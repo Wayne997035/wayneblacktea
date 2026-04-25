@@ -1,0 +1,67 @@
+version: '3'
+
+vars:
+  BINARY_NAME: wayneblacktea-mcp
+  BINARY_OUT: ../bin/{{.BINARY_NAME}}
+
+tasks:
+  default:
+    cmds:
+      - task: check
+
+  check:
+    desc: "Full quality gate — run before any commit"
+    cmds:
+      - task: lint
+      - task: test
+      - task: build-mcp
+    silent: false
+
+  build-mcp:
+    desc: "Build MCP binary to bin/"
+    cmds:
+      - mkdir -p ../bin
+      - go build -o {{.BINARY_OUT}} ../cmd/mcp/
+    dir: ..
+
+  lint:
+    desc: "Run golangci-lint"
+    cmds:
+      - golangci-lint run --config build/.golangci.yml ./...
+    dir: ..
+
+  test:
+    desc: "Run unit tests"
+    cmds:
+      - go test ./...
+    dir: ..
+
+  test-integration:
+    desc: "Run integration tests (requires DATABASE_URL)"
+    cmds:
+      - go test -tags integration ./...
+    dir: ..
+
+  migrate-up:
+    desc: "Apply DB migrations"
+    cmds:
+      - migrate -path migrations/ -database "{{.DATABASE_URL}}" up
+    dir: ..
+    vars:
+      DATABASE_URL:
+        sh: grep DATABASE_URL ../.env | cut -d= -f2-
+
+  migrate-down:
+    desc: "Roll back last DB migration"
+    cmds:
+      - migrate -path migrations/ -database "{{.DATABASE_URL}}" down 1
+    dir: ..
+    vars:
+      DATABASE_URL:
+        sh: grep DATABASE_URL ../.env | cut -d= -f2-
+
+  sqlc:
+    desc: "Regenerate sqlc code"
+    cmds:
+      - sqlc generate
+    dir: ..
