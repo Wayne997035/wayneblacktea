@@ -3,10 +3,13 @@ run:
   go: "1.26.1"
   timeout: 5m
 
-linters:
+formatters:
   enable:
     - gofmt
     - goimports
+
+linters:
+  enable:
     - govet
     - staticcheck
     - errcheck
