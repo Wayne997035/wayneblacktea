@@ -43,8 +43,8 @@ tasks:
     dir: ..
 
   migrate-up:
-    desc: "Apply DB migrations (requires .env with DATABASE_URL)"
-    dotenv: ['../.env']
+    desc: "Apply DB migrations (requires .env.local with DATABASE_URL)"
+    dotenv: ['../.env.local']
     preconditions:
       - sh: test -n "{{.DATABASE_URL}}"
         msg: "DATABASE_URL is not set — add it to .env"
@@ -53,8 +53,8 @@ tasks:
     dir: ..
 
   migrate-down:
-    desc: "Roll back last DB migration (requires .env with DATABASE_URL)"
-    dotenv: ['../.env']
+    desc: "Roll back last DB migration (requires .env.local with DATABASE_URL)"
+    dotenv: ['../.env.local']
     preconditions:
       - sh: test -n "{{.DATABASE_URL}}"
         msg: "DATABASE_URL is not set — add it to .env"
