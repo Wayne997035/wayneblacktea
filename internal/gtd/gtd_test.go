@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/waynechen/wayneblacktea/internal/db"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
 )
 
@@ -40,10 +39,9 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 }
 
 func TestListActiveProjects(t *testing.T) {
-	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(setupPool(t))
 
-	projects, err := svc.ListActiveProjects(context.Background())
+	projects, err := store.ListActiveProjects(context.Background())
 	if err != nil {
 		t.Fatalf("ListActiveProjects: %v", err)
 	}
@@ -52,10 +50,10 @@ func TestListActiveProjects(t *testing.T) {
 
 func TestCreateAndCompleteTask(t *testing.T) {
 	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(pool)
 	ctx := context.Background()
 
-	proj, err := svc.CreateProject(ctx, gtd.CreateProjectParams{
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
 		Name:  "test-project-task5-" + t.Name(),
 		Title: "Test Project",
 		Area:  "projects",
@@ -70,7 +68,7 @@ func TestCreateAndCompleteTask(t *testing.T) {
 		}
 	})
 
-	task, err := svc.CreateTask(ctx, gtd.CreateTaskParams{
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
 		ProjectID: &proj.ID,
 		Title:     "Test task",
 		Priority:  2,
@@ -87,7 +85,7 @@ func TestCreateAndCompleteTask(t *testing.T) {
 	})
 
 	artifact := "https://github.com/test/pr/1"
-	completed, err := svc.CompleteTask(ctx, task.ID, &artifact)
+	completed, err := store.CompleteTask(ctx, task.ID, &artifact)
 	if err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}
@@ -101,10 +99,10 @@ func TestCreateAndCompleteTask(t *testing.T) {
 
 func TestCreateTask_NoProject(t *testing.T) {
 	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(pool)
 	ctx := context.Background()
 
-	task, err := svc.CreateTask(ctx, gtd.CreateTaskParams{
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
 		Title:    "Orphan task",
 		Priority: 1,
 	})
@@ -124,26 +122,25 @@ func TestCreateTask_NoProject(t *testing.T) {
 }
 
 func TestCompleteTask_NotFound(t *testing.T) {
-	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(setupPool(t))
 	ctx := context.Background()
 
-	// All-zero UUID does not exist in the DB; CompleteTask must return an error.
+	// All-zero UUID does not exist in the DB; CompleteTask must return ErrNotFound.
 	nonexistent := uuid.UUID{}
-	_, err := svc.CompleteTask(ctx, nonexistent, nil)
+	_, err := store.CompleteTask(ctx, nonexistent, nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent task ID, got nil")
 	}
 }
 
-func TestGetTasks_ByProject(t *testing.T) {
+func TestTasks_ByProject(t *testing.T) {
 	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(pool)
 	ctx := context.Background()
 
-	proj, err := svc.CreateProject(ctx, gtd.CreateProjectParams{
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
 		Name:  "test-get-tasks-" + t.Name(),
-		Title: "GetTasks project",
+		Title: "Tasks project",
 		Area:  "projects",
 	})
 	if err != nil {
@@ -157,7 +154,7 @@ func TestGetTasks_ByProject(t *testing.T) {
 		}
 	})
 
-	_, err = svc.CreateTask(ctx, gtd.CreateTaskParams{
+	_, err = store.CreateTask(ctx, gtd.CreateTaskParams{
 		ProjectID: &proj.ID,
 		Title:     "Task A",
 		Priority:  1,
@@ -166,9 +163,9 @@ func TestGetTasks_ByProject(t *testing.T) {
 		t.Fatalf("CreateTask A: %v", err)
 	}
 
-	tasks, err := svc.GetTasks(ctx, &proj.ID)
+	tasks, err := store.Tasks(ctx, &proj.ID)
 	if err != nil {
-		t.Fatalf("GetTasks: %v", err)
+		t.Fatalf("Tasks: %v", err)
 	}
 	if len(tasks) == 0 {
 		t.Error("expected at least one task for new project")
@@ -176,11 +173,10 @@ func TestGetTasks_ByProject(t *testing.T) {
 }
 
 func TestWeeklyProgress(t *testing.T) {
-	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(setupPool(t))
 	ctx := context.Background()
 
-	completed, total, err := svc.WeeklyProgress(ctx)
+	completed, total, err := store.WeeklyProgress(ctx)
 	if err != nil {
 		t.Fatalf("WeeklyProgress: %v", err)
 	}
@@ -190,11 +186,10 @@ func TestWeeklyProgress(t *testing.T) {
 }
 
 func TestLogActivity(t *testing.T) {
-	pool := setupPool(t)
-	svc := gtd.New(db.New(pool))
+	store := gtd.NewStore(setupPool(t))
 	ctx := context.Background()
 
-	err := svc.LogActivity(ctx, "test-actor", "test-action", nil, "integration test note")
+	err := store.LogActivity(ctx, "test-actor", "test-action", nil, "integration test note")
 	if err != nil {
 		t.Fatalf("LogActivity: %v", err)
 	}
