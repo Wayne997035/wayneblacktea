@@ -1,0 +1,12 @@
+.env
+.env.local
+*.env
+bin/
+dist/
+/tmp/
+*.log
+
+# DB credentials
+local.yaml
+application-local.yml
+credentials.json
