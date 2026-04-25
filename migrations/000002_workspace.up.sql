@@ -14,4 +14,3 @@ CREATE TABLE repos (
 );
 
 CREATE INDEX idx_repos_status ON repos(status);
-CREATE INDEX idx_repos_name ON repos(name);

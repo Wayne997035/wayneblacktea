@@ -8,5 +8,5 @@ CREATE TABLE session_handoffs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_session_handoffs_resolved ON session_handoffs(resolved_at) WHERE resolved_at IS NULL;
+CREATE INDEX idx_session_handoffs_resolved ON session_handoffs(created_at DESC) WHERE resolved_at IS NULL;
 CREATE INDEX idx_session_handoffs_created ON session_handoffs(created_at DESC);
