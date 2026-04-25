@@ -1,3 +1,9 @@
+# AI tool config (personal, local only)
+CLAUDE.md
+AGENTS.md
+.claude/
+.mcp.json
+
 .env
 .env.local
 *.env
