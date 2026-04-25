@@ -10,3 +10,12 @@ dist/
 local.yaml
 application-local.yml
 credentials.json
+configs/*.local.*
+
+# Go
+vendor/
+*.test
+coverage.out
+
+# macOS
+.DS_Store
