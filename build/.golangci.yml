@@ -1,6 +1,6 @@
 version: "2"
 run:
-  go: "1.26"
+  go: "1.26.1"
   timeout: 5m
 
 linters:
@@ -18,6 +18,8 @@ linters:
     - bodyclose
     - nilnil
     - wrapcheck
+    - lll
+    - gocyclo
 
 linters-settings:
   lll:
