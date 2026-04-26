@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/net/html"
 )
+
+// sessionNoise matches GitHub/web-app session management fragments injected into HTML.
+var sessionNoise = regexp.MustCompile(`(?i)(you signed (in|out)|switched accounts|to refresh your session|there was an error while loading|please reload this page)`)
+
 
 const maxFetchBytes = 256 * 1024 // 256 KB
 
@@ -70,7 +75,7 @@ func extractText(raw string) (title, text string) {
 			}
 		case html.TextNode:
 			t := strings.TrimSpace(n.Data)
-			if len(t) > 20 {
+			if len(t) > 20 && !sessionNoise.MatchString(t) {
 				sb.WriteString(t)
 				sb.WriteString(" ")
 			}
