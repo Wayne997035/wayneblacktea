@@ -7,6 +7,8 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/db"
 	"github.com/waynechen/wayneblacktea/internal/decision"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
+	"github.com/waynechen/wayneblacktea/internal/knowledge"
+	"github.com/waynechen/wayneblacktea/internal/learning"
 	"github.com/waynechen/wayneblacktea/internal/session"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
@@ -42,6 +44,20 @@ type decisionStore interface {
 type sessionStore interface {
 	LatestHandoff(ctx context.Context) (*db.SessionHandoff, error)
 	SetHandoff(ctx context.Context, p session.HandoffParams) (*db.SessionHandoff, error)
+}
+
+// knowledgeStore covers the subset of knowledge.Store used by handlers.
+type knowledgeStore interface {
+	AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error)
+	Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
+	List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error)
+}
+
+// learningStore covers the subset of learning.Store used by handlers.
+type learningStore interface {
+	DueReviews(ctx context.Context, limit int) ([]learning.DueReview, error)
+	SubmitReview(ctx context.Context, scheduleID uuid.UUID, state learning.CardState, rating learning.Rating) error
+	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
 }
 
 // errResp returns a standard error response body.

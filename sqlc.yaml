@@ -24,3 +24,5 @@ sql:
             go_type:
               import: "database/sql"
               type: "NullTime"
+          - db_type: "vector"
+            go_type: "string"

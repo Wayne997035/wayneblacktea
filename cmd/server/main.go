@@ -7,14 +7,21 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
 	"github.com/waynechen/wayneblacktea/internal/decision"
+	"github.com/waynechen/wayneblacktea/internal/discord"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
 	"github.com/waynechen/wayneblacktea/internal/handler"
+	"github.com/waynechen/wayneblacktea/internal/knowledge"
+	"github.com/waynechen/wayneblacktea/internal/learning"
 	apimw "github.com/waynechen/wayneblacktea/internal/middleware"
+	"github.com/waynechen/wayneblacktea/internal/scheduler"
+	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
@@ -60,12 +67,18 @@ func run() error {
 	wsStore := workspace.NewStore(pool)
 	decStore := decision.NewStore(pool)
 	sessStore := session.NewStore(pool)
+	embedClient := search.NewEmbeddingClient()
+	knowledgeStore := knowledge.NewStore(pool, embedClient)
+	learningStore := learning.NewStore(pool)
+	discordClient := discord.NewClient()
 
 	ctxH := handler.NewContextHandler(gtdStore, sessStore)
 	gtdH := handler.NewGTDHandler(gtdStore)
 	wsH := handler.NewWorkspaceHandler(wsStore)
 	decH := handler.NewDecisionHandler(decStore)
 	sessH := handler.NewSessionHandler(sessStore)
+	knowledgeH := handler.NewKnowledgeHandler(knowledgeStore)
+	learningH := handler.NewLearningHandler(learningStore)
 
 	e := echo.New()
 	e.HideBanner = true
@@ -104,7 +117,32 @@ func run() error {
 	api.GET("/session/handoff", sessH.GetHandoff)
 	api.POST("/session/handoff", sessH.SetHandoff)
 
-	if err := e.Start(":" + port); err != nil {
+	api.GET("/knowledge", knowledgeH.ListKnowledge)
+	api.POST("/knowledge", knowledgeH.AddKnowledge)
+	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
+
+	api.GET("/learning/reviews", learningH.GetDueReviews)
+	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
+	api.POST("/learning/concepts", learningH.CreateConcept)
+
+	// Start scheduler.
+	sched, err := scheduler.New(learningStore, discordClient)
+	if err != nil {
+		return fmt.Errorf("creating scheduler: %w", err)
+	}
+	sched.Start()
+	defer sched.Stop()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-quit
+		if err := e.Shutdown(context.Background()); err != nil {
+			log.Printf("server shutdown error: %v", err)
+		}
+	}()
+
+	if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil

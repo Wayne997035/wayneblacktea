@@ -7,6 +7,7 @@ package db
 import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/pgvector/pgvector-go"
 )
 
 type ActivityLog struct {
@@ -16,6 +17,15 @@ type ActivityLog struct {
 	Action    string             `json:"action"`
 	Notes     pgtype.Text        `json:"notes"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Concept struct {
+	ID        uuid.UUID          `json:"id"`
+	Title     string             `json:"title"`
+	Content   string             `json:"content"`
+	Tags      []string           `json:"tags"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Decision struct {
@@ -39,6 +49,18 @@ type Goal struct {
 	DueDate     pgtype.Timestamptz `json:"due_date"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type KnowledgeItem struct {
+	ID        uuid.UUID          `json:"id"`
+	Type      string             `json:"type"`
+	Title     string             `json:"title"`
+	Content   string             `json:"content"`
+	Url       pgtype.Text        `json:"url"`
+	Tags      []string           `json:"tags"`
+	Embedding pgvector.Vector    `json:"embedding"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Project struct {
@@ -67,6 +89,18 @@ type Repo struct {
 	LastActivity    pgtype.Timestamptz `json:"last_activity"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ReviewSchedule struct {
+	ID           uuid.UUID          `json:"id"`
+	ConceptID    uuid.UUID          `json:"concept_id"`
+	Stability    float64            `json:"stability"`
+	Difficulty   float64            `json:"difficulty"`
+	DueDate      pgtype.Timestamptz `json:"due_date"`
+	LastReviewAt pgtype.Timestamptz `json:"last_review_at"`
+	ReviewCount  int32              `json:"review_count"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type SessionHandoff struct {
