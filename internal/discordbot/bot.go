@@ -181,6 +181,10 @@ func (b *Bot) runAnalyze(input string) string {
 		if err != nil {
 			return fmt.Sprintf("Fetch failed: %v", err)
 		}
+		slog.Info("fetched URL", "url", input, "title", title, "content_len", len(content))
+		if len(content) < 100 {
+			return fmt.Sprintf("Fetch failed: extracted content too short (%d chars) — page may require login or is JS-rendered", len(content))
+		}
 	} else {
 		title = truncate(input, 80)
 		content = input
