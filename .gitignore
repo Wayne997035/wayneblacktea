@@ -22,6 +22,7 @@ configs/*.local.*
 vendor/
 *.test
 coverage.out
+/server
 
 # macOS
 .DS_Store

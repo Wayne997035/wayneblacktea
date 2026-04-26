@@ -23,6 +23,12 @@ linters:
     - wrapcheck
     - lll
     - gocyclo
+  settings:
+    wrapcheck:
+      extra-ignore-sigs:
+        - "github.com/labstack/echo/v4.Context).JSON("
+        - "github.com/labstack/echo/v4.Context).String("
+        - "github.com/labstack/echo/v4.Context).NoContent("
 
 linters-settings:
   lll:
