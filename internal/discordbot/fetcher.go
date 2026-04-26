@@ -14,7 +14,7 @@ import (
 
 var sessionNoise = regexp.MustCompile(`(?i)(you signed (in|out)|switched accounts|to refresh your session|there was an error while loading|please reload this page|open more actions menu|repository files navigation|change notification settings)`)
 
-const maxFetchBytes = 256 * 1024
+const maxFetchBytes = 512 * 1024
 
 var fetchClient = &http.Client{Timeout: 20 * time.Second}
 
