@@ -4,9 +4,8 @@ AGENTS.md
 .claude/
 .mcp.json
 
-.env
 .env.local
-*.env
+*.env.local
 bin/
 dist/
 /tmp/
