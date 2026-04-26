@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -206,6 +208,10 @@ func (b *Bot) runAnalyze(input string) string {
 		Type: result.SuggestedType, Title: title, Content: stored.String(),
 		URL: input, Tags: result.Tags, Source: "discord", LearningValue: result.LearningValue,
 	}); err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Sprintf("Analysis done but save failed: %s", urlErr.Err)
+		}
 		return fmt.Sprintf("Analysis done but save failed: %v", err)
 	}
 

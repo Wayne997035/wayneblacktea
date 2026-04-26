@@ -23,6 +23,7 @@ import (
 	pgvectorpgx "github.com/pgvector/pgvector-go/pgx"
 	"github.com/waynechen/wayneblacktea/internal/decision"
 	"github.com/waynechen/wayneblacktea/internal/discord"
+	"github.com/waynechen/wayneblacktea/internal/discordbot"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
 	"github.com/waynechen/wayneblacktea/internal/handler"
 	"github.com/waynechen/wayneblacktea/internal/knowledge"
@@ -32,7 +33,6 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
-	"github.com/waynechen/wayneblacktea/internal/discordbot"
 )
 
 //go:embed web/dist
@@ -184,11 +184,7 @@ func run() error {
 
 	// Start Discord bot if token is configured.
 	if botToken := os.Getenv("DISCORD_BOT_TOKEN"); botToken != "" {
-		botAPIURL := os.Getenv("WAYNEBLACKTEA_API_URL")
-		if botAPIURL == "" {
-			botAPIURL = "http://localhost:8080"
-		}
-		bot, err := discordbot.New(botToken, os.Getenv("GROQ_API_KEY"), botAPIURL, apiKey, os.Getenv("DISCORD_GUILD_ID"))
+		bot, err := discordbot.New(botToken, os.Getenv("GROQ_API_KEY"), "http://localhost:"+port, apiKey, os.Getenv("DISCORD_GUILD_ID"))
 		if err != nil {
 			return fmt.Errorf("creating discord bot: %w", err)
 		}
