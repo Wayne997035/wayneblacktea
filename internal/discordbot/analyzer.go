@@ -71,8 +71,9 @@ func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult
 		"messages": []map[string]string{
 			{"role": "user", "content": analyzePrompt + content},
 		},
-		"temperature": 0.2,
-		"max_tokens":  512,
+		"temperature":     0.2,
+		"max_tokens":      1024,
+		"response_format": map[string]string{"type": "json_object"},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
