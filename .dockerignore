@@ -1,0 +1,11 @@
+.env*
+local.yaml
+configs/*.local.*
+*.local
+bin/
+.claude/
+docs/
+web/node_modules/
+*.md
+.git/
+.gitignore

@@ -29,7 +29,7 @@ func run() error {
 		return fmt.Errorf("parsing database URL: %w", err)
 	}
 	// Aiven uses a custom CA not in the system trust store.
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
