@@ -21,6 +21,7 @@ type Querier interface {
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	CreateSessionHandoff(ctx context.Context, arg CreateSessionHandoffParams) (SessionHandoff, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
+	DeleteTask(ctx context.Context, id uuid.UUID) error
 	GetAllPendingTasks(ctx context.Context) ([]Task, error)
 	GetLatestUnresolvedHandoff(ctx context.Context) (SessionHandoff, error)
 	GetProjectByName(ctx context.Context, name string) (Project, error)

@@ -216,6 +216,14 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status Pr
 	return &row, nil
 }
 
+// DeleteTask permanently removes a task by ID.
+func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
+	if err := s.q.DeleteTask(ctx, id); err != nil {
+		return fmt.Errorf("deleting task %s: %w", id, err)
+	}
+	return nil
+}
+
 // WeeklyProgress returns completed task count this week and total active task count.
 func (s *Store) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	completed, err = s.q.CountCompletedTasksThisWeek(ctx)
