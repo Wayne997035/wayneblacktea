@@ -12,7 +12,10 @@ import (
 
 func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("log_decision",
-		mcp.WithDescription("Records an architectural or design decision."),
+		mcp.WithDescription(
+			"CALL when a technical decision is confirmed (user says go/start/好啊). "+
+				"Records architectural and design decisions with context and rationale.",
+		),
 		mcp.WithString("title", mcp.Description("Short decision title"), mcp.Required()),
 		mcp.WithString("context", mcp.Description("What problem or situation prompted this decision"), mcp.Required()),
 		mcp.WithString("decision", mcp.Description("What was decided"), mcp.Required()),
@@ -23,7 +26,10 @@ func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 	), s.handleLogDecision)
 
 	ms.AddTool(mcp.NewTool("list_decisions",
-		mcp.WithDescription("Retrieves decisions filtered by repo name or project."),
+		mcp.WithDescription(
+			"CALL BEFORE scanning code — check if the answer is already stored. "+
+				"Returns decisions filtered by repo_name or project.",
+		),
 		mcp.WithString("repo_name", mcp.Description("Filter by repository name")),
 		mcp.WithString("project_id", mcp.Description("Filter by project UUID")),
 		mcp.WithNumber("limit", mcp.Description("Maximum number of results (default 20)")),

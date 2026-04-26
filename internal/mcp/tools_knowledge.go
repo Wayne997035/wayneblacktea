@@ -14,7 +14,10 @@ import (
 
 func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("add_knowledge",
-		mcp.WithDescription("Adds a new knowledge item (article, TIL, bookmark, or zettelkasten)."),
+		mcp.WithDescription(
+			"CALL to save a new knowledge item (article, TIL, bookmark, zettelkasten). "+
+				"Used after Discord bot analysis or manual learning.",
+		),
 		mcp.WithString("type", mcp.Description("Item type: article, til, bookmark, or zettelkasten"), mcp.Required()),
 		mcp.WithString("title", mcp.Description("Item title"), mcp.Required()),
 		mcp.WithString("content", mcp.Description("Item body / notes")),
@@ -23,7 +26,10 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 	), s.handleAddKnowledge)
 
 	ms.AddTool(mcp.NewTool("search_knowledge",
-		mcp.WithDescription("Searches knowledge items by full-text and optionally by vector similarity."),
+		mcp.WithDescription(
+			"CALL before fetching/analyzing a URL — check if content is already saved. "+
+				"Searches by full-text and vector similarity.",
+		),
 		mcp.WithString("query", mcp.Description("Search query"), mcp.Required()),
 		mcp.WithNumber("limit", mcp.Description("Maximum results to return (default 10)")),
 	), s.handleSearchKnowledge)

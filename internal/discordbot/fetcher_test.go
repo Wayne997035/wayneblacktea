@@ -81,6 +81,10 @@ func TestFetchURL_RealGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchURL failed: %v", err)
 	}
+	// GitHub may return a rate-limit / error page ("Unicorn") — skip rather than fail.
+	if strings.Contains(title, "Unicorn") || strings.Contains(text, "too long to load") {
+		t.Skip("GitHub returned an error page (rate limit or network issue) — skipping")
+	}
 	if title == "" {
 		t.Error("expected non-empty title")
 	}

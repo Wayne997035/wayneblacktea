@@ -212,6 +212,10 @@ func (b *Bot) runAnalyze(input string) string {
 		Type: result.SuggestedType, Title: title, Content: stored.String(),
 		URL: input, Tags: result.Tags, Source: "discord", LearningValue: result.LearningValue,
 	}); err != nil {
+		var dupErr *errDuplicate
+		if errors.As(err, &dupErr) {
+			return fmt.Sprintf("Already saved similar content: %s", dupErr.message)
+		}
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return fmt.Sprintf("Analysis done but save failed: %s", urlErr.Err)
@@ -247,7 +251,7 @@ func (b *Bot) runSearch(query string) string {
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/api/knowledge/search?q=%s&limit=3", b.apiURL, query), nil)
+		fmt.Sprintf("%s/api/knowledge/search?q=%s&limit=3", b.apiURL, url.QueryEscape(query)), nil)
 	if err != nil {
 		return fmt.Sprintf("Build request failed: %v", err)
 	}
@@ -322,6 +326,11 @@ type saveParams struct {
 	LearningValue int
 }
 
+// errDuplicate is a sentinel used by saveKnowledge to signal a 409 Conflict response.
+type errDuplicate struct{ message string }
+
+func (e *errDuplicate) Error() string { return e.message }
+
 func (b *Bot) saveKnowledge(ctx context.Context, p saveParams) error {
 	payload := map[string]any{
 		"type":           p.Type,
@@ -349,8 +358,21 @@ func (b *Bot) saveKnowledge(ctx context.Context, p saveParams) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+	if resp.StatusCode == http.StatusConflict {
+		// Extract the error message from the API response.
+		var apiResp struct {
+			Error string `json:"error"`
+		}
+		msg := "already saved similar content"
+		if jsonErr := json.Unmarshal(raw, &apiResp); jsonErr == nil && apiResp.Error != "" {
+			msg = apiResp.Error
+		}
+		return &errDuplicate{message: msg}
+	}
+
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("api error %d: %s", resp.StatusCode, raw)
 	}
 	return nil
