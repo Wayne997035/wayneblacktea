@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS knowledge_items;
+DROP EXTENSION IF EXISTS vector;
