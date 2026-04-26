@@ -35,6 +35,7 @@ type workspaceStore interface {
 
 // decisionStore covers the subset of decision.Store used by handlers.
 type decisionStore interface {
+	All(ctx context.Context, limit int32) ([]db.Decision, error)
 	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
 	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
 	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)

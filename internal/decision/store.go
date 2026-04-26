@@ -65,6 +65,15 @@ func (s *Store) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.
 	return rows, nil
 }
 
+// All returns the most recent decisions across all repos and projects.
+func (s *Store) All(ctx context.Context, limit int32) ([]db.Decision, error) {
+	rows, err := s.q.ListAllDecisions(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing all decisions: %w", err)
+	}
+	return rows, nil
+}
+
 // ByProject returns the most recent decisions for a given project ID.
 func (s *Store) ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByProject(ctx, db.ListDecisionsByProjectParams{

@@ -33,6 +33,23 @@ func NewStore(pool *pgxpool.Pool, embed *search.EmbeddingClient) *Store {
 	}
 }
 
+// selectCols is the explicit column list for all read queries.
+// embedding is intentionally excluded: rows may have NULL embedding (async generation),
+// and pgvector-go v0.3.0 DecodeBinary panics on empty bytes even with a pointer scan destination.
+const selectCols = `id, type, title, content, url, tags, created_at, updated_at, source, learning_value`
+
+// scanKnowledgeItem scans a row (10 columns, no embedding) into db.KnowledgeItem.
+func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
+	var i db.KnowledgeItem
+	err := scan(
+		&i.ID, &i.Type, &i.Title, &i.Content,
+		&i.Url, &i.Tags,
+		&i.CreatedAt, &i.UpdatedAt,
+		&i.Source, &i.LearningValue,
+	)
+	return i, err
+}
+
 // AddItem creates the knowledge item, then asynchronously generates and stores its embedding.
 func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem, error) {
 	var url pgtype.Text
@@ -43,13 +60,23 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 	if tags == nil {
 		tags = []string{}
 	}
+	source := p.Source
+	if source == "" {
+		source = "manual"
+	}
+	var lv pgtype.Int4
+	if p.LearningValue > 0 {
+		lv = pgtype.Int4{Int32: int32(p.LearningValue), Valid: true} //nolint:gosec
+	}
 
-	item, err := s.q.CreateKnowledgeItem(ctx, db.CreateKnowledgeItemParams{
-		Type:    p.Type,
-		Title:   p.Title,
-		Content: p.Content,
-		Url:     url,
-		Tags:    tags,
+	const q = `INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING ` + selectCols
+
+	item, err := scanKnowledgeItem(func(args ...any) error {
+		return s.pool.QueryRow(ctx, q,
+			p.Type, p.Title, p.Content, url, tags, source, lv,
+		).Scan(args...)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating knowledge item: %w", err)
@@ -87,27 +114,28 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 // has more than 3 words, it also performs vector similarity search and merges results
 // using Reciprocal Rank Fusion.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	ftsResults, err := s.q.SearchKnowledgeFTS(ctx, db.SearchKnowledgeFTSParams{
-		PlaintoTsquery: query,
-		Limit:          int32(limit), //nolint:gosec // limit is bounded by caller (max 100)
-	})
+	const ftsQ = `SELECT ` + selectCols + `
+		FROM knowledge_items
+		WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+		ORDER BY ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) DESC
+		LIMIT $2`
+
+	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit)) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("FTS search: %w", err)
 	}
+	defer rows.Close()
 
-	ftsItems := make([]db.KnowledgeItem, 0, len(ftsResults))
-	for _, r := range ftsResults {
-		ftsItems = append(ftsItems, db.KnowledgeItem{
-			ID:        r.ID,
-			Type:      r.Type,
-			Title:     r.Title,
-			Content:   r.Content,
-			Url:       r.Url,
-			Tags:      r.Tags,
-			Embedding: r.Embedding,
-			CreatedAt: r.CreatedAt,
-			UpdatedAt: r.UpdatedAt,
-		})
+	var ftsItems []db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning FTS result: %w", err)
+		}
+		ftsItems = append(ftsItems, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating FTS results: %w", err)
 	}
 
 	// Vector search: only if embedding client has an API key and query is > 3 words.
@@ -134,16 +162,16 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 	return mergeRRF(ftsItems, vecItems, limit), nil
 }
 
-// vectorSearch executes a raw vector similarity query.
+// vectorSearch executes a raw vector similarity query (only rows with non-null embeddings).
 func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]db.KnowledgeItem, error) {
 	v := pgvector.NewVector(vec)
-	query := `SELECT id, type, title, content, url, tags, embedding, created_at, updated_at
+	const q = `SELECT ` + selectCols + `
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2`
 
-	rows, err := s.pool.Query(ctx, query, v, limit)
+	rows, err := s.pool.Query(ctx, q, v, limit)
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
 	}
@@ -151,15 +179,11 @@ func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]d
 
 	var items []db.KnowledgeItem
 	for rows.Next() {
-		var i db.KnowledgeItem
-		if err := rows.Scan(
-			&i.ID, &i.Type, &i.Title, &i.Content,
-			&i.Url, &i.Tags, &i.Embedding,
-			&i.CreatedAt, &i.UpdatedAt,
-		); err != nil {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning vector search result: %w", err)
 		}
-		items = append(items, i)
+		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating vector search results: %w", err)
@@ -192,7 +216,6 @@ func mergeRRF(fts, vec []db.KnowledgeItem, limit int) []db.KnowledgeItem {
 		byID[item.ID] = item
 	}
 
-	// Sort by descending RRF score.
 	for i := 0; i < len(order)-1; i++ {
 		for j := i + 1; j < len(order); j++ {
 			if scores[order[j]] > scores[order[i]] {
@@ -213,12 +236,25 @@ func mergeRRF(fts, vec []db.KnowledgeItem, limit int) []db.KnowledgeItem {
 
 // List returns knowledge items ordered by creation date.
 func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error) {
-	items, err := s.q.ListKnowledge(ctx, db.ListKnowledgeParams{
-		Limit:  int32(limit),  //nolint:gosec // limit is bounded by caller (max 100)
-		Offset: int32(offset), //nolint:gosec // offset is a non-negative pagination value
-	})
+	const q = `SELECT ` + selectCols + `
+		FROM knowledge_items ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+
+	rows, err := s.pool.Query(ctx, q, int32(limit), int32(offset)) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("listing knowledge items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning knowledge item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating knowledge items: %w", err)
 	}
 	if items == nil {
 		return []db.KnowledgeItem{}, nil
@@ -228,7 +264,10 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem
 
 // GetByID returns a single knowledge item by ID.
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, error) {
-	item, err := s.q.GetKnowledgeByID(ctx, id)
+	const q = `SELECT ` + selectCols + ` FROM knowledge_items WHERE id = $1`
+	item, err := scanKnowledgeItem(func(args ...any) error {
+		return s.pool.QueryRow(ctx, q, id).Scan(args...)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound

@@ -1,4 +1,4 @@
-import { Menu } from 'lucide-react'
+import { X, Menu } from 'lucide-react'
 import { ThemeToggle } from '../ui/ThemeToggle'
 import { LanguageToggle } from '../ui/LanguageToggle'
 import { useApiPing } from '../../hooks/useApiPing'
@@ -6,17 +6,17 @@ import { useTranslation } from 'react-i18next'
 
 interface HeaderProps {
   onMenuClick?: () => void;
-  showMenu?: boolean;
+  sidebarOpen?: boolean;
 }
 
-export function Header({ onMenuClick, showMenu = false }: HeaderProps) {
+export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
   const { t } = useTranslation()
   const { isSuccess, isError } = useApiPing()
   const apiConnected = isSuccess && !isError
 
   return (
     <header
-      className="flex items-center justify-between px-4 sticky top-0 z-30 shrink-0"
+      className="flex items-center justify-between px-4 sticky top-0 z-[60] shrink-0"
       style={{
         height: '56px',
         background: 'var(--color-bg-card)',
@@ -24,18 +24,31 @@ export function Header({ onMenuClick, showMenu = false }: HeaderProps) {
       }}
     >
       <div className="flex items-center gap-3">
-        {showMenu && (
-          <button
-            type="button"
-            onClick={onMenuClick}
-            aria-label="Open navigation menu"
-            className="flex items-center justify-center w-10 h-10 rounded-md transition-colors"
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-bg-hover)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+        {/* Hamburger: visible on mobile + tablet (< lg), hidden on desktop */}
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={sidebarOpen}
+          className="lg:hidden flex items-center justify-center w-10 h-10 rounded-md transition-colors"
+          style={{ background: 'transparent' }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-bg-hover)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+        >
+          <span
+            style={{
+              display: 'block',
+              transition: 'transform 220ms ease, opacity 220ms ease',
+              transform: sidebarOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}
           >
-            <Menu size={20} aria-hidden="true" />
-          </button>
-        )}
+            {sidebarOpen
+              ? <X size={20} aria-hidden="true" />
+              : <Menu size={20} aria-hidden="true" />
+            }
+          </span>
+        </button>
+
         <span
           className="font-mono font-medium tracking-widest text-sm"
           style={{ color: 'var(--color-accent-blue)' }}

@@ -73,6 +73,42 @@
   "error": {
     "loadFailed": "Failed to load"
   },
+  "knowledge": {
+    "title": "Knowledge",
+    "searchPlaceholder": "Search knowledge...",
+    "noItems": "No knowledge entries yet",
+    "addEntry": "Add Entry",
+    "form": {
+      "type": "Type",
+      "title": "Title",
+      "titlePlaceholder": "Entry title...",
+      "content": "Content",
+      "contentPlaceholder": "Write your notes here...",
+      "url": "URL (optional)",
+      "urlPlaceholder": "https://..."
+    }
+  },
+  "reviews": {
+    "title": "Reviews",
+    "dueCount": "{{count}} reviews due",
+    "noDue": "No reviews due",
+    "addConcept": "Add Concept",
+    "reviewCount": "×{{count}}",
+    "form": {
+      "title": "Title",
+      "content": "Content",
+      "tags": "Tags (optional)",
+      "titlePlaceholder": "Concept title...",
+      "contentPlaceholder": "What do you want to remember?",
+      "tagsPlaceholder": "tag1, tag2, tag3"
+    },
+    "ratings": {
+      "again": "Again",
+      "hard": "Hard",
+      "good": "Good",
+      "easy": "Easy"
+    }
+  },
   "comingSoon": {
     "title": "Coming Soon",
     "message": "This feature will be available in Phase 3"

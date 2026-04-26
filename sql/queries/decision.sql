@@ -14,3 +14,8 @@ SELECT * FROM decisions
 WHERE project_id = $1
 ORDER BY created_at DESC
 LIMIT $2;
+
+-- name: ListAllDecisions :many
+SELECT * FROM decisions
+ORDER BY created_at DESC
+LIMIT $1;

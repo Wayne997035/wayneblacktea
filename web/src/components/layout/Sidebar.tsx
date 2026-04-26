@@ -11,8 +11,8 @@ const navItems = [
   { icon: ListTodo,        labelKey: 'nav.gtd',       to: '/gtd',       phase: 1 as const },
   { icon: FolderGit2,      labelKey: 'nav.workspace', to: '/workspace', phase: 1 as const },
   { icon: BookMarked,      labelKey: 'nav.decisions', to: '/decisions', phase: 1 as const },
-  { icon: Library,         labelKey: 'nav.knowledge', to: '/knowledge', phase: 3 as const },
-  { icon: GraduationCap,   labelKey: 'nav.reviews',   to: '/reviews',   phase: 3 as const },
+  { icon: Library,         labelKey: 'nav.knowledge', to: '/knowledge', phase: 1 as const },
+  { icon: GraduationCap,   labelKey: 'nav.reviews',   to: '/reviews',   phase: 1 as const },
 ]
 
 export function Sidebar({ collapsed = false, onNavigate }: SidebarProps) {

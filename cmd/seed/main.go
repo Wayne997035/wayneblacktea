@@ -8,6 +8,8 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -32,7 +34,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parsing database URL: %w", err)
 	}
-	// Aiven uses a custom CA not in the system trust store.
 	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
@@ -89,35 +90,133 @@ func seedGoals(ctx context.Context, store *gtd.Store) int {
 	return created
 }
 
+// repoSpec holds auto-discovered repo metadata.
+type repoSpec struct {
+	name     string
+	path     string
+	language string
+	desc     string
+}
+
 func seedRepos(ctx context.Context, store *workspace.Store) int {
-	type repoSpec struct {
-		name        string
-		path        string
-		language    string
-		description string
-	}
-	repos := []repoSpec{
-		{"chat-gateway", "/Users/waynechen/_project/chat-gateway", "Go", "Gin+gRPC gateway with MongoDB"},
-		{"chatbot-go", "/Users/waynechen/_project/chatbot-go", "Go", "Echo LINE Bot with Redis"},
-		{"chat-web", "/Users/waynechen/_project/chat-web", "TypeScript", "React 19 chat frontend"},
-		{"wayneblacktea", "/Users/waynechen/_project/wayneblacktea", "Go", "Personal AI OS MCP server"},
-		{"chatbot", "/Users/waynechen/_project/chatbot", "Java", "Spring Boot LINE Bot"},
+	root := os.Getenv("PROJECT_ROOT")
+	if root == "" {
+		slog.Warn("PROJECT_ROOT not set, skipping repo discovery")
+		return 0
 	}
 
+	repos := discoverRepos(root)
 	synced := 0
 	for _, r := range repos {
 		_, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 			Name:        r.name,
 			Path:        r.path,
 			Language:    r.language,
-			Description: r.description,
+			Description: r.desc,
 		})
 		if err != nil {
 			slog.Warn("failed to upsert repo", "name", r.name, "err", err)
 			continue
 		}
-		slog.Info("repo synced", "name", r.name)
+		slog.Info("repo synced", "name", r.name, "lang", r.language)
 		synced++
 	}
 	return synced
+}
+
+// discoverRepos scans root for code projects (root-level and one level deep for
+// monorepo-style directories that contain nested modules).
+func discoverRepos(root string) []repoSpec {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		slog.Warn("cannot read PROJECT_ROOT", "path", root, "err", err)
+		return nil
+	}
+
+	var repos []repoSpec
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		lang := detectLanguage(dir)
+		if lang != "" {
+			repos = append(repos, repoSpec{
+				name:     e.Name(),
+				path:     dir,
+				language: lang,
+				desc:     autoDesc(e.Name(), lang),
+			})
+			continue
+		}
+		// No marker at root → scan one level deep (e.g. Flare-Go/auth, skcloud-*/subpkg)
+		subs, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, sub := range subs {
+			if !sub.IsDir() || strings.HasPrefix(sub.Name(), ".") {
+				continue
+			}
+			subDir := filepath.Join(dir, sub.Name())
+			subLang := detectLanguage(subDir)
+			if subLang != "" {
+				repos = append(repos, repoSpec{
+					name:     e.Name() + "/" + sub.Name(),
+					path:     subDir,
+					language: subLang,
+					desc:     autoDesc(sub.Name(), subLang),
+				})
+			}
+		}
+	}
+	return repos
+}
+
+// detectLanguage returns the primary language of a directory based on marker files.
+// Returns "" when no known marker is found.
+func detectLanguage(dir string) string {
+	switch {
+	case fileExists(dir, "go.mod"):
+		return "Go"
+	case fileExists(dir, "pom.xml"), fileExists(dir, "build.gradle"), fileExists(dir, "build.gradle.kts"):
+		return "Java"
+	case fileExists(dir, "package.json"):
+		if fileExists(dir, "tsconfig.json") {
+			return "TypeScript"
+		}
+		return "JavaScript"
+	case hasGlob(dir, "*.py"):
+		return "Python"
+	case fileExists(dir, "Cargo.toml"):
+		return "Rust"
+	default:
+		return ""
+	}
+}
+
+func autoDesc(name, lang string) string {
+	labels := map[string]string{
+		"Go":         "Go service",
+		"TypeScript": "TypeScript app",
+		"JavaScript": "JavaScript app",
+		"Java":       "Java/Spring Boot service",
+		"Python":     "Python project",
+		"Rust":       "Rust project",
+	}
+	label := labels[lang]
+	if label == "" {
+		label = lang + " project"
+	}
+	return name + " — " + label
+}
+
+func fileExists(dir, name string) bool {
+	_, err := os.Stat(filepath.Join(dir, name))
+	return err == nil
+}
+
+func hasGlob(dir, pattern string) bool {
+	matches, err := filepath.Glob(filepath.Join(dir, pattern))
+	return err == nil && len(matches) > 0
 }

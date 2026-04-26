@@ -30,7 +30,8 @@ export function RepoCard({ repo }: RepoCardProps) {
   const { t } = useTranslation()
   const [isOpen, setIsOpen] = useState(false)
   const issuesRef = useRef<HTMLUListElement>(null)
-  const hasIssues = repo.known_issues.length > 0
+  const issues = repo.known_issues ?? []
+  const hasIssues = issues.length > 0
 
   const issuesId = `issues-${repo.id}`
 
@@ -94,7 +95,7 @@ export function RepoCard({ repo }: RepoCardProps) {
               aria-hidden="true"
               style={{ transition: 'transform 200ms', transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
             />
-            {t('workspace.issues', { count: repo.known_issues.length })}
+            {t('workspace.issues', { count: issues.length })}
           </button>
 
           <ul
@@ -108,7 +109,7 @@ export function RepoCard({ repo }: RepoCardProps) {
               marginTop: isOpen ? '8px' : '0',
             }}
           >
-            {repo.known_issues.map((issue, idx) => (
+            {issues.map((issue, idx) => (
               <li key={idx} className="text-body-sm flex gap-2 py-0.5" style={{ color: 'var(--color-warning)' }}>
                 <span aria-hidden="true">•</span>
                 <span>{issue}</span>

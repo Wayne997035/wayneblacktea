@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const geminiEmbedURL = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+const geminiEmbedURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 
 // EmbeddingClient calls the Gemini embedding API to generate vector embeddings.
 type EmbeddingClient struct {
@@ -36,8 +36,9 @@ type embedContent struct {
 }
 
 type embedRequest struct {
-	Model   string       `json:"model"`
-	Content embedContent `json:"content"`
+	Model                string       `json:"model"`
+	Content              embedContent `json:"content"`
+	OutputDimensionality int          `json:"outputDimensionality,omitempty"`
 }
 
 type embedValues struct {
@@ -48,7 +49,7 @@ type embedResponse struct {
 	Embedding embedValues `json:"embedding"`
 }
 
-// Embed returns a 768-dimension embedding vector for the given text.
+// Embed returns a 768-dimension embedding vector for the given text (truncated via outputDimensionality).
 // Returns nil, nil if GEMINI_API_KEY is not set (graceful degradation).
 func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
 	if c.apiKey == "" {
@@ -56,10 +57,11 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 	}
 
 	body := embedRequest{
-		Model: "models/text-embedding-004",
+		Model: "models/gemini-embedding-001",
 		Content: embedContent{
 			Parts: []embedPart{{Text: text}},
 		},
+		OutputDimensionality: 768,
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

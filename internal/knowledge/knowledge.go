@@ -17,9 +17,11 @@ var ErrNotFound = errors.New("knowledge: not found")
 
 // AddItemParams holds parameters for adding a new knowledge item.
 type AddItemParams struct {
-	Type    string
-	Title   string
-	Content string
-	URL     string
-	Tags    []string
+	Type          string
+	Title         string
+	Content       string
+	URL           string
+	Tags          []string
+	Source        string // "manual", "discord", etc. — defaults to "manual"
+	LearningValue int    // 1-5; 0 = unset
 }

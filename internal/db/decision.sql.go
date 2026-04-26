@@ -52,6 +52,42 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 	return i, err
 }
 
+const listAllDecisions = `-- name: ListAllDecisions :many
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at FROM decisions
+ORDER BY created_at DESC
+LIMIT $1
+`
+
+func (q *Queries) ListAllDecisions(ctx context.Context, limit int32) ([]Decision, error) {
+	rows, err := q.db.Query(ctx, listAllDecisions, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Decision
+	for rows.Next() {
+		var i Decision
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RepoName,
+			&i.Title,
+			&i.Context,
+			&i.Decision,
+			&i.Rationale,
+			&i.Alternatives,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionsByProject = `-- name: ListDecisionsByProject :many
 SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at FROM decisions
 WHERE project_id = $1

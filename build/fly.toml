@@ -1,5 +1,5 @@
 app = "wayneblacktea-server"
-primary_region = "nrt"
+primary_region = "hkg"
 
 [build]
   dockerfile = "build/Dockerfile.server"
@@ -13,3 +13,11 @@ primary_region = "nrt"
 
 [env]
   PORT = "8080"
+  # Secrets (set via `fly secrets set`, never commit values):
+  # DATABASE_URL=...
+  # API_KEY=...
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

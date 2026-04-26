@@ -41,30 +41,39 @@ type fakeGTDStore struct {
 func (f *fakeGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) {
 	return f.goals, f.err
 }
+
 func (f *fakeGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) {
 	return f.projects, f.err
 }
+
 func (f *fakeGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*db.Goal, error) {
 	return f.createdGoal, f.err
 }
+
 func (f *fakeGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParams) (*db.Project, error) {
 	return f.createdProj, f.err
 }
+
 func (f *fakeGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
 	return f.tasks, f.err
 }
+
 func (f *fakeGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
 	return f.createdTask, f.err
 }
+
 func (f *fakeGTDStore) CompleteTask(_ context.Context, _ uuid.UUID, _ *string) (*db.Task, error) {
 	return f.completed, f.err
 }
+
 func (f *fakeGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.TaskStatus) (*db.Task, error) {
 	return f.updatedTask, f.err
 }
+
 func (f *fakeGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd.ProjectStatus) (*db.Project, error) {
 	return f.updatedProj, f.err
 }
+
 func (f *fakeGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
 	return f.completed_, f.total_, f.err
 }
@@ -78,6 +87,7 @@ type fakeSessionStore struct {
 func (f *fakeSessionStore) LatestHandoff(_ context.Context) (*db.SessionHandoff, error) {
 	return f.handoff, f.err
 }
+
 func (f *fakeSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams) (*db.SessionHandoff, error) {
 	return f.setResult, f.err
 }
@@ -91,6 +101,7 @@ type fakeWorkspaceStore struct {
 func (f *fakeWorkspaceStore) ActiveRepos(_ context.Context) ([]db.Repo, error) {
 	return f.repos, f.err
 }
+
 func (f *fakeWorkspaceStore) UpsertRepo(_ context.Context, _ workspace.UpsertRepoParams) (*db.Repo, error) {
 	return f.repo, f.err
 }
@@ -101,12 +112,18 @@ type fakeDecisionStore struct {
 	err  error
 }
 
+func (f *fakeDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) {
+	return f.list, f.err
+}
+
 func (f *fakeDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
 	return f.list, f.err
 }
+
 func (f *fakeDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
 	return f.list, f.err
 }
+
 func (f *fakeDecisionStore) Log(_ context.Context, _ decision.LogParams) (*db.Decision, error) {
 	return f.item, f.err
 }

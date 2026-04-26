@@ -35,6 +35,7 @@ type Querier interface {
 	ListActiveGoals(ctx context.Context) ([]Goal, error)
 	ListActiveProjects(ctx context.Context) ([]Project, error)
 	ListActiveRepos(ctx context.Context) ([]Repo, error)
+	ListAllDecisions(ctx context.Context, limit int32) ([]Decision, error)
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, limit int32) ([]ListDueReviewsRow, error)

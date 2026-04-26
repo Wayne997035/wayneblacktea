@@ -4,6 +4,8 @@ import { DashboardPage } from './pages/DashboardPage'
 import { GtdPage } from './pages/GtdPage'
 import { WorkspacePage } from './pages/WorkspacePage'
 import { DecisionsPage } from './pages/DecisionsPage'
+import { KnowledgePage } from './pages/KnowledgePage'
+import { ReviewsPage } from './pages/ReviewsPage'
 
 const router = createBrowserRouter([
   {
@@ -14,8 +16,8 @@ const router = createBrowserRouter([
       { path: 'gtd', element: <GtdPage /> },
       { path: 'workspace', element: <WorkspacePage /> },
       { path: 'decisions', element: <DecisionsPage /> },
-      { path: 'knowledge', element: <Navigate to="/" replace /> },
-      { path: 'reviews', element: <Navigate to="/" replace /> },
+      { path: 'knowledge', element: <KnowledgePage /> },
+      { path: 'reviews', element: <ReviewsPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

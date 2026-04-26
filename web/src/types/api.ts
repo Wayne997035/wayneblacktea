@@ -48,7 +48,7 @@ export interface Repo {
   language?: string | null;
   status: string;
   current_branch?: string | null;
-  known_issues: string[];
+  known_issues: string[] | null;
   next_planned_step?: string | null;
   last_activity?: string | null;
   created_at: string;
@@ -83,8 +83,8 @@ export interface WeeklyProgress {
 }
 
 export interface TodayContext {
-  goals: Goal[];
-  projects: Project[];
+  goals: Goal[] | null;
+  projects: Project[] | null;
   weekly_progress: WeeklyProgress;
   pending_handoff: SessionHandoff | null;
 }
@@ -94,4 +94,53 @@ export interface CreateTaskRequest {
   project_id?: string | null;
   priority: 1 | 2 | 3 | 4 | 5;
   due_date?: string | null;
+}
+
+export interface DueReview {
+  concept_id: string;
+  schedule_id: string;
+  title: string;
+  content: string;
+  stability: number;
+  difficulty: number;
+  due_date: string;
+  review_count: number;
+}
+
+export interface SubmitReviewRequest {
+  rating: 1 | 2 | 3 | 4;
+  stability: number;
+  difficulty: number;
+  review_count: number;
+}
+
+export interface CreateConceptRequest {
+  title: string;
+  content: string;
+  tags: string[];
+}
+
+export type KnowledgeType = 'article' | 'til' | 'bookmark' | 'zettelkasten';
+
+export interface KnowledgeItem {
+  id: string;
+  type: KnowledgeType;
+  title: string;
+  content: string;
+  url: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  source: string;
+  learning_value: number | null;
+}
+
+export interface CreateKnowledgeRequest {
+  type: KnowledgeType;
+  title: string;
+  content: string;
+  url?: string | null;
+  tags?: string[];
+  source?: string;
+  learning_value?: number | null;
 }

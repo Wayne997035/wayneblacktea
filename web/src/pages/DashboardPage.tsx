@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useContextToday } from '../hooks/useContextToday'
 import { ProjectCard } from '../components/dashboard/ProjectCard'
@@ -26,10 +27,11 @@ function formatDate(date: Date): string {
 export function DashboardPage() {
   const { t } = useTranslation()
   const { data, isLoading, isError } = useContextToday()
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  const activeProjects = data?.projects
+  const activeProjects = (data?.projects ?? [])
     .filter((p) => p.status === 'active')
-    .sort((a, b) => b.priority - a.priority) ?? []
+    .sort((a, b) => b.priority - a.priority)
 
   const weeklyProgress = data?.weekly_progress ?? { completed: 0, total: 0 }
 
@@ -76,7 +78,12 @@ export function DashboardPage() {
           ) : (
             <div className="flex flex-col gap-3">
               {activeProjects.map((project) => (
-                <ProjectCard key={project.id} project={project} variant="compact" />
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  variant={expandedId === project.id ? 'expanded' : 'compact'}
+                  onClick={() => setExpandedId(expandedId === project.id ? null : project.id)}
+                />
               ))}
             </div>
           )}
@@ -118,7 +125,7 @@ export function DashboardPage() {
           {/* Quick Stats */}
           <section>
             <QuickStats
-              pendingTasks={isLoading ? null : (data?.projects.length ?? null)}
+              pendingTasks={isLoading ? null : ((data?.projects ?? []).length)}
               decisionsToday={null}
             />
           </section>

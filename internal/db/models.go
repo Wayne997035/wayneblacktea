@@ -52,15 +52,17 @@ type Goal struct {
 }
 
 type KnowledgeItem struct {
-	ID        uuid.UUID          `json:"id"`
-	Type      string             `json:"type"`
-	Title     string             `json:"title"`
-	Content   string             `json:"content"`
-	Url       pgtype.Text        `json:"url"`
-	Tags      []string           `json:"tags"`
-	Embedding pgvector.Vector    `json:"embedding"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	ID            uuid.UUID          `json:"id"`
+	Type          string             `json:"type"`
+	Title         string             `json:"title"`
+	Content       string             `json:"content"`
+	Url           pgtype.Text        `json:"url"`
+	Tags          []string           `json:"tags"`
+	Embedding     pgvector.Vector    `json:"embedding"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Source        string             `json:"source"`
+	LearningValue pgtype.Int4        `json:"learning_value"`
 }
 
 type Project struct {

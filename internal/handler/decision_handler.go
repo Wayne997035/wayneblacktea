@@ -36,10 +36,18 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 		return c.JSON(http.StatusOK, decisions)
 	}
 
-	repoName := c.QueryParam("repo_name")
-	decisions, err := h.store.ByRepo(ctx, repoName, defaultLimit)
+	if repoName := c.QueryParam("repo_name"); repoName != "" {
+		decisions, err := h.store.ByRepo(ctx, repoName, defaultLimit)
+		if err != nil {
+			c.Logger().Errorf("ListDecisions ByRepo: %v", err)
+			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		}
+		return c.JSON(http.StatusOK, decisions)
+	}
+
+	decisions, err := h.store.All(ctx, defaultLimit)
 	if err != nil {
-		c.Logger().Errorf("ListDecisions ByRepo: %v", err)
+		c.Logger().Errorf("ListDecisions All: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, decisions)

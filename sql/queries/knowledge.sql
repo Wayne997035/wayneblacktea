@@ -1,6 +1,6 @@
 -- name: CreateKnowledgeItem :one
-INSERT INTO knowledge_items (type, title, content, url, tags)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: UpdateKnowledgeEmbedding :exec

@@ -73,6 +73,42 @@
   "error": {
     "loadFailed": "載入失敗"
   },
+  "knowledge": {
+    "title": "知識庫",
+    "searchPlaceholder": "搜尋知識庫...",
+    "noItems": "尚無知識條目",
+    "addEntry": "新增條目",
+    "form": {
+      "type": "類型",
+      "title": "標題",
+      "titlePlaceholder": "條目標題...",
+      "content": "內容",
+      "contentPlaceholder": "在此寫下筆記...",
+      "url": "URL（選填）",
+      "urlPlaceholder": "https://..."
+    }
+  },
+  "reviews": {
+    "title": "學習回顧",
+    "dueCount": "{{count}} 筆待複習",
+    "noDue": "今日無待複習項目",
+    "addConcept": "新增概念",
+    "reviewCount": "×{{count}}",
+    "form": {
+      "title": "標題",
+      "content": "內容",
+      "tags": "標籤（選填）",
+      "titlePlaceholder": "概念標題...",
+      "contentPlaceholder": "你想記住什麼？",
+      "tagsPlaceholder": "tag1, tag2, tag3"
+    },
+    "ratings": {
+      "again": "再來",
+      "hard": "困難",
+      "good": "良好",
+      "easy": "簡單"
+    }
+  },
   "comingSoon": {
     "title": "即將推出",
     "message": "此功能將在 Phase 3 開放"

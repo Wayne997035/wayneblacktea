@@ -43,11 +43,13 @@ func (h *KnowledgeHandler) ListKnowledge(c echo.Context) error {
 }
 
 type addKnowledgeRequest struct {
-	Type    string   `json:"type"`
-	Title   string   `json:"title"`
-	Content string   `json:"content"`
-	URL     string   `json:"url"`
-	Tags    []string `json:"tags"`
+	Type          string   `json:"type"`
+	Title         string   `json:"title"`
+	Content       string   `json:"content"`
+	URL           string   `json:"url"`
+	Tags          []string `json:"tags"`
+	Source        string   `json:"source"`
+	LearningValue int      `json:"learning_value"`
 }
 
 // AddKnowledge creates a new knowledge item.
@@ -66,11 +68,13 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 	}
 
 	item, err := h.store.AddItem(c.Request().Context(), knowledge.AddItemParams{
-		Type:    req.Type,
-		Title:   req.Title,
-		Content: req.Content,
-		URL:     req.URL,
-		Tags:    req.Tags,
+		Type:          req.Type,
+		Title:         req.Title,
+		Content:       req.Content,
+		URL:           req.URL,
+		Tags:          req.Tags,
+		Source:        req.Source,
+		LearningValue: req.LearningValue,
 	})
 	if err != nil {
 		c.Logger().Errorf("AddKnowledge: %v", err)

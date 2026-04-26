@@ -3,16 +3,24 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"embed"
+	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata" // embed IANA timezone DB so Asia/Taipei works on any base image
 
+	"github.com/joho/godotenv"
+
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
+	pgvectorpgx "github.com/pgvector/pgvector-go/pgx"
 	"github.com/waynechen/wayneblacktea/internal/decision"
 	"github.com/waynechen/wayneblacktea/internal/discord"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
@@ -24,9 +32,18 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
+	"github.com/waynechen/wayneblacktea/internal/discordbot"
 )
 
+//go:embed web/dist
+var staticFiles embed.FS
+
 func main() {
+	envFile := flag.String("env", ".env", "env file to load")
+	flag.Parse()
+	if err := godotenv.Load(*envFile); err != nil {
+		log.Fatalf("loading %s: %v", *envFile, err)
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -56,6 +73,9 @@ func run() error {
 	}
 	// Aiven uses a custom CA not in the system trust store.
 	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		return pgvectorpgx.RegisterTypes(ctx, conn)
+	}
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
@@ -82,7 +102,18 @@ func run() error {
 
 	e := echo.New()
 	e.HideBanner = true
-	e.Use(echolog.RequestLogger())
+	e.Use(echolog.RequestLoggerWithConfig(echolog.RequestLoggerConfig{
+		LogMethod: true, LogURI: true, LogStatus: true,
+		LogLatency: true, LogHost: true, LogError: true,
+		LogValuesFunc: func(c echo.Context, v echolog.RequestLoggerValues) error {
+			if v.URI == "/health" {
+				return nil
+			}
+			fmt.Fprintf(os.Stdout, "INFO REQUEST method=%s uri=%s status=%d latency=%s host=%s\n",
+				v.Method, v.URI, v.Status, v.Latency, v.Host)
+			return nil
+		},
+	}))
 	e.Use(echolog.Recover())
 	e.Use(echolog.BodyLimit("1M"))
 	e.Use(apimw.CORSMiddleware(allowedOrigins))
@@ -125,6 +156,24 @@ func run() error {
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
 	api.POST("/learning/concepts", learningH.CreateConcept)
 
+	// Serve the React SPA for all non-API routes (must be registered last).
+	// Unknown paths fall back to index.html so client-side routing works.
+	distFS, err := fs.Sub(staticFiles, "web/dist")
+	if err != nil {
+		return fmt.Errorf("embedding static files: %w", err)
+	}
+	spaFS := http.FS(distFS)
+	spaHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, err := spaFS.Open(r.URL.Path)
+		if err != nil {
+			r.URL.Path = "/"
+		} else {
+			f.Close()
+		}
+		http.FileServer(spaFS).ServeHTTP(w, r)
+	})
+	e.GET("/*", echo.WrapHandler(spaHandler))
+
 	// Start scheduler.
 	sched, err := scheduler.New(learningStore, discordClient)
 	if err != nil {
@@ -132,6 +181,23 @@ func run() error {
 	}
 	sched.Start()
 	defer sched.Stop()
+
+	// Start Discord bot if token is configured.
+	if botToken := os.Getenv("DISCORD_BOT_TOKEN"); botToken != "" {
+		botAPIURL := os.Getenv("WAYNEBLACKTEA_API_URL")
+		if botAPIURL == "" {
+			botAPIURL = "http://localhost:8080"
+		}
+		bot, err := discordbot.New(botToken, os.Getenv("GROQ_API_KEY"), botAPIURL, apiKey, os.Getenv("DISCORD_GUILD_ID"))
+		if err != nil {
+			return fmt.Errorf("creating discord bot: %w", err)
+		}
+		if err := bot.Start(); err != nil {
+			return fmt.Errorf("starting discord bot: %w", err)
+		}
+		defer bot.Stop()
+		log.Println("discord bot started")
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
