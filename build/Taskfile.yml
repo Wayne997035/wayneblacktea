@@ -15,6 +15,7 @@ tasks:
       - task: lint
       - task: test
       - task: build-mcp
+      - task: build-server
     silent: false
 
   build-mcp:
@@ -22,6 +23,13 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o {{.BINARY_OUT}} ./cmd/mcp/
+    dir: ..
+
+  build-server:
+    desc: "Build REST API server binary to bin/"
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wayneblacktea-server ./cmd/server/
     dir: ..
 
   lint:
