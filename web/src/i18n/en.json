@@ -1,0 +1,108 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "gtd": "GTD",
+    "workspace": "Workspace",
+    "decisions": "Decisions",
+    "knowledge": "Knowledge",
+    "reviews": "Reviews"
+  },
+  "dashboard": {
+    "greeting": {
+      "morning": "Good morning, Wayne",
+      "afternoon": "Good afternoon, Wayne",
+      "evening": "Good evening, Wayne"
+    },
+    "sections": {
+      "activeProjects": "ACTIVE PROJECTS",
+      "weeklyProgress": "WEEKLY PROGRESS",
+      "nextSession": "NEXT SESSION",
+      "pendingTasks": "Pending Tasks",
+      "decisionsToday": "Decisions Today"
+    },
+    "noProjects": "No active projects",
+    "noTasksThisWeek": "No tasks this week",
+    "noHandoff": "No pending handoff",
+    "tasksDone": "tasks done"
+  },
+  "gtd": {
+    "title": "GTD",
+    "goals": "Goals",
+    "projects": "Projects",
+    "tasks": "Tasks",
+    "tabs": {
+      "all": "All",
+      "active": "Active",
+      "on_hold": "On Hold",
+      "completed": "Completed"
+    },
+    "allProjects": "All Projects",
+    "noGoals": "No goals",
+    "noProjects": "No projects",
+    "noTasks": "No tasks",
+    "addTask": "Add Task",
+    "addGoal": "Add Goal"
+  },
+  "workspace": {
+    "title": "Workspace",
+    "syncRepos": "Sync Repos",
+    "noRepos": "No repositories",
+    "issues": "{{count}} issues",
+    "knownIssues": "Known Issues"
+  },
+  "decisions": {
+    "title": "Decisions",
+    "allProjects": "All Projects",
+    "searchPlaceholder": "Search decisions...",
+    "noDecisions": "No decisions recorded",
+    "showFull": "▸ Show full",
+    "collapse": "▾ Collapse",
+    "context": "Context",
+    "decision": "Decision",
+    "alternatives": "Alternatives"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "empty": "No data",
+    "save": "Save",
+    "cancel": "Cancel",
+    "add": "Add",
+    "retry": "Retry"
+  },
+  "error": {
+    "loadFailed": "Failed to load"
+  },
+  "comingSoon": {
+    "title": "Coming Soon",
+    "message": "This feature will be available in Phase 3"
+  },
+  "modal": {
+    "addTask": {
+      "title": "Add Task",
+      "titleLabel": "Task title",
+      "titlePlaceholder": "Task title...",
+      "projectLabel": "Project (optional)",
+      "priorityLabel": "Priority",
+      "dueDateLabel": "Due date (optional)",
+      "submit": "Add Task"
+    }
+  },
+  "priority": {
+    "1": "Low",
+    "2": "Normal",
+    "3": "Medium",
+    "4": "High",
+    "5": "Critical"
+  },
+  "status": {
+    "active": "Active",
+    "on_hold": "On Hold",
+    "completed": "Completed",
+    "archived": "Archived"
+  },
+  "api": {
+    "connected": "API connected",
+    "disconnected": "API disconnected"
+  }
+}

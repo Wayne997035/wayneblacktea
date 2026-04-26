@@ -1,0 +1,108 @@
+{
+  "nav": {
+    "dashboard": "儀表板",
+    "gtd": "GTD",
+    "workspace": "工作區",
+    "decisions": "決策紀錄",
+    "knowledge": "知識庫",
+    "reviews": "學習回顧"
+  },
+  "dashboard": {
+    "greeting": {
+      "morning": "早安，Wayne",
+      "afternoon": "午安，Wayne",
+      "evening": "晚安，Wayne"
+    },
+    "sections": {
+      "activeProjects": "進行中專案",
+      "weeklyProgress": "本週進度",
+      "nextSession": "下次工作",
+      "pendingTasks": "待辦事項",
+      "decisionsToday": "今日決策"
+    },
+    "noProjects": "目前沒有進行中的專案",
+    "noTasksThisWeek": "本週沒有任務",
+    "noHandoff": "沒有待辦的交接事項",
+    "tasksDone": "個任務完成"
+  },
+  "gtd": {
+    "title": "GTD",
+    "goals": "目標",
+    "projects": "專案",
+    "tasks": "任務",
+    "tabs": {
+      "all": "全部",
+      "active": "進行中",
+      "on_hold": "暫停",
+      "completed": "已完成"
+    },
+    "allProjects": "所有專案",
+    "noGoals": "沒有目標",
+    "noProjects": "沒有專案",
+    "noTasks": "沒有任務",
+    "addTask": "新增任務",
+    "addGoal": "新增目標"
+  },
+  "workspace": {
+    "title": "工作區",
+    "syncRepos": "同步儲存庫",
+    "noRepos": "沒有儲存庫",
+    "issues": "{{count}} 個問題",
+    "knownIssues": "已知問題"
+  },
+  "decisions": {
+    "title": "決策紀錄",
+    "allProjects": "所有專案",
+    "searchPlaceholder": "搜尋決策...",
+    "noDecisions": "沒有決策紀錄",
+    "showFull": "▸ 展開",
+    "collapse": "▾ 收起",
+    "context": "背景",
+    "decision": "決策",
+    "alternatives": "替代方案"
+  },
+  "common": {
+    "loading": "載入中...",
+    "error": "發生錯誤",
+    "empty": "沒有資料",
+    "save": "儲存",
+    "cancel": "取消",
+    "add": "新增",
+    "retry": "重試"
+  },
+  "error": {
+    "loadFailed": "載入失敗"
+  },
+  "comingSoon": {
+    "title": "即將推出",
+    "message": "此功能將在 Phase 3 開放"
+  },
+  "modal": {
+    "addTask": {
+      "title": "新增任務",
+      "titleLabel": "任務標題",
+      "titlePlaceholder": "任務標題...",
+      "projectLabel": "專案（選填）",
+      "priorityLabel": "優先級",
+      "dueDateLabel": "截止日期（選填）",
+      "submit": "新增任務"
+    }
+  },
+  "priority": {
+    "1": "低",
+    "2": "普通",
+    "3": "中",
+    "4": "高",
+    "5": "緊急"
+  },
+  "status": {
+    "active": "進行中",
+    "on_hold": "暫停",
+    "completed": "已完成",
+    "archived": "封存"
+  },
+  "api": {
+    "connected": "API 已連線",
+    "disconnected": "API 未連線"
+  }
+}
