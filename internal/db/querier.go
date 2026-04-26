@@ -31,8 +31,9 @@ type Querier interface {
 	ListActiveRepos(ctx context.Context) ([]Repo, error)
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
-	ResolveHandoff(ctx context.Context, id uuid.UUID) error
+	ResolveHandoff(ctx context.Context, id uuid.UUID) (int64, error)
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)
+	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error)
 }
 

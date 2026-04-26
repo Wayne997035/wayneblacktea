@@ -6,10 +6,8 @@ import (
 	"github.com/google/uuid"
 )
 
-var (
-	// ErrNotFound is returned when a requested decision does not exist.
-	ErrNotFound = errors.New("decision: not found")
-)
+// ErrNotFound is returned when a requested decision does not exist.
+var ErrNotFound = errors.New("decision: not found")
 
 // LogParams holds parameters for recording a new architectural decision.
 type LogParams struct {

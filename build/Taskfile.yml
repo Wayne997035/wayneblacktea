@@ -2,7 +2,7 @@ version: '3'
 
 vars:
   BINARY_NAME: wayneblacktea-mcp
-  BINARY_OUT: ../bin/{{.BINARY_NAME}}
+  BINARY_OUT: bin/{{.BINARY_NAME}}
 
 tasks:
   default:
@@ -20,8 +20,8 @@ tasks:
   build-mcp:
     desc: "Build MCP binary to bin/"
     cmds:
-      - mkdir -p ../bin
-      - go build -o {{.BINARY_OUT}} ../cmd/mcp/
+      - mkdir -p bin
+      - go build -o {{.BINARY_OUT}} ./cmd/mcp/
     dir: ..
 
   lint:
@@ -71,4 +71,5 @@ tasks:
   clean:
     desc: "Remove build artifacts"
     cmds:
-      - rm -rf ../bin/
+      - rm -rf bin/
+    dir: ..

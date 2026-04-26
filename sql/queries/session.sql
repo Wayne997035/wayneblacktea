@@ -9,5 +9,5 @@ WHERE resolved_at IS NULL
 ORDER BY created_at DESC
 LIMIT 1;
 
--- name: ResolveHandoff :exec
+-- name: ResolveHandoff :execrows
 UPDATE session_handoffs SET resolved_at = NOW() WHERE id = $1;

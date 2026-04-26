@@ -67,11 +67,14 @@ func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context) (SessionHandof
 	return i, err
 }
 
-const resolveHandoff = `-- name: ResolveHandoff :exec
+const resolveHandoff = `-- name: ResolveHandoff :execrows
 UPDATE session_handoffs SET resolved_at = NOW() WHERE id = $1
 `
 
-func (q *Queries) ResolveHandoff(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, resolveHandoff, id)
-	return err
+func (q *Queries) ResolveHandoff(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveHandoff, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -65,8 +65,12 @@ func (s *Store) LatestHandoff(ctx context.Context) (*db.SessionHandoff, error) {
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.
 func (s *Store) Resolve(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.ResolveHandoff(ctx, id); err != nil {
+	n, err := s.q.ResolveHandoff(ctx, id)
+	if err != nil {
 		return fmt.Errorf("resolving handoff %s: %w", id, err)
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
