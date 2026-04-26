@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/waynechen/wayneblacktea/internal/db"
 )
@@ -28,6 +30,13 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 
 func toText(v string) pgtype.Text {
 	return pgtype.Text{String: v, Valid: v != ""}
+}
+
+func toTimestamptz(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
 }
 
 func toUUID(id *uuid.UUID) pgtype.UUID {
@@ -77,6 +86,10 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 		Priority:    priority,
 	})
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrConflict
+		}
 		return nil, fmt.Errorf("creating project %q: %w", p.Name, err)
 	}
 	return &row, nil
@@ -157,6 +170,50 @@ func (s *Store) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
 		return nil, fmt.Errorf("listing active goals: %w", err)
 	}
 	return rows, nil
+}
+
+// CreateGoal inserts a new goal.
+func (s *Store) CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error) {
+	row, err := s.q.CreateGoal(ctx, db.CreateGoalParams{
+		Title:       p.Title,
+		Description: toText(p.Description),
+		Area:        toText(p.Area),
+		DueDate:     toTimestamptz(p.DueDate),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating goal %q: %w", p.Title, err)
+	}
+	return &row, nil
+}
+
+// UpdateTaskStatus sets the status of a task by ID.
+func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error) {
+	row, err := s.q.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+		ID:     id,
+		Status: string(status),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("updating task %s status: %w", id, err)
+	}
+	return &row, nil
+}
+
+// UpdateProjectStatus sets the status of a project by ID.
+func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error) {
+	row, err := s.q.UpdateProjectStatus(ctx, db.UpdateProjectStatusParams{
+		ID:     id,
+		Status: string(status),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("updating project %s status: %w", id, err)
+	}
+	return &row, nil
 }
 
 // WeeklyProgress returns completed task count this week and total active task count.

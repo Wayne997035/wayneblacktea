@@ -407,3 +407,31 @@ func (q *Queries) UpdateProjectStatus(ctx context.Context, arg UpdateProjectStat
 	)
 	return i, err
 }
+
+const updateTaskStatus = `-- name: UpdateTaskStatus :one
+UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+`
+
+type UpdateTaskStatusParams struct {
+	ID     uuid.UUID `json:"id"`
+	Status string    `json:"status"`
+}
+
+func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskStatus, arg.ID, arg.Status)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.Assignee,
+		&i.DueDate,
+		&i.Artifact,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

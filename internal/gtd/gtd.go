@@ -2,6 +2,7 @@ package gtd
 
 import (
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -50,6 +51,14 @@ type CreateProjectParams struct {
 	Description string // empty → NULL
 	Area        string // defaults to "projects"
 	Priority    int32  // defaults to 3
+}
+
+// CreateGoalParams holds parameters for creating a new goal.
+type CreateGoalParams struct {
+	Title       string
+	Description string     // empty → NULL
+	Area        string     // empty → NULL
+	DueDate     *time.Time // nil → NULL
 }
 
 // CreateTaskParams holds parameters for creating a new task.

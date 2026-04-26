@@ -52,5 +52,8 @@ WHERE status = 'completed'
   AND updated_at >= date_trunc('week', NOW())
   AND updated_at < date_trunc('week', NOW()) + interval '1 week';
 
+-- name: UpdateTaskStatus :one
+UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING *;
+
 -- name: CountTotalActiveTasks :one
 SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'in_progress');
