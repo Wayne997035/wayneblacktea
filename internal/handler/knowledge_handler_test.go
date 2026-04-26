@@ -127,6 +127,12 @@ func TestKnowledgeHandler_AddKnowledge(t *testing.T) {
 			store:    &fakeKnowledgeStore{item: item},
 			wantCode: http.StatusCreated,
 		},
+		{
+			name:     "duplicate content → 409",
+			body:     `{"type":"til","title":"Go generics"}`,
+			store:    &fakeKnowledgeStore{err: knowledge.ErrDuplicate{ExistingTitle: "Go generics", Similarity: 0.95}},
+			wantCode: http.StatusConflict,
+		},
 	}
 
 	for _, tc := range cases {

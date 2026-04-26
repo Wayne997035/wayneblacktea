@@ -50,11 +50,21 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	return i, err
 }
 
-// AddItem creates the knowledge item, then asynchronously generates and stores its embedding.
+// dedupSimilarityThreshold is the cosine similarity threshold above which an incoming
+// item is considered a duplicate of an existing one. 0.88 chosen for personal-use recall.
+const dedupSimilarityThreshold = 0.88
+
+// AddItem creates the knowledge item and synchronously generates and stores its embedding.
+// If an embedding client is available:
+//  1. URL exact-match check (fast, no Gemini call needed).
+//  2. Vector cosine similarity check (similarity >= 0.88 → ErrDuplicate).
+//  3. INSERT, then immediately store the embedding.
+//
+// Any Gemini error or nil vector (no API key) → dedup skipped, item inserted normally.
 func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem, error) {
-	var url pgtype.Text
+	var itemURL pgtype.Text
 	if p.URL != "" {
-		url = pgtype.Text{String: p.URL, Valid: true}
+		itemURL = pgtype.Text{String: p.URL, Valid: true}
 	}
 	tags := p.Tags
 	if tags == nil {
@@ -66,48 +76,97 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 	}
 	var lv pgtype.Int4
 	if p.LearningValue > 0 {
-		lv = pgtype.Int4{Int32: int32(p.LearningValue), Valid: true} //nolint:gosec
+		lv = pgtype.Int4{Int32: int32(p.LearningValue), Valid: true} //nolint:gosec // G115: LearningValue is bounded 1-5 by caller
 	}
 
+	// Step 1: URL exact-match dedup (cheap — no embed call needed).
+	if p.URL != "" {
+		const urlCheckQ = `SELECT title FROM knowledge_items WHERE url = $1 LIMIT 1`
+		var existingTitle string
+		err := s.pool.QueryRow(ctx, urlCheckQ, p.URL).Scan(&existingTitle)
+		if err == nil {
+			// Row found — exact URL duplicate.
+			return nil, ErrDuplicate{ExistingTitle: existingTitle, Similarity: 1.0}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("url dedup check: %w", err)
+		}
+	}
+
+	// Step 2: Vector cosine similarity dedup (only when Gemini API key is available).
+	var vec []float32
+	if s.embed != nil {
+		// Use an 8s deadline so Gemini downtime never blocks the write path.
+		embedCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+
+		text := p.Title + " " + p.Content
+		v, err := s.embed.Embed(embedCtx, text)
+		if err != nil {
+			// Gemini error — skip dedup, continue with insert.
+			slog.Warn("embed failed during dedup, skipping similarity check", "err", err)
+		} else {
+			vec = v
+		}
+	}
+
+	if vec != nil {
+		existingTitle, similarity, found, err := s.findSimilar(ctx, vec)
+		if err != nil {
+			// DB error during similarity check — skip dedup, continue with insert.
+			slog.Warn("similarity check failed, skipping dedup", "err", err)
+		} else if found && similarity >= dedupSimilarityThreshold {
+			return nil, ErrDuplicate{ExistingTitle: existingTitle, Similarity: similarity}
+		}
+	}
+
+	// Step 3: INSERT the item.
 	const q = `INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING ` + selectCols
 
 	item, err := scanKnowledgeItem(func(args ...any) error {
 		return s.pool.QueryRow(ctx, q,
-			p.Type, p.Title, p.Content, url, tags, source, lv,
+			p.Type, p.Title, p.Content, itemURL, tags, source, lv,
 		).Scan(args...)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating knowledge item: %w", err)
 	}
 
-	// Asynchronously generate and store the embedding.
-	// context.Background() is intentional: the embedding must outlive the HTTP request context.
-	//nolint:gosec // G118: background context required — embedding goroutine must not be cancelled by request
-	go func() {
-		embedCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		text := item.Title + " " + item.Content
-		vec, err := s.embed.Embed(embedCtx, text)
-		if err != nil {
-			slog.Warn("embedding generation failed", "id", item.ID, "err", err)
-			return
-		}
-		if vec == nil {
-			return // GEMINI_API_KEY not set, skip silently
-		}
-
-		if err := s.q.UpdateKnowledgeEmbedding(embedCtx, db.UpdateKnowledgeEmbeddingParams{
+	// Step 4: Store embedding synchronously (vec may be nil — that's fine).
+	if vec != nil {
+		if err := s.q.UpdateKnowledgeEmbedding(ctx, db.UpdateKnowledgeEmbeddingParams{
 			ID:        item.ID,
 			Embedding: pgvector.NewVector(vec),
 		}); err != nil {
 			slog.Warn("storing embedding failed", "id", item.ID, "err", err)
 		}
-	}()
+	}
 
 	return &item, nil
+}
+
+// findSimilar returns the title and cosine similarity of the most similar stored item.
+// Returns found=false when no items have embeddings yet (empty result → not a duplicate).
+func (s *Store) findSimilar(ctx context.Context, vec []float32) (
+	title string, similarity float64, found bool, err error,
+) {
+	const q = `SELECT title, 1 - (embedding <=> $1::vector) AS similarity
+		FROM knowledge_items
+		WHERE embedding IS NOT NULL
+		ORDER BY embedding <=> $1::vector
+		LIMIT 1`
+
+	v := pgvector.NewVector(vec)
+	err = s.pool.QueryRow(ctx, q, v).Scan(&title, &similarity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false, nil // no items with embeddings yet
+	}
+	if err != nil {
+		return "", 0, false, fmt.Errorf("similarity query: %w", err)
+	}
+	return title, similarity, true, nil
 }
 
 // Search performs full-text search. If an embedding client is available and the query

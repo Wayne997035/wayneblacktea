@@ -13,7 +13,7 @@ import (
 
 func (s *Server) registerSessionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("set_session_handoff",
-		mcp.WithDescription("Records what you intend to continue in the next session."),
+		mcp.WithDescription("CALL when user says tomorrow/next time/later. Records what to continue in next session."),
 		mcp.WithString("intent", mcp.Description("What to continue next session"), mcp.Required()),
 		mcp.WithString("repo_name", mcp.Description("Repository being worked on")),
 		mcp.WithString("context_summary", mcp.Description("Current state and relevant context")),

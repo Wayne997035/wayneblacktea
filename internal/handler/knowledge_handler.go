@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -77,6 +78,10 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 		LearningValue: req.LearningValue,
 	})
 	if err != nil {
+		var dupErr knowledge.ErrDuplicate
+		if errors.As(err, &dupErr) {
+			return c.JSON(http.StatusConflict, errResp(dupErr.Error()))
+		}
 		c.Logger().Errorf("AddKnowledge: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}

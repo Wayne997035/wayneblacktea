@@ -33,7 +33,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	), s.handleListTasks)
 
 	ms.AddTool(mcp.NewTool("add_task",
-		mcp.WithDescription("Creates a task, optionally under a project."),
+		mcp.WithDescription(
+			"CALL immediately when follow-up work is identified during discussion. "+
+				"Creates a task optionally under a project.",
+		),
 		mcp.WithString("title", mcp.Description("Task title"), mcp.Required()),
 		mcp.WithString("project_id", mcp.Description("Parent project UUID")),
 		mcp.WithString("description", mcp.Description("Task details")),
@@ -42,7 +45,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	), s.handleAddTask)
 
 	ms.AddTool(mcp.NewTool("complete_task",
-		mcp.WithDescription("Marks a task as completed."),
+		mcp.WithDescription(
+			"CALL after task is verified done (build pass, tests pass). Marks task completed and records artifact.",
+		),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 		mcp.WithString("artifact", mcp.Description("Link or note for the output")),
 	), s.handleCompleteTask)

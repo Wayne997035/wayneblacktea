@@ -41,9 +41,37 @@ func New(pool *pgxpool.Pool) *Server {
 	}
 }
 
+const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — USAGE PROTOCOL
+
+## MANDATORY: Session Start
+Call get_today_context at the start of EVERY session before doing anything else.
+(Skip if MCP is unavailable or returns an error.)
+
+## RECOMMENDED: When the question involves architecture, history, or past decisions
+Call list_decisions first with the relevant repo_name. If empty or MCP returns an error, inspect code regardless.
+list_decisions returning empty does NOT mean skip code inspection — always verify in code after checking DB.
+
+## MANDATORY: When user confirms a decision ("好啊", "go", "開始", "start")
+Call log_decision BEFORE starting implementation. Include alternatives considered.
+(Skip if MCP is unavailable or returns an error.)
+
+Loggable: bug fix approach, architecture, API design, deployment, third-party service, non-obvious discoveries.
+
+## MANDATORY: After task completion (build pass, tests pass)
+Call complete_task with artifact (file path or PR URL).
+(Skip if MCP is unavailable or returns an error.)
+
+## Proactive
+- New follow-up work discovered → add_task immediately
+- User says "tomorrow"/"next time"/"later" → set_session_handoff before responding
+- Question about saved knowledge → search_knowledge before fetching/analyzing URLs`
+
 // MCPServer returns a configured MCP server with all tools registered.
 func (s *Server) MCPServer() *server.MCPServer {
-	ms := server.NewMCPServer("wayneblacktea", "0.1.0")
+	ms := server.NewMCPServer("wayneblacktea", "0.1.0",
+		server.WithInstructions(mcpInstructions),
+	)
+	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)
 	s.registerGTDTools(ms)
 	s.registerDecisionTools(ms)

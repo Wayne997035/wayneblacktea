@@ -14,7 +14,9 @@ import (
 
 func (s *Server) registerContextTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("get_today_context",
-		mcp.WithDescription("Morning briefing: active goals, projects, weekly progress, and pending session handoff."),
+		mcp.WithDescription(
+			"CALL AT SESSION START. Returns active goals, projects, weekly progress, and pending session handoff.",
+		),
 	), s.handleGetTodayContext)
 
 	ms.AddTool(mcp.NewTool("list_active_repos",
