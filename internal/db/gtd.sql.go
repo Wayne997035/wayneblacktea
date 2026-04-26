@@ -213,6 +213,15 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 	return i, err
 }
 
+const deleteTask = `-- name: DeleteTask :exec
+DELETE FROM tasks WHERE id = $1
+`
+
+func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteTask, id)
+	return err
+}
+
 const getAllPendingTasks = `-- name: GetAllPendingTasks :many
 SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at FROM tasks
 WHERE status IN ('pending', 'in_progress')

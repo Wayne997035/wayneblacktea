@@ -57,3 +57,6 @@ UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING *;
 
 -- name: CountTotalActiveTasks :one
 SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'in_progress');
+
+-- name: DeleteTask :exec
+DELETE FROM tasks WHERE id = $1;

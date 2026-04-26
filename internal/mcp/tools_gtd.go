@@ -70,6 +70,24 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 		mcp.WithString("status", mcp.Description("New status: active, completed, archived, or on_hold"), mcp.Required()),
 	), s.handleUpdateProjectStatus)
+
+	ms.AddTool(mcp.NewTool("get_project",
+		mcp.WithDescription("Returns a project by name with its recent decisions."),
+		mcp.WithString("name", mcp.Description("Project slug name"), mcp.Required()),
+	), s.handleGetProject)
+
+	ms.AddTool(mcp.NewTool("log_activity",
+		mcp.WithDescription("Records an activity log entry for a project."),
+		mcp.WithString("actor", mcp.Description("Who did the action (e.g. claude-code, human)"), mcp.Required()),
+		mcp.WithString("action", mcp.Description("What was done"), mcp.Required()),
+		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
+		mcp.WithString("notes", mcp.Description("Additional notes")),
+	), s.handleLogActivity)
+
+	ms.AddTool(mcp.NewTool("delete_task",
+		mcp.WithDescription("Permanently deletes a task."),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+	), s.handleDeleteTask)
 }
 
 func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -278,4 +296,72 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
 	}
 	return jsonText(project)
+}
+
+type projectWithDecisions struct {
+	Project   any `json:"project"`
+	Decisions any `json:"recent_decisions"`
+}
+
+func (s *Server) handleGetProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	name := stringArg(args, "name")
+	if name == "" {
+		return mcp.NewToolResultError("name is required"), nil
+	}
+
+	project, err := s.gtd.ProjectByName(ctx, name)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", name)), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading project: %v", err)), nil
+	}
+
+	decisions, err := s.decision.ByProject(ctx, project.ID, 5)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+	}
+
+	return jsonText(projectWithDecisions{Project: project, Decisions: decisions})
+}
+
+func (s *Server) handleLogActivity(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	actor, action := stringArg(args, "actor"), stringArg(args, "action")
+	if actor == "" || action == "" {
+		return mcp.NewToolResultError("actor and action are required"), nil
+	}
+
+	var projectID *uuid.UUID
+	if raw := stringArg(args, "project_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return mcp.NewToolResultError("invalid project_id UUID"), nil
+		}
+		projectID = &id
+	}
+
+	notes := stringArg(args, "notes")
+	if err := s.gtd.LogActivity(ctx, actor, action, projectID, notes); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("logging activity: %v", err)), nil
+	}
+	return mcp.NewToolResultText("activity logged"), nil
+}
+
+func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	raw := stringArg(args, "task_id")
+	if raw == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return mcp.NewToolResultError("invalid task_id UUID"), nil
+	}
+
+	if err := s.gtd.DeleteTask(ctx, id); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("deleting task: %v", err)), nil
+	}
+	return mcp.NewToolResultText("task deleted"), nil
 }
