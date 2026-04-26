@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -112,8 +113,16 @@ func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult
 		return nil, fmt.Errorf("parse groq response: %w", err)
 	}
 
+	jsonStr := groqResp.Choices[0].Message.Content
+	// Extract JSON object in case the model prepends explanatory text.
+	if i := strings.Index(jsonStr, "{"); i > 0 {
+		jsonStr = jsonStr[i:]
+	}
+	if i := strings.LastIndex(jsonStr, "}"); i >= 0 && i < len(jsonStr)-1 {
+		jsonStr = jsonStr[:i+1]
+	}
 	var result AnalysisResult
-	if err := json.Unmarshal([]byte(groqResp.Choices[0].Message.Content), &result); err != nil {
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		return nil, fmt.Errorf("parse analysis json: %w", err)
 	}
 	return &result, nil
