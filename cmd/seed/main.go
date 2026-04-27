@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
 	wbtruntime "github.com/waynechen/wayneblacktea/internal/runtime"
+	"github.com/waynechen/wayneblacktea/internal/storage"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
@@ -26,6 +27,9 @@ func main() {
 }
 
 func run() error {
+	if _, err := storage.ResolveFromEnv(); err != nil {
+		return fmt.Errorf("resolving storage backend: %w", err)
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL not set")

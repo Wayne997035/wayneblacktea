@@ -33,6 +33,7 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/scheduler"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
+	"github.com/waynechen/wayneblacktea/internal/storage"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
@@ -51,6 +52,11 @@ func main() {
 }
 
 func run() error {
+	backend, err := storage.ResolveFromEnv()
+	if err != nil {
+		return fmt.Errorf("resolving storage backend: %w", err)
+	}
+	log.Printf("storage backend: %s", backend)
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL not set")
