@@ -26,6 +26,12 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{q: db.New(pool)}
 }
 
+// WithTx returns a Store bound to tx, for use in multi-store transactions
+// (e.g. atomically materializing a concept while resolving a pending proposal).
+func (s *Store) WithTx(tx pgx.Tx) *Store {
+	return &Store{q: s.q.WithTx(tx)}
+}
+
 // DueReview represents a concept with its associated review schedule.
 type DueReview struct {
 	ConceptID   uuid.UUID `json:"concept_id"`

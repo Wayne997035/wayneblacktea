@@ -28,6 +28,7 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/knowledge"
 	"github.com/waynechen/wayneblacktea/internal/learning"
 	apimw "github.com/waynechen/wayneblacktea/internal/middleware"
+	"github.com/waynechen/wayneblacktea/internal/proposal"
 	"github.com/waynechen/wayneblacktea/internal/scheduler"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
@@ -79,6 +80,7 @@ func run() error {
 	embedClient := search.NewEmbeddingClient()
 	knowledgeStore := knowledge.NewStore(pool, embedClient)
 	learningStore := learning.NewStore(pool)
+	proposalStore := proposal.NewStore(pool)
 	discordClient := discord.NewClient()
 
 	ctxH := handler.NewContextHandler(gtdStore, sessStore)
@@ -86,7 +88,7 @@ func run() error {
 	wsH := handler.NewWorkspaceHandler(wsStore)
 	decH := handler.NewDecisionHandler(decStore)
 	sessH := handler.NewSessionHandler(sessStore)
-	knowledgeH := handler.NewKnowledgeHandler(knowledgeStore)
+	knowledgeH := handler.NewKnowledgeHandler(knowledgeStore, proposalStore)
 	learningH := handler.NewLearningHandler(learningStore)
 
 	e := echo.New()

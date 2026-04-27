@@ -11,6 +11,7 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/knowledge"
 	"github.com/waynechen/wayneblacktea/internal/learning"
 	"github.com/waynechen/wayneblacktea/internal/notion"
+	"github.com/waynechen/wayneblacktea/internal/proposal"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
@@ -18,12 +19,14 @@ import (
 
 // Server wires all domain stores to MCP tools.
 type Server struct {
+	pool      *pgxpool.Pool
 	gtd       *gtd.Store
 	workspace *workspace.Store
 	decision  *decision.Store
 	session   *session.Store
 	knowledge *knowledge.Store
 	learning  *learning.Store
+	proposal  *proposal.Store
 	notion    *notion.Client
 }
 
@@ -31,12 +34,14 @@ type Server struct {
 func New(pool *pgxpool.Pool) *Server {
 	embedClient := search.NewEmbeddingClient()
 	return &Server{
+		pool:      pool,
 		gtd:       gtd.NewStore(pool),
 		workspace: workspace.NewStore(pool),
 		decision:  decision.NewStore(pool),
 		session:   session.NewStore(pool),
 		knowledge: knowledge.NewStore(pool, embedClient),
 		learning:  learning.NewStore(pool),
+		proposal:  proposal.NewStore(pool),
 		notion:    notion.NewClient(),
 	}
 }
@@ -84,6 +89,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerKnowledgeTools(ms)
 	s.registerLearningTools(ms)
 	s.registerPlanTools(ms)
+	s.registerProposalTools(ms)
 	return ms
 }
 
