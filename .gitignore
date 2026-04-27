@@ -17,11 +17,18 @@ application-local.yml
 credentials.json
 configs/*.local.*
 
-# Go
+# Go build artifacts (root) — binaries go in bin/ via Taskfile
 vendor/
 *.test
 coverage.out
 /server
+/discordbot
+/wayneblacktea-server
+/wayneblacktea-mcp
+/wbt-doctor
+
+# Stop hook output
+/tmp/wbt-health.json
 
 # macOS
 .DS_Store

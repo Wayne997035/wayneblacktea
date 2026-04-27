@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Placeholder logo. Designed to be deliberately rough so it can never
+  be mistaken for the final mark. Replace with the deliverable described
+  in docs/logo-brief.md.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 280" width="280" height="280" role="img" aria-label="wayneblacktea placeholder logo">
+  <title>wayneblacktea (placeholder)</title>
+  <!-- background: paper -->
+  <rect width="280" height="280" fill="#FAF6EE"/>
+
+  <!-- steam ribbons forming a wobbly 'w' -->
+  <g fill="none" stroke="#8C2A1A" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M75 95 q10 -22 22 -10 q12 12 22 -12 q10 -24 22 -8 q12 16 22 -10 q10 -26 24 -6"/>
+    <!-- second, fainter trail -->
+    <path opacity="0.45" d="M82 75 q10 -18 20 -6 q10 12 20 -10 q10 -22 22 -4 q12 18 24 -8"/>
+  </g>
+
+  <!-- teacup body -->
+  <g fill="#8C2A1A">
+    <path d="M58 130
+             h164
+             a8 8 0 0 1 8 8
+             v18
+             a76 76 0 0 1 -76 76
+             h-28
+             a76 76 0 0 1 -76 -76
+             v-18
+             a8 8 0 0 1 8 -8 z"/>
+  </g>
+  <!-- handle outline (cream to suggest depth) -->
+  <path d="M222 150
+           c20 0 28 16 28 32
+           c0 16 -10 30 -28 30"
+        fill="none" stroke="#8C2A1A" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- cup rim highlight -->
+  <ellipse cx="140" cy="135" rx="76" ry="6" fill="#FAF6EE" opacity="0.35"/>
+
+  <!-- saucer -->
+  <ellipse cx="140" cy="240" rx="106" ry="10" fill="#3A2517" opacity="0.85"/>
+
+  <!-- wordmark hint -->
+  <text x="140" y="270" font-family="ui-serif, Georgia, serif" font-size="14" fill="#3A2517" text-anchor="middle" letter-spacing="0.1em">PLACEHOLDER · 紅茶悠閒</text>
+</svg>
