@@ -16,7 +16,6 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
@@ -67,19 +66,9 @@ func run() error {
 		allowedOrigins = "*"
 	}
 
-	cfg, err := pgxpool.ParseConfig(dsn)
+	pool, err := buildPool(dsn)
 	if err != nil {
-		return fmt.Errorf("parsing database URL: %w", err)
-	}
-	// Aiven uses a custom CA not in the system trust store.
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
-	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		return pgvectorpgx.RegisterTypes(ctx, conn)
-	}
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
-	if err != nil {
-		return fmt.Errorf("connecting to database: %w", err)
+		return err
 	}
 	defer pool.Close()
 
@@ -162,17 +151,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("embedding static files: %w", err)
 	}
-	spaFS := http.FS(distFS)
-	spaHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f, err := spaFS.Open(r.URL.Path)
-		if err != nil {
-			r.URL.Path = "/"
-		} else {
-			f.Close()
-		}
-		http.FileServer(spaFS).ServeHTTP(w, r)
-	})
-	e.GET("/*", echo.WrapHandler(spaHandler))
+	e.GET("/*", echo.WrapHandler(buildSPAHandler(distFS)))
 
 	// Start scheduler.
 	sched, err := scheduler.New(learningStore, discordClient)
@@ -208,4 +187,32 @@ func run() error {
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil
+}
+
+func buildSPAHandler(distFS fs.FS) http.Handler {
+	spaFS := http.FS(distFS)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, err := spaFS.Open(r.URL.Path)
+		if err != nil {
+			r.URL.Path = "/"
+		} else {
+			_ = f.Close()
+		}
+		http.FileServer(spaFS).ServeHTTP(w, r)
+	})
+}
+
+func buildPool(dsn string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parsing database URL: %w", err)
+	}
+	// Aiven uses a custom CA not in the system trust store.
+	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
+	cfg.AfterConnect = pgvectorpgx.RegisterTypes
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to database: %w", err)
+	}
+	return pool, nil
 }

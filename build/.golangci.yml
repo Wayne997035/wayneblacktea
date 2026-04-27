@@ -1,7 +1,9 @@
 version: "2"
+
 run:
   go: "1.26.1"
   timeout: 5m
+  modules-download-mode: readonly
 
 formatters:
   enable:
@@ -23,23 +25,35 @@ linters:
     - wrapcheck
     - lll
     - gocyclo
+
   settings:
     wrapcheck:
       extra-ignore-sigs:
         - "github.com/labstack/echo/v4.Context).JSON("
         - "github.com/labstack/echo/v4.Context).String("
         - "github.com/labstack/echo/v4.Context).NoContent("
+    lll:
+      line-length: 140
+    gocyclo:
+      min-complexity: 15
+    gosec:
+      excludes:
+        - G703 # seed CLI uses user-controlled PROJECT_ROOT intentionally
+        - G706 # slog structured logging is not vulnerable to log injection
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
 
-linters-settings:
-  lll:
-    line-length: 140
-  gocyclo:
-    min-complexity: 15
-  gosec:
-    excludes: []
+  exclusions:
+    paths:
+      - web/node_modules
+    rules:
+      - path: "_test.go"
+        linters:
+          - wrapcheck
 
 issues:
-  exclude-rules:
-    - path: "_test.go"
-      linters:
-        - wrapcheck
+  max-issues-per-linter: 0
+  max-same-issues: 0

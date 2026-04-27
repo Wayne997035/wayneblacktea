@@ -79,48 +79,15 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		lv = pgtype.Int4{Int32: int32(p.LearningValue), Valid: true} //nolint:gosec // G115: LearningValue is bounded 1-5 by caller
 	}
 
-	// Step 1: URL exact-match dedup (cheap — no embed call needed).
-	if p.URL != "" {
-		const urlCheckQ = `SELECT title FROM knowledge_items WHERE url = $1 LIMIT 1`
-		var existingTitle string
-		err := s.pool.QueryRow(ctx, urlCheckQ, p.URL).Scan(&existingTitle)
-		if err == nil {
-			// Row found — exact URL duplicate.
-			return nil, ErrDuplicate{ExistingTitle: existingTitle, Similarity: 1.0}
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("url dedup check: %w", err)
-		}
+	if err := s.urlDedupCheck(ctx, p.URL); err != nil {
+		return nil, err
 	}
 
-	// Step 2: Vector cosine similarity dedup (only when Gemini API key is available).
-	var vec []float32
-	if s.embed != nil {
-		// Use an 8s deadline so Gemini downtime never blocks the write path.
-		embedCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
-
-		text := p.Title + " " + p.Content
-		v, err := s.embed.Embed(embedCtx, text)
-		if err != nil {
-			// Gemini error — skip dedup, continue with insert.
-			slog.Warn("embed failed during dedup, skipping similarity check", "err", err)
-		} else {
-			vec = v
-		}
+	vec, err := s.embedAndCheckDup(ctx, p.Title+" "+p.Content)
+	if err != nil {
+		return nil, err
 	}
 
-	if vec != nil {
-		existingTitle, similarity, found, err := s.findSimilar(ctx, vec)
-		if err != nil {
-			// DB error during similarity check — skip dedup, continue with insert.
-			slog.Warn("similarity check failed, skipping dedup", "err", err)
-		} else if found && similarity >= dedupSimilarityThreshold {
-			return nil, ErrDuplicate{ExistingTitle: existingTitle, Similarity: similarity}
-		}
-	}
-
-	// Step 3: INSERT the item.
 	const q = `INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING ` + selectCols
@@ -134,7 +101,6 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		return nil, fmt.Errorf("creating knowledge item: %w", err)
 	}
 
-	// Step 4: Store embedding synchronously (vec may be nil — that's fine).
 	if vec != nil {
 		if err := s.q.UpdateKnowledgeEmbedding(ctx, db.UpdateKnowledgeEmbeddingParams{
 			ID:        item.ID,
@@ -145,6 +111,50 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 	}
 
 	return &item, nil
+}
+
+// urlDedupCheck returns ErrDuplicate if an item with the same URL already exists.
+func (s *Store) urlDedupCheck(ctx context.Context, url string) error {
+	if url == "" {
+		return nil
+	}
+	const q = `SELECT title FROM knowledge_items WHERE url = $1 LIMIT 1`
+	var existingTitle string
+	err := s.pool.QueryRow(ctx, q, url).Scan(&existingTitle)
+	if err == nil {
+		return ErrDuplicate{ExistingTitle: existingTitle, Similarity: 1.0}
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("url dedup check: %w", err)
+	}
+	return nil
+}
+
+// embedAndCheckDup computes the embedding for text and checks cosine similarity against
+// existing items. Returns the vector for reuse (nil when embedding is unavailable).
+// Embedding or DB errors are logged and treated as non-fatal — dedup is best-effort.
+func (s *Store) embedAndCheckDup(ctx context.Context, text string) ([]float32, error) {
+	if s.embed == nil {
+		return nil, nil
+	}
+	embedCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	vec, err := s.embed.Embed(embedCtx, text)
+	if err != nil {
+		slog.Warn("embed failed during dedup, skipping similarity check", "err", err)
+		return nil, nil
+	}
+
+	existingTitle, similarity, found, err := s.findSimilar(ctx, vec)
+	if err != nil {
+		slog.Warn("similarity check failed, skipping dedup", "err", err)
+		return vec, nil
+	}
+	if found && similarity >= dedupSimilarityThreshold {
+		return nil, ErrDuplicate{ExistingTitle: existingTitle, Similarity: similarity}
+	}
+	return vec, nil
 }
 
 // findSimilar returns the title and cosine similarity of the most similar stored item.
