@@ -12,7 +12,7 @@ import (
 )
 
 const getRepoByName = `-- name: GetRepoByName :one
-SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at FROM repos WHERE name = $1 LIMIT 1
+SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id FROM repos WHERE name = $1 LIMIT 1
 `
 
 func (q *Queries) GetRepoByName(ctx context.Context, name string) (Repo, error) {
@@ -31,12 +31,13 @@ func (q *Queries) GetRepoByName(ctx context.Context, name string) (Repo, error) 
 		&i.LastActivity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const listActiveRepos = `-- name: ListActiveRepos :many
-SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at FROM repos WHERE status = 'active' ORDER BY last_activity DESC NULLS LAST, name ASC
+SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id FROM repos WHERE status = 'active' ORDER BY last_activity DESC NULLS LAST, name ASC
 `
 
 func (q *Queries) ListActiveRepos(ctx context.Context) ([]Repo, error) {
@@ -61,6 +62,7 @@ func (q *Queries) ListActiveRepos(ctx context.Context) ([]Repo, error) {
 			&i.LastActivity,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -84,7 +86,7 @@ ON CONFLICT (name) DO UPDATE SET
     next_planned_step = EXCLUDED.next_planned_step,
     last_activity = EXCLUDED.last_activity,
     updated_at = NOW()
-RETURNING id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at
+RETURNING id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id
 `
 
 type UpsertRepoParams struct {
@@ -123,6 +125,7 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, e
 		&i.LastActivity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }

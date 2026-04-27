@@ -15,7 +15,7 @@ import (
 const createSessionHandoff = `-- name: CreateSessionHandoff :one
 INSERT INTO session_handoffs (project_id, repo_name, intent, context_summary)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at
+RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id
 `
 
 type CreateSessionHandoffParams struct {
@@ -41,12 +41,13 @@ func (q *Queries) CreateSessionHandoff(ctx context.Context, arg CreateSessionHan
 		&i.ContextSummary,
 		&i.ResolvedAt,
 		&i.CreatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getLatestUnresolvedHandoff = `-- name: GetLatestUnresolvedHandoff :one
-SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at FROM session_handoffs
+SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id FROM session_handoffs
 WHERE resolved_at IS NULL
 ORDER BY created_at DESC
 LIMIT 1
@@ -63,6 +64,7 @@ func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context) (SessionHandof
 		&i.ContextSummary,
 		&i.ResolvedAt,
 		&i.CreatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }

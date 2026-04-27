@@ -16,7 +16,7 @@ import (
 const createKnowledgeItem = `-- name: CreateKnowledgeItem :one
 INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value
+RETURNING id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id
 `
 
 type CreateKnowledgeItemParams struct {
@@ -52,12 +52,13 @@ func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeIt
 		&i.UpdatedAt,
 		&i.Source,
 		&i.LearningValue,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getKnowledgeByID = `-- name: GetKnowledgeByID :one
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value FROM knowledge_items WHERE id = $1
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id FROM knowledge_items WHERE id = $1
 `
 
 func (q *Queries) GetKnowledgeByID(ctx context.Context, id uuid.UUID) (KnowledgeItem, error) {
@@ -75,12 +76,13 @@ func (q *Queries) GetKnowledgeByID(ctx context.Context, id uuid.UUID) (Knowledge
 		&i.UpdatedAt,
 		&i.Source,
 		&i.LearningValue,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const listKnowledge = `-- name: ListKnowledge :many
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value FROM knowledge_items ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id FROM knowledge_items ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListKnowledgeParams struct {
@@ -109,6 +111,7 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 			&i.UpdatedAt,
 			&i.Source,
 			&i.LearningValue,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -121,7 +124,7 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 }
 
 const searchKnowledgeFTS = `-- name: SearchKnowledgeFTS :many
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
 FROM knowledge_items
 WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
 ORDER BY rank DESC
@@ -145,6 +148,7 @@ type SearchKnowledgeFTSRow struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	Source        string             `json:"source"`
 	LearningValue pgtype.Int4        `json:"learning_value"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
 	Rank          float32            `json:"rank"`
 }
 
@@ -169,6 +173,7 @@ func (q *Queries) SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTS
 			&i.UpdatedAt,
 			&i.Source,
 			&i.LearningValue,
+			&i.WorkspaceID,
 			&i.Rank,
 		); err != nil {
 			return nil, err

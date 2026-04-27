@@ -123,11 +123,20 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		Description: toText(p.Description),
 		Priority:    priority,
 		Assignee:    toText(p.Assignee),
+		Importance:  toInt2(p.Importance),
+		Context:     toText(p.Context),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating task %q: %w", p.Title, err)
 	}
 	return &row, nil
+}
+
+func toInt2(v *int16) pgtype.Int2 {
+	if v == nil {
+		return pgtype.Int2{}
+	}
+	return pgtype.Int2{Int16: *v, Valid: true}
 }
 
 // CompleteTask marks a task as completed with an optional artifact URL.

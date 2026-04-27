@@ -14,7 +14,7 @@ import (
 
 const completeTask = `-- name: CompleteTask :one
 UPDATE tasks SET status = 'completed', artifact = $2, updated_at = NOW()
-WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context
 `
 
 type CompleteTaskParams struct {
@@ -37,6 +37,9 @@ func (q *Queries) CompleteTask(ctx context.Context, arg CompleteTaskParams) (Tas
 		&i.Artifact,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
 	)
 	return i, err
 }
@@ -69,7 +72,7 @@ func (q *Queries) CountTotalActiveTasks(ctx context.Context) (int64, error) {
 const createActivityLog = `-- name: CreateActivityLog :one
 INSERT INTO activity_log (actor, project_id, action, notes)
 VALUES ($1, $2, $3, $4)
-RETURNING id, actor, project_id, action, notes, created_at
+RETURNING id, actor, project_id, action, notes, created_at, workspace_id
 `
 
 type CreateActivityLogParams struct {
@@ -94,6 +97,7 @@ func (q *Queries) CreateActivityLog(ctx context.Context, arg CreateActivityLogPa
 		&i.Action,
 		&i.Notes,
 		&i.CreatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -101,7 +105,7 @@ func (q *Queries) CreateActivityLog(ctx context.Context, arg CreateActivityLogPa
 const createGoal = `-- name: CreateGoal :one
 INSERT INTO goals (title, description, area, due_date)
 VALUES ($1, $2, $3, $4)
-RETURNING id, title, description, status, area, due_date, created_at, updated_at
+RETURNING id, title, description, status, area, due_date, created_at, updated_at, workspace_id
 `
 
 type CreateGoalParams struct {
@@ -128,6 +132,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		&i.DueDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -135,7 +140,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 const createProject = `-- name: CreateProject :one
 INSERT INTO projects (goal_id, name, title, description, area, priority)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
 `
 
 type CreateProjectParams struct {
@@ -168,14 +173,15 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.Priority,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (project_id, title, description, priority, assignee, due_date)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context
 `
 
 type CreateTaskParams struct {
@@ -185,6 +191,8 @@ type CreateTaskParams struct {
 	Priority    int32              `json:"priority"`
 	Assignee    pgtype.Text        `json:"assignee"`
 	DueDate     pgtype.Timestamptz `json:"due_date"`
+	Importance  pgtype.Int2        `json:"importance"`
+	Context     pgtype.Text        `json:"context"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -195,6 +203,8 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.Priority,
 		arg.Assignee,
 		arg.DueDate,
+		arg.Importance,
+		arg.Context,
 	)
 	var i Task
 	err := row.Scan(
@@ -209,6 +219,9 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.Artifact,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
 	)
 	return i, err
 }
@@ -223,7 +236,7 @@ func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) error {
 }
 
 const getAllPendingTasks = `-- name: GetAllPendingTasks :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at FROM tasks
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context FROM tasks
 WHERE status IN ('pending', 'in_progress')
 ORDER BY priority ASC, created_at ASC
 `
@@ -249,6 +262,9 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context) ([]Task, error) {
 			&i.Artifact,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.Context,
 		); err != nil {
 			return nil, err
 		}
@@ -261,7 +277,7 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context) ([]Task, error) {
 }
 
 const getProjectByName = `-- name: GetProjectByName :one
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at FROM projects WHERE name = $1 LIMIT 1
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects WHERE name = $1 LIMIT 1
 `
 
 func (q *Queries) GetProjectByName(ctx context.Context, name string) (Project, error) {
@@ -278,12 +294,13 @@ func (q *Queries) GetProjectByName(ctx context.Context, name string) (Project, e
 		&i.Priority,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getTasksByProject = `-- name: GetTasksByProject :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at FROM tasks
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context FROM tasks
 WHERE project_id = $1 AND status IN ('pending', 'in_progress')
 ORDER BY priority ASC, created_at ASC
 `
@@ -309,6 +326,9 @@ func (q *Queries) GetTasksByProject(ctx context.Context, projectID pgtype.UUID) 
 			&i.Artifact,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.Context,
 		); err != nil {
 			return nil, err
 		}
@@ -321,7 +341,7 @@ func (q *Queries) GetTasksByProject(ctx context.Context, projectID pgtype.UUID) 
 }
 
 const listActiveGoals = `-- name: ListActiveGoals :many
-SELECT id, title, description, status, area, due_date, created_at, updated_at FROM goals WHERE status = 'active' ORDER BY due_date ASC NULLS LAST
+SELECT id, title, description, status, area, due_date, created_at, updated_at, workspace_id FROM goals WHERE status = 'active' ORDER BY due_date ASC NULLS LAST
 `
 
 func (q *Queries) ListActiveGoals(ctx context.Context) ([]Goal, error) {
@@ -342,6 +362,7 @@ func (q *Queries) ListActiveGoals(ctx context.Context) ([]Goal, error) {
 			&i.DueDate,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -354,7 +375,7 @@ func (q *Queries) ListActiveGoals(ctx context.Context) ([]Goal, error) {
 }
 
 const listActiveProjects = `-- name: ListActiveProjects :many
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at FROM projects
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
 WHERE status = 'active'
 ORDER BY priority ASC, updated_at DESC
 `
@@ -379,6 +400,7 @@ func (q *Queries) ListActiveProjects(ctx context.Context) ([]Project, error) {
 			&i.Priority,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -391,7 +413,7 @@ func (q *Queries) ListActiveProjects(ctx context.Context) ([]Project, error) {
 }
 
 const updateProjectStatus = `-- name: UpdateProjectStatus :one
-UPDATE projects SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at
+UPDATE projects SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
 `
 
 type UpdateProjectStatusParams struct {
@@ -413,12 +435,13 @@ func (q *Queries) UpdateProjectStatus(ctx context.Context, arg UpdateProjectStat
 		&i.Priority,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const updateTaskStatus = `-- name: UpdateTaskStatus :one
-UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context
 `
 
 type UpdateTaskStatusParams struct {
@@ -441,6 +464,9 @@ func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusPara
 		&i.Artifact,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
 	)
 	return i, err
 }

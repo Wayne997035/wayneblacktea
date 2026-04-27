@@ -13,7 +13,7 @@ import (
 )
 
 const createConcept = `-- name: CreateConcept :one
-INSERT INTO concepts (title, content, tags) VALUES ($1, $2, $3) RETURNING id, title, content, tags, created_at, updated_at
+INSERT INTO concepts (title, content, tags) VALUES ($1, $2, $3) RETURNING id, title, content, tags, created_at, updated_at, workspace_id
 `
 
 type CreateConceptParams struct {
@@ -32,12 +32,13 @@ func (q *Queries) CreateConcept(ctx context.Context, arg CreateConceptParams) (C
 		&i.Tags,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const createReviewSchedule = `-- name: CreateReviewSchedule :one
-INSERT INTO review_schedule (concept_id) VALUES ($1) RETURNING id, concept_id, stability, difficulty, due_date, last_review_at, review_count, created_at, updated_at
+INSERT INTO review_schedule (concept_id) VALUES ($1) RETURNING id, concept_id, stability, difficulty, due_date, last_review_at, review_count, created_at, updated_at, workspace_id
 `
 
 func (q *Queries) CreateReviewSchedule(ctx context.Context, conceptID uuid.UUID) (ReviewSchedule, error) {
@@ -53,12 +54,13 @@ func (q *Queries) CreateReviewSchedule(ctx context.Context, conceptID uuid.UUID)
 		&i.ReviewCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getConceptByID = `-- name: GetConceptByID :one
-SELECT id, title, content, tags, created_at, updated_at FROM concepts WHERE id = $1
+SELECT id, title, content, tags, created_at, updated_at, workspace_id FROM concepts WHERE id = $1
 `
 
 func (q *Queries) GetConceptByID(ctx context.Context, id uuid.UUID) (Concept, error) {
@@ -71,6 +73,7 @@ func (q *Queries) GetConceptByID(ctx context.Context, id uuid.UUID) (Concept, er
 		&i.Tags,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -135,7 +138,7 @@ const updateReviewSchedule = `-- name: UpdateReviewSchedule :one
 UPDATE review_schedule
 SET stability = $2, difficulty = $3, due_date = $4,
     last_review_at = NOW(), review_count = review_count + 1, updated_at = NOW()
-WHERE id = $1 RETURNING id, concept_id, stability, difficulty, due_date, last_review_at, review_count, created_at, updated_at
+WHERE id = $1 RETURNING id, concept_id, stability, difficulty, due_date, last_review_at, review_count, created_at, updated_at, workspace_id
 `
 
 type UpdateReviewScheduleParams struct {
@@ -163,6 +166,7 @@ func (q *Queries) UpdateReviewSchedule(ctx context.Context, arg UpdateReviewSche
 		&i.ReviewCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }

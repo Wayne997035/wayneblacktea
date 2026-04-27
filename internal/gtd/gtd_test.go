@@ -194,3 +194,64 @@ func TestLogActivity(t *testing.T) {
 		t.Fatalf("LogActivity: %v", err)
 	}
 }
+
+func TestCreateTask_WithImportanceContext(t *testing.T) {
+	pool := setupPool(t)
+	store := gtd.NewStore(pool)
+	ctx := context.Background()
+
+	importance := int16(1)
+	taskCtx := "Discussed in 4/27 architecture sync — must ship before Phase B."
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:      "Phase A schema upgrade",
+		Priority:   2,
+		Importance: &importance,
+		Context:    taskCtx,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask with importance/context: %v", err)
+	}
+	t.Cleanup(func() {
+		_, cleanErr := pool.Exec(ctx, "DELETE FROM tasks WHERE id = $1", task.ID)
+		if cleanErr != nil {
+			t.Logf("cleanup task: %v", cleanErr)
+		}
+	})
+
+	if !task.Importance.Valid || task.Importance.Int16 != 1 {
+		t.Errorf("expected importance=1, got valid=%v value=%d", task.Importance.Valid, task.Importance.Int16)
+	}
+	if !task.Context.Valid || task.Context.String != taskCtx {
+		t.Errorf("expected context=%q, got valid=%v value=%q", taskCtx, task.Context.Valid, task.Context.String)
+	}
+}
+
+func TestCreateTask_BackwardCompat_NoImportance(t *testing.T) {
+	pool := setupPool(t)
+	store := gtd.NewStore(pool)
+	ctx := context.Background()
+
+	// Caller from Phase A or earlier that does not pass importance/context must
+	// still produce a valid task with NULL in those columns.
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:    "legacy task",
+		Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask without importance/context: %v", err)
+	}
+	t.Cleanup(func() {
+		_, cleanErr := pool.Exec(ctx, "DELETE FROM tasks WHERE id = $1", task.ID)
+		if cleanErr != nil {
+			t.Logf("cleanup task: %v", cleanErr)
+		}
+	})
+
+	if task.Importance.Valid {
+		t.Errorf("expected NULL importance, got valid=%v value=%d", task.Importance.Valid, task.Importance.Int16)
+	}
+	if task.Context.Valid {
+		t.Errorf("expected NULL context, got valid=%v value=%q", task.Context.Valid, task.Context.String)
+	}
+}

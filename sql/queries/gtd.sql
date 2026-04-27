@@ -33,8 +33,8 @@ WHERE status IN ('pending', 'in_progress')
 ORDER BY priority ASC, created_at ASC;
 
 -- name: CreateTask :one
-INSERT INTO tasks (project_id, title, description, priority, assignee, due_date)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: CompleteTask :one

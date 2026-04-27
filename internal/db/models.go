@@ -11,21 +11,23 @@ import (
 )
 
 type ActivityLog struct {
-	ID        uuid.UUID          `json:"id"`
-	Actor     string             `json:"actor"`
-	ProjectID pgtype.UUID        `json:"project_id"`
-	Action    string             `json:"action"`
-	Notes     pgtype.Text        `json:"notes"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID          uuid.UUID          `json:"id"`
+	Actor       string             `json:"actor"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	Action      string             `json:"action"`
+	Notes       pgtype.Text        `json:"notes"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 type Concept struct {
-	ID        uuid.UUID          `json:"id"`
-	Title     string             `json:"title"`
-	Content   string             `json:"content"`
-	Tags      []string           `json:"tags"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	ID          uuid.UUID          `json:"id"`
+	Title       string             `json:"title"`
+	Content     string             `json:"content"`
+	Tags        []string           `json:"tags"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 type Decision struct {
@@ -38,6 +40,7 @@ type Decision struct {
 	Rationale    string             `json:"rationale"`
 	Alternatives pgtype.Text        `json:"alternatives"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
 }
 
 type Goal struct {
@@ -49,6 +52,7 @@ type Goal struct {
 	DueDate     pgtype.Timestamptz `json:"due_date"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 type KnowledgeItem struct {
@@ -63,6 +67,18 @@ type KnowledgeItem struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	Source        string             `json:"source"`
 	LearningValue pgtype.Int4        `json:"learning_value"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+}
+
+type PendingProposal struct {
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Type        string             `json:"type"`
+	Payload     []byte             `json:"payload"`
+	Status      string             `json:"status"`
+	ProposedBy  pgtype.Text        `json:"proposed_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ResolvedAt  pgtype.Timestamptz `json:"resolved_at"`
 }
 
 type Project struct {
@@ -76,6 +92,7 @@ type Project struct {
 	Priority    int32              `json:"priority"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 type Repo struct {
@@ -91,6 +108,7 @@ type Repo struct {
 	LastActivity    pgtype.Timestamptz `json:"last_activity"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
 }
 
 type ReviewSchedule struct {
@@ -103,6 +121,7 @@ type ReviewSchedule struct {
 	ReviewCount  int32              `json:"review_count"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
 }
 
 type SessionHandoff struct {
@@ -113,6 +132,7 @@ type SessionHandoff struct {
 	ContextSummary pgtype.Text        `json:"context_summary"`
 	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
 }
 
 type Task struct {
@@ -127,4 +147,7 @@ type Task struct {
 	Artifact    pgtype.Text        `json:"artifact"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Importance  pgtype.Int2        `json:"importance"`
+	Context     pgtype.Text        `json:"context"`
 }

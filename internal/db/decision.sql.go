@@ -14,7 +14,7 @@ import (
 const createDecision = `-- name: CreateDecision :one
 INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at
+RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id
 `
 
 type CreateDecisionParams struct {
@@ -48,12 +48,13 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		&i.Rationale,
 		&i.Alternatives,
 		&i.CreatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const listAllDecisions = `-- name: ListAllDecisions :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id FROM decisions
 ORDER BY created_at DESC
 LIMIT $1
 `
@@ -77,6 +78,7 @@ func (q *Queries) ListAllDecisions(ctx context.Context, limit int32) ([]Decision
 			&i.Rationale,
 			&i.Alternatives,
 			&i.CreatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -89,7 +91,7 @@ func (q *Queries) ListAllDecisions(ctx context.Context, limit int32) ([]Decision
 }
 
 const listDecisionsByProject = `-- name: ListDecisionsByProject :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id FROM decisions
 WHERE project_id = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -119,6 +121,7 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 			&i.Rationale,
 			&i.Alternatives,
 			&i.CreatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -131,7 +134,7 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 }
 
 const listDecisionsByRepo = `-- name: ListDecisionsByRepo :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id FROM decisions
 WHERE repo_name = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -161,6 +164,7 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 			&i.Rationale,
 			&i.Alternatives,
 			&i.CreatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
