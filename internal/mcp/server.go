@@ -51,7 +51,12 @@ Call get_today_context at the start of EVERY session before doing anything else.
 Call list_decisions first with the relevant repo_name. If empty or MCP returns an error, inspect code regardless.
 list_decisions returning empty does NOT mean skip code inspection — always verify in code after checking DB.
 
-## MANDATORY: When user confirms a decision ("好啊", "go", "開始", "start")
+## MANDATORY: When user confirms a plan ("可以","好","go","ok","明天做","start","開始")
+Call confirm_plan IMMEDIATELY with ALL phases as tasks and ALL confirmed decisions.
+Do NOT call add_task + log_decision separately — confirm_plan handles both atomically and is more reliable.
+(Skip if MCP is unavailable or returns an error.)
+
+## MANDATORY: When user confirms a single decision (not a multi-phase plan)
 Call log_decision BEFORE starting implementation. Include alternatives considered.
 (Skip if MCP is unavailable or returns an error.)
 
@@ -78,6 +83,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerSessionTools(ms)
 	s.registerKnowledgeTools(ms)
 	s.registerLearningTools(ms)
+	s.registerPlanTools(ms)
 	return ms
 }
 
