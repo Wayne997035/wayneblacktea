@@ -69,15 +69,20 @@ Avoid `#FF0000`, `#000000`, blues, and any glossy gradient.
 
 ## Typography on the tag
 
-- Wordmark on the tag is **lowercase**: `wayneblacktea`.
+- The tag carries **only one piece of text: `wayneblacktea`**, lowercase.
+  No Chinese line, no tagline, no "PLACEHOLDER" footer — those drag the
+  design toward "made by AI". The wordmark stands alone.
 - Typeface: a slightly serifed display sans (Inter Display, IBM Plex
   Sans, or Söhne) at a heavy weight so it survives small sizes. A
   pure serif will get lossy at 32 px.
 - Tracking very slightly loose (~0.04 em) — the tag should feel
   printed, not crammed.
-- A secondary line below the wordmark on the tag (optional, only on
-  large sizes): `韋恩紅茶` in the same sans, lighter weight. Drops
-  silently when the mark scales down.
+
+> Vibe note: phrases like *紅茶悠閒* describe the mood (calm, slow,
+> tea-shop) the design should evoke. They are **not** to be set in
+> type anywhere on the mark. The mood is conveyed by the cup, the
+> dangling tag, the colour palette, and the unhurried geometry — not
+> by writing "calm tea" on the artwork.
 
 ## Deliverables
 
