@@ -16,6 +16,7 @@ import (
 	wbtruntime "github.com/waynechen/wayneblacktea/internal/runtime"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
+	"github.com/waynechen/wayneblacktea/internal/watchdog"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
@@ -30,6 +31,7 @@ type Server struct {
 	learning  *learning.Store
 	proposal  *proposal.Store
 	notion    *notion.Client
+	watchdog  *watchdog.Watchdog
 }
 
 // New creates a Server connected to the given connection pool. The optional
@@ -50,6 +52,7 @@ func New(pool *pgxpool.Pool) (*Server, error) {
 		learning:  learning.NewStore(pool, wsID),
 		proposal:  proposal.NewStore(pool, wsID),
 		notion:    notion.NewClient(),
+		watchdog:  watchdog.New(200),
 	}, nil
 }
 
@@ -84,9 +87,14 @@ Call complete_task with artifact (file path or PR URL).
 - Question about saved knowledge → search_knowledge before fetching/analyzing URLs`
 
 // MCPServer returns a configured MCP server with all tools registered.
+//
+// The watchdog middleware records every tool invocation in process memory so
+// the system_health tool can surface "stuck" patterns (Claude updated a task
+// to in_progress but never called complete_task, etc.).
 func (s *Server) MCPServer() *server.MCPServer {
 	ms := server.NewMCPServer("wayneblacktea", "0.1.0",
 		server.WithInstructions(mcpInstructions),
+		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 	)
 	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)
@@ -97,6 +105,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerLearningTools(ms)
 	s.registerPlanTools(ms)
 	s.registerProposalTools(ms)
+	s.registerHealthTools(ms)
 	return ms
 }
 
