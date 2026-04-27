@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -12,6 +13,7 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/learning"
 	"github.com/waynechen/wayneblacktea/internal/notion"
 	"github.com/waynechen/wayneblacktea/internal/proposal"
+	wbtruntime "github.com/waynechen/wayneblacktea/internal/runtime"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
@@ -30,20 +32,25 @@ type Server struct {
 	notion    *notion.Client
 }
 
-// New creates a Server connected to the given connection pool.
-func New(pool *pgxpool.Pool) *Server {
+// New creates a Server connected to the given connection pool. The optional
+// WORKSPACE_ID env scopes every domain store; unset = legacy unscoped mode.
+func New(pool *pgxpool.Pool) (*Server, error) {
+	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
+	}
 	embedClient := search.NewEmbeddingClient()
 	return &Server{
 		pool:      pool,
-		gtd:       gtd.NewStore(pool),
-		workspace: workspace.NewStore(pool),
-		decision:  decision.NewStore(pool),
-		session:   session.NewStore(pool),
-		knowledge: knowledge.NewStore(pool, embedClient),
-		learning:  learning.NewStore(pool),
-		proposal:  proposal.NewStore(pool),
+		gtd:       gtd.NewStore(pool, wsID),
+		workspace: workspace.NewStore(pool, wsID),
+		decision:  decision.NewStore(pool, wsID),
+		session:   session.NewStore(pool, wsID),
+		knowledge: knowledge.NewStore(pool, embedClient, wsID),
+		learning:  learning.NewStore(pool, wsID),
+		proposal:  proposal.NewStore(pool, wsID),
 		notion:    notion.NewClient(),
-	}
+	}, nil
 }
 
 const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — USAGE PROTOCOL

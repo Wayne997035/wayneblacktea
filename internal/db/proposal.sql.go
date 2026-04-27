@@ -47,11 +47,19 @@ func (q *Queries) CreatePendingProposal(ctx context.Context, arg CreatePendingPr
 }
 
 const getPendingProposal = `-- name: GetPendingProposal :one
-SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at FROM pending_proposals WHERE id = $1 LIMIT 1
+SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at FROM pending_proposals
+WHERE id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+LIMIT 1
 `
 
-func (q *Queries) GetPendingProposal(ctx context.Context, id uuid.UUID) (PendingProposal, error) {
-	row := q.db.QueryRow(ctx, getPendingProposal, id)
+type GetPendingProposalParams struct {
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetPendingProposal(ctx context.Context, arg GetPendingProposalParams) (PendingProposal, error) {
+	row := q.db.QueryRow(ctx, getPendingProposal, arg.ID, arg.WorkspaceID)
 	var i PendingProposal
 	err := row.Scan(
 		&i.ID,
@@ -69,11 +77,12 @@ func (q *Queries) GetPendingProposal(ctx context.Context, id uuid.UUID) (Pending
 const listPendingProposals = `-- name: ListPendingProposals :many
 SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at FROM pending_proposals
 WHERE status = 'pending'
+  AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListPendingProposals(ctx context.Context) ([]PendingProposal, error) {
-	rows, err := q.db.Query(ctx, listPendingProposals)
+func (q *Queries) ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error) {
+	rows, err := q.db.Query(ctx, listPendingProposals, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,18 +112,21 @@ func (q *Queries) ListPendingProposals(ctx context.Context) ([]PendingProposal, 
 
 const resolvePendingProposal = `-- name: ResolvePendingProposal :one
 UPDATE pending_proposals
-SET status = $2, resolved_at = NOW()
-WHERE id = $1 AND status = 'pending'
+SET status = $1, resolved_at = NOW()
+WHERE id = $2
+  AND status = 'pending'
+  AND ($3::uuid IS NULL OR workspace_id = $3)
 RETURNING id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at
 `
 
 type ResolvePendingProposalParams struct {
-	ID     uuid.UUID `json:"id"`
-	Status string    `json:"status"`
+	Status      string      `json:"status"`
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error) {
-	row := q.db.QueryRow(ctx, resolvePendingProposal, arg.ID, arg.Status)
+	row := q.db.QueryRow(ctx, resolvePendingProposal, arg.Status, arg.ID, arg.WorkspaceID)
 	var i PendingProposal
 	err := row.Scan(
 		&i.ID,

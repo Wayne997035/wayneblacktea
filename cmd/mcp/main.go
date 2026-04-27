@@ -37,7 +37,10 @@ func run() error {
 	}
 	defer pool.Close()
 
-	s := mcpsrv.New(pool)
+	s, err := mcpsrv.New(pool)
+	if err != nil {
+		return fmt.Errorf("initializing MCP server: %w", err)
+	}
 	if err := server.ServeStdio(s.MCPServer()); err != nil {
 		return fmt.Errorf("serving MCP: %w", err)
 	}

@@ -12,8 +12,8 @@ import (
 )
 
 const createDecision = `-- name: CreateDecision :one
-INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id
 `
 
@@ -25,6 +25,7 @@ type CreateDecisionParams struct {
 	Decision     string      `json:"decision"`
 	Rationale    string      `json:"rationale"`
 	Alternatives pgtype.Text `json:"alternatives"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error) {
@@ -36,6 +37,7 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		arg.Decision,
 		arg.Rationale,
 		arg.Alternatives,
+		arg.WorkspaceID,
 	)
 	var i Decision
 	err := row.Scan(
@@ -55,12 +57,18 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 
 const listAllDecisions = `-- name: ListAllDecisions :many
 SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id FROM decisions
+WHERE ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
-LIMIT $1
+LIMIT $2
 `
 
-func (q *Queries) ListAllDecisions(ctx context.Context, limit int32) ([]Decision, error) {
-	rows, err := q.db.Query(ctx, listAllDecisions, limit)
+type ListAllDecisionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
+}
+
+func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error) {
+	rows, err := q.db.Query(ctx, listAllDecisions, arg.WorkspaceID, arg.LimitN)
 	if err != nil {
 		return nil, err
 	}
@@ -93,17 +101,19 @@ func (q *Queries) ListAllDecisions(ctx context.Context, limit int32) ([]Decision
 const listDecisionsByProject = `-- name: ListDecisionsByProject :many
 SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id FROM decisions
 WHERE project_id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
-LIMIT $2
+LIMIT $3
 `
 
 type ListDecisionsByProjectParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
-	Limit     int32       `json:"limit"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
 }
 
 func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error) {
-	rows, err := q.db.Query(ctx, listDecisionsByProject, arg.ProjectID, arg.Limit)
+	rows, err := q.db.Query(ctx, listDecisionsByProject, arg.ProjectID, arg.WorkspaceID, arg.LimitN)
 	if err != nil {
 		return nil, err
 	}
@@ -136,17 +146,19 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 const listDecisionsByRepo = `-- name: ListDecisionsByRepo :many
 SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id FROM decisions
 WHERE repo_name = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
-LIMIT $2
+LIMIT $3
 `
 
 type ListDecisionsByRepoParams struct {
-	RepoName pgtype.Text `json:"repo_name"`
-	Limit    int32       `json:"limit"`
+	RepoName    pgtype.Text `json:"repo_name"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
 }
 
 func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error) {
-	rows, err := q.db.Query(ctx, listDecisionsByRepo, arg.RepoName, arg.Limit)
+	rows, err := q.db.Query(ctx, listDecisionsByRepo, arg.RepoName, arg.WorkspaceID, arg.LimitN)
 	if err != nil {
 		return nil, err
 	}

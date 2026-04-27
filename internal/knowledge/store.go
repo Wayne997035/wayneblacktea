@@ -19,17 +19,24 @@ import (
 
 // Store handles all database operations for the Knowledge bounded context.
 type Store struct {
-	q     *db.Queries
-	embed *search.EmbeddingClient
-	pool  *pgxpool.Pool
+	q           *db.Queries
+	embed       *search.EmbeddingClient
+	pool        *pgxpool.Pool
+	workspaceID pgtype.UUID
 }
 
-// NewStore returns a Store backed by the given connection pool.
-func NewStore(pool *pgxpool.Pool, embed *search.EmbeddingClient) *Store {
+// NewStore returns a Store backed by the given connection pool, scoped to the
+// optional workspace. nil workspaceID = legacy unscoped mode.
+func NewStore(pool *pgxpool.Pool, embed *search.EmbeddingClient, workspaceID *uuid.UUID) *Store {
+	var ws pgtype.UUID
+	if workspaceID != nil {
+		ws = pgtype.UUID{Bytes: [16]byte(*workspaceID), Valid: true}
+	}
 	return &Store{
-		q:     db.New(pool),
-		embed: embed,
-		pool:  pool,
+		q:           db.New(pool),
+		embed:       embed,
+		pool:        pool,
+		workspaceID: ws,
 	}
 }
 
@@ -88,13 +95,13 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		return nil, err
 	}
 
-	const q = `INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	const q = `INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING ` + selectCols
 
 	item, err := scanKnowledgeItem(func(args ...any) error {
 		return s.pool.QueryRow(ctx, q,
-			p.Type, p.Title, p.Content, itemURL, tags, source, lv,
+			p.Type, p.Title, p.Content, itemURL, tags, source, lv, s.workspaceID,
 		).Scan(args...)
 	})
 	if err != nil {
@@ -113,14 +120,18 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 	return &item, nil
 }
 
-// urlDedupCheck returns ErrDuplicate if an item with the same URL already exists.
+// urlDedupCheck returns ErrDuplicate if an item with the same URL already
+// exists in the current workspace scope.
 func (s *Store) urlDedupCheck(ctx context.Context, url string) error {
 	if url == "" {
 		return nil
 	}
-	const q = `SELECT title FROM knowledge_items WHERE url = $1 LIMIT 1`
+	const q = `SELECT title FROM knowledge_items
+		WHERE url = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		LIMIT 1`
 	var existingTitle string
-	err := s.pool.QueryRow(ctx, q, url).Scan(&existingTitle)
+	err := s.pool.QueryRow(ctx, q, url, s.workspaceID).Scan(&existingTitle)
 	if err == nil {
 		return ErrDuplicate{ExistingTitle: existingTitle, Similarity: 1.0}
 	}
@@ -157,19 +168,21 @@ func (s *Store) embedAndCheckDup(ctx context.Context, text string) ([]float32, e
 	return vec, nil
 }
 
-// findSimilar returns the title and cosine similarity of the most similar stored item.
-// Returns found=false when no items have embeddings yet (empty result → not a duplicate).
+// findSimilar returns the title and cosine similarity of the most similar
+// stored item within the current workspace scope. Returns found=false when no
+// items have embeddings yet (empty result → not a duplicate).
 func (s *Store) findSimilar(ctx context.Context, vec []float32) (
 	title string, similarity float64, found bool, err error,
 ) {
 	const q = `SELECT title, 1 - (embedding <=> $1::vector) AS similarity
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
 		ORDER BY embedding <=> $1::vector
 		LIMIT 1`
 
 	v := pgvector.NewVector(vec)
-	err = s.pool.QueryRow(ctx, q, v).Scan(&title, &similarity)
+	err = s.pool.QueryRow(ctx, q, v, s.workspaceID).Scan(&title, &similarity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", 0, false, nil // no items with embeddings yet
 	}
@@ -186,10 +199,11 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 	const ftsQ = `SELECT ` + selectCols + `
 		FROM knowledge_items
 		WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
 		ORDER BY ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) DESC
 		LIMIT $2`
 
-	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit)) //nolint:gosec
+	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("FTS search: %w", err)
 	}
@@ -231,16 +245,18 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 	return mergeRRF(ftsItems, vecItems, limit), nil
 }
 
-// vectorSearch executes a raw vector similarity query (only rows with non-null embeddings).
+// vectorSearch executes a raw vector similarity query (only rows with non-null
+// embeddings within the current workspace scope).
 func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]db.KnowledgeItem, error) {
 	v := pgvector.NewVector(vec)
 	const q = `SELECT ` + selectCols + `
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2`
 
-	rows, err := s.pool.Query(ctx, q, v, limit)
+	rows, err := s.pool.Query(ctx, q, v, limit, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
 	}
@@ -306,9 +322,12 @@ func mergeRRF(fts, vec []db.KnowledgeItem, limit int) []db.KnowledgeItem {
 // List returns knowledge items ordered by creation date.
 func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error) {
 	const q = `SELECT ` + selectCols + `
-		FROM knowledge_items ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+		FROM knowledge_items
+		WHERE ($3::uuid IS NULL OR workspace_id = $3)
+		ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2`
 
-	rows, err := s.pool.Query(ctx, q, int32(limit), int32(offset)) //nolint:gosec
+	rows, err := s.pool.Query(ctx, q, int32(limit), int32(offset), s.workspaceID) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("listing knowledge items: %w", err)
 	}
@@ -331,11 +350,16 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem
 	return items, nil
 }
 
-// GetByID returns a single knowledge item by ID.
+// GetByID returns a single knowledge item by ID within the current workspace
+// scope. Returns ErrNotFound when the item does not exist or belongs to a
+// different workspace.
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, error) {
-	const q = `SELECT ` + selectCols + ` FROM knowledge_items WHERE id = $1`
+	const q = `SELECT ` + selectCols + `
+		FROM knowledge_items
+		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)`
 	item, err := scanKnowledgeItem(func(args ...any) error {
-		return s.pool.QueryRow(ctx, q, id).Scan(args...)
+		return s.pool.QueryRow(ctx, q, id, s.workspaceID).Scan(args...)
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

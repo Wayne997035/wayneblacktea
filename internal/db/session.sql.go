@@ -13,8 +13,8 @@ import (
 )
 
 const createSessionHandoff = `-- name: CreateSessionHandoff :one
-INSERT INTO session_handoffs (project_id, repo_name, intent, context_summary)
-VALUES ($1, $2, $3, $4)
+INSERT INTO session_handoffs (project_id, repo_name, intent, context_summary, workspace_id)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id
 `
 
@@ -23,6 +23,7 @@ type CreateSessionHandoffParams struct {
 	RepoName       pgtype.Text `json:"repo_name"`
 	Intent         string      `json:"intent"`
 	ContextSummary pgtype.Text `json:"context_summary"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) CreateSessionHandoff(ctx context.Context, arg CreateSessionHandoffParams) (SessionHandoff, error) {
@@ -31,6 +32,7 @@ func (q *Queries) CreateSessionHandoff(ctx context.Context, arg CreateSessionHan
 		arg.RepoName,
 		arg.Intent,
 		arg.ContextSummary,
+		arg.WorkspaceID,
 	)
 	var i SessionHandoff
 	err := row.Scan(
@@ -49,12 +51,13 @@ func (q *Queries) CreateSessionHandoff(ctx context.Context, arg CreateSessionHan
 const getLatestUnresolvedHandoff = `-- name: GetLatestUnresolvedHandoff :one
 SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id FROM session_handoffs
 WHERE resolved_at IS NULL
+  AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
 LIMIT 1
 `
 
-func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context) (SessionHandoff, error) {
-	row := q.db.QueryRow(ctx, getLatestUnresolvedHandoff)
+func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pgtype.UUID) (SessionHandoff, error) {
+	row := q.db.QueryRow(ctx, getLatestUnresolvedHandoff, workspaceID)
 	var i SessionHandoff
 	err := row.Scan(
 		&i.ID,
@@ -70,11 +73,18 @@ func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context) (SessionHandof
 }
 
 const resolveHandoff = `-- name: ResolveHandoff :execrows
-UPDATE session_handoffs SET resolved_at = NOW() WHERE id = $1
+UPDATE session_handoffs SET resolved_at = NOW()
+WHERE id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 `
 
-func (q *Queries) ResolveHandoff(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, resolveHandoff, id)
+type ResolveHandoffParams struct {
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveHandoff, arg.ID, arg.WorkspaceID)
 	if err != nil {
 		return 0, err
 	}

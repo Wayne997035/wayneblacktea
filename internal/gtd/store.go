@@ -14,18 +14,29 @@ import (
 )
 
 // Store handles all database operations for the GTD bounded context.
+//
+// Every method automatically applies the configured workspace scope: NULL →
+// no filter (legacy mode); set → strict per-workspace reads and writes.
 type Store struct {
-	q *db.Queries
+	q           *db.Queries
+	workspaceID pgtype.UUID
 }
 
-// NewStore returns a Store backed by the given DBTX (pool or transaction).
-func NewStore(dbtx db.DBTX) *Store {
-	return &Store{q: db.New(dbtx)}
+// NewStore returns a Store backed by the given DBTX (pool or transaction)
+// scoped to the optional workspaceID. nil workspaceID = legacy unscoped mode.
+func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
+	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
 }
 
-// WithTx returns a Store bound to tx, for use in multi-store transactions.
+// WithTx returns a Store bound to tx, preserving the workspace scope, for use
+// in multi-store transactions.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx)}
+	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
+}
+
+// WorkspaceID exposes the configured workspace UUID (or zero pgtype.UUID).
+func (s *Store) WorkspaceID() pgtype.UUID {
+	return s.workspaceID
 }
 
 func toText(v string) pgtype.Text {
@@ -48,7 +59,7 @@ func toUUID(id *uuid.UUID) pgtype.UUID {
 
 // ListActiveProjects returns all active projects ordered by priority.
 func (s *Store) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
-	rows, err := s.q.ListActiveProjects(ctx)
+	rows, err := s.q.ListActiveProjects(ctx, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing active projects: %w", err)
 	}
@@ -57,7 +68,10 @@ func (s *Store) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
 
 // ProjectByName returns a single project by unique name.
 func (s *Store) ProjectByName(ctx context.Context, name string) (*db.Project, error) {
-	row, err := s.q.GetProjectByName(ctx, name)
+	row, err := s.q.GetProjectByName(ctx, db.GetProjectByNameParams{
+		Name:        name,
+		WorkspaceID: s.workspaceID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -84,6 +98,7 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 		Description: toText(p.Description),
 		Area:        area,
 		Priority:    priority,
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -98,13 +113,16 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 // Tasks returns pending/in-progress tasks, optionally filtered by project.
 func (s *Store) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error) {
 	if projectID != nil {
-		rows, err := s.q.GetTasksByProject(ctx, toUUID(projectID))
+		rows, err := s.q.GetTasksByProject(ctx, db.GetTasksByProjectParams{
+			ProjectID:   toUUID(projectID),
+			WorkspaceID: s.workspaceID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing tasks for project %s: %w", *projectID, err)
 		}
 		return rows, nil
 	}
-	rows, err := s.q.GetAllPendingTasks(ctx)
+	rows, err := s.q.GetAllPendingTasks(ctx, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing all pending tasks: %w", err)
 	}
@@ -125,6 +143,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		Assignee:    toText(p.Assignee),
 		Importance:  toInt2(p.Importance),
 		Context:     toText(p.Context),
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating task %q: %w", p.Title, err)
@@ -146,8 +165,9 @@ func (s *Store) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string
 		art = pgtype.Text{String: *artifact, Valid: true}
 	}
 	row, err := s.q.CompleteTask(ctx, db.CompleteTaskParams{
-		ID:       id,
-		Artifact: art,
+		ID:          id,
+		Artifact:    art,
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -161,10 +181,11 @@ func (s *Store) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string
 // LogActivity records an activity entry.
 func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
 	_, err := s.q.CreateActivityLog(ctx, db.CreateActivityLogParams{
-		Actor:     actor,
-		ProjectID: toUUID(projectID),
-		Action:    action,
-		Notes:     toText(notes),
+		Actor:       actor,
+		ProjectID:   toUUID(projectID),
+		Action:      action,
+		Notes:       toText(notes),
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		return fmt.Errorf("logging activity: %w", err)
@@ -174,7 +195,7 @@ func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID
 
 // ActiveGoals returns all active goals ordered by due date.
 func (s *Store) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
-	rows, err := s.q.ListActiveGoals(ctx)
+	rows, err := s.q.ListActiveGoals(ctx, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing active goals: %w", err)
 	}
@@ -188,6 +209,7 @@ func (s *Store) CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, e
 		Description: toText(p.Description),
 		Area:        toText(p.Area),
 		DueDate:     toTimestamptz(p.DueDate),
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating goal %q: %w", p.Title, err)
@@ -198,8 +220,9 @@ func (s *Store) CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, e
 // UpdateTaskStatus sets the status of a task by ID.
 func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error) {
 	row, err := s.q.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
-		ID:     id,
-		Status: string(status),
+		ID:          id,
+		Status:      string(status),
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -213,8 +236,9 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 // UpdateProjectStatus sets the status of a project by ID.
 func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error) {
 	row, err := s.q.UpdateProjectStatus(ctx, db.UpdateProjectStatusParams{
-		ID:     id,
-		Status: string(status),
+		ID:          id,
+		Status:      string(status),
+		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -227,7 +251,10 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status Pr
 
 // DeleteTask permanently removes a task by ID.
 func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.DeleteTask(ctx, id); err != nil {
+	if err := s.q.DeleteTask(ctx, db.DeleteTaskParams{
+		ID:          id,
+		WorkspaceID: s.workspaceID,
+	}); err != nil {
 		return fmt.Errorf("deleting task %s: %w", id, err)
 	}
 	return nil
@@ -235,11 +262,11 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 
 // WeeklyProgress returns completed task count this week and total active task count.
 func (s *Store) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
-	completed, err = s.q.CountCompletedTasksThisWeek(ctx)
+	completed, err = s.q.CountCompletedTasksThisWeek(ctx, s.workspaceID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("counting completed tasks: %w", err)
 	}
-	total, err = s.q.CountTotalActiveTasks(ctx)
+	total, err = s.q.CountTotalActiveTasks(ctx, s.workspaceID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("counting active tasks: %w", err)
 	}
