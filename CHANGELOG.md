@@ -37,14 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NULL disables filtering and a UUID enforces strict scoping.
 - `cmd/server`, `cmd/mcp`, `cmd/seed` read `WORKSPACE_ID` at startup.
 
-### Added — Phase C (storage interface lift)
+### Added — Phase C (storage interface lift + SQLite v1)
 - `internal/storage` package with `Backend` enum, `BackendFromEnv`,
   `EnsureSupported`, and `ResolveFromEnv`.
 - Per-domain `StoreIface` declared in `internal/<domain>/iface.go`. Each
   concrete `*Store` is checked at compile time. SQLite-backed stores can
   satisfy the same surface when implemented.
-- Entry-point binaries fail-fast on `STORAGE_BACKEND=sqlite` with
-  `ErrSQLiteNotImplemented`.
+- `internal/storage/sqlite` package: pure-Go (modernc.org/sqlite, no
+  CGo) backend.
+  - `sqlite.Open` opens a file or `:memory:` DB and applies the embedded
+    schema idempotently (`CREATE TABLE IF NOT EXISTS …`).
+  - `sqlite.GTDStore` fully satisfies `gtd.StoreIface`: create / list /
+    update / delete goals, projects, tasks, and activity log, including
+    workspace scoping, importance/context, and the WeeklyProgress query.
+    10 unit tests pass against in-memory SQLite.
+  - Other six domain stores (decision / session / workspace / knowledge /
+    learning / proposal) are deferred to follow-up commits — the schema
+    contains the tables but no Go-side `Store` ships in this commit.
+- Entry-point binaries currently still fail-fast on
+  `STORAGE_BACKEND=sqlite`. Lifting that gate happens once the remaining
+  six stores ship.
 
 ### Added — Phase D (open source readiness)
 - README.md with architecture diagram, env var table, and phase summary.
