@@ -1,0 +1,86 @@
+# GoReleaser config — run `goreleaser release --clean` after `git tag vX.Y.Z`.
+# Cross-compiles wayneblacktea-server and wayneblacktea-mcp for macOS and
+# Linux, both on amd64 and arm64.
+
+version: 2
+
+project_name: wayneblacktea
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: server
+    main: ./cmd/server
+    binary: wayneblacktea-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+  - id: mcp
+    main: ./cmd/mcp
+    binary: wayneblacktea-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: default
+    builds:
+      - server
+      - mcp
+    name_template: >-
+      {{- .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - migrations/*.sql
+      - sql/queries/*.sql
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - '^test:'
+      - '^chore:'
+      - 'merge conflict'
