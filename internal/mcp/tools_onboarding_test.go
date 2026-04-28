@@ -40,6 +40,8 @@ func TestHandleInitialInstructions_ReturnsProtocol(t *testing.T) {
 		"complete_task",
 		"set_session_handoff",
 		"search_knowledge",
+		"When user signals task completion",
+		"Session-end auto-handoff",
 	}
 	for _, section := range requiredSections {
 		if !strings.Contains(textContent.Text, section) {
