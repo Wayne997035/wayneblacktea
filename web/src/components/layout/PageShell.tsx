@@ -26,7 +26,7 @@ export function PageShell() {
         sidebarOpen={sidebarOpen}
       />
 
-      <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 56px)' }}>
+      <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - var(--spacing-header))' }}>
         {/* Desktop: always-visible 240px sidebar */}
         <div className="hidden lg:block shrink-0" style={{ width: '240px' }}>
           <Sidebar />
@@ -37,12 +37,12 @@ export function PageShell() {
           <Sidebar collapsed />
         </div>
 
-        {/* Overlay backdrop — starts below header (top-14 = 56px), always mounted */}
+        {/* Overlay backdrop starts below the sticky header and stays aligned with its tokenized height. */}
         <div
           className="fixed inset-x-0 bottom-0 z-40 lg:hidden"
           aria-hidden="true"
           style={{
-            top: '56px',
+            top: 'var(--spacing-header)',
             background: 'rgba(0, 0, 0, 0.55)',
             opacity: sidebarOpen ? 1 : 0,
             pointerEvents: sidebarOpen ? 'auto' : 'none',
@@ -58,7 +58,7 @@ export function PageShell() {
           aria-modal="true"
           aria-label="Navigation"
           style={{
-            top: '56px',
+            top: 'var(--spacing-header)',
             width: '240px',
             transform: sidebarOpen ? 'translateX(0)' : 'translateX(-240px)',
             transition: 'transform 280ms cubic-bezier(0.4, 0, 0.2, 1)',
