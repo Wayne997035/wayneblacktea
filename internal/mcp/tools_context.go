@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/db"
-	"github.com/waynechen/wayneblacktea/internal/session"
-	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
 func (s *Server) registerContextTools(ms *server.MCPServer) {

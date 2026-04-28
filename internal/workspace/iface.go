@@ -3,7 +3,7 @@ package workspace
 import (
 	"context"
 
-	"github.com/waynechen/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 )
 
 // StoreIface is the backend-agnostic contract for the Workspace bounded

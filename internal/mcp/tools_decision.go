@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/decision"
 )
 
 func (s *Server) registerDecisionTools(ms *server.MCPServer) {

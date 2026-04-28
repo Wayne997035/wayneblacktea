@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/waynechen/wayneblacktea/internal/watchdog"
 )
 
 func TestWatchdog_RecordsSuccessfulCalls(t *testing.T) {

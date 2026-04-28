@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/discord"
+	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/go-co-op/gocron/v2"
-	"github.com/waynechen/wayneblacktea/internal/discord"
-	"github.com/waynechen/wayneblacktea/internal/learning"
 )
 
 // Scheduler wraps gocron and coordinates scheduled background jobs.

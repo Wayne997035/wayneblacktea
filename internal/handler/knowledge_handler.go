@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/labstack/echo/v4"
-	"github.com/waynechen/wayneblacktea/internal/knowledge"
 )
 
 // KnowledgeHandler handles all Knowledge-domain endpoints.

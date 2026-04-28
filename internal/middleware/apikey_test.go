@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
 	"github.com/labstack/echo/v4"
-	apimw "github.com/waynechen/wayneblacktea/internal/middleware"
 )
 
 func setupEchoWithMiddleware(configuredKey string) *echo.Echo {

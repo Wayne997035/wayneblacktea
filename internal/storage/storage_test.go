@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/waynechen/wayneblacktea/internal/storage"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 )
 
 func TestBackendFromEnv_DefaultPostgres(t *testing.T) {
