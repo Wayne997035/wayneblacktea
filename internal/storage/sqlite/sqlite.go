@@ -2,18 +2,16 @@
 // storage interfaces, intended for friend-grade self-hosting (one binary +
 // one .db file, no Postgres server).
 //
-// Status (Phase C+ v1, this commit):
+// Status (SQLite v2, this commit): 7 stores done.
 //   - GTD store: fully implemented. Create/list/update/delete goals,
 //     projects, tasks, and activity log all work, including the workspace
 //     scoping contract.
 //   - Session store: fully implemented. Set/Latest/Resolve session
 //     handoffs honour the same workspace scoping pattern.
-//   - Remaining five stores (decision, workspace, knowledge, learning,
-//     proposal): not yet implemented in this package; cmd/* still routes
-//     those domains through the Postgres backend until follow-up commits
-//     land the SQLite versions.
-//   - Knowledge vector search and FTS5 are deferred; SQLite v1 plans to
-//     fall back to LIKE for search when that store arrives.
+//   - Decision, workspace, knowledge, learning, and proposal stores are
+//     implemented with the same workspace scoping pattern.
+//   - Knowledge vector search and FTS5 are deferred; SQLite uses LIKE search
+//     fallback for now.
 //
 // Driver: modernc.org/sqlite (pure Go, no CGo) so cross-compilation to
 // Linux/macOS/arm64 stays painless.

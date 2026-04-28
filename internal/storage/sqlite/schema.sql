@@ -88,3 +88,99 @@ CREATE INDEX IF NOT EXISTS idx_activity_log_project_id       ON activity_log(pro
 CREATE INDEX IF NOT EXISTS idx_activity_log_created_at       ON activity_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_handoffs_unresolved   ON session_handoffs(created_at DESC) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_session_handoffs_workspace_id ON session_handoffs(workspace_id) WHERE workspace_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS repos (
+    id                TEXT PRIMARY KEY,
+    workspace_id      TEXT,
+    name              TEXT NOT NULL UNIQUE,
+    path              TEXT,
+    description       TEXT,
+    language          TEXT,
+    status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','on_hold')),
+    current_branch    TEXT,
+    known_issues      TEXT NOT NULL DEFAULT '[]',
+    next_planned_step TEXT,
+    last_activity     TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    project_id   TEXT REFERENCES projects(id),
+    repo_name    TEXT,
+    title        TEXT NOT NULL,
+    context      TEXT NOT NULL,
+    decision     TEXT NOT NULL,
+    rationale    TEXT NOT NULL,
+    alternatives TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id             TEXT PRIMARY KEY,
+    workspace_id   TEXT,
+    type           TEXT NOT NULL CHECK (type IN ('article','til','bookmark','zettelkasten')),
+    title          TEXT NOT NULL,
+    content        TEXT NOT NULL DEFAULT '',
+    url            TEXT,
+    tags           TEXT NOT NULL DEFAULT '[]',
+    embedding      BLOB,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    source         TEXT NOT NULL DEFAULT 'manual',
+    learning_value INTEGER CHECK (learning_value BETWEEN 1 AND 5)
+);
+
+CREATE TABLE IF NOT EXISTS concepts (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    title        TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    tags         TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS review_schedule (
+    id             TEXT PRIMARY KEY,
+    workspace_id   TEXT,
+    concept_id     TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    stability      REAL NOT NULL DEFAULT 1.0,
+    difficulty     REAL NOT NULL DEFAULT 0.3,
+    due_date       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_review_at TEXT,
+    review_count   INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS pending_proposals (
+    id            TEXT PRIMARY KEY,
+    workspace_id  TEXT,
+    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept')),
+    payload       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
+    proposed_by   TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    resolved_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_repos_status                         ON repos(status);
+CREATE INDEX IF NOT EXISTS idx_repos_last_activity                  ON repos(last_activity DESC);
+CREATE INDEX IF NOT EXISTS idx_repos_workspace_id                   ON repos(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_decisions_project_id                 ON decisions(project_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_repo_name                  ON decisions(repo_name);
+CREATE INDEX IF NOT EXISTS idx_decisions_created_at                 ON decisions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_workspace_id               ON decisions(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_knowledge_type                       ON knowledge_items(type);
+CREATE INDEX IF NOT EXISTS idx_knowledge_created_at                 ON knowledge_items(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_workspace_id         ON knowledge_items(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_concepts_workspace_id                ON concepts(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_review_schedule_due_date             ON review_schedule(due_date ASC);
+CREATE INDEX IF NOT EXISTS idx_review_schedule_concept_id           ON review_schedule(concept_id);
+CREATE INDEX IF NOT EXISTS idx_review_schedule_workspace_id         ON review_schedule(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_pending_proposals_status_pending     ON pending_proposals(created_at DESC) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_pending_proposals_workspace_id       ON pending_proposals(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_pending_proposals_type               ON pending_proposals(type);
