@@ -135,6 +135,59 @@ Do all four BEFORE the next action. Never "I'll log it after I finish this
 command" — that is the failure mode that makes the memory system unreliable.
 (Skip if MCP is unavailable or returns an error.)
 
+## MANDATORY: When user signals task completion (conversational)
+Distinct from the build-pass / tests-pass trigger below — this fires on
+conversational acknowledgement that work the assistant just reported as
+shipped is accepted, even when there is no fresh build/test artifact in the
+same turn.
+
+Trigger phrases (any of these, when said about a task currently in_progress):
+  - 中文: "好了", "可以了", "沒問題了", "OK 了", "ok 了", "搞定", "完成"
+  - English: "done", "looks good", "ship it", "all set"
+  - 帶肯定情緒（在 ship 報告之後出現視為對該任務的接收）:
+    "不錯", "不錯耶", "漂亮", "讚", "nice", "perfect"
+
+Trigger condition:
+  - Only fires on a task whose status is currently in_progress.
+  - If no task is in_progress, treat the phrase as casual chat — do NOT call
+    complete_task speculatively.
+  - If multiple in_progress tasks could plausibly match, ASK the user which
+    one before calling complete_task. Never guess.
+
+Do NOT auto-fire if the build / tests have not yet passed for the work in
+question — wait for green and apply the existing "After task completion"
+rule below instead. This conversational rule is for the case where the
+build/test cycle has already completed in an earlier turn and the user is
+now verbally accepting the result.
+
+Call complete_task with artifact (file path or PR URL) when the trigger
+fires.
+(Skip if MCP is unavailable or returns an error.)
+
+## MANDATORY: Session-end auto-handoff
+When the user signals that the session is ending — even casually — persist
+continuation context BEFORE responding. Without this, the next session
+rebuilds from zero and progress is lost.
+
+Trigger phrases (any of these):
+  - 中文: "收工", "下班", "下次再說", "改天", "明天再", "休息",
+    "晚一點繼續", "先這樣", "掰"
+  - English: "tomorrow", "later", "next time", "signing off", "call it",
+    "wrap up", "good night", "ttyl"
+
+Call set_session_handoff with:
+  - intent: a SPECIFIC continuation point — file paths to resume editing,
+    task IDs to pick up, pending decisions awaiting user input. NEVER vague
+    placeholders like "繼續開發" or "keep going".
+  - context_summary: today's last 3-5 decision id+title, currently
+    in_progress tasks, and any outstanding questions awaiting answer.
+
+Failure mode this guards against: user says "收工", assistant replies
+"好的晚安" without persisting → next session has no handoff record → progress
+is reconstructed from scratch and decisions are lost. The handoff write MUST
+happen before the closing reply, not after.
+(Skip if MCP is unavailable or returns an error.)
+
 ## MANDATORY: After task completion (build pass, tests pass)
 Call complete_task with artifact (file path or PR URL).
 (Skip if MCP is unavailable or returns an error.)
@@ -170,8 +223,8 @@ update — propose a PR to wayneblacktea/internal/mcp/server.go instead.
 
 ## Proactive
 - New follow-up work discovered → add_task immediately
-- User says "tomorrow" / "next time" / "later" → set_session_handoff before
-  responding
+- Session-end signals are covered by the dedicated MANDATORY section above
+  (Session-end auto-handoff)
 - Question about saved knowledge → search_knowledge before fetching or
   analysing URLs`
 
