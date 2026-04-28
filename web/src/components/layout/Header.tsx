@@ -56,7 +56,7 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
           style={{ textDecoration: 'none' }}
         >
           <img
-            src="/wayneblacktea.png"
+            src="/icon.png"
             alt=""
             aria-hidden="true"
             width={72}
