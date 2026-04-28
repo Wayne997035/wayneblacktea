@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/learning"
 )
 
 func (s *Server) registerLearningTools(ms *server.MCPServer) {

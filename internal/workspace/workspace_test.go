@@ -8,8 +8,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
 func setupPool(t *testing.T) *pgxpool.Pool {

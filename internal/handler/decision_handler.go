@@ -3,9 +3,9 @@ package handler
 import (
 	"net/http"
 
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/waynechen/wayneblacktea/internal/decision"
 )
 
 // DecisionHandler handles the /api/decisions endpoints.

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/gtd"
 )
 
 func (s *Server) registerGTDTools(ms *server.MCPServer) {

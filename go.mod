@@ -1,4 +1,4 @@
-module github.com/waynechen/wayneblacktea
+module github.com/Wayne997035/wayneblacktea
 
 go 1.26.1
 

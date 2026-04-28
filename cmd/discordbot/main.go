@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
-	"github.com/waynechen/wayneblacktea/internal/discordbot"
 )
 
 func main() {

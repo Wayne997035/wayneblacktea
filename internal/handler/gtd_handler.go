@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/waynechen/wayneblacktea/internal/gtd"
 )
 
 // GTDHandler handles all GTD-domain endpoints.
