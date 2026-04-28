@@ -5,10 +5,10 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/watchdog"
 )
 
 func (s *Server) registerHealthTools(ms *server.MCPServer) {

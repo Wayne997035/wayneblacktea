@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/knowledge"
 )
 
 func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {

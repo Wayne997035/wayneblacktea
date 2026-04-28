@@ -6,10 +6,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/waynechen/wayneblacktea/internal/db"
-	"github.com/waynechen/wayneblacktea/internal/gtd"
 )
 
 // GTDStore is the SQLite-backed implementation of gtd.StoreIface.

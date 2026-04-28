@@ -3,8 +3,8 @@ package knowledge
 import (
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/google/uuid"
-	"github.com/waynechen/wayneblacktea/internal/db"
 )
 
 func makeItem(title string) db.KnowledgeItem {

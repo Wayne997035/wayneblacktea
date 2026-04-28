@@ -8,9 +8,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/waynechen/wayneblacktea/internal/gtd"
 )
 
 func setupPool(t *testing.T) *pgxpool.Pool {

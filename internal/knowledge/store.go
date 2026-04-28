@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgvector "github.com/pgvector/pgvector-go"
-	"github.com/waynechen/wayneblacktea/internal/db"
-	"github.com/waynechen/wayneblacktea/internal/search"
 )
 
 // Store handles all database operations for the Knowledge bounded context.

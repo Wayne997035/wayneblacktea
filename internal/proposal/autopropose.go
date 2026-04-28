@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/waynechen/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 )
 
 // ConceptCandidate is the on-disk shape of a concept proposal payload.
