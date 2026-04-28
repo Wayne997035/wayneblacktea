@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
-	"github.com/waynechen/wayneblacktea/internal/session"
-	"github.com/waynechen/wayneblacktea/internal/storage/sqlite"
 )
 
 func openSessionStore(t *testing.T, workspaceID string) *sqlite.SessionStore {
