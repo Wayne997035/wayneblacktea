@@ -5,13 +5,11 @@
 -- one-shot script run via `sqlite3 <db-path> < this-file` on the rare
 -- occasion a SQLite self-hoster wants to backfill workspace scoping.
 --
--- Usage (mirrors the Postgres flow in docs/operations.md):
---   1. Pick a UUID:    WORKSPACE_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
---   2. Substitute:     sed -i.bak "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
---                          migrations/sqlite/000011_backfill_workspace_id.up.sql \
---                          migrations/sqlite/000011_backfill_workspace_id.down.sql
---   3. Apply:          sqlite3 ./wayneblacktea.db < migrations/sqlite/000011_backfill_workspace_id.up.sql
---   4. Set WORKSPACE_ID in your .env, restart the server.
+-- Usage: see docs/operations.md → "Backfill workspace_id (one-time, per
+-- environment)" → "SQLite self-hosters". The runbook there uses a /tmp/
+-- copy + sed flow so this committed SQL file is never mutated in place.
+-- DO NOT run sed against this file directly — that leaks the operator
+-- UUID into the worktree and breaks sentinel-match safety on re-runs.
 --
 -- Differences vs Postgres twin: workspace_id columns are TEXT (not UUID),
 -- so we compare against the literal string. There are no `\set` psql

@@ -2,11 +2,9 @@
 -- Postgres twin: only rows that match the sentinel UUID are flipped back
 -- to NULL, so accidentally double-running this never nukes other workspaces.
 --
--- Substitute the sentinel UUID with the same value used in the .up.sql
--- before running:
---   sed -i.bak "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
---       migrations/sqlite/000011_backfill_workspace_id.down.sql
---   sqlite3 ./wayneblacktea.db < migrations/sqlite/000011_backfill_workspace_id.down.sql
+-- Usage: see docs/operations.md → "Rollback (if you picked the wrong UUID)"
+-- under the SQLite self-hosters section. The runbook uses a /tmp/ copy
+-- + sed flow; do NOT sed in place against this committed file.
 
 UPDATE pending_proposals SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000000';
 UPDATE review_schedule   SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000000';
