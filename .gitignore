@@ -30,5 +30,12 @@ coverage.out
 # Stop hook output
 /tmp/wbt-health.json
 
+# Defense-in-depth: never let a stray sed -i.bak from an old run leak
+# a substituted WORKSPACE_UUID through the migrations/ tree. The
+# operations runbook now copies migrations to /tmp before sed'ing,
+# but keep this pattern in case someone follows an older copy of
+# docs/operations.md.
+migrations/**/*.bak
+
 # macOS
 .DS_Store
