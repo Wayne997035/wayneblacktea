@@ -29,6 +29,14 @@ different sentinels.
 
 ### Step 1 — pick a personal workspace UUID
 
+> ⚠️ **DO NOT use the sentinel value `00000000-0000-0000-0000-000000000000`
+> as your real `WORKSPACE_ID`.** The sentinel is a placeholder that the
+> migration files ship with so `sed` can substitute it for your real
+> UUID. It is itself a syntactically valid UUID, so the database will
+> happily accept it — but on any shared / forked / template DB every
+> backfill will land on the same nil-UUID workspace and you will see
+> cross-tenant data co-mingling. Always generate a fresh UUID below.
+
 Generate one and save it. This is the value you will paste into both
 the SQL file and the `WORKSPACE_ID` environment variable.
 
@@ -43,23 +51,48 @@ to lowercase and the application emits lowercase in API responses.
 If you skip the `tr` step, `psql` will still accept it but later
 string comparisons in tooling may diverge.
 
+Sanity check before you continue — refuse to proceed if your UUID is
+the nil sentinel:
+
+```bash
+if [ "$WORKSPACE_UUID" = "00000000-0000-0000-0000-000000000000" ]; then
+  echo "refusing to use the nil sentinel as WORKSPACE_ID" >&2
+  exit 1
+fi
+```
+
 ### Step 2 — substitute the sentinel and apply the migration
 
 Both `migrations/000011_backfill_workspace_id.up.sql` and
 `migrations/000011_backfill_workspace_id.down.sql` ship with the
-sentinel literal `00000000-0000-0000-0000-000000000000`. Replace it
-with `$WORKSPACE_UUID` and run the up migration:
+sentinel literal `00000000-0000-0000-0000-000000000000`. **Copy them
+to `/tmp/` and run `sed` on the copies** — never edit the files in
+the repo. Editing in place would (a) leave the substituted UUID in
+your worktree where a careless `git add` could leak it, and (b)
+break the sentinel-match safety guarantee on the next run, because a
+re-substitution would no longer find the literal `0000…` pattern.
 
 ```bash
-# Substitute in place. Keep a backup the first time you run this.
-sed -i.bak \
+# Copy migration files to /tmp so the repo copies stay pristine.
+cp migrations/000011_backfill_workspace_id.up.sql   /tmp/applied-000011.up.sql
+cp migrations/000011_backfill_workspace_id.down.sql /tmp/applied-000011.down.sql
+
+# Substitute the sentinel for your real UUID on the /tmp copies only.
+sed -i \
   "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
-  migrations/000011_backfill_workspace_id.up.sql \
-  migrations/000011_backfill_workspace_id.down.sql
+  /tmp/applied-000011.up.sql \
+  /tmp/applied-000011.down.sql
 
 # Apply against the target Postgres.
-psql "$DATABASE_URL" -f migrations/000011_backfill_workspace_id.up.sql
+psql "$DATABASE_URL" -f /tmp/applied-000011.up.sql
 ```
+
+> Note: BSD `sed` (macOS) requires `sed -i ''` instead of `sed -i`.
+> Substitute accordingly if you are running on macOS.
+
+Keep `/tmp/applied-000011.down.sql` until you have verified the
+backfill (Step 4) — Rollback below reuses it. After verification you
+can `rm /tmp/applied-000011.up.sql /tmp/applied-000011.down.sql`.
 
 **Verify** the row count was non-zero:
 
@@ -111,29 +144,50 @@ curl -H "Authorization: Bearer $API_KEY" \
 If you need to undo the backfill (e.g. you picked the wrong UUID):
 
 ```bash
-# Reuses the same substituted .down.sql from Step 2.
-psql "$DATABASE_URL" -f migrations/000011_backfill_workspace_id.down.sql
+# Reuses the substituted /tmp/applied-000011.down.sql from Step 2.
+psql "$DATABASE_URL" -f /tmp/applied-000011.down.sql
 ```
 
-This sets `workspace_id = NULL` only on rows that match the sentinel
-you applied, so other workspaces are untouched. Then unset
-`WORKSPACE_ID` (Railway: delete the variable; local: remove the line
-from `.env`) and redeploy.
+This sets `workspace_id = NULL` only on rows that match the UUID you
+applied (it was substituted into the `.down.sql` in Step 2), so
+other workspaces are untouched. Then unset `WORKSPACE_ID` (Railway:
+delete the variable; local: remove the line from `.env`) and
+redeploy.
+
+If `/tmp/applied-000011.down.sql` has been deleted, regenerate it by
+re-running the `cp` + `sed` block from Step 2 with the same
+`WORKSPACE_UUID` value before applying.
 
 ### SQLite self-hosters
 
 The SQLite backend has no incremental migration tool — `schema.sql`
 is applied idempotently at boot. Use the parallel script
 [`migrations/sqlite/000011_backfill_workspace_id.up.sql`](../migrations/sqlite/000011_backfill_workspace_id.up.sql)
-instead of the Postgres one:
+instead of the Postgres one. Same `/tmp` discipline applies — copy
+out, substitute on the copy, do not edit the repo files in place:
 
 ```bash
-sed -i.bak \
-  "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
-  migrations/sqlite/000011_backfill_workspace_id.up.sql \
-  migrations/sqlite/000011_backfill_workspace_id.down.sql
+cp migrations/sqlite/000011_backfill_workspace_id.up.sql   /tmp/applied-sqlite-000011.up.sql
+cp migrations/sqlite/000011_backfill_workspace_id.down.sql /tmp/applied-sqlite-000011.down.sql
 
-sqlite3 ./wayneblacktea.db < migrations/sqlite/000011_backfill_workspace_id.up.sql
+sed -i \
+  "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
+  /tmp/applied-sqlite-000011.up.sql \
+  /tmp/applied-sqlite-000011.down.sql
+
+sqlite3 ./wayneblacktea.db < /tmp/applied-sqlite-000011.up.sql
+```
+
+Rollback (only after you verified the backfill went wrong):
+
+```bash
+sqlite3 ./wayneblacktea.db < /tmp/applied-sqlite-000011.down.sql
+```
+
+Cleanup once you are happy with Step 4 verification:
+
+```bash
+rm /tmp/applied-sqlite-000011.up.sql /tmp/applied-sqlite-000011.down.sql
 ```
 
 Steps 3 and 4 are identical to the Postgres workflow.
