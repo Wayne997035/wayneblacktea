@@ -16,14 +16,14 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
 
   return (
     <header
-      className="flex items-center justify-between px-4 sticky top-0 z-[60] shrink-0"
+      className="flex items-center justify-between px-3 sm:px-4 sticky top-0 z-[60] shrink-0"
       style={{
-        height: '56px',
+        height: 'var(--spacing-header)',
         background: 'var(--color-bg-card)',
         borderBottom: '1px solid var(--color-border)',
       }}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         {/* Hamburger: visible on mobile + tablet (< lg), hidden on desktop */}
         <button
           type="button"
@@ -51,7 +51,7 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
 
         <a
           href="/"
-          className="flex items-center gap-2 rounded outline-none focus-visible:ring-2"
+          className="flex items-center gap-2 rounded outline-none focus-visible:ring-2 min-w-0"
           aria-label="wayneblacktea — home"
           style={{ textDecoration: 'none' }}
         >
@@ -59,12 +59,13 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
             src="/wayneblacktea.png"
             alt=""
             aria-hidden="true"
-            width={28}
-            height={28}
+            width={72}
+            height={48}
+            className="h-10 w-auto shrink-0 sm:h-12"
             style={{ display: 'block', objectFit: 'contain' }}
           />
           <span
-            className="font-mono font-medium tracking-widest text-sm"
+            className="hidden sm:inline font-mono font-medium tracking-widest text-sm"
             style={{ color: 'var(--color-accent-blue)' }}
           >
             CONTROL ROOM
@@ -72,7 +73,7 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
         </a>
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 shrink-0">
         <LanguageToggle />
         <ThemeToggle />
         <div
