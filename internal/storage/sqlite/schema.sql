@@ -66,12 +66,25 @@ CREATE TABLE IF NOT EXISTS activity_log (
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_projects_status         ON projects(status);
-CREATE INDEX IF NOT EXISTS idx_projects_priority       ON projects(priority);
-CREATE INDEX IF NOT EXISTS idx_projects_workspace_id   ON projects(workspace_id) WHERE workspace_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_tasks_project_id        ON tasks(project_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_status            ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id      ON tasks(workspace_id) WHERE workspace_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_goals_workspace_id      ON goals(workspace_id) WHERE workspace_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_activity_log_project_id ON activity_log(project_id);
-CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at DESC);
+CREATE TABLE IF NOT EXISTS session_handoffs (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT,
+    project_id      TEXT REFERENCES projects(id),
+    repo_name       TEXT,
+    intent          TEXT NOT NULL,
+    context_summary TEXT,
+    resolved_at     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_status               ON projects(status);
+CREATE INDEX IF NOT EXISTS idx_projects_priority             ON projects(priority);
+CREATE INDEX IF NOT EXISTS idx_projects_workspace_id         ON projects(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_project_id              ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status                  ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id            ON tasks(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_goals_workspace_id            ON goals(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_activity_log_project_id       ON activity_log(project_id);
+CREATE INDEX IF NOT EXISTS idx_activity_log_created_at       ON activity_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_handoffs_unresolved   ON session_handoffs(created_at DESC) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_session_handoffs_workspace_id ON session_handoffs(workspace_id) WHERE workspace_id IS NOT NULL;
