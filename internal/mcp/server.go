@@ -74,7 +74,8 @@ Trigger phrases (any of these counts as confirmation):
   - Schedule shifts: "明天", "明天做", "下次", "tomorrow", "later", "next time",
     "提早", "提前", "改天", "等到", "現在開始", "提早開始"
   - Action verbs: "start", "開始", "執行", "do it", "繼續",
-    "那就…", "先做…", "改成…", "改…"
+    "那就…", "先做…", "改成…", "改…",
+    "清掉", "拿掉", "刪", "remove", "drop"
 
 When ANY of these fire on a plan described in the last 3 turns:
 Call confirm_plan IMMEDIATELY with ALL phases as tasks and ALL confirmed decisions.
@@ -94,7 +95,26 @@ proposed by the assistant and accepted.
 
 Loggable: bug fix approach, architecture, API design, deployment, third-party
 service, non-obvious discoveries, schedule/scope pivots, dispatch strategy
-changes, mid-conversation course corrections.
+changes, mid-conversation course corrections, rule-source edits (CLAUDE.md /
+private memory / this mcpInstructions / .mcp.json — see Meta-rule section
+below).
+
+## MANDATORY: Meta-rule edits ARE loggable decisions
+Editing the rule-sources themselves — CLAUDE.md, private agent memory, this
+mcpInstructions text, or moving a rule between these sources (single-source-
+of-truth re-assignments) — counts as a loggable architectural decision.
+
+Call log_decision BEFORE running Edit / Write / rm on:
+  - Any CLAUDE.md (global or per-project)
+  - Files under ~/.claude/projects/*/memory/
+  - internal/mcp/server.go mcpInstructions constant
+  - .mcp.json or any MCP server configuration
+
+Failure mode this guards against: treating "cleanup duplicate rules" as a
+chore (no log) when it is actually a single-source-of-truth re-assignment
+that affects every future session's behavior. The audit trail matters more,
+not less, when the change is to the rule-source itself.
+(Skip if MCP is unavailable or returns an error.)
 
 ## MANDATORY: When schedule, scope, or strategy changes mid-conversation
 Examples that trigger this:
