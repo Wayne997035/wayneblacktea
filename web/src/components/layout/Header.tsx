@@ -59,9 +59,9 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
             src="/icon.png"
             alt=""
             aria-hidden="true"
-            width={96}
-            height={64}
-            className="h-12 w-auto shrink-0 sm:h-16"
+            width={120}
+            height={80}
+            className="h-16 w-auto shrink-0 sm:h-20"
             style={{ display: 'block', objectFit: 'contain' }}
           />
           <span
