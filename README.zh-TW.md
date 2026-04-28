@@ -18,30 +18,6 @@
 
 ---
 
-## 安裝
-
-MCP server 是一個靜態 binary，配上任何 PostgreSQL 資料庫即可使用。
-等 GitHub Releases 上線後，最快路徑會是：
-
-```bash
-# 1. 下載對應平台的 binary（範例為 darwin-arm64）
-curl -L https://github.com/Wayne997035/wayneblacktea/releases/latest/download/wayneblacktea-mcp_darwin_arm64.tar.gz \
-  | tar -xz -C ~/.local/bin
-
-# 2. 接到 Claude Code
-claude mcp add wayneblacktea \
-  --env DATABASE_URL="postgres://user:pass@host/db?sslmode=require" \
-  --env API_KEY="your-bearer-token" \
-  -- ~/.local/bin/wayneblacktea-mcp
-```
-
-第一個 release 還沒上線之前，從 source build：`git clone` →
-`cd build && task build-mcp` → `claude mcp add` 指向
-`bin/wayneblacktea-mcp`。完整 self-host（Postgres、儀表板、Discord
-bot、env 變數）在 [docs/installation.md]。
-
-`curl | bash` 一行安裝腳本還在 roadmap。
-
 ## 為什麼存在
 
 大多數 AI 工作流程是無狀態的。每次對話從零開始、每個 agent 都健忘、

@@ -19,31 +19,6 @@
 
 ---
 
-## Install
-
-The MCP server is a single static binary that pairs with any
-PostgreSQL database. Once we publish GitHub Releases, the
-fastest path will be:
-
-```bash
-# 1. Download the latest binary (replace darwin-arm64 with your platform)
-curl -L https://github.com/Wayne997035/wayneblacktea/releases/latest/download/wayneblacktea-mcp_darwin_arm64.tar.gz \
-  | tar -xz -C ~/.local/bin
-
-# 2. Wire it into Claude Code
-claude mcp add wayneblacktea \
-  --env DATABASE_URL="postgres://user:pass@host/db?sslmode=require" \
-  --env API_KEY="your-bearer-token" \
-  -- ~/.local/bin/wayneblacktea-mcp
-```
-
-Until the first release lands, build from source: `git clone`,
-`cd build && task build-mcp`, then point `claude mcp add` at
-`bin/wayneblacktea-mcp`. The full self-host story (Postgres,
-dashboard, Discord bot, env vars) is in [docs/installation.md].
-
-A `curl | bash` one-liner is on the roadmap.
-
 ## Why this exists
 
 Most AI workflows are stateless. Every chat starts from zero, every
