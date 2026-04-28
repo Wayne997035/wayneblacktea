@@ -16,6 +16,7 @@ tasks:
       - task: test
       - task: build-mcp
       - task: build-server
+      - task: build-doctor
     silent: false
 
   build-mcp:
@@ -30,6 +31,13 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/wayneblacktea-server ./cmd/server/
+    dir: ..
+
+  build-doctor:
+    desc: "Build the wbt-doctor health snapshot binary used by the Stop hook"
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-doctor ./cmd/doctor/
     dir: ..
 
   lint:

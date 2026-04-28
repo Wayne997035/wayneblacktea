@@ -12,17 +12,19 @@ import (
 
 // Store handles all database operations for the Decision bounded context.
 type Store struct {
-	q *db.Queries
+	q           *db.Queries
+	workspaceID pgtype.UUID
 }
 
-// NewStore returns a Store backed by the given DBTX (pool or transaction).
-func NewStore(dbtx db.DBTX) *Store {
-	return &Store{q: db.New(dbtx)}
+// NewStore returns a Store backed by the given DBTX scoped to the optional
+// workspace. nil workspaceID = legacy unscoped mode.
+func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
+	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
 }
 
-// WithTx returns a Store bound to tx, for use in multi-store transactions.
+// WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx)}
+	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
 }
 
 func toText(v string) pgtype.Text {
@@ -46,6 +48,7 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 		Decision:     p.Decision,
 		Rationale:    p.Rationale,
 		Alternatives: toText(p.Alternatives),
+		WorkspaceID:  s.workspaceID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("logging decision %q: %w", p.Title, err)
@@ -56,8 +59,9 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 // ByRepo returns the most recent decisions for a given repo name.
 func (s *Store) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByRepo(ctx, db.ListDecisionsByRepoParams{
-		RepoName: toText(repoName),
-		Limit:    limit,
+		RepoName:    toText(repoName),
+		WorkspaceID: s.workspaceID,
+		LimitN:      limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing decisions for repo %q: %w", repoName, err)
@@ -67,7 +71,10 @@ func (s *Store) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.
 
 // All returns the most recent decisions across all repos and projects.
 func (s *Store) All(ctx context.Context, limit int32) ([]db.Decision, error) {
-	rows, err := s.q.ListAllDecisions(ctx, limit)
+	rows, err := s.q.ListAllDecisions(ctx, db.ListAllDecisionsParams{
+		WorkspaceID: s.workspaceID,
+		LimitN:      limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing all decisions: %w", err)
 	}
@@ -77,8 +84,9 @@ func (s *Store) All(ctx context.Context, limit int32) ([]db.Decision, error) {
 // ByProject returns the most recent decisions for a given project ID.
 func (s *Store) ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByProject(ctx, db.ListDecisionsByProjectParams{
-		ProjectID: toUUID(&projectID),
-		Limit:     limit,
+		ProjectID:   toUUID(&projectID),
+		WorkspaceID: s.workspaceID,
+		LimitN:      limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing decisions for project %s: %w", projectID, err)

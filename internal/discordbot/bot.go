@@ -52,6 +52,15 @@ var slashCommands = []*discordgo.ApplicationCommand{
 		Name:        "recent",
 		Description: "List your 5 most recently saved knowledge items",
 	},
+	{
+		Name:        "review",
+		Description: "Save a new FSRS concept card — adds it to today's spaced-repetition review queue",
+		Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "title", Description: "Concept title", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "content", Description: "What you want to remember", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "tags", Description: "Comma-separated tags (optional)"},
+		},
+	},
 }
 
 // New creates and configures a Bot but does not connect yet.
@@ -128,6 +137,8 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		msg = b.runSearch(optStr("query"))
 	case "recent":
 		msg = b.runRecent()
+	case "review":
+		msg = b.runReview(optStr("title"), optStr("content"), optStr("tags"))
 	}
 
 	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: msg})
@@ -148,6 +159,8 @@ func (b *Bot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		b.handleSearch(s, m.ChannelID, strings.TrimPrefix(text, "!search "))
 	case text == "!recent":
 		b.handleRecent(s, m.ChannelID)
+	case strings.HasPrefix(text, "!review "):
+		b.handleReview(s, m.ChannelID, strings.TrimPrefix(text, "!review "))
 	}
 }
 
@@ -166,6 +179,80 @@ func (b *Bot) handleSearch(s *discordgo.Session, channelID, query string) {
 
 func (b *Bot) handleRecent(s *discordgo.Session, channelID string) {
 	reply(s, channelID, b.runRecent())
+}
+
+func (b *Bot) handleReview(s *discordgo.Session, channelID, raw string) {
+	// `!review title :: content :: tag1,tag2` — `::` separates fields.
+	// Tags optional; missing parts are treated as empty.
+	parts := strings.SplitN(raw, "::", 3)
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	title := ""
+	content := ""
+	tags := ""
+	if len(parts) > 0 {
+		title = parts[0]
+	}
+	if len(parts) > 1 {
+		content = parts[1]
+	}
+	if len(parts) > 2 {
+		tags = parts[2]
+	}
+	reply(s, channelID, b.runReview(title, content, tags))
+}
+
+// runReview creates a new FSRS concept card via POST /api/learning/concepts.
+// title and content are required; tags is a comma-separated optional list.
+func (b *Bot) runReview(title, content, tagsRaw string) string {
+	title = strings.TrimSpace(title)
+	content = strings.TrimSpace(content)
+	if title == "" || content == "" {
+		return "Both title and content are required.\n" +
+			"Usage (slash): /review title:<…> content:<…> tags:<a,b>\n" +
+			"Usage (text):  !review <title> :: <content> :: <a,b>"
+	}
+
+	var tags []string
+	for _, t := range strings.Split(tagsRaw, ",") {
+		if trimmed := strings.TrimSpace(t); trimmed != "" {
+			tags = append(tags, trimmed)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	payload := map[string]any{"title": title, "content": content}
+	if len(tags) > 0 {
+		payload["tags"] = tags
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL+"/api/learning/concepts", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf("Build request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", b.apiKey)
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf("Save concept failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Sprintf("API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	tagSuffix := ""
+	if len(tags) > 0 {
+		tagSuffix = " | tags: " + strings.Join(tags, ", ")
+	}
+	return fmt.Sprintf("Concept saved — first review due now\n%s%s", title, tagSuffix)
 }
 
 func (b *Bot) runAnalyze(input string) string {

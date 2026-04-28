@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/waynechen/wayneblacktea/internal/gtd"
+	wbtruntime "github.com/waynechen/wayneblacktea/internal/runtime"
+	"github.com/waynechen/wayneblacktea/internal/storage"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
@@ -25,6 +27,9 @@ func main() {
 }
 
 func run() error {
+	if _, err := storage.ResolveFromEnv(); err != nil {
+		return fmt.Errorf("resolving storage backend: %w", err)
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL not set")
@@ -43,8 +48,12 @@ func run() error {
 	defer pool.Close()
 
 	ctx := context.Background()
-	gtdStore := gtd.NewStore(pool)
-	wsStore := workspace.NewStore(pool)
+	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	if err != nil {
+		return fmt.Errorf("reading WORKSPACE_ID env: %w", err)
+	}
+	gtdStore := gtd.NewStore(pool, wsID)
+	wsStore := workspace.NewStore(pool, wsID)
 
 	goalsCreated := seedGoals(ctx, gtdStore)
 	reposSynced := seedRepos(ctx, wsStore)

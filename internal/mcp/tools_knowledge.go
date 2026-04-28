@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -79,7 +80,26 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("adding knowledge item: %v", err)), nil
 	}
-	return jsonText(item)
+
+	// Auto-propose a concept card for review-eligible item types so the spaced
+	// repetition queue is fed without an explicit user step. Failure is logged
+	// but does not roll back the knowledge item.
+	prop, perr := s.proposal.AutoProposeConceptFromKnowledge(ctx, item, "mcp:add_knowledge")
+	if perr != nil {
+		slog.Warn("auto-propose concept failed", "knowledge_id", item.ID, "err", perr)
+	}
+	resp := addKnowledgeResult{Item: item}
+	if prop != nil {
+		resp.ConceptProposalID = prop.ID.String()
+	}
+	return jsonText(resp)
+}
+
+// addKnowledgeResult wraps the freshly-created knowledge item with the optional
+// concept proposal ID so MCP clients can immediately call confirm_proposal.
+type addKnowledgeResult struct {
+	Item              any    `json:"item"`
+	ConceptProposalID string `json:"concept_proposal_id,omitempty"`
 }
 
 func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

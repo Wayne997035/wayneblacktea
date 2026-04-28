@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -11,34 +12,48 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/knowledge"
 	"github.com/waynechen/wayneblacktea/internal/learning"
 	"github.com/waynechen/wayneblacktea/internal/notion"
+	"github.com/waynechen/wayneblacktea/internal/proposal"
+	wbtruntime "github.com/waynechen/wayneblacktea/internal/runtime"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
+	"github.com/waynechen/wayneblacktea/internal/watchdog"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
 // Server wires all domain stores to MCP tools.
 type Server struct {
+	pool      *pgxpool.Pool
 	gtd       *gtd.Store
 	workspace *workspace.Store
 	decision  *decision.Store
 	session   *session.Store
 	knowledge *knowledge.Store
 	learning  *learning.Store
+	proposal  *proposal.Store
 	notion    *notion.Client
+	watchdog  *watchdog.Watchdog
 }
 
-// New creates a Server connected to the given connection pool.
-func New(pool *pgxpool.Pool) *Server {
+// New creates a Server connected to the given connection pool. The optional
+// WORKSPACE_ID env scopes every domain store; unset = legacy unscoped mode.
+func New(pool *pgxpool.Pool) (*Server, error) {
+	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
+	}
 	embedClient := search.NewEmbeddingClient()
 	return &Server{
-		gtd:       gtd.NewStore(pool),
-		workspace: workspace.NewStore(pool),
-		decision:  decision.NewStore(pool),
-		session:   session.NewStore(pool),
-		knowledge: knowledge.NewStore(pool, embedClient),
-		learning:  learning.NewStore(pool),
+		pool:      pool,
+		gtd:       gtd.NewStore(pool, wsID),
+		workspace: workspace.NewStore(pool, wsID),
+		decision:  decision.NewStore(pool, wsID),
+		session:   session.NewStore(pool, wsID),
+		knowledge: knowledge.NewStore(pool, embedClient, wsID),
+		learning:  learning.NewStore(pool, wsID),
+		proposal:  proposal.NewStore(pool, wsID),
 		notion:    notion.NewClient(),
-	}
+		watchdog:  watchdog.New(200),
+	}, nil
 }
 
 const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — USAGE PROTOCOL
@@ -72,9 +87,14 @@ Call complete_task with artifact (file path or PR URL).
 - Question about saved knowledge → search_knowledge before fetching/analyzing URLs`
 
 // MCPServer returns a configured MCP server with all tools registered.
+//
+// The watchdog middleware records every tool invocation in process memory so
+// the system_health tool can surface "stuck" patterns (Claude updated a task
+// to in_progress but never called complete_task, etc.).
 func (s *Server) MCPServer() *server.MCPServer {
 	ms := server.NewMCPServer("wayneblacktea", "0.1.0",
 		server.WithInstructions(mcpInstructions),
+		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 	)
 	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)
@@ -84,6 +104,8 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerKnowledgeTools(ms)
 	s.registerLearningTools(ms)
 	s.registerPlanTools(ms)
+	s.registerProposalTools(ms)
+	s.registerHealthTools(ms)
 	return ms
 }
 

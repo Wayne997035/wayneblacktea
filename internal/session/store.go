@@ -13,17 +13,19 @@ import (
 
 // Store handles all database operations for the Session bounded context.
 type Store struct {
-	q *db.Queries
+	q           *db.Queries
+	workspaceID pgtype.UUID
 }
 
-// NewStore returns a Store backed by the given DBTX (pool or transaction).
-func NewStore(dbtx db.DBTX) *Store {
-	return &Store{q: db.New(dbtx)}
+// NewStore returns a Store backed by the given DBTX scoped to the optional
+// workspace. nil workspaceID = legacy unscoped mode.
+func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
+	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
 }
 
-// WithTx returns a Store bound to tx, for use in multi-store transactions.
+// WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx)}
+	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
 }
 
 func toText(v string) pgtype.Text {
@@ -44,6 +46,7 @@ func (s *Store) SetHandoff(ctx context.Context, p HandoffParams) (*db.SessionHan
 		RepoName:       toText(p.RepoName),
 		Intent:         p.Intent,
 		ContextSummary: toText(p.ContextSummary),
+		WorkspaceID:    s.workspaceID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating session handoff: %w", err)
@@ -53,7 +56,7 @@ func (s *Store) SetHandoff(ctx context.Context, p HandoffParams) (*db.SessionHan
 
 // LatestHandoff returns the most recent unresolved handoff, or ErrNotFound.
 func (s *Store) LatestHandoff(ctx context.Context) (*db.SessionHandoff, error) {
-	row, err := s.q.GetLatestUnresolvedHandoff(ctx)
+	row, err := s.q.GetLatestUnresolvedHandoff(ctx, s.workspaceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -65,7 +68,10 @@ func (s *Store) LatestHandoff(ctx context.Context) (*db.SessionHandoff, error) {
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.
 func (s *Store) Resolve(ctx context.Context, id uuid.UUID) error {
-	n, err := s.q.ResolveHandoff(ctx, id)
+	n, err := s.q.ResolveHandoff(ctx, db.ResolveHandoffParams{
+		ID:          id,
+		WorkspaceID: s.workspaceID,
+	})
 	if err != nil {
 		return fmt.Errorf("resolving handoff %s: %w", id, err)
 	}

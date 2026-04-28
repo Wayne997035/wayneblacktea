@@ -7,40 +7,45 @@ package db
 import (
 	"context"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
 	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
-	CountCompletedTasksThisWeek(ctx context.Context) (int64, error)
-	CountTotalActiveTasks(ctx context.Context) (int64, error)
+	CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
+	CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	CreateActivityLog(ctx context.Context, arg CreateActivityLogParams) (ActivityLog, error)
 	CreateConcept(ctx context.Context, arg CreateConceptParams) (Concept, error)
 	CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error)
 	CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error)
 	CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeItemParams) (KnowledgeItem, error)
+	CreatePendingProposal(ctx context.Context, arg CreatePendingProposalParams) (PendingProposal, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
-	CreateReviewSchedule(ctx context.Context, conceptID uuid.UUID) (ReviewSchedule, error)
+	CreateReviewSchedule(ctx context.Context, arg CreateReviewScheduleParams) (ReviewSchedule, error)
 	CreateSessionHandoff(ctx context.Context, arg CreateSessionHandoffParams) (SessionHandoff, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
-	DeleteTask(ctx context.Context, id uuid.UUID) error
-	GetAllPendingTasks(ctx context.Context) ([]Task, error)
-	GetConceptByID(ctx context.Context, id uuid.UUID) (Concept, error)
-	GetKnowledgeByID(ctx context.Context, id uuid.UUID) (KnowledgeItem, error)
-	GetLatestUnresolvedHandoff(ctx context.Context) (SessionHandoff, error)
-	GetProjectByName(ctx context.Context, name string) (Project, error)
-	GetRepoByName(ctx context.Context, name string) (Repo, error)
-	GetTasksByProject(ctx context.Context, projectID pgtype.UUID) ([]Task, error)
-	ListActiveGoals(ctx context.Context) ([]Goal, error)
-	ListActiveProjects(ctx context.Context) ([]Project, error)
-	ListActiveRepos(ctx context.Context) ([]Repo, error)
-	ListAllDecisions(ctx context.Context, limit int32) ([]Decision, error)
+	DeleteTask(ctx context.Context, arg DeleteTaskParams) error
+	GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUID) ([]Task, error)
+	GetConceptByID(ctx context.Context, arg GetConceptByIDParams) (Concept, error)
+	GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (KnowledgeItem, error)
+	GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pgtype.UUID) (SessionHandoff, error)
+	GetPendingProposal(ctx context.Context, arg GetPendingProposalParams) (PendingProposal, error)
+	GetProjectByName(ctx context.Context, arg GetProjectByNameParams) (Project, error)
+	GetRepoByName(ctx context.Context, arg GetRepoByNameParams) (Repo, error)
+	GetTasksByProject(ctx context.Context, arg GetTasksByProjectParams) ([]Task, error)
+	ListActiveGoals(ctx context.Context, workspaceID pgtype.UUID) ([]Goal, error)
+	// All queries take workspace_id as the named nullable arg @workspace_id.
+	// NULL → no filter (legacy mode); UUID → strict per-workspace scope.
+	ListActiveProjects(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error)
+	ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) ([]Repo, error)
+	ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error)
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
-	ListDueReviews(ctx context.Context, limit int32) ([]ListDueReviewsRow, error)
+	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
 	ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([]KnowledgeItem, error)
-	ResolveHandoff(ctx context.Context, id uuid.UUID) (int64, error)
+	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
+	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
+	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
 	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
 	UpdateKnowledgeEmbedding(ctx context.Context, arg UpdateKnowledgeEmbeddingParams) error
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)

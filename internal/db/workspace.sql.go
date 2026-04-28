@@ -12,11 +12,19 @@ import (
 )
 
 const getRepoByName = `-- name: GetRepoByName :one
-SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at FROM repos WHERE name = $1 LIMIT 1
+SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id FROM repos
+WHERE name = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+LIMIT 1
 `
 
-func (q *Queries) GetRepoByName(ctx context.Context, name string) (Repo, error) {
-	row := q.db.QueryRow(ctx, getRepoByName, name)
+type GetRepoByNameParams struct {
+	Name        string      `json:"name"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetRepoByName(ctx context.Context, arg GetRepoByNameParams) (Repo, error) {
+	row := q.db.QueryRow(ctx, getRepoByName, arg.Name, arg.WorkspaceID)
 	var i Repo
 	err := row.Scan(
 		&i.ID,
@@ -31,16 +39,20 @@ func (q *Queries) GetRepoByName(ctx context.Context, name string) (Repo, error) 
 		&i.LastActivity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const listActiveRepos = `-- name: ListActiveRepos :many
-SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at FROM repos WHERE status = 'active' ORDER BY last_activity DESC NULLS LAST, name ASC
+SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id FROM repos
+WHERE status = 'active'
+  AND ($1::uuid IS NULL OR workspace_id = $1)
+ORDER BY last_activity DESC NULLS LAST, name ASC
 `
 
-func (q *Queries) ListActiveRepos(ctx context.Context) ([]Repo, error) {
-	rows, err := q.db.Query(ctx, listActiveRepos)
+func (q *Queries) ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) ([]Repo, error) {
+	rows, err := q.db.Query(ctx, listActiveRepos, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -61,6 +73,7 @@ func (q *Queries) ListActiveRepos(ctx context.Context) ([]Repo, error) {
 			&i.LastActivity,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -73,8 +86,8 @@ func (q *Queries) ListActiveRepos(ctx context.Context) ([]Repo, error) {
 }
 
 const upsertRepo = `-- name: UpsertRepo :one
-INSERT INTO repos (name, path, description, language, current_branch, known_issues, next_planned_step, last_activity)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO repos (name, path, description, language, current_branch, known_issues, next_planned_step, last_activity, workspace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (name) DO UPDATE SET
     path = EXCLUDED.path,
     description = EXCLUDED.description,
@@ -84,7 +97,7 @@ ON CONFLICT (name) DO UPDATE SET
     next_planned_step = EXCLUDED.next_planned_step,
     last_activity = EXCLUDED.last_activity,
     updated_at = NOW()
-RETURNING id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at
+RETURNING id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id
 `
 
 type UpsertRepoParams struct {
@@ -96,6 +109,7 @@ type UpsertRepoParams struct {
 	KnownIssues     []string           `json:"known_issues"`
 	NextPlannedStep pgtype.Text        `json:"next_planned_step"`
 	LastActivity    pgtype.Timestamptz `json:"last_activity"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
 }
 
 func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error) {
@@ -108,6 +122,7 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, e
 		arg.KnownIssues,
 		arg.NextPlannedStep,
 		arg.LastActivity,
+		arg.WorkspaceID,
 	)
 	var i Repo
 	err := row.Scan(
@@ -123,6 +138,7 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, e
 		&i.LastActivity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }

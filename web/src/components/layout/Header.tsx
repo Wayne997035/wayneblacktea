@@ -49,12 +49,27 @@ export function Header({ onMenuClick, sidebarOpen = false }: HeaderProps) {
           </span>
         </button>
 
-        <span
-          className="font-mono font-medium tracking-widest text-sm"
-          style={{ color: 'var(--color-accent-blue)' }}
+        <a
+          href="/"
+          className="flex items-center gap-2 rounded outline-none focus-visible:ring-2"
+          aria-label="wayneblacktea — home"
+          style={{ textDecoration: 'none' }}
         >
-          CONTROL ROOM
-        </span>
+          <img
+            src="/wayneblacktea.png"
+            alt=""
+            aria-hidden="true"
+            width={28}
+            height={28}
+            style={{ display: 'block', objectFit: 'contain' }}
+          />
+          <span
+            className="font-mono font-medium tracking-widest text-sm"
+            style={{ color: 'var(--color-accent-blue)' }}
+          >
+            CONTROL ROOM
+          </span>
+        </a>
       </div>
 
       <div className="flex items-center gap-1">

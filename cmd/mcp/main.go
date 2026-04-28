@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/server"
 	mcpsrv "github.com/waynechen/wayneblacktea/internal/mcp"
+	"github.com/waynechen/wayneblacktea/internal/storage"
 )
 
 func main() {
@@ -19,11 +20,16 @@ func main() {
 }
 
 func run() error {
+	backend, err := storage.ResolveFromEnv()
+	if err != nil {
+		return fmt.Errorf("resolving storage backend: %w", err)
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL not set")
 	}
 
+	log.Printf("storage backend: %s", backend)
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return fmt.Errorf("parsing database URL: %w", err)
@@ -37,7 +43,10 @@ func run() error {
 	}
 	defer pool.Close()
 
-	s := mcpsrv.New(pool)
+	s, err := mcpsrv.New(pool)
+	if err != nil {
+		return fmt.Errorf("initializing MCP server: %w", err)
+	}
 	if err := server.ServeStdio(s.MCPServer()); err != nil {
 		return fmt.Errorf("serving MCP: %w", err)
 	}

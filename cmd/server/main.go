@@ -28,9 +28,12 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/knowledge"
 	"github.com/waynechen/wayneblacktea/internal/learning"
 	apimw "github.com/waynechen/wayneblacktea/internal/middleware"
+	"github.com/waynechen/wayneblacktea/internal/proposal"
+	wbtruntime "github.com/waynechen/wayneblacktea/internal/runtime"
 	"github.com/waynechen/wayneblacktea/internal/scheduler"
 	"github.com/waynechen/wayneblacktea/internal/search"
 	"github.com/waynechen/wayneblacktea/internal/session"
+	"github.com/waynechen/wayneblacktea/internal/storage"
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
@@ -49,6 +52,11 @@ func main() {
 }
 
 func run() error {
+	backend, err := storage.ResolveFromEnv()
+	if err != nil {
+		return fmt.Errorf("resolving storage backend: %w", err)
+	}
+	log.Printf("storage backend: %s", backend)
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL not set")
@@ -72,22 +80,19 @@ func run() error {
 	}
 	defer pool.Close()
 
-	gtdStore := gtd.NewStore(pool)
-	wsStore := workspace.NewStore(pool)
-	decStore := decision.NewStore(pool)
-	sessStore := session.NewStore(pool)
-	embedClient := search.NewEmbeddingClient()
-	knowledgeStore := knowledge.NewStore(pool, embedClient)
-	learningStore := learning.NewStore(pool)
+	stores, err := buildStores(pool)
+	if err != nil {
+		return err
+	}
 	discordClient := discord.NewClient()
 
-	ctxH := handler.NewContextHandler(gtdStore, sessStore)
-	gtdH := handler.NewGTDHandler(gtdStore)
-	wsH := handler.NewWorkspaceHandler(wsStore)
-	decH := handler.NewDecisionHandler(decStore)
-	sessH := handler.NewSessionHandler(sessStore)
-	knowledgeH := handler.NewKnowledgeHandler(knowledgeStore)
-	learningH := handler.NewLearningHandler(learningStore)
+	ctxH := handler.NewContextHandler(stores.gtd, stores.session)
+	gtdH := handler.NewGTDHandler(stores.gtd)
+	wsH := handler.NewWorkspaceHandler(stores.workspace)
+	decH := handler.NewDecisionHandler(stores.decision)
+	sessH := handler.NewSessionHandler(stores.session)
+	knowledgeH := handler.NewKnowledgeHandler(stores.knowledge, stores.proposal)
+	learningH := handler.NewLearningHandler(stores.learning)
 
 	e := echo.New()
 	e.HideBanner = true
@@ -154,25 +159,18 @@ func run() error {
 	e.GET("/*", echo.WrapHandler(buildSPAHandler(distFS)))
 
 	// Start scheduler.
-	sched, err := scheduler.New(learningStore, discordClient)
+	sched, err := scheduler.New(stores.learning, discordClient)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
 	}
 	sched.Start()
 	defer sched.Stop()
 
-	// Start Discord bot if token is configured.
-	if botToken := os.Getenv("DISCORD_BOT_TOKEN"); botToken != "" {
-		bot, err := discordbot.New(botToken, os.Getenv("GROQ_API_KEY"), "http://localhost:"+port, apiKey, os.Getenv("DISCORD_GUILD_ID"))
-		if err != nil {
-			return fmt.Errorf("creating discord bot: %w", err)
-		}
-		if err := bot.Start(); err != nil {
-			return fmt.Errorf("starting discord bot: %w", err)
-		}
-		defer bot.Stop()
-		log.Println("discord bot started")
+	stopBot, err := startDiscordBotIfConfigured(port, apiKey)
+	if err != nil {
+		return err
 	}
+	defer stopBot()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -200,6 +198,61 @@ func buildSPAHandler(distFS fs.FS) http.Handler {
 		}
 		http.FileServer(spaFS).ServeHTTP(w, r)
 	})
+}
+
+// storeBundle groups every domain store the server needs after they have
+// been scoped to the configured workspace. Extracted out of run() to keep
+// run()'s cyclomatic complexity below the gocyclo threshold.
+type storeBundle struct {
+	gtd       *gtd.Store
+	workspace *workspace.Store
+	decision  *decision.Store
+	session   *session.Store
+	knowledge *knowledge.Store
+	learning  *learning.Store
+	proposal  *proposal.Store
+}
+
+// startDiscordBotIfConfigured starts the Discord bot when DISCORD_BOT_TOKEN is
+// set, returning a stop function the caller defers. When the token is unset,
+// returns a no-op stop function so the caller can defer unconditionally.
+func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
+	botToken := os.Getenv("DISCORD_BOT_TOKEN")
+	if botToken == "" {
+		return func() {}, nil
+	}
+	bot, err := discordbot.New(
+		botToken,
+		os.Getenv("GROQ_API_KEY"),
+		"http://localhost:"+port,
+		apiKey,
+		os.Getenv("DISCORD_GUILD_ID"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating discord bot: %w", err)
+	}
+	if err := bot.Start(); err != nil {
+		return nil, fmt.Errorf("starting discord bot: %w", err)
+	}
+	log.Println("discord bot started")
+	return bot.Stop, nil
+}
+
+func buildStores(pool *pgxpool.Pool) (*storeBundle, error) {
+	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
+	}
+	embedClient := search.NewEmbeddingClient()
+	return &storeBundle{
+		gtd:       gtd.NewStore(pool, wsID),
+		workspace: workspace.NewStore(pool, wsID),
+		decision:  decision.NewStore(pool, wsID),
+		session:   session.NewStore(pool, wsID),
+		knowledge: knowledge.NewStore(pool, embedClient, wsID),
+		learning:  learning.NewStore(pool, wsID),
+		proposal:  proposal.NewStore(pool, wsID),
+	}, nil
 }
 
 func buildPool(dsn string) (*pgxpool.Pool, error) {

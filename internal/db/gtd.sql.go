@@ -13,17 +13,20 @@ import (
 )
 
 const completeTask = `-- name: CompleteTask :one
-UPDATE tasks SET status = 'completed', artifact = $2, updated_at = NOW()
-WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+UPDATE tasks SET status = 'completed', artifact = $1, updated_at = NOW()
+WHERE id = $2
+  AND ($3::uuid IS NULL OR workspace_id = $3)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context
 `
 
 type CompleteTaskParams struct {
-	ID       uuid.UUID   `json:"id"`
-	Artifact pgtype.Text `json:"artifact"`
+	Artifact    pgtype.Text `json:"artifact"`
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error) {
-	row := q.db.QueryRow(ctx, completeTask, arg.ID, arg.Artifact)
+	row := q.db.QueryRow(ctx, completeTask, arg.Artifact, arg.ID, arg.WorkspaceID)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -37,6 +40,9 @@ func (q *Queries) CompleteTask(ctx context.Context, arg CompleteTaskParams) (Tas
 		&i.Artifact,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
 	)
 	return i, err
 }
@@ -46,37 +52,41 @@ SELECT COUNT(*) FROM tasks
 WHERE status = 'completed'
   AND updated_at >= date_trunc('week', NOW())
   AND updated_at < date_trunc('week', NOW()) + interval '1 week'
+  AND ($1::uuid IS NULL OR workspace_id = $1)
 `
 
-func (q *Queries) CountCompletedTasksThisWeek(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countCompletedTasksThisWeek)
+func (q *Queries) CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCompletedTasksThisWeek, workspaceID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const countTotalActiveTasks = `-- name: CountTotalActiveTasks :one
-SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'in_progress')
+SELECT COUNT(*) FROM tasks
+WHERE status IN ('pending', 'in_progress')
+  AND ($1::uuid IS NULL OR workspace_id = $1)
 `
 
-func (q *Queries) CountTotalActiveTasks(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countTotalActiveTasks)
+func (q *Queries) CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countTotalActiveTasks, workspaceID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const createActivityLog = `-- name: CreateActivityLog :one
-INSERT INTO activity_log (actor, project_id, action, notes)
-VALUES ($1, $2, $3, $4)
-RETURNING id, actor, project_id, action, notes, created_at
+INSERT INTO activity_log (actor, project_id, action, notes, workspace_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, actor, project_id, action, notes, created_at, workspace_id
 `
 
 type CreateActivityLogParams struct {
-	Actor     string      `json:"actor"`
-	ProjectID pgtype.UUID `json:"project_id"`
-	Action    string      `json:"action"`
-	Notes     pgtype.Text `json:"notes"`
+	Actor       string      `json:"actor"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	Action      string      `json:"action"`
+	Notes       pgtype.Text `json:"notes"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) CreateActivityLog(ctx context.Context, arg CreateActivityLogParams) (ActivityLog, error) {
@@ -85,6 +95,7 @@ func (q *Queries) CreateActivityLog(ctx context.Context, arg CreateActivityLogPa
 		arg.ProjectID,
 		arg.Action,
 		arg.Notes,
+		arg.WorkspaceID,
 	)
 	var i ActivityLog
 	err := row.Scan(
@@ -94,14 +105,15 @@ func (q *Queries) CreateActivityLog(ctx context.Context, arg CreateActivityLogPa
 		&i.Action,
 		&i.Notes,
 		&i.CreatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const createGoal = `-- name: CreateGoal :one
-INSERT INTO goals (title, description, area, due_date)
-VALUES ($1, $2, $3, $4)
-RETURNING id, title, description, status, area, due_date, created_at, updated_at
+INSERT INTO goals (title, description, area, due_date, workspace_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, title, description, status, area, due_date, created_at, updated_at, workspace_id
 `
 
 type CreateGoalParams struct {
@@ -109,6 +121,7 @@ type CreateGoalParams struct {
 	Description pgtype.Text        `json:"description"`
 	Area        pgtype.Text        `json:"area"`
 	DueDate     pgtype.Timestamptz `json:"due_date"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error) {
@@ -117,6 +130,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		arg.Description,
 		arg.Area,
 		arg.DueDate,
+		arg.WorkspaceID,
 	)
 	var i Goal
 	err := row.Scan(
@@ -128,14 +142,15 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		&i.DueDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const createProject = `-- name: CreateProject :one
-INSERT INTO projects (goal_id, name, title, description, area, priority)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at
+INSERT INTO projects (goal_id, name, title, description, area, priority, workspace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
 `
 
 type CreateProjectParams struct {
@@ -145,6 +160,7 @@ type CreateProjectParams struct {
 	Description pgtype.Text `json:"description"`
 	Area        string      `json:"area"`
 	Priority    int32       `json:"priority"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error) {
@@ -155,6 +171,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		arg.Description,
 		arg.Area,
 		arg.Priority,
+		arg.WorkspaceID,
 	)
 	var i Project
 	err := row.Scan(
@@ -168,14 +185,15 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.Priority,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (project_id, title, description, priority, assignee, due_date)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, workspace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context
 `
 
 type CreateTaskParams struct {
@@ -185,6 +203,9 @@ type CreateTaskParams struct {
 	Priority    int32              `json:"priority"`
 	Assignee    pgtype.Text        `json:"assignee"`
 	DueDate     pgtype.Timestamptz `json:"due_date"`
+	Importance  pgtype.Int2        `json:"importance"`
+	Context     pgtype.Text        `json:"context"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -195,6 +216,9 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.Priority,
 		arg.Assignee,
 		arg.DueDate,
+		arg.Importance,
+		arg.Context,
+		arg.WorkspaceID,
 	)
 	var i Task
 	err := row.Scan(
@@ -209,27 +233,38 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.Artifact,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
 	)
 	return i, err
 }
 
 const deleteTask = `-- name: DeleteTask :exec
-DELETE FROM tasks WHERE id = $1
+DELETE FROM tasks
+WHERE id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 `
 
-func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteTask, id)
+type DeleteTaskParams struct {
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteTask(ctx context.Context, arg DeleteTaskParams) error {
+	_, err := q.db.Exec(ctx, deleteTask, arg.ID, arg.WorkspaceID)
 	return err
 }
 
 const getAllPendingTasks = `-- name: GetAllPendingTasks :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at FROM tasks
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context FROM tasks
 WHERE status IN ('pending', 'in_progress')
+  AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY priority ASC, created_at ASC
 `
 
-func (q *Queries) GetAllPendingTasks(ctx context.Context) ([]Task, error) {
-	rows, err := q.db.Query(ctx, getAllPendingTasks)
+func (q *Queries) GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUID) ([]Task, error) {
+	rows, err := q.db.Query(ctx, getAllPendingTasks, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +284,9 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context) ([]Task, error) {
 			&i.Artifact,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.Context,
 		); err != nil {
 			return nil, err
 		}
@@ -261,11 +299,19 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context) ([]Task, error) {
 }
 
 const getProjectByName = `-- name: GetProjectByName :one
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at FROM projects WHERE name = $1 LIMIT 1
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
+WHERE name = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+LIMIT 1
 `
 
-func (q *Queries) GetProjectByName(ctx context.Context, name string) (Project, error) {
-	row := q.db.QueryRow(ctx, getProjectByName, name)
+type GetProjectByNameParams struct {
+	Name        string      `json:"name"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetProjectByName(ctx context.Context, arg GetProjectByNameParams) (Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByName, arg.Name, arg.WorkspaceID)
 	var i Project
 	err := row.Scan(
 		&i.ID,
@@ -278,18 +324,26 @@ func (q *Queries) GetProjectByName(ctx context.Context, name string) (Project, e
 		&i.Priority,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getTasksByProject = `-- name: GetTasksByProject :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at FROM tasks
-WHERE project_id = $1 AND status IN ('pending', 'in_progress')
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context FROM tasks
+WHERE project_id = $1
+  AND status IN ('pending', 'in_progress')
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY priority ASC, created_at ASC
 `
 
-func (q *Queries) GetTasksByProject(ctx context.Context, projectID pgtype.UUID) ([]Task, error) {
-	rows, err := q.db.Query(ctx, getTasksByProject, projectID)
+type GetTasksByProjectParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetTasksByProject(ctx context.Context, arg GetTasksByProjectParams) ([]Task, error) {
+	rows, err := q.db.Query(ctx, getTasksByProject, arg.ProjectID, arg.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +363,9 @@ func (q *Queries) GetTasksByProject(ctx context.Context, projectID pgtype.UUID) 
 			&i.Artifact,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.Context,
 		); err != nil {
 			return nil, err
 		}
@@ -321,11 +378,14 @@ func (q *Queries) GetTasksByProject(ctx context.Context, projectID pgtype.UUID) 
 }
 
 const listActiveGoals = `-- name: ListActiveGoals :many
-SELECT id, title, description, status, area, due_date, created_at, updated_at FROM goals WHERE status = 'active' ORDER BY due_date ASC NULLS LAST
+SELECT id, title, description, status, area, due_date, created_at, updated_at, workspace_id FROM goals
+WHERE status = 'active'
+  AND ($1::uuid IS NULL OR workspace_id = $1)
+ORDER BY due_date ASC NULLS LAST
 `
 
-func (q *Queries) ListActiveGoals(ctx context.Context) ([]Goal, error) {
-	rows, err := q.db.Query(ctx, listActiveGoals)
+func (q *Queries) ListActiveGoals(ctx context.Context, workspaceID pgtype.UUID) ([]Goal, error) {
+	rows, err := q.db.Query(ctx, listActiveGoals, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -342,6 +402,7 @@ func (q *Queries) ListActiveGoals(ctx context.Context) ([]Goal, error) {
 			&i.DueDate,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -354,13 +415,17 @@ func (q *Queries) ListActiveGoals(ctx context.Context) ([]Goal, error) {
 }
 
 const listActiveProjects = `-- name: ListActiveProjects :many
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at FROM projects
+
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
 WHERE status = 'active'
+  AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY priority ASC, updated_at DESC
 `
 
-func (q *Queries) ListActiveProjects(ctx context.Context) ([]Project, error) {
-	rows, err := q.db.Query(ctx, listActiveProjects)
+// All queries take workspace_id as the named nullable arg @workspace_id.
+// NULL → no filter (legacy mode); UUID → strict per-workspace scope.
+func (q *Queries) ListActiveProjects(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error) {
+	rows, err := q.db.Query(ctx, listActiveProjects, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -379,6 +444,7 @@ func (q *Queries) ListActiveProjects(ctx context.Context) ([]Project, error) {
 			&i.Priority,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -391,16 +457,20 @@ func (q *Queries) ListActiveProjects(ctx context.Context) ([]Project, error) {
 }
 
 const updateProjectStatus = `-- name: UpdateProjectStatus :one
-UPDATE projects SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at
+UPDATE projects SET status = $1, updated_at = NOW()
+WHERE id = $2
+  AND ($3::uuid IS NULL OR workspace_id = $3)
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
 `
 
 type UpdateProjectStatusParams struct {
-	ID     uuid.UUID `json:"id"`
-	Status string    `json:"status"`
+	Status      string      `json:"status"`
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error) {
-	row := q.db.QueryRow(ctx, updateProjectStatus, arg.ID, arg.Status)
+	row := q.db.QueryRow(ctx, updateProjectStatus, arg.Status, arg.ID, arg.WorkspaceID)
 	var i Project
 	err := row.Scan(
 		&i.ID,
@@ -413,21 +483,26 @@ func (q *Queries) UpdateProjectStatus(ctx context.Context, arg UpdateProjectStat
 		&i.Priority,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const updateTaskStatus = `-- name: UpdateTaskStatus :one
-UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at
+UPDATE tasks SET status = $1, updated_at = NOW()
+WHERE id = $2
+  AND ($3::uuid IS NULL OR workspace_id = $3)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context
 `
 
 type UpdateTaskStatusParams struct {
-	ID     uuid.UUID `json:"id"`
-	Status string    `json:"status"`
+	Status      string      `json:"status"`
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error) {
-	row := q.db.QueryRow(ctx, updateTaskStatus, arg.ID, arg.Status)
+	row := q.db.QueryRow(ctx, updateTaskStatus, arg.Status, arg.ID, arg.WorkspaceID)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -441,6 +516,9 @@ func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusPara
 		&i.Artifact,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
 	)
 	return i, err
 }

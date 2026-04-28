@@ -12,12 +12,14 @@ import (
 
 // KnowledgeHandler handles all Knowledge-domain endpoints.
 type KnowledgeHandler struct {
-	store knowledgeStore
+	store    knowledgeStore
+	proposal proposalStore // optional; nil disables auto-propose-concept
 }
 
-// NewKnowledgeHandler creates a KnowledgeHandler.
-func NewKnowledgeHandler(s knowledgeStore) *KnowledgeHandler {
-	return &KnowledgeHandler{store: s}
+// NewKnowledgeHandler creates a KnowledgeHandler. proposal may be nil to opt
+// out of the auto-propose-concept-card behaviour (mainly for tests).
+func NewKnowledgeHandler(s knowledgeStore, p proposalStore) *KnowledgeHandler {
+	return &KnowledgeHandler{store: s, proposal: p}
 }
 
 // ListKnowledge returns knowledge items with optional pagination.
@@ -84,6 +86,16 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 		}
 		c.Logger().Errorf("AddKnowledge: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	// Best-effort auto-propose: failure here must not roll back the freshly
+	// created knowledge item. The proposal can be retried by the agent.
+	if h.proposal != nil {
+		if _, err := h.proposal.AutoProposeConceptFromKnowledge(
+			c.Request().Context(), item, "http:add_knowledge",
+		); err != nil {
+			c.Logger().Errorf("auto-propose concept (knowledge_id=%s): %v", item.ID, err)
+		}
 	}
 	return c.JSON(http.StatusCreated, item)
 }

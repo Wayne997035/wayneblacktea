@@ -41,7 +41,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("project_id", mcp.Description("Parent project UUID")),
 		mcp.WithString("description", mcp.Description("Task details")),
 		mcp.WithString("assignee", mcp.Description("Who owns this task")),
-		mcp.WithNumber("priority", mcp.Description("Priority 1-5")),
+		mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
+		mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low) — distinct from priority")),
+		mcp.WithString("context", mcp.Description("Free-form discussion background — why this task came up")),
 	), s.handleAddTask)
 
 	ms.AddTool(mcp.NewTool("complete_task",
@@ -164,6 +166,7 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 		Description: stringArg(args, "description"),
 		Assignee:    stringArg(args, "assignee"),
 		Priority:    numberArg(args, "priority"),
+		Context:     stringArg(args, "context"),
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -171,6 +174,13 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 			return mcp.NewToolResultError("invalid project_id UUID"), nil
 		}
 		p.ProjectID = &id
+	}
+	if imp := numberArg(args, "importance"); imp > 0 {
+		if imp < 1 || imp > 3 {
+			return mcp.NewToolResultError("importance must be 1, 2, or 3"), nil
+		}
+		v := int16(imp)
+		p.Importance = &v
 	}
 
 	task, err := s.gtd.CreateTask(ctx, p)

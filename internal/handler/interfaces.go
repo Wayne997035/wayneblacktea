@@ -13,6 +13,11 @@ import (
 	"github.com/waynechen/wayneblacktea/internal/workspace"
 )
 
+// proposalStore covers the subset of proposal.Store used by handlers.
+type proposalStore interface {
+	AutoProposeConceptFromKnowledge(ctx context.Context, item *db.KnowledgeItem, proposedBy string) (*db.PendingProposal, error)
+}
+
 // gtdStore covers the subset of gtd.Store used by handlers.
 type gtdStore interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)

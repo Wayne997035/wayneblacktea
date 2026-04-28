@@ -71,7 +71,7 @@ func TestKnowledgeHandler_ListKnowledge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := echo.New()
-			h := handler.NewKnowledgeHandler(tc.store)
+			h := handler.NewKnowledgeHandler(tc.store, nil)
 			e.GET("/api/knowledge", h.ListKnowledge)
 			rec := performRequest(e, http.MethodGet, "/api/knowledge"+tc.query, "")
 			if rec.Code != tc.wantCode {
@@ -138,7 +138,7 @@ func TestKnowledgeHandler_AddKnowledge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := echo.New()
-			h := handler.NewKnowledgeHandler(tc.store)
+			h := handler.NewKnowledgeHandler(tc.store, nil)
 			e.POST("/api/knowledge", h.AddKnowledge)
 			rec := performRequest(e, http.MethodPost, "/api/knowledge", tc.body)
 			if rec.Code != tc.wantCode {
@@ -187,7 +187,7 @@ func TestKnowledgeHandler_SearchKnowledge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := echo.New()
-			h := handler.NewKnowledgeHandler(tc.store)
+			h := handler.NewKnowledgeHandler(tc.store, nil)
 			e.GET("/api/knowledge/search", h.SearchKnowledge)
 			rec := performRequest(e, http.MethodGet, "/api/knowledge/search"+tc.query, "")
 			if rec.Code != tc.wantCode {

@@ -14,9 +14,9 @@ import (
 )
 
 const createKnowledgeItem = `-- name: CreateKnowledgeItem :one
-INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value
+INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id
 `
 
 type CreateKnowledgeItemParams struct {
@@ -27,6 +27,7 @@ type CreateKnowledgeItemParams struct {
 	Tags          []string    `json:"tags"`
 	Source        string      `json:"source"`
 	LearningValue pgtype.Int4 `json:"learning_value"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeItemParams) (KnowledgeItem, error) {
@@ -38,6 +39,7 @@ func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeIt
 		arg.Tags,
 		arg.Source,
 		arg.LearningValue,
+		arg.WorkspaceID,
 	)
 	var i KnowledgeItem
 	err := row.Scan(
@@ -52,16 +54,24 @@ func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeIt
 		&i.UpdatedAt,
 		&i.Source,
 		&i.LearningValue,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getKnowledgeByID = `-- name: GetKnowledgeByID :one
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value FROM knowledge_items WHERE id = $1
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id FROM knowledge_items
+WHERE id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 `
 
-func (q *Queries) GetKnowledgeByID(ctx context.Context, id uuid.UUID) (KnowledgeItem, error) {
-	row := q.db.QueryRow(ctx, getKnowledgeByID, id)
+type GetKnowledgeByIDParams struct {
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (KnowledgeItem, error) {
+	row := q.db.QueryRow(ctx, getKnowledgeByID, arg.ID, arg.WorkspaceID)
 	var i KnowledgeItem
 	err := row.Scan(
 		&i.ID,
@@ -75,21 +85,26 @@ func (q *Queries) GetKnowledgeByID(ctx context.Context, id uuid.UUID) (Knowledge
 		&i.UpdatedAt,
 		&i.Source,
 		&i.LearningValue,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const listKnowledge = `-- name: ListKnowledge :many
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value FROM knowledge_items ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id FROM knowledge_items
+WHERE ($1::uuid IS NULL OR workspace_id = $1)
+ORDER BY created_at DESC
+LIMIT $3 OFFSET $2
 `
 
 type ListKnowledgeParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OffsetN     int32       `json:"offset_n"`
+	LimitN      int32       `json:"limit_n"`
 }
 
 func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([]KnowledgeItem, error) {
-	rows, err := q.db.Query(ctx, listKnowledge, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listKnowledge, arg.WorkspaceID, arg.OffsetN, arg.LimitN)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +124,7 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 			&i.UpdatedAt,
 			&i.Source,
 			&i.LearningValue,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -121,16 +137,18 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 }
 
 const searchKnowledgeFTS = `-- name: SearchKnowledgeFTS :many
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
 FROM knowledge_items
 WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+  AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY rank DESC
-LIMIT $2
+LIMIT $3
 `
 
 type SearchKnowledgeFTSParams struct {
-	PlaintoTsquery string `json:"plainto_tsquery"`
-	Limit          int32  `json:"limit"`
+	Query       string      `json:"query"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
 }
 
 type SearchKnowledgeFTSRow struct {
@@ -145,11 +163,12 @@ type SearchKnowledgeFTSRow struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	Source        string             `json:"source"`
 	LearningValue pgtype.Int4        `json:"learning_value"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
 	Rank          float32            `json:"rank"`
 }
 
 func (q *Queries) SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error) {
-	rows, err := q.db.Query(ctx, searchKnowledgeFTS, arg.PlaintoTsquery, arg.Limit)
+	rows, err := q.db.Query(ctx, searchKnowledgeFTS, arg.Query, arg.WorkspaceID, arg.LimitN)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +188,7 @@ func (q *Queries) SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTS
 			&i.UpdatedAt,
 			&i.Source,
 			&i.LearningValue,
+			&i.WorkspaceID,
 			&i.Rank,
 		); err != nil {
 			return nil, err

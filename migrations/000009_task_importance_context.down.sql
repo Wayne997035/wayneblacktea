@@ -1,0 +1,3 @@
+ALTER TABLE tasks
+    DROP COLUMN IF EXISTS context,
+    DROP COLUMN IF EXISTS importance;

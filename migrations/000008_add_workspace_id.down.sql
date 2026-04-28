@@ -1,0 +1,21 @@
+DROP INDEX IF EXISTS idx_review_schedule_workspace_id;
+DROP INDEX IF EXISTS idx_concepts_workspace_id;
+DROP INDEX IF EXISTS idx_knowledge_items_workspace_id;
+DROP INDEX IF EXISTS idx_session_handoffs_workspace_id;
+DROP INDEX IF EXISTS idx_decisions_workspace_id;
+DROP INDEX IF EXISTS idx_repos_workspace_id;
+DROP INDEX IF EXISTS idx_activity_log_workspace_id;
+DROP INDEX IF EXISTS idx_tasks_workspace_id;
+DROP INDEX IF EXISTS idx_projects_workspace_id;
+DROP INDEX IF EXISTS idx_goals_workspace_id;
+
+ALTER TABLE review_schedule   DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE concepts          DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE knowledge_items   DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE session_handoffs  DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE decisions         DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE repos             DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE activity_log      DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE tasks             DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE projects          DROP COLUMN IF EXISTS workspace_id;
+ALTER TABLE goals             DROP COLUMN IF EXISTS workspace_id;
