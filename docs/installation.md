@@ -65,8 +65,8 @@ Setting `WORKSPACE_ID` to a UUID:
 - Reads filter every domain query with the workspace predicate.
 - Writes populate `workspace_id` on insert.
 - Existing rows with `NULL` workspace_id become invisible. To bring
-  them in, run `migrations/000011_backfill_workspace_id.up.sql`
-  (replace the placeholder UUID first).
+  them in, follow the four-step backfill runbook in
+  [`operations.md`](operations.md#backfill-workspace_id-one-time-per-environment).
 
 Leaving `WORKSPACE_ID` unset preserves single-tenant behaviour: no
 filter, NULL on insert.
