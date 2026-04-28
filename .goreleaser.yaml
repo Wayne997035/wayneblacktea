@@ -9,7 +9,7 @@ project_name: wayneblacktea
 before:
   hooks:
     # cmd/server uses //go:embed web/dist — build the SPA before compiling
-    - sh -c 'cd web && npm ci'
+    - sh -c 'cd web && npm ci --ignore-scripts'
     - sh -c 'cd web && npm run build'
     - sh -c 'mkdir -p cmd/server/web && rm -rf cmd/server/web/dist && cp -r web/dist cmd/server/web/dist'
     - go mod tidy
