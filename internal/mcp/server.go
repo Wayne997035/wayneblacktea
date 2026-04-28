@@ -153,6 +153,12 @@ Trigger condition:
     complete_task speculatively.
   - If multiple in_progress tasks could plausibly match, ASK the user which
     one before calling complete_task. Never guess.
+  - Bare 好 / OK / ok / yes (without 了 suffix) is ambiguous between plan
+    confirmation (line 71 confirm_plan) and task completion. Priority rule:
+    if a task is in_progress AND the assistant's last turn reported
+    completion (artifact / PR URL / "done" summary for that task), treat
+    the bare phrase as task acceptance under this section. Otherwise
+    default to plan confirmation under confirm_plan.
 
 Do NOT auto-fire if the build / tests have not yet passed for the work in
 question — wait for green and apply the existing "After task completion"
@@ -174,6 +180,16 @@ Trigger phrases (any of these):
     "晚一點繼續", "先這樣", "掰"
   - English: "tomorrow", "later", "next time", "signing off", "call it",
     "wrap up", "good night", "ttyl"
+
+Disambiguation with confirm_plan schedule-shift triggers (line 74-75):
+Several phrases overlap with confirm_plan's "Schedule shifts" category
+("明天", "tomorrow", "later", "next time", "改天", "下次"). Priority rule:
+  - If the phrase appears in the context of confirming a previously-proposed
+    plan (assistant just listed options or proposed scheduling in the last 3
+    turns), treat as confirm_plan trigger.
+  - Otherwise treat as session-end signal.
+  - When ambiguous, ASK the user before persisting handoff — do NOT silently
+    fire either tool.
 
 Call set_session_handoff with:
   - intent: a SPECIFIC continuation point — file paths to resume editing,
