@@ -6,14 +6,14 @@
 //   - GTD store: fully implemented. Create/list/update/delete goals,
 //     projects, tasks, and activity log all work, including the workspace
 //     scoping contract.
-//   - Other six stores (decision, session, workspace, knowledge, learning,
-//     proposal): not yet implemented. Constructing them returns a Store
-//     that satisfies the StoreIface but every method returns
-//     ErrNotImplemented. This documents the surface area and lets cmd/*
-//     wire the SQLite path end-to-end while we land the remaining stores
-//     in follow-up commits.
+//   - Session store: fully implemented. Set/Latest/Resolve session
+//     handoffs honour the same workspace scoping pattern.
+//   - Remaining five stores (decision, workspace, knowledge, learning,
+//     proposal): not yet implemented in this package; cmd/* still routes
+//     those domains through the Postgres backend until follow-up commits
+//     land the SQLite versions.
 //   - Knowledge vector search and FTS5 are deferred; SQLite v1 plans to
-//     fall back to LIKE for search when those stores arrive.
+//     fall back to LIKE for search when that store arrives.
 //
 // Driver: modernc.org/sqlite (pure Go, no CGo) so cross-compilation to
 // Linux/macOS/arm64 stays painless.
