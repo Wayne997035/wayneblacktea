@@ -1,0 +1,172 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// KnowledgeStore is the SQLite-backed implementation of knowledge.StoreIface.
+type KnowledgeStore struct {
+	db *DB
+}
+
+// NewKnowledgeStore wraps an open DB into a KnowledgeStore.
+func NewKnowledgeStore(d *DB) *KnowledgeStore {
+	return &KnowledgeStore{db: d}
+}
+
+var _ knowledge.StoreIface = (*KnowledgeStore)(nil)
+
+const knowledgeSelectCols = `id, type, title, content, url, tags,
+	created_at, updated_at, source, learning_value, workspace_id`
+
+func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
+	var (
+		item                         db.KnowledgeItem
+		idStr                        string
+		urlNS, tagsNS, createdNS     sql.NullString
+		updatedNS                    sql.NullString
+		workspaceNS                  sql.NullString
+		learningValueNullableInteger sql.NullInt32
+	)
+	err := scan(&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
+		&createdNS, &updatedNS, &item.Source, &learningValueNullableInteger, &workspaceNS)
+	if err != nil {
+		return db.KnowledgeItem{}, err
+	}
+	if id, err := uuid.Parse(idStr); err == nil {
+		item.ID = id
+	}
+	tags, err := decodeStringSlice(tagsNS)
+	if err != nil {
+		return db.KnowledgeItem{}, err
+	}
+	item.Url = pgtypeText(urlNS.String, urlNS.Valid)
+	item.Tags = tags
+	item.CreatedAt = parseTimestamptz(createdNS)
+	item.UpdatedAt = parseTimestamptz(updatedNS)
+	if learningValueNullableInteger.Valid {
+		item.LearningValue = pgtype.Int4{Int32: learningValueNullableInteger.Int32, Valid: true}
+	}
+	item.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+	return item, nil
+}
+
+// AddItem creates a knowledge item using LIKE/search-only SQLite v2 semantics.
+func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error) {
+	if err := s.urlDedupCheck(ctx, p.URL); err != nil {
+		return nil, err
+	}
+
+	tagsJSON, err := encodeStringSlice(p.Tags)
+	if err != nil {
+		return nil, err
+	}
+	source := p.Source
+	if source == "" {
+		source = "manual"
+	}
+	var learningValue any
+	if p.LearningValue > 0 {
+		learningValue = p.LearningValue
+	}
+
+	id := uuid.New()
+	now := sqliteNowMillis()
+	const q = `INSERT INTO knowledge_items
+		(id, workspace_id, type, title, content, url, tags, source, learning_value, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`
+	_, err = s.db.conn.ExecContext(ctx, q,
+		id.String(), s.db.workspaceArg(), p.Type, p.Title, p.Content,
+		nullStringIfEmpty(p.URL), tagsJSON, source, learningValue, now)
+	if err != nil {
+		return nil, errWrap("AddKnowledgeItem", err)
+	}
+	return s.GetByID(ctx, id)
+}
+
+func (s *KnowledgeStore) urlDedupCheck(ctx context.Context, url string) error {
+	if url == "" {
+		return nil
+	}
+	const q = `SELECT title FROM knowledge_items
+		WHERE url = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	var title string
+	err := s.db.conn.QueryRowContext(ctx, q, url, s.db.workspaceArg()).Scan(&title)
+	if err == nil {
+		return knowledge.ErrDuplicate{ExistingTitle: title, Similarity: 1.0}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	return errWrap("knowledge url dedup", err)
+}
+
+// Search performs a portable LIKE search over title and content.
+func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	pattern := "%" + query + "%"
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE (title LIKE ?1 COLLATE NOCASE OR content LIKE ?1 COLLATE NOCASE)
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY
+		  CASE WHEN title LIKE ?1 COLLATE NOCASE THEN 0 ELSE 1 END,
+		  created_at DESC, id DESC
+		LIMIT ?3`
+	return s.list(ctx, "SearchKnowledge", q, pattern, s.db.workspaceArg(), limit)
+}
+
+// List returns knowledge items ordered by creation date.
+func (s *KnowledgeStore) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?2 OFFSET ?3`
+	return s.list(ctx, "ListKnowledge", q, s.db.workspaceArg(), limit, offset)
+}
+
+// GetByID returns a single knowledge item by ID within the workspace scope.
+func (s *KnowledgeStore) GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	item, err := scanKnowledgeItem(s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg()).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, knowledge.ErrNotFound
+	}
+	if err != nil {
+		return nil, errWrap("GetKnowledgeByID", err)
+	}
+	return &item, nil
+}
+
+func (s *KnowledgeStore) list(ctx context.Context, op, q string, args ...any) ([]db.KnowledgeItem, error) {
+	rows, err := s.db.conn.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, errWrap(op, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, errWrap(op+" scan", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap(op+" iter", err)
+	}
+	if out == nil {
+		return []db.KnowledgeItem{}, nil
+	}
+	return out, nil
+}
