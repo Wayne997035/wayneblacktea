@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
-	"github.com/waynechen/wayneblacktea/internal/gtd"
-	"github.com/waynechen/wayneblacktea/internal/storage/sqlite"
 )
 
 // openMem opens an in-memory SQLite DB and applies the embedded schema.

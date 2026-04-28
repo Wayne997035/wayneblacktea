@@ -7,10 +7,10 @@ import (
 	"log"
 	"os"
 
+	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/server"
-	mcpsrv "github.com/waynechen/wayneblacktea/internal/mcp"
-	"github.com/waynechen/wayneblacktea/internal/storage"
 )
 
 func main() {

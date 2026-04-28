@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/session"
 )
 
 func (s *Server) registerSessionTools(ms *server.MCPServer) {

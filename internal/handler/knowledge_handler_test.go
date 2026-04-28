@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/handler"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/waynechen/wayneblacktea/internal/db"
-	"github.com/waynechen/wayneblacktea/internal/handler"
-	"github.com/waynechen/wayneblacktea/internal/knowledge"
 )
 
 // fakeKnowledgeStore implements the knowledgeStore interface for testing.

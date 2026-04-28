@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/waynechen/wayneblacktea/internal/db"
-	"github.com/waynechen/wayneblacktea/internal/gtd"
-	"github.com/waynechen/wayneblacktea/internal/proposal"
 )
 
 // goalPayload is the JSONB shape stored in pending_proposals when type=goal.
