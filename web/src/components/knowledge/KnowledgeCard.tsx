@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { KnowledgeItem } from '../../types/api'
+import { useCreateConceptFromKnowledge } from '../../hooks/useReviews'
 
 interface KnowledgeCardProps {
   item: KnowledgeItem;
@@ -37,6 +39,21 @@ function StarRating({ value }: { value: number }) {
 }
 
 export function KnowledgeCard({ item }: KnowledgeCardProps) {
+  const addToLearning = useCreateConceptFromKnowledge()
+  const [added, setAdded] = useState(false)
+
+  function handleAddToLearning() {
+    addToLearning.mutate(
+      { knowledge_id: item.id },
+      {
+        onSuccess: () => {
+          setAdded(true)
+          setTimeout(() => setAdded(false), 1000)
+        },
+      },
+    )
+  }
+
   return (
     <article
       aria-label={item.title}
@@ -119,6 +136,26 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
         <div className="flex items-center gap-3">
           {/* Learning value stars */}
           {item.learning_value !== null && <StarRating value={item.learning_value} />}
+
+          {/* Add to learning button */}
+          <button
+            type="button"
+            onClick={handleAddToLearning}
+            disabled={addToLearning.isPending || added}
+            aria-label={`加入學習：${item.title}`}
+            className="text-label rounded px-2 py-0.5 transition-opacity"
+            style={{
+              minHeight: '28px',
+              background: added ? 'rgba(34,197,94,0.1)' : 'var(--color-bg-hover)',
+              color: added ? '#22c55e' : 'var(--color-accent-blue)',
+              border: `1px solid ${added ? '#22c55e' : 'var(--color-accent-blue)'}`,
+              cursor: addToLearning.isPending || added ? 'not-allowed' : 'pointer',
+              opacity: addToLearning.isPending ? 0.5 : 1,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {added ? '已加入' : addToLearning.isPending ? '加入中…' : '加入學習'}
+          </button>
 
           {/* URL link */}
           {item.url !== null && (
