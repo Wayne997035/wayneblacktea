@@ -219,3 +219,56 @@ func TestGTDStore_ActiveGoals(t *testing.T) {
 		t.Errorf("unexpected goals: %+v", goals)
 	}
 }
+
+// TestGTDStore_GetProjectByID_WorkspaceIsolation verifies that GetProjectByID
+// cannot cross workspace boundaries — workspace B must not read workspace A's data.
+func TestGTDStore_GetProjectByID_WorkspaceIsolation(t *testing.T) {
+	tmp := t.TempDir() + "/iso.db"
+	ctx := context.Background()
+	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	if err != nil {
+		t.Fatalf("Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	storeA := sqlite.NewGTDStore(dbA)
+
+	proj, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "secret", Title: "workspace A secret", Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	storeB := sqlite.NewGTDStore(dbB)
+
+	_, err = storeB.GetProjectByID(ctx, proj.ID)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("cross-workspace read must return ErrNotFound, got: %v", err)
+	}
+
+	// Sanity: workspace A can still read its own project.
+	got, err := storeA.GetProjectByID(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("storeA.GetProjectByID: %v", err)
+	}
+	if got.ID != proj.ID {
+		t.Errorf("storeA got wrong project: %+v", got)
+	}
+}
+
+// TestGTDStore_GetProjectByID_NotFound ensures ErrNotFound for unknown UUIDs.
+func TestGTDStore_GetProjectByID_NotFound(t *testing.T) {
+	s := openMem(t, "11111111-1111-4111-8111-111111111111")
+	_, err := s.GetProjectByID(context.Background(), uuid.New())
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}

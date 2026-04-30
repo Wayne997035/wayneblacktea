@@ -66,6 +66,21 @@ func (s *Store) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
 	return rows, nil
 }
 
+// GetProjectByID returns a single project by UUID, regardless of status.
+func (s *Store) GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error) {
+	row, err := s.q.GetProjectByID(ctx, db.GetProjectByIDParams{
+		ID:          id,
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("querying project %s: %w", id, err)
+	}
+	return &row, nil
+}
+
 // ProjectByName returns a single project by unique name.
 func (s *Store) ProjectByName(ctx context.Context, name string) (*db.Project, error) {
 	row, err := s.q.GetProjectByName(ctx, db.GetProjectByNameParams{

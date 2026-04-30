@@ -47,6 +47,18 @@ func (f *fakeGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, erro
 	return f.projects, f.err
 }
 
+func (f *fakeGTDStore) GetProjectByID(_ context.Context, id uuid.UUID) (*db.Project, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	for i := range f.projects {
+		if f.projects[i].ID == id {
+			return &f.projects[i], nil
+		}
+	}
+	return nil, gtd.ErrNotFound
+}
+
 func (f *fakeGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*db.Goal, error) {
 	return f.createdGoal, f.err
 }

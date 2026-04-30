@@ -18,6 +18,7 @@ import (
 // unit-of-work design is settled (Phase C+).
 type StoreIface interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
+	GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error)
 	ProjectByName(ctx context.Context, name string) (*db.Project, error)
 	CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
