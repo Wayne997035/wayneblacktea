@@ -2,6 +2,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import type { DueReview, SubmitReviewRequest, CreateConceptRequest, LearningSuggestions } from '../types/api'
 
+export function useNewConcepts() {
+  return useQuery<DueReview[]>({
+    queryKey: ['reviews', 'new'],
+    queryFn: async () => {
+      const all = await apiFetch<DueReview[]>('/api/learning/reviews?limit=100')
+      return all.filter((r) => r.review_count === 0)
+    },
+  })
+}
+
 export function useReviews() {
   return useQuery<DueReview[]>({
     queryKey: ['reviews'],

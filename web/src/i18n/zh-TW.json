@@ -41,7 +41,8 @@
     "noProjects": "沒有專案",
     "noTasks": "沒有任務",
     "addTask": "新增任務",
-    "addGoal": "新增目標"
+    "addGoal": "新增目標",
+    "addProject": "新增專案"
   },
   "workspace": {
     "title": "工作區",
@@ -53,13 +54,18 @@
   "decisions": {
     "title": "決策紀錄",
     "allProjects": "所有專案",
+    "allRepos": "所有 Repo",
     "searchPlaceholder": "搜尋決策...",
     "noDecisions": "沒有決策紀錄",
     "showFull": "▸ 展開",
     "collapse": "▾ 收起",
     "context": "背景",
     "decision": "決策",
-    "alternatives": "替代方案"
+    "alternatives": "替代方案",
+    "from": "從",
+    "to": "至",
+    "dateFrom": "起始日期",
+    "dateTo": "結束日期"
   },
   "common": {
     "loading": "載入中...",
@@ -78,6 +84,8 @@
     "searchPlaceholder": "搜尋知識庫...",
     "noItems": "尚無知識條目",
     "addEntry": "新增條目",
+    "pendingConcepts": "待確認概念提案",
+    "newConcept": "新增",
     "form": {
       "type": "類型",
       "title": "標題",
