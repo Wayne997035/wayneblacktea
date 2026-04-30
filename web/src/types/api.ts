@@ -144,3 +144,17 @@ export interface CreateKnowledgeRequest {
   source?: string;
   learning_value?: number | null;
 }
+
+export interface LearningSuggestion {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  learning_value?: number;
+  context?: string;
+}
+
+export interface LearningSuggestions {
+  knowledge_items: LearningSuggestion[];
+  decisions: LearningSuggestion[];
+}

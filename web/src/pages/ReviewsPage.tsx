@@ -1,10 +1,11 @@
 import { useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { GraduationCap, Plus, X } from 'lucide-react'
-import { useReviews, useCreateConcept } from '../hooks/useReviews'
+import { GraduationCap, Plus, X, Sparkles } from 'lucide-react'
+import { useReviews, useCreateConcept, useLearningSuggestions, useCreateConceptFromKnowledge } from '../hooks/useReviews'
 import { ReviewCard } from '../components/reviews/ReviewCard'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
+import type { LearningSuggestion } from '../types/api'
 
 interface AddConceptForm {
   title: string
@@ -13,6 +14,156 @@ interface AddConceptForm {
 }
 
 const EMPTY_FORM: AddConceptForm = { title: '', content: '', tags: '' }
+const MAX_SUGGESTIONS_SHOWN = 5
+
+interface SuggestionItemProps {
+  suggestion: LearningSuggestion
+  kind: 'knowledge' | 'decision'
+  onAdd: () => void
+  isPending: boolean
+}
+
+function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemProps) {
+  const [added, setAdded] = useState(false)
+
+  function handleAdd() {
+    onAdd()
+    setAdded(true)
+    setTimeout(() => setAdded(false), 1000)
+  }
+
+  return (
+    <div
+      className="flex items-center gap-3 rounded-md px-3 py-2"
+      style={{
+        background: 'var(--color-bg-hover)',
+        border: '1px solid var(--color-border)',
+      }}
+    >
+      <span
+        className="text-label rounded px-1.5 py-0.5 shrink-0"
+        style={{
+          background: kind === 'knowledge' ? 'rgba(79,195,247,0.1)' : 'rgba(167,139,250,0.1)',
+          color: kind === 'knowledge' ? 'var(--color-accent-blue)' : '#a78bfa',
+          border: `1px solid ${kind === 'knowledge' ? 'var(--color-accent-blue)' : '#a78bfa'}`,
+          fontSize: '0.7rem',
+        }}
+      >
+        {kind === 'knowledge' ? 'Knowledge' : 'Decision'}
+      </span>
+      <span
+        className="text-body-sm flex-1 min-w-0 truncate"
+        style={{ color: 'var(--color-text-primary)' }}
+        title={suggestion.title}
+      >
+        {suggestion.title}
+      </span>
+      <button
+        type="button"
+        onClick={handleAdd}
+        disabled={isPending || added}
+        aria-label={`加入學習：${suggestion.title}`}
+        className="text-label rounded px-2 py-0.5 shrink-0 transition-opacity"
+        style={{
+          minHeight: '28px',
+          background: added ? 'rgba(34,197,94,0.1)' : 'transparent',
+          color: added ? '#22c55e' : 'var(--color-accent-blue)',
+          border: `1px solid ${added ? '#22c55e' : 'var(--color-accent-blue)'}`,
+          cursor: isPending || added ? 'not-allowed' : 'pointer',
+          opacity: isPending ? 0.5 : 1,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {added ? '已加入' : isPending ? '加入中…' : '加入學習'}
+      </button>
+    </div>
+  )
+}
+
+function SuggestionsPanel() {
+  const { data: suggestions, isLoading, isError } = useLearningSuggestions()
+  const addFromKnowledge = useCreateConceptFromKnowledge()
+  const createConcept = useCreateConcept()
+  const [expanded, setExpanded] = useState(false)
+
+  if (isError || isLoading) return null
+
+  const allItems = [
+    ...(suggestions?.knowledge_items ?? []).map((s) => ({ ...s, kind: 'knowledge' as const })),
+    ...(suggestions?.decisions ?? []).map((s) => ({ ...s, kind: 'decision' as const })),
+  ]
+
+  if (allItems.length === 0) return null
+
+  const visibleItems = expanded ? allItems : allItems.slice(0, MAX_SUGGESTIONS_SHOWN)
+  const hasMore = allItems.length > MAX_SUGGESTIONS_SHOWN
+
+  return (
+    <div
+      className="rounded-lg p-4 mb-4"
+      style={{
+        background: 'var(--color-bg-card)',
+        border: '1px solid var(--color-border)',
+      }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Sparkles size={15} aria-hidden="true" style={{ color: 'var(--color-accent-blue)' }} />
+        <h2 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
+          AI 推薦
+        </h2>
+        <span
+          className="text-label rounded-full px-2 py-0.5 ml-auto"
+          style={{
+            background: 'var(--color-bg-hover)',
+            color: 'var(--color-text-muted)',
+            border: '1px solid var(--color-border)',
+          }}
+        >
+          {allItems.length} 項
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {visibleItems.map((item) => (
+          <SuggestionItem
+            key={`${item.kind}-${item.id}`}
+            suggestion={item}
+            kind={item.kind}
+            isPending={addFromKnowledge.isPending || createConcept.isPending}
+            onAdd={() => {
+              if (item.kind === 'knowledge') {
+                addFromKnowledge.mutate({ knowledge_id: item.id })
+              } else {
+                createConcept.mutate({
+                  title: item.title,
+                  content: item.context ?? item.content,
+                  tags: [],
+                })
+              }
+            }}
+          />
+        ))}
+      </div>
+
+      {hasMore && (
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          className="text-body-sm mt-3 w-full text-center transition-colors"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--color-accent-blue)',
+            cursor: 'pointer',
+            padding: '4px 0',
+          }}
+        >
+          {expanded ? '收起' : `顯示全部 ${allItems.length} 項`}
+        </button>
+      )}
+    </div>
+  )
+}
 
 export function ReviewsPage() {
   const { t } = useTranslation()
@@ -255,6 +406,9 @@ export function ReviewsPage() {
           </form>
         </div>
       )}
+
+      {/* AI Suggestions panel */}
+      <SuggestionsPanel />
 
       {/* Error state */}
       {isError && (
