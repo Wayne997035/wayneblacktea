@@ -206,13 +206,23 @@ func (s *Server) handleConfirmProposal(ctx context.Context, req mcp.CallToolRequ
 }
 
 func (s *Server) acceptProposal(ctx context.Context, id uuid.UUID) (*mcp.CallToolResult, error) {
+	if s.pool != nil {
+		return s.acceptProposalPg(ctx, id)
+	}
+	return s.acceptProposalSequential(ctx, id)
+}
+
+// acceptProposalPg runs the materialise + resolve sequence inside a single
+// pgx.Tx so partial failures don't leave a half-materialised proposal in the
+// accepted state. Postgres-only path.
+func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallToolResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("beginning tx: %v", err)), nil
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // safe: no-op if already committed
 
-	prop, err := s.proposal.WithTx(tx).Get(ctx, id)
+	prop, err := s.pgProposal.WithTx(tx).Get(ctx, id)
 	if errors.Is(err, proposal.ErrNotFound) {
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
@@ -223,13 +233,13 @@ func (s *Server) acceptProposal(ctx context.Context, id uuid.UUID) (*mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
 	}
 
-	created, errMsg := s.materializeFromPayload(ctx, tx, prop)
+	created, errMsg := s.materializeFromPayloadPg(ctx, tx, prop)
 	if errMsg != "" {
 		_ = tx.Rollback(ctx)
 		return mcp.NewToolResultError(errMsg), nil
 	}
 
-	resolved, err := s.proposal.WithTx(tx).Resolve(ctx, id, proposal.StatusAccepted)
+	resolved, err := s.pgProposal.WithTx(tx).Resolve(ctx, id, proposal.StatusAccepted)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal: %v", err)), nil
 	}
@@ -239,63 +249,69 @@ func (s *Server) acceptProposal(ctx context.Context, id uuid.UUID) (*mcp.CallToo
 	return jsonText(confirmResult{Proposal: resolved, Created: created})
 }
 
-// materializeFromPayload decodes the proposal's payload and creates the
-// concrete entity inside the given transaction. Returns the created entity
-// or an error message string (empty = success).
-func (s *Server) materializeFromPayload(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
+// acceptProposalSequential is the SQLite-backed best-effort path. modernc.org/
+// sqlite supports transactions but the StoreIface does not expose a WithTx
+// hook for either backend, so this path materialises the entity first and
+// then resolves the proposal as two separate writes. If the second write
+// fails the entity is created but the proposal stays pending — callers
+// re-invoke confirm_proposal which will reject due to the duplicate. The
+// audit-trail compromise is acceptable for the friend-grade self-host path
+// and is documented in ServerStores doc.
+func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*mcp.CallToolResult, error) {
+	prop, err := s.proposal.Get(ctx, id)
+	if errors.Is(err, proposal.ErrNotFound) {
+		return mcp.NewToolResultError("proposal not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+	}
+	if prop.Status != string(proposal.StatusPending) {
+		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
+	}
+
+	created, errMsg := s.materializeFromPayloadIface(ctx, prop)
+	if errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
+	}
+
+	resolved, err := s.proposal.Resolve(ctx, id, proposal.StatusAccepted)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal (entity already created): %v", err)), nil
+	}
+	return jsonText(confirmResult{Proposal: resolved, Created: created})
+}
+
+// materializeFromPayloadPg decodes the proposal's payload and creates the
+// concrete entity inside the given pgx transaction. Returns the created
+// entity or an error message string (empty = success). Postgres-only.
+func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeGoal:
-		var p goalPayload
-		if err := json.Unmarshal(prop.Payload, &p); err != nil {
-			return nil, fmt.Sprintf("decoding goal payload: %v", err)
+		gp, errMsg := decodeGoalParams(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
 		}
-		gp := gtd.CreateGoalParams{
-			Title:       p.Title,
-			Area:        p.Area,
-			Description: p.Description,
-		}
-		if p.DueDate != "" {
-			t, err := time.Parse(time.RFC3339, p.DueDate)
-			if err != nil {
-				return nil, fmt.Sprintf("invalid due_date in payload: %v", err)
-			}
-			gp.DueDate = &t
-		}
-		goal, err := s.gtd.WithTx(tx).CreateGoal(ctx, gp)
+		goal, err := s.pgGTD.WithTx(tx).CreateGoal(ctx, gp)
 		if err != nil {
 			return nil, fmt.Sprintf("creating goal: %v", err)
 		}
 		return goal, ""
 	case proposal.TypeProject:
-		var p projectPayload
-		if err := json.Unmarshal(prop.Payload, &p); err != nil {
-			return nil, fmt.Sprintf("decoding project payload: %v", err)
+		pp, errMsg := decodeProjectParams(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
 		}
-		pp := gtd.CreateProjectParams{
-			Name:        p.Name,
-			Title:       p.Title,
-			Area:        p.Area,
-			Description: p.Description,
-			Priority:    p.Priority,
-		}
-		if p.GoalID != "" {
-			gid, err := uuid.Parse(p.GoalID)
-			if err != nil {
-				return nil, fmt.Sprintf("invalid goal_id in payload: %v", err)
-			}
-			pp.GoalID = &gid
-		}
-		project, err := s.gtd.WithTx(tx).CreateProject(ctx, pp)
+		project, err := s.pgGTD.WithTx(tx).CreateProject(ctx, pp)
 		if err != nil {
 			return nil, fmt.Sprintf("creating project: %v", err)
 		}
 		return project, ""
 	case proposal.TypeConcept:
-		var p conceptPayload
-		if err := json.Unmarshal(prop.Payload, &p); err != nil {
-			return nil, fmt.Sprintf("decoding concept payload: %v", err)
+		cp, errMsg := decodeConceptPayload(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
 		}
-		concept, err := s.learning.WithTx(tx).CreateConcept(ctx, p.Title, p.Content, p.Tags)
+		concept, err := s.pgLearning.WithTx(tx).CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
 		if err != nil {
 			return nil, fmt.Sprintf("creating concept: %v", err)
 		}
@@ -305,4 +321,98 @@ func (s *Server) materializeFromPayload(ctx context.Context, tx pgx.Tx, prop *db
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
+}
+
+// materializeFromPayloadIface is the SQLite-backed counterpart that calls
+// through the backend-agnostic StoreIface methods. No tx — see
+// acceptProposalSequential doc for the ordering / failure tradeoff.
+func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
+	switch proposal.Type(prop.Type) {
+	case proposal.TypeGoal:
+		gp, errMsg := decodeGoalParams(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		goal, err := s.gtd.CreateGoal(ctx, gp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating goal: %v", err)
+		}
+		return goal, ""
+	case proposal.TypeProject:
+		pp, errMsg := decodeProjectParams(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		project, err := s.gtd.CreateProject(ctx, pp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating project: %v", err)
+		}
+		return project, ""
+	case proposal.TypeConcept:
+		cp, errMsg := decodeConceptPayload(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		concept, err := s.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
+		if err != nil {
+			return nil, fmt.Sprintf("creating concept: %v", err)
+		}
+		return concept, ""
+	case proposal.TypeTask:
+		return nil, "task proposals are not materialized via confirm_proposal in Phase B1; use add_task directly"
+	default:
+		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
+	}
+}
+
+// decodeGoalParams centralises the goal-payload JSON decode + RFC3339 parse
+// so the pg-tx and iface paths don't drift.
+func decodeGoalParams(payload []byte) (gtd.CreateGoalParams, string) {
+	var p goalPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return gtd.CreateGoalParams{}, fmt.Sprintf("decoding goal payload: %v", err)
+	}
+	gp := gtd.CreateGoalParams{
+		Title:       p.Title,
+		Area:        p.Area,
+		Description: p.Description,
+	}
+	if p.DueDate != "" {
+		t, err := time.Parse(time.RFC3339, p.DueDate)
+		if err != nil {
+			return gtd.CreateGoalParams{}, fmt.Sprintf("invalid due_date in payload: %v", err)
+		}
+		gp.DueDate = &t
+	}
+	return gp, ""
+}
+
+func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
+	var p projectPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return gtd.CreateProjectParams{}, fmt.Sprintf("decoding project payload: %v", err)
+	}
+	pp := gtd.CreateProjectParams{
+		Name:        p.Name,
+		Title:       p.Title,
+		Area:        p.Area,
+		Description: p.Description,
+		Priority:    p.Priority,
+	}
+	if p.GoalID != "" {
+		gid, err := uuid.Parse(p.GoalID)
+		if err != nil {
+			return gtd.CreateProjectParams{}, fmt.Sprintf("invalid goal_id in payload: %v", err)
+		}
+		pp.GoalID = &gid
+	}
+	return pp, ""
+}
+
+func decodeConceptPayload(payload []byte) (conceptPayload, string) {
+	var p conceptPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return conceptPayload{}, fmt.Sprintf("decoding concept payload: %v", err)
+	}
+	return p, ""
 }

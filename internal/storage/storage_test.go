@@ -49,8 +49,8 @@ func TestEnsureSupported(t *testing.T) {
 	if err := storage.EnsureSupported(storage.BackendPostgres); err != nil {
 		t.Errorf("postgres should be supported, got %v", err)
 	}
-	if err := storage.EnsureSupported(storage.BackendSQLite); !errors.Is(err, storage.ErrSQLiteNotImplemented) {
-		t.Errorf("sqlite should report not-implemented, got %v", err)
+	if err := storage.EnsureSupported(storage.BackendSQLite); err != nil {
+		t.Errorf("sqlite should be supported (SQLite v2 cmd dispatch), got %v", err)
 	}
 	if err := storage.EnsureSupported("mysql"); !errors.Is(err, storage.ErrInvalidBackend) {
 		t.Errorf("invalid backend should report ErrInvalidBackend, got %v", err)

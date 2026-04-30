@@ -22,6 +22,13 @@ func NewGTDStore(d *DB) *GTDStore {
 	return &GTDStore{db: d}
 }
 
+// WorkspaceID returns the configured workspace UUID for parity with
+// gtd.Store.WorkspaceID(). Used by MCP system_health to surface the active
+// scope. Empty configured workspace → zero pgtype.UUID (Valid=false).
+func (s *GTDStore) WorkspaceID() pgtype.UUID {
+	return pgtypeUUID(s.db.workspaceID)
+}
+
 // Compile-time guarantee against drift from gtd.StoreIface.
 var _ gtd.StoreIface = (*GTDStore)(nil)
 
