@@ -100,10 +100,7 @@ type notionCreatePageResponse struct {
 // CreatePage creates a new page in the configured Notion database.
 // Returns the URL of the created page.
 func (c *Client) CreatePage(ctx context.Context, title, content, itemType string) (string, error) {
-	// Truncate content to 2000 chars — Notion rich_text limit is 2000.
-	if len(content) > 2000 {
-		content = content[:2000]
-	}
+	content = truncateForNotion(content)
 
 	payload := notionCreatePageRequest{
 		Parent: notionParent{DatabaseID: c.dbID},
