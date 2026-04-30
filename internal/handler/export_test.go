@@ -11,3 +11,9 @@ func BuildAuthTokenForTest(apiKey, ts string) string {
 func ValidateAuthTokenForTest(apiKey, token string) bool {
 	return validateAuthToken(apiKey, token)
 }
+
+// NewAutologHandlerForTest creates an AutologHandler with a test-injectable summarizer stub.
+// The stub must satisfy the same transcriptSummarizer interface used internally.
+func NewAutologHandlerForTest(g autologGTDStore, s autologSessionStore, d autologDecisionStore, sum transcriptSummarizer) *AutologHandler {
+	return &AutologHandler{gtd: g, sess: s, decision: d, summarizer: sum}
+}
