@@ -136,6 +136,8 @@ type updateProjectStatusRequest struct {
 }
 
 // UpdateProjectStatus updates a project's status.
+//
+//nolint:dupl // intentionally parallel handlers for project and task — same pattern, different entity
 func (h *GTDHandler) UpdateProjectStatus(c echo.Context) error {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -213,6 +215,8 @@ type updateTaskStatusRequest struct {
 }
 
 // UpdateTaskStatus sets the status of a task.
+//
+//nolint:dupl // intentionally parallel handlers for project and task — same pattern, different entity
 func (h *GTDHandler) UpdateTaskStatus(c echo.Context) error {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

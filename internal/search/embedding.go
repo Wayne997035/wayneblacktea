@@ -70,7 +70,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 
 	// G107: URL is constructed from a trusted constant + API key. Gemini API spec
 	// requires the key as a query parameter — using a header is not supported.
-	apiURL := geminiEmbedURL + "?key=" + c.apiKey //nolint:gosec // Gemini requires key in URL
+	apiURL := geminiEmbedURL + "?key=" + c.apiKey
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("creating embed request: %w", err)

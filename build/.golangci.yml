@@ -9,22 +9,37 @@ formatters:
   enable:
     - gofmt
     - goimports
+    - gofumpt # stricter gofmt: no extra blank lines, canonical import grouping
 
 linters:
   enable:
+    # Static analysis
     - govet
     - staticcheck
-    - errcheck
     - ineffassign
     - unused
-    - misspell
-    - gocritic
-    - gosec
-    - bodyclose
-    - nilnil
+    # Errors
+    - errcheck
     - wrapcheck
-    - lll
+    # Quality
+    - misspell
     - gocyclo
+    - dupl       # detects copy-paste code duplication
+    - goconst    # repeated string constants should be named
+    - bodyclose
+    # Style
+    - gocritic
+    - lll
+    - noctx      # no context.Background/TODO in http handler path
+    - nilnil
+    # Security
+    - gosec
+    # Completeness
+    - exhaustive # switch on enum must cover all cases (or have default)
+    # Audit integrity
+    - nolintlint # every //nolint must name the linter + have a reason
+    # Context propagation
+    - contextcheck # context must flow through call chain, not Background mid-stack
 
   settings:
     wrapcheck:
@@ -36,6 +51,16 @@ linters:
       line-length: 140
     gocyclo:
       min-complexity: 15
+    dupl:
+      threshold: 150
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    exhaustive:
+      default-signifies-exhaustive: true
+    nolintlint:
+      require-explanation: true  # //nolint:lintername // reason: ... is required
+      require-specific: true     # //nolint (no linter name) is rejected
     gosec:
       excludes:
         - G703 # seed CLI uses user-controlled PROJECT_ROOT intentionally
@@ -53,6 +78,8 @@ linters:
       - path: "_test.go"
         linters:
           - wrapcheck
+          - dupl       # test helpers are intentionally repetitive
+          - contextcheck # test setup often uses context.Background() legitimately
 
 issues:
   max-issues-per-linter: 0
