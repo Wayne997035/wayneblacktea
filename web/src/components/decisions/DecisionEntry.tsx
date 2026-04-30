@@ -7,10 +7,13 @@ interface DecisionEntryProps {
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString(undefined, {
+  return new Date(dateStr).toLocaleString(undefined, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
   })
 }
 
@@ -35,12 +38,30 @@ export function DecisionEntry({ decision }: DecisionEntryProps) {
       />
 
       <div className="flex items-start justify-between gap-4 mb-1">
-        <h3 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
-          {decision.title}
-        </h3>
-        <span className="text-caption shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
+            {decision.title}
+          </h3>
+          {decision.repo_name && (
+            <span
+              className="text-label rounded px-1.5 py-0.5 mt-0.5 inline-block"
+              style={{
+                background: 'var(--color-bg-hover)',
+                color: 'var(--color-accent-blue)',
+                border: '1px solid var(--color-border)',
+              }}
+            >
+              {decision.repo_name}
+            </span>
+          )}
+        </div>
+        <time
+          dateTime={decision.created_at}
+          className="text-caption shrink-0"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
           {formatDate(decision.created_at)}
-        </span>
+        </time>
       </div>
 
       <p

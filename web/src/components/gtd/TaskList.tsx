@@ -3,30 +3,73 @@ import { useTranslation } from 'react-i18next'
 import { TaskRow } from './TaskRow'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
-import { useTasksByProject } from '../../hooks/useTasks'
+import { useTasksByProject, useTasksForAllProjects } from '../../hooks/useTasks'
 import type { Project } from '../../types/api'
 
 interface TaskListProps {
   projects: Project[];
 }
 
+interface SingleProjectTasksProps {
+  projectId: string;
+}
+
+function SingleProjectTasks({ projectId }: SingleProjectTasksProps) {
+  const { data: tasks = [], isLoading } = useTasksByProject(projectId)
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 5 }, (_, i) => (
+          <LoadingSkeleton key={i} className="h-11 w-full" />
+        ))}
+      </div>
+    )
+  }
+  if (tasks.length === 0) {
+    return <EmptyState messageKey="gtd.noTasks" />
+  }
+  return (
+    <ul aria-label="Task list" className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
+      {tasks.map((task) => (
+        <TaskRow key={task.id} task={task} />
+      ))}
+    </ul>
+  )
+}
+
+interface AllProjectsTasksProps {
+  projects: Project[];
+}
+
+function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
+  const activeProjects = projects.filter((p) => p.status === 'active')
+  const { isLoading, tasks } = useTasksForAllProjects(activeProjects)
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 5 }, (_, i) => (
+          <LoadingSkeleton key={i} className="h-11 w-full" />
+        ))}
+      </div>
+    )
+  }
+  if (tasks.length === 0) {
+    return <EmptyState messageKey="gtd.noTasks" />
+  }
+  return (
+    <ul aria-label="Task list" className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
+      {tasks.map((task) => (
+        <TaskRow key={task.id} task={task} />
+      ))}
+    </ul>
+  )
+}
+
 export function TaskList({ projects }: TaskListProps) {
   const { t } = useTranslation()
   const [selectedProjectId, setSelectedProjectId] = useState<string>('all')
-
-  const activeProjects = projects.filter((p) => p.status === 'active')
-  // Load tasks for selected project or all active projects
-  const projectToLoad = selectedProjectId !== 'all'
-    ? projects.find((p) => p.id === selectedProjectId)
-    : null
-
-  const singleQuery = useTasksByProject(projectToLoad?.id ?? '')
-  const allQuery = useTasksByProject(activeProjects[0]?.id ?? '')
-
-  // For simplicity: when "all" selected, load tasks for first active project
-  // A full implementation would use parallel queries
-  const isLoading = selectedProjectId !== 'all' ? singleQuery.isLoading : allQuery.isLoading
-  const tasks = selectedProjectId !== 'all' ? (singleQuery.data ?? []) : (allQuery.data ?? [])
 
   return (
     <div>
@@ -49,20 +92,10 @@ export function TaskList({ projects }: TaskListProps) {
         </select>
       </div>
 
-      {isLoading ? (
-        <div className="space-y-2">
-          {Array.from({ length: 5 }, (_, i) => (
-            <LoadingSkeleton key={i} className="h-11 w-full" />
-          ))}
-        </div>
-      ) : tasks.length === 0 ? (
-        <EmptyState messageKey="gtd.noTasks" />
+      {selectedProjectId === 'all' ? (
+        <AllProjectsTasks projects={projects} />
       ) : (
-        <ul aria-label="Task list" className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
-          {tasks.map((task) => (
-            <TaskRow key={task.id} task={task} />
-          ))}
-        </ul>
+        <SingleProjectTasks projectId={selectedProjectId} />
       )}
     </div>
   )

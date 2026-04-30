@@ -1,6 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
-import type { Task, CreateTaskRequest } from '../types/api'
+import type { Task, CreateTaskRequest, Project } from '../types/api'
 
 export function useTasksByProject(projectId: string) {
   return useQuery<Task[]>({
@@ -8,6 +8,20 @@ export function useTasksByProject(projectId: string) {
     queryFn: () => apiFetch<Task[]>(`/api/projects/${projectId}/tasks`),
     enabled: Boolean(projectId),
   })
+}
+
+export function useTasksForAllProjects(projects: Project[]) {
+  const queries = useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ['projects', p.id, 'tasks'] as const,
+      queryFn: () => apiFetch<Task[]>(`/api/projects/${p.id}/tasks`),
+      enabled: Boolean(p.id),
+    })),
+  })
+
+  const isLoading = queries.some((q) => q.isLoading)
+  const tasks = queries.flatMap((q) => q.data ?? [])
+  return { isLoading, tasks }
 }
 
 export function useCreateTask() {

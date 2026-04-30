@@ -41,7 +41,8 @@
     "noProjects": "No projects",
     "noTasks": "No tasks",
     "addTask": "Add Task",
-    "addGoal": "Add Goal"
+    "addGoal": "Add Goal",
+    "addProject": "Add Project"
   },
   "workspace": {
     "title": "Workspace",
@@ -53,13 +54,18 @@
   "decisions": {
     "title": "Decisions",
     "allProjects": "All Projects",
+    "allRepos": "All Repos",
     "searchPlaceholder": "Search decisions...",
     "noDecisions": "No decisions recorded",
     "showFull": "▸ Show full",
     "collapse": "▾ Collapse",
     "context": "Context",
     "decision": "Decision",
-    "alternatives": "Alternatives"
+    "alternatives": "Alternatives",
+    "from": "From",
+    "to": "To",
+    "dateFrom": "Date from",
+    "dateTo": "Date to"
   },
   "common": {
     "loading": "Loading...",
@@ -78,6 +84,8 @@
     "searchPlaceholder": "Search knowledge...",
     "noItems": "No knowledge entries yet",
     "addEntry": "Add Entry",
+    "pendingConcepts": "Pending Concept Proposals",
+    "newConcept": "New",
     "form": {
       "type": "Type",
       "title": "Title",
