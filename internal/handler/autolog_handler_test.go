@@ -31,12 +31,23 @@ func (f *fakeAutologGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task,
 }
 
 type fakeAutologSessionStore struct {
-	result *db.SessionHandoff
-	err    error
+	result     *db.SessionHandoff
+	err        error
+	latest     *db.SessionHandoff
+	latestErr  error
+	resolveErr error
+}
+
+func (f *fakeAutologSessionStore) LatestHandoff(_ context.Context) (*db.SessionHandoff, error) {
+	return f.latest, f.latestErr
 }
 
 func (f *fakeAutologSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams) (*db.SessionHandoff, error) {
 	return f.result, f.err
+}
+
+func (f *fakeAutologSessionStore) Resolve(_ context.Context, _ uuid.UUID) error {
+	return f.resolveErr
 }
 
 type fakeAutologDecisionStore struct {

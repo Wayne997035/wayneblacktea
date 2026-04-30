@@ -74,7 +74,9 @@ type autologGTDStore interface {
 
 // autologSessionStore covers the subset of session.Store used by AutologHandler.
 type autologSessionStore interface {
+	LatestHandoff(ctx context.Context) (*db.SessionHandoff, error)
 	SetHandoff(ctx context.Context, p session.HandoffParams) (*db.SessionHandoff, error)
+	Resolve(ctx context.Context, id uuid.UUID) error
 }
 
 // autologDecisionStore covers the subset of decision.Store used by AutologHandler.

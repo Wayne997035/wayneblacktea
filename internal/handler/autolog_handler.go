@@ -12,6 +12,8 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+const autoHandoffPrefix = "Auto-handoff:"
+
 const autologBodyLimit = 64 * 1024 // 64 KB
 
 // AutologHandler handles the /api/activity and /api/auto-handoff endpoints.
@@ -85,12 +87,20 @@ func (h *AutologHandler) AutoHandoff(c echo.Context) error {
 	}
 
 	// 3. Build intent and summary strings mechanically.
-	intent := fmt.Sprintf("Auto-handoff: in_progress=[%s] recent_decisions=[%s]",
+	intent := fmt.Sprintf("%s in_progress=[%s] recent_decisions=[%s]",
+		autoHandoffPrefix,
 		strings.Join(inProgress, ", "),
 		strings.Join(decTitles, ", "),
 	)
 
-	// 4. Create session handoff.
+	// 4. Resolve any existing auto-generated unresolved handoff so there is at
+	// most one at a time (Stop hook can fire multiple times per session).
+	if existing, latestErr := h.sess.LatestHandoff(ctx); latestErr == nil &&
+		existing != nil && strings.HasPrefix(existing.Intent, autoHandoffPrefix) {
+		_ = h.sess.Resolve(ctx, existing.ID)
+	}
+
+	// 5. Create session handoff.
 	handoff, err := h.sess.SetHandoff(ctx, session.HandoffParams{
 		Intent:         intent,
 		ContextSummary: intent,

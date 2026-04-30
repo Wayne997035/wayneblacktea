@@ -49,18 +49,15 @@ except Exception:
     local NOTES_JSON
     NOTES_JSON=$(printf '%s' "$NOTES" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null) || return 0
 
-    # --- Load API_KEY from .env.local (preferred) then .env ---
-    if [[ -f "$PROJECT_ROOT/.env.local" ]]; then
-        set -a
-        # shellcheck source=/dev/null
-        source "$PROJECT_ROOT/.env.local" 2>/dev/null || true
-        set +a
+    # --- Load API_KEY: parse only API_KEY= lines, never source (avoids arbitrary code exec) ---
+    local _key
+    if [[ -z "${API_KEY:-}" && -f "$PROJECT_ROOT/.env.local" ]]; then
+        _key=$(grep -m1 '^API_KEY=' "$PROJECT_ROOT/.env.local" 2>/dev/null | cut -d= -f2-)
+        [[ -n "$_key" ]] && API_KEY="$_key"
     fi
-    if [[ -f "$PROJECT_ROOT/.env" ]]; then
-        set -a
-        # shellcheck source=/dev/null
-        source "$PROJECT_ROOT/.env" 2>/dev/null || true
-        set +a
+    if [[ -z "${API_KEY:-}" && -f "$PROJECT_ROOT/.env" ]]; then
+        _key=$(grep -m1 '^API_KEY=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2-)
+        [[ -n "$_key" ]] && API_KEY="$_key"
     fi
 
     # --- Try to log via HTTP ---
