@@ -2,6 +2,7 @@
 CLAUDE.md
 AGENTS.md
 .claude/
+!.claude/settings.json
 .mcp.json
 
 .env.local
