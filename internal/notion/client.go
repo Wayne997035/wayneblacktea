@@ -14,28 +14,44 @@ import (
 const (
 	notionAPIBase    = "https://api.notion.com/v1"
 	notionAPIVersion = "2022-06-28"
+	// notionResponseLimit caps every Notion response body read at 256 KB.
+	// Database query responses with daily-briefing payloads stay well under
+	// 64 KB, but list endpoints can grow once history accumulates so we
+	// pick a comfortable headroom.
+	notionResponseLimit = 1 << 18
 )
 
 // Client creates pages in a Notion database via the Notion API.
 type Client struct {
-	token string
-	dbID  string
-	http  *http.Client
+	token   string
+	dbID    string
+	baseURL string
+	http    *http.Client
 }
 
-// NewClient returns a Client configured from NOTION_API_KEY and NOTION_DATABASE_ID env vars.
-// Returns nil if NOTION_API_KEY is not set (graceful degradation).
+// NewClient returns a Client configured from NOTION_INTEGRATION_SECRET and
+// NOTION_DATABASE_ID env vars. Returns nil if NOTION_INTEGRATION_SECRET is
+// not set (graceful degradation).
+//
+// The env var name matches Notion's public terminology ("Integration secret",
+// shown verbatim in https://www.notion.so/my-integrations) and is the same
+// name the project's .env.example, Railway, and docs/installation.md use.
 func NewClient() *Client {
-	token := os.Getenv("NOTION_API_KEY")
+	token := os.Getenv("NOTION_INTEGRATION_SECRET")
 	if token == "" {
 		return nil
 	}
 	return &Client{
-		token: token,
-		dbID:  os.Getenv("NOTION_DATABASE_ID"),
-		http:  &http.Client{Timeout: 15 * time.Second},
+		token:   token,
+		dbID:    os.Getenv("NOTION_DATABASE_ID"),
+		baseURL: notionAPIBase,
+		http:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
+
+// DatabaseID returns the configured Notion database ID. Used by helpers in
+// the notion package that need to scope queries to the same database.
+func (c *Client) DatabaseID() string { return c.dbID }
 
 type notionParent struct {
 	DatabaseID string `json:"database_id"`
@@ -104,14 +120,30 @@ func (c *Client) CreatePage(ctx context.Context, title, content, itemType string
 		},
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshaling notion page request: %w", err)
+	var result notionCreatePageResponse
+	if err := c.do(ctx, http.MethodPost, "/pages", payload, &result); err != nil {
+		return "", err
+	}
+	return result.URL, nil
+}
+
+// do issues a JSON request to path (relative to baseURL), enforces the
+// response-size cap, and decodes the response into out when non-nil. It is
+// shared by every Notion call in this package so authorization, version
+// header, and body-limit handling stay consistent.
+func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshaling notion %s %s: %w", method, path, err)
+		}
+		reader = bytes.NewReader(buf)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, notionAPIBase+"/pages", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
-		return "", fmt.Errorf("creating notion request: %w", err)
+		return fmt.Errorf("creating notion %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
@@ -119,7 +151,7 @@ func (c *Client) CreatePage(ctx context.Context, title, content, itemType string
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("calling notion API: %w", err)
+		return fmt.Errorf("calling notion %s %s: %w", method, path, err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -127,19 +159,20 @@ func (c *Client) CreatePage(ctx context.Context, title, content, itemType string
 		}
 	}()
 
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64 KB limit
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, notionResponseLimit))
 	if err != nil {
-		return "", fmt.Errorf("reading notion response: %w", err)
+		return fmt.Errorf("reading notion %s %s response: %w", method, path, err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("notion API returned %d: %s", resp.StatusCode, string(respBytes))
+		return fmt.Errorf("notion %s %s returned %d: %s", method, path, resp.StatusCode, string(respBytes))
 	}
 
-	var result notionCreatePageResponse
-	if err := json.Unmarshal(respBytes, &result); err != nil {
-		return "", fmt.Errorf("parsing notion response: %w", err)
+	if out == nil {
+		return nil
 	}
-
-	return result.URL, nil
+	if err := json.Unmarshal(respBytes, out); err != nil {
+		return fmt.Errorf("parsing notion %s %s response: %w", method, path, err)
+	}
+	return nil
 }
