@@ -56,7 +56,7 @@ func (w *Watchdog) Middleware() server.ToolHandlerMiddleware {
 			start := time.Now()
 			res, err := next(ctx, req)
 			w.record(req.Params.Name, start, res, err)
-			return res, err //nolint:wrapcheck // middleware passes through caller's error verbatim
+			return res, err
 		}
 	}
 }

@@ -2,6 +2,7 @@ package discordbot
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -70,9 +71,11 @@ func TestExtractText_SessionNoiseRegex(t *testing.T) {
 	}
 }
 
-// TestFetchURL_RealGitHub is an integration test against a real GitHub URL.
-// Skipped unless -run=Integration is passed explicitly.
+// TestFetchURL_RealGitHub is an opt-in integration test against a real GitHub URL.
 func TestFetchURL_RealGitHub(t *testing.T) {
+	if os.Getenv("WBT_RUN_NETWORK_TESTS") != "1" {
+		t.Skip("set WBT_RUN_NETWORK_TESTS=1 to run network integration tests")
+	}
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

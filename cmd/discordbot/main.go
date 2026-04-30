@@ -50,7 +50,7 @@ func run() error {
 	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
 		cfg, err := pgxpool.ParseConfig(dsn)
 		if err == nil {
-			cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+			cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // G402: optional local DB health check
 			if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
 				defer pool.Close()
 				slog.Info("database connected")

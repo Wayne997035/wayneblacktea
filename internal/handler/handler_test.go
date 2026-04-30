@@ -135,7 +135,7 @@ func newEcho() *echo.Echo {
 }
 
 func performRequest(e *echo.Echo, method, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -807,7 +807,7 @@ func TestAPIKeyMiddleware(t *testing.T) {
 				return c.String(http.StatusOK, "ok")
 			})
 
-			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 			if tc.key != "" {
 				req.Header.Set("X-API-Key", tc.key)
 			}

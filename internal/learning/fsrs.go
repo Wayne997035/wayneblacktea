@@ -83,6 +83,8 @@ func NextState(s CardState, rating Rating) (stability, difficulty float64, inter
 			// factor unchanged
 		case Easy:
 			stabilityFactor *= w[16]
+		default:
+			// Again handled by outer switch; unreachable.
 		}
 		stability = s.Stability * (1 + stabilityFactor)
 	}
