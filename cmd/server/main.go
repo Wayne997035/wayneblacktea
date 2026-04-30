@@ -15,12 +15,19 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
+	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
+	"github.com/Wayne997035/wayneblacktea/internal/notion"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
 )
@@ -133,16 +140,15 @@ func run() error {
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
 	api.POST("/learning/concepts", learningH.CreateConcept)
 
-	// Serve the React SPA for all non-API routes (must be registered last).
-	// Unknown paths fall back to index.html so client-side routing works.
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {
 		return fmt.Errorf("embedding static files: %w", err)
 	}
 	e.GET("/*", echo.WrapHandler(buildSPAHandler(distFS)))
 
-	// Start scheduler.
-	sched, err := scheduler.New(stores.Learning(), discordClient)
+	notionClient := notion.NewClient()
+	briefingStores := newBriefingStores(stores)
+	sched, err := scheduler.New(stores.Learning(), discordClient, notionClient, briefingStores)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
 	}
@@ -183,9 +189,6 @@ func buildSPAHandler(distFS fs.FS) http.Handler {
 	})
 }
 
-// startDiscordBotIfConfigured starts the Discord bot when DISCORD_BOT_TOKEN is
-// set, returning a stop function the caller defers. When the token is unset,
-// returns a no-op stop function so the caller can defer unconditionally.
 func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
 	botToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if botToken == "" {
@@ -214,4 +217,62 @@ func buildStores(backend storage.Backend) (storage.ServerStores, error) {
 		return nil, fmt.Errorf("building stores for backend %s: %w", backend, err)
 	}
 	return stores, nil
+}
+
+// briefingStoresAdapter implements notion.BriefingStores by delegating to
+// the backend-agnostic StoreIface types from storage.ServerStores.
+type briefingStoresAdapter struct {
+	gtd      gtd.StoreIface
+	learning learning.StoreIface
+	proposal proposal.StoreIface
+	decision decision.StoreIface
+}
+
+func (a *briefingStoresAdapter) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error) {
+	tasks, err := a.gtd.Tasks(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("gtd tasks: %w", err)
+	}
+	return tasks, nil
+}
+
+func (a *briefingStoresAdapter) DueReviews(ctx context.Context, limit int) ([]learning.DueReview, error) {
+	reviews, err := a.learning.DueReviews(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("due reviews: %w", err)
+	}
+	return reviews, nil
+}
+
+func (a *briefingStoresAdapter) ListPending(ctx context.Context) ([]db.PendingProposal, error) {
+	pending, err := a.proposal.ListPending(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list pending proposals: %w", err)
+	}
+	return pending, nil
+}
+
+func (a *briefingStoresAdapter) All(ctx context.Context, limit int32) ([]db.Decision, error) {
+	decisions, err := a.decision.All(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("all decisions: %w", err)
+	}
+	return decisions, nil
+}
+
+func (a *briefingStoresAdapter) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
+	completed, total, err = a.gtd.WeeklyProgress(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("weekly progress: %w", err)
+	}
+	return completed, total, nil
+}
+
+func newBriefingStores(stores storage.ServerStores) notion.BriefingStores {
+	return &briefingStoresAdapter{
+		gtd:      stores.GTD(),
+		learning: stores.Learning(),
+		proposal: stores.Proposal(),
+		decision: stores.Decision(),
+	}
 }
