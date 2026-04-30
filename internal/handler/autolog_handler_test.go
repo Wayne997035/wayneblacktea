@@ -370,3 +370,36 @@ func TestAutoHandoff_TranscriptCapAt100Messages(t *testing.T) {
 		t.Errorf("summarizer received %d messages, want ≤ 100", capturedLen)
 	}
 }
+
+func TestAutoHandoff_DecisionLogFailsDuringAIPath(t *testing.T) {
+	// Summarizer returns implicit decisions, but decision.Log fails.
+	// Handler MUST still return 200 + handoff_id (log error is swallowed).
+	handoffID := uuid.New()
+	sess := &fakeAutologSessionStore{result: &db.SessionHandoff{
+		ID:     handoffID,
+		Intent: "Auto-handoff: in_progress=[] recent_decisions=[]",
+	}}
+	dec := &fakeAutologDecisionStore{
+		logErr: errors.New("db write fail"),
+	}
+	stub := &stubSummarizer{
+		result: ai.SummaryResult{
+			Summary:   "Session summary.",
+			Decisions: []string{"Use gRPC over REST"},
+		},
+	}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerForTest(&fakeAutologGTDStore{}, sess, dec, stub)
+	e.POST("/api/auto-handoff", h.AutoHandoff)
+
+	body := `{"transcript":[{"role":"user","content":"should we use gRPC?"},{"role":"assistant","content":"yes, gRPC"}]}`
+	rec := performRequest(e, http.MethodPost, "/api/auto-handoff", body)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200 even when decision.Log fails (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "handoff_id") {
+		t.Errorf("expected handoff_id in response, got: %s", rec.Body.String())
+	}
+}
