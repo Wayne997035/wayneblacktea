@@ -1,9 +1,6 @@
 # Stage 1: Build the React/Vite frontend
 FROM node:22-alpine AS frontend
 
-ARG VITE_API_KEY
-ENV VITE_API_KEY=$VITE_API_KEY
-
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
