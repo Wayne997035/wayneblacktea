@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -46,7 +47,7 @@ func TestAuthSessionHandler_IssueSession(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/session", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/session", nil)
 			if tc.headerKey != "" {
 				req.Header.Set("X-API-Key", tc.headerKey)
 			}

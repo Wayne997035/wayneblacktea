@@ -864,7 +864,7 @@ func TestAPIKeyMiddleware_Cookie(t *testing.T) {
 				return c.String(http.StatusOK, "ok")
 			})
 
-			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 			if tc.cookieVal != "" {
 				req.AddCookie(&http.Cookie{
 					Name:  handler.WbtSessionCookie,
