@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
-	"os"
 
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -24,26 +21,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("resolving storage backend: %w", err)
 	}
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL not set")
-	}
-
 	log.Printf("storage backend: %s", backend)
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return fmt.Errorf("parsing database URL: %w", err)
-	}
-	// Aiven uses a custom CA not in the system trust store.
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
 
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	stores, err := buildStores(backend)
 	if err != nil {
-		return fmt.Errorf("connecting to database: %w", err)
+		return err
 	}
-	defer pool.Close()
+	defer func() {
+		if cerr := stores.Close(); cerr != nil {
+			log.Printf("closing stores: %v", cerr)
+		}
+	}()
 
-	s, err := mcpsrv.New(pool)
+	s, err := mcpsrv.New(stores)
 	if err != nil {
 		return fmt.Errorf("initializing MCP server: %w", err)
 	}
@@ -51,4 +41,12 @@ func run() error {
 		return fmt.Errorf("serving MCP: %w", err)
 	}
 	return nil
+}
+
+func buildStores(backend storage.Backend) (storage.ServerStores, error) {
+	stores, err := storage.BuildServerStores(context.Background(), backend)
+	if err != nil {
+		return nil, fmt.Errorf("building stores for backend %s: %w", backend, err)
+	}
+	return stores, nil
 }

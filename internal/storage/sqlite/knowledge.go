@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -110,14 +111,24 @@ func (s *KnowledgeStore) urlDedupCheck(ctx context.Context, url string) error {
 	return errWrap("knowledge url dedup", err)
 }
 
+// escapeLike escapes LIKE wildcards in user input so they are treated as
+// literals when used with SQLite ESCAPE '\'. The outer % wildcards are added
+// by the caller after escaping.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 // Search performs a portable LIKE search over title and content.
 func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	pattern := "%" + query + "%"
+	pattern := "%" + escapeLike(query) + "%"
 	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
-		WHERE (title LIKE ?1 COLLATE NOCASE OR content LIKE ?1 COLLATE NOCASE)
+		WHERE (title LIKE ?1 ESCAPE '\' OR content LIKE ?1 ESCAPE '\')
 		  AND (?2 IS NULL OR workspace_id = ?2)
 		ORDER BY
-		  CASE WHEN title LIKE ?1 COLLATE NOCASE THEN 0 ELSE 1 END,
+		  CASE WHEN title LIKE ?1 ESCAPE '\' THEN 0 ELSE 1 END,
 		  created_at DESC, id DESC
 		LIMIT ?3`
 	return s.list(ctx, "SearchKnowledge", q, pattern, s.db.workspaceArg(), limit)

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -10,9 +9,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
-	wbtruntime "github.com/Wayne997035/wayneblacktea/internal/runtime"
-	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,38 +19,53 @@ import (
 )
 
 // Server wires all domain stores to MCP tools.
+//
+// Domain stores are held as backend-agnostic StoreIface values so the same
+// Server runs against either Postgres or SQLite. The pgxpool.Pool plus the
+// concrete pg* fields are populated only on the Postgres bundle and used
+// exclusively by acceptProposal (the only flow that needs a pgx-typed
+// transaction across multiple stores). On SQLite they are nil and the flow
+// falls back to a sequential best-effort path.
 type Server struct {
 	pool      *pgxpool.Pool
-	gtd       *gtd.Store
-	workspace *workspace.Store
-	decision  *decision.Store
-	session   *session.Store
-	knowledge *knowledge.Store
-	learning  *learning.Store
-	proposal  *proposal.Store
-	notion    *notion.Client
-	watchdog  *watchdog.Watchdog
+	gtd       gtd.StoreIface
+	workspace workspace.StoreIface
+	decision  decision.StoreIface
+	session   session.StoreIface
+	knowledge knowledge.StoreIface
+	learning  learning.StoreIface
+	proposal  proposal.StoreIface
+
+	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
+	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
+	// reluctantly — see ServerStores doc comment for the migration plan.
+	pgGTD      *gtd.Store
+	pgProposal *proposal.Store
+	pgLearning *learning.Store
+
+	notion   *notion.Client
+	watchdog *watchdog.Watchdog
 }
 
-// New creates a Server connected to the given connection pool. The optional
-// WORKSPACE_ID env scopes every domain store; unset = legacy unscoped mode.
-func New(pool *pgxpool.Pool) (*Server, error) {
-	wsID, err := wbtruntime.WorkspaceIDFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
-	}
-	embedClient := search.NewEmbeddingClient()
+// New creates a Server backed by the given pre-built ServerStores bundle.
+// The bundle is responsible for the workspace-id scoping and the underlying
+// connection lifecycle; cmd/mcp/main.go MUST defer stores.Close() after this
+// call returns.
+func New(stores storage.ServerStores) (*Server, error) {
 	return &Server{
-		pool:      pool,
-		gtd:       gtd.NewStore(pool, wsID),
-		workspace: workspace.NewStore(pool, wsID),
-		decision:  decision.NewStore(pool, wsID),
-		session:   session.NewStore(pool, wsID),
-		knowledge: knowledge.NewStore(pool, embedClient, wsID),
-		learning:  learning.NewStore(pool, wsID),
-		proposal:  proposal.NewStore(pool, wsID),
-		notion:    notion.NewClient(),
-		watchdog:  watchdog.New(200),
+		pool:       stores.PgxPool(),
+		gtd:        stores.GTD(),
+		workspace:  stores.Workspace(),
+		decision:   stores.Decision(),
+		session:    stores.Session(),
+		knowledge:  stores.Knowledge(),
+		learning:   stores.Learning(),
+		proposal:   stores.Proposal(),
+		pgGTD:      stores.PgGTD(),
+		pgProposal: stores.PgProposal(),
+		pgLearning: stores.PgLearning(),
+		notion:     notion.NewClient(),
+		watchdog:   watchdog.New(200),
 	}, nil
 }
 

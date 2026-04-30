@@ -37,5 +37,10 @@ coverage.out
 # docs/operations.md.
 migrations/**/*.bak
 
+# SQLite database files (WAL mode creates sidecar files)
+*.db
+*.db-wal
+*.db-shm
+
 # macOS
 .DS_Store

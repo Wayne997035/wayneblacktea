@@ -14,12 +14,14 @@ import (
 // Scheduler wraps gocron and coordinates scheduled background jobs.
 type Scheduler struct {
 	s        gocron.Scheduler
-	learning *learning.Store
+	learning learning.StoreIface
 	discord  *discord.Client
 }
 
-// New creates and configures the Scheduler with all registered jobs.
-func New(ls *learning.Store, dc *discord.Client) (*Scheduler, error) {
+// New creates and configures the Scheduler with all registered jobs. The
+// learning store is taken as the backend-agnostic StoreIface so the scheduler
+// works against either pg or SQLite.
+func New(ls learning.StoreIface, dc *discord.Client) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
 		return nil, fmt.Errorf("loading Asia/Taipei timezone: %w", err)

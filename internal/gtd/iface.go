@@ -5,6 +5,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // StoreIface is the backend-agnostic contract for the GTD bounded context.
@@ -29,6 +30,7 @@ type StoreIface interface {
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error)
 	DeleteTask(ctx context.Context, id uuid.UUID) error
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
+	WorkspaceID() pgtype.UUID
 }
 
 // Compile-time assertion: pg-backed Store implements StoreIface.
