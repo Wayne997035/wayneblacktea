@@ -19,20 +19,16 @@ const queryClient = new QueryClient({
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Root element not found')
 
-// Obtain the wbt_session httpOnly cookie from the server before mounting the app.
-// Render is deferred to finally() so the cookie is set (or failed) before React
-// renders — preventing 401 flashes on first API call.
+// Kick off session establishment in the background — do NOT block rendering.
+// apiFetch retries automatically on 401, so first-load users are handled
+// without delaying the initial paint by a full Railway round-trip.
 initSession()
-  .catch(() => {
-    // Intentionally silent — the app will degrade gracefully with 401 responses.
-  })
-  .finally(() => {
-    createRoot(rootElement).render(
-      <StrictMode>
-        <QueryClientProvider client={queryClient}>
-          <App />
-          <ToastContainer />
-        </QueryClientProvider>
-      </StrictMode>,
-    )
-  })
+
+createRoot(rootElement).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <App />
+      <ToastContainer />
+    </QueryClientProvider>
+  </StrictMode>,
+)
