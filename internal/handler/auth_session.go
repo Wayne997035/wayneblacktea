@@ -37,6 +37,9 @@ func NewAuthSessionHandler(apiKey string) *AuthSessionHandler {
 // The caller must present the raw API key in the X-API-Key header; this
 // prevents unauthenticated third parties from minting session cookies.
 func (h *AuthSessionHandler) IssueSession(c echo.Context) error {
+	if h.apiKey == "" {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "server misconfiguration"})
+	}
 	key := c.Request().Header.Get("X-API-Key")
 	if !hmac.Equal([]byte(key), []byte(h.apiKey)) {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
@@ -44,13 +47,17 @@ func (h *AuthSessionHandler) IssueSession(c echo.Context) error {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	token := buildAuthToken(h.apiKey, ts)
 
+	// Secure=true only when the request arrived over HTTPS (production/Railway).
+	// Local dev over plain HTTP leaves the flag false so the browser accepts it.
+	secure := c.Request().Header.Get("X-Forwarded-Proto") == "https" || c.Request().TLS != nil
+
 	cookie := &http.Cookie{
 		Name:     WbtSessionCookie,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   int(sessionCookieTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	}
 	c.SetCookie(cookie)
