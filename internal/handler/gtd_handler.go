@@ -113,22 +113,15 @@ func (h *GTDHandler) GetProject(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid project id"))
 	}
-
-	// We fetch by updating status with same value to retrieve — but actually we
-	// look through active projects. The store has no GetByID, so we list and filter.
-	// Use UpdateProjectStatus to get the row (not ideal but avoids new query).
-	// Actually, list active projects and find the one with matching ID.
-	projects, err := h.store.ListActiveProjects(c.Request().Context())
+	project, err := h.store.GetProjectByID(c.Request().Context(), id)
 	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("project not found"))
+		}
 		c.Logger().Errorf("GetProject: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
-	for _, p := range projects {
-		if p.ID == id {
-			return c.JSON(http.StatusOK, p)
-		}
-	}
-	return c.JSON(http.StatusNotFound, errResp("project not found"))
+	return c.JSON(http.StatusOK, project)
 }
 
 type updateProjectStatusRequest struct {

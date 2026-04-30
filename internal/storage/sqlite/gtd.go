@@ -242,6 +242,11 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 	return s.projectByID(ctx, id)
 }
 
+// GetProjectByID returns a single project by UUID, regardless of status.
+func (s *GTDStore) GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error) {
+	return s.projectByID(ctx, id)
+}
+
 func (s *GTDStore) projectByID(ctx context.Context, id uuid.UUID) (*db.Project, error) {
 	const q = `SELECT ` + projectsSelectCols + ` FROM projects WHERE id = ?1 LIMIT 1`
 	row := s.db.conn.QueryRowContext(ctx, q, id.String())

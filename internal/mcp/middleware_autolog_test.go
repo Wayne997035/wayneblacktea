@@ -56,6 +56,10 @@ func (m *mockGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, erro
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) GetProjectByID(_ context.Context, _ uuid.UUID) (*db.Project, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) ProjectByName(_ context.Context, _ string) (*db.Project, error) {
 	return nil, errMockNotImpl
 }

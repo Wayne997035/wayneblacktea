@@ -30,6 +30,7 @@ type Querier interface {
 	GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (KnowledgeItem, error)
 	GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pgtype.UUID) (SessionHandoff, error)
 	GetPendingProposal(ctx context.Context, arg GetPendingProposalParams) (PendingProposal, error)
+	GetProjectByID(ctx context.Context, arg GetProjectByIDParams) (Project, error)
 	GetProjectByName(ctx context.Context, arg GetProjectByNameParams) (Project, error)
 	GetRepoByName(ctx context.Context, arg GetRepoByNameParams) (Repo, error)
 	GetTasksByProject(ctx context.Context, arg GetTasksByProjectParams) ([]Task, error)

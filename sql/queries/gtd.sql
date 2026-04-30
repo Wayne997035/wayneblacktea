@@ -13,6 +13,12 @@ WHERE name = sqlc.arg('name')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 LIMIT 1;
 
+-- name: GetProjectByID :one
+SELECT * FROM projects
+WHERE id = sqlc.arg('id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+LIMIT 1;
+
 -- name: CreateProject :one
 INSERT INTO projects (goal_id, name, title, description, area, priority, workspace_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

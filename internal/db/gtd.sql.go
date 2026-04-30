@@ -298,6 +298,37 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUI
 	return items, nil
 }
 
+const getProjectByID = `-- name: GetProjectByID :one
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
+WHERE id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+LIMIT 1
+`
+
+type GetProjectByIDParams struct {
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetProjectByID(ctx context.Context, arg GetProjectByIDParams) (Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByID, arg.ID, arg.WorkspaceID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.Name,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Area,
+		&i.Priority,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+	)
+	return i, err
+}
+
 const getProjectByName = `-- name: GetProjectByName :one
 SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
 WHERE name = $1
