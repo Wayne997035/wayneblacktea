@@ -39,7 +39,8 @@ var staticFiles embed.FS
 func main() {
 	envFile := flag.String("env", ".env", "env file to load")
 	flag.Parse()
-	if err := godotenv.Load(*envFile); err != nil {
+	// Non-fatal: Railway injects env vars directly; .env is for local dev only.
+	if err := godotenv.Load(*envFile); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("loading %s: %v", *envFile, err)
 	}
 	if err := run(); err != nil {
