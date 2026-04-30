@@ -3,6 +3,10 @@ version: '3'
 vars:
   BINARY_NAME: wayneblacktea-mcp
   BINARY_OUT: bin/{{.BINARY_NAME}}
+  GO_BUILD_CACHE: "{{.TASKFILE_DIR}}/../tmp/go-build"
+
+env:
+  GOCACHE: "{{.GO_BUILD_CACHE}}"
 
 tasks:
   default:
@@ -21,6 +25,8 @@ tasks:
 
   build-mcp:
     desc: "Build MCP binary to bin/"
+    deps:
+      - go-cache
     cmds:
       - mkdir -p bin
       - go build -o {{.BINARY_OUT}} ./cmd/mcp/
@@ -28,6 +34,8 @@ tasks:
 
   build-server:
     desc: "Build REST API server binary to bin/"
+    deps:
+      - go-cache
     cmds:
       - mkdir -p bin
       - go build -o bin/wayneblacktea-server ./cmd/server/
@@ -35,6 +43,8 @@ tasks:
 
   build-doctor:
     desc: "Build the wbt-doctor health snapshot binary used by the Stop hook"
+    deps:
+      - go-cache
     cmds:
       - mkdir -p bin
       - go build -o bin/wbt-doctor ./cmd/doctor/
@@ -42,14 +52,29 @@ tasks:
 
   lint:
     desc: "Run golangci-lint"
+    deps:
+      - go-cache
     cmds:
-      - golangci-lint run --config build/.golangci.yml ./...
+      - |
+        if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
+          GOPROXY=off golangci-lint run --config build/.golangci.yml ./...
+        else
+          golangci-lint run --config build/.golangci.yml ./...
+        fi
     dir: ..
 
   test:
     desc: "Run unit tests"
+    deps:
+      - go-cache
     cmds:
       - go test -race ./internal/... ./cmd/...
+    dir: ..
+
+  go-cache:
+    desc: "Create workspace-local Go build cache for sandboxed agent runs"
+    cmds:
+      - mkdir -p {{.GO_BUILD_CACHE}}
     dir: ..
 
   test-integration:
