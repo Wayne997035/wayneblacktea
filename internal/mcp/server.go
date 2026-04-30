@@ -281,6 +281,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	ms := server.NewMCPServer("wayneblacktea", "0.1.0",
 		server.WithInstructions(mcpInstructions),
 		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
+		server.WithToolHandlerMiddleware(s.autoLogMiddleware()),
 	)
 	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)
