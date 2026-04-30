@@ -153,7 +153,7 @@ func (s *Server) handleSyncToNotion(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	if s.notion == nil {
-		return mcp.NewToolResultError("Notion integration not configured (NOTION_API_KEY not set)"), nil
+		return mcp.NewToolResultError("Notion integration not configured (NOTION_INTEGRATION_SECRET not set)"), nil
 	}
 
 	item, err := s.knowledge.GetByID(ctx, id)
