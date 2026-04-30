@@ -60,10 +60,8 @@ func run() error {
 	if port == "" {
 		port = "8080"
 	}
+	// allowedOrigins is validated by CORSMiddleware — empty or "*" will panic at startup.
 	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
-	if allowedOrigins == "" {
-		allowedOrigins = "*"
-	}
 
 	stores, err := buildStores(backend)
 	if err != nil {
@@ -83,6 +81,7 @@ func run() error {
 	sessH := handler.NewSessionHandler(stores.Session())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	learningH := handler.NewLearningHandler(stores.Learning())
+	authSessH := handler.NewAuthSessionHandler(apiKey)
 
 	e := echo.New()
 	e.HideBanner = true
@@ -105,6 +104,9 @@ func run() error {
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+	// Browser SPA calls this once on startup to receive the wbt_session cookie.
+	// Requires X-API-Key header; the SPA reads the key from VITE_API_KEY at build time.
+	e.POST("/api/session", authSessH.IssueSession)
 
 	api := e.Group("/api", apimw.APIKeyMiddleware(apiKey))
 

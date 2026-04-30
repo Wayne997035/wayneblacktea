@@ -70,22 +70,20 @@ func TestAPIKeyMiddleware_EmptyKey(t *testing.T) {
 	}
 }
 
-// TestAPIKeyMiddleware_EmptyConfig verifies the actual behaviour when both
+// TestAPIKeyMiddleware_EmptyConfig verifies the behaviour when both
 // the configured key and the incoming header value are empty strings.
-// subtle.ConstantTimeCompare([]byte{}, []byte{}) == 1 (equal), so the
-// middleware PASSES the request to the next handler — this is an edge case
-// callers must guard against by ensuring a non-empty key is always configured.
+// The middleware now checks whether X-API-Key is present before comparing;
+// an absent header falls through to cookie auth which also fails → 401.
+// Callers MUST configure a non-empty API key at startup.
 func TestAPIKeyMiddleware_EmptyConfig(t *testing.T) {
 	e := setupEchoWithMiddleware("") // configured with empty string
-	// Send request with no X-API-Key header → header value is also ""
+	// Send request with no X-API-Key header and no cookie → both paths fail.
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 
-	// Both configured key and received key are ""; ConstantTimeCompare returns 1
-	// so the middleware lets the request through.
-	if rec.Code != http.StatusOK {
-		t.Errorf("empty config + empty header: got status %d, want %d (ConstantTimeCompare returns 1 for equal empty slices)",
-			rec.Code, http.StatusOK)
+	// No valid credential supplied → 401.
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("empty config + empty header: got status %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
