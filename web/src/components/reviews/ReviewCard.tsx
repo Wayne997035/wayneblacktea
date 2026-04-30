@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { DueReview } from '../../types/api'
 import { useSubmitReview } from '../../hooks/useReviews'
@@ -31,9 +32,19 @@ function formatDueDate(iso: string): string {
   return `${diffDays}d ago`
 }
 
+function estimateNextDays(rating: 1 | 2 | 3 | 4, reviewCount: number): number {
+  switch (rating) {
+    case 1: return 1
+    case 2: return 3
+    case 3: return Math.max(7, reviewCount * 3)
+    case 4: return Math.max(14, reviewCount * 5)
+  }
+}
+
 export function ReviewCard({ review }: ReviewCardProps) {
   const { t } = useTranslation()
   const { mutate: submitReview, isPending, variables } = useSubmitReview()
+  const [rated, setRated] = useState<{ nextDays: number } | null>(null)
 
   const isPendingForThis = isPending && variables?.scheduleId === review.schedule_id
 
@@ -45,6 +56,30 @@ export function ReviewCard({ review }: ReviewCardProps) {
       difficulty: review.difficulty,
       review_count: review.review_count,
     })
+    setRated({ nextDays: estimateNextDays(rating, review.review_count) })
+  }
+
+  if (rated) {
+    return (
+      <div
+        style={{
+          background: 'var(--color-bg-card)',
+          border: '1px solid #22c55e',
+          borderRadius: '8px',
+          padding: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+        }}
+        role="status"
+        aria-live="polite"
+      >
+        <span style={{ color: '#22c55e', fontWeight: 600 }}>✓ 已記錄</span>
+        <span style={{ color: 'var(--color-text-muted)' }}>
+          · 下次複習：{rated.nextDays}天後
+        </span>
+      </div>
+    )
   }
 
   return (

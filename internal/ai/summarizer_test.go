@@ -29,7 +29,7 @@ func newSummarizerWithBase(baseURL string) *localai.Summarizer {
 		option.WithAPIKey("test-key"),
 		option.WithBaseURL(baseURL),
 	)
-	return localai.NewWithClient(&client)
+	return localai.NewWithClient(&client, "claude-haiku-4-5")
 }
 
 func makeAPIResponse(summaryText string, decisions []string) string {

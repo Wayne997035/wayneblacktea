@@ -15,9 +15,10 @@ import (
 
 // fakeKnowledgeStore implements the knowledgeStore interface for testing.
 type fakeKnowledgeStore struct {
-	item  *db.KnowledgeItem
-	items []db.KnowledgeItem
-	err   error
+	item   *db.KnowledgeItem
+	items  []db.KnowledgeItem
+	err    error
+	getErr error // separate error for GetByID; if nil, falls back to err
 }
 
 func (f *fakeKnowledgeStore) AddItem(_ context.Context, _ knowledge.AddItemParams) (*db.KnowledgeItem, error) {
@@ -30,6 +31,13 @@ func (f *fakeKnowledgeStore) Search(_ context.Context, _ string, _ int) ([]db.Kn
 
 func (f *fakeKnowledgeStore) List(_ context.Context, _, _ int) ([]db.KnowledgeItem, error) {
 	return f.items, f.err
+}
+
+func (f *fakeKnowledgeStore) GetByID(_ context.Context, _ uuid.UUID) (*db.KnowledgeItem, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.item, f.err
 }
 
 // ---- ListKnowledge tests ----

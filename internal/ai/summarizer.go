@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 const (
-	summarizerModel  = "claude-haiku-4-5"
-	maxTranscriptLen = 64 * 1024 // 64 KB
+	defaultSummarizerModel = "claude-sonnet-4-6"
+	maxTranscriptLen       = 64 * 1024 // 64 KB
 )
 
 // summarizerSystemPrompt instructs the model to return structured JSON.
@@ -44,22 +45,33 @@ type Summarizer struct {
 	model  string
 }
 
-// New creates a Summarizer with the given API key.
-func New(apiKey string) *Summarizer {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	return NewWithClient(&client)
+// resolveModel reads the CLAUDE_SUMMARY_MODEL env var and falls back to the
+// default model when the variable is unset or empty.
+func resolveModel() string {
+	if m := os.Getenv("CLAUDE_SUMMARY_MODEL"); m != "" {
+		return m
+	}
+	return defaultSummarizerModel
 }
 
-// NewWithClient creates a Summarizer with a pre-configured client.
-// Intended for testing with a mock HTTP server via option.WithBaseURL.
-func NewWithClient(client *anthropic.Client) *Summarizer {
+// New creates a Summarizer with the given API key.
+// The model is selected from the CLAUDE_SUMMARY_MODEL environment variable,
+// defaulting to "claude-sonnet-4-6".
+func New(apiKey string) *Summarizer {
+	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	return NewWithClient(&client, resolveModel())
+}
+
+// NewWithClient creates a Summarizer with a pre-configured client and explicit
+// model name. Intended for testing with a mock HTTP server via option.WithBaseURL.
+func NewWithClient(client *anthropic.Client, model string) *Summarizer {
 	return &Summarizer{
 		client: client,
-		model:  summarizerModel,
+		model:  model,
 	}
 }
 
-// Summarize calls claude-haiku-4-5 with the transcript and returns a structured summary.
+// Summarize calls the configured Claude model with the transcript and returns a structured summary.
 // It returns an empty SummaryResult on any error — callers should always fall back gracefully.
 func (s *Summarizer) Summarize(ctx context.Context, transcript []Message) SummaryResult {
 	if len(transcript) == 0 {

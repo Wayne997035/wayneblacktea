@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
-import type { DueReview, SubmitReviewRequest, CreateConceptRequest } from '../types/api'
+import type { DueReview, SubmitReviewRequest, CreateConceptRequest, LearningSuggestions } from '../types/api'
 
 export function useReviews() {
   return useQuery<DueReview[]>({
@@ -33,6 +33,29 @@ export function useCreateConcept() {
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['reviews'] })
+    },
+  })
+}
+
+export function useLearningSuggestions() {
+  return useQuery<LearningSuggestions>({
+    queryKey: ['learning-suggestions'],
+    queryFn: () => apiFetch<LearningSuggestions>('/api/learning/suggestions'),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useCreateConceptFromKnowledge() {
+  const queryClient = useQueryClient()
+  return useMutation<unknown, Error, { knowledge_id: string }>({
+    mutationFn: (body) =>
+      apiFetch('/api/learning/from-knowledge', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      void queryClient.invalidateQueries({ queryKey: ['learning-suggestions'] })
     },
   })
 }

@@ -57,6 +57,13 @@ type knowledgeStore interface {
 	AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error)
 	Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
 	List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, error)
+}
+
+// suggestionDecisionStore covers the subset of decision.Store used by the
+// learning suggestions endpoint.
+type suggestionDecisionStore interface {
+	All(ctx context.Context, limit int32) ([]db.Decision, error)
 }
 
 // learningStore covers the subset of learning.Store used by handlers.
