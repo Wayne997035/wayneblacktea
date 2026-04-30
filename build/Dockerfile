@@ -31,8 +31,6 @@ RUN apk --no-cache add ca-certificates && \
 
 WORKDIR /app
 COPY --from=builder /app/server .
-# .env contains only ${VAR_NAME} placeholders — no real secrets. Real values injected by Railway at runtime.
-COPY .env .
 
 USER appuser
 EXPOSE 8080

@@ -2,7 +2,7 @@ app = "wayneblacktea-server"
 primary_region = "hkg"
 
 [build]
-  dockerfile = "build/Dockerfile.server"
+  dockerfile = "build/Dockerfile"
 
 [http_service]
   internal_port = 8080
