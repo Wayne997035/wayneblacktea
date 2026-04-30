@@ -1,6 +1,6 @@
 [build]
 builder = "dockerfile"
-dockerfilePath = "build/Dockerfile.server"
+dockerfilePath = "build/Dockerfile"
 
 [deploy]
 healthcheckPath = "/health"
