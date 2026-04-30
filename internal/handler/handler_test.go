@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -815,6 +816,65 @@ func TestAPIKeyMiddleware(t *testing.T) {
 			e.ServeHTTP(rec, req)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d", rec.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+// TestAPIKeyMiddleware_Cookie tests that the middleware also accepts a valid
+// wbt_session cookie (browser SPA path) and rejects invalid ones.
+func TestAPIKeyMiddleware_Cookie(t *testing.T) {
+	const testKey = "test-secret-key"
+
+	validToken := handler.BuildAuthTokenForTest(testKey, strconv.FormatInt(time.Now().Unix(), 10))
+	expiredToken := handler.BuildAuthTokenForTest(testKey, strconv.FormatInt(time.Now().Add(-25*time.Hour).Unix(), 10))
+
+	cases := []struct {
+		name      string
+		cookieVal string
+		wantCode  int
+	}{
+		{
+			name:      "valid session cookie → 200",
+			cookieVal: validToken,
+			wantCode:  http.StatusOK,
+		},
+		{
+			name:      "invalid cookie value → 401",
+			cookieVal: "bad-token",
+			wantCode:  http.StatusUnauthorized,
+		},
+		{
+			name:      "expired cookie → 401",
+			cookieVal: expiredToken,
+			wantCode:  http.StatusUnauthorized,
+		},
+		{
+			name:      "no header and no cookie → 401",
+			cookieVal: "",
+			wantCode:  http.StatusUnauthorized,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			e.Use(apimw.APIKeyMiddleware(testKey))
+			e.GET("/test", func(c echo.Context) error {
+				return c.String(http.StatusOK, "ok")
+			})
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
+			if tc.cookieVal != "" {
+				req.AddCookie(&http.Cookie{
+					Name:  handler.WbtSessionCookie,
+					Value: tc.cookieVal,
+				})
+			}
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
 		})
 	}
