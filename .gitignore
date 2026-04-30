@@ -5,8 +5,10 @@ AGENTS.md
 !.claude/settings.json
 .mcp.json
 
+.env
 .env.local
 *.env.local
+.cache/
 bin/
 dist/
 /tmp/

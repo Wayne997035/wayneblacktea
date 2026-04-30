@@ -62,6 +62,11 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 	}
 }
 
+const (
+	maxNotesBytes   = 2000
+	maxJSONArgBytes = 512 * 1024 // 512 KB cap before json.Unmarshal to prevent double-parse OOM
+)
+
 // autoLogEntry returns the action string, notes string, and true for the five
 // high-signal tools that should produce an activity_log entry. It returns
 // ("", "", false) for all other tools.
@@ -70,30 +75,40 @@ func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bo
 	case "complete_task":
 		taskID := stringArg(args, "task_id")
 		artifact := stringArg(args, "artifact")
-		return "task:completed", fmt.Sprintf("task_id=%s artifact=%s", taskID, artifact), true
+		return "task:completed", truncate(fmt.Sprintf("task_id=%s artifact=%s", taskID, artifact)), true
 
 	case "add_task":
-		title := stringArg(args, "title")
-		return "task:added", title, true
+		return "task:added", truncate(stringArg(args, "title")), true
 
 	case "log_decision":
-		title := stringArg(args, "title")
-		return "decision:logged", title, true
+		return "decision:logged", truncate(stringArg(args, "title")), true
 
 	case "confirm_plan":
 		phases := stringArg(args, "phases")
 		decisions := stringArg(args, "decisions")
-		nPhases := jsonArrayLen(phases)
-		nDecisions := jsonArrayLen(decisions)
-		return "plan:confirmed", fmt.Sprintf("phases=%d decisions=%d", nPhases, nDecisions), true
+		if len(phases) > maxJSONArgBytes {
+			phases = ""
+		}
+		if len(decisions) > maxJSONArgBytes {
+			decisions = ""
+		}
+		return "plan:confirmed", fmt.Sprintf("phases=%d decisions=%d", jsonArrayLen(phases), jsonArrayLen(decisions)), true
 
 	case "set_session_handoff":
 		intent := stringArg(args, "intent")
-		return "session:handoff", intent, true
+		return "session:handoff", truncate(intent), true
 
 	default:
 		return "", "", false
 	}
+}
+
+// truncate caps notes at maxNotesBytes to prevent unbounded DB writes.
+func truncate(s string) string {
+	if len(s) <= maxNotesBytes {
+		return s
+	}
+	return s[:maxNotesBytes]
 }
 
 // jsonArrayLen parses a JSON array string and returns its length.
