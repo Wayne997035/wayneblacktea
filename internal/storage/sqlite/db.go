@@ -23,6 +23,10 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open %q: %w", dsn, err)
 	}
+	// Serialise all writes through a single connection. SQLite has no
+	// multi-writer concurrency; a pool > 1 triggers SQLITE_BUSY under concurrent
+	// goroutines. Readers coexist via WAL mode set below.
+	conn.SetMaxOpenConns(1)
 	if err := conn.PingContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite ping %q: %w", dsn, err)
@@ -31,6 +35,17 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite enable FK: %w", err)
+	}
+	// WAL mode lets readers run concurrently with the single writer.
+	// In-memory databases silently stay in "memory" mode (no-op, no error).
+	if _, err := conn.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sqlite WAL mode: %w", err)
+	}
+	// busy_timeout: wait up to 5 s when another OS-level writer holds the lock.
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sqlite busy timeout: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, schemaSQL); err != nil {
 		_ = conn.Close()

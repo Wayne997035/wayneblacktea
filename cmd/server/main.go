@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"embed"
 	"flag"
 	"fmt"
@@ -16,25 +15,14 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
-	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
-	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
-	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
-	"github.com/Wayne997035/wayneblacktea/internal/proposal"
-	wbtruntime "github.com/Wayne997035/wayneblacktea/internal/runtime"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
-	"github.com/Wayne997035/wayneblacktea/internal/search"
-	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
-	"github.com/Wayne997035/wayneblacktea/internal/workspace"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
-	pgvectorpgx "github.com/pgvector/pgvector-go/pgx"
 )
 
 //go:embed web/dist
@@ -57,10 +45,6 @@ func run() error {
 		return fmt.Errorf("resolving storage backend: %w", err)
 	}
 	log.Printf("storage backend: %s", backend)
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL not set")
-	}
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
 		return fmt.Errorf("API_KEY not set")
@@ -74,25 +58,24 @@ func run() error {
 		allowedOrigins = "*"
 	}
 
-	pool, err := buildPool(dsn)
+	stores, err := buildStores(backend)
 	if err != nil {
 		return err
 	}
-	defer pool.Close()
-
-	stores, err := buildStores(pool)
-	if err != nil {
-		return err
-	}
+	defer func() {
+		if cerr := stores.Close(); cerr != nil {
+			log.Printf("closing stores: %v", cerr)
+		}
+	}()
 	discordClient := discord.NewClient()
 
-	ctxH := handler.NewContextHandler(stores.gtd, stores.session)
-	gtdH := handler.NewGTDHandler(stores.gtd)
-	wsH := handler.NewWorkspaceHandler(stores.workspace)
-	decH := handler.NewDecisionHandler(stores.decision)
-	sessH := handler.NewSessionHandler(stores.session)
-	knowledgeH := handler.NewKnowledgeHandler(stores.knowledge, stores.proposal)
-	learningH := handler.NewLearningHandler(stores.learning)
+	ctxH := handler.NewContextHandler(stores.GTD(), stores.Session())
+	gtdH := handler.NewGTDHandler(stores.GTD())
+	wsH := handler.NewWorkspaceHandler(stores.Workspace())
+	decH := handler.NewDecisionHandler(stores.Decision())
+	sessH := handler.NewSessionHandler(stores.Session())
+	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
+	learningH := handler.NewLearningHandler(stores.Learning())
 
 	e := echo.New()
 	e.HideBanner = true
@@ -159,7 +142,7 @@ func run() error {
 	e.GET("/*", echo.WrapHandler(buildSPAHandler(distFS)))
 
 	// Start scheduler.
-	sched, err := scheduler.New(stores.learning, discordClient)
+	sched, err := scheduler.New(stores.Learning(), discordClient)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
 	}
@@ -200,19 +183,6 @@ func buildSPAHandler(distFS fs.FS) http.Handler {
 	})
 }
 
-// storeBundle groups every domain store the server needs after they have
-// been scoped to the configured workspace. Extracted out of run() to keep
-// run()'s cyclomatic complexity below the gocyclo threshold.
-type storeBundle struct {
-	gtd       *gtd.Store
-	workspace *workspace.Store
-	decision  *decision.Store
-	session   *session.Store
-	knowledge *knowledge.Store
-	learning  *learning.Store
-	proposal  *proposal.Store
-}
-
 // startDiscordBotIfConfigured starts the Discord bot when DISCORD_BOT_TOKEN is
 // set, returning a stop function the caller defers. When the token is unset,
 // returns a no-op stop function so the caller can defer unconditionally.
@@ -238,34 +208,10 @@ func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
 	return bot.Stop, nil
 }
 
-func buildStores(pool *pgxpool.Pool) (*storeBundle, error) {
-	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+func buildStores(backend storage.Backend) (storage.ServerStores, error) {
+	stores, err := storage.BuildServerStores(context.Background(), backend)
 	if err != nil {
-		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
+		return nil, fmt.Errorf("building stores for backend %s: %w", backend, err)
 	}
-	embedClient := search.NewEmbeddingClient()
-	return &storeBundle{
-		gtd:       gtd.NewStore(pool, wsID),
-		workspace: workspace.NewStore(pool, wsID),
-		decision:  decision.NewStore(pool, wsID),
-		session:   session.NewStore(pool, wsID),
-		knowledge: knowledge.NewStore(pool, embedClient, wsID),
-		learning:  learning.NewStore(pool, wsID),
-		proposal:  proposal.NewStore(pool, wsID),
-	}, nil
-}
-
-func buildPool(dsn string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("parsing database URL: %w", err)
-	}
-	// Aiven uses a custom CA not in the system trust store.
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
-	cfg.AfterConnect = pgvectorpgx.RegisterTypes
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to database: %w", err)
-	}
-	return pool, nil
+	return stores, nil
 }

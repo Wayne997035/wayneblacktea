@@ -2,22 +2,20 @@
 //
 // The personal-OS goal of friend-grade self-hosting drives a pluggable
 // storage layer: the canonical PostgreSQL deployment for Wayne's instance,
-// and a future zero-infra SQLite backend (sqlite-vec for vectors, FTS5 for
-// full-text) for friends installing locally.
+// and a zero-infra SQLite backend (modernc.org/sqlite, pure-Go, no CGo)
+// for friends installing locally with one binary + one .db file.
 //
-// Phase C (this commit) ships the architectural scaffolding:
-//   - Backend enum + STORAGE_BACKEND env reading (this file).
-//   - Per-domain Go interfaces (`<domain>.StoreIface`) under each domain
-//     package — see internal/gtd/iface.go, internal/decision/iface.go, etc.
-//     Existing Postgres-backed Store structs satisfy those interfaces via
-//     compile-time `var _ Iface = (*Store)(nil)` assertions.
+// Both backends are runnable today via NewServerStores in factory.go.
+// EnsureSupported below permits both BackendPostgres and BackendSQLite; the
+// only failure mode it still guards against is an unknown STORAGE_BACKEND
+// value (e.g. "mysql"), which we want to reject at startup rather than
+// halfway through the first request.
 //
-// What is NOT in Phase C: a runnable SQLite implementation. STORAGE_BACKEND=
-// sqlite returns ErrSQLiteNotImplemented at startup. Implementing the SQLite
-// stores requires (a) pure-Go SQLite driver decision (modernc.org/sqlite vs
-// mattn/go-sqlite3 with sqlite-vec), (b) UUID and JSONB column adaptation,
-// and (c) FTS5/sqlite-vec wiring for the knowledge domain. Those are tracked
-// as a follow-up task and are non-trivial.
+// Per-domain Go interfaces (`<domain>.StoreIface`) under each domain
+// package — see internal/gtd/iface.go, internal/decision/iface.go, etc. —
+// keep handler / MCP code backend-agnostic; both Postgres- and SQLite-backed
+// Store types satisfy those interfaces via compile-time `var _ Iface = ...`
+// assertions, and ServerStores in server_stores.go bundles the seven of them.
 package storage
 
 import (
@@ -37,13 +35,6 @@ const (
 	// BackendSQLite uses a local file-backed SQLite database. Reserved for
 	// the upcoming friend-grade self-host path; not yet implemented.
 	BackendSQLite Backend = "sqlite"
-)
-
-// ErrSQLiteNotImplemented is returned at startup when STORAGE_BACKEND=sqlite
-// is requested. Replace with a real implementation under
-// internal/storage/sqlite/ before removing this sentinel.
-var ErrSQLiteNotImplemented = errors.New(
-	"STORAGE_BACKEND=sqlite is not yet implemented; use postgres or leave the env unset",
 )
 
 // ErrInvalidBackend is returned by BackendFromEnv when the value is set but
@@ -67,16 +58,18 @@ func BackendFromEnv() (Backend, error) {
 	}
 }
 
-// EnsureSupported returns nil when the given backend is fully implemented
-// today, and an actionable error when it is not. Call this at startup right
-// after BackendFromEnv so the process fails fast with a clear message rather
-// than mid-request when an unimplemented store is invoked.
+// EnsureSupported returns nil when the given backend is one we ship a real
+// implementation for, and ErrInvalidBackend (wrapped) for any unknown value.
+//
+// As of SQLite v2 cmd dispatch (this commit) both BackendPostgres and
+// BackendSQLite are runnable; the only failure mode is an unknown enum value
+// (e.g. "mysql") that bypassed BackendFromEnv. We keep the function so callers
+// can re-validate after constructing a Backend by hand (tests, future
+// migration tooling) without re-implementing the switch.
 func EnsureSupported(b Backend) error {
 	switch b {
-	case BackendPostgres:
+	case BackendPostgres, BackendSQLite:
 		return nil
-	case BackendSQLite:
-		return ErrSQLiteNotImplemented
 	default:
 		return fmt.Errorf("%w: got %q", ErrInvalidBackend, string(b))
 	}
