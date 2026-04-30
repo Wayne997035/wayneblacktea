@@ -88,7 +88,8 @@ Trigger phrases (any of these counts as confirmation):
     "提早", "提前", "改天", "等到", "現在開始", "提早開始"
   - Action verbs: "start", "開始", "執行", "do it", "繼續",
     "那就…", "先做…", "改成…", "改…",
-    "清掉", "拿掉", "刪", "remove", "drop"
+    "清掉", "拿掉", "刪", "remove", "drop",
+    "開工", "動工", "衝", "按照你列出的", "按這個順序"
 
 When ANY of these fire on a plan described in the last 3 turns:
 Call confirm_plan IMMEDIATELY with ALL phases as tasks and ALL confirmed decisions.
@@ -98,6 +99,20 @@ Critical: when YOU (the assistant) propose options and the user replies with
 just a letter or very short pick, that IS a plan confirmation. Treat it as such,
 not as casual chat. The assistant proposing + user accepting still requires the
 same logging discipline as user proposing.
+
+Anti-rationalization: tasks already existing in GTD does NOT exempt from calling
+confirm_plan or log_decision. Confirming execution order IS a decision worth
+logging. "Tasks exist → no need to log" is a failure mode, not a valid exception.
+(Skip if MCP is unavailable or returns an error.)
+
+## MANDATORY: After plan confirmation — immediate dispatch assessment
+After confirm_plan or log_decision fires, Lead MUST immediately assess each task:
+  - Lead-direct (< 5 files, 1-line change, no new logic): start doing NOW
+  - Needs dispatch: invoke feature/fix skill and dispatch engineer + codex NOW
+
+Do NOT wait for the user to say "and dispatch the agents" — that is always implied.
+Both can happen in parallel: Lead-direct tasks + dispatching agents for complex ones.
+Failure mode: Lead does CI-1 itself, then stops and waits. That is wrong.
 (Skip if MCP is unavailable or returns an error.)
 
 ## MANDATORY: When user confirms a single decision (not a multi-phase plan)
