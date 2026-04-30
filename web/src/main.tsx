@@ -20,16 +20,19 @@ const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Root element not found')
 
 // Obtain the wbt_session httpOnly cookie from the server before mounting the app.
-// If this fails (e.g. network error), the app still mounts; API calls will get 401s.
-initSession().catch(() => {
-  // Intentionally silent — the app will degrade gracefully with 401 responses.
-})
-
-createRoot(rootElement).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-      <ToastContainer />
-    </QueryClientProvider>
-  </StrictMode>,
-)
+// Render is deferred to finally() so the cookie is set (or failed) before React
+// renders — preventing 401 flashes on first API call.
+initSession()
+  .catch(() => {
+    // Intentionally silent — the app will degrade gracefully with 401 responses.
+  })
+  .finally(() => {
+    createRoot(rootElement).render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <App />
+          <ToastContainer />
+        </QueryClientProvider>
+      </StrictMode>,
+    )
+  })

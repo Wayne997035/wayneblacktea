@@ -9,12 +9,21 @@ import (
 )
 
 // CORSMiddleware returns an Echo CORS middleware.
-// allowedOrigins is a comma-separated list of origins; "*" allows all.
+// allowedOrigins is a comma-separated list of explicit origins.
 // AllowCredentials is set to true so that the browser can send the
-// wbt_session httpOnly cookie in cross-origin requests (e.g. local dev).
-// Note: AllowCredentials=true is incompatible with AllowOrigins=["*"] in
-// browsers; callers must set ALLOWED_ORIGINS to explicit origins in production.
+// wbt_session httpOnly cookie in cross-origin requests.
+//
+// IMPORTANT: allowedOrigins must not be "*" or empty — wildcard origins are
+// incompatible with AllowCredentials=true and browsers reject such responses.
+// This function panics at startup when an unsafe value is detected to prevent
+// silent misconfiguration in production.
 func CORSMiddleware(allowedOrigins string) echo.MiddlewareFunc {
+	if allowedOrigins == "*" || allowedOrigins == "" {
+		// Wildcard origin with AllowCredentials=true is silently rejected by all
+		// browsers and creates a false sense of security. Callers must set
+		// ALLOWED_ORIGINS to explicit origins (e.g. https://app.example.com).
+		panic("CORSMiddleware: ALLOWED_ORIGINS must not be '*' or empty when AllowCredentials=true; set ALLOWED_ORIGINS env var")
+	}
 	origins := strings.Split(allowedOrigins, ",")
 	for i, o := range origins {
 		origins[i] = strings.TrimSpace(o)

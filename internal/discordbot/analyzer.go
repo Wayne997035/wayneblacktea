@@ -60,8 +60,6 @@ Rules:
 - tags: 2-5 lowercase keywords
 - skip_reason: brief reason only when worth_saving=false, otherwise ""
 - summary must be in the same language as the content
-
-Content:
 `
 
 // Analyze sends content to GROQ and returns a structured learning assessment.
@@ -69,7 +67,8 @@ func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult
 	body, err := json.Marshal(map[string]any{
 		"model": a.model,
 		"messages": []map[string]string{
-			{"role": "user", "content": analyzePrompt + content},
+			{"role": "system", "content": analyzePrompt},
+			{"role": "user", "content": content},
 		},
 		"temperature":     0.2,
 		"max_tokens":      1024,
