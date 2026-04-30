@@ -34,14 +34,14 @@ func TestHandleInitialInstructions_ReturnsProtocol(t *testing.T) {
 
 	// Verify key sections are present.
 	requiredSections := []string{
-		"MANDATORY",
 		"get_today_context",
 		"log_decision",
 		"complete_task",
 		"set_session_handoff",
 		"search_knowledge",
-		"When user signals task completion",
-		"Session-end auto-handoff",
+		"confirm_plan",
+		"add_task",
+		"auto-log",
 	}
 	for _, section := range requiredSections {
 		if !strings.Contains(textContent.Text, section) {
