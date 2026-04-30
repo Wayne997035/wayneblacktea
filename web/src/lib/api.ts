@@ -1,34 +1,41 @@
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-  })
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
-  return res.json() as Promise<T>
+// Singleton: at most one in-flight initSession at a time.
+let _sessionPromise: Promise<void> | null = null
+
+export function initSession(): Promise<void> {
+  if (!_sessionPromise) {
+    const apiKey = import.meta.env.VITE_API_KEY as string | undefined
+    _sessionPromise = fetch(`${BASE}/api/session`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-API-Key': apiKey ?? '' },
+    })
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        // Allow re-issue after the session expires (next 401 will trigger again).
+        _sessionPromise = null
+      })
+  }
+  return _sessionPromise
 }
 
-/**
- * initSession calls POST /api/session once at SPA startup so the server can
- * set the wbt_session httpOnly cookie.  Subsequent apiFetch calls carry the
- * cookie automatically via credentials: 'include'.
- *
- * The endpoint requires the raw API key in X-API-Key.  The SPA reads it from
- * the build-time env var VITE_API_KEY — never exposed to end users because
- * it is only sent to our own origin to obtain a short-lived session cookie.
- */
-export async function initSession(): Promise<void> {
-  const apiKey = import.meta.env.VITE_API_KEY as string | undefined
-  await fetch(`${BASE}/api/session`, {
-    method: 'POST',
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const opts: RequestInit = {
+    ...init,
     credentials: 'include',
-    headers: {
-      'X-API-Key': apiKey ?? '',
-    },
-  })
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  }
+
+  let res = await fetch(`${BASE}${path}`, opts)
+
+  if (res.status === 401) {
+    // Cookie expired or not yet set — refresh session and retry once.
+    await initSession()
+    res = await fetch(`${BASE}${path}`, opts)
+  }
+
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json() as Promise<T>
 }
