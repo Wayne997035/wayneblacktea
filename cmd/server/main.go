@@ -81,7 +81,10 @@ func run() error {
 	decH := handler.NewDecisionHandler(stores.Decision())
 	sessH := handler.NewSessionHandler(stores.Session())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
-	learningH := handler.NewLearningHandler(stores.Learning())
+	learningH := handler.NewLearningHandler(stores.Learning(),
+		handler.WithKnowledgeStore(stores.Knowledge()),
+		handler.WithDecisionStore(stores.Decision()),
+	)
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	var sum *ai.Summarizer
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
@@ -147,6 +150,8 @@ func run() error {
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
 	api.POST("/learning/concepts", learningH.CreateConcept)
+	api.GET("/learning/suggestions", learningH.GetSuggestions)
+	api.POST("/learning/from-knowledge", learningH.CreateConceptFromKnowledge)
 
 	api.POST("/activity", autologH.LogActivity)
 	api.POST("/auto-handoff", autologH.AutoHandoff)
