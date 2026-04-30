@@ -248,8 +248,11 @@ func (s *GTDStore) GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Projec
 }
 
 func (s *GTDStore) projectByID(ctx context.Context, id uuid.UUID) (*db.Project, error) {
-	const q = `SELECT ` + projectsSelectCols + ` FROM projects WHERE id = ?1 LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id.String())
+	const q = `SELECT ` + projectsSelectCols + ` FROM projects
+		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg())
 	p, err := scanProject(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, gtd.ErrNotFound
