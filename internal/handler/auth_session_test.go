@@ -90,6 +90,67 @@ func TestAuthSessionHandler_IssueSession(t *testing.T) {
 	}
 }
 
+func TestAuthSessionHandler_EmptyAPIKey(t *testing.T) {
+	e := echo.New()
+	h := handler.NewAuthSessionHandler("")
+	e.POST("/api/session", h.IssueSession)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/session", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("empty apiKey: got status %d, want 500", rec.Code)
+	}
+}
+
+func TestAuthSessionHandler_SecureFlag(t *testing.T) {
+	const apiKey = "test-key"
+
+	cases := []struct {
+		name           string
+		forwardedProto string
+		wantSecure     bool
+	}{
+		{"no X-Forwarded-Proto (local HTTP) → Secure=false", "", false},
+		{"X-Forwarded-Proto: https → Secure=true", "https", true},
+		{"X-Forwarded-Proto: http → Secure=false", "http", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := echo.New()
+			h := handler.NewAuthSessionHandler(apiKey)
+			e.POST("/api/session", h.IssueSession)
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/session", nil)
+			req.Header.Set("X-API-Key", apiKey)
+			if tc.forwardedProto != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
+			}
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got status %d, want 200", rec.Code)
+			}
+			var found *http.Cookie
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == handler.WbtSessionCookie {
+					found = c
+					break
+				}
+			}
+			if found == nil {
+				t.Fatal("cookie not set")
+			}
+			if found.Secure != tc.wantSecure {
+				t.Errorf("Secure=%v, want %v", found.Secure, tc.wantSecure)
+			}
+		})
+	}
+}
+
 func TestValidateAuthToken_RoundTrip(t *testing.T) {
 	const apiKey = "secret-key"
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
