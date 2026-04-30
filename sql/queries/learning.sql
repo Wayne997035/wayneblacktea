@@ -9,11 +9,12 @@ WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
 
 -- name: ListDueReviews :many
-SELECT c.id, c.title, c.content, c.tags, c.created_at, c.updated_at,
+SELECT c.id, c.title, c.content, c.tags, c.created_at, c.updated_at, c.status,
        rs.id as schedule_id, rs.stability, rs.difficulty, rs.due_date, rs.review_count
 FROM concepts c
 JOIN review_schedule rs ON rs.concept_id = c.id
 WHERE rs.due_date <= NOW()
+  AND c.status = 'active'
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR c.workspace_id = sqlc.narg('workspace_id'))
 ORDER BY rs.due_date ASC
 LIMIT sqlc.arg('limit_n');
@@ -29,4 +30,19 @@ SET stability = sqlc.arg('stability'), difficulty = sqlc.arg('difficulty'), due_
     last_review_at = NOW(), review_count = review_count + 1, updated_at = NOW()
 WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+RETURNING *;
+
+-- name: ListConceptsForAIReview :many
+SELECT c.id, c.title, c.content, rs.review_count, rs.stability
+FROM concepts c
+JOIN review_schedule rs ON rs.concept_id = c.id
+WHERE c.status = 'active'
+  AND rs.review_count >= sqlc.arg('min_review_count')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR c.workspace_id = sqlc.narg('workspace_id'))
+ORDER BY rs.review_count DESC;
+
+-- name: UpdateConceptStatus :one
+UPDATE concepts
+SET status = sqlc.arg('status'), updated_at = NOW()
+WHERE id = sqlc.arg('id')
 RETURNING *;

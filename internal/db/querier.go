@@ -39,6 +39,7 @@ type Querier interface {
 	ListActiveProjects(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error)
 	ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) ([]Repo, error)
 	ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error)
+	ListConceptsForAIReview(ctx context.Context, arg ListConceptsForAIReviewParams) ([]ListConceptsForAIReviewRow, error)
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
@@ -47,6 +48,7 @@ type Querier interface {
 	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
 	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
 	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
+	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
 	UpdateKnowledgeEmbedding(ctx context.Context, arg UpdateKnowledgeEmbeddingParams) error
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)
 	UpdateReviewSchedule(ctx context.Context, arg UpdateReviewScheduleParams) (ReviewSchedule, error)

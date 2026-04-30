@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
@@ -18,6 +19,14 @@ import (
 // HTTP call wedge the scheduler goroutine.
 const dailyBriefingTimeout = 60 * time.Second
 
+// weeklyAIReviewTimeout caps the weekly AI concept review job. Claude API
+// latency plus DB updates for up to 50 concepts fits comfortably within 5 min.
+const weeklyAIReviewTimeout = 5 * time.Minute
+
+// aiReviewMinReviewCount is the minimum number of completed reviews a concept
+// must have before it is eligible for AI evaluation.
+const aiReviewMinReviewCount = 5
+
 // Scheduler wraps gocron and coordinates scheduled background jobs.
 type Scheduler struct {
 	s              gocron.Scheduler
@@ -25,6 +34,7 @@ type Scheduler struct {
 	discord        *discord.Client
 	notion         *notion.Client
 	briefingStores notion.BriefingStores
+	reviewer       ai.ConceptReviewerIface
 }
 
 // New creates and configures the Scheduler with all registered jobs.
@@ -34,11 +44,15 @@ type Scheduler struct {
 // job entirely and log a single info-level skip message at startup. This
 // preserves the "no Notion configured = legacy single-user mode" behavior
 // without surprising the operator with retried 401s every morning.
+//
+// reviewer is optional: when nil the weekly AI concept review job is skipped
+// and a single info-level message is logged at startup.
 func New(
 	ls learning.StoreIface,
 	dc *discord.Client,
 	notionClient *notion.Client,
 	briefingStores notion.BriefingStores,
+	reviewer ai.ConceptReviewerIface,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -56,6 +70,7 @@ func New(
 		discord:        dc,
 		notion:         notionClient,
 		briefingStores: briefingStores,
+		reviewer:       reviewer,
 	}
 
 	_, err = s.NewJob(
@@ -82,6 +97,22 @@ func New(
 		slog.Info("scheduler: DailyNotionBriefing scheduled at 08:00 Asia/Taipei")
 	} else {
 		slog.Info("scheduler: DailyNotionBriefing skipped (Notion client not configured)")
+	}
+
+	if reviewer != nil {
+		_, err = s.NewJob(
+			gocron.WeeklyJob(1, gocron.NewWeekdays(time.Sunday), gocron.NewAtTimes(gocron.NewAtTime(2, 0, 0))),
+			gocron.NewTask(sc.weeklyAIConceptReview),
+			gocron.WithName("weekly-ai-concept-review"),
+			// LimitModeReschedule prevents goroutine pile-up if Claude is slow.
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("registering weekly AI concept review job: %w", err)
+		}
+		slog.Info("scheduler: WeeklyAIConceptReview scheduled at Sunday 02:00 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: WeeklyAIConceptReview skipped (Claude API key not configured)")
 	}
 
 	return sc, nil
@@ -162,5 +193,69 @@ func (s *Scheduler) sendDailyNotionBriefing() {
 		"pending_proposals", len(briefing.PendingProposals),
 		"due_reviews", len(briefing.DueReviews),
 		"stuck_tasks", briefing.SystemHealth.StuckTaskCount,
+	)
+}
+
+// weeklyAIConceptReview fetches active concepts with sufficient review history,
+// asks Claude to evaluate them, and updates the status of any concept that has
+// been mastered or found to be not helpful. All errors are logged at warn level
+// so the scheduler keeps running other jobs.
+func (s *Scheduler) weeklyAIConceptReview() {
+	// Independent timeout — MUST NOT inherit a request context.
+	ctx, cancel := context.WithTimeout(context.Background(), weeklyAIReviewTimeout)
+	defer cancel()
+
+	concepts, err := s.learning.ListForAIReview(ctx, aiReviewMinReviewCount)
+	if err != nil {
+		slog.Warn("weekly AI concept review: listing concepts failed", "err", err)
+		return
+	}
+
+	if len(concepts) == 0 {
+		slog.Info("weekly AI concept review: no concepts eligible for review")
+		return
+	}
+
+	inputs := make([]ai.ReviewInput, 0, len(concepts))
+	for _, c := range concepts {
+		inputs = append(inputs, ai.ReviewInput{
+			ID:          c.ID,
+			Title:       c.Title,
+			Content:     c.Content,
+			ReviewCount: c.ReviewCount,
+			Stability:   c.Stability,
+		})
+	}
+
+	results := s.reviewer.ReviewConcepts(ctx, inputs)
+	if len(results) == 0 {
+		slog.Info("weekly AI concept review: no status changes recommended")
+		return
+	}
+
+	updated := 0
+	for _, res := range results {
+		if res.NewStatus == "active" {
+			continue
+		}
+		if err := s.learning.UpdateConceptStatus(ctx, res.ID, res.NewStatus); err != nil {
+			slog.Warn("weekly AI concept review: updating concept status failed",
+				"concept_id", res.ID,
+				"new_status", res.NewStatus,
+				"err", err,
+			)
+			continue
+		}
+		updated++
+		slog.Info("weekly AI concept review: concept status updated",
+			"concept_id", res.ID,
+			"new_status", res.NewStatus,
+		)
+	}
+
+	slog.Info("weekly AI concept review: completed",
+		"eligible_concepts", len(concepts),
+		"ai_results", len(results),
+		"updated", updated,
 	)
 }

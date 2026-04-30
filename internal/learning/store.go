@@ -140,3 +140,49 @@ func (s *Store) CountDueReviews(ctx context.Context) (int, error) {
 	}
 	return len(reviews), nil
 }
+
+// ConceptForReview holds the fields needed by the AI reviewer to evaluate
+// whether a concept has been mastered or is no longer helpful.
+type ConceptForReview struct {
+	ID          uuid.UUID
+	Title       string
+	Content     string
+	ReviewCount int
+	Stability   float64
+}
+
+// ListForAIReview returns active concepts that have at least minReviewCount
+// completed reviews, ordered by review count descending.
+func (s *Store) ListForAIReview(ctx context.Context, minReviewCount int) ([]ConceptForReview, error) {
+	rows, err := s.q.ListConceptsForAIReview(ctx, db.ListConceptsForAIReviewParams{
+		MinReviewCount: int32(minReviewCount), //nolint:gosec // minReviewCount is a small bounded constant (5)
+		WorkspaceID:    s.workspaceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing concepts for AI review: %w", err)
+	}
+
+	out := make([]ConceptForReview, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ConceptForReview{
+			ID:          r.ID,
+			Title:       r.Title,
+			Content:     r.Content,
+			ReviewCount: int(r.ReviewCount),
+			Stability:   r.Stability,
+		})
+	}
+	return out, nil
+}
+
+// UpdateConceptStatus sets the status column of the given concept.
+// Valid values are "active", "mastered", and "not_helpful".
+func (s *Store) UpdateConceptStatus(ctx context.Context, id uuid.UUID, status string) error {
+	if _, err := s.q.UpdateConceptStatus(ctx, db.UpdateConceptStatusParams{
+		ID:     id,
+		Status: status,
+	}); err != nil {
+		return fmt.Errorf("updating concept %s status to %q: %w", id, status, err)
+	}
+	return nil
+}

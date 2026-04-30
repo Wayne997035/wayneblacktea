@@ -28,6 +28,7 @@ type Concept struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Status      string             `json:"status"`
 }
 
 type Decision struct {
