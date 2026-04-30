@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -188,7 +189,7 @@ func (c *Client) deletePageChildren(ctx context.Context, pageID string) error {
 	for safety := 0; safety < 10; safety++ { // hard upper bound on pagination
 		path := "/blocks/" + pageID + "/children?page_size=100"
 		if cursor != "" {
-			path += "&start_cursor=" + cursor
+			path += "&start_cursor=" + url.QueryEscape(cursor)
 		}
 		if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 			return fmt.Errorf("listing children (cursor=%q): %w", cursor, err)
@@ -382,11 +383,12 @@ func bulletBlock(text string) map[string]any {
 }
 
 // truncateForNotion enforces Notion's 2000-character per-rich_text limit.
-// Truncated strings get an explicit ellipsis so the reader knows.
+// Uses rune-aware truncation so multi-byte characters (CJK, emoji) are never
+// split mid-sequence. Truncated strings get an ellipsis so the reader knows.
 func truncateForNotion(s string) string {
-	if len(s) <= dailyBriefingRichTextLimit {
+	r := []rune(s)
+	if len(r) <= dailyBriefingRichTextLimit {
 		return s
 	}
-	const ellipsis = "..."
-	return s[:dailyBriefingRichTextLimit-len(ellipsis)] + ellipsis
+	return string(r[:dailyBriefingRichTextLimit-3]) + "..."
 }

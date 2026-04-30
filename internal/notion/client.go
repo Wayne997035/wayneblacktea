@@ -165,7 +165,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("notion %s %s returned %d: %s", method, path, resp.StatusCode, string(respBytes))
+		errBody := string(respBytes)
+		if len(errBody) > 200 {
+			errBody = errBody[:200] + "...[truncated]"
+		}
+		return fmt.Errorf("notion %s %s returned %d: %s", method, path, resp.StatusCode, errBody)
 	}
 
 	if out == nil {

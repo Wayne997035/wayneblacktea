@@ -139,10 +139,15 @@ func keepFirstErr(dst *error, err error) {
 	}
 }
 
-// briefingIsEmpty reports whether every data section in b is empty.
+// briefingIsEmpty reports whether every data section in b is empty,
+// including weekly progress counters so a briefing with only health data
+// is not discarded.
 func briefingIsEmpty(b *DailyBriefing) bool {
 	return len(b.InProgressTasks) == 0 && len(b.DueReviews) == 0 &&
-		len(b.PendingProposals) == 0 && len(b.RecentDecisions) == 0
+		len(b.PendingProposals) == 0 && len(b.RecentDecisions) == 0 &&
+		b.SystemHealth.StuckTaskCount == 0 &&
+		b.SystemHealth.WeeklyCompletedTask == 0 &&
+		b.SystemHealth.WeeklyTotalActive == 0
 }
 
 // fillTasks loads in-progress tasks and computes stuck-task health signals.
