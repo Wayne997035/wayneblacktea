@@ -15,6 +15,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
@@ -82,7 +83,11 @@ func run() error {
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	learningH := handler.NewLearningHandler(stores.Learning())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
-	autologH := handler.NewAutologHandler(stores.GTD(), stores.Session(), stores.Decision())
+	var sum *ai.Summarizer
+	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
+		sum = ai.New(claudeKey)
+	}
+	autologH := handler.NewAutologHandler(stores.GTD(), stores.Session(), stores.Decision(), sum)
 
 	e := echo.New()
 	e.HideBanner = true

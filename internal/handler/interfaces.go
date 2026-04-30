@@ -82,6 +82,7 @@ type autologSessionStore interface {
 // autologDecisionStore covers the subset of decision.Store used by AutologHandler.
 type autologDecisionStore interface {
 	All(ctx context.Context, limit int32) ([]db.Decision, error)
+	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
 }
 
 // errResp returns a standard error response body.
