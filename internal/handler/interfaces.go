@@ -66,6 +66,22 @@ type learningStore interface {
 	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
 }
 
+// autologGTDStore covers the subset of gtd.StoreIface used by AutologHandler.
+type autologGTDStore interface {
+	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error
+	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+}
+
+// autologSessionStore covers the subset of session.Store used by AutologHandler.
+type autologSessionStore interface {
+	SetHandoff(ctx context.Context, p session.HandoffParams) (*db.SessionHandoff, error)
+}
+
+// autologDecisionStore covers the subset of decision.Store used by AutologHandler.
+type autologDecisionStore interface {
+	All(ctx context.Context, limit int32) ([]db.Decision, error)
+}
+
 // errResp returns a standard error response body.
 func errResp(msg string) map[string]string {
 	return map[string]string{"error": msg}

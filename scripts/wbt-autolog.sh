@@ -3,16 +3,15 @@
 #
 # Reads the Claude Code hook JSON payload from stdin. When the bash command
 # contains deployment-decision keywords (railway vars set, gh pr merge, etc.),
-# it logs an activity entry to wayneblacktea via the local MCP binary.
+# it logs an activity entry to wayneblacktea via HTTP (curl).
 #
 # Silently exits on any failure — hooks must never block the main workflow.
-# This file is committed to the repo; it works for any contributor who has
-# cloned the full repo and built the MCP binary (cd build && task build-mcp).
-# Binary-only users get the same auto-log via the server-side Go middleware.
+# WBT_API_URL defaults to the Railway production URL; override with a local
+# value (e.g. http://localhost:8080) for development.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BINARY="$PROJECT_ROOT/bin/wayneblacktea-mcp"
+WBT_URL="${WBT_API_URL:-https://wayneblacktea-production.up.railway.app}"
 FALLBACK_LOG="$PROJECT_ROOT/.cache/wbt-pending-decisions.jsonl"
 
 # Wrap everything so any unexpected failure is silenced.
@@ -50,30 +49,27 @@ except Exception:
     local NOTES_JSON
     NOTES_JSON=$(printf '%s' "$NOTES" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null) || return 0
 
-    # --- Try to log via local MCP binary ---
-    if [[ -x "$BINARY" ]]; then
-        # Load DATABASE_URL from .env.local (preferred) then .env
-        if [[ -f "$PROJECT_ROOT/.env.local" ]]; then
-            set -a
-            # shellcheck source=/dev/null
-            source "$PROJECT_ROOT/.env.local" 2>/dev/null || true
-            set +a
-        fi
-        if [[ -f "$PROJECT_ROOT/.env" ]]; then
-            set -a
-            # shellcheck source=/dev/null
-            source "$PROJECT_ROOT/.env" 2>/dev/null || true
-            set +a
-        fi
+    # --- Load API_KEY from .env.local (preferred) then .env ---
+    if [[ -f "$PROJECT_ROOT/.env.local" ]]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$PROJECT_ROOT/.env.local" 2>/dev/null || true
+        set +a
+    fi
+    if [[ -f "$PROJECT_ROOT/.env" ]]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$PROJECT_ROOT/.env" 2>/dev/null || true
+        set +a
+    fi
 
-        # Validate DATABASE_URL looks like a postgres URI before using it
-        if [[ "${DATABASE_URL:-}" =~ ^postgres(ql)?:// ]]; then
-            # MCP protocol: initialize then call tool
-            {
-                printf '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"bash-hook","version":"1.0"}},"id":1}\n'
-                printf '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_activity","arguments":{"actor":"bash-hook","action":"deploy:bash","notes":%s}},"id":2}\n' "$NOTES_JSON"
-            } | timeout 8 "$BINARY" >/dev/null 2>&1 && return 0
-        fi
+    # --- Try to log via HTTP ---
+    if [[ -n "${API_KEY:-}" ]]; then
+        curl -s -f -X POST "$WBT_URL/api/activity" \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"actor\":\"bash-hook\",\"action\":\"deploy:bash\",\"notes\":$NOTES_JSON}" \
+            --max-time 5 >/dev/null 2>&1 && return 0
     fi
 
     # --- Fallback: append to project-local cache file (not world-writable /tmp) ---

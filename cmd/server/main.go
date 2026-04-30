@@ -82,6 +82,7 @@ func run() error {
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	learningH := handler.NewLearningHandler(stores.Learning())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
+	autologH := handler.NewAutologHandler(stores.GTD(), stores.Session(), stores.Decision())
 
 	e := echo.New()
 	e.HideBanner = true
@@ -141,6 +142,9 @@ func run() error {
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
 	api.POST("/learning/concepts", learningH.CreateConcept)
+
+	api.POST("/activity", autologH.LogActivity)
+	api.POST("/auto-handoff", autologH.AutoHandoff)
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {
