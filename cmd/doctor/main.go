@@ -60,7 +60,7 @@ func main() {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // G402: doctor targets self-signed certs
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})

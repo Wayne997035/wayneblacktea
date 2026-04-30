@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const statusActive = "active"
+
 func openWorkspaceStore(t *testing.T, dsn, workspaceID string) *sqlite.WorkspaceStore {
 	t.Helper()
 	d, err := sqlite.Open(context.Background(), dsn, workspaceID)
@@ -112,7 +114,7 @@ func TestWorkspaceStore_ActiveReposOrderingByNameWhenActivityTies(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ActiveRepos: %v", err)
 	}
-	if len(rows) != 2 || rows[0].Status != "active" || rows[1].Status != "active" {
+	if len(rows) != 2 || rows[0].Status != statusActive || rows[1].Status != statusActive {
 		t.Fatalf("expected two active repos, got %+v", rows)
 	}
 }

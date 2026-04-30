@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func setupEchoWithMiddleware(configuredKey string) *echo.Echo {
 }
 
 func doRequest(e *echo.Echo, headerKey string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 	if headerKey != "" {
 		req.Header.Set("X-API-Key", headerKey)
 	}
@@ -77,7 +78,7 @@ func TestAPIKeyMiddleware_EmptyKey(t *testing.T) {
 func TestAPIKeyMiddleware_EmptyConfig(t *testing.T) {
 	e := setupEchoWithMiddleware("") // configured with empty string
 	// Send request with no X-API-Key header → header value is also ""
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 

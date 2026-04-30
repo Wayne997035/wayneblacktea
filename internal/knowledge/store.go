@@ -203,7 +203,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 		ORDER BY ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) DESC
 		LIMIT $2`
 
-	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec
+	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec // G115: caller guarantees positive int32
 	if err != nil {
 		return nil, fmt.Errorf("FTS search: %w", err)
 	}
@@ -327,7 +327,7 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2`
 
-	rows, err := s.pool.Query(ctx, q, int32(limit), int32(offset), s.workspaceID) //nolint:gosec
+	rows, err := s.pool.Query(ctx, q, int32(limit), int32(offset), s.workspaceID) //nolint:gosec // G115: fits int32 by caller contract
 	if err != nil {
 		return nil, fmt.Errorf("listing knowledge items: %w", err)
 	}

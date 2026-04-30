@@ -137,5 +137,5 @@ func (t *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, err
 	r2 := req.Clone(req.Context())
 	r2.URL.Scheme = t.targetScheme
 	r2.URL.Host = t.targetHost
-	return http.DefaultTransport.RoundTrip(r2) //nolint:wrapcheck // test helper: transport wrapping is intentional
+	return http.DefaultTransport.RoundTrip(r2)
 }
