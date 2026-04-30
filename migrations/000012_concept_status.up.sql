@@ -1,0 +1,1 @@
+ALTER TABLE concepts ADD COLUMN status TEXT NOT NULL DEFAULT 'active';

@@ -2,7 +2,18 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "sql/queries/"
-    schema: "migrations/"
+    schema:
+      - "migrations/000001_gtd.up.sql"
+      - "migrations/000002_workspace.up.sql"
+      - "migrations/000003_decisions.up.sql"
+      - "migrations/000004_sessions.up.sql"
+      - "migrations/000005_knowledge.up.sql"
+      - "migrations/000006_learning.up.sql"
+      - "migrations/000007_knowledge_source.up.sql"
+      - "migrations/000008_add_workspace_id.up.sql"
+      - "migrations/000009_task_importance_context.up.sql"
+      - "migrations/000010_pending_proposals.up.sql"
+      - "migrations/000012_concept_status.up.sql"
     gen:
       go:
         package: "db"

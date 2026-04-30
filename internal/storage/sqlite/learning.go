@@ -23,7 +23,7 @@ func NewLearningStore(d *DB) *LearningStore {
 
 var _ learning.StoreIface = (*LearningStore)(nil)
 
-const conceptsSelectCols = `id, title, content, tags, created_at, updated_at, workspace_id`
+const conceptsSelectCols = `id, title, content, tags, created_at, updated_at, workspace_id, status`
 
 func scanConcept(scan func(...any) error) (db.Concept, error) {
 	var (
@@ -32,7 +32,7 @@ func scanConcept(scan func(...any) error) (db.Concept, error) {
 		tagsNS, createdNS, updNS sql.NullString
 		workspaceNS              sql.NullString
 	)
-	err := scan(&idStr, &c.Title, &c.Content, &tagsNS, &createdNS, &updNS, &workspaceNS)
+	err := scan(&idStr, &c.Title, &c.Content, &tagsNS, &createdNS, &updNS, &workspaceNS, &c.Status)
 	if err != nil {
 		return db.Concept{}, err
 	}
@@ -86,13 +86,14 @@ func (s *LearningStore) CreateConcept(ctx context.Context, title, content string
 	return s.conceptByID(ctx, conceptID)
 }
 
-// DueReviews returns concepts whose review schedule is due.
+// DueReviews returns concepts whose review schedule is due and status is active.
 func (s *LearningStore) DueReviews(ctx context.Context, limit int) ([]learning.DueReview, error) {
 	const q = `SELECT c.id, rs.id, c.title, c.content, rs.stability, rs.difficulty,
 			rs.due_date, rs.review_count
 		FROM concepts c
 		JOIN review_schedule rs ON rs.concept_id = c.id
 		WHERE rs.due_date <= ?1
+		  AND c.status = 'active'
 		  AND (?2 IS NULL OR c.workspace_id = ?2)
 		ORDER BY rs.due_date ASC, rs.id ASC
 		LIMIT ?3`
@@ -166,6 +167,55 @@ func (s *LearningStore) CountDueReviews(ctx context.Context) (int, error) {
 		return 0, errWrap("CountDueReviews", err)
 	}
 	return count, nil
+}
+
+// ListForAIReview returns active concepts with at least minReviewCount completed
+// reviews, ordered by review count descending.
+func (s *LearningStore) ListForAIReview(ctx context.Context, minReviewCount int) ([]learning.ConceptForReview, error) {
+	const q = `SELECT c.id, c.title, c.content, rs.review_count, rs.stability
+		FROM concepts c
+		JOIN review_schedule rs ON rs.concept_id = c.id
+		WHERE c.status = 'active'
+		  AND rs.review_count >= ?1
+		  AND (?2 IS NULL OR c.workspace_id = ?2)
+		ORDER BY rs.review_count DESC`
+	rows, err := s.db.conn.QueryContext(ctx, q, minReviewCount, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("ListForAIReview", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []learning.ConceptForReview
+	for rows.Next() {
+		var (
+			c     learning.ConceptForReview
+			idStr string
+		)
+		if err := rows.Scan(&idStr, &c.Title, &c.Content, &c.ReviewCount, &c.Stability); err != nil {
+			return nil, errWrap("ListForAIReview scan", err)
+		}
+		if id, err := uuid.Parse(idStr); err == nil {
+			c.ID = id
+		}
+		out = append(out, c)
+	}
+	return out, errWrap("ListForAIReview iter", rows.Err())
+}
+
+// UpdateConceptStatus sets the status column for the given concept.
+func (s *LearningStore) UpdateConceptStatus(ctx context.Context, id uuid.UUID, status string) error {
+	const q = `UPDATE concepts
+		SET status = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		WHERE id = ?1`
+	res, err := s.db.conn.ExecContext(ctx, q, id.String(), status)
+	if err != nil {
+		return errWrap("UpdateConceptStatus", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return learning.ErrNotFound
+	}
+	return nil
 }
 
 func (s *LearningStore) conceptByID(ctx context.Context, id uuid.UUID) (*db.Concept, error) {

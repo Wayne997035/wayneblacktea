@@ -15,7 +15,7 @@ import (
 const createConcept = `-- name: CreateConcept :one
 INSERT INTO concepts (title, content, tags, workspace_id)
 VALUES ($1, $2, $3, $4)
-RETURNING id, title, content, tags, created_at, updated_at, workspace_id
+RETURNING id, title, content, tags, created_at, updated_at, workspace_id, status
 `
 
 type CreateConceptParams struct {
@@ -41,6 +41,7 @@ func (q *Queries) CreateConcept(ctx context.Context, arg CreateConceptParams) (C
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.Status,
 	)
 	return i, err
 }
@@ -75,7 +76,7 @@ func (q *Queries) CreateReviewSchedule(ctx context.Context, arg CreateReviewSche
 }
 
 const getConceptByID = `-- name: GetConceptByID :one
-SELECT id, title, content, tags, created_at, updated_at, workspace_id FROM concepts
+SELECT id, title, content, tags, created_at, updated_at, workspace_id, status FROM concepts
 WHERE id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 `
@@ -96,16 +97,67 @@ func (q *Queries) GetConceptByID(ctx context.Context, arg GetConceptByIDParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.Status,
 	)
 	return i, err
 }
 
+const listConceptsForAIReview = `-- name: ListConceptsForAIReview :many
+SELECT c.id, c.title, c.content, rs.review_count, rs.stability
+FROM concepts c
+JOIN review_schedule rs ON rs.concept_id = c.id
+WHERE c.status = 'active'
+  AND rs.review_count >= $1
+  AND ($2::uuid IS NULL OR c.workspace_id = $2)
+ORDER BY rs.review_count DESC
+`
+
+type ListConceptsForAIReviewParams struct {
+	MinReviewCount int32       `json:"min_review_count"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+}
+
+type ListConceptsForAIReviewRow struct {
+	ID          uuid.UUID `json:"id"`
+	Title       string    `json:"title"`
+	Content     string    `json:"content"`
+	ReviewCount int32     `json:"review_count"`
+	Stability   float64   `json:"stability"`
+}
+
+func (q *Queries) ListConceptsForAIReview(ctx context.Context, arg ListConceptsForAIReviewParams) ([]ListConceptsForAIReviewRow, error) {
+	rows, err := q.db.Query(ctx, listConceptsForAIReview, arg.MinReviewCount, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConceptsForAIReviewRow
+	for rows.Next() {
+		var i ListConceptsForAIReviewRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Content,
+			&i.ReviewCount,
+			&i.Stability,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueReviews = `-- name: ListDueReviews :many
-SELECT c.id, c.title, c.content, c.tags, c.created_at, c.updated_at,
+SELECT c.id, c.title, c.content, c.tags, c.created_at, c.updated_at, c.status,
        rs.id as schedule_id, rs.stability, rs.difficulty, rs.due_date, rs.review_count
 FROM concepts c
 JOIN review_schedule rs ON rs.concept_id = c.id
 WHERE rs.due_date <= NOW()
+  AND c.status = 'active'
   AND ($1::uuid IS NULL OR c.workspace_id = $1)
 ORDER BY rs.due_date ASC
 LIMIT $2
@@ -123,6 +175,7 @@ type ListDueReviewsRow struct {
 	Tags        []string           `json:"tags"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	Status      string             `json:"status"`
 	ScheduleID  uuid.UUID          `json:"schedule_id"`
 	Stability   float64            `json:"stability"`
 	Difficulty  float64            `json:"difficulty"`
@@ -146,6 +199,7 @@ func (q *Queries) ListDueReviews(ctx context.Context, arg ListDueReviewsParams) 
 			&i.Tags,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Status,
 			&i.ScheduleID,
 			&i.Stability,
 			&i.Difficulty,
@@ -160,6 +214,34 @@ func (q *Queries) ListDueReviews(ctx context.Context, arg ListDueReviewsParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateConceptStatus = `-- name: UpdateConceptStatus :one
+UPDATE concepts
+SET status = $1, updated_at = NOW()
+WHERE id = $2
+RETURNING id, title, content, tags, created_at, updated_at, workspace_id, status
+`
+
+type UpdateConceptStatusParams struct {
+	Status string    `json:"status"`
+	ID     uuid.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error) {
+	row := q.db.QueryRow(ctx, updateConceptStatus, arg.Status, arg.ID)
+	var i Concept
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Content,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Status,
+	)
+	return i, err
 }
 
 const updateReviewSchedule = `-- name: UpdateReviewSchedule :one

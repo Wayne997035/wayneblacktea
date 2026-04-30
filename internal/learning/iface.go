@@ -14,6 +14,8 @@ type StoreIface interface {
 	DueReviews(ctx context.Context, limit int) ([]DueReview, error)
 	SubmitReview(ctx context.Context, scheduleID uuid.UUID, currentState CardState, rating Rating) error
 	CountDueReviews(ctx context.Context) (int, error)
+	ListForAIReview(ctx context.Context, minReviewCount int) ([]ConceptForReview, error)
+	UpdateConceptStatus(ctx context.Context, id uuid.UUID, status string) error
 }
 
 var _ StoreIface = (*Store)(nil)
