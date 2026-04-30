@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -79,7 +80,36 @@ func SQLitePathFromEnv() string {
 	if raw == "" {
 		return "./wayneblacktea.db"
 	}
-	return raw
+	if raw == ":memory:" {
+		return raw // special in-memory DSN; filepath.Clean would corrupt it
+	}
+	return filepath.Clean(raw)
+}
+
+// BuildServerStores is the single env-reading entry point for cmd binaries.
+// It reads DATABASE_URL / SQLITE_PATH / POSTGRES_INSECURE_TLS from the
+// environment and calls NewServerStores so both cmd/server and cmd/mcp always
+// use the same env variables and defaults without duplicating the switch.
+func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, error) {
+	cfg := FactoryConfig{Backend: backend}
+	switch backend {
+	case BackendPostgres:
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			return nil, fmt.Errorf("DATABASE_URL not set")
+		}
+		cfg.PostgresDSN = dsn
+		// POSTGRES_INSECURE_TLS=true is needed for providers (Aiven, Railway)
+		// that use a custom CA not in the system trust store. Must be opt-in.
+		cfg.PostgresInsecureTLS = os.Getenv("POSTGRES_INSECURE_TLS") == "true"
+	case BackendSQLite:
+		cfg.SQLitePath = SQLitePathFromEnv()
+	}
+	stores, err := NewServerStores(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("building stores for backend %s: %w", backend, err)
+	}
+	return stores, nil
 }
 
 // ----- Postgres bundle -----

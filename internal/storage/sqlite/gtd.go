@@ -66,7 +66,8 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 	if importanceNI.Valid {
 		// Schema CHECK constrains importance to 1..3, so the int32 → int16 cast
 		// cannot overflow.
-		t.Importance = pgtype.Int2{Int16: int16(importanceNI.Int32), Valid: true} //nolint:gosec
+		imp := int16(importanceNI.Int32) //nolint:gosec // G115: schema CHECK (importance BETWEEN 1 AND 3) guarantees int32 fits int16
+		t.Importance = pgtype.Int2{Int16: imp, Valid: true}
 	}
 	t.Context = pgtypeText(contextNS.String, contextNS.Valid)
 	t.Assignee = pgtypeText(assigneeNS.String, assigneeNS.Valid)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
@@ -44,22 +43,8 @@ func run() error {
 	return nil
 }
 
-// buildStores wires the storage factory the same way cmd/server does so the
-// two binaries stay in sync on backend selection / DSN handling.
 func buildStores(backend storage.Backend) (storage.ServerStores, error) {
-	cfg := storage.FactoryConfig{Backend: backend}
-	switch backend {
-	case storage.BackendPostgres:
-		dsn := os.Getenv("DATABASE_URL")
-		if dsn == "" {
-			return nil, fmt.Errorf("DATABASE_URL not set")
-		}
-		cfg.PostgresDSN = dsn
-		cfg.PostgresInsecureTLS = true
-	case storage.BackendSQLite:
-		cfg.SQLitePath = storage.SQLitePathFromEnv()
-	}
-	stores, err := storage.NewServerStores(context.Background(), cfg)
+	stores, err := storage.BuildServerStores(context.Background(), backend)
 	if err != nil {
 		return nil, fmt.Errorf("building stores for backend %s: %w", backend, err)
 	}

@@ -208,25 +208,8 @@ func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
 	return bot.Stop, nil
 }
 
-// buildStores delegates to storage.NewServerStores so the server stays
-// backend-agnostic. STORAGE_BACKEND=postgres uses DATABASE_URL (Aiven custom
-// CA assumed → InsecureSkipVerify); STORAGE_BACKEND=sqlite uses SQLITE_PATH
-// (defaulting to ./wayneblacktea.db) and the schema is applied idempotently
-// by sqlite.Open.
 func buildStores(backend storage.Backend) (storage.ServerStores, error) {
-	cfg := storage.FactoryConfig{Backend: backend}
-	switch backend {
-	case storage.BackendPostgres:
-		dsn := os.Getenv("DATABASE_URL")
-		if dsn == "" {
-			return nil, fmt.Errorf("DATABASE_URL not set")
-		}
-		cfg.PostgresDSN = dsn
-		cfg.PostgresInsecureTLS = true
-	case storage.BackendSQLite:
-		cfg.SQLitePath = storage.SQLitePathFromEnv()
-	}
-	stores, err := storage.NewServerStores(context.Background(), cfg)
+	stores, err := storage.BuildServerStores(context.Background(), backend)
 	if err != nil {
 		return nil, fmt.Errorf("building stores for backend %s: %w", backend, err)
 	}
