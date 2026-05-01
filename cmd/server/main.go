@@ -93,10 +93,12 @@ func run() error {
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
 	var clf *ai.ActivityClassifier
+	var reflector ai.ReflectorIface
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
 		sum = ai.New(claudeKey)
 		conceptReviewer = ai.NewConceptReviewer(claudeKey)
 		clf = ai.NewActivityClassifier(claudeKey)
+		reflector = ai.NewReflector(claudeKey)
 	}
 	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
 
@@ -204,7 +206,10 @@ func run() error {
 
 	notionClient := notion.NewClient()
 	briefingStores := newBriefingStores(stores)
-	sched, err := scheduler.New(stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer)
+	sched, err := scheduler.New(
+		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
+		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
+	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
 	}

@@ -19,19 +19,20 @@ import (
 // no filter (legacy mode); set → strict per-workspace reads and writes.
 type Store struct {
 	q           *db.Queries
+	dbtx        db.DBTX // retained for hand-written queries outside of sqlc
 	workspaceID pgtype.UUID
 }
 
 // NewStore returns a Store backed by the given DBTX (pool or transaction)
 // scoped to the optional workspaceID. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope, for use
 // in multi-store transactions.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
+	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
 }
 
 // WorkspaceID exposes the configured workspace UUID (or zero pgtype.UUID).
@@ -274,6 +275,37 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("deleting task %s: %w", id, err)
 	}
 	return nil
+}
+
+// ListActivityLogsSince returns activity_log rows created on or after since,
+// scoped to the configured workspace. Results are ordered created_at ASC.
+// maxRows caps the result set; callers should use a sensible bound (e.g. 500).
+func (s *Store) ListActivityLogsSince(ctx context.Context, since time.Time, maxRows int32) ([]db.ActivityLog, error) {
+	const q = `SELECT id, actor, project_id, action, notes, created_at, workspace_id
+		FROM activity_log
+		WHERE created_at >= $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at ASC
+		LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, since, s.workspaceID, maxRows)
+	if err != nil {
+		return nil, fmt.Errorf("listing activity logs since %s: %w", since.Format(time.RFC3339), err)
+	}
+	defer rows.Close()
+	var out []db.ActivityLog
+	for rows.Next() {
+		var a db.ActivityLog
+		if err := rows.Scan(
+			&a.ID, &a.Actor, &a.ProjectID, &a.Action, &a.Notes, &a.CreatedAt, &a.WorkspaceID,
+		); err != nil {
+			return nil, fmt.Errorf("scanning activity log: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating activity logs: %w", err)
+	}
+	return out, nil
 }
 
 // WeeklyProgress returns completed task count this week and total active task count.

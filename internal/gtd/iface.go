@@ -2,6 +2,7 @@ package gtd
 
 import (
 	"context"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/google/uuid"
@@ -25,6 +26,10 @@ type StoreIface interface {
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error
+	// ListActivityLogsSince returns activity_log rows created on or after since,
+	// scoped to the configured workspace. Results are ordered by created_at ASC.
+	// maxRows caps the result set to prevent unbounded memory usage.
+	ListActivityLogsSince(ctx context.Context, since time.Time, maxRows int32) ([]db.ActivityLog, error)
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error)
