@@ -33,10 +33,15 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError("intent is required"), nil
 	}
 
+	contextSummary := stringArg(args, "context_summary")
+	if reason := checkHandoffNoise(intent, contextSummary); reason != "" {
+		return mcp.NewToolResultError("invalid params: " + reason), nil
+	}
+
 	p := session.HandoffParams{
 		Intent:         intent,
 		RepoName:       stringArg(args, "repo_name"),
-		ContextSummary: stringArg(args, "context_summary"),
+		ContextSummary: contextSummary,
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
