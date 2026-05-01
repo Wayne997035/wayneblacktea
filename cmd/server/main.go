@@ -165,7 +165,7 @@ func run() error {
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
 
-	api.GET("/search", searchH.Search)
+	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)

@@ -57,6 +57,7 @@ function ResultItem({ result, isActive, onSelect, onMouseEnter }: ResultItemProp
     <button
       type="button"
       role="option"
+      id={`search-result-${result.id}`}
       aria-selected={isActive}
       className="w-full text-left px-4 py-3 flex flex-col gap-1 transition-colors"
       style={{
@@ -77,8 +78,8 @@ function ResultItem({ result, isActive, onSelect, onMouseEnter }: ResultItemProp
         </span>
       </div>
       <p
-        className="text-caption"
-        style={{ color: 'var(--color-text-muted)', lineClamp: 2 }}
+        className="text-caption line-clamp-2"
+        style={{ color: 'var(--color-text-muted)' }}
       >
         {preview}{hasMore ? '…' : ''}
       </p>

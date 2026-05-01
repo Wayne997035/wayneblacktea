@@ -10,9 +10,9 @@ export function PageShell() {
 
   // Lock body scroll when overlay is open
   useEffect(() => {
-    document.body.style.overflow = sidebarOpen ? 'hidden' : ''
+    document.body.style.overflow = (sidebarOpen || searchOpen) ? 'hidden' : ''
     return () => { document.body.style.overflow = '' }
-  }, [sidebarOpen])
+  }, [sidebarOpen, searchOpen])
 
   // Escape to close sidebar (search palette handles its own Escape with stopPropagation)
   useEffect(() => {
