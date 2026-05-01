@@ -49,7 +49,10 @@
     "projectNameExists": "Project name already exists",
     "taskContext": "Context",
     "recentDecisions": "Recent decisions",
-    "noDescription": "No description"
+    "noDescription": "No description",
+    "unassigned": "Unassigned",
+    "noDecisionsForProject": "No decisions logged for this project yet",
+    "projectNotFound": "Project not found"
   },
   "project": {
     "back": "Back",

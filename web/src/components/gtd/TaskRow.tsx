@@ -48,7 +48,7 @@ interface RecentDecisionsProps {
 
 function RecentDecisions({ projectId, isExpanded }: RecentDecisionsProps) {
   const { t } = useTranslation()
-  const { data: decisions, isLoading, isError } = useDecisions(isExpanded ? projectId : undefined)
+  const { data: decisions, isLoading, isError } = useDecisions(projectId, { enabled: isExpanded && !!projectId })
 
   const recent = useMemo(() => {
     if (!decisions) return []
@@ -81,7 +81,7 @@ function RecentDecisions({ projectId, isExpanded }: RecentDecisionsProps) {
 
       {!isLoading && !isError && recent.length === 0 && (
         <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>
-          No decisions logged for this project yet
+          {t('gtd.noDecisionsForProject')}
         </p>
       )}
 
@@ -140,6 +140,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
         <label
           className="shrink-0 cursor-pointer"
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
         >
           <input
             type="checkbox"
@@ -241,7 +242,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
             </p>
             {task.project_id == null ? (
               <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>
-                Unassigned
+                {t('gtd.unassigned')}
               </p>
             ) : project ? (
               <p className="text-body-sm" style={{ color: 'var(--color-text-primary)' }}>
@@ -252,7 +253,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
               </p>
             ) : (
               <p className="text-body-sm" style={{ color: 'var(--color-warning)' }}>
-                Project not found
+                {t('gtd.projectNotFound')}
               </p>
             )}
           </div>

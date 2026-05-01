@@ -49,7 +49,10 @@
     "projectNameExists": "專案名稱已存在",
     "taskContext": "背景專案",
     "recentDecisions": "最近決策",
-    "noDescription": "無描述"
+    "noDescription": "無描述",
+    "unassigned": "未指定專案",
+    "noDecisionsForProject": "此專案尚無決策紀錄",
+    "projectNotFound": "找不到專案"
   },
   "project": {
     "back": "返回",
