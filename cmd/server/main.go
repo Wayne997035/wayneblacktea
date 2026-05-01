@@ -88,6 +88,7 @@ func run() error {
 		handler.WithKnowledgeStore(stores.Knowledge()),
 		handler.WithDecisionStore(stores.Decision()),
 	)
+	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
@@ -101,6 +102,11 @@ func run() error {
 
 	e := echo.New()
 	e.HideBanner = true
+	// Trust the Railway/proxy edge to provide the real client IP via X-Forwarded-For.
+	// Without this, c.RealIP() falls back to the connection peer (the proxy) and the
+	// per-IP rate limiter (e.g. dashboardRL) treats every authenticated caller as one
+	// IP, OR — worse — accepts any spoofed XFF header verbatim.
+	e.IPExtractor = echo.ExtractIPFromXFFHeader()
 	e.Use(echolog.RequestLoggerWithConfig(echolog.RequestLoggerConfig{
 		LogMethod: true, LogURI: true, LogStatus: true,
 		LogLatency: true, LogHost: true, LogError: true,
@@ -171,6 +177,13 @@ func run() error {
 	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal, proposalRL)
 
 	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))
+
+	dashboardRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
+	api.GET("/dashboard/stats", dashH.GetStats, dashboardRL)
+	api.GET("/dashboard/recent-decisions", dashH.GetRecentDecisions, dashboardRL)
+	api.GET("/dashboard/active-projects", dashH.GetActiveProjects, dashboardRL)
+	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress, dashboardRL)
+	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)

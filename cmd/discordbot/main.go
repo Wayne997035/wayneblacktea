@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
@@ -46,14 +46,37 @@ func run() error {
 	}
 	guildID := os.Getenv("DISCORD_GUILD_ID") // optional; enables instant guild-scoped slash commands
 
-	// Optional DB connectivity check
+	// Optional DB connectivity check. TLS errors MUST be logged so a
+	// misconfigured PGSSLROOTCERT in production cannot silently fall back to
+	// pgx default TLS behaviour — the security posture must be visible to the
+	// operator at boot time.
 	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
 		cfg, err := pgxpool.ParseConfig(dsn)
 		if err == nil {
-			cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // G402: optional local DB health check
-			if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
-				defer pool.Close()
-				slog.Info("database connected")
+			tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
+			switch {
+			case tlsErr != nil:
+				slog.Error("discordbot DB TLS config failed; skipping optional connectivity check",
+					"err", tlsErr)
+			case tlsCfg != nil:
+				cfg.ConnConfig.TLSConfig = tlsCfg
+				pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+				if err != nil {
+					slog.Warn("discordbot optional DB connectivity check failed", "err", err)
+				} else {
+					defer pool.Close()
+					slog.Info("database connected")
+				}
+			default:
+				// Non-production with no PGSSLROOTCERT: nil tls.Config means
+				// pgx falls back to system CA pool, which is acceptable here.
+				pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+				if err != nil {
+					slog.Warn("discordbot optional DB connectivity check failed", "err", err)
+				} else {
+					defer pool.Close()
+					slog.Info("database connected (system CA)")
+				}
 			}
 		}
 	}

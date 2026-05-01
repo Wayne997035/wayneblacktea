@@ -15,14 +15,15 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -60,7 +61,18 @@ func main() {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // G402: doctor targets self-signed certs
+	// doctor is a Stop-hook snapshot tool — failures here MUST NOT panic the
+	// hook, but a misconfigured PGSSLROOTCERT in production must be logged so
+	// the operator can see why the snapshot lacks DB metrics.
+	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
+	if tlsErr != nil {
+		slog.Error("doctor DB TLS config failed; emitting empty snapshot", "err", tlsErr)
+		emit(snapshot{GeneratedAt: time.Now().UTC()})
+		return
+	}
+	if tlsCfg != nil {
+		cfg.ConnConfig.TLSConfig = tlsCfg
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
