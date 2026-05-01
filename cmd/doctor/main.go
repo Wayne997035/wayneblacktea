@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -60,8 +61,16 @@ func main() {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
+	// doctor is a Stop-hook snapshot tool — failures here MUST NOT panic the
+	// hook, but a misconfigured PGSSLROOTCERT in production must be logged so
+	// the operator can see why the snapshot lacks DB metrics.
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
-	if tlsErr == nil && tlsCfg != nil {
+	if tlsErr != nil {
+		slog.Error("doctor DB TLS config failed; emitting empty snapshot", "err", tlsErr)
+		emit(snapshot{GeneratedAt: time.Now().UTC()})
+		return
+	}
+	if tlsCfg != nil {
 		cfg.ConnConfig.TLSConfig = tlsCfg
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

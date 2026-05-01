@@ -23,9 +23,15 @@ function normalise(r: unknown): SearchResult | null {
       ? obj.content
       : ''
 
-  // url MUST be a relative path — reject absolute URLs to prevent open redirect
+  // url MUST be a relative path — reject absolute URLs to prevent open
+  // redirect. `startsWith('/')` alone passes protocol-relative `//evil.com`
+  // and Windows-style `/\evil.com`, both of which React Router treats as
+  // external navigations. Require exactly one leading `/` followed by a
+  // non-slash, non-backslash character (or be the bare root `/`).
   const rawUrl = typeof obj.url === 'string' ? obj.url : null
-  const url = rawUrl && rawUrl.startsWith('/') ? rawUrl : FALLBACK_URL[type as SearchResult['type']]
+  const url = rawUrl && isSafeRelativeUrl(rawUrl)
+    ? rawUrl
+    : FALLBACK_URL[type as SearchResult['type']]
 
   return {
     type: type as SearchResult['type'],
@@ -42,6 +48,14 @@ const FALLBACK_URL: Record<SearchResult['type'], string> = {
   decision: '/decisions',
   task: '/gtd',
   project: '/workspace',
+}
+
+// isSafeRelativeUrl returns true only for in-app paths. It rejects
+// protocol-relative (`//x`), backslash (`/\x`), absolute (`https://x`,
+// `javascript:`, `data:`), and any non-string-path input.
+export function isSafeRelativeUrl(u: string): boolean {
+  if (u === '/') return true
+  return /^\/[^/\\]/.test(u)
 }
 
 export function useGlobalSearch(query: string) {

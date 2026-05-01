@@ -46,17 +46,31 @@ func run() error {
 	}
 	guildID := os.Getenv("DISCORD_GUILD_ID") // optional; enables instant guild-scoped slash commands
 
-	// Optional DB connectivity check
+	// Optional DB connectivity check. TLS errors MUST be logged so a
+	// misconfigured PGSSLROOTCERT in production cannot silently fall back to
+	// pgx default TLS behaviour — the security posture must be visible to the
+	// operator at boot time.
 	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
 		cfg, err := pgxpool.ParseConfig(dsn)
 		if err == nil {
 			tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
-			if tlsErr == nil && tlsCfg != nil {
+			switch {
+			case tlsErr != nil:
+				slog.Error("discordbot DB TLS config failed; skipping optional connectivity check",
+					"err", tlsErr)
+			case tlsCfg != nil:
 				cfg.ConnConfig.TLSConfig = tlsCfg
-			}
-			if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
-				defer pool.Close()
-				slog.Info("database connected")
+				if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
+					defer pool.Close()
+					slog.Info("database connected")
+				}
+			default:
+				// Non-production with no PGSSLROOTCERT: nil tls.Config means
+				// pgx falls back to system CA pool, which is acceptable here.
+				if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
+					defer pool.Close()
+					slog.Info("database connected (system CA)")
+				}
 			}
 		}
 	}
