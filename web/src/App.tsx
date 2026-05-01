@@ -6,6 +6,7 @@ import { WorkspacePage } from './pages/WorkspacePage'
 import { DecisionsPage } from './pages/DecisionsPage'
 import { KnowledgePage } from './pages/KnowledgePage'
 import { ReviewsPage } from './pages/ReviewsPage'
+import { ProjectDetailPage } from './pages/ProjectDetailPage'
 
 const router = createBrowserRouter([
   {
@@ -15,6 +16,7 @@ const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: 'gtd', element: <GtdPage /> },
       { path: 'workspace', element: <WorkspacePage /> },
+      { path: 'workspace/projects/:id', element: <ProjectDetailPage /> },
       { path: 'decisions', element: <DecisionsPage /> },
       { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'reviews', element: <ReviewsPage /> },

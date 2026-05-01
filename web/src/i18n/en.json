@@ -46,7 +46,7 @@
   },
   "workspace": {
     "title": "Workspace",
-    "syncRepos": "Sync Repos",
+    "syncRepos": "Refresh",
     "noRepos": "No repositories",
     "issues": "{{count}} issues",
     "knownIssues": "Known Issues"

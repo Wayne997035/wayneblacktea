@@ -46,7 +46,7 @@
   },
   "workspace": {
     "title": "工作區",
-    "syncRepos": "同步儲存庫",
+    "syncRepos": "重新整理",
     "noRepos": "沒有儲存庫",
     "issues": "{{count}} 個問題",
     "knownIssues": "已知問題"

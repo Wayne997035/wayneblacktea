@@ -9,13 +9,31 @@ export function useRepos() {
   })
 }
 
-export function useSyncRepos() {
+export interface UpsertRepoRequest {
+  name: string;
+  path?: string;
+  description?: string;
+  language?: string;
+  current_branch?: string;
+  known_issues?: string[];
+  next_planned_step?: string;
+}
+
+export function useUpsertRepo() {
   const queryClient = useQueryClient()
-  return useMutation<Repo[], Error, void>({
-    mutationFn: () =>
-      apiFetch<Repo[]>('/api/workspace/repos', { method: 'POST' }),
+  return useMutation<Repo, Error, UpsertRepoRequest>({
+    mutationFn: (data) =>
+      apiFetch<Repo>('/api/workspace/repos', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workspace', 'repos'] })
     },
   })
+}
+
+export function useRefreshRepos() {
+  const queryClient = useQueryClient()
+  return () => queryClient.invalidateQueries({ queryKey: ['workspace', 'repos'] })
 }
