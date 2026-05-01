@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"golang.org/x/net/html"
 )
@@ -18,11 +17,18 @@ var sessionNoise = regexp.MustCompile(
 		`open more actions menu|repository files navigation|change notification settings)`,
 )
 
-const maxFetchBytes = 512 * 1024
+// maxFetchBytes caps response body reads to 1 MB to prevent memory exhaustion.
+const maxFetchBytes = 1 * 1024 * 1024
 
-var fetchClient = &http.Client{Timeout: 20 * time.Second}
+// fetchClient uses a safe dialer that enforces SSRF protection at the TCP layer.
+var fetchClient = NewSafeHTTPClient()
 
 func FetchURL(ctx context.Context, rawURL string) (title, text string, err error) {
+	// Gate: validate URL scheme and resolve DNS before opening any connection.
+	if _, ssrfErr := IsSafeURL(ctx, rawURL); ssrfErr != nil {
+		return "", "", fmt.Errorf("URL blocked: %w", ssrfErr)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("build request: %w", err)
