@@ -309,15 +309,19 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	if p.Importance != nil {
 		importance = int(*p.Importance)
 	}
+	var dueVal any
+	if p.DueDate != nil {
+		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
+	}
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, priority,
-		 importance, context, assignee, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`
+		 importance, context, assignee, due_date, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
 	now := nowRFC3339()
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
-		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), now)
+		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, now)
 	if err != nil {
 		return nil, errWrap("CreateTask", err)
 	}
