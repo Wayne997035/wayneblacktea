@@ -22,6 +22,7 @@ export interface Task {
   description?: string | null;
   status: TaskStatus;
   priority: 1 | 2 | 3 | 4 | 5;
+  importance?: number | null;
   assignee?: string | null;
   due_date?: string | null;
   artifact?: string | null;

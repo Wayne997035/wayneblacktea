@@ -1,8 +1,9 @@
+import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useProject } from '../hooks/useProjects'
-import { useTasksByProject } from '../hooks/useTasks'
+import { useTasksByProject, useCompleteTask } from '../hooks/useTasks'
 import { useDecisions } from '../hooks/useDecisions'
 import { PriorityDot } from '../components/ui/PriorityDot'
 import { StatusBadge } from '../components/ui/StatusBadge'
@@ -14,10 +15,12 @@ export function ProjectDetailPage() {
   const { id = '' } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
 
   const projectQuery = useProject(id)
   const tasksQuery = useTasksByProject(id)
   const decisionsQuery = useDecisions(id)
+  const completeTask = useCompleteTask(id)
 
   const project = projectQuery.data
   const tasks = tasksQuery.data ?? []
@@ -123,10 +126,24 @@ export function ProjectDetailPage() {
                   style={{ border: '1px solid var(--color-border)' }}
                 >
                   {pendingTasks.map((task) => (
-                    <TaskRow key={task.id} task={task} />
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      project={project}
+                      expanded={expandedTaskId === task.id}
+                      onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+                      onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
+                    />
                   ))}
                   {doneTasks.map((task) => (
-                    <TaskRow key={task.id} task={task} />
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      project={project}
+                      expanded={expandedTaskId === task.id}
+                      onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+                      onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
+                    />
                   ))}
                 </ul>
               )}

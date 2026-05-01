@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import type { Decision } from '../types/api'
 
-export function useDecisions(projectId?: string) {
+export function useDecisions(projectId?: string, options?: { enabled?: boolean }) {
   return useQuery<Decision[]>({
     queryKey: ['decisions', projectId ?? 'all'],
     queryFn: () => {
@@ -11,6 +11,7 @@ export function useDecisions(projectId?: string) {
         : '/api/decisions'
       return apiFetch<Decision[]>(url)
     },
+    enabled: options?.enabled ?? true,
   })
 }
 

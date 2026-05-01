@@ -24,6 +24,19 @@ export function useTasksForAllProjects(projects: Project[]) {
   return { isLoading, tasks }
 }
 
+export function useCompleteTask(projectId?: string) {
+  const queryClient = useQueryClient()
+  return useMutation<Task, Error, string>({
+    mutationFn: (taskId) =>
+      apiFetch<Task>(`/api/tasks/${taskId}/complete`, { method: 'PATCH' }),
+    onSuccess: () => {
+      if (projectId) {
+        void queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'tasks'] })
+      }
+    },
+  })
+}
+
 export function useCreateTask() {
   const queryClient = useQueryClient()
   return useMutation<Task, Error, CreateTaskRequest>({
