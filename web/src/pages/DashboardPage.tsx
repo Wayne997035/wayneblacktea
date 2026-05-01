@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useContextToday } from '../hooks/useContextToday'
+import { useDecisions } from '../hooks/useDecisions'
+import { useApiPing } from '../hooks/useApiPing'
 import { ProjectCard } from '../components/dashboard/ProjectCard'
 import { GoalProgress } from '../components/dashboard/GoalProgress'
 import { HandoffCard } from '../components/dashboard/HandoffCard'
 import { QuickStats } from '../components/dashboard/QuickStats'
+import { SystemHealth } from '../components/dashboard/SystemHealth'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
@@ -24,16 +27,32 @@ function formatDate(date: Date): string {
   })
 }
 
+function isTodayDecision(createdAt: string): boolean {
+  const d = new Date(createdAt)
+  const now = new Date()
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  )
+}
+
 export function DashboardPage() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const { data, isLoading, isError } = useContextToday()
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const decisionsQuery = useDecisions()
+  const pingQuery = useApiPing()
 
   const activeProjects = (data?.projects ?? [])
     .filter((p) => p.status === 'active')
     .sort((a, b) => b.priority - a.priority)
 
   const weeklyProgress = data?.weekly_progress ?? { completed: 0, total: 0 }
+
+  const todayDecisionsCount = decisionsQuery.isLoading
+    ? null
+    : (decisionsQuery.data ?? []).filter((d) => isTodayDecision(d.created_at)).length
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto">
@@ -81,15 +100,15 @@ export function DashboardPage() {
                 <ProjectCard
                   key={project.id}
                   project={project}
-                  variant={expandedId === project.id ? 'expanded' : 'compact'}
-                  onClick={() => setExpandedId(expandedId === project.id ? null : project.id)}
+                  variant="compact"
+                  onClick={() => navigate(`/workspace/projects/${project.id}`)}
                 />
               ))}
             </div>
           )}
         </section>
 
-        {/* Right: Progress + Handoff + Stats */}
+        {/* Right: Progress + Handoff + Stats + Health */}
         <div className="flex flex-col gap-6">
           {/* Weekly Progress */}
           <section>
@@ -125,9 +144,15 @@ export function DashboardPage() {
           {/* Quick Stats */}
           <section>
             <QuickStats
-              pendingTasks={isLoading ? null : ((data?.projects ?? []).length)}
-              decisionsToday={null}
+              pendingTasks={isLoading ? null : activeProjects.length}
+              decisionsToday={todayDecisionsCount}
+              onPendingTasksClick={() => navigate('/gtd')}
             />
+          </section>
+
+          {/* System Health */}
+          <section>
+            <SystemHealth isOnline={!pingQuery.isError} isLoading={pingQuery.isLoading} />
           </section>
         </div>
       </div>

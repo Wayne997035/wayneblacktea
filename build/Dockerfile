@@ -2,13 +2,12 @@
 FROM node:22-alpine AS frontend
 
 ARG VITE_API_KEY
-ENV VITE_API_KEY=$VITE_API_KEY
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-RUN npm run build
+RUN VITE_API_KEY=${VITE_API_KEY} npm run build
 
 # Stage 2: Build the Go binary (with embedded frontend)
 FROM golang:1.26-alpine AS builder

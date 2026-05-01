@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ProjectCard } from '../dashboard/ProjectCard'
 import { EmptyState } from '../ui/EmptyState'
@@ -19,6 +20,7 @@ const tabs: { key: TabFilter; labelKey: string }[] = [
 
 export function ProjectList({ projects }: ProjectListProps) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TabFilter>('all')
 
   const filtered = activeTab === 'all'
@@ -52,7 +54,12 @@ export function ProjectList({ projects }: ProjectListProps) {
       ) : (
         <div className="flex flex-col gap-3">
           {filtered.map((project) => (
-            <ProjectCard key={project.id} project={project} variant="expanded" />
+            <ProjectCard
+              key={project.id}
+              project={project}
+              variant="expanded"
+              onClick={() => navigate(`/workspace/projects/${project.id}`)}
+            />
           ))}
         </div>
       )}

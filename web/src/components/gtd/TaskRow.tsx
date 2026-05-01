@@ -20,10 +20,10 @@ function isPastDue(dateStr: string): boolean {
 
 // Map task status to badge-compatible status (for display)
 function toDisplayStatus(status: string): ProjectStatus {
-  if (status === 'done') return 'completed'
+  if (status === 'completed') return 'completed'
+  if (status === 'cancelled') return 'archived'
   if (status === 'in_progress') return 'active'
-  if (status === 'blocked') return 'on_hold'
-  return 'active'
+  return 'on_hold' // pending
 }
 
 const PRIORITY_LABELS: Record<number, string> = {
@@ -35,7 +35,7 @@ const PRIORITY_LABELS: Record<number, string> = {
 }
 
 export function TaskRow({ task, onComplete }: TaskRowProps) {
-  const isCompleted = task.status === 'done'
+  const isCompleted = task.status === 'completed'
   const [isExpanded, setIsExpanded] = useState(false)
   const expandId = `task-detail-${task.id}`
   const hasDetails = Boolean(task.description || task.assignee)

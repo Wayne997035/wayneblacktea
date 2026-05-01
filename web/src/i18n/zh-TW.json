@@ -42,11 +42,22 @@
     "noTasks": "沒有任務",
     "addTask": "新增任務",
     "addGoal": "新增目標",
-    "addProject": "新增專案"
+    "addProject": "新增專案",
+    "goalCreated": "目標已建立",
+    "projectCreated": "專案已建立",
+    "projectNameExists": "專案名稱已存在"
+  },
+  "project": {
+    "back": "返回",
+    "tasksSection": "任務",
+    "openCount": "{{count}} 筆未完成",
+    "noTasks": "尚無任務",
+    "decisionsSection": "決策",
+    "noDecisions": "尚無決策紀錄"
   },
   "workspace": {
     "title": "工作區",
-    "syncRepos": "同步儲存庫",
+    "syncRepos": "重新整理",
     "noRepos": "沒有儲存庫",
     "issues": "{{count}} 個問題",
     "knownIssues": "已知問題"
@@ -77,7 +88,8 @@
     "retry": "重試"
   },
   "error": {
-    "loadFailed": "載入失敗"
+    "loadFailed": "載入失敗",
+    "fieldRequired": "此欄位為必填"
   },
   "knowledge": {
     "title": "知識庫",

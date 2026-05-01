@@ -1,14 +1,14 @@
 import { useTranslation } from 'react-i18next'
 import { RefreshCw } from 'lucide-react'
-import { useRepos, useSyncRepos } from '../hooks/useRepos'
+import { useRepos, useRefreshRepos } from '../hooks/useRepos'
 import { RepoCard } from '../components/workspace/RepoCard'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
 export function WorkspacePage() {
   const { t } = useTranslation()
-  const { data: repos, isLoading, isError } = useRepos()
-  const syncMutation = useSyncRepos()
+  const { data: repos, isLoading, isError, isFetching } = useRepos()
+  const refreshRepos = useRefreshRepos()
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto">
@@ -18,21 +18,21 @@ export function WorkspacePage() {
         </h1>
         <button
           type="button"
-          onClick={() => syncMutation.mutate()}
-          disabled={syncMutation.isPending}
+          onClick={() => void refreshRepos()}
+          disabled={isFetching}
           className="flex items-center gap-2 px-4 py-2 rounded-md text-body-sm transition-colors"
           style={{
             border: '1px solid var(--color-accent-blue)',
             color: 'var(--color-accent-blue)',
             background: 'transparent',
-            cursor: syncMutation.isPending ? 'not-allowed' : 'pointer',
-            opacity: syncMutation.isPending ? 0.7 : 1,
+            cursor: isFetching ? 'not-allowed' : 'pointer',
+            opacity: isFetching ? 0.7 : 1,
           }}
         >
           <RefreshCw
             size={14}
             aria-hidden="true"
-            style={{ animation: syncMutation.isPending ? 'spin 1s linear infinite' : 'none' }}
+            style={{ animation: isFetching ? 'spin 1s linear infinite' : 'none' }}
           />
           {t('workspace.syncRepos')}
         </button>
