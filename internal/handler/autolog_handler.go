@@ -254,33 +254,6 @@ func (h *AutologHandler) enrichSummary(ctx context.Context, c echo.Context, mech
 	return mechanical
 }
 
-// autoCreateTask creates a GTD task with the given title unless one with the same title
-// already exists (case-insensitive dedup). Title is capped at 500 characters.
-func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error {
-	const maxTaskTitle = 500
-	if len(title) > maxTaskTitle {
-		title = title[:maxTaskTitle]
-	}
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return nil
-	}
-
-	// Dedup: skip if a task with the same title already exists.
-	if existing, err := h.gtd.Tasks(ctx, nil); err == nil {
-		for _, t := range existing {
-			if strings.EqualFold(t.Title, title) {
-				return nil
-			}
-		}
-	}
-
-	if _, err := h.gtd.CreateTask(ctx, gtd.CreateTaskParams{Title: title, Priority: 2}); err != nil {
-		return fmt.Errorf("auto-create task: %w", err)
-	}
-	return nil
-}
-
 // logImplicitDecision persists a single implicit decision extracted from the transcript.
 // Errors are returned wrapped so the caller can log them, but the handoff is never aborted.
 func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) error {
