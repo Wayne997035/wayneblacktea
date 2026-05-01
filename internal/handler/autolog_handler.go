@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -19,6 +20,12 @@ import (
 const autoHandoffPrefix = "Auto-handoff:"
 
 const autologBodyLimit = 64 * 1024 // 64 KB
+
+const (
+	maxActorLen  = 200
+	maxActionLen = 200
+	maxNotesLen  = 2000
+)
 
 // maxTranscriptMessages caps the number of messages accepted from callers.
 const maxTranscriptMessages = 100
@@ -86,6 +93,15 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
 	}
+	if len(req.Actor) > maxActorLen {
+		req.Actor = req.Actor[:maxActorLen]
+	}
+	if len(req.Action) > maxActionLen {
+		req.Action = req.Action[:maxActionLen]
+	}
+	if len(req.Notes) > maxNotesLen {
+		req.Notes = req.Notes[:maxNotesLen]
+	}
 	if req.Actor == "" || req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("actor and action are required"))
 	}
@@ -100,7 +116,9 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 		go func() {
 			result := h.classifier.Classify(context.Background(), actor, action, notes)
 			if result.IsDecision && result.Title != "" {
-				if err := h.logImplicitDecision(context.Background(), result.Title); err != nil {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := h.logImplicitDecision(bgCtx, result.Title); err != nil {
 					slog.Warn("auto-decision classify: log failed", "err", err)
 				}
 			}
@@ -209,6 +227,24 @@ func (h *AutologHandler) enrichSummary(ctx context.Context, c echo.Context, mech
 // logImplicitDecision persists a single implicit decision extracted from the transcript.
 // Errors are returned wrapped so the caller can log them, but the handoff is never aborted.
 func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) error {
+	const maxDecisionTitle = 500
+	if len(title) > maxDecisionTitle {
+		title = title[:maxDecisionTitle]
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+
+	// Dedup: skip if same title was logged recently (check last 10 decisions).
+	if recent, err := h.decision.All(ctx, int32(10)); err == nil {
+		for _, d := range recent {
+			if strings.EqualFold(d.Title, title) {
+				return nil
+			}
+		}
+	}
+
 	_, err := h.decision.Log(ctx, decision.LogParams{
 		Title:     title,
 		Context:   "auto-extracted from session transcript",

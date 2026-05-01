@@ -55,7 +55,6 @@ func (h *SearchHandler) Search(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errResp("q parameter exceeds maximum length of 500 characters"))
 	}
 
-	ctx := c.Request().Context()
 	qLower := strings.ToLower(q)
 
 	kResults, err := h.knowledgeResults(c, q)
@@ -71,7 +70,6 @@ func (h *SearchHandler) Search(c echo.Context) error {
 		return err
 	}
 
-	_ = ctx // ctx used inside helpers via echo context
 	results := make([]SearchResult, 0, len(kResults)+len(dResults)+len(tResults))
 	results = append(results, kResults...)
 	results = append(results, dResults...)
