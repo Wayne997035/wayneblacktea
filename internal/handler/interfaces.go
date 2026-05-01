@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -91,6 +92,27 @@ type autologSessionStore interface {
 type autologDecisionStore interface {
 	All(ctx context.Context, limit int32) ([]db.Decision, error)
 	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
+}
+
+// searchKnowledgeStore covers the subset of knowledge.Store used by SearchHandler.
+type searchKnowledgeStore interface {
+	Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
+}
+
+// searchDecisionStore covers the subset of decision.Store used by SearchHandler.
+type searchDecisionStore interface {
+	All(ctx context.Context, limit int32) ([]db.Decision, error)
+}
+
+// searchGTDStore covers the subset of gtd.Store used by SearchHandler.
+type searchGTDStore interface {
+	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+}
+
+// activityClassifier is the narrow interface AutologHandler needs from ActivityClassifier.
+// *ai.ActivityClassifier satisfies this interface.
+type activityClassifier interface {
+	Classify(ctx context.Context, actor, action, notes string) ai.ClassifyResult
 }
 
 // errResp returns a standard error response body.
