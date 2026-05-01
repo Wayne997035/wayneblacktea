@@ -26,7 +26,12 @@ const (
 	maxActorLen  = 200
 	maxActionLen = 200
 	maxNotesLen  = 2000
+	maxTaskTitle = 500
 )
+
+// classifySem caps concurrent classifier goroutines to prevent goroutine accumulation
+// when /api/activity receives bursts of requests.
+var classifySem = make(chan struct{}, 20)
 
 // maxTranscriptMessages caps the number of messages accepted from callers.
 const maxTranscriptMessages = 100
@@ -113,8 +118,20 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	}
 
 	if h.classifier != nil {
-		actor, action, notes := req.Actor, req.Action, req.Notes
+		h.maybeClassifyAsync(req.Actor, req.Action, req.Notes)
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// maybeClassifyAsync tries to acquire classifySem and, if successful, spawns a goroutine
+// that classifies the activity and auto-captures any implied decision or task.
+// When the semaphore is full it logs a warning and returns immediately without blocking.
+func (h *AutologHandler) maybeClassifyAsync(actor, action, notes string) {
+	select {
+	case classifySem <- struct{}{}:
 		go func() {
+			defer func() { <-classifySem }()
 			result := h.classifier.Classify(context.Background(), actor, action, notes)
 			if result.IsDecision && result.Title != "" {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -131,9 +148,9 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 				}
 			}
 		}()
+	default:
+		slog.Warn("auto-classify: goroutine cap reached, skipping", "actor", actor)
 	}
-
-	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // autoHandoffRequest is the optional request body for POST /api/auto-handoff.
@@ -269,7 +286,10 @@ func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error
 func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) error {
 	const maxDecisionTitle = 500
 	if len(title) > maxDecisionTitle {
-		title = title[:maxDecisionTitle]
+		runes := []rune(title)
+		if len(runes) > maxDecisionTitle {
+			title = string(runes[:maxDecisionTitle])
+		}
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -293,6 +313,42 @@ func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) 
 	})
 	if err != nil {
 		return fmt.Errorf("log implicit decision: %w", err)
+	}
+	return nil
+}
+
+// autoCreateTask creates a GTD task for the given title if no active task with
+// the same title exists. Dedup is scoped to pending/in_progress tasks only;
+// completed tasks with the same title may be re-created.
+func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error {
+	if len(title) > maxTaskTitle {
+		runes := []rune(title)
+		if len(runes) > maxTaskTitle {
+			title = string(runes[:maxTaskTitle])
+		}
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+
+	// Dedup: skip if an active (pending/in_progress) task with the same title exists.
+	tasks, err := h.gtd.Tasks(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("auto-create task: list tasks: %w", err)
+	}
+	for _, t := range tasks {
+		if (t.Status == "pending" || t.Status == "in_progress") && strings.EqualFold(t.Title, title) {
+			return nil
+		}
+	}
+
+	_, err = h.gtd.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:       title,
+		Description: "auto-captured from activity log",
+	})
+	if err != nil {
+		return fmt.Errorf("auto-create task: %w", err)
 	}
 	return nil
 }

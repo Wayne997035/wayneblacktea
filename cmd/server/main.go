@@ -178,8 +178,10 @@ func run() error {
 	api.GET("/learning/suggestions", learningH.GetSuggestions)
 	api.POST("/learning/from-knowledge", learningH.CreateConceptFromKnowledge)
 
-	api.POST("/activity", autologH.LogActivity)
-	api.POST("/auto-handoff", autologH.AutoHandoff)
+	activityRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
+	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
+	api.POST("/activity", autologH.LogActivity, activityRL)
+	api.POST("/auto-handoff", autologH.AutoHandoff, handoffRL)
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {
