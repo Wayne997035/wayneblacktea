@@ -129,6 +129,61 @@ func TestSessionStore_LatestHandoffOrdersByCreatedAtDesc(t *testing.T) {
 	}
 }
 
+func TestSessionStore_UpdateSummary_WritesToLatestHandoff(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	h, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "ship feature X"})
+	if err != nil {
+		t.Fatalf("SetHandoff: %v", err)
+	}
+
+	const wantSummary = "Shipped feature X. Merged PR #42. Next: write tests."
+	if err := s.UpdateSummary(ctx, wantSummary); err != nil {
+		t.Fatalf("UpdateSummary: %v", err)
+	}
+
+	// Confirm the handoff is still visible and intent is intact after the update.
+	latest, err := s.LatestHandoff(ctx)
+	if err != nil {
+		t.Fatalf("LatestHandoff after UpdateSummary: %v", err)
+	}
+	if latest.ID != h.ID {
+		t.Errorf("expected same handoff id after UpdateSummary, got %s want %s", latest.ID, h.ID)
+	}
+	if latest.Intent != "ship feature X" {
+		t.Errorf("intent changed after UpdateSummary: got %q", latest.Intent)
+	}
+}
+
+func TestSessionStore_UpdateSummary_NoOpWhenNoHandoff(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	// No handoff exists — UpdateSummary must not return an error.
+	if err := s.UpdateSummary(ctx, "nothing to update"); err != nil {
+		t.Errorf("UpdateSummary with no handoff must not error, got %v", err)
+	}
+}
+
+func TestSessionStore_UpdateSummary_NoOpAfterResolve(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	h, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "resolved work"})
+	if err != nil {
+		t.Fatalf("SetHandoff: %v", err)
+	}
+	if err := s.Resolve(ctx, h.ID); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// After resolving, UpdateSummary should affect 0 rows but return no error.
+	if err := s.UpdateSummary(ctx, "too late"); err != nil {
+		t.Errorf("UpdateSummary after resolve must not error, got %v", err)
+	}
+}
+
 func TestSessionStore_WorkspaceIsolation(t *testing.T) {
 	ctx := context.Background()
 	wsA := uuid.New().String()

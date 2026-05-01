@@ -102,6 +102,10 @@ func (m *mockGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
 	return 0, 0, errMockNotImpl
 }
 
+func (m *mockGTDStore) ListActivityLogsSince(_ context.Context, _ time.Time, _ int32) ([]db.ActivityLog, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) WorkspaceID() pgtype.UUID { return pgtype.UUID{} }
 
 // successHandler returns a fixed success result — simulates a tool that completed OK.

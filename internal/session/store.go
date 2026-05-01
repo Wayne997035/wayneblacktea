@@ -14,18 +14,19 @@ import (
 // Store handles all database operations for the Session bounded context.
 type Store struct {
 	q           *db.Queries
+	dbtx        db.DBTX
 	workspaceID pgtype.UUID
 }
 
 // NewStore returns a Store backed by the given DBTX scoped to the optional
 // workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
+	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
 }
 
 func toText(v string) pgtype.Text {
@@ -64,6 +65,27 @@ func (s *Store) LatestHandoff(ctx context.Context) (*db.SessionHandoff, error) {
 		return nil, fmt.Errorf("getting latest handoff: %w", err)
 	}
 	return &row, nil
+}
+
+// UpdateSummary writes summary to the most recent unresolved handoff's
+// summary_text column. It is a best-effort operation: if no unresolved
+// handoff exists the update affects 0 rows and returns nil (not ErrNotFound),
+// so the Stop hook is never blocked.
+func (s *Store) UpdateSummary(ctx context.Context, summary string) error {
+	const q = `UPDATE session_handoffs
+		SET summary_text = $1
+		WHERE id = (
+			SELECT id FROM session_handoffs
+			WHERE resolved_at IS NULL
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY created_at DESC
+			LIMIT 1
+		)`
+	_, err := s.dbtx.Exec(ctx, q, summary, s.workspaceID)
+	if err != nil {
+		return fmt.Errorf("updating session summary: %w", err)
+	}
+	return nil
 }
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.

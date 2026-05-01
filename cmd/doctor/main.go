@@ -7,6 +7,13 @@
 // surface the previous session's open loops without depending on the live
 // MCP process (which is gone by Stop time).
 //
+// Stop hook upgrade (session lifecycle): if stdin contains a Claude Code
+// transcript JSON (non-empty), wbt-doctor:
+//  1. Calls Haiku to produce a ≤500-char plain-text summary.
+//  2. Writes the summary to session_handoffs.summary_text (best-effort).
+//  3. Saves the summary as a zettelkasten knowledge_item (type=zettelkasten,
+//     source=auto-summary) for long-term searchable recall.
+//
 // Output:
 //   - JSON to stdout (parseable by SessionStart hook / claude-hud)
 //   - Forgotten signals also written to stderr in human-readable form
@@ -18,14 +25,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	// maxStdinBytes caps the transcript read from stdin to avoid OOM on
+	// unexpectedly large payloads. Claude Code transcripts are typically <10 MB.
+	maxStdinBytes = 16 * 1024 * 1024 // 16 MB
 )
 
 type snapshot struct {
@@ -37,23 +52,20 @@ type snapshot struct {
 	PendingProposals int       `json:"pending_proposals"`
 	DueReviews       int       `json:"due_reviews"`
 	ForgottenSignals []string  `json:"forgotten_signals,omitempty"`
+	SessionSummary   string    `json:"session_summary,omitempty"`
 }
 
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		// Fall back to .env.local in the wayneblacktea repo (Stop hook runs
-		// without the project env). Best-effort; silent if missing.
 		dsn = dsnFromFallback()
 	}
 	if dsn == "" {
-		// No DSN reachable → emit empty snapshot so the consumer can still
-		// read JSON without erroring.
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	cfg, err := pgxpool.ParseConfig(dsn)
@@ -61,9 +73,6 @@ func main() {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
-	// doctor is a Stop-hook snapshot tool — failures here MUST NOT panic the
-	// hook, but a misconfigured PGSSLROOTCERT in production must be logged so
-	// the operator can see why the snapshot lacks DB metrics.
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
 	if tlsErr != nil {
 		slog.Error("doctor DB TLS config failed; emitting empty snapshot", "err", tlsErr)
@@ -91,9 +100,124 @@ func main() {
 	collectProposalCount(ctx, pool, wsID, &snap)
 	collectDueReviewCount(ctx, pool, wsID, &snap)
 
+	// Session summary: read stdin transcript, call Haiku, persist.
+	// A separate 30 s budget so AI latency does not consume the 15 s DB timeout.
+	// Using context.Background() here is intentional: the outer ctx will expire
+	// before the AI call finishes; we want the AI goroutine to have its own budget.
+	summaryCtx, summaryCancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer summaryCancel()
+	summary := processSummary(ctx, summaryCtx, pool, wsID)
+	snap.SessionSummary = summary
+
 	snap.ForgottenSignals = detectSignals(snap)
 
 	emit(snap)
+}
+
+// processSummary reads stdin, summarises the transcript with Haiku, writes the
+// summary to session_handoffs.summary_text, and saves a zettelkasten knowledge
+// item. Returns the summary text (empty string on any error or empty stdin).
+// dbCtx is used for DB operations; aiCtx is the separate AI-call budget.
+func processSummary(dbCtx, aiCtx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, maxStdinBytes))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+
+	// The Claude Code Stop hook sends a transcript JSON. Extract the messages
+	// array if present; fall back to treating the whole stdin as plain text.
+	transcript := parseTranscript(raw)
+	if len(transcript) == 0 {
+		return ""
+	}
+
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		slog.Warn("doctor: ANTHROPIC_API_KEY not set; skipping session summary")
+		return ""
+	}
+
+	summarizer := localai.New(apiKey)
+	text, sumErr := summarizer.SummarizeSession(aiCtx, transcript)
+	if sumErr != nil {
+		slog.Warn("doctor: session summary failed", "err", sumErr)
+		return ""
+	}
+	if text == "" {
+		return ""
+	}
+
+	// Persist summary_text to the latest unresolved session handoff (best-effort).
+	updateHandoffSummary(dbCtx, pool, wsID, text)
+
+	// Save as searchable zettelkasten knowledge item (best-effort).
+	saveKnowledgeItem(dbCtx, pool, wsID, text)
+
+	return text
+}
+
+// parseTranscript tries to decode a Claude Code hook transcript JSON envelope.
+// If the input is not valid JSON or has no messages, it falls back to treating
+// the entire stdin as a single user message so the summarizer still gets input.
+func parseTranscript(raw []byte) []localai.Message {
+	// Claude Code hook sends: {"transcript": [{"role":"user","content":"..."},...]}
+	var envelope struct {
+		Transcript []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"transcript"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && len(envelope.Transcript) > 0 {
+		msgs := make([]localai.Message, 0, len(envelope.Transcript))
+		for _, m := range envelope.Transcript {
+			msgs = append(msgs, localai.Message{Role: m.Role, Content: m.Content})
+		}
+		return msgs
+	}
+
+	// Fallback: treat entire stdin as a single user message.
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return nil
+	}
+	return []localai.Message{{Role: "user", Content: text}}
+}
+
+// updateHandoffSummary writes summary to the latest unresolved session_handoff.
+func updateHandoffSummary(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, summary string) {
+	var wsArg any
+	if wsID != nil {
+		wsArg = wsID
+	}
+	const q = `UPDATE session_handoffs
+		SET summary_text = $1
+		WHERE id = (
+			SELECT id FROM session_handoffs
+			WHERE resolved_at IS NULL
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY created_at DESC
+			LIMIT 1
+		)`
+	if _, err := pool.Exec(ctx, q, summary, wsArg); err != nil {
+		slog.Warn("doctor: failed to update handoff summary_text", "err", err)
+	}
+}
+
+// saveKnowledgeItem persists the session summary as a zettelkasten knowledge item.
+func saveKnowledgeItem(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, summary string) {
+	var wsArg any
+	if wsID != nil {
+		wsArg = wsID
+	}
+	title := "Session summary " + time.Now().UTC().Format("2006-01-02 15:04")
+	const q = `INSERT INTO knowledge_items
+		(type, title, content, source, tags, workspace_id)
+		VALUES ('zettelkasten', $1, $2, 'auto-summary', '[]', $3)`
+	if _, err := pool.Exec(ctx, q, title, summary, wsArg); err != nil {
+		slog.Warn("doctor: failed to save knowledge item", "err", err)
+	}
 }
 
 func collectTaskHealth(ctx context.Context, pool *pgxpool.Pool, ws *uuid.UUID, threshold time.Duration, snap *snapshot) {
@@ -155,7 +279,7 @@ func emit(s snapshot) {
 
 	// Mirror signals to stderr so the Stop-hook log surfaces them.
 	for _, msg := range s.ForgottenSignals {
-		fmt.Fprintln(os.Stderr, "⚠ "+msg)
+		fmt.Fprintln(os.Stderr, "WARNING: "+msg)
 	}
 }
 

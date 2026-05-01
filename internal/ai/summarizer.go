@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -13,7 +14,20 @@ import (
 const (
 	defaultSummarizerModel = "claude-sonnet-4-6"
 	maxTranscriptLen       = 64 * 1024 // 64 KB
+
+	// sessionSummaryMaxChars is the character cap for Stop-hook plain-text
+	// summaries written to session_handoffs.summary_text.
+	sessionSummaryMaxChars = 500
 )
+
+// sessionSummarySystemPrompt instructs the model to produce a plain-text
+// ≤500-char session summary suitable for persisting to session_handoffs.summary_text
+// and injecting into the next SessionStart hook. Secret-redaction instruction is
+// included to reduce the risk of API keys surfacing in the stored text.
+const sessionSummarySystemPrompt = "Summarize this Claude Code session in ≤500 characters " +
+	"(focus: decisions made, code changes, blockers, next steps). " +
+	"Output plain text only — no markdown, no bullet points, no JSON. " +
+	"Do NOT include any API keys, tokens, passwords, or credentials in the summary."
 
 // summarizerSystemPrompt instructs the model to return structured JSON.
 // Lines are split to stay within the 140-char line limit.
@@ -114,6 +128,47 @@ func (s *Summarizer) Summarize(ctx context.Context, transcript []Message) Summar
 	}
 
 	return result
+}
+
+// SummarizeSession calls the configured Claude model with the transcript and
+// returns a plain-text summary of at most sessionSummaryMaxChars characters.
+// It is designed for the Stop hook: the output is written directly to
+// session_handoffs.summary_text and injected into the next SessionStart.
+// Returns ("", err) on API failure; callers should always handle the error
+// gracefully (log + skip write) rather than blocking the Stop hook.
+func (s *Summarizer) SummarizeSession(ctx context.Context, transcript []Message) (string, error) {
+	if len(transcript) == 0 {
+		return "", nil
+	}
+
+	promptText := buildPromptText(transcript)
+
+	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(s.model),
+		MaxTokens: 256,
+		System: []anthropic.TextBlockParam{
+			{Text: sessionSummarySystemPrompt},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(promptText)),
+		},
+	})
+	if err != nil {
+		slog.Warn("summarizer: SummarizeSession API call failed", "error", err)
+		return "", fmt.Errorf("session summary API call: %w", err)
+	}
+
+	if len(resp.Content) == 0 {
+		slog.Warn("summarizer: SummarizeSession empty response")
+		return "", fmt.Errorf("session summary: empty response from API")
+	}
+
+	text := resp.Content[0].Text
+	if len([]rune(text)) > sessionSummaryMaxChars {
+		runes := []rune(text)
+		text = string(runes[:sessionSummaryMaxChars])
+	}
+	return text, nil
 }
 
 // buildPromptText concatenates transcript messages into a single string, capped at maxTranscriptLen.
