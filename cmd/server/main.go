@@ -166,8 +166,9 @@ func run() error {
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
 
-	api.GET("/proposals/pending", proposalH.ListPendingProposals)
-	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal)
+	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
+	api.GET("/proposals/pending", proposalH.ListPendingProposals, proposalRL)
+	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal, proposalRL)
 
 	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))
 

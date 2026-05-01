@@ -195,10 +195,25 @@ type conceptCandidatePayload struct {
 	SourceItemType string   `json:"source_item_type,omitempty"`
 }
 
+const (
+	maxConceptTitleBytes   = 512
+	maxConceptContentBytes = 65536
+	maxConceptTags         = 50
+)
+
 func decodeConceptCandidatePayload(payload []byte) (conceptCandidatePayload, string) {
 	var p conceptCandidatePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return conceptCandidatePayload{}, "decoding concept payload: " + err.Error()
+		return conceptCandidatePayload{}, "concept proposal payload is malformed"
+	}
+	if len(p.Title) > maxConceptTitleBytes {
+		return conceptCandidatePayload{}, "concept title exceeds 512 characters"
+	}
+	if len(p.Content) > maxConceptContentBytes {
+		return conceptCandidatePayload{}, "concept content exceeds 64 KB"
+	}
+	if len(p.Tags) > maxConceptTags {
+		return conceptCandidatePayload{}, "too many tags (max 50)"
 	}
 	return p, ""
 }
