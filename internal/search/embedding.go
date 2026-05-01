@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 )
 
@@ -79,7 +81,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("calling gemini embed API: %w", err)
+		return nil, fmt.Errorf("calling gemini embed API: %w", sanitizeURLError(err))
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -103,4 +105,18 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 	}
 
 	return result.Embedding.Values, nil
+}
+
+// sanitizeURLError redacts API key query parameters from URL-embedded error messages.
+// Go's net/http *url.Error includes the full request URL on network failures.
+func sanitizeURLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	// Replace key=<value> with key=REDACTED in any URL string within the error.
+	sanitized := regexp.MustCompile(`key=[^&\s"]+`).ReplaceAllString(err.Error(), "key=REDACTED")
+	if sanitized == err.Error() {
+		return err
+	}
+	return errors.New(sanitized)
 }

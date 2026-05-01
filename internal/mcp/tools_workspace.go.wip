@@ -1,0 +1,94 @@
+package mcp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/Wayne997035/wayneblacktea/internal/workspace"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// registerWorkspaceTools wires the per-workspace settings MCP tools.
+//
+// Currently exposed:
+//   - get_model_preference: read the active workspace's preferred Claude model
+//   - set_model_preference: persist a new Claude model identifier (allowlist-validated)
+func (s *Server) registerWorkspaceTools(ms *server.MCPServer) {
+	ms.AddTool(mcp.NewTool("get_model_preference",
+		mcp.WithDescription(
+			"Returns the Claude model identifier configured for the active "+
+				"workspace. Falls back to the application default when the "+
+				"workspace has no preference set. Requires WORKSPACE_ID env.",
+		),
+	), s.handleGetModelPreference)
+
+	ms.AddTool(mcp.NewTool("set_model_preference",
+		mcp.WithDescription(
+			"Persists the Claude model the active workspace should use. The "+
+				"model identifier MUST be in the allowlist (claude-haiku-4-5, "+
+				"claude-haiku-4-5-20251001, claude-sonnet-4-5, "+
+				"claude-sonnet-4-6, claude-opus-4-5). Requires WORKSPACE_ID env.",
+		),
+		mcp.WithString("model",
+			mcp.Description("Claude model identifier from the allowlist"),
+			mcp.Required(),
+		),
+	), s.handleSetModelPreference)
+}
+
+// modelPreferenceResponse is the shape returned by get_model_preference and
+// set_model_preference (after a successful write). Keeping the shape stable
+// lets MCP clients parse both tools with one type.
+type modelPreferenceResponse struct {
+	Model     string   `json:"model"`
+	IsDefault bool     `json:"is_default"`
+	Allowed   []string `json:"allowed_models"`
+}
+
+func (s *Server) handleGetModelPreference(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	model, err := s.workspace.GetModelPreference(ctx)
+	if errors.Is(err, workspace.ErrUnscoped) {
+		return mcp.NewToolResultError("WORKSPACE_ID is not set; per-workspace preferences are unavailable in legacy unscoped mode"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading model preference: %v", err)), nil
+	}
+	return jsonText(modelPreferenceResponse{
+		Model:     model,
+		IsDefault: model == workspace.DefaultModelPreference,
+		Allowed:   workspace.AllowedModelPreferences,
+	})
+}
+
+func (s *Server) handleSetModelPreference(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	model := stringArg(args, "model")
+	if model == "" {
+		return mcp.NewToolResultError("model is required"), nil
+	}
+	if !workspace.IsAllowedModelPreference(model) {
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"model %q is not in the allowlist; allowed: %v",
+			model, workspace.AllowedModelPreferences,
+		)), nil
+	}
+
+	switch err := s.workspace.SetModelPreference(ctx, model); {
+	case errors.Is(err, workspace.ErrUnscoped):
+		return mcp.NewToolResultError("WORKSPACE_ID is not set; per-workspace preferences are unavailable in legacy unscoped mode"), nil
+	case errors.Is(err, workspace.ErrInvalidModel):
+		// Should not reach here because we pre-validate above, but the
+		// store layer enforces the same check defence-in-depth.
+		return mcp.NewToolResultError(fmt.Sprintf("invalid model: %v", err)), nil
+	case err != nil:
+		return mcp.NewToolResultError(fmt.Sprintf("saving model preference: %v", err)), nil
+	}
+
+	return jsonText(modelPreferenceResponse{
+		Model:     model,
+		IsDefault: model == workspace.DefaultModelPreference,
+		Allowed:   workspace.AllowedModelPreferences,
+	})
+}

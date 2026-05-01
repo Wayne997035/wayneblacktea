@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -18,6 +20,12 @@ import (
 const autoHandoffPrefix = "Auto-handoff:"
 
 const autologBodyLimit = 64 * 1024 // 64 KB
+
+const (
+	maxActorLen  = 200
+	maxActionLen = 200
+	maxNotesLen  = 2000
+)
 
 // maxTranscriptMessages caps the number of messages accepted from callers.
 const maxTranscriptMessages = 100
@@ -34,17 +42,40 @@ type AutologHandler struct {
 	sess       autologSessionStore
 	decision   autologDecisionStore
 	summarizer transcriptSummarizer
+	classifier activityClassifier
 }
 
 // NewAutologHandler creates an AutologHandler.
 // sum may be nil — when nil, AI enrichment is disabled and the handler falls back
 // to the mechanical "Auto-handoff: in_progress=[...]" summary.
-func NewAutologHandler(g autologGTDStore, s autologSessionStore, d autologDecisionStore, sum *ai.Summarizer) *AutologHandler {
+// classifier is wired when CLAUDE_API_KEY is set; nil disables auto-decision capture.
+func NewAutologHandler(
+	g autologGTDStore,
+	s autologSessionStore,
+	d autologDecisionStore,
+	sum *ai.Summarizer,
+) *AutologHandler {
 	var ts transcriptSummarizer
 	if sum != nil {
 		ts = sum
 	}
 	return &AutologHandler{gtd: g, sess: s, decision: d, summarizer: ts}
+}
+
+// NewAutologHandlerWithClassifier creates an AutologHandler with both summarizer and classifier.
+// Used by main.go when CLAUDE_API_KEY is configured; clf may be nil to disable auto-capture.
+func NewAutologHandlerWithClassifier(
+	g autologGTDStore,
+	s autologSessionStore,
+	d autologDecisionStore,
+	sum *ai.Summarizer,
+	clf *ai.ActivityClassifier,
+) *AutologHandler {
+	h := NewAutologHandler(g, s, d, sum)
+	if clf != nil {
+		h.classifier = clf
+	}
+	return h
 }
 
 type logActivityRequest struct {
@@ -62,6 +93,15 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
 	}
+	if len(req.Actor) > maxActorLen {
+		req.Actor = req.Actor[:maxActorLen]
+	}
+	if len(req.Action) > maxActionLen {
+		req.Action = req.Action[:maxActionLen]
+	}
+	if len(req.Notes) > maxNotesLen {
+		req.Notes = req.Notes[:maxNotesLen]
+	}
 	if req.Actor == "" || req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("actor and action are required"))
 	}
@@ -70,6 +110,21 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 		c.Logger().Errorf("LogActivity: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
+
+	if h.classifier != nil {
+		actor, action, notes := req.Actor, req.Action, req.Notes
+		go func() {
+			result := h.classifier.Classify(context.Background(), actor, action, notes)
+			if result.IsDecision && result.Title != "" {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := h.logImplicitDecision(bgCtx, result.Title); err != nil {
+					slog.Warn("auto-decision classify: log failed", "err", err)
+				}
+			}
+		}()
+	}
+
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -172,6 +227,24 @@ func (h *AutologHandler) enrichSummary(ctx context.Context, c echo.Context, mech
 // logImplicitDecision persists a single implicit decision extracted from the transcript.
 // Errors are returned wrapped so the caller can log them, but the handoff is never aborted.
 func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) error {
+	const maxDecisionTitle = 500
+	if len(title) > maxDecisionTitle {
+		title = title[:maxDecisionTitle]
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+
+	// Dedup: skip if same title was logged recently (check last 10 decisions).
+	if recent, err := h.decision.All(ctx, int32(10)); err == nil {
+		for _, d := range recent {
+			if strings.EqualFold(d.Title, title) {
+				return nil
+			}
+		}
+	}
+
 	_, err := h.decision.Log(ctx, decision.LogParams{
 		Title:     title,
 		Context:   "auto-extracted from session transcript",

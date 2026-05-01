@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -54,6 +56,7 @@ func (f *fakeAutologSessionStore) Resolve(_ context.Context, _ uuid.UUID) error 
 }
 
 type fakeAutologDecisionStore struct {
+	mu     sync.Mutex
 	list   []db.Decision
 	err    error
 	logErr error
@@ -61,10 +64,14 @@ type fakeAutologDecisionStore struct {
 }
 
 func (f *fakeAutologDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.list, f.err
 }
 
 func (f *fakeAutologDecisionStore) Log(_ context.Context, p decision.LogParams) (*db.Decision, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.logErr != nil {
 		return nil, f.logErr
 	}
@@ -82,6 +89,27 @@ type stubSummarizer struct {
 func (s *stubSummarizer) Summarize(_ context.Context, _ []ai.Message) ai.SummaryResult {
 	s.called = true
 	return s.result
+}
+
+// ---- stub classifier ----
+
+type stubClassifier struct {
+	result ai.ClassifyResult
+	mu     sync.Mutex
+	called bool
+}
+
+func (s *stubClassifier) Classify(_ context.Context, _, _, _ string) ai.ClassifyResult {
+	s.mu.Lock()
+	s.called = true
+	s.mu.Unlock()
+	return s.result
+}
+
+func (s *stubClassifier) wasCalled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.called
 }
 
 type stubCapturingSummarizer struct {
@@ -149,6 +177,69 @@ func TestAutologHandler_LogActivity(t *testing.T) {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestAutologHandler_LogActivity_AutoDecision(t *testing.T) {
+	clf := &stubClassifier{result: ai.ClassifyResult{IsDecision: true, Title: "Use Haiku for classification"}}
+	dec := &fakeAutologDecisionStore{}
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierForTest(
+		&fakeAutologGTDStore{}, &fakeAutologSessionStore{}, dec, nil, clf,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"pr_merge","notes":"merged feature branch"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	// Wait for the goroutine to finish (max 500ms, 5ms steps).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		dec.mu.Lock()
+		logged := len(dec.logged)
+		dec.mu.Unlock()
+		if logged > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	dec.mu.Lock()
+	defer dec.mu.Unlock()
+	if len(dec.logged) == 0 {
+		t.Fatalf("expected decision to be logged, got 0")
+	}
+	if dec.logged[0].Title != "Use Haiku for classification" {
+		t.Errorf("unexpected decision title: %q", dec.logged[0].Title)
+	}
+}
+
+func TestAutologHandler_LogActivity_ClassifierRoutine(t *testing.T) {
+	// Classifier returns is_decision=false → no decision should be logged.
+	clf := &stubClassifier{result: ai.ClassifyResult{IsDecision: false}}
+	dec := &fakeAutologDecisionStore{}
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierForTest(
+		&fakeAutologGTDStore{}, &fakeAutologSessionStore{}, dec, nil, clf,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"test_run","notes":"ran go test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	// Give goroutine time to run (max 500ms).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if clf.wasCalled() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	dec.mu.Lock()
+	defer dec.mu.Unlock()
+	if len(dec.logged) != 0 {
+		t.Errorf("expected no decision logged for routine activity, got %d", len(dec.logged))
 	}
 }
 

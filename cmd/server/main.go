@@ -82,6 +82,7 @@ func run() error {
 	decH := handler.NewDecisionHandler(stores.Decision())
 	sessH := handler.NewSessionHandler(stores.Session())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
+	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(stores.Learning(),
 		handler.WithKnowledgeStore(stores.Knowledge()),
 		handler.WithDecisionStore(stores.Decision()),
@@ -89,11 +90,13 @@ func run() error {
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
+	var clf *ai.ActivityClassifier
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
 		sum = ai.New(claudeKey)
 		conceptReviewer = ai.NewConceptReviewer(claudeKey)
+		clf = ai.NewActivityClassifier(claudeKey)
 	}
-	autologH := handler.NewAutologHandler(stores.GTD(), stores.Session(), stores.Decision(), sum)
+	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
 
 	e := echo.New()
 	e.HideBanner = true
@@ -149,6 +152,8 @@ func run() error {
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
+
+	api.GET("/search", searchH.Search)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)

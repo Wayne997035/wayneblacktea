@@ -17,3 +17,15 @@ func ValidateAuthTokenForTest(apiKey, token string) bool {
 func NewAutologHandlerForTest(g autologGTDStore, s autologSessionStore, d autologDecisionStore, sum transcriptSummarizer) *AutologHandler {
 	return &AutologHandler{gtd: g, sess: s, decision: d, summarizer: sum}
 }
+
+// NewAutologHandlerWithClassifierForTest creates an AutologHandler with both a summarizer
+// and an activity classifier stub — for testing the auto-decision capture path.
+func NewAutologHandlerWithClassifierForTest(
+	g autologGTDStore,
+	s autologSessionStore,
+	d autologDecisionStore,
+	sum transcriptSummarizer,
+	clf activityClassifier,
+) *AutologHandler {
+	return &AutologHandler{gtd: g, sess: s, decision: d, summarizer: sum, classifier: clf}
+}
