@@ -25,18 +25,19 @@ import (
 // ---- fake store implementations ----
 
 type fakeGTDStore struct {
-	goals       []db.Goal
-	projects    []db.Project
-	tasks       []db.Task
-	createdGoal *db.Goal
-	createdProj *db.Project
-	createdTask *db.Task
-	updatedTask *db.Task
-	updatedProj *db.Project
-	completed   *db.Task
-	completed_  int64
-	total_      int64
-	err         error
+	goals              []db.Goal
+	projects           []db.Project
+	tasks              []db.Task
+	createdGoal        *db.Goal
+	createdProj        *db.Project
+	createdTask        *db.Task
+	capturedTaskParams *gtd.CreateTaskParams
+	updatedTask        *db.Task
+	updatedProj        *db.Project
+	completed          *db.Task
+	completed_         int64
+	total_             int64
+	err                error
 }
 
 func (f *fakeGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) {
@@ -71,7 +72,8 @@ func (f *fakeGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error)
 	return f.tasks, f.err
 }
 
-func (f *fakeGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
+func (f *fakeGTDStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
+	f.capturedTaskParams = &p
 	return f.createdTask, f.err
 }
 
@@ -236,6 +238,81 @@ func TestGTDHandler_CreateGoal(t *testing.T) {
 			rec := performRequest(e, http.MethodPost, "/api/goals", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestGTDHandler_CreateTask(t *testing.T) {
+	taskID := uuid.New()
+	dueStr := "2026-12-31T00:00:00Z"
+	dueTime, _ := time.Parse(time.RFC3339, dueStr)
+
+	cases := []struct {
+		name          string
+		body          string
+		store         *fakeGTDStore
+		wantCode      int
+		checkDueDate  bool
+		expectDueDate bool
+	}{
+		{
+			name:          "with due_date → persisted",
+			body:          `{"title":"Ship E3","due_date":"` + dueStr + `"}`,
+			store:         &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Ship E3"}},
+			wantCode:      http.StatusCreated,
+			checkDueDate:  true,
+			expectDueDate: true,
+		},
+		{
+			name:          "without due_date → nil",
+			body:          `{"title":"Ship E3"}`,
+			store:         &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Ship E3"}},
+			wantCode:      http.StatusCreated,
+			checkDueDate:  true,
+			expectDueDate: false,
+		},
+		{
+			name:     "invalid due_date format → 400",
+			body:     `{"title":"Ship E3","due_date":"not-a-date"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "missing title → 400",
+			body:     `{"due_date":"` + dueStr + `"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "store error → 500",
+			body:     `{"title":"Ship E3"}`,
+			store:    &fakeGTDStore{err: errors.New("db write fail")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.POST("/api/tasks", h.CreateTask)
+			rec := performRequest(e, http.MethodPost, "/api/tasks", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.checkDueDate && rec.Code == http.StatusCreated {
+				if tc.expectDueDate {
+					if tc.store.capturedTaskParams == nil || tc.store.capturedTaskParams.DueDate == nil {
+						t.Error("expected DueDate to be propagated to store, got nil")
+					} else if !tc.store.capturedTaskParams.DueDate.Equal(dueTime) {
+						t.Errorf("DueDate mismatch: got %v, want %v", tc.store.capturedTaskParams.DueDate, dueTime)
+					}
+				} else {
+					if tc.store.capturedTaskParams != nil && tc.store.capturedTaskParams.DueDate != nil {
+						t.Errorf("expected DueDate to be nil, got %v", tc.store.capturedTaskParams.DueDate)
+					}
+				}
 			}
 		})
 	}
