@@ -33,12 +33,20 @@ func newSummarizerWithBase(baseURL string) *localai.Summarizer {
 }
 
 func makeAPIResponse(summaryText string, decisions []string) string {
+	return makeAPIResponseWithTasks(summaryText, decisions, nil)
+}
+
+func makeAPIResponseWithTasks(summaryText string, decisions, tasks []string) string {
 	if decisions == nil {
 		decisions = []string{}
+	}
+	if tasks == nil {
+		tasks = []string{}
 	}
 	payload := map[string]any{
 		"summary":   summaryText,
 		"decisions": decisions,
+		"tasks":     tasks,
 	}
 	b, _ := json.Marshal(payload)
 	// Wrap in Anthropic Messages API response envelope.
@@ -206,5 +214,64 @@ func TestSummarizer_TranscriptCapAt64KB(t *testing.T) {
 	const maxBytes = 64 * 1024
 	if receivedLen > maxBytes {
 		t.Errorf("prompt sent to API was %d bytes, exceeds 64KB cap", receivedLen)
+	}
+}
+
+func TestSummarizer_Tasks_Success(t *testing.T) {
+	wantSummary := "Discussed implementation plan."
+	wantTasks := []string{"Write integration tests", "Update API docs"}
+
+	srv := newMockServer(t, http.StatusOK, makeAPIResponseWithTasks(wantSummary, nil, wantTasks))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "We need integration tests and updated API docs."},
+		{Role: "assistant", Content: "I'll add both."},
+	}
+
+	result := s.Summarize(context.Background(), transcript)
+	if result.Summary != wantSummary {
+		t.Errorf("got summary %q, want %q", result.Summary, wantSummary)
+	}
+	if len(result.Tasks) != len(wantTasks) {
+		t.Fatalf("got %d tasks, want %d", len(result.Tasks), len(wantTasks))
+	}
+	for i, task := range wantTasks {
+		if result.Tasks[i] != task {
+			t.Errorf("task[%d]: got %q, want %q", i, result.Tasks[i], task)
+		}
+	}
+}
+
+func TestSummarizer_Tasks_EmptyWhenNotInTranscript(t *testing.T) {
+	// API returns empty tasks array → Tasks field should be empty.
+	srv := newMockServer(t, http.StatusOK, makeAPIResponseWithTasks("Done.", nil, []string{}))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "Reviewed the PR."},
+	}
+
+	result := s.Summarize(context.Background(), transcript)
+	if len(result.Tasks) != 0 {
+		t.Errorf("expected 0 tasks, got %d", len(result.Tasks))
+	}
+}
+
+func TestSummarizer_Tasks_NilOnAPIError(t *testing.T) {
+	// API error → Tasks must be nil/empty, not panic.
+	srv := newMockServer(t, http.StatusInternalServerError, `{"type":"error","error":{"type":"api_error","message":"server error"}}`)
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "Let's fix the bug."},
+	}
+
+	result := s.Summarize(context.Background(), transcript)
+	if len(result.Tasks) != 0 {
+		t.Errorf("expected 0 tasks on API error, got %d", len(result.Tasks))
 	}
 }

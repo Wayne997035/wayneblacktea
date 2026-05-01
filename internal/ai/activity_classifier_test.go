@@ -149,3 +149,76 @@ func TestActivityClassifier_Classify_EmptyAPIResponse(t *testing.T) {
 		t.Errorf("expected IsDecision=false on empty API content, got true")
 	}
 }
+
+func TestActivityClassifier_Classify_IsTask(t *testing.T) {
+	// API returns is_task=true with a task title.
+	want := localai.ClassifyResult{
+		IsDecision: false,
+		Title:      "",
+		Rationale:  "",
+		IsTask:     true,
+		TaskTitle:  "Implement OAuth login with PKCE",
+	}
+
+	srv := newMockServer(t, http.StatusOK, makeClassifyAPIResponse(want))
+	defer srv.Close()
+
+	c := newClassifierWithBase(srv.URL)
+	result := c.Classify(context.Background(), "bash-hook", "pr:open", "opened PR for OAuth login with PKCE")
+
+	if !result.IsTask {
+		t.Errorf("expected IsTask=true, got false")
+	}
+	if result.TaskTitle != want.TaskTitle {
+		t.Errorf("TaskTitle = %q, want %q", result.TaskTitle, want.TaskTitle)
+	}
+	if result.IsDecision {
+		t.Errorf("expected IsDecision=false, got true")
+	}
+}
+
+func TestActivityClassifier_Classify_IsTaskAndDecision(t *testing.T) {
+	// API returns both is_decision=true and is_task=true.
+	want := localai.ClassifyResult{
+		IsDecision: true,
+		Title:      "Switched deployment platform to Railway",
+		Rationale:  "Platform change with trade-offs",
+		IsTask:     true,
+		TaskTitle:  "Update CI/CD config for Railway",
+	}
+
+	srv := newMockServer(t, http.StatusOK, makeClassifyAPIResponse(want))
+	defer srv.Close()
+
+	c := newClassifierWithBase(srv.URL)
+	result := c.Classify(context.Background(), "bash-hook", "deploy:railway", "migrated from Render to Railway")
+
+	if !result.IsDecision {
+		t.Errorf("expected IsDecision=true, got false")
+	}
+	if !result.IsTask {
+		t.Errorf("expected IsTask=true, got false")
+	}
+	if result.Title != want.Title {
+		t.Errorf("Title = %q, want %q", result.Title, want.Title)
+	}
+	if result.TaskTitle != want.TaskTitle {
+		t.Errorf("TaskTitle = %q, want %q", result.TaskTitle, want.TaskTitle)
+	}
+}
+
+func TestActivityClassifier_Classify_IsTask_FalseOnAPIError(t *testing.T) {
+	// API returns 500 → IsTask must be false (safe zero value).
+	srv := newMockServer(t, http.StatusInternalServerError, `{"type":"error","error":{"type":"api_error","message":"server error"}}`)
+	defer srv.Close()
+
+	c := newClassifierWithBase(srv.URL)
+	result := c.Classify(context.Background(), "bash-hook", "pr:open", "opened PR for feature Y")
+
+	if result.IsTask {
+		t.Errorf("expected IsTask=false on API error, got true")
+	}
+	if result.TaskTitle != "" {
+		t.Errorf("expected empty TaskTitle on API error, got %q", result.TaskTitle)
+	}
+}

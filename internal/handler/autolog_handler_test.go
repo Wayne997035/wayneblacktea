@@ -13,6 +13,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
@@ -22,9 +23,12 @@ import (
 // ---- fake stores for AutologHandler ----
 
 type fakeAutologGTDStore struct {
-	tasks   []db.Task
-	taskErr error
-	logErr  error
+	mu            sync.Mutex
+	tasks         []db.Task
+	taskErr       error
+	logErr        error
+	createTaskErr error
+	createdTasks  []gtd.CreateTaskParams
 }
 
 func (f *fakeAutologGTDStore) LogActivity(_ context.Context, _, _ string, _ *uuid.UUID, _ string) error {
@@ -32,7 +36,20 @@ func (f *fakeAutologGTDStore) LogActivity(_ context.Context, _, _ string, _ *uui
 }
 
 func (f *fakeAutologGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.tasks, f.taskErr
+}
+
+func (f *fakeAutologGTDStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createTaskErr != nil {
+		return nil, f.createTaskErr
+	}
+	f.createdTasks = append(f.createdTasks, p)
+	f.tasks = append(f.tasks, db.Task{ID: uuid.New(), Title: p.Title, Status: "pending"})
+	return &db.Task{ID: uuid.New(), Title: p.Title}, nil
 }
 
 type fakeAutologSessionStore struct {
@@ -489,6 +506,163 @@ func TestAutoHandoff_DecisionLogFailsDuringAIPath(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("got status %d, want 200 even when decision.Log fails (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "handoff_id") {
+		t.Errorf("expected handoff_id in response, got: %s", rec.Body.String())
+	}
+}
+
+// ---- IsTask auto-create tests ----
+
+func TestAutologHandler_LogActivity_AutoTask(t *testing.T) {
+	// Classifier returns is_task=true → a GTD task should be created.
+	clf := &stubClassifier{result: ai.ClassifyResult{IsTask: true, TaskTitle: "Implement feature Z"}}
+	gtdStore := &fakeAutologGTDStore{}
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{}, nil, clf,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"pr:open","notes":"opened PR for feature Z"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	// Wait for goroutine (max 500ms, 5ms steps).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		gtdStore.mu.Lock()
+		created := len(gtdStore.createdTasks)
+		gtdStore.mu.Unlock()
+		if created > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) == 0 {
+		t.Fatalf("expected task to be created, got 0")
+	}
+	if gtdStore.createdTasks[0].Title != "Implement feature Z" {
+		t.Errorf("unexpected task title: %q", gtdStore.createdTasks[0].Title)
+	}
+}
+
+func TestAutologHandler_LogActivity_AutoTask_NotTask(t *testing.T) {
+	// Classifier returns is_task=false → no task should be created.
+	clf := &stubClassifier{result: ai.ClassifyResult{IsTask: false}}
+	gtdStore := &fakeAutologGTDStore{}
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{}, nil, clf,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"test_run","notes":"ran go test ./..."}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	// Wait for goroutine to run (max 500ms).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if clf.wasCalled() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 0 {
+		t.Errorf("expected no task created for routine activity, got %d", len(gtdStore.createdTasks))
+	}
+}
+
+func TestAutologHandler_LogActivity_AutoTask_Dedup(t *testing.T) {
+	// Classifier returns is_task=true but a task with the same title already exists → no duplicate.
+	existing := db.Task{ID: uuid.New(), Title: "Implement feature Z", Status: "pending"}
+	clf := &stubClassifier{result: ai.ClassifyResult{IsTask: true, TaskTitle: "Implement feature Z"}}
+	gtdStore := &fakeAutologGTDStore{tasks: []db.Task{existing}}
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{}, nil, clf,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"pr:open","notes":"opened PR for feature Z"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	// Wait for goroutine to run (max 500ms).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if clf.wasCalled() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 0 {
+		t.Errorf("expected dedup: no new task created, got %d", len(gtdStore.createdTasks))
+	}
+}
+
+func TestAutoHandoff_WithTranscriptTasks(t *testing.T) {
+	// Summarizer returns tasks → autoCreateTask must be called for each.
+	handoffID := uuid.New()
+	sess := &fakeAutologSessionStore{result: &db.SessionHandoff{
+		ID:     handoffID,
+		Intent: "Auto-handoff: in_progress=[] recent_decisions=[]",
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	stub := &stubSummarizer{
+		result: ai.SummaryResult{
+			Summary:   "Discussed next steps.",
+			Decisions: []string{},
+			Tasks:     []string{"Write integration tests", "Update API docs"},
+		},
+	}
+	e := newEcho()
+	h := handler.NewAutologHandlerForTest(gtdStore, sess, &fakeAutologDecisionStore{}, stub)
+	e.POST("/api/auto-handoff", h.AutoHandoff)
+
+	body := `{"transcript":[{"role":"user","content":"We need integration tests and API docs."}]}`
+	rec := performRequest(e, http.MethodPost, "/api/auto-handoff", body)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 2 {
+		t.Errorf("expected 2 tasks created, got %d", len(gtdStore.createdTasks))
+	}
+}
+
+func TestAutoHandoff_TaskCreateFailsStillReturns200(t *testing.T) {
+	// autoCreateTask fails → handler must still return 200 + handoff_id.
+	handoffID := uuid.New()
+	sess := &fakeAutologSessionStore{result: &db.SessionHandoff{
+		ID:     handoffID,
+		Intent: "Auto-handoff: in_progress=[] recent_decisions=[]",
+	}}
+	gtdStore := &fakeAutologGTDStore{createTaskErr: errors.New("db write fail")}
+	stub := &stubSummarizer{
+		result: ai.SummaryResult{
+			Summary: "Session done.",
+			Tasks:   []string{"Fix the bug"},
+		},
+	}
+	e := newEcho()
+	h := handler.NewAutologHandlerForTest(gtdStore, sess, &fakeAutologDecisionStore{}, stub)
+	e.POST("/api/auto-handoff", h.AutoHandoff)
+
+	body := `{"transcript":[{"role":"user","content":"We need to fix the bug."}]}`
+	rec := performRequest(e, http.MethodPost, "/api/auto-handoff", body)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200 even when task create fails (body: %s)", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "handoff_id") {
 		t.Errorf("expected handoff_id in response, got: %s", rec.Body.String())

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -122,6 +123,13 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 					slog.Warn("auto-decision classify: log failed", "err", err)
 				}
 			}
+			if result.IsTask && result.TaskTitle != "" {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := h.autoCreateTask(bgCtx, result.TaskTitle); err != nil {
+					slog.Warn("auto-task classify: create failed", "err", err)
+				}
+			}
 		}()
 	}
 
@@ -218,10 +226,42 @@ func (h *AutologHandler) enrichSummary(ctx context.Context, c echo.Context, mech
 			c.Logger().Warnf("AutoHandoff: failed to log implicit decision %q: %v", d, logErr)
 		}
 	}
+	for _, t := range result.Tasks {
+		if createErr := h.autoCreateTask(ctx, t); createErr != nil {
+			c.Logger().Warnf("AutoHandoff: failed to auto-create task %q: %v", t, createErr)
+		}
+	}
 	if result.Summary != "" {
 		return result.Summary
 	}
 	return mechanical
+}
+
+// autoCreateTask creates a GTD task with the given title unless one with the same title
+// already exists (case-insensitive dedup). Title is capped at 500 characters.
+func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error {
+	const maxTaskTitle = 500
+	if len(title) > maxTaskTitle {
+		title = title[:maxTaskTitle]
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+
+	// Dedup: skip if a task with the same title already exists.
+	if existing, err := h.gtd.Tasks(ctx, nil); err == nil {
+		for _, t := range existing {
+			if strings.EqualFold(t.Title, title) {
+				return nil
+			}
+		}
+	}
+
+	if _, err := h.gtd.CreateTask(ctx, gtd.CreateTaskParams{Title: title, Priority: 2}); err != nil {
+		return fmt.Errorf("auto-create task: %w", err)
+	}
+	return nil
 }
 
 // logImplicitDecision persists a single implicit decision extracted from the transcript.
