@@ -102,6 +102,11 @@ func run() error {
 
 	e := echo.New()
 	e.HideBanner = true
+	// Trust the Railway/proxy edge to provide the real client IP via X-Forwarded-For.
+	// Without this, c.RealIP() falls back to the connection peer (the proxy) and the
+	// per-IP rate limiter (e.g. dashboardRL) treats every authenticated caller as one
+	// IP, OR — worse — accepts any spoofed XFF header verbatim.
+	e.IPExtractor = echo.ExtractIPFromXFFHeader()
 	e.Use(echolog.RequestLoggerWithConfig(echolog.RequestLoggerConfig{
 		LogMethod: true, LogURI: true, LogStatus: true,
 		LogLatency: true, LogHost: true, LogError: true,

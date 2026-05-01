@@ -60,14 +60,20 @@ func run() error {
 					"err", tlsErr)
 			case tlsCfg != nil:
 				cfg.ConnConfig.TLSConfig = tlsCfg
-				if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
+				pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+				if err != nil {
+					slog.Warn("discordbot optional DB connectivity check failed", "err", err)
+				} else {
 					defer pool.Close()
 					slog.Info("database connected")
 				}
 			default:
 				// Non-production with no PGSSLROOTCERT: nil tls.Config means
 				// pgx falls back to system CA pool, which is acceptable here.
-				if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
+				pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+				if err != nil {
+					slog.Warn("discordbot optional DB connectivity check failed", "err", err)
+				} else {
 					defer pool.Close()
 					slog.Info("database connected (system CA)")
 				}
