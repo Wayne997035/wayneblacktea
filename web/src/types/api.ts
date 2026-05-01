@@ -1,5 +1,5 @@
 export type ProjectStatus = 'active' | 'on_hold' | 'completed' | 'archived';
-export type TaskStatus    = 'todo' | 'in_progress' | 'done' | 'blocked';
+export type TaskStatus    = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 export type GoalStatus    = 'active' | 'completed' | 'archived';
 
 export interface Project {

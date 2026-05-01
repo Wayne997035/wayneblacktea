@@ -40,7 +40,7 @@ export function CreateProjectModal({ goals, onClose }: CreateProjectModalProps) 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim() || !title.trim()) {
-      setFormError('Name and title are required')
+      setFormError(t('error.fieldRequired'))
       return
     }
     setFormError('')
@@ -54,11 +54,11 @@ export function CreateProjectModal({ goals, onClose }: CreateProjectModalProps) 
         goal_id: goalId || null,
         priority,
       })
-      addToast({ type: 'success', message: 'Project created!' })
+      addToast({ type: 'success', message: t('gtd.projectCreated') })
       dialogRef.current?.close()
     } catch (err) {
       const message = err instanceof Error && err.message.includes('409')
-        ? 'Project name already exists'
+        ? t('gtd.projectNameExists')
         : t('error.loadFailed')
       setFormError(message)
     }

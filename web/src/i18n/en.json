@@ -42,7 +42,18 @@
     "noTasks": "No tasks",
     "addTask": "Add Task",
     "addGoal": "Add Goal",
-    "addProject": "Add Project"
+    "addProject": "Add Project",
+    "goalCreated": "Goal created",
+    "projectCreated": "Project created",
+    "projectNameExists": "Project name already exists"
+  },
+  "project": {
+    "back": "Back",
+    "tasksSection": "TASKS",
+    "openCount": "{{count}} open",
+    "noTasks": "No tasks yet",
+    "decisionsSection": "DECISIONS",
+    "noDecisions": "No decisions recorded"
   },
   "workspace": {
     "title": "Workspace",
@@ -77,7 +88,8 @@
     "retry": "Retry"
   },
   "error": {
-    "loadFailed": "Failed to load"
+    "loadFailed": "Failed to load",
+    "fieldRequired": "This field is required"
   },
   "knowledge": {
     "title": "Knowledge",

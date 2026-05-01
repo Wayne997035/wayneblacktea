@@ -23,8 +23,8 @@ export function ProjectDetailPage() {
   const tasks = tasksQuery.data ?? []
   const decisions = decisionsQuery.data ?? []
 
-  const pendingTasks = tasks.filter((t) => t.status !== 'done')
-  const doneTasks = tasks.filter((t) => t.status === 'done')
+  const pendingTasks = tasks.filter((t) => t.status !== 'completed')
+  const doneTasks = tasks.filter((t) => t.status === 'completed')
 
   if (projectQuery.isError) {
     return (
@@ -37,7 +37,7 @@ export function ProjectDetailPage() {
           style={{ color: 'var(--color-text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
         >
           <ArrowLeft size={16} aria-hidden="true" />
-          Back
+          {t('project.back')}
         </button>
         <div
           className="rounded-md p-3 text-body-sm"
@@ -55,14 +55,14 @@ export function ProjectDetailPage() {
       <button
         type="button"
         onClick={() => navigate(-1)}
-        aria-label="Go back"
+        aria-label={t('project.back')}
         className="flex items-center gap-2 mb-6 text-body-sm transition-colors"
         style={{ color: 'var(--color-text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
         onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--color-text-primary)' }}
         onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--color-text-muted)' }}
       >
         <ArrowLeft size={16} aria-hidden="true" />
-        Back
+        {t('project.back')}
       </button>
 
       {projectQuery.isLoading || !project ? (
@@ -102,12 +102,12 @@ export function ProjectDetailPage() {
             {/* Tasks */}
             <section>
               <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
-                TASKS
+                {t('project.tasksSection')}
                 <span
                   className="ml-2 text-caption px-1.5 rounded-full font-mono"
                   style={{ background: 'var(--color-bg-hover)', color: 'var(--color-text-muted)' }}
                 >
-                  {pendingTasks.length} open
+                  {t('project.openCount', { count: pendingTasks.length })}
                 </span>
               </div>
               {tasksQuery.isLoading ? (
@@ -115,7 +115,7 @@ export function ProjectDetailPage() {
                   {Array.from({ length: 4 }, (_, i) => <LoadingSkeleton key={i} className="h-11 w-full" />)}
                 </div>
               ) : tasks.length === 0 ? (
-                <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>No tasks yet</p>
+                <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>{t('project.noTasks')}</p>
               ) : (
                 <ul
                   aria-label="Project tasks"
@@ -135,14 +135,14 @@ export function ProjectDetailPage() {
             {/* Decisions */}
             <section>
               <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
-                DECISIONS
+                {t('project.decisionsSection')}
               </div>
               {decisionsQuery.isLoading ? (
                 <div className="space-y-3">
                   {Array.from({ length: 3 }, (_, i) => <LoadingSkeleton key={i} className="h-16 w-full" />)}
                 </div>
               ) : decisions.length === 0 ? (
-                <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>No decisions recorded</p>
+                <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>{t('project.noDecisions')}</p>
               ) : (
                 <DecisionTimeline decisions={decisions} />
               )}

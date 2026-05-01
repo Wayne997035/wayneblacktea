@@ -36,7 +36,7 @@ export function CreateGoalModal({ onClose }: CreateGoalModalProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim()) {
-      setFormError('Title is required')
+      setFormError(t('error.fieldRequired'))
       return
     }
     setFormError('')
@@ -46,9 +46,9 @@ export function CreateGoalModal({ onClose }: CreateGoalModalProps) {
         title: title.trim(),
         area: area.trim() || undefined,
         description: description.trim() || undefined,
-        due_date: dueDate || null,
+        due_date: dueDate ? new Date(dueDate).toISOString() : null,
       })
-      addToast({ type: 'success', message: 'Goal created!' })
+      addToast({ type: 'success', message: t('gtd.goalCreated') })
       dialogRef.current?.close()
     } catch {
       setFormError(t('error.loadFailed'))
