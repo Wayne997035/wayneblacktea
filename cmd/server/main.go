@@ -88,6 +88,7 @@ func run() error {
 		handler.WithKnowledgeStore(stores.Knowledge()),
 		handler.WithDecisionStore(stores.Decision()),
 	)
+	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
@@ -171,6 +172,12 @@ func run() error {
 	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal, proposalRL)
 
 	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))
+
+	api.GET("/dashboard/stats", dashH.GetStats)
+	api.GET("/dashboard/recent-decisions", dashH.GetRecentDecisions)
+	api.GET("/dashboard/active-projects", dashH.GetActiveProjects)
+	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress)
+	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
