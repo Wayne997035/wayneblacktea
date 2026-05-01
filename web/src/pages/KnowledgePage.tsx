@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, Plus, X, BookOpen } from 'lucide-react'
+import { Search, Plus, X } from 'lucide-react'
 import { useKnowledge, useKnowledgeSearch, useCreateKnowledge } from '../hooks/useKnowledge'
-import { useNewConcepts } from '../hooks/useReviews'
 import { KnowledgeCard } from '../components/knowledge/KnowledgeCard'
+import { PendingProposalsSection } from '../components/knowledge/PendingProposalsSection'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 import type { KnowledgeType, CreateKnowledgeRequest } from '../types/api'
@@ -53,7 +53,6 @@ export function KnowledgePage() {
 
   const { data: listData, isLoading: listLoading, isError: listError } = useKnowledge()
   const { data: searchData, isLoading: searchLoading, isError: searchError } = useKnowledgeSearch(debouncedSearch)
-  const { data: newConcepts } = useNewConcepts()
   const createMutation = useCreateKnowledge()
 
   const items = isSearching ? (searchData ?? []) : (listData ?? [])
@@ -297,74 +296,7 @@ export function KnowledgePage() {
       )}
 
       {/* Pending Concept Proposals */}
-      {newConcepts && newConcepts.length > 0 && (
-        <section className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <BookOpen size={15} aria-hidden="true" style={{ color: 'var(--color-accent-blue)' }} />
-            <h2 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
-              {t('knowledge.pendingConcepts')}
-            </h2>
-            <span
-              className="text-label rounded-full px-2 py-0.5 ml-auto"
-              style={{
-                background: 'var(--color-bg-hover)',
-                color: 'var(--color-text-muted)',
-                border: '1px solid var(--color-border)',
-              }}
-            >
-              {newConcepts.length}
-            </span>
-          </div>
-          <div
-            className="rounded-lg overflow-hidden"
-            style={{ border: '1px solid var(--color-border)' }}
-          >
-            {newConcepts.map((concept, idx) => (
-              <div
-                key={concept.concept_id}
-                className="px-4 py-3 text-body-sm"
-                style={{
-                  background: 'var(--color-bg-card)',
-                  borderTop: idx > 0 ? '1px solid var(--color-border)' : 'none',
-                }}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span
-                    className="font-medium"
-                    style={{ color: 'var(--color-text-primary)' }}
-                  >
-                    {concept.title}
-                  </span>
-                  <span
-                    className="text-label rounded-full px-2 py-0.5 shrink-0"
-                    style={{
-                      background: 'rgba(79,195,247,0.1)',
-                      color: 'var(--color-accent-blue)',
-                      border: '1px solid var(--color-accent-blue)',
-                    }}
-                  >
-                    {t('knowledge.newConcept')}
-                  </span>
-                </div>
-                {concept.content && (
-                  <p
-                    className="mt-1"
-                    style={{
-                      color: 'var(--color-text-muted)',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {concept.content}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      <PendingProposalsSection />
 
       {/* Error banner */}
       {isError && (

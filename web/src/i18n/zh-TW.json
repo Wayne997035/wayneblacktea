@@ -99,6 +99,17 @@
     "addEntry": "新增條目",
     "pendingConcepts": "待確認概念提案",
     "newConcept": "新增",
+    "proposals": {
+      "sectionTitle": "待確認概念提案",
+      "awaiting": "{{count}} 筆待審",
+      "accept": "接受",
+      "reject": "拒絕",
+      "acceptedToast": "概念已接受，已加入學習佇列",
+      "rejectedToast": "提案已拒絕",
+      "confirmReject": "確認拒絕此提案？",
+      "expand": "展開提案區塊",
+      "collapse": "收起提案區塊"
+    },
     "form": {
       "type": "類型",
       "title": "標題",

@@ -99,6 +99,17 @@
     "addEntry": "Add Entry",
     "pendingConcepts": "Pending Concept Proposals",
     "newConcept": "New",
+    "proposals": {
+      "sectionTitle": "PROPOSED CONCEPTS",
+      "awaiting": "{{count}} awaiting review",
+      "accept": "Accept",
+      "reject": "Reject",
+      "acceptedToast": "Concept accepted — added to learning queue",
+      "rejectedToast": "Proposal rejected",
+      "confirmReject": "Reject this proposal?",
+      "expand": "Expand proposals section",
+      "collapse": "Collapse proposals section"
+    },
     "form": {
       "type": "Type",
       "title": "Title",
