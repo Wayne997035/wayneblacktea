@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 
+	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -35,6 +36,7 @@ type Server struct {
 	knowledge knowledge.StoreIface
 	learning  learning.StoreIface
 	proposal  proposal.StoreIface
+	arch      arch.StoreIface
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
@@ -61,6 +63,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		knowledge:  stores.Knowledge(),
 		learning:   stores.Learning(),
 		proposal:   stores.Proposal(),
+		arch:       stores.Arch(),
 		pgGTD:      stores.PgGTD(),
 		pgProposal: stores.PgProposal(),
 		pgLearning: stores.PgLearning(),
@@ -105,6 +108,12 @@ High-signal tools (complete_task, confirm_plan, add_task, log_decision, set_sess
 are auto-logged server-side. Stop hook auto-creates a session snapshot. These tools are still
 required — auto-log is a safety net, not a replacement.
 
+## Architecture snapshots
+After reading 3+ internal/ files from a project, MUST call upsert_project_arch to store the
+architecture snapshot (slug = repo name, summary = one-paragraph description, file_map = path→purpose).
+At session start, call get_project_arch first — if stale (last_commit_sha differs from git rev-parse HEAD),
+re-read changed files and call upsert_project_arch again.
+
 ## Behavior rules live here, not in private memory
 Do not store wayneblacktea protocol rules in agent memory. Rules ship with the binary so
 all MCP clients get identical behavior. To change a rule, propose a PR to internal/mcp/server.go.`
@@ -130,6 +139,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerPlanTools(ms)
 	s.registerProposalTools(ms)
 	s.registerHealthTools(ms)
+	s.registerArchTools(ms)
 	return ms
 }
 
