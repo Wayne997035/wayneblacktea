@@ -46,6 +46,10 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 		return mcp.NewToolResultError("title, context, decision and rationale are required"), nil
 	}
 
+	if reason := checkDecisionNoise(title, decCtx, dec, rationale); reason != "" {
+		return mcp.NewToolResultError("invalid params: " + reason), nil
+	}
+
 	p := decision.LogParams{
 		Title:        title,
 		Context:      decCtx,
