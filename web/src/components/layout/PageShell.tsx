@@ -2,11 +2,21 @@ import { useState, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
-import { GlobalSearch } from '../search/GlobalSearch'
+import { GlobalSearch } from '../GlobalSearch/GlobalSearch'
+import { useUiStore } from '../../stores/uiStore'
+
+/** Returns true when the active element is an editable field (input, textarea, contentEditable). */
+function isEditableTarget(el: Element | null): boolean {
+  if (!el) return false
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if ((el as HTMLElement).isContentEditable) return true
+  return false
+}
 
 export function PageShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
+  const { searchOpen, closeSearch, toggleSearch } = useUiStore()
 
   // Lock body scroll when overlay is open
   useEffect(() => {
@@ -14,25 +24,26 @@ export function PageShell() {
     return () => { document.body.style.overflow = '' }
   }, [sidebarOpen, searchOpen])
 
-  // Escape to close sidebar (search palette handles its own Escape with stopPropagation)
+  // Escape closes sidebar (search palette handles its own Escape with stopPropagation)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSidebarOpen(false) }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
-  // ⌘K / Ctrl+K to open search palette
+  // ⌘K / Ctrl+K opens search palette — MUST skip when user is typing in an input
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault()
-        e.stopPropagation()
-        setSearchOpen((v) => !v)
-      }
+      if (e.key !== 'k' || !(e.metaKey || e.ctrlKey)) return
+      // Skip if the active element is an editable field
+      if (isEditableTarget(document.activeElement)) return
+      e.preventDefault()
+      e.stopPropagation()
+      toggleSearch()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [])
+  }, [toggleSearch])
 
   return (
     <div className="flex flex-col" style={{ minHeight: '100vh', background: 'var(--color-bg-base)' }}>
@@ -41,7 +52,7 @@ export function PageShell() {
         sidebarOpen={sidebarOpen}
       />
 
-      <GlobalSearch isOpen={searchOpen} onClose={() => setSearchOpen(false)} />
+      <GlobalSearch isOpen={searchOpen} onClose={closeSearch} />
 
       <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - var(--spacing-header))' }}>
         {/* Desktop: always-visible 240px sidebar */}
@@ -54,7 +65,7 @@ export function PageShell() {
           <Sidebar collapsed />
         </div>
 
-        {/* Overlay backdrop starts below the sticky header and stays aligned with its tokenized height. */}
+        {/* Overlay backdrop starts below the sticky header */}
         <div
           className="fixed inset-x-0 bottom-0 z-40 lg:hidden"
           aria-hidden="true"
@@ -68,7 +79,7 @@ export function PageShell() {
           onClick={() => setSidebarOpen(false)}
         />
 
-        {/* Slide-in sidebar — starts below header, always mounted for smooth animation */}
+        {/* Slide-in sidebar — always mounted for smooth animation */}
         <div
           className="fixed left-0 bottom-0 z-50 lg:hidden"
           role="dialog"

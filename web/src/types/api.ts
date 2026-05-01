@@ -161,11 +161,15 @@ export interface LearningSuggestions {
 }
 
 export interface SearchResult {
-  type: 'knowledge' | 'decision' | 'task';
+  type: 'knowledge' | 'decision' | 'task' | 'project';
   id: string;
   title: string;
-  content: string;
-  score: number | null;
+  /** Backend may return either 'snippet' or 'content'. useGlobalSearch normalises to snippet. */
+  snippet: string;
+  /** content is the legacy field name kept for backward compat with older backend responses. */
+  content?: string;
+  url: string;
+  score?: number | null;
 }
 
 export interface SearchResponse {
