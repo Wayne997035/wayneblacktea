@@ -94,6 +94,11 @@ func (s *Server) handleCreateConcept(ctx context.Context, req mcp.CallToolReques
 			}
 		}
 	}
+	cleanedTags, reason := sanitizeTags(tags)
+	if reason != "" {
+		return mcp.NewToolResultError(string(reason)), nil
+	}
+	tags = cleanedTags
 
 	concept, err := s.learning.CreateConcept(ctx, title, content, tags)
 	if err != nil {

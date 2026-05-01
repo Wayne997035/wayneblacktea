@@ -69,6 +69,11 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 			}
 		}
 	}
+	cleanedTags, reason := sanitizeTags(tags)
+	if reason != "" {
+		return mcp.NewToolResultError(string(reason)), nil
+	}
+	tags = cleanedTags
 
 	item, err := s.knowledge.AddItem(ctx, knowledge.AddItemParams{
 		Type:    itemType,

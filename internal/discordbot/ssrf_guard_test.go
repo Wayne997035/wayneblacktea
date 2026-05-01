@@ -126,6 +126,21 @@ func TestIsSafeURL_BlockedRanges(t *testing.T) {
 			wantSafe:  false,
 			wantErrIs: "RFC 1918 private range",
 		},
+		// --- Public IPv4 must PASS (regression guard) ---
+		// Without this case the over-broad ::ffff:0:0/96 CIDR would silently
+		// block every public IPv4 — see the comment in ssrf_guard.go init().
+		{
+			name:      "public IPv4 8.8.8.8 must be allowed",
+			url:       "http://8.8.8.8/",
+			wantSafe:  true,
+			wantErrIs: "",
+		},
+		{
+			name:      "public IPv4 1.1.1.1 must be allowed",
+			url:       "https://1.1.1.1/",
+			wantSafe:  true,
+			wantErrIs: "",
+		},
 	}
 
 	for _, tc := range cases {
