@@ -115,6 +115,18 @@ func run() error {
 	e.Use(echolog.Recover())
 	e.Use(echolog.BodyLimit("1M"))
 	e.Use(apimw.CORSMiddleware(allowedOrigins))
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			c.Response().Header().Set("Content-Security-Policy",
+				"default-src 'self'; "+
+					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+					"font-src 'self' https://fonts.gstatic.com; "+
+					"script-src 'self'; "+
+					"connect-src 'self'; "+
+					"img-src 'self' data:")
+			return next(c)
+		}
+	})
 
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})

@@ -7,7 +7,7 @@ export function useDecisions(projectId?: string) {
     queryKey: ['decisions', projectId ?? 'all'],
     queryFn: () => {
       const url = projectId
-        ? `/api/decisions?project_id=${projectId}`
+        ? `/api/decisions?${new URLSearchParams({ project_id: projectId }).toString()}`
         : '/api/decisions'
       return apiFetch<Decision[]>(url)
     },
