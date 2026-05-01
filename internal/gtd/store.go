@@ -156,6 +156,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		Description: toText(p.Description),
 		Priority:    priority,
 		Assignee:    toText(p.Assignee),
+		DueDate:     toTimestamptz(p.DueDate),
 		Importance:  toInt2(p.Importance),
 		Context:     toText(p.Context),
 		WorkspaceID: s.workspaceID,

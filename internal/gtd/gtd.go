@@ -65,9 +65,10 @@ type CreateGoalParams struct {
 type CreateTaskParams struct {
 	ProjectID   *uuid.UUID // nil → no project
 	Title       string
-	Description string // empty → NULL
-	Priority    int32  // defaults to 3
-	Assignee    string // empty → NULL
-	Importance  *int16 // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
-	Context     string // empty → NULL; free-form discussion background
+	Description string     // empty → NULL
+	Priority    int32      // defaults to 3
+	Assignee    string     // empty → NULL
+	DueDate     *time.Time // nil → NULL
+	Importance  *int16     // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
+	Context     string     // empty → NULL; free-form discussion background
 }

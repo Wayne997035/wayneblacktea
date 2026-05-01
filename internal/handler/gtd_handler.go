@@ -177,6 +177,7 @@ type createTaskRequest struct {
 	Description string     `json:"description"`
 	Assignee    string     `json:"assignee"`
 	Priority    int32      `json:"priority"`
+	DueDate     *time.Time `json:"due_date"`
 }
 
 // CreateTask inserts a new task.
@@ -195,6 +196,7 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 		Description: req.Description,
 		Assignee:    req.Assignee,
 		Priority:    req.Priority,
+		DueDate:     req.DueDate,
 	})
 	if err != nil {
 		c.Logger().Errorf("CreateTask: %v", err)
