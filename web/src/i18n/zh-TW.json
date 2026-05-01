@@ -46,7 +46,10 @@
     "goalCreated": "目標已建立",
     "taskCreated": "任務已新增",
     "projectCreated": "專案已建立",
-    "projectNameExists": "專案名稱已存在"
+    "projectNameExists": "專案名稱已存在",
+    "taskContext": "背景專案",
+    "recentDecisions": "最近決策",
+    "noDescription": "無描述"
   },
   "project": {
     "back": "返回",

@@ -12,10 +12,12 @@ interface TaskListProps {
 
 interface SingleProjectTasksProps {
   projectId: string;
+  projects: Project[];
 }
 
-function SingleProjectTasks({ projectId }: SingleProjectTasksProps) {
+function SingleProjectTasks({ projectId, projects }: SingleProjectTasksProps) {
   const { data: tasks = [], isLoading } = useTasksByProject(projectId)
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
 
   if (isLoading) {
     return (
@@ -31,9 +33,18 @@ function SingleProjectTasks({ projectId }: SingleProjectTasksProps) {
   }
   return (
     <ul aria-label="Task list" className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
-      {tasks.map((task) => (
-        <TaskRow key={task.id} task={task} />
-      ))}
+      {tasks.map((task) => {
+        const project = task.project_id ? projects.find((p) => p.id === task.project_id) : undefined
+        return (
+          <TaskRow
+            key={task.id}
+            task={task}
+            project={project}
+            expanded={expandedTaskId === task.id}
+            onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+          />
+        )
+      })}
     </ul>
   )
 }
@@ -45,6 +56,7 @@ interface AllProjectsTasksProps {
 function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
   const activeProjects = projects.filter((p) => p.status === 'active')
   const { isLoading, tasks } = useTasksForAllProjects(activeProjects)
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
 
   if (isLoading) {
     return (
@@ -60,9 +72,18 @@ function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
   }
   return (
     <ul aria-label="Task list" className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
-      {tasks.map((task) => (
-        <TaskRow key={task.id} task={task} />
-      ))}
+      {tasks.map((task) => {
+        const project = task.project_id ? projects.find((p) => p.id === task.project_id) : undefined
+        return (
+          <TaskRow
+            key={task.id}
+            task={task}
+            project={project}
+            expanded={expandedTaskId === task.id}
+            onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+          />
+        )
+      })}
     </ul>
   )
 }
@@ -95,7 +116,7 @@ export function TaskList({ projects }: TaskListProps) {
       {selectedProjectId === 'all' ? (
         <AllProjectsTasks projects={projects} />
       ) : (
-        <SingleProjectTasks projectId={selectedProjectId} />
+        <SingleProjectTasks projectId={selectedProjectId} projects={projects} />
       )}
     </div>
   )

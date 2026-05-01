@@ -46,7 +46,10 @@
     "goalCreated": "Goal created",
     "taskCreated": "Task added",
     "projectCreated": "Project created",
-    "projectNameExists": "Project name already exists"
+    "projectNameExists": "Project name already exists",
+    "taskContext": "Context",
+    "recentDecisions": "Recent decisions",
+    "noDescription": "No description"
   },
   "project": {
     "back": "Back",
