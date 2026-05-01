@@ -11,4 +11,3 @@ CREATE TABLE project_arch (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_project_arch_slug ON project_arch(slug);

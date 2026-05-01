@@ -5,10 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+)
+
+const (
+	maxSlugLen    = 128
+	maxSummaryLen = 8000
+	maxFileMapRaw = 128 * 1024 // 128 KB
 )
 
 func (s *Server) registerArchTools(ms *server.MCPServer) {
@@ -51,9 +58,20 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError("summary is required"), nil
 	}
 
+	if len(slug) > maxSlugLen {
+		return mcp.NewToolResultError(fmt.Sprintf("slug too long (max %d chars)", maxSlugLen)), nil
+	}
+	if len(summary) > maxSummaryLen {
+		return mcp.NewToolResultError(fmt.Sprintf("summary too long (max %d chars)", maxSummaryLen)), nil
+	}
+	rawFileMap := stringArg(args, "file_map")
+	if len(rawFileMap) > maxFileMapRaw {
+		return mcp.NewToolResultError(fmt.Sprintf("file_map too large (max %d bytes)", maxFileMapRaw)), nil
+	}
+
 	fileMap := map[string]string{}
-	if raw := stringArg(args, "file_map"); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &fileMap); err != nil {
+	if rawFileMap != "" {
+		if err := json.Unmarshal([]byte(rawFileMap), &fileMap); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("file_map must be a valid JSON object: %v", err)), nil
 		}
 	}
@@ -65,7 +83,8 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 		LastCommitSHA: stringArg(args, "last_commit_sha"),
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("upserting arch snapshot: %v", err)), nil
+		slog.Error("upsert_project_arch: store error", "err", err)
+		return mcp.NewToolResultError("failed to store architecture snapshot"), nil
 	}
 
 	return jsonText(snap)
@@ -84,7 +103,8 @@ func (s *Server) handleGetProjectArch(ctx context.Context, req mcp.CallToolReque
 		if errors.Is(err, arch.ErrNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("no architecture snapshot found for %q — call upsert_project_arch first", slug)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("getting arch snapshot: %v", err)), nil
+		slog.Error("get_project_arch: store error", "err", err)
+		return mcp.NewToolResultError("failed to retrieve architecture snapshot"), nil
 	}
 
 	// stale field is set false by the store; callers should compare

@@ -195,4 +195,3 @@ CREATE TABLE IF NOT EXISTS project_arch (
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_project_arch_slug ON project_arch(slug);
