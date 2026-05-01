@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -39,7 +38,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parsing database URL: %w", err)
 	}
-	cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Aiven custom CA
+	tlsCfg, err := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
+	if err != nil {
+		return fmt.Errorf("building TLS config: %w", err)
+	}
+	if tlsCfg != nil {
+		cfg.ConnConfig.TLSConfig = tlsCfg
+	}
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
@@ -50,7 +50,10 @@ func run() error {
 	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
 		cfg, err := pgxpool.ParseConfig(dsn)
 		if err == nil {
-			cfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // G402: optional local DB health check
+			tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
+			if tlsErr == nil && tlsCfg != nil {
+				cfg.ConnConfig.TLSConfig = tlsCfg
+			}
 			if pool, err := pgxpool.NewWithConfig(context.Background(), cfg); err == nil {
 				defer pool.Close()
 				slog.Info("database connected")

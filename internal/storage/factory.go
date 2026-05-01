@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
@@ -38,10 +37,14 @@ type FactoryConfig struct {
 	// "./wayneblacktea.db" or ":memory:" for tests). Required when
 	// Backend == BackendSQLite.
 	SQLitePath string
-	// PostgresInsecureTLS is set when the upstream Postgres provider uses a
-	// custom CA not in the system trust store (Aiven, Railway internal).
-	// When true, pgxpool runs with InsecureSkipVerify on its TLSConfig.
-	PostgresInsecureTLS bool
+	// PGSSLRootCert is the file path to a PEM-encoded CA certificate bundle
+	// used to verify the Postgres server's TLS certificate. When empty and
+	// AppEnv is "production", NewServerStores returns ErrMissingPGSSLROOTCERT.
+	// When empty and AppEnv is not "production", the system CA pool is used.
+	PGSSLRootCert string
+	// AppEnv is the deployment environment (e.g. "production", "staging").
+	// Used by BuildTLSConfig to enforce PGSSLROOTCERT in production.
+	AppEnv string
 }
 
 // ErrMissingPostgresDSN signals NewServerStores was asked for a Postgres
@@ -88,11 +91,14 @@ func SQLitePathFromEnv() string {
 }
 
 // BuildServerStores is the single env-reading entry point for cmd binaries.
-// It reads DATABASE_URL / SQLITE_PATH / POSTGRES_INSECURE_TLS from the
+// It reads DATABASE_URL / SQLITE_PATH / PGSSLROOTCERT / APP_ENV from the
 // environment and calls NewServerStores so both cmd/server and cmd/mcp always
 // use the same env variables and defaults without duplicating the switch.
 func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, error) {
-	cfg := FactoryConfig{Backend: backend}
+	cfg := FactoryConfig{
+		Backend: backend,
+		AppEnv:  os.Getenv("APP_ENV"),
+	}
 	switch backend {
 	case BackendPostgres:
 		dsn := os.Getenv("DATABASE_URL")
@@ -100,9 +106,7 @@ func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, erro
 			return nil, fmt.Errorf("DATABASE_URL not set")
 		}
 		cfg.PostgresDSN = dsn
-		// POSTGRES_INSECURE_TLS=true is needed for providers (Aiven, Railway)
-		// that use a custom CA not in the system trust store. Must be opt-in.
-		cfg.PostgresInsecureTLS = os.Getenv("POSTGRES_INSECURE_TLS") == "true"
+		cfg.PGSSLRootCert = os.Getenv("PGSSLROOTCERT")
 	case BackendSQLite:
 		cfg.SQLitePath = SQLitePathFromEnv()
 	}
@@ -134,7 +138,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	if cfg.PostgresDSN == "" {
 		return nil, ErrMissingPostgresDSN
 	}
-	pool, err := buildPgxPool(ctx, cfg.PostgresDSN, cfg.PostgresInsecureTLS)
+	pool, err := buildPgxPool(ctx, cfg.PostgresDSN, cfg.AppEnv, cfg.PGSSLRootCert)
 	if err != nil {
 		return nil, err
 	}
@@ -180,16 +184,17 @@ func (p *postgresServerStores) PgLearning() *learning.Store     { return p.learn
 
 // buildPgxPool centralises the pgxpool config we use across cmd/server and
 // cmd/mcp so the TLS / pgvector wiring lives in one place.
-func buildPgxPool(ctx context.Context, dsn string, insecureTLS bool) (*pgxpool.Pool, error) {
+func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxpool.Pool, error) {
 	pgcfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parsing database URL: %w", err)
 	}
-	if insecureTLS {
-		// Aiven / Railway-internal use a custom CA not in the system trust
-		// store. The factory only sets this when the caller explicitly
-		// opts in via FactoryConfig.PostgresInsecureTLS.
-		pgcfg.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opt-in via config
+	tlsCfg, err := BuildTLSConfig(appEnv, pgsslrootcert)
+	if err != nil {
+		return nil, fmt.Errorf("building TLS config: %w", err)
+	}
+	if tlsCfg != nil {
+		pgcfg.ConnConfig.TLSConfig = tlsCfg
 	}
 	pgcfg.AfterConnect = pgvectorpgx.RegisterTypes
 	pool, err := pgxpool.NewWithConfig(ctx, pgcfg)

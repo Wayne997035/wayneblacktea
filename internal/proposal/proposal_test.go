@@ -4,13 +4,13 @@ package proposal_test
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"os"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,10 +25,12 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("parse DATABASE_URL: %v", err)
 	}
-	if cfg.ConnConfig.TLSConfig != nil {
-		cfg.ConnConfig.TLSConfig = &tls.Config{ //nolint:gosec // test-only: skip CA verify for Aiven custom CA
-			InsecureSkipVerify: true,
-		}
+	tlsCfg, err := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
+	if err != nil {
+		t.Fatalf("build TLS config: %v", err)
+	}
+	if tlsCfg != nil {
+		cfg.ConnConfig.TLSConfig = tlsCfg
 	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
