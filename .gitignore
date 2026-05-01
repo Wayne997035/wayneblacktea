@@ -47,3 +47,6 @@ migrations/**/*.bak
 
 # macOS
 .DS_Store
+
+# Root-level wbt CLI binary (source lives in cmd/wbt/)
+/wbt
