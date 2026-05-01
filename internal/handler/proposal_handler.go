@@ -123,7 +123,7 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 	case "reject":
 		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusRejected)
 		if errors.Is(err, proposal.ErrNotFound) {
-			return c.JSON(http.StatusNotFound, errResp("proposal not found or already resolved"))
+			return c.JSON(http.StatusConflict, errResp("proposal not found or already resolved"))
 		}
 		if err != nil {
 			c.Logger().Errorf("ConfirmProposal reject %s: %v", id, err)
@@ -132,41 +132,58 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
 
 	case "accept":
-		prop, err := h.proposal.Get(ctx, id)
-		if errors.Is(err, proposal.ErrNotFound) {
-			return c.JSON(http.StatusNotFound, errResp("proposal not found or already resolved"))
-		}
-		if err != nil {
-			c.Logger().Errorf("ConfirmProposal get %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-		}
-		if prop.Status != string(proposal.StatusPending) {
-			return c.JSON(http.StatusNotFound, errResp("proposal not found or already resolved"))
-		}
-
-		var concept *db.Concept
-		if proposal.Type(prop.Type) == proposal.TypeConcept {
-			cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
-			if errMsg != "" {
-				return c.JSON(http.StatusBadRequest, errResp(errMsg))
-			}
-			concept, err = h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
-			if err != nil {
-				c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
-				return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-			}
-		}
-
-		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
-		if err != nil {
-			c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-		}
-		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Concept: concept})
+		return h.handleAccept(c, ctx, id)
 
 	default:
 		return c.JSON(http.StatusBadRequest, errResp("action must be 'accept' or 'reject'"))
 	}
+}
+
+// handleAccept executes the accept flow with optimistic-lock ordering:
+// Get → status guard → Resolve (atomic, WHERE status='pending') → CreateConcept.
+// Concurrent accepts on the same proposal see a 409 from Resolve before any
+// concept is materialised.
+func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id uuid.UUID) error {
+	prop, err := h.proposal.Get(ctx, id)
+	if errors.Is(err, proposal.ErrNotFound) {
+		return c.JSON(http.StatusNotFound, errResp("proposal not found"))
+	}
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal get %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if prop.Status != string(proposal.StatusPending) {
+		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
+	}
+
+	var cp conceptCandidatePayload
+	isConcept := proposal.Type(prop.Type) == proposal.TypeConcept
+	if isConcept {
+		var errMsg string
+		cp, errMsg = decodeConceptCandidatePayload(prop.Payload)
+		if errMsg != "" {
+			return c.JSON(http.StatusBadRequest, errResp(errMsg))
+		}
+	}
+
+	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
+	if errors.Is(err, proposal.ErrNotFound) {
+		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
+	}
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	var concept *db.Concept
+	if isConcept {
+		concept, err = h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
+		if err != nil {
+			c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
+			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		}
+	}
+	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Concept: concept})
 }
 
 // conceptCandidatePayload mirrors the shape stored by AutoProposeConceptFromKnowledge.
