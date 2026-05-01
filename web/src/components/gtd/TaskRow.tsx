@@ -110,7 +110,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
   const { t } = useTranslation()
   const isCompleted = task.status === 'completed'
   const panelId = `task-detail-${task.id}`
-  const importance = toImportance(task.priority)
+  const importance = task.importance ?? toImportance(task.priority)
 
   function handleRowKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -121,7 +121,6 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
 
   return (
     <li
-      role="group"
       style={{ borderBottom: '1px solid var(--color-border)' }}
     >
       {/* Main row — clickable to toggle */}
@@ -146,7 +145,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
             type="checkbox"
             checked={isCompleted}
             onChange={() => onComplete?.(task.id)}
-            aria-label={`Complete: ${task.title}`}
+            aria-label={`Complete: ${task.title.slice(0, 200)}`}
             className="sr-only"
           />
           <span
