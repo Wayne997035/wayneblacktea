@@ -158,3 +158,16 @@ export interface LearningSuggestions {
   knowledge_items: LearningSuggestion[];
   decisions: LearningSuggestion[];
 }
+
+export interface SearchResult {
+  type: 'knowledge' | 'decision' | 'task';
+  id: string;
+  title: string;
+  content: string;
+  score: number | null;
+}
+
+export interface SearchResponse {
+  query: string;
+  results: SearchResult[];
+}

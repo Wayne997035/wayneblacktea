@@ -160,5 +160,15 @@
   "api": {
     "connected": "API connected",
     "disconnected": "API disconnected"
+  },
+  "search": {
+    "placeholder": "Search knowledge, decisions, tasks…",
+    "noResults": "No results",
+    "empty": "Type to search",
+    "type": {
+      "knowledge": "Knowledge",
+      "decision": "Decision",
+      "task": "Task"
+    }
   }
 }

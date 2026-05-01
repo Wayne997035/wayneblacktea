@@ -160,5 +160,15 @@
   "api": {
     "connected": "API 已連線",
     "disconnected": "API 未連線"
+  },
+  "search": {
+    "placeholder": "搜尋知識、決策、任務...",
+    "noResults": "沒有結果",
+    "empty": "輸入以搜尋",
+    "type": {
+      "knowledge": "知識",
+      "decision": "決策",
+      "task": "任務"
+    }
   }
 }

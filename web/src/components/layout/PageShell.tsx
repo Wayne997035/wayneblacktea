@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
+import { GlobalSearch } from '../search/GlobalSearch'
 
 export function PageShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
 
   // Lock body scroll when overlay is open
   useEffect(() => {
@@ -12,9 +14,22 @@ export function PageShell() {
     return () => { document.body.style.overflow = '' }
   }, [sidebarOpen])
 
-  // Escape to close
+  // Escape to close sidebar (search palette handles its own Escape with stopPropagation)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSidebarOpen(false) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
+  // ⌘K / Ctrl+K to open search palette
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        e.stopPropagation()
+        setSearchOpen((v) => !v)
+      }
+    }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [])
@@ -25,6 +40,8 @@ export function PageShell() {
         onMenuClick={() => setSidebarOpen((v) => !v)}
         sidebarOpen={sidebarOpen}
       />
+
+      <GlobalSearch isOpen={searchOpen} onClose={() => setSearchOpen(false)} />
 
       <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - var(--spacing-header))' }}>
         {/* Desktop: always-visible 240px sidebar */}
