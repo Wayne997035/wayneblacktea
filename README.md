@@ -107,12 +107,120 @@ scattered across clients.
 
 ---
 
-Self-hosting steps live in [docs/installation.md].
-Contributing notes live in [CONTRIBUTING.md].
+## Installation
+
+### Prerequisites
+
+| Tool | Minimum version |
+|------|----------------|
+| Go | 1.26 |
+| Node.js | 22 |
+| Task | latest stable |
+| PostgreSQL + pgvector | 14+ (see note below) |
+
+> SQLite is also supported as a zero-infra alternative. Set `STORAGE_BACKEND=sqlite` and `SQLITE_PATH=/path/to/data.db` to skip PostgreSQL entirely.
+
+### Clone and build
+
+```bash
+git clone https://github.com/Wayne997035/wayneblacktea.git
+cd wayneblacktea
+
+# Build the Go server binary
+cd build && task build-server && cd ..
+
+# Build the React dashboard (output is embedded in the server binary)
+cd web && npm ci && npm run build && cd ..
+```
+
+### Environment variables
+
+Copy the example file and fill in the required values:
+
+```bash
+cp .env.example .env
+```
+
+**Required**
+
+| Variable | Purpose |
+|----------|---------|
+| `API_KEY` | Bearer token that authenticates every `/api/*` request |
+| `DATABASE_URL` | PostgreSQL connection string (not needed for SQLite) |
+| `ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins (e.g. `http://localhost:5173`) |
+
+**Storage**
+
+| Variable | Purpose |
+|----------|---------|
+| `STORAGE_BACKEND` | `postgres` (default) or `sqlite` |
+| `SQLITE_PATH` | Path to the SQLite database file (SQLite backend only) |
+| `POSTGRES_INSECURE_TLS` | Set to `true` when using managed Postgres providers (Aiven, Railway) |
+
+**Optional**
+
+| Variable | Purpose |
+|----------|---------|
+| `PORT` | HTTP port (default `8080`) |
+| `WORKSPACE_ID` | UUID for workspace scoping; unset for single-user mode |
+| `USER_ID` | Identity tag used as attribution on agent-originated writes |
+| `CLAUDE_API_KEY` | Enables AI summarisation and activity classification |
+| `GEMINI_API_KEY` | Enables vector embeddings for knowledge dedup and similarity search |
+| `GROQ_API_KEY` | Powers the Discord bot LLM analyser |
+| `DISCORD_BOT_TOKEN` | Discord bot session token; bot is disabled when unset |
+| `DISCORD_GUILD_ID` | Discord guild for instant slash command registration |
+| `DISCORD_WEBHOOK_URL` | Outbound webhook for scheduled briefing posts |
+| `NOTION_INTEGRATION_SECRET` | Enables the `sync_to_notion` tool |
+| `NOTION_DATABASE_ID` | Target Notion database for synced pages |
+
+**Frontend build variable**
+
+The dashboard is built once at compile time and embedded in the server binary. Before running `npm run build`, set:
+
+| Variable | Purpose |
+|----------|---------|
+| `VITE_API_KEY` | Must match the server's `API_KEY` value |
+
+```bash
+cd web
+VITE_API_KEY=your-api-key npm run build
+```
+
+### Run
+
+```bash
+./bin/wayneblacktea-server
+# open http://localhost:8080
+```
+
+To load a custom env file:
+
+```bash
+./bin/wayneblacktea-server -env /path/to/.env
+```
+
+### Docker
+
+```bash
+docker build \
+  --build-arg VITE_API_KEY=your-api-key \
+  -f build/Dockerfile \
+  -t wayneblacktea .
+
+docker run \
+  -p 8080:8080 \
+  -e API_KEY=your-api-key \
+  -e DATABASE_URL=postgres://user:pass@host/db?sslmode=require \
+  -e ALLOWED_ORIGINS=http://localhost:8080 \
+  wayneblacktea
+```
+
+---
+
 The day-by-day log of what changes lives in [CHANGELOG.md].
+Full self-hosting reference (migrations, workspace scoping, deployment) lives in [docs/installation.md].
 
 Released under [MIT](./LICENSE).
 
 [docs/installation.md]: ./docs/installation.md
-[CONTRIBUTING.md]: ./CONTRIBUTING.md
 [CHANGELOG.md]: ./CHANGELOG.md
