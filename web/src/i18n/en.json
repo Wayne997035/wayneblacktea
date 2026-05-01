@@ -44,6 +44,7 @@
     "addGoal": "Add Goal",
     "addProject": "Add Project",
     "goalCreated": "Goal created",
+    "taskCreated": "Task added",
     "projectCreated": "Project created",
     "projectNameExists": "Project name already exists"
   },

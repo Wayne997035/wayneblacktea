@@ -44,6 +44,7 @@
     "addGoal": "新增目標",
     "addProject": "新增專案",
     "goalCreated": "目標已建立",
+    "taskCreated": "任務已新增",
     "projectCreated": "專案已建立",
     "projectNameExists": "專案名稱已存在"
   },

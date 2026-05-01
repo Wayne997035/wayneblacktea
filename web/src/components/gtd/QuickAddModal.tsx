@@ -38,7 +38,7 @@ export function QuickAddModal({ projects, onClose }: QuickAddModalProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim()) {
-      setFormError('Title is required')
+      setFormError(t('error.fieldRequired'))
       return
     }
     setFormError('')
@@ -47,12 +47,12 @@ export function QuickAddModal({ projects, onClose }: QuickAddModalProps) {
       title: title.trim(),
       project_id: projectId || null,
       priority,
-      due_date: dueDate || null,
+      due_date: dueDate ? new Date(dueDate).toISOString() : null,
     }
 
     try {
       await createTask.mutateAsync(payload)
-      addToast({ type: 'success', message: 'Task added!' })
+      addToast({ type: 'success', message: t('gtd.taskCreated') })
       dialogRef.current?.close()
     } catch {
       setFormError(t('error.loadFailed'))
