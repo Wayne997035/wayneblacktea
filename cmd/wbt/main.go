@@ -246,9 +246,18 @@ func buildEnvFile(claudeKey, apiKey, port string, db dbConfig) string {
 	return sb.String()
 }
 
-// writeEnvLine appends a KEY=value line, quoting the value if it contains spaces.
+// writeEnvLine appends a KEY=value line, double-quoting the value when it
+// contains any character that godotenv would otherwise interpret as syntax:
+//   - space / tab: would split the line
+//   - '#': would start a comment, silently truncating the value
+//   - '"' / '\\': would corrupt the parser
+//   - newline / carriage return: would break the file structure
+//
+// This prevents silent credential corruption when an API key or DSN contains
+// '#' (a common character in randomly-generated secrets) or other shell-special
+// chars.
 func writeEnvLine(sb *strings.Builder, key, value string) {
-	if strings.ContainsAny(value, " \t") {
+	if strings.ContainsAny(value, " \t#\"\\\r\n") {
 		fmt.Fprintf(sb, "%s=%q\n", key, value)
 	} else {
 		fmt.Fprintf(sb, "%s=%s\n", key, value)

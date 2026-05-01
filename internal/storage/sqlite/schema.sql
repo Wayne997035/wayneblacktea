@@ -195,3 +195,13 @@ CREATE TABLE IF NOT EXISTS project_arch (
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- Mirrored from migrations/sqlite/000013_workspace_model_preference.up.sql.
+-- Per-workspace AI model preference (sonnet vs haiku). Absence of a row =
+-- application default ('claude-sonnet-4-6'); see workspace.DefaultModelPreference.
+CREATE TABLE IF NOT EXISTS workspace_preferences (
+    workspace_id     TEXT PRIMARY KEY,
+    model_preference TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+

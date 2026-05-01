@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -32,7 +33,38 @@ const (
 	mcpClassifyTimeout       = 15 * time.Second
 	mcpDecisionMaxTitle      = 500
 	mcpTaskMaxTitle          = 500
+
+	// mcpClassifyMaxPerWindow caps Haiku classify calls per rolling window to
+	// prevent API budget drain from a looping agent or prompt-injected client
+	// (LLM04 model-DoS mitigation).
+	mcpClassifyMaxPerWindow = 60
+	mcpClassifyWindow       = time.Minute
 )
+
+// mcpClassifyBudget is a simple token-bucket rate limiter that refills the
+// full quota at the start of each window. Sufficient to defend against
+// runaway tool loops without the complexity of golang.org/x/time/rate.
+var mcpClassifyBudget = struct {
+	mu      sync.Mutex
+	tokens  int
+	resetAt time.Time
+}{tokens: mcpClassifyMaxPerWindow}
+
+// tryAcquireClassifyToken returns true if budget remains in the current
+// window. It refills the bucket when the window has elapsed. Concurrency-safe.
+func tryAcquireClassifyToken(now time.Time) bool {
+	mcpClassifyBudget.mu.Lock()
+	defer mcpClassifyBudget.mu.Unlock()
+	if now.After(mcpClassifyBudget.resetAt) {
+		mcpClassifyBudget.tokens = mcpClassifyMaxPerWindow
+		mcpClassifyBudget.resetAt = now.Add(mcpClassifyWindow)
+	}
+	if mcpClassifyBudget.tokens <= 0 {
+		return false
+	}
+	mcpClassifyBudget.tokens--
+	return true
+}
 
 // maybeClassifyToolCall tries to acquire mcpClassifySem and, if successful,
 // spawns a goroutine that classifies the tool call and auto-captures any
@@ -44,6 +76,14 @@ const (
 // goroutine commits to the DB.
 func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary string) {
 	if s.classifier == nil || !significantTools[toolName] {
+		return
+	}
+
+	// Rate-limit BEFORE the concurrency semaphore. Defends against API budget
+	// drain from a looping agent (LLM04). The drop is silent on the response
+	// path; we only log a warning so noisy callers leave a trail.
+	if !tryAcquireClassifyToken(time.Now()) {
+		slog.Warn("maybeClassifyToolCall: rate limit reached, skipping", "tool", toolName)
 		return
 	}
 
