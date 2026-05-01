@@ -185,3 +185,14 @@ CREATE INDEX IF NOT EXISTS idx_review_schedule_workspace_id         ON review_sc
 CREATE INDEX IF NOT EXISTS idx_pending_proposals_status_pending     ON pending_proposals(created_at DESC) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_pending_proposals_workspace_id       ON pending_proposals(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_pending_proposals_type               ON pending_proposals(type);
+
+CREATE TABLE IF NOT EXISTS project_arch (
+    id              TEXT PRIMARY KEY,
+    slug            TEXT NOT NULL UNIQUE,
+    summary         TEXT NOT NULL,
+    file_map        TEXT NOT NULL DEFAULT '{}',
+    last_commit_sha TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_arch_slug ON project_arch(slug);

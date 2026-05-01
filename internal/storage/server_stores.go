@@ -12,6 +12,7 @@ package storage
 import (
 	"io"
 
+	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -23,7 +24,7 @@ import (
 )
 
 // ServerStores is the backend-agnostic store bundle that cmd/server and
-// cmd/mcp consume. It exposes the seven domain Store interfaces plus a Close
+// cmd/mcp consume. It exposes the domain Store interfaces plus a Close
 // hook for the underlying connection (pgx pool or SQLite *sql.DB).
 //
 // PgxPool returns the live *pgxpool.Pool when the bundle is Postgres-backed,
@@ -49,6 +50,7 @@ type ServerStores interface {
 	Knowledge() knowledge.StoreIface
 	Learning() learning.StoreIface
 	Proposal() proposal.StoreIface
+	Arch() arch.StoreIface
 
 	// PgxPool returns the underlying pgx pool when this bundle is the
 	// Postgres backend, or nil for any other backend. Used only by code

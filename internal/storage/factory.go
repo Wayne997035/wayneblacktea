@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -124,6 +125,7 @@ type postgresServerStores struct {
 	knowledge *knowledge.Store
 	learning  *learning.Store
 	proposal  *proposal.Store
+	archStore *arch.Store
 }
 
 var _ ServerStores = (*postgresServerStores)(nil)
@@ -151,6 +153,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 		knowledge: knowledge.NewStore(pool, embedClient, wsID),
 		learning:  learning.NewStore(pool, wsID),
 		proposal:  proposal.NewStore(pool, wsID),
+		archStore: arch.NewStore(pool),
 	}, nil
 }
 
@@ -169,6 +172,7 @@ func (p *postgresServerStores) Session() session.StoreIface     { return p.sessi
 func (p *postgresServerStores) Knowledge() knowledge.StoreIface { return p.knowledge }
 func (p *postgresServerStores) Learning() learning.StoreIface   { return p.learning }
 func (p *postgresServerStores) Proposal() proposal.StoreIface   { return p.proposal }
+func (p *postgresServerStores) Arch() arch.StoreIface           { return p.archStore }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool          { return p.pool }
 func (p *postgresServerStores) PgGTD() *gtd.Store               { return p.gtd }
 func (p *postgresServerStores) PgProposal() *proposal.Store     { return p.proposal }
@@ -207,6 +211,7 @@ type sqliteServerStores struct {
 	knowledge *wbtsqlite.KnowledgeStore
 	learning  *wbtsqlite.LearningStore
 	proposal  *wbtsqlite.ProposalStore
+	archStore *wbtsqlite.ArchStore
 }
 
 var _ ServerStores = (*sqliteServerStores)(nil)
@@ -236,6 +241,7 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		knowledge: wbtsqlite.NewKnowledgeStore(sdb),
 		learning:  wbtsqlite.NewLearningStore(sdb),
 		proposal:  wbtsqlite.NewProposalStore(sdb),
+		archStore: wbtsqlite.NewArchStore(sdb),
 	}, nil
 }
 
@@ -256,6 +262,7 @@ func (s *sqliteServerStores) Session() session.StoreIface     { return s.session
 func (s *sqliteServerStores) Knowledge() knowledge.StoreIface { return s.knowledge }
 func (s *sqliteServerStores) Learning() learning.StoreIface   { return s.learning }
 func (s *sqliteServerStores) Proposal() proposal.StoreIface   { return s.proposal }
+func (s *sqliteServerStores) Arch() arch.StoreIface           { return s.archStore }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool          { return nil }
 func (s *sqliteServerStores) PgGTD() *gtd.Store               { return nil }
 func (s *sqliteServerStores) PgProposal() *proposal.Store     { return nil }

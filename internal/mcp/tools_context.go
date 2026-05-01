@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
+	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
@@ -44,6 +46,7 @@ type todayContext struct {
 	Projects       []db.Project       `json:"projects"`
 	WeeklyProgress weeklyProgress     `json:"weekly_progress"`
 	PendingHandoff *db.SessionHandoff `json:"pending_handoff"`
+	ArchSnapshot   *arch.Snapshot     `json:"arch_snapshot"`
 }
 
 func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -67,11 +70,22 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 		return mcp.NewToolResultError(fmt.Sprintf("loading handoff: %v", err)), nil
 	}
 
+	// Best-effort: fetch the arch snapshot for the primary project. Returns
+	// null when no snapshot has been stored yet (arch.ErrNotFound is silenced).
+	var archSnap *arch.Snapshot
+	snap, archErr := s.arch.GetSnapshot(ctx, "wayneblacktea")
+	if archErr == nil {
+		archSnap = snap
+	} else if !errors.Is(archErr, arch.ErrNotFound) {
+		slog.Warn("get_today_context: loading arch snapshot", "err", archErr)
+	}
+
 	return jsonText(todayContext{
 		Goals:          goals,
 		Projects:       projects,
 		WeeklyProgress: weeklyProgress{Completed: completed, Total: total},
 		PendingHandoff: handoff,
+		ArchSnapshot:   archSnap,
 	})
 }
 
