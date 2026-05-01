@@ -82,6 +82,7 @@ func run() error {
 	decH := handler.NewDecisionHandler(stores.Decision())
 	sessH := handler.NewSessionHandler(stores.Session())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
+	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(stores.Learning(),
 		handler.WithKnowledgeStore(stores.Knowledge()),
@@ -164,6 +165,9 @@ func run() error {
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
+
+	api.GET("/proposals/pending", proposalH.ListPendingProposals)
+	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal)
 
 	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))
 

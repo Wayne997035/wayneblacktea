@@ -171,3 +171,28 @@ export interface SearchResponse {
   query: string;
   results: SearchResult[];
 }
+
+export type ProposalType = 'goal' | 'project' | 'task' | 'concept'
+export type ProposalStatus = 'pending' | 'accepted' | 'rejected'
+
+export interface ConceptCandidatePayload {
+  title: string
+  content: string
+  tags?: string[]
+  source_item_id?: string
+  source_item_type?: string
+}
+
+export interface PendingProposal {
+  id: string
+  type: ProposalType
+  status: ProposalStatus
+  payload: ConceptCandidatePayload
+  proposed_by: string | null
+  created_at: string
+  resolved_at: string | null
+}
+
+export interface ResolveProposalRequest {
+  action: 'accept' | 'reject'
+}
