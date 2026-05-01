@@ -21,6 +21,7 @@ tasks:
       - task: build-mcp
       - task: build-server
       - task: build-doctor
+      - task: build-wbt
     silent: false
 
   build-mcp:
@@ -48,6 +49,15 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/wbt-doctor ./cmd/doctor/
+    dir: ..
+
+  build-wbt:
+    desc: "Build the wbt CLI installer binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt ./cmd/wbt/
     dir: ..
 
   lint:

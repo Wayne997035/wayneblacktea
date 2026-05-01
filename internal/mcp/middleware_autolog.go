@@ -15,6 +15,9 @@ import (
 // it records an activity_log entry in a background goroutine.
 // Goroutine uses context.Background() — never inherits the request context
 // to prevent the DB write being cancelled when the request ends.
+//
+// For tools in significantTools, it also fires maybeClassifyToolCall so
+// that implicit decisions and follow-up tasks are captured automatically.
 func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
@@ -26,6 +29,15 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 
 			tool := req.Params.Name
 			args := req.GetArguments()
+
+			// Auto-classify significant tools regardless of whether they
+			// produce an activity log entry. maybeClassifyToolCall guards
+			// with its own significantTools check, so this is always safe.
+			argSummary := truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes)
+			resultSummary := extractResultText(res, mcpResultSummaryMaxRunes)
+			//nolint:contextcheck // maybeClassifyToolCall manages its own background context; context param not applicable here
+			s.maybeClassifyToolCall(tool, argSummary, resultSummary)
+
 			action, notes, ok := autoLogEntry(tool, args)
 			if !ok {
 				return res, err
@@ -60,6 +72,20 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			return res, err
 		}
 	}
+}
+
+// extractResultText returns the text content of the first text content block
+// in the result, capped at maxRunes runes. Returns "" for nil or empty results.
+func extractResultText(res *mcpmsg.CallToolResult, maxRunes int) string {
+	if res == nil {
+		return ""
+	}
+	for _, c := range res.Content {
+		if tc, ok := c.(mcpmsg.TextContent); ok {
+			return truncateRunes(tc.Text, maxRunes)
+		}
+	}
+	return ""
 }
 
 const (

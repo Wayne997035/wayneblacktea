@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -45,8 +46,9 @@ type Server struct {
 	pgProposal *proposal.Store
 	pgLearning *learning.Store
 
-	notion   *notion.Client
-	watchdog *watchdog.Watchdog
+	notion     *notion.Client
+	watchdog   *watchdog.Watchdog
+	classifier *ai.ActivityClassifier
 }
 
 // New creates a Server backed by the given pre-built ServerStores bundle.
@@ -70,6 +72,15 @@ func New(stores storage.ServerStores) (*Server, error) {
 		notion:     notion.NewClient(),
 		watchdog:   watchdog.New(200),
 	}, nil
+}
+
+// WithClassifier wires an ActivityClassifier into the server so that
+// significant MCP tool calls are automatically classified for implicit
+// decisions and follow-up tasks. Passing nil is valid and disables
+// auto-classification (e.g. when CLAUDE_API_KEY is not set).
+func (s *Server) WithClassifier(clf *ai.ActivityClassifier) *Server {
+	s.classifier = clf
+	return s
 }
 
 const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — USAGE PROTOCOL
