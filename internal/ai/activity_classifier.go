@@ -13,25 +13,35 @@ import (
 const (
 	defaultClassifierModel = "claude-haiku-4-5"
 	classifierTimeout      = 10 * time.Second
-	classifierMaxTokens    = 256
+	classifierMaxTokens    = 384
 )
 
 // classifierSystemPrompt instructs the model to classify development activities.
-// It returns JSON indicating whether the activity implies a real architectural decision.
+// It returns JSON indicating whether the activity implies a real architectural decision
+// and/or a concrete next task that was committed to.
 const classifierSystemPrompt = "You classify software development activities. " +
 	"Decide if the following activity implies an architectural, design, or scope decision was made. " +
-	"Only return true for real decisions with trade-offs " +
+	"Only return is_decision=true for real decisions with trade-offs " +
 	"(e.g. 'merged PR that changes DB schema', 'deployed config change that disables feature X', " +
 	"'changed deployment platform'). " +
 	"NOT for routine activities (PR review comments, test runs, file edits). " +
-	"Return JSON: {\"is_decision\": bool, \"title\": string, \"rationale\": string}. " +
-	"Return empty title/rationale when is_decision=false."
+	"Also decide if the activity implies a concrete next action was created or committed to " +
+	"(e.g. 'opened a PR for X', 'decided to implement Y next', 'user agreed to add feature Z'). " +
+	"Only return is_task=true when there is a clear, actionable task title. " +
+	"NOT for routine file edits, PR reviews, or test runs. " +
+	"Return JSON: {\"is_decision\": bool, \"title\": string, \"rationale\": string, " +
+	"\"is_task\": bool, \"task_title\": string}. " +
+	"Return empty title/rationale when is_decision=false. Return empty task_title when is_task=false."
 
 // ClassifyResult holds the outcome of classifying a single activity.
+// Title is the decision title when IsDecision=true.
+// TaskTitle is the actionable task title when IsTask=true; empty otherwise.
 type ClassifyResult struct {
 	IsDecision bool   `json:"is_decision"`
 	Title      string `json:"title"`
 	Rationale  string `json:"rationale"`
+	IsTask     bool   `json:"is_task"`
+	TaskTitle  string `json:"task_title"`
 }
 
 // ActivityClassifier calls the Claude API to decide whether an activity is a decision.

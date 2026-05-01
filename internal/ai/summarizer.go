@@ -16,15 +16,19 @@ const (
 )
 
 // summarizerSystemPrompt instructs the model to return structured JSON.
-// Line 2 of the decisions description is split to stay within the 140-char line limit.
+// Lines are split to stay within the 140-char line limit.
 const summarizerSystemPrompt = "You are analyzing a software development session transcript.\n" +
-	"Return a JSON object with two fields:\n" +
+	"Return a JSON object with three fields:\n" +
 	"1. \"summary\": 2-4 sentences describing what was accomplished this session " +
 	"(decisions made, features shipped, blockers hit)\n" +
 	"2. \"decisions\": array of strings, each a one-line title for an architectural/design decision " +
 	"that was made implicitly (user accepted a proposal, agreed to an approach) " +
 	"but NOT explicitly logged via a log_decision tool call. " +
 	"Only include real decisions with clear trade-offs. Return empty array if none.\n" +
+	"3. \"tasks\": array of strings, each a one-line actionable task title for work that was " +
+	"discussed or committed to during the session but NOT yet explicitly created via " +
+	"add_task or confirm_plan tool calls. Only include tasks that are concrete and actionable. " +
+	"Return empty array if none.\n" +
 	"Respond ONLY with valid JSON, no markdown."
 
 // Message represents a single conversation turn from the session transcript.
@@ -33,10 +37,11 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-// SummaryResult holds the AI-generated session summary and implicit decisions.
+// SummaryResult holds the AI-generated session summary, implicit decisions, and pending tasks.
 type SummaryResult struct {
 	Summary   string   `json:"summary"`
 	Decisions []string `json:"decisions"`
+	Tasks     []string `json:"tasks"` // pending tasks discovered in transcript not yet in GTD
 }
 
 // Summarizer calls the Claude API to generate session summaries.

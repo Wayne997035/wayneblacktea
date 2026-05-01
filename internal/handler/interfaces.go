@@ -79,6 +79,7 @@ type learningStore interface {
 type autologGTDStore interface {
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error)
 }
 
 // autologSessionStore covers the subset of session.Store used by AutologHandler.
