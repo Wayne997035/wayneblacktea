@@ -260,6 +260,21 @@ func (s *KnowledgeStore) GetByID(ctx context.Context, id uuid.UUID) (*db.Knowled
 	return &item, nil
 }
 
+// UpdateEmbedding writes the embedding bytes to the knowledge_items row
+// matching id within the current workspace scope. Best-effort: returns nil
+// when no row matches. Used by tests + the future Stop-hook integration that
+// will populate knowledge_items.embedding alongside session_handoffs.
+func (s *KnowledgeStore) UpdateEmbedding(ctx context.Context, id uuid.UUID, embedding []byte) error {
+	const q = `UPDATE knowledge_items
+		SET embedding = ?1
+		WHERE id = ?2
+		  AND (?3 IS NULL OR workspace_id = ?3)`
+	if _, err := s.db.conn.ExecContext(ctx, q, embedding, id.String(), s.db.workspaceArg()); err != nil {
+		return errWrap("UpdateKnowledgeEmbedding", err)
+	}
+	return nil
+}
+
 // SearchByCosine returns the top-limit knowledge items most similar to queryEmbedding.
 // SQLite has no pgvector — brute-force Go-side cosine scan.
 // knowledge_items.embedding is stored as BLOB (serialized float32 LE).
@@ -287,13 +302,23 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 	}
 	var candidates []scored
 	for rows.Next() {
+		// SECURITY/correctness: scan list MUST match knowledgeSelectCols (16 cols)
+		// + trailing embedding BLOB = 17 destinations. Migration 000019 added
+		// 5 decay columns (importance, recall_count, last_recalled_at,
+		// base_lambda, archived_at); a 12-arg scan would silently fail every
+		// row and return zero results (security audit C-1).
 		var item db.KnowledgeItem
 		var idStr string
 		var urlNS, tagsNS, createdNS, updatedNS, workspaceNS sql.NullString
 		var learningValue sql.NullInt32
+		var lastRecalledNS, archivedNS sql.NullString
 		var rawEmbed []byte
-		if err := rows.Scan(&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
-			&createdNS, &updatedNS, &item.Source, &learningValue, &workspaceNS, &rawEmbed); err != nil {
+		if err := rows.Scan(
+			&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
+			&createdNS, &updatedNS, &item.Source, &learningValue, &workspaceNS,
+			&item.Importance, &item.RecallCount, &lastRecalledNS, &item.BaseLambda, &archivedNS,
+			&rawEmbed,
+		); err != nil {
 			continue
 		}
 		if id, parseErr := uuid.Parse(idStr); parseErr == nil {
@@ -308,6 +333,8 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 			item.LearningValue = pgtype.Int4{Int32: learningValue.Int32, Valid: true}
 		}
 		item.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+		item.LastRecalledAt = parseTimestamptz(lastRecalledNS)
+		item.ArchivedAt = parseTimestamptz(archivedNS)
 
 		vec := localai.DeserializeEmbedding(rawEmbed)
 		if vec == nil {

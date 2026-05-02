@@ -35,6 +35,12 @@ const (
 
 	// snapshotCacheTTL is the 24 h cache window checked before regenerating.
 	snapshotCacheTTL = 24 * time.Hour
+
+	// forceRefreshCooldown caps Haiku cost amplification when a looping or
+	// prompt-injected caller spams generate_project_status with
+	// force_refresh=true. Within this window force_refresh is treated as a
+	// cache hit. (security audit M-4)
+	forceRefreshCooldown = 5 * time.Minute
 )
 
 // snapshotSystemPrompt instructs Haiku to produce a structured status summary.
@@ -165,6 +171,14 @@ func (g *Generator) Generate(
 // Decision titles and activity actor/action are included; rationale and notes
 // are intentionally EXCLUDED to reduce the prompt-injection surface (mirrors
 // the reflection.go pattern).
+//
+// SECURITY: every user-authored field that lands in the prompt is passed
+// through escapeUntrusted() to neutralise an embedded "[END UNTRUSTED]"
+// literal that would otherwise close the boundary block early and inject
+// instructions into the trusted zone (security audit C-2 / M-2).
+// The slug is gated by the MCP handler (statusSlugRe) so it cannot contain
+// boundary characters; we still keep it OUTSIDE the [BEGIN UNTRUSTED] block
+// because it is a system-controlled identifier, not user-authored content.
 func buildSnapshotPrompt(
 	slug string,
 	decisions []db.Decision,
@@ -183,7 +197,7 @@ func buildSnapshotPrompt(
 				ts = d.CreatedAt.Time.Format("2006-01-02")
 			}
 			// Title only — rationale excluded (prompt-injection guard).
-			fmt.Fprintf(&sb, "- [%s] %s\n", ts, d.Title)
+			fmt.Fprintf(&sb, "- [%s] %s\n", ts, escapeUntrusted(d.Title))
 		}
 	}
 
@@ -195,7 +209,8 @@ func buildSnapshotPrompt(
 				ts = a.CreatedAt.Time.Format("2006-01-02")
 			}
 			// Actor + action only — notes excluded (prompt-injection guard).
-			fmt.Fprintf(&sb, "- [%s] %s: %s\n", ts, a.Actor, a.Action)
+			fmt.Fprintf(&sb, "- [%s] %s: %s\n", ts,
+				escapeUntrusted(a.Actor), escapeUntrusted(a.Action))
 		}
 	}
 
@@ -203,12 +218,23 @@ func buildSnapshotPrompt(
 	if len(pending) > 0 {
 		sb.WriteString("\n## Open Tasks\n")
 		for _, t := range pending {
-			fmt.Fprintf(&sb, "- [%s] %s\n", t.Status, t.Title)
+			fmt.Fprintf(&sb, "- [%s] %s\n",
+				escapeUntrusted(t.Status), escapeUntrusted(t.Title))
 		}
 	}
 
 	sb.WriteString("[END UNTRUSTED]")
 	return sb.String()
+}
+
+// escapeUntrusted neutralises an embedded "[END UNTRUSTED]" or "[BEGIN
+// UNTRUSTED]" literal in user-authored content so a crafted decision title
+// (etc.) cannot close the boundary block early and inject instructions into
+// the trusted prompt context.
+func escapeUntrusted(s string) string {
+	s = strings.ReplaceAll(s, "[END UNTRUSTED]", "[END_UNTRUSTED_ESC]")
+	s = strings.ReplaceAll(s, "[BEGIN UNTRUSTED]", "[BEGIN_UNTRUSTED_ESC]")
+	return s
 }
 
 func filterPendingTasks(tasks []db.Task) []db.Task {
@@ -241,6 +267,14 @@ func EnsureSnapshot(
 		}
 		if !IsNotFound(err) {
 			return nil, false, fmt.Errorf("snapshot: checking cache for %q: %w", slug, err)
+		}
+	} else {
+		// SECURITY: bound force_refresh blast radius — looping caller (or
+		// prompt-injected agent) cannot trigger more than one Haiku call per
+		// slug per forceRefreshCooldown window. (security audit M-4)
+		recent, err := store.LatestFresh(ctx, slug, forceRefreshCooldown)
+		if err == nil && recent != nil {
+			return recent, true, nil // treat as cache hit during cooldown
 		}
 	}
 

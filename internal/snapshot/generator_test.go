@@ -98,15 +98,45 @@ func TestEnsureSnapshot_CacheExpired(t *testing.T) {
 	}
 }
 
-// TestEnsureSnapshot_ForceRefresh verifies that force_refresh=true bypasses
-// the cache and always calls the generator.
-func TestEnsureSnapshot_ForceRefresh(t *testing.T) {
+// TestEnsureSnapshot_ForceRefresh_DuringCooldown_ReturnsCached verifies that
+// force_refresh=true is RATE LIMITED by the 5-minute cooldown. Inside the
+// cooldown window even force_refresh returns the cached snapshot — this
+// caps Haiku cost amplification when a looping caller spams force_refresh
+// (security audit M-4).
+func TestEnsureSnapshot_ForceRefresh_DuringCooldown_ReturnsCached(t *testing.T) {
 	cached := &snapshot.Snapshot{
 		Slug:          "wayneblacktea",
 		GeneratedAt:   time.Now(),
-		SprintSummary: "stale cached",
+		SprintSummary: "recent cached",
 	}
-	store := &stubStore{latestFresh: cached}
+	store := &stubStore{latestFresh: cached} // stub returns cached for any TTL
+	gen := &stubGen{
+		result: &snapshot.StatusResult{SprintSummary: "fresh generated"},
+	}
+
+	snap, fromCache, err := snapshot.EnsureSnapshot(
+		context.Background(), "wayneblacktea", true, // force_refresh
+		store, gen, nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fromCache {
+		t.Error("expected fromCache=true (cooldown active) on force_refresh")
+	}
+	if snap.SprintSummary != "recent cached" {
+		t.Errorf("expected cached summary, got %q", snap.SprintSummary)
+	}
+	if gen.called != 0 {
+		t.Errorf("generator MUST NOT run during force_refresh cooldown, called %d times", gen.called)
+	}
+}
+
+// TestEnsureSnapshot_ForceRefresh_OutsideCooldown_Regenerates verifies that
+// when no recent snapshot exists (cooldown window empty), force_refresh
+// actually calls the generator.
+func TestEnsureSnapshot_ForceRefresh_OutsideCooldown_Regenerates(t *testing.T) {
+	store := &stubStore{freshErr: snapshot.ErrNotFound} // no recent snapshot
 	gen := &stubGen{
 		result: &snapshot.StatusResult{
 			SprintSummary:  "fresh generated",
@@ -122,13 +152,13 @@ func TestEnsureSnapshot_ForceRefresh(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fromCache {
-		t.Error("expected fromCache=false on force_refresh")
+		t.Error("expected fromCache=false when no cooldown snapshot exists")
 	}
 	if snap.SprintSummary != "fresh generated" {
 		t.Errorf("expected fresh summary, got %q", snap.SprintSummary)
 	}
 	if gen.called != 1 {
-		t.Errorf("generator should be called once on force_refresh, called %d times", gen.called)
+		t.Errorf("generator should be called once outside cooldown, called %d times", gen.called)
 	}
 }
 

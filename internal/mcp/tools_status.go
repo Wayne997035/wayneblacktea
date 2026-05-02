@@ -4,11 +4,21 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// statusSlugMaxLen + statusSlugRe define the slug-format guard at the
+// generate_project_status MCP boundary. Slug flows into a Haiku prompt
+// (see snapshot/generator.go); a free-text slug containing newlines or
+// "[END UNTRUSTED]" can break out of the boundary block and inject
+// instructions into the model context (security audit C-2).
+const statusSlugMaxLen = 64
+
+var statusSlugRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 func (s *Server) registerStatusTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("generate_project_status",
@@ -28,6 +38,14 @@ func (s *Server) handleGenerateProjectStatus(ctx context.Context, req mcp.CallTo
 	slug := stringArg(args, "slug")
 	if slug == "" {
 		return mcp.NewToolResultError("slug is required"), nil
+	}
+	// Reject slugs that could break out of the [BEGIN UNTRUSTED] boundary
+	// in the Haiku snapshot prompt. Same allow-list as upsert_project_arch
+	// (alphanumeric + underscore + dash, max 64).
+	if len(slug) > statusSlugMaxLen || !statusSlugRe.MatchString(slug) {
+		return mcp.NewToolResultError(
+			"slug must match ^[a-zA-Z0-9_-]+$ and be ≤ 64 chars",
+		), nil
 	}
 
 	forceRefresh, _ := args["force_refresh"].(bool)

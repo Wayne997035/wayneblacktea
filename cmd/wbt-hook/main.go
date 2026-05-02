@@ -38,9 +38,17 @@ const maxStdinBytes = 300
 // hookTimeout is the total budget for one hook invocation (enqueue to server).
 const hookTimeout = 50 * time.Millisecond
 
-// httpTimeout is the HTTP POST deadline; deliberately shorter than hookTimeout
-// so we still have time to do cleanup before returning.
+// httpTimeout is a fallback ceiling on the HTTP client in case the request
+// ctx (hookTimeout = 50 ms) cancellation is removed in a future refactor.
+// Effective ceiling today is hookTimeout because ctx fires first.
 const httpTimeout = 200 * time.Millisecond
+
+// rawNotesMaxLen caps the raw payload sent when WBT_HOOK_RAW=1. Even in raw
+// dev mode we MUST NOT POST the full 16 MB stdin to the server — file
+// contents written by the Edit tool can include credentials. 500 chars is
+// enough for "what tool did with what file" without harvesting secrets.
+// (security audit M-3)
+const rawNotesMaxLen = 500
 
 // defaultPort is the fallback server port when PORT env is not set.
 const defaultPort = "8080"
@@ -96,10 +104,17 @@ func run() error {
 	return postActivity(ctx, payload.ToolName, notes)
 }
 
-// buildNotes returns a SHA256 hex hash of toolInput, or the raw input when
-// WBT_HOOK_RAW=1 is set (only for trusted dev environments).
+// buildNotes returns a SHA256 hex hash of toolInput, or a length-capped raw
+// input when WBT_HOOK_RAW=1 is set (only for trusted dev environments).
+//
+// SECURITY: raw mode caps at rawNotesMaxLen (500 chars) so file contents
+// written by Edit/Write/Bash that include secrets cannot be harvested
+// wholesale. (security audit M-3)
 func buildNotes(toolInput string) string {
 	if os.Getenv("WBT_HOOK_RAW") == "1" {
+		if len(toolInput) > rawNotesMaxLen {
+			return toolInput[:rawNotesMaxLen] + "...[TRUNCATED]"
+		}
 		return toolInput
 	}
 	h := sha256.Sum256([]byte(toolInput))
@@ -128,7 +143,7 @@ func postActivity(ctx context.Context, toolName, notes string) error {
 	// (set by wbt init or the user's shell).  It is not derived from the hook
 	// stdin payload, so there is no SSRF risk here.
 	serverURL := "http://localhost:" + port + "/api/activity/posttooluse"
-	//nolint:gosec // G704: serverURL is localhost-only; port comes from trusted env, not hook stdin
+	//nolint:gosec // G107: serverURL is localhost-only; port comes from trusted env, not hook stdin
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		serverURL,
 		bytes.NewReader(body),
@@ -142,7 +157,7 @@ func postActivity(ctx context.Context, toolName, notes string) error {
 	}
 
 	client := &http.Client{Timeout: httpTimeout}
-	//nolint:gosec // G704: same localhost SSRF rationale as above; context is on req via NewRequestWithContext
+	//nolint:gosec // G107: same localhost SSRF rationale as above; context is on req via NewRequestWithContext
 	resp, err := client.Do(req)
 	if err != nil {
 		// Server may not be running — silently swallow, never block Claude Code.

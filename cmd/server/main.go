@@ -180,9 +180,14 @@ func run() error {
 	api.GET("/session/handoff", sessH.GetHandoff)
 	api.POST("/session/handoff", sessH.SetHandoff)
 
+	// /knowledge/search has a side-effect (bumps recall_count + last_recalled_at
+	// on every hit) so a high-rate caller can permanently subvert the Ebbinghaus
+	// decay prune by inflating recall_count past the threshold. Cap at 20 RPS
+	// per IP — same tier as /search (security audit M-1).
+	knowledgeRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20))
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
-	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
+	api.GET("/knowledge/search", knowledgeH.SearchKnowledge, knowledgeRL)
 
 	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/proposals/pending", proposalH.ListPendingProposals, proposalRL)
