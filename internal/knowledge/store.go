@@ -43,9 +43,12 @@ func NewStore(pool *pgxpool.Pool, embed *search.EmbeddingClient, workspaceID *uu
 // selectCols is the explicit column list for all read queries.
 // embedding is intentionally excluded: rows may have NULL embedding (async generation),
 // and pgvector-go v0.3.0 DecodeBinary panics on empty bytes even with a pointer scan destination.
-const selectCols = `id, type, title, content, url, tags, created_at, updated_at, source, learning_value`
+// Decay fields (importance, recall_count, last_recalled_at, base_lambda, archived_at) added in
+// migration 000019.
+const selectCols = `id, type, title, content, url, tags, created_at, updated_at, source, learning_value,
+	importance, recall_count, last_recalled_at, base_lambda, archived_at`
 
-// scanKnowledgeItem scans a row (10 columns, no embedding) into db.KnowledgeItem.
+// scanKnowledgeItem scans a row (15 columns, no embedding) into db.KnowledgeItem.
 func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	var i db.KnowledgeItem
 	err := scan(
@@ -53,6 +56,7 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 		&i.Url, &i.Tags,
 		&i.CreatedAt, &i.UpdatedAt,
 		&i.Source, &i.LearningValue,
+		&i.Importance, &i.RecallCount, &i.LastRecalledAt, &i.BaseLambda, &i.ArchivedAt,
 	)
 	return i, err
 }
@@ -194,13 +198,25 @@ func (s *Store) findSimilar(ctx context.Context, vec []float32) (
 
 // Search performs full-text search. If an embedding client is available and the query
 // has more than 3 words, it also performs vector similarity search and merges results
-// using Reciprocal Rank Fusion.
+// using Reciprocal Rank Fusion. Results are ordered by strength × similarity DESC
+// (Ebbinghaus decay weighting). On each hit, recall_count is incremented and
+// last_recalled_at is set atomically.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	const ftsQ = `SELECT ` + selectCols + `
+	// strength formula inline: importance * exp(-base_lambda*(1-importance*0.8)*age_days) * (1+recall_count*0.2)
+	// ts_rank is the similarity signal for FTS. Combined: ORDER BY strength * ts_rank DESC.
+	const ftsQ = `SELECT ` + selectCols + `,
+		GREATEST(0.0, LEAST(1.0,
+			importance
+			* EXP(-base_lambda * (1.0 - importance * 0.8)
+				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+			* (1.0 + recall_count * 0.2)
+		)) AS strength,
+		ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS sim
 		FROM knowledge_items
 		WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+		  AND archived_at IS NULL
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
-		ORDER BY ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) DESC
+		ORDER BY strength * sim DESC
 		LIMIT $2`
 
 	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec // G115: caller guarantees positive int32
@@ -211,7 +227,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 
 	var ftsItems []db.KnowledgeItem
 	for rows.Next() {
-		item, err := scanKnowledgeItem(rows.Scan)
+		item, err := scanKnowledgeItemWithScore(rows.Scan)
 		if err != nil {
 			return nil, fmt.Errorf("scanning FTS result: %w", err)
 		}
@@ -221,9 +237,12 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 		return nil, fmt.Errorf("iterating FTS results: %w", err)
 	}
 
+	// Bump recall atomically for returned items.
+	s.bumpRecall(ctx, ftsItems)
+
 	// Vector search: only if embedding client has an API key and query is > 3 words.
 	words := strings.Fields(query)
-	if len(words) <= 3 {
+	if s.embed == nil || len(words) <= 3 {
 		return ftsItems, nil
 	}
 
@@ -242,18 +261,31 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 		return ftsItems, nil
 	}
 
-	return mergeRRF(ftsItems, vecItems, limit), nil
+	merged := mergeRRF(ftsItems, vecItems, limit)
+	// Bump recall for any items returned only from vector search.
+	s.bumpRecall(ctx, vecItems)
+	return merged, nil
 }
 
 // vectorSearch executes a raw vector similarity query (only rows with non-null
-// embeddings within the current workspace scope).
+// embeddings within the current workspace scope). Results are ordered by
+// strength × cosine_similarity DESC so fresh high-importance items rank higher.
 func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]db.KnowledgeItem, error) {
 	v := pgvector.NewVector(vec)
-	const q = `SELECT ` + selectCols + `
+	// cosine similarity = 1 - distance; strength multiplied for combined ranking.
+	const q = `SELECT ` + selectCols + `,
+		GREATEST(0.0, LEAST(1.0,
+			importance
+			* EXP(-base_lambda * (1.0 - importance * 0.8)
+				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+			* (1.0 + recall_count * 0.2)
+		)) AS strength,
+		(1.0 - (embedding <=> $1::vector)) AS sim
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
+		  AND archived_at IS NULL
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
-		ORDER BY embedding <=> $1::vector
+		ORDER BY strength * (1.0 - (embedding <=> $1::vector)) DESC
 		LIMIT $2`
 
 	rows, err := s.pool.Query(ctx, q, v, limit, s.workspaceID)
@@ -264,7 +296,7 @@ func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]d
 
 	var items []db.KnowledgeItem
 	for rows.Next() {
-		item, err := scanKnowledgeItem(rows.Scan)
+		item, err := scanKnowledgeItemWithScore(rows.Scan)
 		if err != nil {
 			return nil, fmt.Errorf("scanning vector search result: %w", err)
 		}
@@ -274,6 +306,74 @@ func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]d
 		return nil, fmt.Errorf("iterating vector search results: %w", err)
 	}
 	return items, nil
+}
+
+// scanKnowledgeItemWithScore scans a row that includes two trailing score
+// columns (strength FLOAT, sim FLOAT) appended by the strength-ranked query.
+// The score columns are consumed but not stored in the model (used only for ORDER BY).
+func scanKnowledgeItemWithScore(scan func(...any) error) (db.KnowledgeItem, error) {
+	var (
+		i             db.KnowledgeItem
+		strength, sim float64
+	)
+	err := scan(
+		&i.ID, &i.Type, &i.Title, &i.Content,
+		&i.Url, &i.Tags,
+		&i.CreatedAt, &i.UpdatedAt,
+		&i.Source, &i.LearningValue,
+		&i.Importance, &i.RecallCount, &i.LastRecalledAt, &i.BaseLambda, &i.ArchivedAt,
+		&strength, &sim,
+	)
+	return i, err
+}
+
+// bumpRecall increments recall_count and sets last_recalled_at=NOW() for all
+// returned items using a single batched UPDATE. Each update is atomic via SQL;
+// this prevents race conditions between concurrent searches on the same row.
+// Errors are logged at warn level only — recall tracking is best-effort.
+func (s *Store) bumpRecall(ctx context.Context, items []db.KnowledgeItem) {
+	if len(items) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID.String())
+	}
+	// Use ANY($1::uuid[]) for an atomic single-statement UPDATE.
+	const q = `UPDATE knowledge_items
+		SET recall_count = recall_count + 1,
+		    last_recalled_at = NOW()
+		WHERE id = ANY($1::uuid[])
+		  AND ($2::uuid IS NULL OR workspace_id = $2)`
+	if _, err := s.pool.Exec(ctx, q, ids, s.workspaceID); err != nil {
+		slog.Warn("knowledge: bump recall failed", "count", len(items), "err", err)
+	}
+}
+
+// SoftPruneDecayed implements decay.PrunerStore. It sets archived_at=NOW() on
+// knowledge_items that are:
+//   - not already archived (archived_at IS NULL)
+//   - older than cutoff (created_at < cutoff, i.e. age > 90 days)
+//   - Ebbinghaus strength < strengthThreshold
+//
+// Decisions table is never touched by this method.
+func (s *Store) SoftPruneDecayed(ctx context.Context, cutoff time.Time, strengthThreshold float64) (int64, error) {
+	const q = `UPDATE knowledge_items
+		SET archived_at = NOW()
+		WHERE archived_at IS NULL
+		  AND created_at < $1
+		  AND GREATEST(0.0, LEAST(1.0,
+			importance
+			* EXP(-base_lambda * (1.0 - importance * 0.8)
+				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+			* (1.0 + recall_count * 0.2)
+		  )) < $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)`
+	tag, err := s.pool.Exec(ctx, q, cutoff, strengthThreshold, s.workspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("soft prune knowledge_items: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // mergeRRF merges two ranked lists using Reciprocal Rank Fusion (k=60).

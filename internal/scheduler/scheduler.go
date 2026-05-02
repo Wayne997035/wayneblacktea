@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -43,6 +44,7 @@ type Scheduler struct {
 	reflectionDeps *reflectionDeps
 	consolidDeps   *consolidationDeps
 	statusDeps     *statusSnapshotDeps
+	pruner         *decay.Pruner
 }
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
@@ -71,6 +73,8 @@ type statusSnapshotDeps struct {
 //
 // snapStore, snapGen are optional: when either is nil the Saturday status
 // snapshot job is skipped. Both are set when CLAUDE_API_KEY is configured.
+//
+// pruner is optional: when nil the daily decay soft-prune job is skipped.
 func New(
 	ls learning.StoreIface,
 	dc *discord.Client,
@@ -84,6 +88,7 @@ func New(
 	snapStore snapshot.StoreIface,
 	snapGen snapshot.GeneratorIface,
 	workspaceID *uuid.UUID,
+	pruner *decay.Pruner,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -132,6 +137,7 @@ func New(
 		reflectionDeps: rDeps,
 		consolidDeps:   cDeps,
 		statusDeps:     sDeps,
+		pruner:         pruner,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -144,7 +150,7 @@ func New(
 	return sc, nil
 }
 
-// registerDailyJobs adds the daily 08:00 scheduled tasks.
+// registerDailyJobs adds the daily scheduled tasks (08:00 and 23:00).
 func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 	_, err := s.NewJob(
 		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(8, 0, 0))),
@@ -155,22 +161,40 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		return fmt.Errorf("registering daily review job: %w", err)
 	}
 
-	if sc.notion == nil || sc.briefingStores == nil {
+	if sc.notion != nil && sc.briefingStores != nil {
+		_, err = s.NewJob(
+			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(8, 0, 0))),
+			gocron.NewTask(sc.sendDailyNotionBriefing),
+			gocron.WithName("daily-notion-briefing"),
+			// LimitModeReschedule drops a run if the previous one is still
+			// executing (e.g. Notion API slow). Prevents goroutine pile-up.
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering daily Notion briefing job: %w", err)
+		}
+		slog.Info("scheduler: DailyNotionBriefing scheduled at 08:00 Asia/Taipei")
+	} else {
 		slog.Info("scheduler: DailyNotionBriefing skipped (Notion client not configured)")
-		return nil
 	}
-	_, err = s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(8, 0, 0))),
-		gocron.NewTask(sc.sendDailyNotionBriefing),
-		gocron.WithName("daily-notion-briefing"),
-		// LimitModeReschedule drops a run if the previous one is still
-		// executing (e.g. Notion API slow). Prevents goroutine pile-up.
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily Notion briefing job: %w", err)
+
+	if sc.pruner != nil {
+		_, err = s.NewJob(
+			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(23, 0, 0))),
+			gocron.NewTask(sc.runDailyDecayPrune),
+			gocron.WithName("daily-decay-prune"),
+			// LimitModeReschedule: drop a run if the previous one is still
+			// executing. DB scan may be slow on large workspaces.
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering daily decay prune job: %w", err)
+		}
+		slog.Info("scheduler: DailyDecayPrune scheduled at 23:00 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: DailyDecayPrune skipped (pruner not configured)")
 	}
-	slog.Info("scheduler: DailyNotionBriefing scheduled at 08:00 Asia/Taipei")
+
 	return nil
 }
 
@@ -348,6 +372,16 @@ func (s *Scheduler) saturdayStatusSnapshot() {
 		return
 	}
 	runStatusSnapshot(*s.statusDeps)
+}
+
+// runDailyDecayPrune delegates to the Pruner.Run which applies the Ebbinghaus
+// soft-delete policy across knowledge_items and concepts. Decisions are never
+// touched. Runs at 23:00 Asia/Taipei.
+func (s *Scheduler) runDailyDecayPrune() {
+	if s.pruner == nil {
+		return
+	}
+	s.pruner.Run()
 }
 
 // weeklyAIConceptReview fetches active concepts with sufficient review history,

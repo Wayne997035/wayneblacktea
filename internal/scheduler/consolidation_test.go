@@ -181,7 +181,7 @@ func TestActorKey_SplitsOnSlash(t *testing.T) {
 // to call when reflectionDeps / consolidDeps are nil (no CLAUDE_API_KEY set).
 func TestSaturdayReflection_NilDeps(t *testing.T) {
 	learningStore := &stubLearningStore{}
-	sc, err := New(learningStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(learningStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

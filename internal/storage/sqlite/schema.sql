@@ -121,29 +121,41 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_items (
-    id             TEXT PRIMARY KEY,
-    workspace_id   TEXT,
-    type           TEXT NOT NULL CHECK (type IN ('article','til','bookmark','zettelkasten')),
-    title          TEXT NOT NULL,
-    content        TEXT NOT NULL DEFAULT '',
-    url            TEXT,
-    tags           TEXT NOT NULL DEFAULT '[]',
-    embedding      BLOB,
-    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    source         TEXT NOT NULL DEFAULT 'manual',
-    learning_value INTEGER CHECK (learning_value BETWEEN 1 AND 5)
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT,
+    type             TEXT NOT NULL CHECK (type IN ('article','til','bookmark','zettelkasten')),
+    title            TEXT NOT NULL,
+    content          TEXT NOT NULL DEFAULT '',
+    url              TEXT,
+    tags             TEXT NOT NULL DEFAULT '[]',
+    embedding        BLOB,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    source           TEXT NOT NULL DEFAULT 'manual',
+    learning_value   INTEGER CHECK (learning_value BETWEEN 1 AND 5),
+    -- Ebbinghaus decay fields (migration 000019)
+    importance       REAL    NOT NULL DEFAULT 0.5,
+    recall_count     INTEGER NOT NULL DEFAULT 0,
+    last_recalled_at TEXT,
+    base_lambda      REAL    NOT NULL DEFAULT 0.1,
+    archived_at      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS concepts (
-    id           TEXT PRIMARY KEY,
-    workspace_id TEXT,
-    title        TEXT NOT NULL,
-    content      TEXT NOT NULL,
-    tags         TEXT NOT NULL DEFAULT '[]',
-    status       TEXT NOT NULL DEFAULT 'active',
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT,
+    title            TEXT NOT NULL,
+    content          TEXT NOT NULL,
+    tags             TEXT NOT NULL DEFAULT '[]',
+    status           TEXT NOT NULL DEFAULT 'active',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    -- Ebbinghaus decay fields (migration 000019)
+    importance       REAL    NOT NULL DEFAULT 0.5,
+    recall_count     INTEGER NOT NULL DEFAULT 0,
+    last_recalled_at TEXT,
+    base_lambda      REAL    NOT NULL DEFAULT 0.1,
+    archived_at      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS review_schedule (
@@ -180,7 +192,11 @@ CREATE INDEX IF NOT EXISTS idx_decisions_workspace_id               ON decisions
 CREATE INDEX IF NOT EXISTS idx_knowledge_type                       ON knowledge_items(type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_created_at                 ON knowledge_items(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_workspace_id         ON knowledge_items(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_knowledge_archived_at                ON knowledge_items(archived_at) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_knowledge_last_recalled_at           ON knowledge_items(last_recalled_at);
 CREATE INDEX IF NOT EXISTS idx_concepts_workspace_id                ON concepts(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_concepts_archived_at                 ON concepts(archived_at) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_concepts_last_recalled_at            ON concepts(last_recalled_at);
 CREATE INDEX IF NOT EXISTS idx_review_schedule_due_date             ON review_schedule(due_date ASC);
 CREATE INDEX IF NOT EXISTS idx_review_schedule_concept_id           ON review_schedule(concept_id);
 CREATE INDEX IF NOT EXISTS idx_review_schedule_workspace_id         ON review_schedule(workspace_id) WHERE workspace_id IS NOT NULL;

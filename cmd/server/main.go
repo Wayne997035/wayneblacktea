@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
@@ -219,11 +220,12 @@ func run() error {
 
 	notionClient := notion.NewClient()
 	briefingStores := newBriefingStores(stores)
+	pruner := buildPruner(stores)
 
 	sched, err := scheduler.New(
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
-		snapStore, snapGen, stores.WorkspaceID(),
+		snapStore, snapGen, stores.WorkspaceID(), pruner,
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
@@ -366,4 +368,28 @@ func newBriefingStores(stores storage.ServerStores) notion.BriefingStores {
 		proposal: stores.Proposal(),
 		decision: stores.Decision(),
 	}
+}
+
+// buildPruner constructs a decay.Pruner for the given backend.
+// Both knowledge.Store (Postgres) and sqlite.KnowledgeStore (SQLite) implement
+// decay.PrunerStore via their SoftPruneDecayed method. Same for learning.Store
+// and sqlite.LearningStore (concepts pruning).
+// When neither interface is available (unexpected backend), pruner is nil and
+// the daily prune job is skipped gracefully.
+func buildPruner(stores storage.ServerStores) *decay.Pruner {
+	// Type-assert to decay.PrunerStore for each table.
+	// knowledge.Store and sqlite.KnowledgeStore both implement the interface.
+	var kp decay.PrunerStore
+	if ps, ok := stores.Knowledge().(decay.PrunerStore); ok {
+		kp = ps
+	}
+	// learning.Store and sqlite.LearningStore both implement the interface.
+	var cp decay.PrunerStore
+	if ps, ok := stores.Learning().(decay.PrunerStore); ok {
+		cp = ps
+	}
+	if kp == nil && cp == nil {
+		return nil
+	}
+	return decay.NewPruner(kp, cp)
 }
