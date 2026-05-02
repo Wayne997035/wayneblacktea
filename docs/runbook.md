@@ -138,13 +138,19 @@ Counts should match Step 2.
 
 **Local:** `echo "WORKSPACE_ID=$WORKSPACE_UUID" >> .env`
 
-Verify server picked it up: startup log shows `workspace scoping: enabled (uuid=...)`.
+Verify server picked it up via the API (no startup log line is emitted today —
+verification is API-side):
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" https://your-host/api/projects \
   | jq '.[].workspace_id' | sort -u
-# Should print only your $WORKSPACE_UUID
+# Should print only your $WORKSPACE_UUID — anything else means the env var
+# was not loaded or got merged with rows that were never backfilled.
 ```
+
+If the response is empty, hit `/api/dashboard/stats?period=7` and confirm
+`workspace` field on the snapshot equals your UUID. If neither matches,
+restart the server — `runtime.WorkspaceIDFromEnv()` runs at boot only.
 
 ### Rollback — undo the backfill
 
