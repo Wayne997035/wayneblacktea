@@ -13,16 +13,18 @@
 -- See docs/operations.md → "WORKSPACE_ID Backfill (migration 000015)" →
 -- "Rollback" for the full procedure.
 
-\set BACKFILL_WORKSPACE_ID '''00000000-0000-0000-0000-000000000001'''
-
-UPDATE pending_proposals SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE review_schedule   SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE concepts          SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE knowledge_items   SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE session_handoffs  SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE decisions         SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE repos             SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE activity_log      SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE tasks             SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE projects          SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
-UPDATE goals             SET workspace_id = NULL WHERE workspace_id = :BACKFILL_WORKSPACE_ID::uuid;
+-- Plain SQL (no psql `\set`) so this file is safe under both `psql -f` and
+-- golang-migrate. The UPDATE statements use the sentinel UUID literal directly;
+-- the operator's `sed` substitution in /tmp before apply rewrites every
+-- occurrence to the real workspace UUID.
+UPDATE pending_proposals SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE review_schedule   SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE concepts          SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE knowledge_items   SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE session_handoffs  SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE decisions         SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE repos             SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE activity_log      SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE tasks             SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE projects          SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;
+UPDATE goals             SET workspace_id = NULL WHERE workspace_id = '00000000-0000-0000-0000-000000000001'::uuid;

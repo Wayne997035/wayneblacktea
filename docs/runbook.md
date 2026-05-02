@@ -159,12 +159,12 @@ If `/tmp/applied-000015.down.sql` was deleted, re-run the `cp` + `sed` block fro
 ### SQLite variant
 
 ```bash
-cp migrations/sqlite/000015_workspace_id_backfill.up.sql   /tmp/applied-sqlite-000011.up.sql
-cp migrations/sqlite/000015_workspace_id_backfill.down.sql /tmp/applied-sqlite-000011.down.sql
+cp migrations/sqlite/000015_workspace_id_backfill.up.sql   /tmp/applied-sqlite-000015.up.sql
+cp migrations/sqlite/000015_workspace_id_backfill.down.sql /tmp/applied-sqlite-000015.down.sql
 sed -i "s/00000000-0000-0000-0000-000000000001/$WORKSPACE_UUID/g" \
-  /tmp/applied-sqlite-000011.up.sql /tmp/applied-sqlite-000011.down.sql
-sqlite3 /path/to/data.db < /tmp/applied-sqlite-000011.up.sql
-# Rollback: sqlite3 /path/to/data.db < /tmp/applied-sqlite-000011.down.sql
+  /tmp/applied-sqlite-000015.up.sql /tmp/applied-sqlite-000015.down.sql
+sqlite3 /path/to/data.db < /tmp/applied-sqlite-000015.up.sql
+# Rollback: sqlite3 /path/to/data.db < /tmp/applied-sqlite-000015.down.sql
 ```
 
 ---

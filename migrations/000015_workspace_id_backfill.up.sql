@@ -29,21 +29,15 @@
 -- (distinct from 000011's all-zero sentinel so down.sql can target exactly
 -- the rows that THIS migration set)
 
--- SECURITY GUARD: refuse to apply the migration if the sentinel UUID is
--- still present. This makes the /tmp+sed step machine-enforced instead of
--- documentation-only. Both psql and golang-migrate execute DO $$ blocks; the
--- exception aborts the transaction before any UPDATE runs. Operators MUST
--- substitute the sentinel via the docs/operations.md SOP before applying.
-DO $$
-BEGIN
-    IF '00000000-0000-0000-0000-000000000001' = '00000000-0000-0000-0000-000000000001' THEN
-        RAISE EXCEPTION 'Migration 000015 sentinel UUID not substituted. '
-            'Follow docs/operations.md "WORKSPACE_ID Backfill (migration 000015)" '
-            '— copy to /tmp, sed-replace 00000000-0000-0000-0000-000000000001 '
-            'with the real workspace UUID, then apply.';
-    END IF;
-END $$;
-
+-- SECURITY: A SQL-level guard that survives a full-file `sed` substitution
+-- is impossible without psql metacommands (sed would replace both sides of
+-- any IF comparison). Defence-in-depth is layered application-side instead:
+--   * runtime/workspace.go ErrSentinelWorkspaceID — the server refuses to
+--     start if WORKSPACE_ID equals the sentinel, so a forgotten substitution
+--     is detected immediately on the next deploy.
+--   * docs/operations.md → "WORKSPACE_ID Backfill (migration 000015)" — the
+--     authoritative SOP requires `cp` + `sed` before `psql -f`.
+--
 -- Plain SQL (no psql `\set`) so this file can be safely picked up by either
 -- `psql -f` (operations.md SOP) or golang-migrate (`task migrate-up`). Both
 -- runners will hit the DO $$ guard above and abort if the sentinel has not
