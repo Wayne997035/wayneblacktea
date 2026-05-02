@@ -20,7 +20,18 @@ const statusInProgress = "in_progress"
 // database for worksession tool tests.
 func newTestWorkSessionServer(t *testing.T) *Server {
 	t.Helper()
+	srv, _ := newTestWorkSessionServerWithDB(t)
+	return srv
+}
+
+// newTestWorkSessionServerWithDB is like newTestWorkSessionServer but also
+// returns a second wbtsqlite.DB handle opened on the same file so tests can
+// insert fixture rows (e.g. tasks to satisfy FK constraints in
+// work_session_tasks.task_id). Both handles share the same WAL journal.
+func newTestWorkSessionServerWithDB(t *testing.T) (*Server, *wbtsqlite.DB) {
+	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "ws-test.db")
+
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,
@@ -30,11 +41,18 @@ func newTestWorkSessionServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = stores.Close() })
 
+	// Open a second connection to the same file for test fixture insertion.
+	db, err := wbtsqlite.Open(context.Background(), dbPath, "")
+	if err != nil {
+		t.Fatalf("Open sqlite fixture handle: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
 	srv, err := New(stores)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return srv
+	return srv, db
 }
 
 // callWorkSessionTool is a thin helper that directly invokes a handler by name.
@@ -181,9 +199,25 @@ func TestHandleStartWork_AlreadyActive(t *testing.T) {
 	}
 }
 
+// insertMCPTestTask inserts a minimal task row into db so FK constraints in
+// work_session_tasks.task_id are satisfied. The wsID arg may be "" when the
+// store is not configured with a workspace (nil workspaceID).
+func insertMCPTestTask(t *testing.T, db *wbtsqlite.DB, wsID, taskID string) {
+	t.Helper()
+	const q = `INSERT INTO tasks (id, workspace_id, title, status, priority)
+		VALUES (?1,?2,'test task','pending',3)`
+	if err := db.ExecContext(context.Background(), q, taskID, wsID); err != nil {
+		t.Fatalf("insertMCPTestTask: %v", err)
+	}
+}
+
 func TestHandleStartWork_WithTaskIDs(t *testing.T) {
-	s := newTestWorkSessionServer(t)
+	s, db := newTestWorkSessionServerWithDB(t)
 	taskID := uuid.New().String()
+
+	// Insert the task so the FK constraint on work_session_tasks.task_id is satisfied.
+	insertMCPTestTask(t, db, "", taskID)
+
 	taskIDsJSON := `["` + taskID + `"]`
 	r := callStartWork(t, s, map[string]any{
 		"repo_name": "task-linked-repo",
@@ -191,18 +225,19 @@ func TestHandleStartWork_WithTaskIDs(t *testing.T) {
 		"goal":      "Test task linking",
 		"task_ids":  taskIDsJSON,
 	})
-	// Note: the task UUID doesn't exist in the DB, but the store should
-	// still create the link (FK enforcement depends on SQLite FK pragma which
-	// is enabled). This test verifies no crash/panic; FK violation is acceptable.
-	// If successful, check the structure.
-	if !r.IsError {
-		var result map[string]any
-		if err := json.Unmarshal([]byte(resultText(r)), &result); err == nil {
-			if linkedTasks, ok := result["linked_tasks"].(float64); ok && linkedTasks != 1 {
-				// linked_tasks count may differ based on FK enforcement
-				_ = linkedTasks
-			}
-		}
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, resultText(r))
+	}
+	linkedTasks, ok := result["linked_tasks"].(float64)
+	if !ok {
+		t.Fatalf("linked_tasks missing or wrong type: %v", result["linked_tasks"])
+	}
+	if int(linkedTasks) != 1 {
+		t.Errorf("expected linked_tasks=1, got %d", int(linkedTasks))
 	}
 }
 
@@ -442,7 +477,9 @@ func TestHandleConfirmPlan_CreatesWorkSession(t *testing.T) {
 
 func TestHandleConfirmPlan_OldFormatUnchanged(t *testing.T) {
 	// Regression test: confirm_plan without repo_name should still work,
-	// outputting "Plan confirmed. Tasks created..." format.
+	// outputting "Plan confirmed.\nTasks created (2):..." format unchanged.
+	// Uses HasPrefix + snapshot pattern to catch any spurious output additions
+	// (e.g. "Work session started" must NOT appear when repo_name is absent).
 	s := newTestWorkSessionServer(t)
 
 	phases := `[{"title":"Do X","description":"desc","priority":2},{"title":"Do Y","priority":1}]`
@@ -458,15 +495,24 @@ func TestHandleConfirmPlan_OldFormatUnchanged(t *testing.T) {
 		t.Fatalf("confirm_plan error: %s", resultText(result))
 	}
 	text := resultText(result)
-	// Old fields must be present.
-	if !strings.Contains(text, "Plan confirmed") {
-		t.Errorf("missing 'Plan confirmed': %s", text)
+
+	// Snapshot: response MUST start with "Plan confirmed." (no prefix drift).
+	if !strings.HasPrefix(text, "Plan confirmed.") {
+		t.Errorf("response must start with 'Plan confirmed.', got: %q", text)
 	}
+	// Old fields must be present.
 	if !strings.Contains(text, "Tasks created (2)") {
 		t.Errorf("missing 'Tasks created (2)': %s", text)
 	}
 	if !strings.Contains(text, "Do X") {
 		t.Errorf("missing task title 'Do X': %s", text)
+	}
+	if !strings.Contains(text, "Do Y") {
+		t.Errorf("missing task title 'Do Y': %s", text)
+	}
+	// Without repo_name, no work session must be started.
+	if strings.Contains(text, "Work session started") {
+		t.Errorf("must NOT output 'Work session started' when repo_name is absent, got: %s", text)
 	}
 }
 

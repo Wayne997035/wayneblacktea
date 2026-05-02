@@ -5,12 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// validWorkSessionSources is the allowlist for the source field.
+// "other" is included as a fallback for callers that cannot determine the exact trigger.
+var validWorkSessionSources = map[string]bool{
+	"manual":       true,
+	"confirm_plan": true,
+	"hook":         true,
+	"other":        true,
+}
 
 func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("start_work",
@@ -20,11 +30,13 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 				"Links the supplied task_ids as primary tasks and sets current_task_id to the first one.",
 		),
 		mcp.WithString("repo_name", mcp.Description("Repository name (required)"), mcp.Required()),
-		mcp.WithString("title", mcp.Description("Short title for this work session (required)"), mcp.Required()),
-		mcp.WithString("goal", mcp.Description("One-paragraph goal for this session (required)"), mcp.Required()),
-		mcp.WithString("task_ids", mcp.Description(`JSON array of task UUIDs to link as primary (e.g. ["uuid1","uuid2"])`)),
+		mcp.WithString("title", mcp.Description("Short title for this work session (required)"), mcp.Required(), mcp.MaxLength(200)),
+		mcp.WithString("goal", mcp.Description("One-paragraph goal for this session (required)"), mcp.Required(), mcp.MaxLength(2000)),
+		mcp.WithString("task_ids",
+			mcp.Description(`JSON array of task UUIDs to link as primary (e.g. ["uuid1","uuid2"]) — max 50`),
+			mcp.MaxLength(8192)),
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
-		mcp.WithString("source", mcp.Description("Source trigger (e.g. 'manual','confirm_plan'). Defaults to 'manual'.")),
+		mcp.WithString("source", mcp.Description("Source trigger: 'manual', 'confirm_plan', 'hook', or 'other'. Defaults to 'manual'.")),
 	), s.handleStartWork)
 
 	ms.AddTool(mcp.NewTool("get_active_work",
@@ -43,7 +55,7 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 				"Use when taking a break or switching context temporarily.",
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
-		mcp.WithString("summary", mcp.Description("What was accomplished since last checkpoint (required)"), mcp.Required()),
+		mcp.WithString("summary", mcp.Description("What was accomplished since last checkpoint (required)"), mcp.Required(), mcp.MaxLength(5000)),
 		mcp.WithString("completed_task_ids", mcp.Description(`JSON array of task UUIDs completed in this segment`)),
 		mcp.WithString("new_task_titles", mcp.Description(`JSON array of new task titles to add`)),
 		mcp.WithString("new_decisions", mcp.Description(`JSON array of decision titles to log`)),
@@ -58,7 +70,7 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 				"Always call this when work on a session is done, even if tasks remain.",
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
-		mcp.WithString("summary", mcp.Description("Final summary of what was accomplished (required)"), mcp.Required()),
+		mcp.WithString("summary", mcp.Description("Final summary of what was accomplished (required)"), mcp.Required(), mcp.MaxLength(5000)),
 		mcp.WithString("completed_task_ids", mcp.Description(`JSON array of task UUIDs completed`)),
 		mcp.WithString("deferred_task_ids", mcp.Description(`JSON array of task UUIDs deferred to next session`)),
 		mcp.WithString("artifact", mcp.Description("PR URL or artifact reference (optional)")),
@@ -67,6 +79,45 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 }
 
 // ---- handleStartWork ----
+
+// parseOptionalUUID parses an optional UUID field from args. Returns (nil, nil)
+// when the field is absent, and (nil, errResult) when the value is present but invalid.
+func parseOptionalUUID(args map[string]any, field string) (*uuid.UUID, *mcp.CallToolResult) {
+	raw := stringArg(args, field)
+	if raw == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid %s UUID: %v", field, err))
+	}
+	return &id, nil
+}
+
+// parseTaskIDs parses the task_ids JSON array (max 50 elements) from args.
+// Returns (nil, errResult) on validation error.
+func parseTaskIDs(args map[string]any) ([]uuid.UUID, *mcp.CallToolResult) {
+	raw := stringArg(args, "task_ids")
+	if raw == "" {
+		return nil, nil
+	}
+	var rawIDs []string
+	if err := json.Unmarshal([]byte(raw), &rawIDs); err != nil {
+		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid task_ids JSON: %v", err))
+	}
+	if len(rawIDs) > 50 {
+		return nil, mcp.NewToolResultError(fmt.Sprintf("task_ids exceeds limit: got %d, max 50", len(rawIDs)))
+	}
+	ids := make([]uuid.UUID, 0, len(rawIDs))
+	for _, rawID := range rawIDs {
+		id, err := uuid.Parse(rawID)
+		if err != nil {
+			return nil, mcp.NewToolResultError(fmt.Sprintf("invalid task_id UUID %q: %v", rawID, err))
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
 
 func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if s.workSession == nil {
@@ -85,35 +136,24 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 	if source == "" {
 		source = "manual"
 	}
-
-	var projectID *uuid.UUID
-	if raw := stringArg(args, "project_id"); raw != "" {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
-		}
-		projectID = &id
+	if !validWorkSessionSources[source] {
+		return mcp.NewToolResultError(
+			fmt.Sprintf("invalid source %q: must be one of manual, confirm_plan, hook, other", source),
+		), nil
 	}
 
-	var taskIDs []uuid.UUID
-	if raw := stringArg(args, "task_ids"); raw != "" {
-		var rawIDs []string
-		if err := json.Unmarshal([]byte(raw), &rawIDs); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid task_ids JSON: %v", err)), nil
-		}
-		for _, rawID := range rawIDs {
-			id, err := uuid.Parse(rawID)
-			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("invalid task_id UUID %q: %v", rawID, err)), nil
-			}
-			taskIDs = append(taskIDs, id)
-		}
+	projectID, errRes := parseOptionalUUID(args, "project_id")
+	if errRes != nil {
+		return errRes, nil
 	}
 
-	wsID := s.workspaceUUIDVal()
+	taskIDs, errRes := parseTaskIDs(args)
+	if errRes != nil {
+		return errRes, nil
+	}
 
 	sess, err := s.workSession.Create(ctx, worksession.CreateParams{
-		WorkspaceID: wsID,
+		WorkspaceID: s.workspaceUUIDVal(),
 		RepoName:    repoName,
 		ProjectID:   projectID,
 		Title:       title,
@@ -123,11 +163,14 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 	})
 	if err != nil {
 		if errors.Is(err, worksession.ErrAlreadyActive) {
-			return mcp.NewToolResultError("another session is already in_progress for this repo — call finish_work or get_active_work first"), nil
+			return mcp.NewToolResultError(
+				"another session is already in_progress for this repo — call finish_work or get_active_work first",
+			), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("start_work failed: %v", err)), nil
 	}
 
+	slog.Info("start_work", "session_id", sess.ID, "workspace_id", s.workspaceUUIDVal(), "repo_name", repoName)
 	return jsonText(map[string]any{
 		"session_id":   sess.ID,
 		"status":       sess.Status,
@@ -177,6 +220,7 @@ func (s *Server) handleCheckpointWork(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError("invalid session_id UUID"), nil
 	}
 
+	slog.Info("checkpoint_work", "session_id", sessID, "workspace_id", s.workspaceUUIDVal())
 	sess, err := s.workSession.Checkpoint(ctx, worksession.CheckpointParams{
 		SessionID: sessID,
 		Summary:   summary,
@@ -213,6 +257,7 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("invalid session_id UUID"), nil
 	}
 
+	slog.Info("finish_work", "session_id", sessID, "workspace_id", s.workspaceUUIDVal())
 	sess, err := s.workSession.Finish(ctx, worksession.FinishParams{
 		SessionID: sessID,
 		Summary:   summary,

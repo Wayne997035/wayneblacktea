@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS work_sessions (
                             'planned','in_progress','checkpointed',
                             'completed','cancelled','archived')),
     source              TEXT        NOT NULL,
+    -- confirmed_plan_id is nullable and has no FK intentionally: it is reserved
+    -- for future linking to a first-class plans table (not yet implemented in P0a-α).
+    -- Do not set this field until the plans table exists and is migrated.
     confirmed_plan_id   UUID        NULL,
     current_task_id     UUID        REFERENCES tasks(id) ON DELETE SET NULL,
     final_summary       TEXT        NULL,

@@ -22,14 +22,16 @@ var ErrAlreadyActive = errors.New("worksession: another session is already in_pr
 // It mirrors the work_sessions table columns using Go-native types so both
 // the Postgres and SQLite stores can return the same struct.
 type Session struct {
-	ID               uuid.UUID  `json:"id"`
-	WorkspaceID      uuid.UUID  `json:"workspace_id"`
-	RepoName         string     `json:"repo_name"`
-	ProjectID        *uuid.UUID `json:"project_id,omitempty"`
-	Title            string     `json:"title"`
-	Goal             string     `json:"goal"`
-	Status           string     `json:"status"`
-	Source           string     `json:"source"`
+	ID          uuid.UUID  `json:"id"`
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	RepoName    string     `json:"repo_name"`
+	ProjectID   *uuid.UUID `json:"project_id,omitempty"`
+	Title       string     `json:"title"`
+	Goal        string     `json:"goal"`
+	Status      string     `json:"status"`
+	Source      string     `json:"source"`
+	// ConfirmedPlanID is reserved for future linking to a first-class plans table.
+	// Currently always nil; do not set in P0a-α.
 	ConfirmedPlanID  *uuid.UUID `json:"confirmed_plan_id,omitempty"`
 	CurrentTaskID    *uuid.UUID `json:"current_task_id,omitempty"`
 	FinalSummary     *string    `json:"final_summary,omitempty"`

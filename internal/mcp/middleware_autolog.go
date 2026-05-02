@@ -124,6 +124,21 @@ func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bo
 		intent := stringArg(args, "intent")
 		return "session:handoff", truncate(intent), true
 
+	case "start_work":
+		repoName := stringArg(args, "repo_name")
+		return "work:started", truncate(repoName), true
+
+	case "finish_work":
+		sessID := stringArg(args, "session_id")
+		return "work:finished", truncate(sessID), true
+
+	case "checkpoint_work":
+		sessID := stringArg(args, "session_id")
+		return "work:checkpointed", truncate(sessID), true
+
+	case "get_active_work":
+		return "", "", false // read-only: no audit log needed
+
 	default:
 		return "", "", false
 	}

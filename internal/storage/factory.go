@@ -142,6 +142,14 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	if cfg.PostgresDSN == "" {
 		return nil, ErrMissingPostgresDSN
 	}
+
+	// Auto-migrate: apply pending migrations before opening the store pool.
+	// Fail-fast: if migration fails, abort startup to prevent running against
+	// a stale schema. Set WBT_AUTO_MIGRATE=false to disable (e.g. in CI).
+	if err := RunMigrations(ctx, cfg.PostgresDSN); err != nil {
+		return nil, fmt.Errorf("auto-migrate: %w", err)
+	}
+
 	pool, err := buildPgxPool(ctx, cfg.PostgresDSN, cfg.AppEnv, cfg.PGSSLRootCert)
 	if err != nil {
 		return nil, err

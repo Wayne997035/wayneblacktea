@@ -2,12 +2,13 @@ package worksession
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -119,6 +120,11 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
 		wsID = *s.workspaceID
 	}
 
+	// SECURITY (P0a single-tenant): task_ids are not validated against workspace
+	// at store layer. Cross-workspace task linking is theoretically possible but
+	// safe in production because WORKSPACE_ID is fixed per server. If multi-tenant
+	// is added later, MUST add per-task workspace_id verification before INSERT.
+
 	id := uuid.New()
 	now := time.Now().UTC()
 
@@ -192,7 +198,7 @@ func (s *Store) GetActive(ctx context.Context, workspaceID uuid.UUID, repoName s
 	row := s.pool.QueryRow(ctx, q, ws, repoName)
 	sess, err := scanSessionFromRow(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return &ActiveSessionResult{Active: false, ImplementationAllowed: false}, nil
 		}
 		return nil, fmt.Errorf("worksession.GetActive: %w", err)
@@ -214,7 +220,7 @@ func (s *Store) GetActive(ctx context.Context, workspaceID uuid.UUID, repoName s
 
 // Checkpoint updates the session to status=checkpointed and records last_checkpoint_at.
 func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, error) {
-	ws := p.SessionID // placeholder; actual workspace from store config
+	var ws uuid.UUID
 	if s.workspaceID != nil {
 		ws = *s.workspaceID
 	}
@@ -231,7 +237,7 @@ func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, e
 	row := s.pool.QueryRow(ctx, q, p.SessionID, ws)
 	sess, err := scanSessionFromRow(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("worksession.Checkpoint: %w", err)
@@ -241,7 +247,7 @@ func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, e
 
 // Finish sets status=completed and records final_summary.
 func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
-	ws := p.SessionID // placeholder; actual workspace from store config
+	var ws uuid.UUID
 	if s.workspaceID != nil {
 		ws = *s.workspaceID
 	}
@@ -259,7 +265,7 @@ func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
 	row := s.pool.QueryRow(ctx, q, p.SessionID, ws, p.Summary)
 	sess, err := scanSessionFromRow(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("worksession.Finish: %w", err)
@@ -281,7 +287,7 @@ func (s *Store) GetByID(ctx context.Context, workspaceID, sessionID uuid.UUID) (
 	row := s.pool.QueryRow(ctx, q, sessionID, ws)
 	sess, err := scanSessionFromRow(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("worksession.GetByID: %w", err)
@@ -341,8 +347,9 @@ func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
-	// pgx wraps the error; check code "23505" (unique_violation).
-	errMsg := err.Error()
-	return strings.Contains(errMsg, "23505") ||
-		strings.Contains(errMsg, "idx_work_sessions_one_active")
+	// Use errors.As to unwrap pgconn.PgError and check the SQL state code
+	// "23505" (unique_violation). This is the idiomatic pgx v5 pattern
+	// (mirrors internal/gtd/store.go:121).
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

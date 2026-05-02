@@ -322,11 +322,14 @@ func (s *WorkSessionStore) LinkedTasks(ctx context.Context, sessionID uuid.UUID)
 	return out, nil
 }
 
-// byID is a helper to fetch a session by its primary key (no workspace scope —
-// only called after an insert that already enforced the workspace constraint).
+// byID is a helper to fetch a session by its primary key, scoped to the
+// store's workspace (if configured). Called after insert to return the
+// created session — workspace constraint was already enforced by the INSERT.
 func (s *WorkSessionStore) byID(ctx context.Context, id uuid.UUID) (*worksession.Session, error) {
-	const q = `SELECT ` + workSessionSelectCols + ` FROM work_sessions WHERE id = ?1 LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id.String())
+	ws := s.db.workspaceArg()
+	const q = `SELECT ` + workSessionSelectCols + ` FROM work_sessions
+		WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, q, id.String(), ws)
 	sess, err := scanWorkSession(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, worksession.ErrNotFound

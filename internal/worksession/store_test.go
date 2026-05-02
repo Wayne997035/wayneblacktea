@@ -9,6 +9,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	statusCheckpointed = "checkpointed"
+	statusCompleted    = "completed"
+)
+
 // openTestDB opens an in-memory SQLite DB for testing.
 func openTestDB(t *testing.T, workspaceID string) *wbtsqlite.DB {
 	t.Helper()
@@ -156,7 +161,7 @@ func TestWorkSessionStore_StatusTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
-	if chk.Status != "checkpointed" {
+	if chk.Status != statusCheckpointed {
 		t.Errorf("after checkpoint status: got %q, want checkpointed", chk.Status)
 	}
 	if chk.LastCheckpointAt == nil {
@@ -171,7 +176,7 @@ func TestWorkSessionStore_StatusTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	if done.Status != "completed" {
+	if done.Status != statusCompleted {
 		t.Errorf("after finish status: got %q, want completed", done.Status)
 	}
 	if done.CompletedAt == nil {
