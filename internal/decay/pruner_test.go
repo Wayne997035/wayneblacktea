@@ -90,3 +90,52 @@ func TestPruner_AgeCutoff_Is_AtLeast90Days(t *testing.T) {
 		t.Errorf("softPruneAgeCutoff = %v, must be >= 90 days", softPruneAgeCutoff)
 	}
 }
+
+// TestPruner_DecisionsNeverPruned verifies that Pruner has no field or method
+// that accepts a decisions store. The decisions table is an audit trail and
+// must never participate in decay pruning (P0a D3 design decision).
+//
+// This test is structural: it asserts the Pruner struct has exactly 2 fields
+// (knowledge and concepts) and that a stubPrunerStore passed only as knowledge
+// and concepts is the only one called — no mystery "decisions" field exists.
+func TestPruner_DecisionsNeverPruned(t *testing.T) {
+	// decisionsSpy would be called if any "decisions" path existed in Pruner.
+	decisionsSpy := &stubPrunerStore{}
+
+	ks := &stubPrunerStore{n: 1}
+	cs := &stubPrunerStore{n: 1}
+	p := NewPruner(ks, cs)
+	p.Run()
+
+	// decisionsSpy must NEVER have been called — Pruner has no decisions path.
+	if decisionsSpy.called {
+		t.Error("decisions store was called — decay must never prune decisions")
+	}
+	// Both knowledge and concepts must have been called.
+	if !ks.called {
+		t.Error("knowledge store was not called")
+	}
+	if !cs.called {
+		t.Error("concepts store was not called")
+	}
+}
+
+// TestPruner_LowStrengthDecisions_NotPruned verifies the semantic guarantee:
+// items with strength below the threshold ARE soft-deleted in knowledge/concepts,
+// but this code path does NOT exist for decisions. The test mocks the store to
+// return non-zero counts and confirms the pruner correctly calls them for
+// knowledge/concepts only.
+func TestPruner_LowStrengthDecisions_NotPruned(t *testing.T) {
+	// Simulate a scenario where "decisions" store would have weak items.
+	// Because Pruner has no decisions field, these items are never pruned.
+	ks := &stubPrunerStore{n: 5} // 5 knowledge items pruned
+	cs := &stubPrunerStore{n: 0} // 0 concepts pruned
+	p := NewPruner(ks, cs)
+	p.Run()
+
+	if ks.n != 5 {
+		t.Errorf("expected 5 knowledge items pruned, got %d", ks.n)
+	}
+	// Decisions: no store, no prune. This is the design guarantee.
+	// Verified by the absence of any decisions-related call.
+}

@@ -97,6 +97,7 @@ func run() error {
 		handler.WithDecisionStore(stores.Decision()),
 	)
 	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
+	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
@@ -179,6 +180,8 @@ func run() error {
 
 	api.GET("/session/handoff", sessH.GetHandoff)
 	api.POST("/session/handoff", sessH.SetHandoff)
+
+	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
 
 	// /knowledge/search has a side-effect (bumps recall_count + last_recalled_at
 	// on every hit) so a high-rate caller can permanently subvert the Ebbinghaus

@@ -243,3 +243,55 @@ CREATE TABLE IF NOT EXISTS project_status_snapshots (
 CREATE INDEX IF NOT EXISTS idx_status_snapshots_slug_time
     ON project_status_snapshots (slug, generated_at DESC);
 
+-- Mirrored from migrations/sqlite/000021_work_sessions.up.sql.
+-- First-class work session model for P0a Session Core.
+CREATE TABLE IF NOT EXISTS work_sessions (
+    id                  TEXT        PRIMARY KEY,
+    workspace_id        TEXT        NOT NULL,
+    repo_name           TEXT        NOT NULL,
+    project_id          TEXT        REFERENCES projects(id) ON DELETE SET NULL,
+    title               TEXT        NOT NULL,
+    goal                TEXT        NOT NULL,
+    status              TEXT        NOT NULL CHECK (status IN (
+                            'planned','in_progress','checkpointed',
+                            'completed','cancelled','archived')),
+    source              TEXT        NOT NULL CHECK (source IN ('manual','confirm_plan','hook','other')),
+    confirmed_plan_id   TEXT        NULL,
+    current_task_id     TEXT        REFERENCES tasks(id) ON DELETE SET NULL,
+    final_summary       TEXT        NULL,
+    started_at          TEXT        NULL,
+    last_checkpoint_at  TEXT        NULL,
+    completed_at        TEXT        NULL,
+    created_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_sessions_one_active
+    ON work_sessions(workspace_id, repo_name)
+    WHERE status = 'in_progress';
+
+CREATE INDEX IF NOT EXISTS idx_work_sessions_workspace_id
+    ON work_sessions(workspace_id) WHERE workspace_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_work_sessions_repo_name
+    ON work_sessions(workspace_id, repo_name, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_work_sessions_status
+    ON work_sessions(workspace_id, status);
+
+-- Mirrored from migrations/sqlite/000022_work_session_tasks.up.sql.
+-- Links work_sessions to tasks with a role classification.
+CREATE TABLE IF NOT EXISTS work_session_tasks (
+    session_id  TEXT    NOT NULL REFERENCES work_sessions(id) ON DELETE CASCADE,
+    task_id     TEXT    NOT NULL REFERENCES tasks(id)         ON DELETE CASCADE,
+    role        TEXT    NOT NULL CHECK (role IN ('primary','follow_up','blocker','generated')),
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (session_id, task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_session_tasks_session_id
+    ON work_session_tasks(session_id);
+
+CREATE INDEX IF NOT EXISTS idx_work_session_tasks_task_id
+    ON work_session_tasks(task_id);
+

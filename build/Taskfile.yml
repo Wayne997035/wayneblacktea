@@ -26,6 +26,12 @@ tasks:
       - task: build-wbt-hook
     silent: false
 
+  vuln:
+    desc: "Run govulncheck to detect known vulnerabilities (informational, does not block check)"
+    cmds:
+      - govulncheck ./...
+    dir: ..
+
   build-mcp:
     desc: "Build MCP binary to bin/"
     deps:
@@ -97,13 +103,14 @@ tasks:
     dir: ..
 
   test:
-    desc: "Run unit tests"
+    desc: "Run unit tests (-short, no Docker required)"
     deps:
       - go-cache
     cmds:
       # cmd/server embeds web/dist which requires a prior `npm run build`.
       # Exclude it so tests are not blocked by a missing frontend build artifact.
-      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/...
+      # -short skips testcontainers-based integration tests that require Docker.
+      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/...
     dir: ..
 
   go-cache:
@@ -113,9 +120,10 @@ tasks:
     dir: ..
 
   test-integration:
-    desc: "Run integration tests (requires DATABASE_URL)"
+    desc: "Run integration tests (requires Docker for testcontainers)"
     cmds:
-      - go test -race -tags integration ./...
+      # No -short flag: runs all tests including testcontainers-based integration tests.
+      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/...
     dir: ..
 
   migrate-up:
