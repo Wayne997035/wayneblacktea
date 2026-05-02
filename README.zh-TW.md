@@ -11,94 +11,72 @@
 </p>
 
 <p align="center">
-  一個給 AI agent 的 personal-OS server — 你的目標、決策、知識、學習
+  一個給 AI agent 的 personal-OS MCP server — 你的目標、決策、知識、學習
   全都活在同一顆共用的腦裡，讓你合作的 AI 已經知道你的脈絡，而不是
   每次對話都要從零解釋一次。
 </p>
 
 ---
 
-## 為什麼存在
+## 安裝
 
-大多數 AI 工作流程是無狀態的。每次對話從零開始、每個 agent 都健忘、
-你整天在重貼連結、重新解釋昨天講過的事。你加越多 agent — 編輯器
-助手、Discord 小幫手、每日摘要 — 情況越糟。最後你變成系統裡唯一
-一塊記憶體。
+單一 binary、互動 wizard、預設 SQLite — 不用自己起任何 infra。
 
-wayneblacktea 走相反的路：把你的工作模型化成 **結構化資料** —
-目標、專案、任務、決策、知識、概念卡、agent 提案、session 交接 —
-讓每個 agent 都讀寫同一份儲存。跟你合作的 AI 已經知道你的脈絡，
-你不再是剪貼簿。
+```bash
+go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+wbt init    # 問你 CLAUDE_API_KEY、選 SQLite 或 Postgres、寫 .env 跟 .mcp.json
+wbt serve   # 啟動 MCP server
+```
 
-## 這帶來什麼
+然後讓你的 MCP client 指到產生的 `.mcp.json`。Claude Code：
 
-- **編輯器、Discord、儀表板對齊狀態。** 在 Discord 存一條連結，一
-  秒後在儀表板看到。沒有「等等我有跟你講過嗎」。
-- **存進來的知識自動餵複習佇列。** 你存一篇文章或一條 TIL，系統
-  會幫你起草一張間隔重複概念卡。佇列從你的閱讀習慣自然成長，不需
-  額外努力。
-- **決策可查詢。** 架構選擇、tradeoff、考慮過的替代方案全在一份
-  log 裡。六週後問「我當時為什麼這樣做」會得到真實答案。
-- **Agent 提案就只是提案。** Agent 想新增的高承諾物件進入待確認
-  佇列。你確認或拒絕。主控權留在你身上。
-- **跨 session 連續性。**「下次繼續做 Y」是下次 session 第一眼看
-  到的結構化筆記。
-- **抗健忘訊號。** Server 追蹤工具呼叫模式，把忘記的事浮上檯面 —
-  卡住的 in-progress 任務、累積的 pending 提案、登錄了決策卻沒做
-  session 開頭 recall。
+```bash
+claude mcp add --scope user wayneblacktea -- $(which wbt) serve
+```
 
-## 怎麼組織
+完。不用 clone、不用手動改 config、不需要另外開 Postgres，除非你自己想要。
 
-七個 bounded context。每個擁有一片模型跟一套窄定義的詞彙；混在
-一起就會壞掉。
+## 你會得到
+
+`wbt serve` 跑起來後，所有支援 MCP 的 agent 都讀寫同一份儲存：
 
 | Context | 擁有什麼 |
 |---|---|
-| **GTD** | 目標 → 專案 → 任務（含重要性與討論脈絡），加 activity log。 |
-| **Decisions** | 架構與設計決策，含理由與替代方案。 |
-| **Knowledge** | 文章、TIL、書籤、Zettelkasten 筆記 — 全文與語意搜尋，ingest 時去重。 |
-| **Learning** | 間隔重複概念卡，跑 FSRS 排程。系統可從存進來的知識自動提案概念卡。 |
-| **Sessions** | 跨 session 的交接筆記 — 「下次要繼續什麼」。 |
-| **Proposals** | Agent 原創、等使用者確認的物件。 |
-| **Workspace** | 追蹤的 Git repo，含狀態、已知問題、下一步計畫。 |
+| **GTD** | 目標 → 專案 → 任務（含重要性與討論脈絡），加 activity log |
+| **Decisions** | 架構與設計決策，含理由與替代方案，可依 repo 查詢 |
+| **Knowledge** | 文章、TIL、書籤、Zettelkasten 筆記 — 全文與 pgvector 語意搜尋 |
+| **Learning** | 間隔重複概念卡，跑 FSRS 排程，可從新存的知識自動提案 |
+| **Sessions** | 跨 session 的交接筆記 — 「下次要繼續什麼」 |
+| **Proposals** | Agent 原創、等使用者確認的物件 |
+| **Workspace** | 追蹤的 Git repo，含狀態、已知問題、下一步計畫 |
 
-每個 entity 帶可選的 workspace scope，多個獨立的個人資料庫可以
-共用同一個 instance。
+## 自動記憶（不用你提醒）
+
+Agent 不需要記得呼叫工具，server 會自動接住：
+
+- **MCP middleware classifier** — 任何 significant tool 呼叫（`complete_task`、`confirm_proposal`、`upsert_project_arch`、`update_project_status`、`resolve_handoff`、`sync_repo`）執行成功後丟給 Haiku 非同步分類；隱性決策自動 log_decision、隱性任務自動 add_task。每分鐘 60 次 rate cap、dedup、prompt injection boundary。
+- **Stop hook**（`wbt-doctor`）— Claude Code session 結束時 transcript 壓成 ≤500 字 summary，同時寫進 `session_handoffs.summary_text` 跟可搜尋的 `knowledge_items`。
+- **SessionStart hook**（`wbt-context`）— 下次 session 開啟時自動把上次 handoff、最近決策、今天 due reviews 注入成 context。
+- **Saturday reflection cron** — 週六批次掃 7 天 activity_log + decisions，叫 Haiku 起草 3-5 條 retrospective knowledge，走 `pending_proposals` 等你確認。
+- **Auto-consolidation** — 同 actor 30 天內 ≥5 條相關 activity 被合併成一條 knowledge proposal。
 
 ## 設計哲學
 
-**結構優先於 prompt。** 把你想要 AI 記得的部分編碼成明確 schema。
-Agent 之間沒漂移、沒有「我記得你提過…」，就是資料。
+**結構優先於 prompt。** 把你想要 AI 記得的部分編碼成明確 schema。Agent 之間沒漂移、沒有「我記得你提過…」，就是資料。
 
-**使用者保留決定權。** Agent 提案，你確認。摩擦本身就是重點 —
-一個替你做決定的系統最後會讓你不會做決定。
+**使用者保留決定權。** Agent 提案，你確認。摩擦本身就是重點 — 一個替你做決定的系統最後會讓你不會做決定。
 
-**讓遺忘可見。** 再自律的 agent 都會忘記收尾。Server 把每次工具
-呼叫都記下來，把模式講出來 — 下次 session 還沒講話就會看到上次
-留下的尾巴。
+**讓遺忘可見。** 再自律的 agent 都會忘記收尾。Server 把每次工具呼叫都記下來，把模式講出來 — 卡住的 in-progress 任務、累積的 pending 提案、登錄了決策卻沒做 session 開頭 recall。
 
-**Workflow 工具，不是原始 CRUD。** Agent 接觸面提供「拿今天的
-context」、「確認一個計畫」、「登錄一個決策」這種動詞操作。規則
-住在工具層，而不是散落在每個 client 的 prompt 裡。
+**Workflow 工具，不是原始 CRUD。** Agent 接觸面提供「拿今天的 context」、「確認一個計畫」、「登錄一個決策」這種動詞操作。規則住在工具層，而不是散落在每個 client 的 prompt 裡。
 
 ## 這 *不是* 什麼
 
-- **不是團隊產品。** 一個人，多個 agent。沒有 RBAC，沒有共享
-  workspace，沒有 Notion-clone 的協作功能。
-- **不是 hosted 服務。** 沒有多租戶 SaaS。你 fork 來自己 self-host，
-  workspace scope 只是幫你資料隔離，僅此而已。
-- **不是穩定 API。** 一個人開發跟維運。release 不規律，會有
-  breaking change，儀表板有些地方還沒上樣式。
-- **不是有記憶的 chatbot。** Schema 才是記憶。對話歷史不重要。
+- **不是團隊產品。** 一個人，多個 agent。沒有 RBAC，沒有共享 workspace，沒有 Notion-clone 協作。
+- **不是 hosted 服務。** Self-host 在你自己機器上。Workspace scope 只是幫你資料隔離，不是多租戶。
+- **不是穩定 API。** 一個人開發跟維運。release 不規律、會有 breaking change、儀表板還有粗糙的角落。
+- **不是有記憶的 chatbot。** Schema 才是記憶，對話歷史不重要。
 
 ---
 
-Self-host 步驟在 [docs/installation.md]。
-貢獻者流程在 [CONTRIBUTING.md]。
-每天發生了什麼在 [CHANGELOG.md]。
-
-採用 [MIT](./LICENSE) 授權。
-
-[docs/installation.md]: ./docs/installation.md
-[CONTRIBUTING.md]: ./CONTRIBUTING.md
-[CHANGELOG.md]: ./CHANGELOG.md
+採用 [MIT](./LICENSE) 授權。架構細節在 [`docs/architecture.md`](./docs/architecture.md)。

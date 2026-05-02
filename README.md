@@ -11,314 +11,72 @@
 </p>
 
 <p align="center">
-  A personal-OS server for AI agents — your goals, decisions, knowledge,
+  A personal-OS MCP server for AI agents — your goals, decisions, knowledge,
   and learning live in one shared brain so the AI you work with already
-  knows your context instead of asking you to re-explain it every
-  conversation.
+  knows your context instead of asking you to re-explain it every conversation.
 </p>
 
 ---
 
-## Why this exists
+## Install
 
-Most AI workflows are stateless. Every chat starts from zero, every agent is amnesiac, and you spend the day re-pasting links and explaining yesterday's context. wayneblacktea takes the opposite position: model your work as **structured data** and let every agent read and write the same store. You stop being the clipboard.
+Single binary, interactive wizard, SQLite-by-default — no infra to provision.
 
-## Features
+```bash
+go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+wbt init    # asks for your CLAUDE_API_KEY, picks SQLite or Postgres, writes .env + .mcp.json
+wbt serve   # starts the MCP server
+```
+
+Then point your MCP client at the generated `.mcp.json`. In Claude Code:
+
+```bash
+claude mcp add --scope user wayneblacktea -- $(which wbt) serve
+```
+
+That's it. No clone, no manual config, no separate Postgres needed unless you want one.
+
+## What you get
+
+Once `wbt serve` is running, every MCP-capable agent reads and writes the same store:
 
 | Context | What it tracks |
 |---------|---------------|
-| **GTD** | Goals, projects, tasks with importance and activity log |
-| **Decisions** | Architectural choices with rationale and alternatives, queryable by repo |
-| **Knowledge** | Articles, TILs, bookmarks, Zettelkasten notes -- full-text and semantic search |
-| **Learning** | Spaced-repetition concept cards on an FSRS schedule |
-| **Sessions** | Cross-session handoff notes -- "what to continue next time" |
-| **Proposals** | Agent-originated entities awaiting user confirmation before materialising |
-| **Workspace** | Tracked Git repos with status, known issues, and next planned step |
+| **GTD** | Goals → projects → tasks with importance, activity log |
+| **Decisions** | Architectural choices with rationale + alternatives, queryable by repo |
+| **Knowledge** | Articles, TILs, bookmarks, Zettelkasten notes — full-text + pgvector semantic search |
+| **Learning** | Spaced-repetition concept cards on an FSRS schedule, auto-proposed from new knowledge |
+| **Sessions** | Cross-session handoff notes — "what to continue next time" |
+| **Proposals** | Agent-originated entities awaiting your confirmation before they materialise |
+| **Workspace** | Tracked Git repos with status, known issues, next planned step |
 
-- **Editor, Discord, and dashboard stay in sync.** Save a link in Discord; see it on the dashboard immediately.
-- **Decisions are queryable.** Six weeks later "why did I do X this way" returns a real answer.
-- **Agent proposals stay proposals.** Anything with permanent consequences waits for your confirmation.
-- **Anti-amnesia signals.** The server tracks tool-call patterns and surfaces stuck tasks, piled-up proposals, and forgotten decisions at session start.
+## Auto-memory (no nagging required)
 
-## Architecture
+The agent doesn't need to remember to save things. The server captures them automatically:
 
-See [`docs/architecture.md`](./docs/architecture.md) for the full data-flow diagram.
+- **MCP middleware classifier** — every significant tool call (`complete_task`, `confirm_proposal`, `upsert_project_arch`, `update_project_status`, `resolve_handoff`, `sync_repo`) is async-classified by Haiku; implicit decisions get auto-logged, follow-up tasks get auto-created. Rate-capped at 60/min, deduped, prompt-injection-bounded.
+- **Stop hook** (`wbt-doctor`) — when a Claude Code session ends, the transcript is compressed to a ≤500-char summary and stored as both `session_handoffs.summary_text` and a searchable `knowledge_items` row.
+- **SessionStart hook** (`wbt-context`) — the next session opens with the previous handoff, recent decisions, and due reviews already injected as context.
+- **Saturday reflection cron** — weekly batch reads 7 days of activity + decisions and proposes 3-5 retrospective knowledge entries (gated through `pending_proposals` for your confirmation).
+- **Auto-consolidation** — clusters of ≥5 same-actor activities in the last 30 days get merged into a single proposed knowledge entry.
 
-```mermaid
-graph TD
-    subgraph Clients
-        CC[Claude Code / Editor]
-        DB[Discord Bot]
-        FE[React Dashboard]
-    end
+## Design
 
-    subgraph wayneblacktea
-        MCP[MCP stdio server]
-        API[HTTP REST API :8080]
-        SCH[Scheduler]
-        AI[AI pipeline]
-    end
+**Structure beats prompts.** Encode what you want the AI to remember as an explicit schema. No drift between agents, no "I think you mentioned…" — it's just data.
 
-    subgraph Storage
-        PG[(PostgreSQL + pgvector)]
-        SQ[(SQLite)]
-    end
+**You stay in control.** Agents propose, you confirm. The friction is the point — a system that decides for you eventually decides everything.
 
-    CC -->|stdio JSON-RPC| MCP
-    DB -->|internal call| API
-    FE -->|Bearer X-API-Key| API
+**Make forgetting visible.** The server tracks every tool call and surfaces forgotten work — stuck `in_progress` tasks, piled-up proposals, decisions logged without a session-start recall.
 
-    MCP --> API
-    API --> PG
-    API --> SQ
-    SCH --> AI
-    AI --> API
-    SCH -->|daily briefing| DB
-```
+**Workflow tools, not raw CRUD.** The agent surface exposes verbs like "get today's context", "confirm this plan", "log this decision" — rules live in the tool layer, not scattered across each client's prompt.
 
-## Tech stack
+## What this *isn't*
 
-| Item | Technology |
-|------|-----------|
-| Language | Go 1.26 |
-| HTTP framework | Echo |
-| Frontend | React 19 + TypeScript 5.9 + Vite 7 |
-| Database | PostgreSQL 14+ with pgvector (default) / SQLite (local) |
-| MCP transport | stdio (Model Context Protocol) |
-| Deployment | Docker / Railway |
-
-## Project structure
-
-```
-wayneblacktea/
-├── cmd/
-│   ├── server/     HTTP API server + embedded dashboard
-│   ├── mcp/        MCP stdio server (wired into .mcp.json)
-│   ├── wbt/        One-click installer CLI (wbt init / wbt serve)
-│   └── doctor/     Health snapshot binary used by editor Stop hook
-├── internal/       All business logic (unexported)
-├── web/            React dashboard source (built and embedded in server binary)
-├── migrations/     SQL migration files, applied in order
-├── build/          Dockerfile + Taskfile (quality gate: task check)
-└── docs/           Architecture, install guide, operations runbook
-```
-
-## Quick install
-
-Three modes -- choose one. Full details in [`docs/install.md`](./docs/install.md).
-
-### SQLite (zero infra, local only)
-
-```bash
-git clone https://github.com/Wayne997035/wayneblacktea.git
-cd wayneblacktea
-go run ./cmd/wbt init        # wizard: picks SQLite, writes .env + .mcp.json
-go run ./cmd/wbt serve       # starts server on http://localhost:8080
-```
-
-### PostgreSQL
-
-```bash
-git clone https://github.com/Wayne997035/wayneblacktea.git
-cd wayneblacktea
-go run ./cmd/wbt init        # wizard: picks Postgres, prompts for DSN
-go run ./cmd/wbt serve
-```
-
-### Docker
-
-```bash
-git clone https://github.com/Wayne997035/wayneblacktea.git
-cd wayneblacktea
-cp .env.example .env         # fill in API_KEY, DATABASE_URL
-docker build \
-  --build-arg VITE_API_KEY=$(grep API_KEY .env | cut -d= -f2) \
-  -f build/Dockerfile -t wayneblacktea .
-docker run -p 8080:8080 --env-file .env wayneblacktea
-```
-
-## 5-minute onboarding
-
-After `wbt init` and `wbt serve`:
-
-**Step 1 -- Open Claude Code and load the MCP server**
-
-`wbt init` writes `.mcp.json` in the project root. Open Claude Code in that directory; it picks up the MCP server automatically.
-
-**Step 2 -- Start your first session**
-
-Ask Claude Code to call `get_today_context`. It returns your active goals, projects, weekly progress, and any pending handoff from a previous session.
-
-**Step 3 -- Do real work**
-
-```
-You:   Add a task to finish the landing page copy by Friday, priority 4.
-Agent: [calls add_task] Done -- task created under project "marketing-site".
-
-You:   That task is done, PR is merged.
-Agent: [calls complete_task] Marked complete, artifact URL recorded.
-
-You:   Why did we choose SQLite over Postgres for local dev?
-Agent: [calls list_decisions] Decision logged 2026-04-30: ...
-```
-
-**Step 4 -- View the dashboard**
-
-Open `http://localhost:8080` to see the Control Room dashboard: active projects, weekly task progress, pending session handoff, and the decision timeline.
-
-**Step 5 -- End of session**
-
-Tell Claude Code "end session" or "see you tomorrow". It calls `set_session_handoff` so the next session starts from where you left off.
-
-## MCP tools
-
-The MCP server exposes tools across seven domains.
-
-**Session and context**
-
-| Tool | Purpose |
-|------|---------|
-| `initial_instructions` | Returns the full usage protocol -- call at session start |
-| `get_today_context` | Active goals, projects, weekly progress, pending handoff |
-| `set_session_handoff` | Record what to continue next session |
-| `resolve_handoff` | Mark the pending handoff resolved when work resumes |
-| `system_health` | Snapshot: stuck tasks, pending proposals, anti-amnesia signals |
-
-**GTD**
-
-| Tool | Purpose |
-|------|---------|
-| `list_goals` | All active goals ordered by due date |
-| `create_goal` | Create a new goal directly |
-| `list_projects` | All active projects |
-| `get_project` | Project detail with recent decisions |
-| `create_project` | Create a new project directly |
-| `update_project_status` | Move project between active / on_hold / completed / archived |
-| `list_tasks` | Tasks, optionally filtered by project |
-| `add_task` | Create a task under a project |
-| `update_task` | Change task status |
-| `complete_task` | Mark task done and record artifact URL |
-| `delete_task` | Permanently remove a task |
-| `log_activity` | Record an activity log entry for a project |
-| `confirm_plan` | Atomically create tasks + log decisions when user confirms a plan |
-
-**Decisions**
-
-| Tool | Purpose |
-|------|---------|
-| `log_decision` | Record an architectural or design decision |
-| `list_decisions` | Query decisions by repo or project |
-
-**Knowledge**
-
-| Tool | Purpose |
-|------|---------|
-| `add_knowledge` | Save an article, TIL, bookmark, or Zettelkasten note |
-| `search_knowledge` | Full-text and semantic search across saved items |
-| `list_knowledge` | Paginated list of knowledge items |
-| `sync_to_notion` | Push a knowledge item to the configured Notion database |
-
-**Learning**
-
-| Tool | Purpose |
-|------|---------|
-| `create_concept` | Create a concept card with FSRS review schedule |
-| `get_due_reviews` | All concepts currently due for review |
-| `submit_review` | Rate a review and update the next schedule |
-
-**Proposals**
-
-| Tool | Purpose |
-|------|---------|
-| `propose_goal` | Suggest a new goal for user confirmation |
-| `propose_project` | Suggest a new project for user confirmation |
-| `list_pending_proposals` | Show proposals awaiting resolution |
-| `confirm_proposal` | Accept (materialise) or reject a pending proposal |
-
-**Workspace and architecture**
-
-| Tool | Purpose |
-|------|---------|
-| `list_active_repos` | All active repositories in the workspace |
-| `sync_repo` | Create or update a repository entry |
-| `upsert_project_arch` | Store an architecture snapshot for a project |
-| `get_project_arch` | Retrieve a stored architecture snapshot |
-
-## Environment variables
-
-`wbt init` writes these automatically. Manual reference:
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `API_KEY` | Yes | Bearer token for every `/api/*` request |
-| `DATABASE_URL` | Postgres only | PostgreSQL connection string |
-| `STORAGE_BACKEND` | No | `postgres` (default) or `sqlite` |
-| `SQLITE_PATH` | SQLite only | Path to the SQLite database file |
-| `ALLOWED_ORIGINS` | No | Comma-separated CORS origins |
-| `PORT` | No | HTTP port (default `8080`) |
-| `WORKSPACE_ID` | No | UUID for workspace scoping; unset for single-user mode |
-| `USER_ID` | No | Identity tag for agent-originated writes |
-| `CLAUDE_API_KEY` | No | Enables AI summarisation and activity classification |
-| `GEMINI_API_KEY` | No | Enables vector embeddings for knowledge dedup and similarity search |
-| `GROQ_API_KEY` | No | Powers the Discord bot LLM analyser |
-| `DISCORD_BOT_TOKEN` | No | Discord bot session token; bot is disabled when unset |
-| `DISCORD_GUILD_ID` | No | Discord guild for slash command registration |
-| `DISCORD_WEBHOOK_URL` | No | Outbound webhook for scheduled briefing posts |
-| `NOTION_INTEGRATION_SECRET` | No | Enables the `sync_to_notion` tool |
-| `NOTION_DATABASE_ID` | No | Target Notion database for synced pages |
-| `POSTGRES_INSECURE_TLS` | No | Set `true` for managed Postgres providers (Railway, Aiven) |
-
-Security note: never commit `.env`. API keys must be injected via environment variables in production.
-
-## Development
-
-### Prerequisites
-
-| Tool | Minimum version |
-|------|----------------|
-| Go | 1.26 |
-| Node.js | 22 |
-| Task | latest stable |
-| PostgreSQL + pgvector | 14+ |
-
-### Local run
-
-```bash
-cp .env.example .env   # fill in DATABASE_URL, API_KEY
-cd web && npm ci && npm run build && cd ..
-cd build && task build-server && cd ..
-./bin/wayneblacktea-server -env .env
-```
-
-### Quality gate
-
-```bash
-cd build && task check   # lint + tests + build all binaries; must be 0 issues
-```
-
-## CI/CD
-
-```
-Push to any branch  -->  lint + test + build
-Merge to main       -->  lint + test + build + Docker build + deploy to Railway
-Git tag (vX.Y.Z)    -->  GoReleaser cross-compile + GitHub Release
-```
-
-## Deployment
-
-Production deployment is a single Railway service built from `build/Dockerfile`.
-
-```bash
-railway link --service <your-service-name>
-railway up --ci -m "your deploy message"
-```
-
-Healthcheck endpoint: `GET /health`
+- **Not a team product.** One person, many agents. No RBAC, no shared workspace, no Notion-clone collaboration.
+- **Not a hosted service.** Self-host on your own machine. Workspace scoping is for personal data isolation, not multi-tenancy.
+- **Not a stable API.** Solo project, irregular releases, breaking changes happen, dashboard rough edges remain.
+- **Not a chatbot with memory.** The schema is the memory. Conversation history is irrelevant.
 
 ---
 
-Day-by-day changes: [CHANGELOG.md](./CHANGELOG.md)
-Full self-hosting reference: [docs/install.md](./docs/install.md)
-Architecture deep-dive: [docs/architecture.md](./docs/architecture.md)
-
-Released under [MIT](./LICENSE).
+Licensed under [MIT](./LICENSE). Architecture deep-dive in [`docs/architecture.md`](./docs/architecture.md).
