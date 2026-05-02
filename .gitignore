@@ -19,6 +19,10 @@ local.yaml
 application-local.yml
 credentials.json
 configs/*.local.*
+*.pem
+*.key
+*.crt
+secrets/
 
 # Go build artifacts (root) — binaries go in bin/ via Taskfile
 vendor/
