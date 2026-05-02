@@ -198,7 +198,15 @@ func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxp
 		return nil, fmt.Errorf("building TLS config: %w", err)
 	}
 	if tlsCfg != nil {
-		pgcfg.ConnConfig.TLSConfig = tlsCfg
+		// Merge our RootCAs into the URL-derived TLS config so ServerName
+		// (set by pgx from the host parameter) is preserved. Replacing the
+		// whole struct drops ServerName and Go's tls handshake then refuses.
+		if pgcfg.ConnConfig.TLSConfig == nil {
+			pgcfg.ConnConfig.TLSConfig = tlsCfg
+		} else {
+			pgcfg.ConnConfig.TLSConfig.RootCAs = tlsCfg.RootCAs
+			pgcfg.ConnConfig.TLSConfig.InsecureSkipVerify = false
+		}
 	}
 	pgcfg.AfterConnect = pgvectorpgx.RegisterTypes
 	pool, err := pgxpool.NewWithConfig(ctx, pgcfg)
