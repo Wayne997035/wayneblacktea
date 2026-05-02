@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
+	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -86,6 +88,101 @@ func (s *Store) UpdateSummary(ctx context.Context, summary string) error {
 		return fmt.Errorf("updating session summary: %w", err)
 	}
 	return nil
+}
+
+// UpdateEmbedding writes the serialized embedding bytes to the most recent
+// unresolved session handoff.  Best-effort: 0 rows updated (no unresolved
+// handoff) is not an error.
+func (s *Store) UpdateEmbedding(ctx context.Context, embedding []byte) error {
+	const q = `UPDATE session_handoffs
+		SET embedding = $1
+		WHERE id = (
+			SELECT id FROM session_handoffs
+			WHERE resolved_at IS NULL
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY created_at DESC
+			LIMIT 1
+		)`
+	if _, err := s.dbtx.Exec(ctx, q, embedding, s.workspaceID); err != nil {
+		return fmt.Errorf("updating session embedding: %w", err)
+	}
+	return nil
+}
+
+// handoffEmbedRow holds the minimal fields needed for cosine recall.
+type handoffEmbedRow struct {
+	id        uuid.UUID
+	intent    string
+	summaryTx *string
+	embedding []byte
+}
+
+// SearchByCosine returns the top-limit session handoffs whose embeddings are
+// most similar to queryEmbedding, filtered by workspace_id.  Only handoffs
+// with non-null embeddings are considered.  Similarity is computed on the Go
+// side (brute-force scan) because session_handoffs.embedding is BYTEA and
+// not yet a pgvector column.
+//
+// SECURITY: filtered by workspace_id — no cross-workspace data is returned.
+func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.SessionHandoff, error) {
+	if len(queryEmbedding) == 0 || limit <= 0 {
+		return nil, nil
+	}
+
+	const q = `SELECT id, intent, summary_text, embedding
+		FROM session_handoffs
+		WHERE embedding IS NOT NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT 200` // scan at most 200 recent handoffs (personal-OS scale)
+
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("session cosine query: %w", err)
+	}
+	defer rows.Close()
+
+	type scored struct {
+		row handoffEmbedRow
+		sim float64
+	}
+	var candidates []scored
+	for rows.Next() {
+		var r handoffEmbedRow
+		if err := rows.Scan(&r.id, &r.intent, &r.summaryTx, &r.embedding); err != nil {
+			continue
+		}
+		vec := localai.DeserializeEmbedding(r.embedding)
+		if vec == nil {
+			continue
+		}
+		sim := localai.CosineSimilarity(queryEmbedding, vec)
+		candidates = append(candidates, scored{row: r, sim: sim})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating session cosine results: %w", err)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].sim > candidates[j].sim
+	})
+
+	if limit < len(candidates) {
+		candidates = candidates[:limit]
+	}
+
+	result := make([]db.SessionHandoff, 0, len(candidates))
+	for _, c := range candidates {
+		h := db.SessionHandoff{
+			ID:     c.row.id,
+			Intent: c.row.intent,
+		}
+		if c.row.summaryTx != nil {
+			h.ContextSummary = pgtype.Text{String: *c.row.summaryTx, Valid: true}
+		}
+		result = append(result, h)
+	}
+	return result, nil
 }
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.

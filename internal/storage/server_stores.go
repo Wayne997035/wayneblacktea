@@ -20,6 +20,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -51,6 +52,11 @@ type ServerStores interface {
 	Learning() learning.StoreIface
 	Proposal() proposal.StoreIface
 	Arch() arch.StoreIface
+
+	// WorkspaceID returns the workspace UUID configured at startup, or nil
+	// when operating in legacy single-workspace mode. Used by MCP tools that
+	// need to scope writes (e.g. snapshot) without a raw pgxpool reference.
+	WorkspaceID() *uuid.UUID
 
 	// PgxPool returns the underlying pgx pool when this bundle is the
 	// Postgres backend, or nil for any other backend. Used only by code

@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
@@ -27,6 +28,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -76,7 +78,13 @@ func run() error {
 	}()
 	discordClient := discord.NewClient()
 
+	// Build snapshot deps early so both ctxH and scheduler can share the same store.
+	snapStore, snapGen := buildSnapshotDeps(stores)
+
 	ctxH := handler.NewContextHandler(stores.GTD(), stores.Session())
+	if snapStore != nil {
+		ctxH.WithSnapshotStore(snapStore)
+	}
 	gtdH := handler.NewGTDHandler(stores.GTD())
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
 	decH := handler.NewDecisionHandler(stores.Decision())
@@ -101,6 +109,8 @@ func run() error {
 		reflector = ai.NewReflector(claudeKey)
 	}
 	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
+	postToolUseH := handler.NewPostToolUseHandler(stores.GTD())
+	defer postToolUseH.Stop()
 
 	e := echo.New()
 	e.HideBanner = true
@@ -170,9 +180,14 @@ func run() error {
 	api.GET("/session/handoff", sessH.GetHandoff)
 	api.POST("/session/handoff", sessH.SetHandoff)
 
+	// /knowledge/search has a side-effect (bumps recall_count + last_recalled_at
+	// on every hit) so a high-rate caller can permanently subvert the Ebbinghaus
+	// decay prune by inflating recall_count past the threshold. Cap at 20 RPS
+	// per IP — same tier as /search (security audit M-1).
+	knowledgeRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20))
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
-	api.GET("/knowledge/search", knowledgeH.SearchKnowledge)
+	api.GET("/knowledge/search", knowledgeH.SearchKnowledge, knowledgeRL)
 
 	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/proposals/pending", proposalH.ListPendingProposals, proposalRL)
@@ -195,7 +210,11 @@ func run() error {
 
 	activityRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
 	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
+	// postToolUseRL is deliberately more permissive (120 req/min) because
+	// wbt-hook fires on every Claude Code tool call, including fast loops.
+	postToolUseRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(120))
 	api.POST("/activity", autologH.LogActivity, activityRL)
+	api.POST("/activity/posttooluse", postToolUseH.PostToolUse, postToolUseRL)
 	api.POST("/auto-handoff", autologH.AutoHandoff, handoffRL)
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
@@ -206,9 +225,12 @@ func run() error {
 
 	notionClient := notion.NewClient()
 	briefingStores := newBriefingStores(stores)
+	pruner := buildPruner(stores)
+
 	sched, err := scheduler.New(
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
+		snapStore, snapGen, stores.WorkspaceID(), pruner,
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
@@ -270,6 +292,21 @@ func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
 	}
 	log.Println("discord bot started")
 	return bot.Stop, nil
+}
+
+// buildSnapshotDeps returns a snapshot store and generator when the Postgres
+// backend is active and CLAUDE_API_KEY is set; otherwise both are nil (feature
+// gracefully disabled).
+func buildSnapshotDeps(stores storage.ServerStores) (snapshot.StoreIface, snapshot.GeneratorIface) {
+	pool := stores.PgxPool()
+	if pool == nil {
+		return nil, nil
+	}
+	claudeKey := os.Getenv("CLAUDE_API_KEY")
+	if claudeKey == "" {
+		return nil, nil
+	}
+	return snapshot.NewStore(pool, stores.WorkspaceID()), snapshot.NewGenerator(claudeKey)
 }
 
 func buildStores(backend storage.Backend) (storage.ServerStores, error) {
@@ -336,4 +373,28 @@ func newBriefingStores(stores storage.ServerStores) notion.BriefingStores {
 		proposal: stores.Proposal(),
 		decision: stores.Decision(),
 	}
+}
+
+// buildPruner constructs a decay.Pruner for the given backend.
+// Both knowledge.Store (Postgres) and sqlite.KnowledgeStore (SQLite) implement
+// decay.PrunerStore via their SoftPruneDecayed method. Same for learning.Store
+// and sqlite.LearningStore (concepts pruning).
+// When neither interface is available (unexpected backend), pruner is nil and
+// the daily prune job is skipped gracefully.
+func buildPruner(stores storage.ServerStores) *decay.Pruner {
+	// Type-assert to decay.PrunerStore for each table.
+	// knowledge.Store and sqlite.KnowledgeStore both implement the interface.
+	var kp decay.PrunerStore
+	if ps, ok := stores.Knowledge().(decay.PrunerStore); ok {
+		kp = ps
+	}
+	// learning.Store and sqlite.LearningStore both implement the interface.
+	var cp decay.PrunerStore
+	if ps, ok := stores.Learning().(decay.PrunerStore); ok {
+		cp = ps
+	}
+	if kp == nil && cp == nil {
+		return nil
+	}
+	return decay.NewPruner(kp, cp)
 }

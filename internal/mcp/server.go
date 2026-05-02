@@ -12,9 +12,11 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -49,6 +51,15 @@ type Server struct {
 	notion     *notion.Client
 	watchdog   *watchdog.Watchdog
 	classifier *ai.ActivityClassifier
+
+	// snapshotStore / snapshotGen are optional; nil = feature disabled.
+	// Populated via WithSnapshot when CLAUDE_API_KEY is set.
+	snapshotStore snapshot.StoreIface
+	snapshotGen   snapshot.GeneratorIface
+
+	// workspaceID is populated from WORKSPACE_ID env at New time for use by
+	// tools that need to scope snapshot writes without a pgxpool reference.
+	workspaceID *uuid.UUID
 }
 
 // New creates a Server backed by the given pre-built ServerStores bundle.
@@ -56,22 +67,38 @@ type Server struct {
 // connection lifecycle; cmd/mcp/main.go MUST defer stores.Close() after this
 // call returns.
 func New(stores storage.ServerStores) (*Server, error) {
+	wsID := stores.WorkspaceID()
 	return &Server{
-		pool:       stores.PgxPool(),
-		gtd:        stores.GTD(),
-		workspace:  stores.Workspace(),
-		decision:   stores.Decision(),
-		session:    stores.Session(),
-		knowledge:  stores.Knowledge(),
-		learning:   stores.Learning(),
-		proposal:   stores.Proposal(),
-		arch:       stores.Arch(),
-		pgGTD:      stores.PgGTD(),
-		pgProposal: stores.PgProposal(),
-		pgLearning: stores.PgLearning(),
-		notion:     notion.NewClient(),
-		watchdog:   watchdog.New(200),
+		pool:        stores.PgxPool(),
+		gtd:         stores.GTD(),
+		workspace:   stores.Workspace(),
+		decision:    stores.Decision(),
+		session:     stores.Session(),
+		knowledge:   stores.Knowledge(),
+		learning:    stores.Learning(),
+		proposal:    stores.Proposal(),
+		arch:        stores.Arch(),
+		pgGTD:       stores.PgGTD(),
+		pgProposal:  stores.PgProposal(),
+		pgLearning:  stores.PgLearning(),
+		notion:      notion.NewClient(),
+		watchdog:    watchdog.New(200),
+		workspaceID: wsID,
 	}, nil
+}
+
+// WithSnapshot wires a snapshot store and generator into the server so that
+// the generate_project_status MCP tool is available. Passing nil store or gen
+// is valid and disables the feature (e.g. when CLAUDE_API_KEY is not set).
+func (s *Server) WithSnapshot(store snapshot.StoreIface, gen snapshot.GeneratorIface) *Server {
+	s.snapshotStore = store
+	s.snapshotGen = gen
+	return s
+}
+
+// workspaceUUID returns the workspace UUID pointer for use in snapshot writes.
+func (s *Server) workspaceUUID() *uuid.UUID {
+	return s.workspaceID
 }
 
 // WithClassifier wires an ActivityClassifier into the server so that
@@ -151,6 +178,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerProposalTools(ms)
 	s.registerHealthTools(ms)
 	s.registerArchTools(ms)
+	s.registerStatusTools(ms)
 	return ms
 }
 

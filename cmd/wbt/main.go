@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/mcprunner"
 	"github.com/joho/godotenv"
 )
 
@@ -25,7 +26,10 @@ const usage = `wbt — wayneblacktea one-click installer
 
 Commands:
   wbt init   Run interactive setup wizard (writes .env and .mcp.json)
-  wbt serve  Load .env and start the wayneblacktea-server
+  wbt serve  Load .env and start the wayneblacktea-server (HTTP API)
+  wbt mcp    Serve MCP stdio (wired into .mcp.json by ` + "`wbt init`" + `;
+             register with Claude Code via:
+               claude mcp add --scope user wayneblacktea -- wbt mcp)
 `
 
 func main() {
@@ -39,6 +43,8 @@ func main() {
 		err = runInit()
 	case "serve":
 		err = runServe()
+	case "mcp":
+		err = runMCP()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n%s", os.Args[1], usage)
 		os.Exit(1)
@@ -47,6 +53,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runMCP serves MCP stdio by delegating to the shared mcprunner package
+// (also used by cmd/mcp). Reads .env from CWD if present so users do not
+// need to set DATABASE_URL / CLAUDE_API_KEY in the environment that
+// Claude Code launches the hook from.
+func runMCP() error {
+	// Best-effort .env load — absent file is not fatal because Claude Code
+	// may export the env vars itself.
+	_ = godotenv.Load()
+	if err := mcprunner.Run(); err != nil {
+		return fmt.Errorf("running MCP stdio server: %w", err)
+	}
+	return nil
 }
 
 // dbConfig holds the database configuration collected during init.
@@ -94,7 +114,43 @@ func runInit() error {
 	}
 
 	fmt.Println("Created .env and .mcp.json — run `wbt serve` to start")
+	printHookSnippet(apiKey, port)
 	return nil
+}
+
+// printHookSnippet prints a copy-pasteable ~/.claude/settings.json snippet
+// that registers wbt-hook as a Claude Code PostToolUse global hook.
+// It does NOT write the file automatically; the user must copy it manually
+// so they can review it and merge with any existing settings.
+func printHookSnippet(apiKey, port string) {
+	fmt.Printf(`
+--- PostToolUse hook setup (optional) ---
+To capture every Claude Code tool call in your activity log, add the following
+to ~/.claude/settings.json (merge with existing content if the file already exists).
+
+WARNING: WBT_HOOK_RAW=1 logs raw tool input — only enable in trusted dev environments.
+
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "wbt-hook",
+            "environment": {
+              "API_KEY": %q,
+              "PORT": %q
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+-----------------------------------------
+`, apiKey, port)
 }
 
 // collectDBConfig asks the user whether to use SQLite or Postgres and collects
@@ -271,10 +327,17 @@ type mcpConfig struct {
 
 type mcpServer struct {
 	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env"`
 }
 
 // buildMCPJSON marshals the .mcp.json content.
+//
+// The MCP entry points at `wbt mcp` (delegating to the shared mcprunner
+// package) rather than the standalone `wayneblacktea-mcp` binary. This way
+// `go install …/cmd/wbt@latest` installs everything an end user needs — no
+// separate go install for the MCP binary, no name mismatch between the
+// installed binary and the .mcp.json command field.
 func buildMCPJSON(claudeKey string, db dbConfig) ([]byte, error) {
 	env := map[string]string{
 		"CLAUDE_API_KEY":  claudeKey,
@@ -289,7 +352,8 @@ func buildMCPJSON(claudeKey string, db dbConfig) ([]byte, error) {
 	cfg := mcpConfig{
 		MCPServers: map[string]mcpServer{
 			"wayneblacktea": {
-				Command: "wayneblacktea-mcp",
+				Command: "wbt",
+				Args:    []string{"mcp"},
 				Env:     env,
 			},
 		},

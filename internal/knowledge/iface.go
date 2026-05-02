@@ -15,6 +15,9 @@ type StoreIface interface {
 	Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
 	List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, error)
+	// SearchByCosine returns the top-limit knowledge items most similar to queryEmbedding.
+	// SECURITY: scoped to workspace_id.
+	SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.KnowledgeItem, error)
 }
 
 var _ StoreIface = (*Store)(nil)

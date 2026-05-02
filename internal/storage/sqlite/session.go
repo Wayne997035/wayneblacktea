@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 
+	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
@@ -119,6 +121,87 @@ func (s *SessionStore) UpdateSummary(ctx context.Context, summary string) error 
 		return errWrap("UpdateSummary", err)
 	}
 	return nil
+}
+
+// UpdateEmbedding writes the embedding bytes to the most recent unresolved
+// session handoff (SQLite version, uses BLOB column).  Best-effort.
+func (s *SessionStore) UpdateEmbedding(ctx context.Context, embedding []byte) error {
+	const q = `UPDATE session_handoffs
+		SET embedding = ?1
+		WHERE id = (
+			SELECT id FROM session_handoffs
+			WHERE resolved_at IS NULL
+			  AND (?2 IS NULL OR workspace_id = ?2)
+			ORDER BY created_at DESC
+			LIMIT 1
+		)`
+	_, err := s.db.conn.ExecContext(ctx, q, embedding, s.db.workspaceArg())
+	if err != nil {
+		return errWrap("UpdateEmbedding", err)
+	}
+	return nil
+}
+
+// SearchByCosine returns the top-limit session handoffs most similar to
+// queryEmbedding.  SQLite has no pgvector — brute-force Go-side cosine scan.
+//
+// SECURITY: filtered by workspace_id — no cross-workspace data returned.
+func (s *SessionStore) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.SessionHandoff, error) {
+	if len(queryEmbedding) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	// Fetch up to 200 recent handoffs that have an embedding.
+	const q = `SELECT id, intent, summary_text, embedding FROM session_handoffs
+		WHERE embedding IS NOT NULL
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY created_at DESC
+		LIMIT 200`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("SearchByCosine", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type scored struct {
+		h   db.SessionHandoff
+		sim float64
+	}
+	var candidates []scored
+	for rows.Next() {
+		var idStr string
+		var intent string
+		var summaryNS sql.NullString
+		var rawEmbed []byte
+		if err := rows.Scan(&idStr, &intent, &summaryNS, &rawEmbed); err != nil {
+			continue
+		}
+		vec := localai.DeserializeEmbedding(rawEmbed)
+		if vec == nil {
+			continue
+		}
+		h := db.SessionHandoff{Intent: intent}
+		if id, parseErr := uuid.Parse(idStr); parseErr == nil {
+			h.ID = id
+		}
+		if summaryNS.Valid {
+			h.ContextSummary = pgtypeText(summaryNS.String, true)
+		}
+		candidates = append(candidates, scored{h: h, sim: localai.CosineSimilarity(queryEmbedding, vec)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("SearchByCosine iter", err)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].sim > candidates[j].sim
+	})
+	if limit < len(candidates) {
+		candidates = candidates[:limit]
+	}
+	result := make([]db.SessionHandoff, 0, len(candidates))
+	for _, c := range candidates {
+		result = append(result, c.h)
+	}
+	return result, nil
 }
 
 func (s *SessionStore) handoffByID(ctx context.Context, id uuid.UUID) (*db.SessionHandoff, error) {

@@ -14,6 +14,9 @@ type StoreIface interface {
 	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
 	All(ctx context.Context, limit int32) ([]db.Decision, error)
 	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
+	// SearchByCosine returns the top-limit decisions most similar to queryEmbedding.
+	// SECURITY: scoped to workspace_id.
+	SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.Decision, error)
 }
 
 var _ StoreIface = (*Store)(nil)

@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/google/uuid"
 )
@@ -23,7 +25,9 @@ func NewLearningStore(d *DB) *LearningStore {
 
 var _ learning.StoreIface = (*LearningStore)(nil)
 
-const conceptsSelectCols = `id, title, content, tags, created_at, updated_at, workspace_id, status`
+// conceptsSelectCols includes decay fields added in migration 000019.
+const conceptsSelectCols = `id, title, content, tags, created_at, updated_at, workspace_id, status,
+	importance, recall_count, last_recalled_at, base_lambda, archived_at`
 
 func scanConcept(scan func(...any) error) (db.Concept, error) {
 	var (
@@ -31,8 +35,13 @@ func scanConcept(scan func(...any) error) (db.Concept, error) {
 		idStr                    string
 		tagsNS, createdNS, updNS sql.NullString
 		workspaceNS              sql.NullString
+		lastRecalledNS           sql.NullString
+		archivedNS               sql.NullString
 	)
-	err := scan(&idStr, &c.Title, &c.Content, &tagsNS, &createdNS, &updNS, &workspaceNS, &c.Status)
+	err := scan(
+		&idStr, &c.Title, &c.Content, &tagsNS, &createdNS, &updNS, &workspaceNS, &c.Status,
+		&c.Importance, &c.RecallCount, &lastRecalledNS, &c.BaseLambda, &archivedNS,
+	)
 	if err != nil {
 		return db.Concept{}, err
 	}
@@ -47,6 +56,8 @@ func scanConcept(scan func(...any) error) (db.Concept, error) {
 	c.CreatedAt = parseTimestamptz(createdNS)
 	c.UpdatedAt = parseTimestamptz(updNS)
 	c.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+	c.LastRecalledAt = parseTimestamptz(lastRecalledNS)
+	c.ArchivedAt = parseTimestamptz(archivedNS)
 	return c, nil
 }
 
@@ -231,4 +242,75 @@ func (s *LearningStore) conceptByID(ctx context.Context, id uuid.UUID) (*db.Conc
 		return nil, errWrap("conceptByID", err)
 	}
 	return &c, nil
+}
+
+// SoftPruneDecayed implements decay.PrunerStore for the SQLite concepts table.
+// It sets archived_at=NOW() on concepts that are:
+//   - not already archived (archived_at IS NULL)
+//   - older than cutoff (created_at < cutoff, i.e. age > 90 days)
+//   - Ebbinghaus strength (computed app-side) < strengthThreshold
+//
+// Decisions table is never touched.
+func (s *LearningStore) SoftPruneDecayed(ctx context.Context, cutoff time.Time, strengthThreshold float64) (int64, error) {
+	cutoffStr := cutoff.UTC().Format(sqliteMillisLayout)
+	const selQ = `SELECT ` + conceptsSelectCols + ` FROM concepts
+		WHERE archived_at IS NULL
+		  AND created_at < ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)`
+	rows, err := s.db.conn.QueryContext(ctx, selQ, cutoffStr, s.db.workspaceArg())
+	if err != nil {
+		return 0, errWrap("SoftPruneDecayedSelect concepts", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var candidates []db.Concept
+	for rows.Next() {
+		c, err := scanConcept(rows.Scan)
+		if err != nil {
+			return 0, errWrap("SoftPruneDecayedScan concepts", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, errWrap("SoftPruneDecayedIter concepts", err)
+	}
+
+	now := time.Now().UTC()
+	nowStr := now.Format(sqliteMillisLayout)
+	var pruned int64
+	const updQ = `UPDATE concepts SET archived_at = ?1
+		WHERE id = ?2
+		  AND (?3 IS NULL OR workspace_id = ?3)`
+	for _, c := range candidates {
+		ageDays := computeConceptAgeDays(c, now)
+		str := decay.ComputeStrength(c.Importance, c.BaseLambda, ageDays, int(c.RecallCount))
+		if str >= strengthThreshold {
+			continue
+		}
+		if _, err := s.db.conn.ExecContext(ctx, updQ, nowStr, c.ID.String(), s.db.workspaceArg()); err != nil {
+			slog.Warn("sqlite learning: soft-prune concept update failed", "id", c.ID, "err", err)
+			continue
+		}
+		pruned++
+	}
+	return pruned, nil
+}
+
+// computeConceptAgeDays computes the age in days since last recall (or creation).
+func computeConceptAgeDays(c db.Concept, now time.Time) float64 {
+	if c.LastRecalledAt.Valid {
+		diff := now.Sub(c.LastRecalledAt.Time)
+		if diff < 0 {
+			return 0
+		}
+		return diff.Hours() / 24.0
+	}
+	if c.CreatedAt.Valid {
+		diff := now.Sub(c.CreatedAt.Time)
+		if diff < 0 {
+			return 0
+		}
+		return diff.Hours() / 24.0
+	}
+	return 0
 }

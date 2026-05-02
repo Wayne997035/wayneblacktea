@@ -29,6 +29,12 @@ type Concept struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	Status      string             `json:"status"`
+	// Ebbinghaus decay fields (migration 000019)
+	Importance     float64            `json:"importance"`
+	RecallCount    int32              `json:"recall_count"`
+	LastRecalledAt pgtype.Timestamptz `json:"last_recalled_at"`
+	BaseLambda     float64            `json:"base_lambda"`
+	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
 }
 
 type Decision struct {
@@ -69,6 +75,12 @@ type KnowledgeItem struct {
 	Source        string             `json:"source"`
 	LearningValue pgtype.Int4        `json:"learning_value"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	// Ebbinghaus decay fields (migration 000019)
+	Importance     float64            `json:"importance"`
+	RecallCount    int32              `json:"recall_count"`
+	LastRecalledAt pgtype.Timestamptz `json:"last_recalled_at"`
+	BaseLambda     float64            `json:"base_lambda"`
+	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
 }
 
 type PendingProposal struct {

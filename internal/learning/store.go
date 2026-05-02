@@ -19,20 +19,21 @@ var ErrNotFound = errors.New("learning: not found")
 // Store handles all database operations for the Learning bounded context.
 type Store struct {
 	q           *db.Queries
+	pool        *pgxpool.Pool
 	workspaceID pgtype.UUID
 }
 
 // NewStore returns a Store backed by the given connection pool scoped to the
 // optional workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(pool *pgxpool.Pool, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(pool), workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(pool), pool: pool, workspaceID: toUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope, for use
 // in multi-store transactions (e.g. atomically materializing a concept while
 // resolving a pending proposal).
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
+	return &Store{q: s.q.WithTx(tx), pool: s.pool, workspaceID: s.workspaceID}
 }
 
 func toUUID(id *uuid.UUID) pgtype.UUID {
@@ -185,4 +186,30 @@ func (s *Store) UpdateConceptStatus(ctx context.Context, id uuid.UUID, status st
 		return fmt.Errorf("updating concept %s status to %q: %w", id, status, err)
 	}
 	return nil
+}
+
+// SoftPruneDecayed implements decay.PrunerStore for the concepts table.
+// It sets archived_at=NOW() on concepts that are:
+//   - not already archived (archived_at IS NULL)
+//   - older than cutoff (created_at < cutoff)
+//   - Ebbinghaus strength < strengthThreshold
+//
+// Decisions table is NEVER touched by this method.
+func (s *Store) SoftPruneDecayed(ctx context.Context, cutoff time.Time, strengthThreshold float64) (int64, error) {
+	const q = `UPDATE concepts
+		SET archived_at = NOW()
+		WHERE archived_at IS NULL
+		  AND created_at < $1
+		  AND GREATEST(0.0, LEAST(1.0,
+			importance
+			* EXP(-base_lambda * (1.0 - importance * 0.8)
+				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+			* (1.0 + recall_count * 0.2)
+		  )) < $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)`
+	tag, err := s.pool.Exec(ctx, q, cutoff, strengthThreshold, s.workspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("soft prune concepts: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

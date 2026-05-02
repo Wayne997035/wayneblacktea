@@ -25,9 +25,25 @@ import (
 	"strings"
 	"time"
 
+	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	// cosineSimilarityThreshold is the minimum cosine similarity for a recalled
+	// item to be injected into the session context.
+	// V1 placeholder: hashed embeddings are not semantic so this threshold is
+	// intentionally low (effectively "take top-K regardless of similarity").
+	// TODO(5/5): raise to 0.5 when using a real semantic embedding provider.
+	cosineSimilarityThreshold = -1.0 // disabled for hashed v1 — take all top-K
+
+	// recallTopK is the number of similar items to inject per store.
+	recallTopK = 1
+
+	// contextWindowChars is the approximate char budget for injected recall lines.
+	contextWindowChars = 800
 )
 
 func main() {
@@ -105,10 +121,252 @@ func buildContextMessage(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		parts = append(parts, "## Due reviews\n"+r)
 	}
 
+	// 4. Semantic recall: top-K similar handoffs, decisions, and knowledge items.
+	// V1: uses hashed embedding (deterministic SHA-256, not semantic).
+	// The query embedding is derived from the last session handoff summary text
+	// so the recall is contextualised to the previous session.
+	if recall := fetchSemanticRecall(ctx, pool, wsID); recall != "" {
+		parts = append(parts, "## Relevant past context\n"+recall)
+	}
+
 	if len(parts) == 0 {
 		return ""
 	}
 	return "context:\n\n" + strings.Join(parts, "\n\n")
+}
+
+// fetchSemanticRecall builds a query embedding from the latest handoff summary
+// and returns the top-K similar handoffs, decisions, and knowledge items.
+// Returns "" when no embeddings exist or on any error (best-effort).
+func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
+	// Build query embedding from the latest unresolved handoff's summary_text.
+	queryText := fetchLatestHandoffSummaryText(ctx, pool, wsID)
+	if strings.TrimSpace(queryText) == "" {
+		return "" // nothing to embed → skip recall
+	}
+
+	embedder := localai.NewEmbeddingProvider()
+	queryVec, err := embedder.Embed(queryText)
+	if err != nil || len(queryVec) == 0 {
+		slog.Warn("wbt-context: embedding failed for semantic recall", "err", err)
+		return ""
+	}
+
+	var lines []string
+	total := 0
+
+	// Top-1 similar handoff (other than the latest one, which is already shown).
+	for _, h := range fetchCosineSimilarHandoffs(ctx, pool, wsID, queryVec, recallTopK+1) {
+		text := h.intent
+		if h.summaryText != "" {
+			text += ": " + truncate(h.summaryText, 100)
+		}
+		line := "- [handoff] " + text
+		if total+len(line) > contextWindowChars {
+			break
+		}
+		lines = append(lines, line)
+		total += len(line)
+	}
+
+	// Top-1 similar decision.
+	for _, d := range fetchCosineSimilarDecisions(ctx, pool, wsID, queryVec, recallTopK) {
+		line := "- [decision] " + d.title + ": " + truncate(d.decision, 100)
+		if total+len(line) > contextWindowChars {
+			break
+		}
+		lines = append(lines, line)
+		total += len(line)
+	}
+
+	// Top-1 similar knowledge item.
+	for _, k := range fetchCosineSimilarKnowledge(ctx, pool, wsID, queryVec, recallTopK) {
+		line := "- [knowledge] " + k.title + ": " + truncate(k.content, 100)
+		if total+len(line) > contextWindowChars {
+			break
+		}
+		lines = append(lines, line)
+		total += len(line)
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+// fetchLatestHandoffSummaryText returns the summary_text of the most recent
+// unresolved handoff.  Returns "" when none exists.
+func fetchLatestHandoffSummaryText(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
+	const q = `SELECT COALESCE(summary_text, '') FROM session_handoffs
+		WHERE resolved_at IS NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT 1`
+	var text string
+	if err := pool.QueryRow(ctx, q, uuidArg(wsID)).Scan(&text); err != nil {
+		return ""
+	}
+	return text
+}
+
+type handoffRecallRow struct {
+	intent      string
+	summaryText string
+}
+
+// recallItem is an intermediate type for the cosine recall pipeline.
+type recallItem struct {
+	col1, col2 string // two text columns (e.g. intent+summary, title+decision)
+	embedding  []byte
+}
+
+// queryCosineCandidates executes a raw SQL query that returns (col1, col2, embedding BYTEA),
+// deserializes embeddings, computes cosine similarity, and returns the top-limit results
+// sorted by descending similarity.  The scan expects exactly these 3 columns.
+//
+// SECURITY: query MUST include workspace_id scoping (enforced by each call site).
+func queryCosineCandidates(
+	ctx context.Context, pool *pgxpool.Pool, query string,
+	queryVec []float32, limit int, logWarnMsg string, args ...any,
+) []recallItem {
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		slog.Warn(logWarnMsg, "err", err)
+		return nil
+	}
+	defer rows.Close()
+
+	type scored struct {
+		item recallItem
+		sim  float64
+	}
+	var candidates []scored
+	for rows.Next() {
+		var it recallItem
+		if err := rows.Scan(&it.col1, &it.col2, &it.embedding); err != nil {
+			continue
+		}
+		vec := localai.DeserializeEmbedding(it.embedding)
+		if vec == nil {
+			continue
+		}
+		sim := localai.CosineSimilarity(queryVec, vec)
+		if sim < cosineSimilarityThreshold {
+			continue
+		}
+		candidates = append(candidates, scored{item: it, sim: sim})
+	}
+
+	sortBySimDesc(candidates, func(c scored) float64 { return c.sim })
+	if limit < len(candidates) {
+		candidates = candidates[:limit]
+	}
+	result := make([]recallItem, 0, len(candidates))
+	for _, c := range candidates {
+		result = append(result, c.item)
+	}
+	return result
+}
+
+// fetchCosineSimilarHandoffs fetches up to limit resolved handoffs with non-null
+// embeddings sorted by cosine similarity to queryVec.
+// The most recent unresolved handoff is excluded (already shown above).
+//
+// SECURITY: filtered by workspace_id via queryCosineCandidates.
+func fetchCosineSimilarHandoffs(
+	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, limit int,
+) []handoffRecallRow {
+	const q = `SELECT intent, COALESCE(summary_text, ''), embedding
+		FROM session_handoffs
+		WHERE embedding IS NOT NULL
+		  AND resolved_at IS NOT NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT 200`
+	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: handoff cosine query failed", uuidArg(wsID))
+	result := make([]handoffRecallRow, 0, len(items))
+	for _, it := range items {
+		result = append(result, handoffRecallRow{intent: it.col1, summaryText: it.col2})
+	}
+	return result
+}
+
+type decisionRecallRow struct {
+	title    string
+	decision string
+}
+
+// fetchCosineSimilarDecisions fetches decisions sorted by cosine similarity.
+//
+// SECURITY: filtered by workspace_id via queryCosineCandidates.
+func fetchCosineSimilarDecisions(
+	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, limit int,
+) []decisionRecallRow {
+	const q = `SELECT title, decision, embedding
+		FROM decisions
+		WHERE embedding IS NOT NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT 200`
+	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: decision cosine query failed", uuidArg(wsID))
+	result := make([]decisionRecallRow, 0, len(items))
+	for _, it := range items {
+		result = append(result, decisionRecallRow{title: it.col1, decision: it.col2})
+	}
+	return result
+}
+
+type knowledgeRecallRow struct {
+	title   string
+	content string
+}
+
+// fetchCosineSimilarKnowledge fetches the most recent knowledge items.
+//
+// V1 NOTE: knowledge_items.embedding uses Gemini 768-dim vectors while the new
+// hashed EmbeddingProvider produces 32-dim vectors.  Cosine similarity across
+// different-dim vectors is always 0 (CosineSimilarity returns 0 on dim mismatch).
+// For v1 we fall back to recency-order for knowledge recall.
+// TODO(5/5): switch to a unified embedding provider (same dims across all stores)
+// and enable true cosine recall for knowledge items too.
+//
+// SECURITY: filtered by workspace_id.
+func fetchCosineSimilarKnowledge(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, _ []float32, limit int) []knowledgeRecallRow {
+	// V1: recency-based fallback — dims differ between knowledge (768) and hashed (32).
+	const q = `SELECT title, content
+		FROM knowledge_items
+		WHERE ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT $2`
+	rows, err := pool.Query(ctx, q, uuidArg(wsID), limit)
+	if err != nil {
+		slog.Warn("wbt-context: knowledge recall query failed", "err", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var result []knowledgeRecallRow
+	for rows.Next() {
+		var title, content string
+		if err := rows.Scan(&title, &content); err != nil {
+			continue
+		}
+		result = append(result, knowledgeRecallRow{title: title, content: content})
+	}
+	return result
+}
+
+// sortBySimDesc sorts a slice of any type by descending similarity score.
+// Uses a simple insertion-sort-style swap (table sizes ≤ 200, acceptable).
+func sortBySimDesc[T any](s []T, score func(T) float64) {
+	for i := 0; i < len(s)-1; i++ {
+		for j := i + 1; j < len(s); j++ {
+			if score(s[j]) > score(s[i]) {
+				s[i], s[j] = s[j], s[i]
+			}
+		}
+	}
 }
 
 type handoffRow struct {

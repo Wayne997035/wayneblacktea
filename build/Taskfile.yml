@@ -19,10 +19,11 @@ tasks:
       - task: lint
       - task: test
       - task: build-mcp
-      - task: build-server
+      # build-server requires web/dist from `npm run build` — skip in CI without frontend build
       - task: build-doctor
       - task: build-wbt
       - task: build-wbt-context
+      - task: build-wbt-hook
     silent: false
 
   build-mcp:
@@ -70,16 +71,28 @@ tasks:
       - go build -o bin/wbt-context ./cmd/wbt-context/
     dir: ..
 
+  build-wbt-hook:
+    desc: "Build the wbt-hook PostToolUse hook binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-hook ./cmd/wbt-hook/
+    dir: ..
+
   lint:
     desc: "Run golangci-lint"
     deps:
       - go-cache
     cmds:
       - |
+        # cmd/server embeds web/dist which requires a prior `npm run build`.
+        # Exclude it so lint is not blocked by a missing frontend build artifact.
+        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/..."
         if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
-          GOPROXY=off golangci-lint run --config build/.golangci.yml ./...
+          GOPROXY=off golangci-lint run --config build/.golangci.yml $PKGS
         else
-          golangci-lint run --config build/.golangci.yml ./...
+          golangci-lint run --config build/.golangci.yml $PKGS
         fi
     dir: ..
 
@@ -88,7 +101,9 @@ tasks:
     deps:
       - go-cache
     cmds:
-      - go test -race ./internal/... ./cmd/...
+      # cmd/server embeds web/dist which requires a prior `npm run build`.
+      # Exclude it so tests are not blocked by a missing frontend build artifact.
+      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/...
     dir: ..
 
   go-cache:
