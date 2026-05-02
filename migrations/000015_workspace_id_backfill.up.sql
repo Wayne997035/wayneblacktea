@@ -38,11 +38,18 @@
 --   * docs/operations.md → "WORKSPACE_ID Backfill (migration 000015)" — the
 --     authoritative SOP requires `cp` + `sed` before `psql -f`.
 --
--- Plain SQL (no psql `\set`) so this file can be safely picked up by either
--- `psql -f` (operations.md SOP) or golang-migrate (`task migrate-up`). Both
--- runners will hit the DO $$ guard above and abort if the sentinel has not
--- been substituted, so an accidental `migrate up` cannot silently apply the
--- placeholder UUID to production rows.
+-- Plain SQL (no psql `\set`) so this file is safe under both `psql -f` and
+-- golang-migrate (`task migrate-up`).
+--
+-- WARNING: there is NO SQL-level abort in this file. A raw `task migrate-up`
+-- without prior `cp` + `sed` substitution WILL silently backfill every NULL
+-- workspace_id with the sentinel UUID. Always follow the SOP in
+-- docs/operations.md → "WORKSPACE_ID Backfill (migration 000015)" first.
+--
+-- Defence-in-depth (catches the SOP being skipped on the application side):
+-- internal/runtime/workspace.go ErrSentinelWorkspaceID rejects server start
+-- when WORKSPACE_ID equals the sentinel — so a forgotten substitution
+-- surfaces on the next deploy instead of silently merging tenant data.
 UPDATE goals             SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
 UPDATE projects          SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
 UPDATE tasks             SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
