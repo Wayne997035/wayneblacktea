@@ -38,7 +38,7 @@ func makeCreateParams(wsID uuid.UUID, repoName string) worksession.CreateParams 
 		RepoName:    repoName,
 		Title:       "Test session",
 		Goal:        "Implement P0a",
-		Source:      "test",
+		Source:      "manual",
 	}
 }
 

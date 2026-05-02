@@ -111,6 +111,96 @@ func resultText(r *mcpmsg.CallToolResult) string {
 	return ""
 }
 
+// ---- M-NEW-1: server-side length guards ----
+
+func TestHandleStartWork_RejectsOversizedTitle(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callStartWork(t, s, map[string]any{
+		"repo_name": "test-repo",
+		"title":     strings.Repeat("x", 201), // 201 chars > limit 200
+		"goal":      "valid goal",
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized title")
+	}
+	if !strings.Contains(resultText(r), "exceeds 200 character limit") {
+		t.Errorf("error message should mention limit, got: %s", resultText(r))
+	}
+}
+
+func TestHandleStartWork_RejectsOversizedGoal(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callStartWork(t, s, map[string]any{
+		"repo_name": "test-repo",
+		"title":     "valid title",
+		"goal":      strings.Repeat("y", 2001), // 2001 chars > limit 2000
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized goal")
+	}
+	if !strings.Contains(resultText(r), "exceeds 2000 character limit") {
+		t.Errorf("error message should mention limit, got: %s", resultText(r))
+	}
+}
+
+func TestHandleCheckpointWork_RejectsOversizedSummary(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	// Start a session first so we have a valid session_id.
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "size-test-repo",
+		"title":     "size test",
+		"goal":      "test goal",
+	})
+	if startR.IsError {
+		t.Fatalf("start_work setup failed: %s", resultText(startR))
+	}
+	var startResult map[string]any
+	if err := json.Unmarshal([]byte(resultText(startR)), &startResult); err != nil {
+		t.Fatalf("unmarshal start: %v", err)
+	}
+	sessID, _ := startResult["session_id"].(string)
+
+	r := callCheckpointWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    strings.Repeat("z", 5001), // 5001 chars > limit 5000
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized summary")
+	}
+	if !strings.Contains(resultText(r), "exceeds 5000 character limit") {
+		t.Errorf("error message should mention limit, got: %s", resultText(r))
+	}
+}
+
+func TestHandleFinishWork_RejectsOversizedSummary(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	// Start a session first.
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "finish-size-repo",
+		"title":     "size test",
+		"goal":      "test goal",
+	})
+	if startR.IsError {
+		t.Fatalf("start_work setup failed: %s", resultText(startR))
+	}
+	var startResult map[string]any
+	if err := json.Unmarshal([]byte(resultText(startR)), &startResult); err != nil {
+		t.Fatalf("unmarshal start: %v", err)
+	}
+	sessID, _ := startResult["session_id"].(string)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    strings.Repeat("w", 5001), // 5001 chars > limit 5000
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized summary")
+	}
+	if !strings.Contains(resultText(r), "exceeds 5000 character limit") {
+		t.Errorf("error message should mention limit, got: %s", resultText(r))
+	}
+}
+
 // ---- get_active_work: no active session ----
 
 func TestHandleGetActiveWork_NoActiveSession(t *testing.T) {

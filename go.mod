@@ -6,12 +6,14 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.38.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/go-co-op/gocron/v2 v2.21.1
+	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/mark3labs/mcp-go v0.49.0
 	github.com/pgvector/pgvector-go v0.3.0
+	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	golang.org/x/net v0.53.0
 	modernc.org/sqlite v1.50.0
 )
@@ -39,7 +41,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
@@ -76,7 +77,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
-	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

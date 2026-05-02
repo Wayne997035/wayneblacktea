@@ -132,6 +132,15 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("repo_name, title, and goal are required"), nil
 	}
 
+	// Server-side length guards: mcp.MaxLength() is client-side advisory only
+	// and is not enforced by the mcp-go server runtime.
+	if len(title) > 200 {
+		return mcp.NewToolResultError("title exceeds 200 character limit"), nil
+	}
+	if len(goal) > 2000 {
+		return mcp.NewToolResultError("goal exceeds 2000 character limit"), nil
+	}
+
 	source := stringArg(args, "source")
 	if source == "" {
 		source = "manual"
@@ -215,6 +224,12 @@ func (s *Server) handleCheckpointWork(ctx context.Context, req mcp.CallToolReque
 	if rawSessID == "" || summary == "" {
 		return mcp.NewToolResultError("session_id and summary are required"), nil
 	}
+
+	// Server-side length guard: mcp.MaxLength() is client-side advisory only.
+	if len(summary) > 5000 {
+		return mcp.NewToolResultError("summary exceeds 5000 character limit"), nil
+	}
+
 	sessID, err := uuid.Parse(rawSessID)
 	if err != nil {
 		return mcp.NewToolResultError("invalid session_id UUID"), nil
@@ -252,6 +267,12 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 	if rawSessID == "" || summary == "" {
 		return mcp.NewToolResultError("session_id and summary are required"), nil
 	}
+
+	// Server-side length guard: mcp.MaxLength() is client-side advisory only.
+	if len(summary) > 5000 {
+		return mcp.NewToolResultError("summary exceeds 5000 character limit"), nil
+	}
+
 	sessID, err := uuid.Parse(rawSessID)
 	if err != nil {
 		return mcp.NewToolResultError("invalid session_id UUID"), nil

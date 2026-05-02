@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -25,9 +26,13 @@ import (
 // SQLite backend: the sqlite package manages its own schema via schema.sql;
 // RunMigrations is Postgres-only and must not be called for SQLite.
 func RunMigrations(ctx context.Context, dsn string) error {
-	if os.Getenv("WBT_AUTO_MIGRATE") == "false" {
-		slog.InfoContext(ctx, "migrate: auto-migrate disabled via WBT_AUTO_MIGRATE=false — skipping")
-		return nil
+	// Accept "false", "0", "FALSE", etc. via strconv.ParseBool.
+	// Empty string = enabled (default). Invalid values are treated as enabled (fail-safe).
+	if v := os.Getenv("WBT_AUTO_MIGRATE"); v != "" {
+		if disabled, err := strconv.ParseBool(v); err == nil && !disabled {
+			slog.InfoContext(ctx, "migrate: auto-migrate disabled via WBT_AUTO_MIGRATE — skipping")
+			return nil
+		}
 	}
 
 	src, err := iofs.New(migrationfs.FS, ".")

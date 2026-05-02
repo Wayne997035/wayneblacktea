@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     status              TEXT        NOT NULL CHECK (status IN (
                             'planned','in_progress','checkpointed',
                             'completed','cancelled','archived')),
-    source              TEXT        NOT NULL,
+    source              TEXT        NOT NULL CHECK (source IN ('manual','confirm_plan','hook','other')),
     confirmed_plan_id   TEXT        NULL,
     current_task_id     TEXT        REFERENCES tasks(id) ON DELETE SET NULL,
     final_summary       TEXT        NULL,

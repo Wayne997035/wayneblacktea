@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     status              TEXT        NOT NULL CHECK (status IN (
                             'planned','in_progress','checkpointed',
                             'completed','cancelled','archived')),
-    source              TEXT        NOT NULL,
+    source              TEXT        NOT NULL CHECK (source IN ('manual','confirm_plan','hook','other')),
     -- confirmed_plan_id is nullable and has no FK intentionally: it is reserved
     -- for future linking to a first-class plans table (not yet implemented in P0a-α).
     -- Do not set this field until the plans table exists and is migrated.
