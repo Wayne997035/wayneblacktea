@@ -187,7 +187,9 @@ func safeDial(ctx context.Context, network, addr string) (net.Conn, error) {
 
 // NewSafeHTTPClient returns an *http.Client whose Transport uses safeDial,
 // enforcing SSRF protection at the TCP dial layer (DNS rebinding mitigation),
-// with a 10-second timeout and a 1 MB response body cap.
+// with a 10-second connection timeout.
+// Caller MUST wrap resp.Body with io.LimitReader before reading.
+// See fetcher.go:FetchURL for the maxFetchBytes pattern.
 func NewSafeHTTPClient() *http.Client {
 	transport := &http.Transport{
 		DialContext: safeDial,

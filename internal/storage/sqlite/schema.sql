@@ -74,7 +74,9 @@ CREATE TABLE IF NOT EXISTS session_handoffs (
     intent          TEXT NOT NULL,
     context_summary TEXT,
     resolved_at     TEXT,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    summary_text    TEXT,
+    embedding       BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_status               ON projects(status);
@@ -160,7 +162,7 @@ CREATE TABLE IF NOT EXISTS review_schedule (
 CREATE TABLE IF NOT EXISTS pending_proposals (
     id            TEXT PRIMARY KEY,
     workspace_id  TEXT,
-    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept')),
+    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept','knowledge')),
     payload       TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
     proposed_by   TEXT,

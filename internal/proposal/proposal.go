@@ -12,10 +12,11 @@ import (
 type Type string
 
 const (
-	TypeGoal    Type = "goal"
-	TypeProject Type = "project"
-	TypeTask    Type = "task"
-	TypeConcept Type = "concept"
+	TypeGoal      Type = "goal"
+	TypeProject   Type = "project"
+	TypeTask      Type = "task"
+	TypeConcept   Type = "concept"
+	TypeKnowledge Type = "knowledge"
 )
 
 // Status is the lifecycle of a proposal record.

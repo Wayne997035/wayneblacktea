@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -273,5 +274,150 @@ func TestSummarizer_Tasks_NilOnAPIError(t *testing.T) {
 	result := s.Summarize(context.Background(), transcript)
 	if len(result.Tasks) != 0 {
 		t.Errorf("expected 0 tasks on API error, got %d", len(result.Tasks))
+	}
+}
+
+// makePlainTextAPIResponse wraps a plain-text string in the Anthropic response envelope.
+func makePlainTextAPIResponse(text string) string {
+	resp := map[string]any{
+		"id":    "msg_test",
+		"type":  "message",
+		"role":  "assistant",
+		"model": "claude-haiku-4-5",
+		"content": []map[string]any{
+			{"type": "text", "text": text},
+		},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage": map[string]any{
+			"input_tokens":  50,
+			"output_tokens": 25,
+		},
+	}
+	out, _ := json.Marshal(resp)
+	return string(out)
+}
+
+func TestSummarizeSession_EmptyTranscript(t *testing.T) {
+	// No HTTP call should be made for an empty transcript.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("unexpected HTTP call for empty transcript")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	text, err := s.SummarizeSession(context.Background(), []localai.Message{})
+	if err != nil {
+		t.Errorf("expected nil error for empty transcript, got %v", err)
+	}
+	if text != "" {
+		t.Errorf("expected empty text for empty transcript, got %q", text)
+	}
+}
+
+func TestSummarizeSession_NilTranscript(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("unexpected HTTP call for nil transcript")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	text, err := s.SummarizeSession(context.Background(), nil)
+	if err != nil {
+		t.Errorf("expected nil error for nil transcript, got %v", err)
+	}
+	if text != "" {
+		t.Errorf("expected empty text, got %q", text)
+	}
+}
+
+func TestSummarizeSession_Success(t *testing.T) {
+	want := "Implemented OAuth login. Shipped feature/auth branch."
+	srv := newMockServer(t, http.StatusOK, makePlainTextAPIResponse(want))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "Implement OAuth."},
+		{Role: "assistant", Content: "Done with PKCE."},
+	}
+
+	text, err := s.SummarizeSession(context.Background(), transcript)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if text != want {
+		t.Errorf("got %q, want %q", text, want)
+	}
+}
+
+func TestSummarizeSession_APIError(t *testing.T) {
+	srv := newMockServer(t, http.StatusInternalServerError, `{"type":"error","error":{"type":"api_error","message":"server error"}}`)
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "Fix the test."},
+	}
+
+	text, err := s.SummarizeSession(context.Background(), transcript)
+	if err == nil {
+		t.Error("expected error on API failure, got nil")
+	}
+	if text != "" {
+		t.Errorf("expected empty text on API error, got %q", text)
+	}
+}
+
+func TestSummarizeSession_TruncatesAt500Chars(t *testing.T) {
+	// Build a 600-character response.
+	longText := strings.Repeat("a", 600)
+
+	srv := newMockServer(t, http.StatusOK, makePlainTextAPIResponse(longText))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "Do stuff."},
+	}
+
+	text, err := s.SummarizeSession(context.Background(), transcript)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len([]rune(text)) > 500 {
+		t.Errorf("text length %d exceeds 500-char cap", len([]rune(text)))
+	}
+}
+
+func TestSummarizeSession_EmptyAPIResponse(t *testing.T) {
+	// API returns 200 but content array is empty.
+	emptyContentResp, _ := json.Marshal(map[string]any{
+		"id":            "msg_test",
+		"type":          "message",
+		"role":          "assistant",
+		"model":         "claude-haiku-4-5",
+		"content":       []map[string]any{},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage":         map[string]any{"input_tokens": 10, "output_tokens": 0},
+	})
+
+	srv := newMockServer(t, http.StatusOK, string(emptyContentResp))
+	defer srv.Close()
+
+	s := newSummarizerWithBase(srv.URL)
+	transcript := []localai.Message{
+		{Role: "user", Content: "Session work."},
+	}
+
+	text, err := s.SummarizeSession(context.Background(), transcript)
+	if err == nil {
+		t.Error("expected error for empty content array, got nil")
+	}
+	if text != "" {
+		t.Errorf("expected empty text, got %q", text)
 	}
 }

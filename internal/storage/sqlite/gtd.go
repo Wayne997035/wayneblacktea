@@ -363,6 +363,44 @@ func (s *GTDStore) CompleteTask(ctx context.Context, id uuid.UUID, artifact *str
 	return s.taskByID(ctx, id)
 }
 
+// ListActivityLogsSince returns activity_log rows created on or after since,
+// scoped to the configured workspace. Results are ordered created_at ASC.
+func (s *GTDStore) ListActivityLogsSince(ctx context.Context, since time.Time, maxRows int32) ([]db.ActivityLog, error) {
+	const q = `SELECT id, workspace_id, actor, project_id, action, notes, created_at
+		FROM activity_log
+		WHERE created_at >= ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at ASC
+		LIMIT ?3`
+	sinceStr := since.UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.conn.QueryContext(ctx, q, sinceStr, s.db.workspaceArg(), maxRows)
+	if err != nil {
+		return nil, errWrap("ListActivityLogsSince", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.ActivityLog
+	for rows.Next() {
+		var (
+			a                      db.ActivityLog
+			idStr                  string
+			workspaceNS, projectNS sql.NullString
+			notesNS, createdNS     sql.NullString
+		)
+		if err := rows.Scan(&idStr, &workspaceNS, &a.Actor, &projectNS, &a.Action, &notesNS, &createdNS); err != nil {
+			return nil, errWrap("ListActivityLogsSince scan", err)
+		}
+		if id, err := uuid.Parse(idStr); err == nil {
+			a.ID = id
+		}
+		a.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+		a.ProjectID = pgtypeUUID(nsString(projectNS))
+		a.Notes = pgtypeText(notesNS.String, notesNS.Valid)
+		a.CreatedAt = parseTimestamptz(createdNS)
+		out = append(out, a)
+	}
+	return out, errWrap("ListActivityLogsSince iter", rows.Err())
+}
+
 // LogActivity records an activity log entry. project may be nil.
 func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
 	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)

@@ -22,6 +22,7 @@ tasks:
       - task: build-server
       - task: build-doctor
       - task: build-wbt
+      - task: build-wbt-context
     silent: false
 
   build-mcp:
@@ -58,6 +59,15 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/wbt ./cmd/wbt/
+    dir: ..
+
+  build-wbt-context:
+    desc: "Build the wbt-context SessionStart hook binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-context ./cmd/wbt-context/
     dir: ..
 
   lint:

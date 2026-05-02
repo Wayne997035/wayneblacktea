@@ -101,6 +101,26 @@ func (s *SessionStore) Resolve(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// UpdateSummary writes summary to the most recent unresolved handoff's
+// summary_text column. Best-effort: 0 rows affected (no unresolved handoff) is
+// not an error.
+func (s *SessionStore) UpdateSummary(ctx context.Context, summary string) error {
+	const q = `UPDATE session_handoffs
+		SET summary_text = ?1
+		WHERE id = (
+			SELECT id FROM session_handoffs
+			WHERE resolved_at IS NULL
+			  AND (?2 IS NULL OR workspace_id = ?2)
+			ORDER BY created_at DESC
+			LIMIT 1
+		)`
+	_, err := s.db.conn.ExecContext(ctx, q, summary, s.db.workspaceArg())
+	if err != nil {
+		return errWrap("UpdateSummary", err)
+	}
+	return nil
+}
+
 func (s *SessionStore) handoffByID(ctx context.Context, id uuid.UUID) (*db.SessionHandoff, error) {
 	const q = `SELECT ` + sessionHandoffsSelectCols + ` FROM session_handoffs
 		WHERE id = ?1 LIMIT 1`

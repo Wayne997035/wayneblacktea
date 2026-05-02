@@ -80,6 +80,7 @@ linters:
           - wrapcheck
           - dupl       # test helpers are intentionally repetitive
           - contextcheck # test setup often uses context.Background() legitimately
+          - nilnil     # test stubs legitimately return (nil, nil) for unexercised methods
 
 issues:
   max-issues-per-linter: 0
