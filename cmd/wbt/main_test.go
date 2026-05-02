@@ -103,15 +103,34 @@ func TestBuildMCPJSON(t *testing.T) {
 			name:      "sqlite backend",
 			claudeKey: "sk-test",
 			db:        dbConfig{storageBackend: "sqlite", sqlitePath: "/tmp/test.db"},
-			wantKeys:  []string{"wayneblacktea", "wayneblacktea-mcp", "CLAUDE_API_KEY", "SQLITE_PATH", "STORAGE_BACKEND"},
-			noKeys:    []string{"DATABASE_URL"},
+			wantKeys: []string{
+				"wayneblacktea",
+				`"command": "wbt"`,
+				`"args": [`,
+				`"mcp"`,
+				"CLAUDE_API_KEY",
+				"SQLITE_PATH",
+				"STORAGE_BACKEND",
+			},
+			// Regression guard: legacy binary name must not appear — `go install
+			// .../cmd/wbt@latest` does not produce a `wayneblacktea-mcp` binary,
+			// so the .mcp.json must point at `wbt mcp` instead.
+			noKeys: []string{"DATABASE_URL", "wayneblacktea-mcp"},
 		},
 		{
 			name:      "postgres backend",
 			claudeKey: "sk-prod",
 			db:        dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSNShort},
-			wantKeys:  []string{"wayneblacktea", "wayneblacktea-mcp", "CLAUDE_API_KEY", "DATABASE_URL", "STORAGE_BACKEND"},
-			noKeys:    []string{"SQLITE_PATH"},
+			wantKeys: []string{
+				"wayneblacktea",
+				`"command": "wbt"`,
+				`"args": [`,
+				`"mcp"`,
+				"CLAUDE_API_KEY",
+				"DATABASE_URL",
+				"STORAGE_BACKEND",
+			},
+			noKeys: []string{"SQLITE_PATH", "wayneblacktea-mcp"},
 		},
 	}
 

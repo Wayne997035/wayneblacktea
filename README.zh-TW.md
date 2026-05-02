@@ -25,20 +25,19 @@
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
 wbt init    # 問你 CLAUDE_API_KEY、選 SQLite 或 Postgres、寫 .env 跟 .mcp.json
-wbt serve   # 啟動 MCP server
 ```
 
-然後讓你的 MCP client 指到產生的 `.mcp.json`。Claude Code：
+然後把 MCP server 註冊給 Claude Code：
 
 ```bash
-claude mcp add --scope user wayneblacktea -- $(which wbt) serve
+claude mcp add --scope user wayneblacktea -- wbt mcp
 ```
 
-完。不用 clone、不用手動改 config、不需要另外開 Postgres，除非你自己想要。
+完 — 單一 binary、單一指令。`wbt mcp` 是 MCP stdio entry；`wbt serve`（選用）跑 dashboard HTTP API，想要 web UI 才開。
 
 ## 你會得到
 
-`wbt serve` 跑起來後，所有支援 MCP 的 agent 都讀寫同一份儲存：
+Claude Code 連上 `wbt mcp` 後，所有支援 MCP 的 agent 都讀寫同一份儲存：
 
 | Context | 擁有什麼 |
 |---|---|

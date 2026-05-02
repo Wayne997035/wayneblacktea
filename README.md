@@ -25,20 +25,19 @@ Single binary, interactive wizard, SQLite-by-default — no infra to provision.
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
 wbt init    # asks for your CLAUDE_API_KEY, picks SQLite or Postgres, writes .env + .mcp.json
-wbt serve   # starts the MCP server
 ```
 
-Then point your MCP client at the generated `.mcp.json`. In Claude Code:
+Then register the MCP server with Claude Code:
 
 ```bash
-claude mcp add --scope user wayneblacktea -- $(which wbt) serve
+claude mcp add --scope user wayneblacktea -- wbt mcp
 ```
 
-That's it. No clone, no manual config, no separate Postgres needed unless you want one.
+That's it — single binary, single command. `wbt mcp` is the MCP stdio entry; `wbt serve` (optional) runs the dashboard's HTTP API alongside if you want the web UI.
 
 ## What you get
 
-Once `wbt serve` is running, every MCP-capable agent reads and writes the same store:
+Once Claude Code is connected to `wbt mcp`, every MCP-capable agent reads and writes the same store:
 
 | Context | What it tracks |
 |---------|---------------|
