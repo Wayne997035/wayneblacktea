@@ -37,6 +37,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// embeddingSummaryCap is the character limit used when embedding a session
+// summary.  Matches sessionSummaryMaxChars in summarizer.go.
+const embeddingSummaryCap = 500
+
 const (
 	// maxStdinBytes caps the transcript read from stdin to avoid OOM on
 	// unexpectedly large payloads. Claude Code transcripts are typically <10 MB.
@@ -152,6 +156,13 @@ func processSummary(dbCtx, aiCtx context.Context, pool *pgxpool.Pool, wsID *uuid
 	// Persist summary_text to the latest unresolved session handoff (best-effort).
 	updateHandoffSummary(dbCtx, pool, wsID, text)
 
+	// Embed the summary and write to session_handoffs.embedding (best-effort).
+	// A fresh context is intentional: aiCtx may be near expiry and the
+	// hashed embedding write (<1 ms) must not be coupled to the AI call timeout.
+	embedCtx, embedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer embedCancel()
+	writeHandoffEmbedding(embedCtx, pool, wsID, text) //nolint:contextcheck // intentional fresh ctx: aiCtx is AI budget, not for DB writes
+
 	// Save as searchable zettelkasten knowledge item (best-effort).
 	saveKnowledgeItem(dbCtx, pool, wsID, text)
 
@@ -183,6 +194,53 @@ func parseTranscript(raw []byte) []localai.Message {
 		return nil
 	}
 	return []localai.Message{{Role: "user", Content: text}}
+}
+
+// writeHandoffEmbedding embeds the session summary and stores the bytes in the
+// most recent unresolved session_handoffs.embedding column (best-effort).
+//
+// V1 PLACEHOLDER: uses HashedEmbeddingProvider (deterministic SHA-256 hash,
+// not semantically meaningful).  Swap to a real provider in 5/5 sprint.
+// Input is capped at embeddingSummaryCap chars to match the summary length.
+func writeHandoffEmbedding(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, summary string) {
+	if summary == "" {
+		return
+	}
+	// Cap to embeddingSummaryCap characters (already capped by SummarizeSession
+	// but be defensive here too).
+	runes := []rune(summary)
+	if len(runes) > embeddingSummaryCap {
+		summary = string(runes[:embeddingSummaryCap])
+	}
+
+	embedder := localai.NewEmbeddingProvider()
+	vec, err := embedder.Embed(summary)
+	if err != nil || len(vec) == 0 {
+		slog.Warn("doctor: embedding generation failed", "err", err)
+		return
+	}
+
+	embBytes := localai.SerializeEmbedding(vec)
+	if embBytes == nil {
+		return
+	}
+
+	var wsArg any
+	if wsID != nil {
+		wsArg = wsID
+	}
+	const q = `UPDATE session_handoffs
+		SET embedding = $1
+		WHERE id = (
+			SELECT id FROM session_handoffs
+			WHERE resolved_at IS NULL
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY created_at DESC
+			LIMIT 1
+		)`
+	if _, err := pool.Exec(ctx, q, embBytes, wsArg); err != nil {
+		slog.Warn("doctor: failed to write handoff embedding", "err", err)
+	}
 }
 
 // updateHandoffSummary writes summary to the latest unresolved session_handoff.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
@@ -228,5 +229,152 @@ func TestSessionStore_WorkspaceIsolation(t *testing.T) {
 	}
 	if got.ID != hA.ID {
 		t.Errorf("storeA should still see its own handoff: want id=%s got id=%s", hA.ID, got.ID)
+	}
+}
+
+// --- UpdateEmbedding + SearchByCosine tests ---
+
+func TestSessionStore_UpdateEmbedding_WritesBytes(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	if _, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "embed me"}); err != nil {
+		t.Fatalf("SetHandoff: %v", err)
+	}
+
+	p := localai.HashedEmbeddingProvider{}
+	vec, _ := p.Embed("embed me")
+	embBytes := localai.SerializeEmbedding(vec)
+
+	if err := s.UpdateEmbedding(ctx, embBytes); err != nil {
+		t.Fatalf("UpdateEmbedding: %v", err)
+	}
+}
+
+func TestSessionStore_UpdateEmbedding_NoOpWhenNoHandoff(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	// No handoff — must not error.
+	if err := s.UpdateEmbedding(ctx, []byte{0x01, 0x02}); err != nil {
+		t.Errorf("UpdateEmbedding with no handoff must not error, got %v", err)
+	}
+}
+
+func TestSessionStore_SearchByCosine_EmptyTableReturnsNil(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	p := localai.HashedEmbeddingProvider{}
+	vec, _ := p.Embed("query")
+	results, err := s.SearchByCosine(ctx, vec, 3)
+	if err != nil {
+		t.Fatalf("SearchByCosine on empty table: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestSessionStore_SearchByCosine_NilVecReturnsNil(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	results, err := s.SearchByCosine(ctx, nil, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil for nil queryEmbedding, got %v", results)
+	}
+}
+
+func TestSessionStore_SearchByCosine_ZeroLimitReturnsNil(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	p := localai.HashedEmbeddingProvider{}
+	vec, _ := p.Embed("query")
+	results, err := s.SearchByCosine(ctx, vec, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil for limit=0, got %v", results)
+	}
+}
+
+func TestSessionStore_SearchByCosine_FindsHandoffWithEmbedding(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	// Create a resolved handoff with an embedding (SearchByCosine queries resolved_at IS NOT NULL).
+	h, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "past session work"})
+	if err != nil {
+		t.Fatalf("SetHandoff: %v", err)
+	}
+
+	p := localai.HashedEmbeddingProvider{}
+	vec, _ := p.Embed("past session work")
+	embBytes := localai.SerializeEmbedding(vec)
+	if err := s.UpdateEmbedding(ctx, embBytes); err != nil {
+		t.Fatalf("UpdateEmbedding: %v", err)
+	}
+	if err := s.Resolve(ctx, h.ID); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	results, err := s.SearchByCosine(ctx, vec, 3)
+	if err != nil {
+		t.Fatalf("SearchByCosine: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least 1 result for handoff with matching embedding")
+	}
+}
+
+func TestSessionStore_SearchByCosine_WorkspaceIsolation(t *testing.T) {
+	ctx := context.Background()
+	wsA := uuid.New().String()
+	wsB := uuid.New().String()
+	dsn := "file:wbtest_cosine?mode=memory&cache=shared"
+
+	dA, err := sqlite.Open(ctx, dsn, wsA)
+	if err != nil {
+		t.Fatalf("Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dA.Close() })
+	dB, err := sqlite.Open(ctx, dsn, wsB)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dB.Close() })
+
+	storeA := sqlite.NewSessionStore(dA)
+	storeB := sqlite.NewSessionStore(dB)
+
+	// Create and resolve a handoff in wsA with an embedding.
+	hA, err := storeA.SetHandoff(ctx, session.HandoffParams{Intent: "wsA only"})
+	if err != nil {
+		t.Fatalf("SetHandoff A: %v", err)
+	}
+	p := localai.HashedEmbeddingProvider{}
+	vec, _ := p.Embed("wsA only")
+	if err := storeA.UpdateEmbedding(ctx, localai.SerializeEmbedding(vec)); err != nil {
+		t.Fatalf("UpdateEmbedding A: %v", err)
+	}
+	if err := storeA.Resolve(ctx, hA.ID); err != nil {
+		t.Fatalf("Resolve A: %v", err)
+	}
+
+	// storeB should not see wsA's handoff.
+	results, err := storeB.SearchByCosine(ctx, vec, 3)
+	if err != nil {
+		t.Fatalf("storeB.SearchByCosine: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == hA.ID {
+			t.Errorf("storeB should not see wsA handoff id=%s", hA.ID)
+		}
 	}
 }

@@ -1,0 +1,13 @@
+-- SQLite does not support DROP COLUMN in most versions — rebuild table approach
+-- is required. For personal-OS scale this migration is rarely needed; the
+-- column stays in the schema as a nullable BLOB with no data loss risk.
+--
+-- Operators who need to physically remove the column can recreate the table:
+--   CREATE TABLE decisions_new AS SELECT id, project_id, repo_name, title,
+--     context, decision, rationale, alternatives, created_at, workspace_id
+--     FROM decisions;
+--   DROP TABLE decisions;
+--   ALTER TABLE decisions_new RENAME TO decisions;
+--
+-- This down migration is intentionally a no-op to keep the runner happy.
+SELECT 1;

@@ -350,6 +350,18 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem
 	return items, nil
 }
 
+// SearchByCosine returns the top-limit knowledge items whose embeddings are most
+// similar to queryEmbedding, filtered by workspace_id.  Delegates to the
+// existing vectorSearch method.
+//
+// SECURITY: filtered by workspace_id via vectorSearch → no cross-workspace data.
+func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.KnowledgeItem, error) {
+	if len(queryEmbedding) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	return s.vectorSearch(ctx, queryEmbedding, limit)
+}
+
 // GetByID returns a single knowledge item by ID within the current workspace
 // scope. Returns ErrNotFound when the item does not exist or belongs to a
 // different workspace.

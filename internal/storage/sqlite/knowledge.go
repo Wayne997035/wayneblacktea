@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 
+	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/google/uuid"
@@ -157,6 +159,77 @@ func (s *KnowledgeStore) GetByID(ctx context.Context, id uuid.UUID) (*db.Knowled
 		return nil, errWrap("GetKnowledgeByID", err)
 	}
 	return &item, nil
+}
+
+// SearchByCosine returns the top-limit knowledge items most similar to queryEmbedding.
+// SQLite has no pgvector — brute-force Go-side cosine scan.
+// knowledge_items.embedding is stored as BLOB (serialized float32 LE).
+//
+// SECURITY: filtered by workspace_id — no cross-workspace data returned.
+func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.KnowledgeItem, error) {
+	if len(queryEmbedding) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	// knowledge_items.embedding is a BLOB in SQLite (Postgres uses pgvector type).
+	const q = `SELECT ` + knowledgeSelectCols + `, embedding FROM knowledge_items
+		WHERE embedding IS NOT NULL
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY created_at DESC
+		LIMIT 200`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("SearchByCosine", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type scored struct {
+		item db.KnowledgeItem
+		sim  float64
+	}
+	var candidates []scored
+	for rows.Next() {
+		var item db.KnowledgeItem
+		var idStr string
+		var urlNS, tagsNS, createdNS, updatedNS, workspaceNS sql.NullString
+		var learningValue sql.NullInt32
+		var rawEmbed []byte
+		if err := rows.Scan(&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
+			&createdNS, &updatedNS, &item.Source, &learningValue, &workspaceNS, &rawEmbed); err != nil {
+			continue
+		}
+		if id, parseErr := uuid.Parse(idStr); parseErr == nil {
+			item.ID = id
+		}
+		tags, _ := decodeStringSlice(tagsNS)
+		item.Tags = tags
+		item.Url = pgtypeText(urlNS.String, urlNS.Valid)
+		item.CreatedAt = parseTimestamptz(createdNS)
+		item.UpdatedAt = parseTimestamptz(updatedNS)
+		if learningValue.Valid {
+			item.LearningValue = pgtype.Int4{Int32: learningValue.Int32, Valid: true}
+		}
+		item.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+
+		vec := localai.DeserializeEmbedding(rawEmbed)
+		if vec == nil {
+			continue
+		}
+		candidates = append(candidates, scored{item: item, sim: localai.CosineSimilarity(queryEmbedding, vec)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("SearchByCosine iter", err)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].sim > candidates[j].sim
+	})
+	if limit < len(candidates) {
+		candidates = candidates[:limit]
+	}
+	result := make([]db.KnowledgeItem, 0, len(candidates))
+	for _, c := range candidates {
+		result = append(result, c.item)
+	}
+	return result, nil
 }
 
 func (s *KnowledgeStore) list(ctx context.Context, op, q string, args ...any) ([]db.KnowledgeItem, error) {
