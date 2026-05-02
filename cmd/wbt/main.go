@@ -114,7 +114,43 @@ func runInit() error {
 	}
 
 	fmt.Println("Created .env and .mcp.json — run `wbt serve` to start")
+	printHookSnippet(apiKey, port)
 	return nil
+}
+
+// printHookSnippet prints a copy-pasteable ~/.claude/settings.json snippet
+// that registers wbt-hook as a Claude Code PostToolUse global hook.
+// It does NOT write the file automatically; the user must copy it manually
+// so they can review it and merge with any existing settings.
+func printHookSnippet(apiKey, port string) {
+	fmt.Printf(`
+--- PostToolUse hook setup (optional) ---
+To capture every Claude Code tool call in your activity log, add the following
+to ~/.claude/settings.json (merge with existing content if the file already exists).
+
+WARNING: WBT_HOOK_RAW=1 logs raw tool input — only enable in trusted dev environments.
+
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "wbt-hook",
+            "environment": {
+              "API_KEY": %q,
+              "PORT": %q
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+-----------------------------------------
+`, apiKey, port)
 }
 
 // collectDBConfig asks the user whether to use SQLite or Postgres and collects

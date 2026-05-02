@@ -108,6 +108,8 @@ func run() error {
 		reflector = ai.NewReflector(claudeKey)
 	}
 	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
+	postToolUseH := handler.NewPostToolUseHandler(stores.GTD())
+	defer postToolUseH.Stop()
 
 	e := echo.New()
 	e.HideBanner = true
@@ -202,7 +204,11 @@ func run() error {
 
 	activityRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
 	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
+	// postToolUseRL is deliberately more permissive (120 req/min) because
+	// wbt-hook fires on every Claude Code tool call, including fast loops.
+	postToolUseRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(120))
 	api.POST("/activity", autologH.LogActivity, activityRL)
+	api.POST("/activity/posttooluse", postToolUseH.PostToolUse, postToolUseRL)
 	api.POST("/auto-handoff", autologH.AutoHandoff, handoffRL)
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")

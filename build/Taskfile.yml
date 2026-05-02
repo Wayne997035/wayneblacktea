@@ -23,6 +23,7 @@ tasks:
       - task: build-doctor
       - task: build-wbt
       - task: build-wbt-context
+      - task: build-wbt-hook
     silent: false
 
   build-mcp:
@@ -68,6 +69,15 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/wbt-context ./cmd/wbt-context/
+    dir: ..
+
+  build-wbt-hook:
+    desc: "Build the wbt-hook PostToolUse hook binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-hook ./cmd/wbt-hook/
     dir: ..
 
   lint:
