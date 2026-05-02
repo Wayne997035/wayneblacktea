@@ -71,3 +71,14 @@ func (d *DB) workspaceArg() any {
 	}
 	return d.workspaceID
 }
+
+// ExecContext executes a query on the underlying connection. Exported so
+// integration tests in sibling packages can insert fixture rows (e.g. tasks
+// to satisfy FK constraints) without depending on production write paths.
+func (d *DB) ExecContext(ctx context.Context, query string, args ...any) error {
+	_, err := d.conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("sqlite ExecContext: %w", err)
+	}
+	return nil
+}

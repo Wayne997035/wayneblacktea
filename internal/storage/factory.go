@@ -18,6 +18,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -124,14 +125,15 @@ type postgresServerStores struct {
 	pool        *pgxpool.Pool
 	workspaceID *uuid.UUID
 
-	gtd       *gtd.Store
-	workspace *workspace.Store
-	decision  *decision.Store
-	session   *session.Store
-	knowledge *knowledge.Store
-	learning  *learning.Store
-	proposal  *proposal.Store
-	archStore *arch.Store
+	gtd         *gtd.Store
+	workspace   *workspace.Store
+	decision    *decision.Store
+	session     *session.Store
+	knowledge   *knowledge.Store
+	learning    *learning.Store
+	proposal    *proposal.Store
+	archStore   *arch.Store
+	workSession *worksession.Store
 }
 
 var _ ServerStores = (*postgresServerStores)(nil)
@@ -161,6 +163,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 		learning:    learning.NewStore(pool, wsID),
 		proposal:    proposal.NewStore(pool, wsID),
 		archStore:   arch.NewStore(pool),
+		workSession: worksession.NewStore(pool, wsID),
 	}, nil
 }
 
@@ -172,19 +175,20 @@ func (p *postgresServerStores) Close() error {
 	return nil
 }
 
-func (p *postgresServerStores) GTD() gtd.StoreIface             { return p.gtd }
-func (p *postgresServerStores) Workspace() workspace.StoreIface { return p.workspace }
-func (p *postgresServerStores) Decision() decision.StoreIface   { return p.decision }
-func (p *postgresServerStores) Session() session.StoreIface     { return p.session }
-func (p *postgresServerStores) Knowledge() knowledge.StoreIface { return p.knowledge }
-func (p *postgresServerStores) Learning() learning.StoreIface   { return p.learning }
-func (p *postgresServerStores) Proposal() proposal.StoreIface   { return p.proposal }
-func (p *postgresServerStores) Arch() arch.StoreIface           { return p.archStore }
-func (p *postgresServerStores) WorkspaceID() *uuid.UUID         { return p.workspaceID }
-func (p *postgresServerStores) PgxPool() *pgxpool.Pool          { return p.pool }
-func (p *postgresServerStores) PgGTD() *gtd.Store               { return p.gtd }
-func (p *postgresServerStores) PgProposal() *proposal.Store     { return p.proposal }
-func (p *postgresServerStores) PgLearning() *learning.Store     { return p.learning }
+func (p *postgresServerStores) GTD() gtd.StoreIface                 { return p.gtd }
+func (p *postgresServerStores) Workspace() workspace.StoreIface     { return p.workspace }
+func (p *postgresServerStores) Decision() decision.StoreIface       { return p.decision }
+func (p *postgresServerStores) Session() session.StoreIface         { return p.session }
+func (p *postgresServerStores) Knowledge() knowledge.StoreIface     { return p.knowledge }
+func (p *postgresServerStores) Learning() learning.StoreIface       { return p.learning }
+func (p *postgresServerStores) Proposal() proposal.StoreIface       { return p.proposal }
+func (p *postgresServerStores) Arch() arch.StoreIface               { return p.archStore }
+func (p *postgresServerStores) WorkSession() worksession.StoreIface { return p.workSession }
+func (p *postgresServerStores) WorkspaceID() *uuid.UUID             { return p.workspaceID }
+func (p *postgresServerStores) PgxPool() *pgxpool.Pool              { return p.pool }
+func (p *postgresServerStores) PgGTD() *gtd.Store                   { return p.gtd }
+func (p *postgresServerStores) PgProposal() *proposal.Store         { return p.proposal }
+func (p *postgresServerStores) PgLearning() *learning.Store         { return p.learning }
 
 // buildPgxPool centralises the pgxpool config we use across cmd/server and
 // cmd/mcp so the TLS / pgvector wiring lives in one place.
@@ -214,14 +218,15 @@ type sqliteServerStores struct {
 	db          *wbtsqlite.DB
 	workspaceID *uuid.UUID
 
-	gtd       *wbtsqlite.GTDStore
-	workspace *wbtsqlite.WorkspaceStore
-	decision  *wbtsqlite.DecisionStore
-	session   *wbtsqlite.SessionStore
-	knowledge *wbtsqlite.KnowledgeStore
-	learning  *wbtsqlite.LearningStore
-	proposal  *wbtsqlite.ProposalStore
-	archStore *wbtsqlite.ArchStore
+	gtd         *wbtsqlite.GTDStore
+	workspace   *wbtsqlite.WorkspaceStore
+	decision    *wbtsqlite.DecisionStore
+	session     *wbtsqlite.SessionStore
+	knowledge   *wbtsqlite.KnowledgeStore
+	learning    *wbtsqlite.LearningStore
+	proposal    *wbtsqlite.ProposalStore
+	archStore   *wbtsqlite.ArchStore
+	workSession *wbtsqlite.WorkSessionStore
 }
 
 var _ ServerStores = (*sqliteServerStores)(nil)
@@ -253,6 +258,7 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		learning:    wbtsqlite.NewLearningStore(sdb),
 		proposal:    wbtsqlite.NewProposalStore(sdb),
 		archStore:   wbtsqlite.NewArchStore(sdb),
+		workSession: wbtsqlite.NewWorkSessionStore(sdb),
 	}, nil
 }
 
@@ -266,16 +272,17 @@ func (s *sqliteServerStores) Close() error {
 	return nil
 }
 
-func (s *sqliteServerStores) GTD() gtd.StoreIface             { return s.gtd }
-func (s *sqliteServerStores) Workspace() workspace.StoreIface { return s.workspace }
-func (s *sqliteServerStores) Decision() decision.StoreIface   { return s.decision }
-func (s *sqliteServerStores) Session() session.StoreIface     { return s.session }
-func (s *sqliteServerStores) Knowledge() knowledge.StoreIface { return s.knowledge }
-func (s *sqliteServerStores) Learning() learning.StoreIface   { return s.learning }
-func (s *sqliteServerStores) Proposal() proposal.StoreIface   { return s.proposal }
-func (s *sqliteServerStores) Arch() arch.StoreIface           { return s.archStore }
-func (s *sqliteServerStores) WorkspaceID() *uuid.UUID         { return s.workspaceID }
-func (s *sqliteServerStores) PgxPool() *pgxpool.Pool          { return nil }
-func (s *sqliteServerStores) PgGTD() *gtd.Store               { return nil }
-func (s *sqliteServerStores) PgProposal() *proposal.Store     { return nil }
-func (s *sqliteServerStores) PgLearning() *learning.Store     { return nil }
+func (s *sqliteServerStores) GTD() gtd.StoreIface                 { return s.gtd }
+func (s *sqliteServerStores) Workspace() workspace.StoreIface     { return s.workspace }
+func (s *sqliteServerStores) Decision() decision.StoreIface       { return s.decision }
+func (s *sqliteServerStores) Session() session.StoreIface         { return s.session }
+func (s *sqliteServerStores) Knowledge() knowledge.StoreIface     { return s.knowledge }
+func (s *sqliteServerStores) Learning() learning.StoreIface       { return s.learning }
+func (s *sqliteServerStores) Proposal() proposal.StoreIface       { return s.proposal }
+func (s *sqliteServerStores) Arch() arch.StoreIface               { return s.archStore }
+func (s *sqliteServerStores) WorkSession() worksession.StoreIface { return s.workSession }
+func (s *sqliteServerStores) WorkspaceID() *uuid.UUID             { return s.workspaceID }
+func (s *sqliteServerStores) PgxPool() *pgxpool.Pool              { return nil }
+func (s *sqliteServerStores) PgGTD() *gtd.Store                   { return nil }
+func (s *sqliteServerStores) PgProposal() *proposal.Store         { return nil }
+func (s *sqliteServerStores) PgLearning() *learning.Store         { return nil }

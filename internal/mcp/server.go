@@ -15,6 +15,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,15 +32,16 @@ import (
 // transaction across multiple stores). On SQLite they are nil and the flow
 // falls back to a sequential best-effort path.
 type Server struct {
-	pool      *pgxpool.Pool
-	gtd       gtd.StoreIface
-	workspace workspace.StoreIface
-	decision  decision.StoreIface
-	session   session.StoreIface
-	knowledge knowledge.StoreIface
-	learning  learning.StoreIface
-	proposal  proposal.StoreIface
-	arch      arch.StoreIface
+	pool        *pgxpool.Pool
+	gtd         gtd.StoreIface
+	workspace   workspace.StoreIface
+	decision    decision.StoreIface
+	session     session.StoreIface
+	knowledge   knowledge.StoreIface
+	learning    learning.StoreIface
+	proposal    proposal.StoreIface
+	arch        arch.StoreIface
+	workSession worksession.StoreIface
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
@@ -78,6 +80,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		learning:    stores.Learning(),
 		proposal:    stores.Proposal(),
 		arch:        stores.Arch(),
+		workSession: stores.WorkSession(),
 		pgGTD:       stores.PgGTD(),
 		pgProposal:  stores.PgProposal(),
 		pgLearning:  stores.PgLearning(),
@@ -179,6 +182,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerHealthTools(ms)
 	s.registerArchTools(ms)
 	s.registerStatusTools(ms)
+	s.registerWorkSessionTools(ms)
 	return ms
 }
 
