@@ -206,6 +206,23 @@ func updateHandoffSummary(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UU
 }
 
 // saveKnowledgeItem persists the session summary as a zettelkasten knowledge item.
+//
+// ARCHITECTURAL EXCEPTION (decision b1a87143 generally requires LLM-generated
+// content to go through pending_proposals → user confirm). Stop-hook session
+// summaries are exempted because:
+//  1. They are factual digests of a session the operator just lived through
+//     (low hallucination surface vs. the reflection cron's speculative
+//     "lessons learned" output).
+//  2. They are user-initiated by ending the session — no unattended cron.
+//  3. They are length-capped (sessionSummaryMaxChars=500) and the prompt
+//     explicitly forbids credentials in the output.
+//  4. They are clearly labelled `source='auto-summary'` so the operator can
+//     delete the row from the knowledge dashboard if a hallucination slips
+//     through. The reflection cron has no such "after the fact" cleanup
+//     because its proposals are gated up-front.
+//
+// If model output quality degrades or this gate is abused, route through
+// pending_proposals with a TypeSessionSummary type instead.
 func saveKnowledgeItem(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, summary string) {
 	var wsArg any
 	if wsID != nil {

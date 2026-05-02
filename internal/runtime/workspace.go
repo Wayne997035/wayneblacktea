@@ -17,6 +17,21 @@ import (
 // set but cannot be parsed as a UUID. Callers typically log.Fatal on this.
 var ErrInvalidWorkspaceID = errors.New("WORKSPACE_ID env is not a valid UUID")
 
+// ErrSentinelWorkspaceID is returned when WORKSPACE_ID is set to the migration
+// 000015 sentinel UUID — using this in production would expose every row
+// backfilled by an unsubstituted migration as if it belonged to one workspace.
+// Callers MUST log.Fatal on this so the server refuses to start.
+var ErrSentinelWorkspaceID = errors.New(
+	"WORKSPACE_ID equals migration 000015 sentinel — " +
+		"substitute the real UUID before starting the server",
+)
+
+// migration000015Sentinel mirrors the placeholder in
+// migrations/000015_workspace_id_backfill.up.sql. Hard-coded here (not a
+// const exported from a package) so a server start with this exact value is
+// rejected before any DB query runs.
+const migration000015Sentinel = "00000000-0000-0000-0000-000000000001"
+
 // WorkspaceIDFromEnv returns the optional workspace ID configured via the
 // WORKSPACE_ID environment variable.
 //
@@ -30,6 +45,9 @@ func WorkspaceIDFromEnv() (*uuid.UUID, error) {
 	raw := strings.TrimSpace(os.Getenv("WORKSPACE_ID"))
 	if raw == "" {
 		return nil, nil //nolint:nilnil // sentinel: no workspace = legacy mode
+	}
+	if raw == migration000015Sentinel {
+		return nil, ErrSentinelWorkspaceID
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {

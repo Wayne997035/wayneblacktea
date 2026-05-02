@@ -119,8 +119,17 @@ func runReflection(deps reflectionDeps) {
 // buildReflectionSummary renders activities and decisions into a compact plain-
 // text string for the Haiku prompt. Activity notes are NOT included verbatim
 // to minimise prompt-injection surface; only actor + action are used.
+//
+// SECURITY: BOTH activities AND decisions sit inside the
+// [BEGIN ACTIVITIES]…[END ACTIVITIES] boundary block so the reflector's
+// system prompt warning covers everything. Decision rationale is
+// intentionally OMITTED — the title alone is enough signal for the reflector
+// and the rationale is a free-text field controlled by whoever called
+// log_decision (see security audit M-2 / OWASP LLM01).
 func buildReflectionSummary(activities []db.ActivityLog, decisions []db.Decision) string {
 	var sb strings.Builder
+
+	sb.WriteString("[BEGIN ACTIVITIES]\n")
 
 	if len(activities) > 0 {
 		sb.WriteString("## Recent Activities\n")
@@ -140,9 +149,13 @@ func buildReflectionSummary(activities []db.ActivityLog, decisions []db.Decision
 			if d.CreatedAt.Valid {
 				ts = d.CreatedAt.Time.Format("2006-01-02")
 			}
-			fmt.Fprintf(&sb, "- [%s] %s — %s\n", ts, d.Title, d.Rationale)
+			// Title only — rationale is excluded to prevent
+			// prompt-injection via free-text decision content.
+			fmt.Fprintf(&sb, "- [%s] %s\n", ts, d.Title)
 		}
 	}
+
+	sb.WriteString("[END ACTIVITIES]\n")
 
 	return sb.String()
 }

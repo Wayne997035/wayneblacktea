@@ -29,16 +29,34 @@
 -- (distinct from 000011's all-zero sentinel so down.sql can target exactly
 -- the rows that THIS migration set)
 
-\set BACKFILL_WORKSPACE_ID '''00000000-0000-0000-0000-000000000001'''
+-- SECURITY GUARD: refuse to apply the migration if the sentinel UUID is
+-- still present. This makes the /tmp+sed step machine-enforced instead of
+-- documentation-only. Both psql and golang-migrate execute DO $$ blocks; the
+-- exception aborts the transaction before any UPDATE runs. Operators MUST
+-- substitute the sentinel via the docs/operations.md SOP before applying.
+DO $$
+BEGIN
+    IF '00000000-0000-0000-0000-000000000001' = '00000000-0000-0000-0000-000000000001' THEN
+        RAISE EXCEPTION 'Migration 000015 sentinel UUID not substituted. '
+            'Follow docs/operations.md "WORKSPACE_ID Backfill (migration 000015)" '
+            '— copy to /tmp, sed-replace 00000000-0000-0000-0000-000000000001 '
+            'with the real workspace UUID, then apply.';
+    END IF;
+END $$;
 
-UPDATE goals             SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE projects          SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE tasks             SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE activity_log      SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE repos             SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE decisions         SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE session_handoffs  SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE knowledge_items   SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE concepts          SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE review_schedule   SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
-UPDATE pending_proposals SET workspace_id = :BACKFILL_WORKSPACE_ID::uuid WHERE workspace_id IS NULL;
+-- Plain SQL (no psql `\set`) so this file can be safely picked up by either
+-- `psql -f` (operations.md SOP) or golang-migrate (`task migrate-up`). Both
+-- runners will hit the DO $$ guard above and abort if the sentinel has not
+-- been substituted, so an accidental `migrate up` cannot silently apply the
+-- placeholder UUID to production rows.
+UPDATE goals             SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE projects          SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE tasks             SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE activity_log      SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE repos             SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE decisions         SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE session_handoffs  SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE knowledge_items   SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE concepts          SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE review_schedule   SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;
+UPDATE pending_proposals SET workspace_id = '00000000-0000-0000-0000-000000000001'::uuid WHERE workspace_id IS NULL;

@@ -91,7 +91,7 @@ echo "$WORKSPACE_UUID"
 # Example: 6e6f7c40-2e45-4c98-9e2a-4f0a93e0e1aa
 
 # Refuse to use the nil sentinel
-[ "$WORKSPACE_UUID" = "00000000-0000-0000-0000-000000000000" ] && \
+[ "$WORKSPACE_UUID" = "00000000-0000-0000-0000-000000000001" ] && \
   { echo "ERROR: nil sentinel not allowed" >&2; exit 1; }
 ```
 
@@ -111,14 +111,14 @@ Zero counts = no rows to backfill; skip to Step 3.
 Copy to `/tmp` — never edit the repo files in place (would leave your UUID in the worktree and break the sentinel safety guarantee on re-runs).
 
 ```bash
-cp migrations/000011_backfill_workspace_id.up.sql   /tmp/applied-000011.up.sql
-cp migrations/000011_backfill_workspace_id.down.sql /tmp/applied-000011.down.sql
+cp migrations/000015_workspace_id_backfill.up.sql   /tmp/applied-000015.up.sql
+cp migrations/000015_workspace_id_backfill.down.sql /tmp/applied-000015.down.sql
 
 # macOS: sed -i ''   Linux: sed -i
-sed -i "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
-  /tmp/applied-000011.up.sql /tmp/applied-000011.down.sql
+sed -i "s/00000000-0000-0000-0000-000000000001/$WORKSPACE_UUID/g" \
+  /tmp/applied-000015.up.sql /tmp/applied-000015.down.sql
 
-psql "$DATABASE_URL" -f /tmp/applied-000011.up.sql
+psql "$DATABASE_URL" -f /tmp/applied-000015.up.sql
 ```
 
 ### Step 4 — verify
@@ -149,19 +149,19 @@ curl -H "Authorization: Bearer YOUR_API_KEY" https://your-host/api/projects \
 ### Rollback — undo the backfill
 
 ```bash
-psql "$DATABASE_URL" -f /tmp/applied-000011.down.sql
+psql "$DATABASE_URL" -f /tmp/applied-000015.down.sql
 ```
 
 Sets `workspace_id = NULL` only on rows matching your UUID. Then unset `WORKSPACE_ID` and redeploy.
 
-If `/tmp/applied-000011.down.sql` was deleted, re-run the `cp` + `sed` block from Step 3 with the same `WORKSPACE_UUID`.
+If `/tmp/applied-000015.down.sql` was deleted, re-run the `cp` + `sed` block from Step 3 with the same `WORKSPACE_UUID`.
 
 ### SQLite variant
 
 ```bash
-cp migrations/sqlite/000011_backfill_workspace_id.up.sql   /tmp/applied-sqlite-000011.up.sql
-cp migrations/sqlite/000011_backfill_workspace_id.down.sql /tmp/applied-sqlite-000011.down.sql
-sed -i "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
+cp migrations/sqlite/000015_workspace_id_backfill.up.sql   /tmp/applied-sqlite-000011.up.sql
+cp migrations/sqlite/000015_workspace_id_backfill.down.sql /tmp/applied-sqlite-000011.down.sql
+sed -i "s/00000000-0000-0000-0000-000000000001/$WORKSPACE_UUID/g" \
   /tmp/applied-sqlite-000011.up.sql /tmp/applied-sqlite-000011.down.sql
 sqlite3 /path/to/data.db < /tmp/applied-sqlite-000011.up.sql
 # Rollback: sqlite3 /path/to/data.db < /tmp/applied-sqlite-000011.down.sql
