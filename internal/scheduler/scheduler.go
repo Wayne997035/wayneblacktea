@@ -13,7 +13,9 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/go-co-op/gocron/v2"
+	"github.com/google/uuid"
 )
 
 // dailyBriefingTimeout caps each Notion morning briefing run. The aggregate
@@ -40,6 +42,17 @@ type Scheduler struct {
 	reviewer       ai.ConceptReviewerIface
 	reflectionDeps *reflectionDeps
 	consolidDeps   *consolidationDeps
+	statusDeps     *statusSnapshotDeps
+}
+
+// statusSnapshotDeps bundles the dependencies needed by the Saturday status
+// snapshot cron job. All fields are required when sDeps is non-nil.
+type statusSnapshotDeps struct {
+	gtd         gtd.StoreIface
+	decision    decision.StoreIface
+	store       snapshot.StoreIface
+	generator   snapshot.GeneratorIface
+	workspaceID *uuid.UUID
 }
 
 // New creates and configures the Scheduler with all registered jobs.
@@ -55,6 +68,9 @@ type Scheduler struct {
 //
 // reflector, gtdStore, decStore, propStore are optional together: when any of
 // them is nil the reflection + consolidation Saturday jobs are skipped.
+//
+// snapStore, snapGen are optional: when either is nil the Saturday status
+// snapshot job is skipped. Both are set when CLAUDE_API_KEY is configured.
 func New(
 	ls learning.StoreIface,
 	dc *discord.Client,
@@ -65,6 +81,9 @@ func New(
 	decStore decision.StoreIface,
 	propStore proposal.StoreIface,
 	reflector ai.ReflectorIface,
+	snapStore snapshot.StoreIface,
+	snapGen snapshot.GeneratorIface,
+	workspaceID *uuid.UUID,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -92,6 +111,17 @@ func New(
 		}
 	}
 
+	var sDeps *statusSnapshotDeps
+	if snapStore != nil && snapGen != nil && gtdStore != nil && decStore != nil {
+		sDeps = &statusSnapshotDeps{
+			gtd:         gtdStore,
+			decision:    decStore,
+			store:       snapStore,
+			generator:   snapGen,
+			workspaceID: workspaceID,
+		}
+	}
+
 	sc := &Scheduler{
 		s:              s,
 		learning:       ls,
@@ -101,6 +131,7 @@ func New(
 		reviewer:       reviewer,
 		reflectionDeps: rDeps,
 		consolidDeps:   cDeps,
+		statusDeps:     sDeps,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -162,13 +193,14 @@ func (sc *Scheduler) registerWeeklyJobs(s gocron.Scheduler) error {
 	}
 
 	if sc.reflectionDeps == nil {
-		slog.Info("scheduler: SaturdayReflection + SaturdayConsolidation skipped (reflector or stores not configured)")
+		slog.Info("scheduler: SaturdayReflection + SaturdayConsolidation + SaturdayStatusSnapshot skipped (reflector or stores not configured)")
 		return nil
 	}
 	return sc.registerSaturdayJobs(s)
 }
 
-// registerSaturdayJobs adds the Saturday 23:00 reflection + consolidation pair.
+// registerSaturdayJobs adds the Saturday 23:00 reflection + consolidation pair,
+// and optionally the status snapshot job when snapDeps is configured.
 func (sc *Scheduler) registerSaturdayJobs(s gocron.Scheduler) error {
 	sat := gocron.WeeklyJob(1, gocron.NewWeekdays(time.Saturday), gocron.NewAtTimes(gocron.NewAtTime(23, 0, 0)))
 
@@ -195,6 +227,24 @@ func (sc *Scheduler) registerSaturdayJobs(s gocron.Scheduler) error {
 		return fmt.Errorf("registering Saturday consolidation job: %w", err)
 	}
 	slog.Info("scheduler: SaturdayReflection + SaturdayConsolidation scheduled at Saturday 23:00 Asia/Taipei")
+
+	if sc.statusDeps != nil {
+		_, err = s.NewJob(
+			// Runs after reflection + consolidation; gocron executes same-tick
+			// jobs in registration order.
+			sat,
+			gocron.NewTask(sc.saturdayStatusSnapshot),
+			gocron.WithName("saturday-status-snapshot"),
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering Saturday status snapshot job: %w", err)
+		}
+		slog.Info("scheduler: SaturdayStatusSnapshot scheduled at Saturday 23:00 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: SaturdayStatusSnapshot skipped (CLAUDE_API_KEY or Postgres pool not configured)")
+	}
+
 	return nil
 }
 
@@ -290,6 +340,14 @@ func (s *Scheduler) saturdayConsolidation() {
 		return
 	}
 	runConsolidation(*s.consolidDeps)
+}
+
+// saturdayStatusSnapshot generates a fresh status snapshot for all known slugs.
+func (s *Scheduler) saturdayStatusSnapshot() {
+	if s.statusDeps == nil {
+		return
+	}
+	runStatusSnapshot(*s.statusDeps)
 }
 
 // weeklyAIConceptReview fetches active concepts with sufficient review history,

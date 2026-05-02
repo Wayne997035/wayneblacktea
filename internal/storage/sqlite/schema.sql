@@ -207,3 +207,23 @@ CREATE TABLE IF NOT EXISTS workspace_preferences (
     updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- Mirrored from migrations/sqlite/000018_project_status_snapshots.up.sql.
+-- Haiku-generated project status snapshots (sprint summary, gap analysis, etc.).
+-- Derived/computed data — bypasses pending_proposals gate. 24 h TTL enforced app-side.
+CREATE TABLE IF NOT EXISTS project_status_snapshots (
+    id                   TEXT PRIMARY KEY,
+    slug                 TEXT NOT NULL,
+    workspace_id         TEXT,
+    generated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    sprint_summary       TEXT,
+    gap_analysis         TEXT,
+    sota_catchup_pct     INTEGER,
+    pending_summary      TEXT,
+    source_decision_ids  TEXT NOT NULL DEFAULT '[]',
+    embedding            BLOB,
+    source               TEXT NOT NULL DEFAULT 'auto-status-snapshot'
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_snapshots_slug_time
+    ON project_status_snapshots (slug, generated_at DESC);
+

@@ -19,6 +19,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgvectorpgx "github.com/pgvector/pgvector-go/pgx"
 )
@@ -120,7 +121,8 @@ func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, erro
 // ----- Postgres bundle -----
 
 type postgresServerStores struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	workspaceID *uuid.UUID
 
 	gtd       *gtd.Store
 	workspace *workspace.Store
@@ -149,15 +151,16 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	}
 	embedClient := search.NewEmbeddingClient()
 	return &postgresServerStores{
-		pool:      pool,
-		gtd:       gtd.NewStore(pool, wsID),
-		workspace: workspace.NewStore(pool, wsID),
-		decision:  decision.NewStore(pool, wsID),
-		session:   session.NewStore(pool, wsID),
-		knowledge: knowledge.NewStore(pool, embedClient, wsID),
-		learning:  learning.NewStore(pool, wsID),
-		proposal:  proposal.NewStore(pool, wsID),
-		archStore: arch.NewStore(pool),
+		pool:        pool,
+		workspaceID: wsID,
+		gtd:         gtd.NewStore(pool, wsID),
+		workspace:   workspace.NewStore(pool, wsID),
+		decision:    decision.NewStore(pool, wsID),
+		session:     session.NewStore(pool, wsID),
+		knowledge:   knowledge.NewStore(pool, embedClient, wsID),
+		learning:    learning.NewStore(pool, wsID),
+		proposal:    proposal.NewStore(pool, wsID),
+		archStore:   arch.NewStore(pool),
 	}, nil
 }
 
@@ -177,6 +180,7 @@ func (p *postgresServerStores) Knowledge() knowledge.StoreIface { return p.knowl
 func (p *postgresServerStores) Learning() learning.StoreIface   { return p.learning }
 func (p *postgresServerStores) Proposal() proposal.StoreIface   { return p.proposal }
 func (p *postgresServerStores) Arch() arch.StoreIface           { return p.archStore }
+func (p *postgresServerStores) WorkspaceID() *uuid.UUID         { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool          { return p.pool }
 func (p *postgresServerStores) PgGTD() *gtd.Store               { return p.gtd }
 func (p *postgresServerStores) PgProposal() *proposal.Store     { return p.proposal }
@@ -207,7 +211,8 @@ func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxp
 // ----- SQLite bundle -----
 
 type sqliteServerStores struct {
-	db *wbtsqlite.DB
+	db          *wbtsqlite.DB
+	workspaceID *uuid.UUID
 
 	gtd       *wbtsqlite.GTDStore
 	workspace *wbtsqlite.WorkspaceStore
@@ -238,15 +243,16 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		return nil, fmt.Errorf("opening sqlite at %q: %w", cfg.SQLitePath, err)
 	}
 	return &sqliteServerStores{
-		db:        sdb,
-		gtd:       wbtsqlite.NewGTDStore(sdb),
-		workspace: wbtsqlite.NewWorkspaceStore(sdb),
-		decision:  wbtsqlite.NewDecisionStore(sdb),
-		session:   wbtsqlite.NewSessionStore(sdb),
-		knowledge: wbtsqlite.NewKnowledgeStore(sdb),
-		learning:  wbtsqlite.NewLearningStore(sdb),
-		proposal:  wbtsqlite.NewProposalStore(sdb),
-		archStore: wbtsqlite.NewArchStore(sdb),
+		db:          sdb,
+		workspaceID: wsID,
+		gtd:         wbtsqlite.NewGTDStore(sdb),
+		workspace:   wbtsqlite.NewWorkspaceStore(sdb),
+		decision:    wbtsqlite.NewDecisionStore(sdb),
+		session:     wbtsqlite.NewSessionStore(sdb),
+		knowledge:   wbtsqlite.NewKnowledgeStore(sdb),
+		learning:    wbtsqlite.NewLearningStore(sdb),
+		proposal:    wbtsqlite.NewProposalStore(sdb),
+		archStore:   wbtsqlite.NewArchStore(sdb),
 	}, nil
 }
 
@@ -268,6 +274,7 @@ func (s *sqliteServerStores) Knowledge() knowledge.StoreIface { return s.knowled
 func (s *sqliteServerStores) Learning() learning.StoreIface   { return s.learning }
 func (s *sqliteServerStores) Proposal() proposal.StoreIface   { return s.proposal }
 func (s *sqliteServerStores) Arch() arch.StoreIface           { return s.archStore }
+func (s *sqliteServerStores) WorkspaceID() *uuid.UUID         { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool          { return nil }
 func (s *sqliteServerStores) PgGTD() *gtd.Store               { return nil }
 func (s *sqliteServerStores) PgProposal() *proposal.Store     { return nil }

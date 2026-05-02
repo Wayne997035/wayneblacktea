@@ -62,7 +62,7 @@ func (r *stubReviewer) ReviewConcepts(_ context.Context, _ []ai.ReviewInput) []a
 
 func makeScheduler(t *testing.T, store learning.StoreIface, reviewer ai.ConceptReviewerIface) *Scheduler {
 	t.Helper()
-	sc, err := New(store, nil, nil, nil, reviewer, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, reviewer, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -74,7 +74,7 @@ func makeScheduler(t *testing.T, store learning.StoreIface, reviewer ai.ConceptR
 func TestWeeklyAIConceptReview_NilReviewer_JobNotRegistered(t *testing.T) {
 	store := &stubLearningStore{}
 	// nil reviewer → New must succeed and NOT register the weekly AI job.
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() with nil reviewer error: %v", err)
 	}

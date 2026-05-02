@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -45,12 +47,19 @@ type weeklyProgress struct {
 	Total     int64 `json:"total"`
 }
 
+type latestStatusSnapshot struct {
+	GeneratedAt    string `json:"generated_at"`
+	SprintSummary  string `json:"sprint_summary"`
+	SotaCatchupPct int    `json:"sota_catchup_pct"`
+}
+
 type todayContext struct {
-	Goals            []db.Goal          `json:"goals"`
-	Projects         []db.Project       `json:"projects"`
-	WeeklyProgress   weeklyProgress     `json:"weekly_progress"`
-	PendingHandoff   *db.SessionHandoff `json:"pending_handoff"`
-	ArchSnapshotData string             `json:"arch_snapshot_data,omitempty"` // empty when no snapshot stored
+	Goals                []db.Goal             `json:"goals"`
+	Projects             []db.Project          `json:"projects"`
+	WeeklyProgress       weeklyProgress        `json:"weekly_progress"`
+	PendingHandoff       *db.SessionHandoff    `json:"pending_handoff"`
+	ArchSnapshotData     string                `json:"arch_snapshot_data,omitempty"` // empty when no snapshot stored
+	LatestStatusSnapshot *latestStatusSnapshot `json:"latest_status_snapshot,omitempty"`
 }
 
 func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -86,12 +95,29 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 		slog.Warn("get_today_context: loading arch snapshot", "err", archErr)
 	}
 
+	// Best-effort: fetch the latest status snapshot (age < 24 h) for the
+	// primary project. Full text is available via generate_project_status.
+	// Failures are logged at warn level and skipped.
+	var latestSnap *latestStatusSnapshot
+	if s.snapshotStore != nil {
+		if snap, snapErr := s.snapshotStore.LatestFresh(ctx, primaryProjectSlug, 24*time.Hour); snapErr == nil {
+			latestSnap = &latestStatusSnapshot{
+				GeneratedAt:    snap.GeneratedAt.UTC().Format(time.RFC3339),
+				SprintSummary:  snap.SprintSummary,
+				SotaCatchupPct: snap.SotaCatchupPct,
+			}
+		} else if !snapshot.IsNotFound(snapErr) {
+			slog.Warn("get_today_context: loading latest snapshot", "err", snapErr)
+		}
+	}
+
 	return jsonText(todayContext{
-		Goals:            goals,
-		Projects:         projects,
-		WeeklyProgress:   weeklyProgress{Completed: completed, Total: total},
-		PendingHandoff:   handoff,
-		ArchSnapshotData: archData,
+		Goals:                goals,
+		Projects:             projects,
+		WeeklyProgress:       weeklyProgress{Completed: completed, Total: total},
+		PendingHandoff:       handoff,
+		ArchSnapshotData:     archData,
+		LatestStatusSnapshot: latestSnap,
 	})
 }
 

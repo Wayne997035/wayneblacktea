@@ -27,6 +27,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -76,7 +77,13 @@ func run() error {
 	}()
 	discordClient := discord.NewClient()
 
+	// Build snapshot deps early so both ctxH and scheduler can share the same store.
+	snapStore, snapGen := buildSnapshotDeps(stores)
+
 	ctxH := handler.NewContextHandler(stores.GTD(), stores.Session())
+	if snapStore != nil {
+		ctxH.WithSnapshotStore(snapStore)
+	}
 	gtdH := handler.NewGTDHandler(stores.GTD())
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
 	decH := handler.NewDecisionHandler(stores.Decision())
@@ -206,9 +213,11 @@ func run() error {
 
 	notionClient := notion.NewClient()
 	briefingStores := newBriefingStores(stores)
+
 	sched, err := scheduler.New(
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
+		snapStore, snapGen, stores.WorkspaceID(),
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
@@ -270,6 +279,21 @@ func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
 	}
 	log.Println("discord bot started")
 	return bot.Stop, nil
+}
+
+// buildSnapshotDeps returns a snapshot store and generator when the Postgres
+// backend is active and CLAUDE_API_KEY is set; otherwise both are nil (feature
+// gracefully disabled).
+func buildSnapshotDeps(stores storage.ServerStores) (snapshot.StoreIface, snapshot.GeneratorIface) {
+	pool := stores.PgxPool()
+	if pool == nil {
+		return nil, nil
+	}
+	claudeKey := os.Getenv("CLAUDE_API_KEY")
+	if claudeKey == "" {
+		return nil, nil
+	}
+	return snapshot.NewStore(pool, stores.WorkspaceID()), snapshot.NewGenerator(claudeKey)
 }
 
 func buildStores(backend storage.Backend) (storage.ServerStores, error) {

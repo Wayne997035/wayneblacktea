@@ -12,6 +12,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -43,6 +44,17 @@ func Run() error {
 
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
 		s.WithClassifier(ai.NewActivityClassifier(claudeKey))
+	}
+
+	// Wire snapshot store + generator when CLAUDE_API_KEY is set.
+	// The snapshot store requires a Postgres pool; on SQLite the feature is
+	// silently disabled — the tool returns a "not configured" error message.
+	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
+		if pool := stores.PgxPool(); pool != nil {
+			snapStore := snapshot.NewStore(pool, stores.WorkspaceID())
+			snapGen := snapshot.NewGenerator(claudeKey)
+			s.WithSnapshot(snapStore, snapGen)
+		}
 	}
 
 	if err := server.ServeStdio(s.MCPServer()); err != nil {
