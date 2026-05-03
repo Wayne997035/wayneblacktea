@@ -111,6 +111,10 @@ func (s *Store) WriteEvent(ctx context.Context, ev Event) error {
 	if len(toolInput) == 0 {
 		toolInput = json.RawMessage(`{}`)
 	}
+	// Apply credential redaction BEFORE the INSERT. RedactToolInput
+	// fail-opens (returns the original on error) so the persistence path
+	// stays robust even if scrubbing breaks for an exotic payload.
+	toolInput = RedactToolInput(toolInput)
 
 	var sessionID *string
 	if ev.SessionID != "" {
