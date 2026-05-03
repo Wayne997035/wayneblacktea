@@ -362,7 +362,7 @@ func TestValidateGuardBypassFlags(t *testing.T) {
 		{name: "file scope abs", scope: "file", target: "/Users/me/repo/foo.go", reason: "trial", wantErr: false},
 		{name: "dir scope abs", scope: "dir", target: "/Users/me/repo", reason: "trial", wantErr: false},
 		{
-			name: "global scope with confirmation",
+			name:  "global scope with confirmation",
 			scope: "global", target: "global", reason: "trial", iUnderG: true,
 			wantErr: false,
 		},
@@ -371,13 +371,13 @@ func TestValidateGuardBypassFlags(t *testing.T) {
 		{name: "missing scope", scope: "", target: "x", reason: "r", wantErr: true, wantInErr: "--scope is required"},
 		{name: "missing target", scope: "repo", target: "", reason: "r", wantErr: true, wantInErr: "--target is required"},
 		{
-			name:    "missing reason",
-			scope:   "repo", target: "x", reason: "",
+			name:  "missing reason",
+			scope: "repo", target: "x", reason: "",
 			wantErr: true, wantInErr: "--reason is required",
 		},
 		{
-			name:    "whitespace reason",
-			scope:   "repo", target: "x", reason: "   \t",
+			name:  "whitespace reason",
+			scope: "repo", target: "x", reason: "   \t",
 			wantErr: true, wantInErr: "--reason is required",
 		},
 
@@ -386,41 +386,41 @@ func TestValidateGuardBypassFlags(t *testing.T) {
 
 		// Reject: global without confirmation / wrong target.
 		{
-			name: "global without confirmation",
+			name:  "global without confirmation",
 			scope: "global", target: "global", reason: "r", iUnderG: false,
 			wantErr: true, wantInErr: "i-understand-this-is-global",
 		},
 		{
-			name: "global with non-literal target",
+			name:  "global with non-literal target",
 			scope: "global", target: "everything", reason: "r", iUnderG: true,
 			wantErr: true, wantInErr: "literal",
 		},
 
 		// Reject: file/dir with relative path.
 		{
-			name: "file relative path",
+			name:  "file relative path",
 			scope: "file", target: "foo.go", reason: "r",
 			wantErr: true, wantInErr: "absolute",
 		},
 		{
-			name: "dir relative path",
+			name:  "dir relative path",
 			scope: "dir", target: "./sub", reason: "r",
 			wantErr: true, wantInErr: "absolute",
 		},
 
 		// Reject: overly-broad targets.
 		{
-			name: "dir target /",
+			name:  "dir target /",
 			scope: "dir", target: "/", reason: "r",
 			wantErr: true, wantInErr: "too broadly",
 		},
 		{
-			name: "dir target /home",
+			name:  "dir target /home",
 			scope: "dir", target: "/home", reason: "r",
 			wantErr: true, wantInErr: "too broadly",
 		},
 		{
-			name: "dir target /Users",
+			name:  "dir target /Users",
 			scope: "dir", target: "/Users", reason: "r",
 			wantErr: true, wantInErr: "too broadly",
 		},

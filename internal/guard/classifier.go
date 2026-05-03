@@ -328,35 +328,53 @@ func detectAbsRedirectAt(runes []rune, start int) (RiskTier, string, bool) {
 	return 0, "", false
 }
 
+// Named constants for repeated string values in wrapper rules.
+const (
+	cmdExec   = "exec"
+	gitConfig = "config"
+)
+
 // classifyWrapperBlocklist matches commands that execute arbitrary shell.
 // Returning T6 because they bypass any per-binary risk classification — the
 // inner payload is the actual risk, but it's user-controlled string content
 // that we cannot statically analyse.
 //
-// Patterns covered:
-//   - "sudo …"                     → T6
-//   - "bash -c …", "sh -c …"       → T6
-//   - "python -c", "python3 -c"    → T6
-//   - "node -e", "deno eval"       → T6
-//   - "eval …", "exec …"           → T6
-//   - "xargs sh -c", "xargs bash -c" → T6
-//   - "git bisect run …"           → T6 (runs arbitrary shell at each commit)
-//   - "git submodule foreach …"    → T6 (runs arbitrary shell in each submodule)
-//   - "git config alias.* !sh"     → T6 (alias prefixed with ! runs shell)
-//   - "git rebase -x …"            → T6 (runs arbitrary shell at each rebase step)
-//   - "git filter-branch …"        → T6 (rewrites history, runs arbitrary shell)
+// Dispatches to family-specific helpers (single-token, -c/-e flag, xargs
+// composition, git subcommand) so per-function cyclomatic complexity stays
+// under the gocyclo budget.
 func classifyWrapperBlocklist(tokens []string, cmdName string) (RiskTier, string, bool) {
-	// Single-token wrappers (cmdName is the wrapper).
+	if tier, reason, ok := classifyWrapperSingle(cmdName); ok {
+		return tier, reason, ok
+	}
+	if tier, reason, ok := classifyWrapperFlag(tokens, cmdName); ok {
+		return tier, reason, ok
+	}
+	if tier, reason, ok := classifyWrapperXargs(tokens, cmdName); ok {
+		return tier, reason, ok
+	}
+	if tier, reason, ok := classifyWrapperGit(tokens, cmdName); ok {
+		return tier, reason, ok
+	}
+	return 0, "", false
+}
+
+// classifyWrapperSingle handles wrappers identified by cmdName alone.
+func classifyWrapperSingle(cmdName string) (RiskTier, string, bool) {
 	switch cmdName {
 	case "sudo":
 		return T6, "wrapper: sudo escalates privilege", true
 	case "eval":
 		return T6, "wrapper: eval executes shell string", true
-	case "exec":
+	case cmdExec:
 		return T6, "wrapper: exec replaces process with arbitrary command", true
 	}
+	return 0, "", false
+}
 
-	// Wrappers that take "-c" / "-e" arg.
+// classifyWrapperFlag handles wrappers recognised by cmdName + a -c / -e
+// / "eval" subcommand argument: bash -c / sh -c / python -c / python3 -c
+// / node -e / deno eval.
+func classifyWrapperFlag(tokens []string, cmdName string) (RiskTier, string, bool) {
 	if (cmdName == "bash" || cmdName == "sh") && hasFlag(tokens, "-c") {
 		return T6, "wrapper: " + cmdName + " -c executes arbitrary shell string", true
 	}
@@ -369,39 +387,51 @@ func classifyWrapperBlocklist(tokens []string, cmdName string) (RiskTier, string
 	if cmdName == "deno" && len(tokens) >= 2 && tokens[1] == "eval" {
 		return T6, "wrapper: deno eval executes arbitrary javascript string", true
 	}
+	return 0, "", false
+}
 
-	// xargs sh -c / xargs bash -c
-	if cmdName == "xargs" {
-		for i := 1; i < len(tokens)-1; i++ {
-			if tokens[i] == "sh" || tokens[i] == "bash" {
-				if tokens[i+1] == "-c" {
-					return T6, "wrapper: xargs " + tokens[i] + " -c executes arbitrary shell", true
-				}
-			}
+// classifyWrapperXargs handles "xargs sh -c …" / "xargs bash -c …" — xargs
+// wrapping a -c invocation is the canonical "shell injection over a pipe"
+// pattern.
+func classifyWrapperXargs(tokens []string, cmdName string) (RiskTier, string, bool) {
+	if cmdName != "xargs" {
+		return 0, "", false
+	}
+	for i := 1; i < len(tokens)-1; i++ {
+		shell := tokens[i]
+		if shell != "sh" && shell != "bash" {
+			continue
+		}
+		if tokens[i+1] == "-c" {
+			return T6, "wrapper: xargs " + shell + " -c executes arbitrary shell", true
 		}
 	}
+	return 0, "", false
+}
 
-	// git subcommand wrappers.
-	if cmdName == "git" && len(tokens) >= 3 {
-		sub := tokens[1]
-		action := tokens[2]
-		switch {
-		case sub == "bisect" && action == "run":
-			return T6, "wrapper: git bisect run executes arbitrary shell at each commit", true
-		case sub == "submodule" && action == "foreach":
-			return T6, "wrapper: git submodule foreach executes arbitrary shell per submodule", true
-		case sub == "rebase" && hasFlag(tokens, "-x"):
-			return T6, "wrapper: git rebase -x executes arbitrary shell at each step", true
-		case sub == "filter-branch":
-			return T6, "wrapper: git filter-branch rewrites history with arbitrary shell", true
-		case sub == "config":
-			// "git config alias.foo '!sh -c …'" — alias starting with '!' is shell.
-			if hasAliasShellEscape(tokens) {
-				return T6, "wrapper: git config alias with '!' shell prefix", true
-			}
+// classifyWrapperGit handles git subcommand wrappers that execute arbitrary
+// shell at each iteration step of a built-in git operation.
+func classifyWrapperGit(tokens []string, cmdName string) (RiskTier, string, bool) {
+	if cmdName != "git" || len(tokens) < 3 {
+		return 0, "", false
+	}
+	sub := tokens[1]
+	action := tokens[2]
+	switch {
+	case sub == "bisect" && action == "run":
+		return T6, "wrapper: git bisect run executes arbitrary shell at each commit", true
+	case sub == "submodule" && action == "foreach":
+		return T6, "wrapper: git submodule foreach executes arbitrary shell per submodule", true
+	case sub == "rebase" && hasFlag(tokens, "-x"):
+		return T6, "wrapper: git rebase -x executes arbitrary shell at each step", true
+	case sub == "filter-branch":
+		return T6, "wrapper: git filter-branch rewrites history with arbitrary shell", true
+	case sub == gitConfig:
+		// "git config alias.foo '!sh -c …'" — alias starting with '!' is shell.
+		if hasAliasShellEscape(tokens) {
+			return T6, "wrapper: git config alias with '!' shell prefix", true
 		}
 	}
-
 	return 0, "", false
 }
 
@@ -544,7 +574,7 @@ func classifyGitReadOnly(sub string) (RiskTier, string, bool) {
 	switch sub {
 	case statusStr, "log", "diff", "show", "shortlog", "describe",
 		"blame", "annotate", "bisect", "ls-files", "ls-tree",
-		"rev-parse", "rev-list", "cat-file", "config", "remote",
+		"rev-parse", "rev-list", "cat-file", gitConfig, "remote",
 		"branch", "tag", "fetch":
 		return T0, reasonGitReadOnly, true
 	}
@@ -619,7 +649,7 @@ func classifyGH(tokens []string) (RiskTier, string) {
 
 	switch sub {
 	case "pr", "issue", repoStr, "release", runStr, "workflow",
-		"api", "auth", "config", "gist", "secret", "variable":
+		"api", "auth", gitConfig, "gist", "secret", "variable":
 		return T4, "gh: " + sub + " (mutation)"
 	}
 	return T7, "gh: unknown subcommand: " + sub
@@ -670,7 +700,7 @@ func classifyNPM(tokens []string) (RiskTier, string) {
 	}
 	sub := tokens[1]
 	switch sub {
-	case runStr, "exec", "start", "build", testStr, "lint",
+	case runStr, cmdExec, "start", "build", testStr, "lint",
 		installStr, "ci", "i":
 		return T1, "npm/yarn/pnpm: " + sub
 	case "publish", "deploy":
@@ -691,7 +721,7 @@ func classifyDevOps(tokens []string, name string) (RiskTier, string) {
 	case "ps", "images", "info", "inspect", "logs", "stats",
 		"top", "version", "get", "describe", statusStr:
 		return T0, name + " read-only"
-	case runStr, "exec", "start", "stop", "restart",
+	case runStr, cmdExec, "start", "stop", "restart",
 		"apply", "create", "upgrade", installStr:
 		return T6, name + ": " + sub + " remote/service mutation"
 	case "rm", "rmi", "remove", "delete", "uninstall":

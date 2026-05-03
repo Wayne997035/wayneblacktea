@@ -18,13 +18,13 @@ func TestRedactString(t *testing.T) {
 		secret      string
 		dontContain []string
 	}{
-		{
+		{ //nolint:gosec // G101: synthetic credentials in test fixtures; test asserts they are redacted
 			name:       "stripe live key",
 			input:      "key=sk_live_AbCdEf012345_xyz",
 			wantSubstr: "[REDACTED:stripe-live-key]",
 			secret:     "sk_live_AbCdEf012345_xyz",
 		},
-		{
+		{ //nolint:gosec // G101: synthetic credentials in test fixtures; test asserts they are redacted
 			name:       "stripe test key",
 			input:      "auth=sk_test_AbCdEf012345_xyz",
 			wantSubstr: "[REDACTED:stripe-test-key]",
@@ -42,37 +42,37 @@ func TestRedactString(t *testing.T) {
 			wantSubstr: "[REDACTED:github-oauth]",
 			secret:     "gho_" + strings.Repeat("Z", 38),
 		},
-		{
+		{ //nolint:gosec // G101: synthetic credentials in test fixtures; test asserts they are redacted
 			name:       "slack bot token",
 			input:      "send xoxb-12345-67890-abcdefg",
 			wantSubstr: "[REDACTED:slack-bot-token]",
 			secret:     "xoxb-12345-67890-abcdefg",
 		},
-		{
+		{ //nolint:gosec // G101: synthetic credentials in test fixtures; test asserts they are redacted
 			name:       "slack user token",
 			input:      "send xoxp-12345-67890-abcdefg",
 			wantSubstr: "[REDACTED:slack-user-token]",
 			secret:     "xoxp-12345-67890-abcdefg",
 		},
-		{
+		{ //nolint:gosec // G101: synthetic JWT in test fixture; test asserts redaction
 			name:       "bearer jwt",
 			input:      "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0",
 			wantSubstr: "[REDACTED:jwt-bearer]",
 			secret:     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0",
 		},
-		{
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
 			name:       "postgres dsn",
 			input:      "DATABASE_URL=postgres://alice:s3cret@db.example.com:5432/app",
 			wantSubstr: "postgres://[REDACTED]:[REDACTED]@db.example.com:5432/app",
 			secret:     "alice:s3cret",
 		},
-		{
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
 			name:       "mongodb dsn srv",
 			input:      "uri=mongodb+srv://admin:topsecret@cluster.mongodb.net/db",
 			wantSubstr: "mongodb://[REDACTED]:[REDACTED]@cluster.mongodb.net",
 			secret:     "admin:topsecret",
 		},
-		{
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
 			name:       "mysql dsn",
 			input:      "url=mysql://root:rootpw@127.0.0.1:3306/app",
 			wantSubstr: "mysql://[REDACTED]:[REDACTED]@127.0.0.1:3306/app",

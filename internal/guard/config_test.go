@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -158,9 +157,7 @@ func TestResolveDBURL_NeitherSet(t *testing.T) {
 // 0o644 (group/world readable) emits an slog.Warn so the operator chmod's
 // it down to 0o600.
 func TestLoadConfig_PermissionWarn0644(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission test relies on POSIX file modes")
-	}
+	skipOnWindows(t, "permission test relies on POSIX file modes")
 	// captureSlogWarn replaces the default handler — cannot run in parallel.
 	buf := captureSlogWarn(t)
 
@@ -170,10 +167,16 @@ func TestLoadConfig_PermissionWarn0644(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(markerDir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"version":1,"observe":true}`), 0o644); err != nil {
+	// Mode 0o644 is INTENTIONALLY too-permissive: the test is precisely
+	// asserting that LoadConfig warns when it sees this mode. gosec's
+	// permissive-mode rules are silenced per call site below.
+	body := []byte(`{"version":1,"observe":true}`)
+	//nolint:gosec // G306: deliberately permissive to exercise the perm-warn path
+	if err := os.WriteFile(cfgPath, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Re-chmod in case the umask raised the bits.
+	//nolint:gosec // G302: deliberately permissive (see WriteFile comment above)
 	if err := os.Chmod(cfgPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -190,9 +193,7 @@ func TestLoadConfig_PermissionWarn0644(t *testing.T) {
 // TestLoadConfig_PermissionNoWarn0600 verifies that a marker file with the
 // recommended mode 0o600 emits no permission warning.
 func TestLoadConfig_PermissionNoWarn0600(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission test relies on POSIX file modes")
-	}
+	skipOnWindows(t, "permission test relies on POSIX file modes")
 	buf := captureSlogWarn(t)
 
 	dir := t.TempDir()

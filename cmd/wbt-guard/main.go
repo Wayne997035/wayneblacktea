@@ -83,7 +83,8 @@ func main() {
 // noise to the user.
 func configureSlog() {
 	logPath := filepath.Join(os.TempDir(), "wbt-guard.log")
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path is os.TempDir() + constant filename, mode 0600
+	// path is os.TempDir() + constant filename; mode 0600 only for owner.
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: see comment above
 	if err != nil || f == nil {
 		slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		return

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -481,9 +480,7 @@ func TestClassifyFilePath_NewFileWriteInRepo(t *testing.T) {
 // this, EvalSymlinks does.
 func TestClassifyFilePath_SymlinkOutsideRepo(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink fixture relies on POSIX permissions")
-	}
+	skipOnWindows(t, "symlink fixture relies on POSIX permissions")
 	root := t.TempDir()
 	repoDir := filepath.Join(root, "repo")
 	outsideDir := filepath.Join(root, "outside")
@@ -512,9 +509,7 @@ func TestClassifyFilePath_SymlinkOutsideRepo(t *testing.T) {
 // another in-repo path stays at T1.
 func TestClassifyFilePath_SymlinkInsideRepo(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink fixture relies on POSIX permissions")
-	}
+	skipOnWindows(t, "symlink fixture relies on POSIX permissions")
 	repoDir := t.TempDir()
 	subDir := filepath.Join(repoDir, "sub")
 	if err := os.MkdirAll(subDir, 0o750); err != nil {
