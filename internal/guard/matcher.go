@@ -20,6 +20,17 @@ type MatchResult struct {
 // Match classifies a PreToolUse invocation and returns the result.
 // cwd is the absolute working directory at time of invocation (from the
 // Claude Code hook payload).
+//
+// The default branch implements a defence-in-depth policy for unknown
+// tools (Round 2 hardening, M5):
+//   - Explicit safe-tool allowlist → T0.
+//   - mcp__* heuristics: destructive-verb names (delete/revoke/force/drop/
+//     destroy/clear/reset) → T5; mutation-verb names (add/create/confirm/
+//     set/update/complete) → T2; everything else mcp__* → T3.
+//   - Anything not matched by either path → T5 (default-deny in observation
+//     so a future Claude Code release that adds a tool we never heard of
+//     surfaces as a high-risk event for triage instead of slipping by at
+//     a generic T4).
 func Match(toolName string, toolInput json.RawMessage, cwd string) MatchResult {
 	switch toolName {
 	case "Bash":
@@ -33,13 +44,91 @@ func Match(toolName string, toolInput json.RawMessage, cwd string) MatchResult {
 	case "Task":
 		return matchTask(toolInput)
 	default:
-		// Unknown tool — treat as T4 (could do anything, but no concrete evidence
-		// of destructive action).
+		return matchUnknownTool(toolName)
+	}
+}
+
+// safeToolAllowlist is the set of built-in Claude Code tools we know are
+// non-mutating. Anything outside this list and outside the explicit handlers
+// above is treated as risky.
+//
+//nolint:gochecknoglobals // immutable allowlist; package-level for cheap O(1) lookup.
+var safeToolAllowlist = map[string]bool{
+	"Read":             true,
+	"Glob":             true,
+	"Grep":             true,
+	"WebSearch":        true,
+	"WebFetch":         true,
+	"NotebookRead":     true,
+	"BashOutput":       true,
+	"KillShell":        true,
+	"ListMcpResources": true,
+}
+
+// destructiveVerbFragments are substrings that, when present in an mcp__*
+// tool name, escalate the classification to T5. Order matters only for the
+// reason string (the first match wins), not the tier.
+//
+//nolint:gochecknoglobals // immutable lookup.
+var destructiveVerbFragments = []string{
+	"delete_", "revoke_", "force_", "drop_", "_destroy", "destroy_", "clear_", "reset_",
+}
+
+// mutationVerbFragments are substrings that mark mcp__* tool names as
+// "mutating but not destructive" — T2.
+//
+//nolint:gochecknoglobals // immutable lookup.
+var mutationVerbFragments = []string{
+	"add_", "create_", "confirm_", "set_", "update_", "complete_",
+}
+
+// matchUnknownTool classifies a tool name not handled by the per-tool
+// matchers above.
+func matchUnknownTool(toolName string) MatchResult {
+	if safeToolAllowlist[toolName] {
 		return MatchResult{
-			Tier:        T4,
-			Reason:      "unknown tool: " + toolName,
-			MatcherName: "unknown",
+			Tier:        T0,
+			Reason:      "safe tool: " + toolName,
+			MatcherName: "allowlist",
 		}
+	}
+	if strings.HasPrefix(toolName, "mcp__") {
+		return classifyMCPTool(toolName)
+	}
+	// Unknown non-mcp tool — default-deny in observation. Better to over-flag
+	// during observe-phase than under-flag and miss a future Claude Code tool
+	// that does something destructive we never anticipated.
+	return MatchResult{
+		Tier:        T5,
+		Reason:      "default-deny: unrecognised tool: " + toolName,
+		MatcherName: "unknown",
+	}
+}
+
+// classifyMCPTool routes mcp__* tools through verb-fragment heuristics.
+func classifyMCPTool(toolName string) MatchResult {
+	for _, frag := range destructiveVerbFragments {
+		if strings.Contains(toolName, frag) {
+			return MatchResult{
+				Tier:        T5,
+				Reason:      "mcp tool with destructive verb (" + frag + "): " + toolName,
+				MatcherName: "mcp",
+			}
+		}
+	}
+	for _, frag := range mutationVerbFragments {
+		if strings.Contains(toolName, frag) {
+			return MatchResult{
+				Tier:        T2,
+				Reason:      "mcp tool with mutation verb (" + frag + "): " + toolName,
+				MatcherName: "mcp",
+			}
+		}
+	}
+	return MatchResult{
+		Tier:        T3,
+		Reason:      "mcp tool with unclassified verb: " + toolName,
+		MatcherName: "mcp",
 	}
 }
 

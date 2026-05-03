@@ -254,12 +254,108 @@ func TestMatch_Task(t *testing.T) {
 	}
 }
 
-// TestMatch_UnknownTool verifies unknown tools return T4.
+// TestMatch_UnknownTool verifies unknown non-mcp tools default-deny at T5.
+// Round 2 hardening (M5): better to over-flag during observe-phase than miss
+// a destructive future tool.
 func TestMatch_UnknownTool(t *testing.T) {
 	t.Parallel()
 	result := Match("UnknownFutureTool", json.RawMessage(`{}`), "/repo")
-	if result.Tier != T4 {
-		t.Errorf("Match(UnknownFutureTool) tier = %d, want T4(%d)", result.Tier, T4)
+	if result.Tier != T5 {
+		t.Errorf("Match(UnknownFutureTool) tier = %d, want T5(%d)", result.Tier, T5)
+	}
+	if result.MatcherName != "unknown" {
+		t.Errorf("MatcherName = %q, want 'unknown'", result.MatcherName)
+	}
+}
+
+// TestMatch_SafeToolAllowlist verifies known-safe tools classify at T0.
+func TestMatch_SafeToolAllowlist(t *testing.T) {
+	t.Parallel()
+	tools := []string{
+		"Read", "Glob", "Grep", "WebSearch", "WebFetch",
+		"NotebookRead", "BashOutput", "KillShell", "ListMcpResources",
+	}
+	for _, name := range tools {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result := Match(name, json.RawMessage(`{}`), "/repo")
+			if result.Tier != T0 {
+				t.Errorf("Match(%s) tier = %d, want T0", name, result.Tier)
+			}
+			if result.MatcherName != "allowlist" {
+				t.Errorf("Match(%s) matcher = %q, want 'allowlist'", name, result.MatcherName)
+			}
+		})
+	}
+}
+
+// TestMatch_MCPDestructiveVerbs verifies mcp__* tool names containing a
+// destructive verb classify at T5.
+func TestMatch_MCPDestructiveVerbs(t *testing.T) {
+	t.Parallel()
+	tools := []string{
+		"mcp__github__delete_repo",
+		"mcp__db__drop_table",
+		"mcp__auth__revoke_token",
+		"mcp__cluster__force_failover",
+		"mcp__sandbox__destroy_workspace",
+		"mcp__cache__clear_all",
+		"mcp__db__reset_password",
+	}
+	for _, name := range tools {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result := Match(name, json.RawMessage(`{}`), "/repo")
+			if result.Tier != T5 {
+				t.Errorf("Match(%s) tier = %d, want T5", name, result.Tier)
+			}
+			if result.MatcherName != "mcp" {
+				t.Errorf("Match(%s) matcher = %q, want 'mcp'", name, result.MatcherName)
+			}
+		})
+	}
+}
+
+// TestMatch_MCPMutationVerbs verifies mcp__* tool names containing a
+// mutation (non-destructive) verb classify at T2.
+func TestMatch_MCPMutationVerbs(t *testing.T) {
+	t.Parallel()
+	tools := []string{
+		"mcp__gtd__add_task",
+		"mcp__gtd__create_session",
+		"mcp__gtd__confirm_plan",
+		"mcp__gtd__set_priority",
+		"mcp__gtd__update_task",
+		"mcp__gtd__complete_task",
+	}
+	for _, name := range tools {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result := Match(name, json.RawMessage(`{}`), "/repo")
+			if result.Tier != T2 {
+				t.Errorf("Match(%s) tier = %d, want T2", name, result.Tier)
+			}
+		})
+	}
+}
+
+// TestMatch_MCPUnclassifiedVerb verifies mcp__* tools without a known verb
+// fall back to T3 (mid-tier with would_deny=false).
+func TestMatch_MCPUnclassifiedVerb(t *testing.T) {
+	t.Parallel()
+	tools := []string{
+		"mcp__random__do_thing",
+		"mcp__weather__forecast",
+		"mcp__chat__send",
+	}
+	for _, name := range tools {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result := Match(name, json.RawMessage(`{}`), "/repo")
+			if result.Tier != T3 {
+				t.Errorf("Match(%s) tier = %d, want T3", name, result.Tier)
+			}
+		})
 	}
 }
 
