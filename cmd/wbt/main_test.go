@@ -306,6 +306,11 @@ func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 	if strings.Contains(string(out), "API key for Claude") {
 		t.Fatalf("runInit prompted for CLAUDE_API_KEY:\n%s", string(out))
 	}
+	// Phase 1-4 of docs/openrouter-fallback.md: the optional OpenRouter
+	// provider MUST NOT be prompted in the default install flow either.
+	if strings.Contains(string(out), "OpenRouter") || strings.Contains(string(out), "OPENROUTER") {
+		t.Fatalf("runInit prompted for OPENROUTER_API_KEY:\n%s", string(out))
+	}
 
 	envContent, err := os.ReadFile(".env")
 	if err != nil {
@@ -314,6 +319,9 @@ func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 	if strings.Contains(string(envContent), "\nCLAUDE_API_KEY=") {
 		t.Fatalf(".env should not contain active CLAUDE_API_KEY:\n%s", string(envContent))
 	}
+	if strings.Contains(string(envContent), "\nOPENROUTER_API_KEY=") {
+		t.Fatalf(".env should not contain active OPENROUTER_API_KEY:\n%s", string(envContent))
+	}
 
 	mcpContent, err := os.ReadFile(".mcp.json")
 	if err != nil {
@@ -321,6 +329,9 @@ func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 	}
 	if strings.Contains(string(mcpContent), "CLAUDE_API_KEY") {
 		t.Fatalf(".mcp.json should not contain CLAUDE_API_KEY:\n%s", string(mcpContent))
+	}
+	if strings.Contains(string(mcpContent), "OPENROUTER_API_KEY") {
+		t.Fatalf(".mcp.json should not contain OPENROUTER_API_KEY:\n%s", string(mcpContent))
 	}
 }
 

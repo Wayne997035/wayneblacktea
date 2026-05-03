@@ -24,6 +24,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -99,14 +100,28 @@ func run() error {
 	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
+	// LLM provider chain (Phase 1-4 of docs/openrouter-fallback.md):
+	// classifier + concept reviewer go through the provider abstraction so
+	// they pick up OpenRouter / Groq fallback automatically. Reflector and
+	// Summarizer remain Claude-only this phase (deferred to Phase 5).
+	llmChain := llm.BuildChainFromEnv()
+	if llmChain.Len() == 0 {
+		log.Println("llm: memory-only mode (no provider configured)")
+	} else {
+		log.Printf("llm: provider chain = %v", llmChain.Names())
+	}
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
 	var clf *ai.ActivityClassifier
 	var reflector ai.ReflectorIface
+	if llmChain.Len() > 0 {
+		clf = ai.NewActivityClassifierFromLLM(llmChain)
+		conceptReviewer = ai.NewConceptReviewerFromLLM(llmChain)
+	}
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
+		// Summarizer and reflector still bind to Claude directly until
+		// Phase 5 of the spec. They are independent of the provider chain.
 		sum = ai.New(claudeKey)
-		conceptReviewer = ai.NewConceptReviewer(claudeKey)
-		clf = ai.NewActivityClassifier(claudeKey)
 		reflector = ai.NewReflector(claudeKey)
 	}
 	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
@@ -241,7 +256,7 @@ func run() error {
 	sched.Start()
 	defer sched.Stop()
 
-	stopBot, err := startDiscordBotIfConfigured(port, apiKey)
+	stopBot, err := startDiscordBotIfConfigured(port, apiKey, llmChain)
 	if err != nil {
 		return err
 	}
@@ -275,17 +290,17 @@ func buildSPAHandler(distFS fs.FS) http.Handler {
 	})
 }
 
-func startDiscordBotIfConfigured(port, apiKey string) (func(), error) {
+func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) (func(), error) {
 	botToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if botToken == "" {
 		return func() {}, nil
 	}
 	bot, err := discordbot.New(
 		botToken,
-		os.Getenv("GROQ_API_KEY"),
 		"http://localhost:"+port,
 		apiKey,
 		os.Getenv("DISCORD_GUILD_ID"),
+		llmClient,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating discord bot: %w", err)

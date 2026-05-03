@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -32,9 +33,14 @@ func run() error {
 	if botToken == "" {
 		return fmt.Errorf("DISCORD_BOT_TOKEN not set")
 	}
-	groqKey := os.Getenv("GROQ_API_KEY")
-	if groqKey == "" {
-		return fmt.Errorf("GROQ_API_KEY not set")
+	// LLM provider chain is built from AI_PROVIDER / AI_FALLBACK_PROVIDERS /
+	// the per-provider keys. When the chain is empty, /analyze gracefully
+	// returns the "memory-only mode" message instead of refusing to start —
+	// other slash commands (/note, /search, /recent, /review) do not need
+	// an LLM provider and must keep working.
+	llmChain := llm.BuildChainFromEnv()
+	if llmChain.Len() == 0 {
+		slog.Warn("discordbot: no LLM provider configured; /analyze will be disabled")
 	}
 	apiURL := os.Getenv("WAYNEBLACKTEA_API_URL")
 	if apiURL == "" {
@@ -81,7 +87,7 @@ func run() error {
 		}
 	}
 
-	bot, err := discordbot.New(botToken, groqKey, apiURL, apiKey, guildID)
+	bot, err := discordbot.New(botToken, apiURL, apiKey, guildID, llmChain)
 	if err != nil {
 		return fmt.Errorf("create bot: %w", err)
 	}
