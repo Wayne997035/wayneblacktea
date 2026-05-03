@@ -1,11 +1,13 @@
 -- Migration 000022: work_session_tasks join table
 --
 -- Links work_sessions to tasks with a role classification.
--- ON DELETE CASCADE: removing a session or task removes the link.
+-- Referential integrity in code (red line #9; see migration 000026).
+-- GTDStore.DeleteTask deletes link rows on parent task delete; if a
+-- DeleteWorkSession handler is added, it MUST do the same for session_id.
 
 CREATE TABLE IF NOT EXISTS work_session_tasks (
-    session_id  UUID    NOT NULL REFERENCES work_sessions(id) ON DELETE CASCADE,
-    task_id     UUID    NOT NULL REFERENCES tasks(id)         ON DELETE CASCADE,
+    session_id  UUID    NOT NULL,
+    task_id     UUID    NOT NULL,
     role        TEXT    NOT NULL CHECK (role IN ('primary','follow_up','blocker','generated')),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (session_id, task_id)

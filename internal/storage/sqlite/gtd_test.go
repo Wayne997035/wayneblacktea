@@ -183,6 +183,192 @@ func TestGTDStore_DeleteTask(t *testing.T) {
 	}
 }
 
+// TestGTDStore_DeleteTask_CascadesIntoWorkSessions verifies the code-level
+// replacement for the FK cascades dropped in migration 000026. After
+// migration 000026 the DB no longer enforces:
+//
+//   - work_session_tasks.task_id ON DELETE CASCADE
+//   - work_sessions.current_task_id ON DELETE SET NULL
+//
+// so GTDStore.DeleteTask MUST clean those rows itself, atomically, in a
+// single transaction. The test inserts a task, links it to a work_session
+// both as the current_task_id and via a join row, then deletes the task and
+// asserts the cleanup happened.
+func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
+	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := sqlite.NewGTDStore(d)
+	ctx := context.Background()
+
+	// Insert a task via the normal store path.
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "linked-task", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Insert a work_session whose current_task_id points at this task.
+	// Hand-rolled INSERT (not via WorkSessionStore) keeps this test focused
+	// on the GTD cascade behaviour without coupling to worksession internals.
+	sessionID := uuid.New().String()
+	wsID := uuid.New().String()
+	if err := d.ExecContext(ctx,
+		`INSERT INTO work_sessions
+			(id, workspace_id, repo_name, project_id, title, goal, status, source,
+			 confirmed_plan_id, current_task_id, started_at, created_at, updated_at)
+		 VALUES (?1,?2,?3,NULL,?4,?5,'in_progress','manual',NULL,?6,?7,?7,?7)`,
+		sessionID, wsID, "demo-repo", "linked-session", "test cascade",
+		task.ID.String(), "2026-05-03T00:00:00.000Z",
+	); err != nil {
+		t.Fatalf("insert work_session: %v", err)
+	}
+
+	// Insert a join row.
+	if err := d.ExecContext(ctx,
+		`INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
+		 VALUES (?1,?2,'primary','2026-05-03T00:00:00.000Z')`,
+		sessionID, task.ID.String(),
+	); err != nil {
+		t.Fatalf("insert work_session_tasks: %v", err)
+	}
+
+	// Sanity check: the link row exists, current_task_id is set.
+	var preLinks int
+	if err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = ?1`, task.ID.String(),
+	).Scan(&preLinks); err != nil {
+		t.Fatalf("pre-count: %v", err)
+	}
+	if preLinks != 1 {
+		t.Fatalf("expected 1 link row before delete, got %d", preLinks)
+	}
+
+	// Delete the task — should cascade.
+	if err := store.DeleteTask(ctx, task.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	// Assertion 1: link row is gone (was ON DELETE CASCADE).
+	var postLinks int
+	if err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = ?1`, task.ID.String(),
+	).Scan(&postLinks); err != nil {
+		t.Fatalf("post-count links: %v", err)
+	}
+	if postLinks != 0 {
+		t.Errorf("expected work_session_tasks rows to be deleted, got %d", postLinks)
+	}
+
+	// Assertion 2: current_task_id is now NULL (was ON DELETE SET NULL).
+	var currentTaskID *string
+	if err := d.QueryRowContext(ctx,
+		`SELECT current_task_id FROM work_sessions WHERE id = ?1`, sessionID,
+	).Scan(&currentTaskID); err != nil {
+		t.Fatalf("post-count session: %v", err)
+	}
+	if currentTaskID != nil {
+		t.Errorf("expected current_task_id to be NULL after task delete, got %q", *currentTaskID)
+	}
+
+	// Assertion 3: the task itself is gone.
+	tasks, _ := store.Tasks(ctx, nil)
+	for _, tk := range tasks {
+		if tk.ID == task.ID {
+			t.Errorf("task should be deleted, still appears: %+v", tk)
+		}
+	}
+}
+
+// TestGTDStore_DeleteTask_NoLinkedRows ensures DeleteTask still works when
+// no work_session_tasks / work_sessions rows reference the task. The cleanup
+// statements should be no-ops and the parent DELETE should commit normally.
+func TestGTDStore_DeleteTask_NoLinkedRows(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "isolated", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if err := s.DeleteTask(ctx, task.ID); err != nil {
+		t.Fatalf("DeleteTask without linked rows: %v", err)
+	}
+
+	tasks, _ := s.Tasks(ctx, nil)
+	for _, tk := range tasks {
+		if tk.ID == task.ID {
+			t.Errorf("task should be deleted, still appears: %+v", tk)
+		}
+	}
+}
+
+// TestGTDStore_DeleteTask_WorkspaceMismatch ensures the workspace filter on
+// the parent DELETE is respected. A task created in workspace A cannot be
+// deleted by a store scoped to workspace B; the parent DELETE affects 0 rows.
+// (Cleanup statements are keyed by task_id only; if a different-workspace
+// row pointed at this UUID it would be cleaned, but UUIDs are globally
+// unique so this only runs for the legitimate task.)
+func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
+	wsA := uuid.New().String()
+	wsB := uuid.New().String()
+
+	// Use a shared file DB so two Open() calls see the same rows. The DB is
+	// auto-deleted via t.Cleanup on the temp file.
+	dbPath := t.TempDir() + "/wbt-cascade-test.db"
+
+	dA, err := sqlite.Open(context.Background(), "file:"+dbPath, wsA)
+	if err != nil {
+		t.Fatalf("sqlite.Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dA.Close() })
+	storeA := sqlite.NewGTDStore(dA)
+	ctx := context.Background()
+
+	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-A-task", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask in workspace A: %v", err)
+	}
+	// CreateTask via the store uses workspace_id from the store config; verify
+	// the row carries workspace A.
+	var rowWS *string
+	if err := dA.QueryRowContext(ctx,
+		`SELECT workspace_id FROM tasks WHERE id = ?1`, task.ID.String(),
+	).Scan(&rowWS); err != nil {
+		t.Fatalf("read workspace_id: %v", err)
+	}
+	if rowWS == nil || *rowWS != wsA {
+		t.Fatalf("expected task workspace_id=%s, got %v", wsA, rowWS)
+	}
+
+	// Open the same file with workspace B.
+	dB, err := sqlite.Open(context.Background(), "file:"+dbPath, wsB)
+	if err != nil {
+		t.Fatalf("sqlite.Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dB.Close() })
+	storeB := sqlite.NewGTDStore(dB)
+
+	if err := storeB.DeleteTask(ctx, task.ID); err != nil {
+		t.Fatalf("DeleteTask cross-workspace: %v", err)
+	}
+
+	// Task should still exist when read from workspace A.
+	tasks, _ := storeA.Tasks(ctx, nil)
+	found := false
+	for _, tk := range tasks {
+		if tk.ID == task.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("task should NOT have been deleted (workspace mismatch); it disappeared")
+	}
+}
+
 func TestGTDStore_LogActivityAndUpdateStatus(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()

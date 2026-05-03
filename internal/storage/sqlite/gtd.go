@@ -506,14 +506,66 @@ func (s *GTDStore) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status
 	return s.projectByID(ctx, id)
 }
 
-// DeleteTask permanently removes a task by ID.
+// DeleteTask permanently removes a task by ID and replicates the cascade
+// behaviour previously enforced by foreign keys (red line #9; see migration
+// 000026):
+//
+//   - work_session_tasks rows referencing the deleted task are removed
+//     (was ON DELETE CASCADE)
+//   - work_sessions.current_task_id pointing at the deleted task is set NULL
+//     (was ON DELETE SET NULL)
+//
+// All three statements run inside a single SQLite transaction so a partial
+// state is impossible. Tx pattern matches WorkSessionStore.Create (manual
+// Begin + defer Rollback + Commit).
 func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	const q = `DELETE FROM tasks
-		WHERE id = ?1
-		  AND (?2 IS NULL OR workspace_id = ?2)`
-	if _, err := s.db.conn.ExecContext(ctx, q, id.String(), s.db.workspaceArg()); err != nil {
+	idStr := id.String()
+
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return errWrap("DeleteTask begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Best-effort rollback; ignore err because tx may already be
+			// closed if Commit succeeded between the check and this defer.
+			_ = tx.Rollback()
+		}
+	}()
+
+	// 1. Remove join-table rows (was ON DELETE CASCADE on work_session_tasks.task_id).
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM work_session_tasks WHERE task_id = ?1`, idStr,
+	); err != nil {
+		return errWrap("DeleteTask cleanup work_session_tasks", err)
+	}
+
+	// 2. NULL out work_sessions.current_task_id (was ON DELETE SET NULL).
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE work_sessions
+		    SET current_task_id = NULL,
+		        updated_at      = ?2
+		  WHERE current_task_id = ?1`,
+		idStr, nowRFC3339(),
+	); err != nil {
+		return errWrap("DeleteTask nullify work_sessions.current_task_id", err)
+	}
+
+	// 3. Delete the task itself, scoped to the configured workspace.
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM tasks
+		   WHERE id = ?1
+		     AND (?2 IS NULL OR workspace_id = ?2)`,
+		idStr, s.db.workspaceArg(),
+	); err != nil {
 		return errWrap("DeleteTask", err)
 	}
+
+	if err = tx.Commit(); err != nil {
+		return errWrap("DeleteTask commit", err)
+	}
+	committed = true
 	return nil
 }
 

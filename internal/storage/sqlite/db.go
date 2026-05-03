@@ -82,3 +82,11 @@ func (d *DB) ExecContext(ctx context.Context, query string, args ...any) error {
 	}
 	return nil
 }
+
+// QueryRowContext is a thin wrapper exposed for sibling-package tests to
+// assert post-condition state (e.g. that a referential cleanup performed by
+// a service-layer DeleteTask actually NULL'd a column / removed a row).
+// Production code paths inside the package use s.db.conn directly.
+func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return d.conn.QueryRowContext(ctx, query, args...)
+}

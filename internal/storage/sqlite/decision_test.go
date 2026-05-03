@@ -156,16 +156,12 @@ func TestDecisionStore_WorkspaceIsolation(t *testing.T) {
 	}
 }
 
-func TestDecisionStore_FKViolationForMissingProject(t *testing.T) {
-	_, s := openDecisionDB(t, ":memory:", "")
-	projectID := uuid.New()
-	_, err := s.Log(context.Background(), decision.LogParams{
-		ProjectID: &projectID, Title: "bad fk", Context: "c", Decision: "d", Rationale: "r",
-	})
-	if err == nil {
-		t.Fatal("expected FK violation, got nil")
-	}
-}
+// (Removed) TestDecisionStore_FKViolationForMissingProject — the schema
+// no longer enforces a foreign key from decisions.project_id to projects.id
+// (red line #9; migration 000026). Referential integrity for project IDs
+// is now expected to be applied in code at the service/handler layer when
+// a use case requires it; the storage layer accepts orphan project_id by
+// design (matching the Postgres backend behaviour after migration 000026).
 
 func TestDecisionStore_ContextCanceled(t *testing.T) {
 	_, s := openDecisionDB(t, ":memory:", "")

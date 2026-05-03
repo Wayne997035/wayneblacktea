@@ -24,6 +24,9 @@ type Querier interface {
 	CreateReviewSchedule(ctx context.Context, arg CreateReviewScheduleParams) (ReviewSchedule, error)
 	CreateSessionHandoff(ctx context.Context, arg CreateSessionHandoffParams) (SessionHandoff, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
+	// The Go-side store wraps this in a transaction together with cleanup of
+	// work_session_tasks + work_sessions.current_task_id (the cascade behaviour
+	// previously enforced by FKs; see migration 000026 and gtd.Store.DeleteTask).
 	DeleteTask(ctx context.Context, arg DeleteTaskParams) error
 	GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUID) ([]Task, error)
 	GetConceptByID(ctx context.Context, arg GetConceptByIDParams) (Concept, error)

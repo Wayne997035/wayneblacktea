@@ -89,6 +89,9 @@ WHERE status IN ('pending', 'in_progress')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
 
 -- name: DeleteTask :exec
+-- The Go-side store wraps this in a transaction together with cleanup of
+-- work_session_tasks + work_sessions.current_task_id (the cascade behaviour
+-- previously enforced by FKs; see migration 000026 and gtd.Store.DeleteTask).
 DELETE FROM tasks
 WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));

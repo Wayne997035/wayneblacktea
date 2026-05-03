@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS goals (
 CREATE TABLE IF NOT EXISTS projects (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT,
-    goal_id      TEXT REFERENCES goals(id),
+    goal_id      TEXT, -- referential integrity in code (red line #9); if a DeleteGoal handler is added it MUST cleanup downstream tables
     name         TEXT NOT NULL UNIQUE,
     title        TEXT NOT NULL,
     description  TEXT,
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS tasks (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT,
-    project_id   TEXT REFERENCES projects(id),
+    project_id   TEXT, -- referential integrity in code (red line #9); if a DeleteProject handler is added it MUST cleanup downstream tables
     title        TEXT NOT NULL,
     description  TEXT,
     status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','cancelled')),
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS activity_log (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT,
     actor        TEXT NOT NULL,
-    project_id   TEXT REFERENCES projects(id),
+    project_id   TEXT, -- referential integrity in code (red line #9); if a DeleteProject handler is added it MUST cleanup downstream tables
     action       TEXT NOT NULL,
     notes        TEXT,
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS activity_log (
 CREATE TABLE IF NOT EXISTS session_handoffs (
     id              TEXT PRIMARY KEY,
     workspace_id    TEXT,
-    project_id      TEXT REFERENCES projects(id),
+    project_id      TEXT, -- referential integrity in code (red line #9); if a DeleteProject handler is added it MUST cleanup downstream tables
     repo_name       TEXT,
     intent          TEXT NOT NULL,
     context_summary TEXT,
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS repos (
 CREATE TABLE IF NOT EXISTS decisions (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT,
-    project_id   TEXT REFERENCES projects(id),
+    project_id   TEXT, -- referential integrity in code (red line #9); if a DeleteProject handler is added it MUST cleanup downstream tables
     repo_name    TEXT,
     title        TEXT NOT NULL,
     context      TEXT NOT NULL,
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS concepts (
 CREATE TABLE IF NOT EXISTS review_schedule (
     id             TEXT PRIMARY KEY,
     workspace_id   TEXT,
-    concept_id     TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    concept_id     TEXT NOT NULL, -- referential integrity in code (red line #9); if a DeleteConcept handler is added it MUST cleanup review_schedule rows
     stability      REAL NOT NULL DEFAULT 1.0,
     difficulty     REAL NOT NULL DEFAULT 0.3,
     due_date       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     id                  TEXT        PRIMARY KEY,
     workspace_id        TEXT        NOT NULL,
     repo_name           TEXT        NOT NULL,
-    project_id          TEXT        REFERENCES projects(id) ON DELETE SET NULL,
+    project_id          TEXT, -- referential integrity in code (red line #9); cleanup on parent delete handled in service layer
     title               TEXT        NOT NULL,
     goal                TEXT        NOT NULL,
     status              TEXT        NOT NULL CHECK (status IN (
@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
                             'completed','cancelled','archived')),
     source              TEXT        NOT NULL CHECK (source IN ('manual','confirm_plan','hook','other')),
     confirmed_plan_id   TEXT        NULL,
-    current_task_id     TEXT        REFERENCES tasks(id) ON DELETE SET NULL,
+    current_task_id     TEXT, -- referential integrity in code (red line #9); GTDStore.DeleteTask NULLs this on parent task delete
     final_summary       TEXT        NULL,
     started_at          TEXT        NULL,
     last_checkpoint_at  TEXT        NULL,
@@ -282,8 +282,10 @@ CREATE INDEX IF NOT EXISTS idx_work_sessions_status
 -- Mirrored from migrations/sqlite/000022_work_session_tasks.up.sql.
 -- Links work_sessions to tasks with a role classification.
 CREATE TABLE IF NOT EXISTS work_session_tasks (
-    session_id  TEXT    NOT NULL REFERENCES work_sessions(id) ON DELETE CASCADE,
-    task_id     TEXT    NOT NULL REFERENCES tasks(id)         ON DELETE CASCADE,
+    -- referential integrity in code (red line #9); GTDStore.DeleteTask cleans up
+    -- rows on parent task delete. A future DeleteWorkSession handler MUST do the same.
+    session_id  TEXT    NOT NULL,
+    task_id     TEXT    NOT NULL,
     role        TEXT    NOT NULL CHECK (role IN ('primary','follow_up','blocker','generated')),
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (session_id, task_id)

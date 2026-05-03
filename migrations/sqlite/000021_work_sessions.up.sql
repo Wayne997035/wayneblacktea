@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     id                  TEXT        PRIMARY KEY,
     workspace_id        TEXT        NOT NULL,
     repo_name           TEXT        NOT NULL,
-    project_id          TEXT        REFERENCES projects(id) ON DELETE SET NULL,
+    project_id          TEXT,        -- referential integrity in code (red line #9; see migration 000026)
     title               TEXT        NOT NULL,
     goal                TEXT        NOT NULL,
     status              TEXT        NOT NULL CHECK (status IN (
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
                             'completed','cancelled','archived')),
     source              TEXT        NOT NULL CHECK (source IN ('manual','confirm_plan','hook','other')),
     confirmed_plan_id   TEXT        NULL,
-    current_task_id     TEXT        REFERENCES tasks(id) ON DELETE SET NULL,
+    current_task_id     TEXT,        -- referential integrity in code (red line #9); GTD store NULLs this on parent task delete
     final_summary       TEXT        NULL,
     started_at          TEXT        NULL,
     last_checkpoint_at  TEXT        NULL,

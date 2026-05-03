@@ -251,6 +251,9 @@ type DeleteTaskParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
+// The Go-side store wraps this in a transaction together with cleanup of
+// work_session_tasks + work_sessions.current_task_id (the cascade behaviour
+// previously enforced by FKs; see migration 000026 and gtd.Store.DeleteTask).
 func (q *Queries) DeleteTask(ctx context.Context, arg DeleteTaskParams) error {
 	_, err := q.db.Exec(ctx, deleteTask, arg.ID, arg.WorkspaceID)
 	return err
