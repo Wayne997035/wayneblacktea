@@ -127,6 +127,7 @@ Call list_decisions with the relevant repo_name before answering. Always verify 
 |-----------|------|
 | Multi-phase plan confirmed ("好"/"go"/"衝"/"開始"/option pick) | confirm_plan — ALL phases + decisions atomically |
 | User confirms a single decision | log_decision BEFORE implementation |
+| **Start a task** (dispatch agent OR begin Lead-direct) | **update_task → in_progress immediately, no user reminder** |
 | Build passes / PR merged / task done | complete_task with artifact URL |
 | "收工" / "下班" / "later" / "good night" | set_session_handoff (Stop hook also fires; call this too for richer context) |
 | Scope/priority changes mid-session | log_decision + update_task + set_session_handoff |
@@ -135,7 +136,15 @@ Call list_decisions with the relevant repo_name before answering. Always verify 
 
 ## confirm_plan triggers
 "可以" "好" "OK" "yes" "go" "對" "衝" "開工" "開始" "執行" "按這個" — or any single letter/number picking from a list the assistant just proposed.
-After confirm_plan fires: assess each task immediately — Lead-direct tasks start now, complex tasks dispatch engineer now. Both in parallel.
+After confirm_plan fires: assess each task immediately — Lead-direct tasks start now,
+complex tasks dispatch engineer now. Both in parallel. **At dispatch (or Lead-direct start),
+MUST call update_task → in_progress for every task being worked. No user prompt needed.**
+
+## update_task triggers (in_progress)
+Mandatory the moment work begins on a task — dispatch engineer/codex/frontend-engineer,
+or Lead-direct execution starts. For multi-phase plans just created via confirm_plan,
+mark every phase task being worked in parallel as in_progress. Skipping this is a process
+bug; user should not have to remind. Pair with complete_task at finish.
 
 ## log_decision scope
 Architecture, API design, deployment config, third-party service choice, scope pivot,
