@@ -342,3 +342,102 @@ func TestCollectDBConfig_PostgresEmptyDSN(t *testing.T) {
 func newBufReader(r io.Reader) *bufio.Reader {
 	return bufio.NewReader(r)
 }
+
+// TestValidateGuardBypassFlags exercises every accept/reject branch of the
+// client-side bypass flag validator. Done as a single table-driven test so
+// future contributors can see the full matrix at a glance.
+func TestValidateGuardBypassFlags(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		scope     string
+		target    string
+		reason    string
+		iUnderG   bool
+		wantErr   bool
+		wantInErr string
+	}{
+		// Happy paths.
+		{name: "repo scope", scope: "repo", target: "wayneblacktea", reason: "trial", wantErr: false},
+		{name: "file scope abs", scope: "file", target: "/Users/me/repo/foo.go", reason: "trial", wantErr: false},
+		{name: "dir scope abs", scope: "dir", target: "/Users/me/repo", reason: "trial", wantErr: false},
+		{
+			name: "global scope with confirmation",
+			scope: "global", target: "global", reason: "trial", iUnderG: true,
+			wantErr: false,
+		},
+
+		// Reject: missing.
+		{name: "missing scope", scope: "", target: "x", reason: "r", wantErr: true, wantInErr: "--scope is required"},
+		{name: "missing target", scope: "repo", target: "", reason: "r", wantErr: true, wantInErr: "--target is required"},
+		{
+			name:    "missing reason",
+			scope:   "repo", target: "x", reason: "",
+			wantErr: true, wantInErr: "--reason is required",
+		},
+		{
+			name:    "whitespace reason",
+			scope:   "repo", target: "x", reason: "   \t",
+			wantErr: true, wantInErr: "--reason is required",
+		},
+
+		// Reject: invalid scope value.
+		{name: "unknown scope", scope: "team", target: "x", reason: "r", wantErr: true, wantInErr: "invalid"},
+
+		// Reject: global without confirmation / wrong target.
+		{
+			name: "global without confirmation",
+			scope: "global", target: "global", reason: "r", iUnderG: false,
+			wantErr: true, wantInErr: "i-understand-this-is-global",
+		},
+		{
+			name: "global with non-literal target",
+			scope: "global", target: "everything", reason: "r", iUnderG: true,
+			wantErr: true, wantInErr: "literal",
+		},
+
+		// Reject: file/dir with relative path.
+		{
+			name: "file relative path",
+			scope: "file", target: "foo.go", reason: "r",
+			wantErr: true, wantInErr: "absolute",
+		},
+		{
+			name: "dir relative path",
+			scope: "dir", target: "./sub", reason: "r",
+			wantErr: true, wantInErr: "absolute",
+		},
+
+		// Reject: overly-broad targets.
+		{
+			name: "dir target /",
+			scope: "dir", target: "/", reason: "r",
+			wantErr: true, wantInErr: "too broadly",
+		},
+		{
+			name: "dir target /home",
+			scope: "dir", target: "/home", reason: "r",
+			wantErr: true, wantInErr: "too broadly",
+		},
+		{
+			name: "dir target /Users",
+			scope: "dir", target: "/Users", reason: "r",
+			wantErr: true, wantInErr: "too broadly",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateGuardBypassFlags(tc.scope, tc.target, tc.reason, tc.iUnderG)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateGuardBypassFlags(%q,%q) expected error, got nil", tc.scope, tc.target)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateGuardBypassFlags(%q,%q) unexpected error: %v", tc.scope, tc.target, err)
+			}
+			if tc.wantErr && tc.wantInErr != "" && !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Errorf("validateGuardBypassFlags error %q missing substring %q", err.Error(), tc.wantInErr)
+			}
+		})
+	}
+}

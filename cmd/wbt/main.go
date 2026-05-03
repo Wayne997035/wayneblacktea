@@ -114,19 +114,18 @@ func runGuardBypassAdd(args []string) error {
 	toolFlag := fs.String("tool", "", "tool name to bypass (empty = all tools)")
 	ttlFlag := fs.String("ttl", "", "bypass TTL duration (e.g. 1h, 24h, 7d); empty = no expiry")
 	reasonFlag := fs.String("reason", "", "reason for bypass (required, must not be empty)")
+	dangerouslyGlobal := fs.Bool(
+		"i-understand-this-is-global",
+		false,
+		"required confirmation when --scope=global; whitelists every repo on every machine",
+	)
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("guard bypass add: %w", err)
 	}
 
-	if *scopeFlag == "" {
-		return fmt.Errorf("guard bypass add: --scope is required (global|repo|dir|file)")
-	}
-	if *targetFlag == "" {
-		return fmt.Errorf("guard bypass add: --target is required")
-	}
-	if guard.IsWhitespacesOnly(*reasonFlag) {
-		return fmt.Errorf("guard bypass add: --reason is required and must not be empty or whitespace-only")
+	if err := validateGuardBypassFlags(*scopeFlag, *targetFlag, *reasonFlag, *dangerouslyGlobal); err != nil {
+		return err
 	}
 
 	var expiresAt *time.Time
@@ -158,6 +157,87 @@ func runGuardBypassAdd(args []string) error {
 	}
 
 	fmt.Printf("bypass added: %s\n", id)
+	return nil
+}
+
+// validBypassScopes lists the scopes accepted by the schema CHECK constraint.
+// Pulled out of validateGuardBypassFlags so it can be unit-tested without
+// hitting the rest of the wiring.
+//
+//nolint:gochecknoglobals // immutable enum table; equivalent to a const set.
+var validBypassScopes = map[string]bool{
+	"file":   true,
+	"dir":    true,
+	"repo":   true,
+	"global": true,
+}
+
+// overlyBroadScopes lists --target values that, while technically valid as
+// absolute paths, would whitelist effectively every project on the machine
+// and so are rejected with a more helpful error than the schema CHECK.
+//
+//nolint:gochecknoglobals // immutable allowlist.
+var overlyBroadScopes = map[string]bool{
+	"/":      true,
+	"/home":  true,
+	"/Users": true,
+}
+
+// validateGuardBypassFlags exhaustively validates the (scope, target, reason)
+// triple plus the global confirmation. Done client-side so:
+//   - The error UX is "valid scopes are file, dir, repo, global", not
+//     `pq: violates check constraint "guard_bypasses_scope_check"`.
+//   - Combinations the DB cannot express (e.g. global without the
+//     i-understand-this-is-global flag, file scope with a relative path)
+//     are rejected up-front.
+//
+// Validation rules:
+//   - scope MUST be in {file, dir, repo, global}.
+//   - When scope=global, target MUST be the literal "global" AND the
+//     --i-understand-this-is-global flag MUST be set.
+//   - When scope in {file, dir}, target MUST be an absolute path AND
+//     MUST NOT be one of the overly-broad system roots ("/", "/home",
+//     "/Users").
+//   - reason MUST be non-empty (non-whitespace).
+func validateGuardBypassFlags(scope, target, reason string, iUnderstandGlobal bool) error {
+	if scope == "" {
+		return fmt.Errorf("guard bypass add: --scope is required (one of: file, dir, repo, global)")
+	}
+	if !validBypassScopes[scope] {
+		return fmt.Errorf("guard bypass add: --scope %q invalid; want one of: file, dir, repo, global", scope)
+	}
+	if target == "" {
+		return fmt.Errorf("guard bypass add: --target is required")
+	}
+	if guard.IsWhitespacesOnly(reason) {
+		return fmt.Errorf("guard bypass add: --reason is required and must not be empty or whitespace-only")
+	}
+
+	switch scope {
+	case "global":
+		if target != "global" {
+			return fmt.Errorf(
+				"guard bypass add: --scope global requires --target=global literal (got %q)",
+				target,
+			)
+		}
+		if !iUnderstandGlobal {
+			return fmt.Errorf(
+				"guard bypass add: --scope global requires --i-understand-this-is-global " +
+					"(this whitelists every repo on every machine)",
+			)
+		}
+	case "dir", "file":
+		if !filepath.IsAbs(target) {
+			return fmt.Errorf("guard bypass add: --scope %s requires an absolute --target path (got %q)", scope, target)
+		}
+		if overlyBroadScopes[target] {
+			return fmt.Errorf(
+				"guard bypass add: --scope %s --target %q would whitelist too broadly; pick a deeper directory",
+				scope, target,
+			)
+		}
+	}
 	return nil
 }
 
