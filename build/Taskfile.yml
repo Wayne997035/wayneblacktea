@@ -146,6 +146,21 @@ tasks:
       - migrate -path migrations/ -database "{{.DATABASE_URL}}" up
     dir: ..
 
+  guard-prune:
+    desc: "Prune guard_events / guard_bypasses older than 30 days (run via cron)"
+    dotenv: ['../.env.local']
+    preconditions:
+      - sh: test -n "{{.DATABASE_URL}}"
+        msg: "DATABASE_URL is not set — add it to .env or export it"
+    cmds:
+      # 30-day TTL on observability tables, codified by docs/p0a-design-rationale.md §6.1.
+      # Postgres-only: SQLite is dev-local single-tenant, no growth concern.
+      - |
+        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM guard_events WHERE created_at < NOW() - INTERVAL '30 days';"
+      - |
+        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM guard_bypasses WHERE expires_at IS NOT NULL AND expires_at < NOW() - INTERVAL '30 days';"
+    dir: ..
+
   migrate-down:
     desc: "Roll back last DB migration (requires .env.local with DATABASE_URL)"
     dotenv: ['../.env.local']

@@ -91,7 +91,7 @@ Dependency: α → β → γ; not parallelizable.
 | Mode upgraded to enforce too early; dev frozen | Direct to enforce | enforce deferred to P0b; P0a max is `ask` |
 | Sub-agent edits bypass guard | No `Task` matcher | P0a-β includes `Task` matcher |
 | Guard panics and locks user out | Not addressed | Fail-open + log error; guard itself can never block |
-| `guard_events` table explosion | Logged on every call | Default writes only `would_deny=true`; 30-day TTL |
+| `guard_events` table explosion | Logged on every call | Default writes only `would_deny=true`; 30-day TTL via `task guard-prune` (see §6.1) |
 | Decay prunes session-linked decisions | Not addressed | Decay retention rule: decisions class entirely retained |
 | Model can't learn behavior in observe | Pure silence | Throttled high-signal nudge on would_deny events |
 | Bypass abused | Single env var, no audit | Mandatory `--reason`, TTL expiration, `--dangerously-global` flag, `wbt doctor` WARN |
@@ -108,6 +108,20 @@ Dependency: α → β → γ; not parallelizable.
 | Public release timing | Ship with the "AI forgets" defect | Complete the enforcement story before going public |
 
 **Conclusion: now is the cheapest moment, and each sub-PR is independently reversible.**
+
+---
+
+## 6.1 30-day TTL Implementation
+
+Round 1 review flagged the "30-day TTL" claim in §6 as undocumented. The implementation:
+
+- **Mechanism**: Taskfile target `guard-prune` (`build/Taskfile.yml`) issues two `DELETE` statements via `psql`:
+  - `DELETE FROM guard_events WHERE created_at < NOW() - INTERVAL '30 days';`
+  - `DELETE FROM guard_bypasses WHERE expires_at IS NOT NULL AND expires_at < NOW() - INTERVAL '30 days';`
+- **Cadence**: run from a host cron / Railway scheduled job once per day (operator concern, not in-repo automation).
+- **Backend scope**: Postgres only. SQLite is single-tenant dev-local — no growth concern, no-op.
+- **Why a Taskfile target, not a SQL migration**: Postgres `pg_cron` is not available on Aiven's free / hobby plans, and the platform has no built-in TTL primitive. A scheduled `DELETE` is the simplest mechanism that doesn't require an extension. If we ever migrate to a host where `pg_cron` is available, the same SQL can be wrapped in `cron.schedule(...)` without changing the rest of the stack.
+- **Credentials redaction**: see `internal/guard/redact.go` — every `tool_input` JSON value is regex-scrubbed before INSERT (Stripe / GitHub / Slack / AWS / DSN / generic key=value patterns), so the audit trail does not become a credential reservoir even before the 30-day window kicks in.
 
 ---
 
