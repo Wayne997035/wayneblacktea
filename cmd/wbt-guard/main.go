@@ -62,11 +62,35 @@ type preToolUsePayload struct {
 }
 
 func main() {
+	// Step 0: redirect slog away from stderr BEFORE the first slog call.
+	// Claude Code surfaces stderr from PreToolUse hooks to the user terminal
+	// as warnings — we don't want every "DB unreachable" to look like a
+	// guard failure to the operator. Log to a private file in TempDir so
+	// the operator can tail it for diagnostics without polluting the chat.
+	configureSlog()
+
 	if err := run(); err != nil {
 		slog.Warn("wbt-guard: exiting with warning", "err", err)
 	}
 	// Exit 0 always — MUST NOT block Claude Code.
 	os.Exit(0)
+}
+
+// configureSlog redirects the default slog handler to a Warn-level JSON
+// file at <TempDir>/wbt-guard.log mode 0600. If the file cannot be opened
+// (read-only fs, weird permissions), slog is wired to io.Discard so a
+// failed log open never causes the hook to write to stderr and surface
+// noise to the user.
+func configureSlog() {
+	logPath := filepath.Join(os.TempDir(), "wbt-guard.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path is os.TempDir() + constant filename, mode 0600
+	if err != nil || f == nil {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	})))
 }
 
 func run() error {
