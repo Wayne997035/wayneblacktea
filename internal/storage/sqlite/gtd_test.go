@@ -305,12 +305,75 @@ func TestGTDStore_DeleteTask_NoLinkedRows(t *testing.T) {
 	}
 }
 
+// insertWSAFixture inserts a work_session + work_session_tasks pair belonging
+// to workspace A pointing at taskID. Used by the cross-workspace test to
+// verify that a workspace-B caller cannot touch these rows.
+func insertWSAFixture(t *testing.T, d *sqlite.DB, ctx context.Context, wsA, taskID string) string {
+	t.Helper()
+	sessionID := uuid.New().String()
+	if err := d.ExecContext(ctx,
+		`INSERT INTO work_sessions
+			(id, workspace_id, repo_name, project_id, title, goal, status, source,
+			 confirmed_plan_id, current_task_id, started_at, created_at, updated_at)
+		 VALUES (?1,?2,?3,NULL,?4,?5,'in_progress','manual',NULL,?6,?7,?7,?7)`,
+		sessionID, wsA, "ws-A-repo", "ws-A-session", "test ws-mismatch guard",
+		taskID, "2026-05-03T00:00:00.000Z",
+	); err != nil {
+		t.Fatalf("insert work_session: %v", err)
+	}
+	if err := d.ExecContext(ctx,
+		`INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
+		 VALUES (?1,?2,'primary','2026-05-03T00:00:00.000Z')`,
+		sessionID, taskID,
+	); err != nil {
+		t.Fatalf("insert work_session_tasks: %v", err)
+	}
+	return sessionID
+}
+
+// assertJoinRowsSurvived asserts a non-zero count of join rows for taskID.
+// Used by TestGTDStore_DeleteTask_WorkspaceMismatch to prove the cleanup
+// DELETE was guarded by the workspace pre-check.
+func assertJoinRowsSurvived(t *testing.T, d *sqlite.DB, ctx context.Context, taskID string, want int) {
+	t.Helper()
+	var got int
+	if err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = ?1`, taskID,
+	).Scan(&got); err != nil {
+		t.Fatalf("count surviving join rows: %v", err)
+	}
+	if got != want {
+		t.Errorf("expected workspace A's join row to survive cross-workspace delete, got %d remaining (want %d)", got, want)
+	}
+}
+
+// assertCurrentTaskIDPreserved asserts current_task_id of the named session
+// is still set to wantTaskID. Used by TestGTDStore_DeleteTask_WorkspaceMismatch
+// to prove the cleanup UPDATE was guarded by the workspace pre-check.
+func assertCurrentTaskIDPreserved(t *testing.T, d *sqlite.DB, ctx context.Context, sessionID, wantTaskID string) {
+	t.Helper()
+	var currentTaskID *string
+	if err := d.QueryRowContext(ctx,
+		`SELECT current_task_id FROM work_sessions WHERE id = ?1`, sessionID,
+	).Scan(&currentTaskID); err != nil {
+		t.Fatalf("read current_task_id: %v", err)
+	}
+	if currentTaskID == nil {
+		t.Error("workspace A current_task_id was NULL'd by cross-workspace DeleteTask (pre-check missing or broken)")
+		return
+	}
+	if *currentTaskID != wantTaskID {
+		t.Errorf("workspace A current_task_id changed unexpectedly: got %q, want %q", *currentTaskID, wantTaskID)
+	}
+}
+
 // TestGTDStore_DeleteTask_WorkspaceMismatch ensures the workspace filter on
-// the parent DELETE is respected. A task created in workspace A cannot be
-// deleted by a store scoped to workspace B; the parent DELETE affects 0 rows.
-// (Cleanup statements are keyed by task_id only; if a different-workspace
-// row pointed at this UUID it would be cleaned, but UUIDs are globally
-// unique so this only runs for the legitimate task.)
+// the parent DELETE is respected AND that the workspace pre-check guards the
+// cleanup statements: a task created in workspace A cannot be deleted by a
+// store scoped to workspace B, and the join-table / current_task_id pointer
+// belonging to workspace A MUST survive the cross-workspace call. Without the
+// pre-check the cleanup statements (keyed only by task_id) would silently
+// erase neighbouring data even though the parent DELETE 0-rowed.
 func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
@@ -331,17 +394,9 @@ func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask in workspace A: %v", err)
 	}
-	// CreateTask via the store uses workspace_id from the store config; verify
-	// the row carries workspace A.
-	var rowWS *string
-	if err := dA.QueryRowContext(ctx,
-		`SELECT workspace_id FROM tasks WHERE id = ?1`, task.ID.String(),
-	).Scan(&rowWS); err != nil {
-		t.Fatalf("read workspace_id: %v", err)
-	}
-	if rowWS == nil || *rowWS != wsA {
-		t.Fatalf("expected task workspace_id=%s, got %v", wsA, rowWS)
-	}
+
+	// Insert workspace-A work_session + join row pointing at the task.
+	sessionID := insertWSAFixture(t, dA, ctx, wsA, task.ID.String())
 
 	// Open the same file with workspace B.
 	dB, err := sqlite.Open(context.Background(), "file:"+dbPath, wsB)
@@ -355,18 +410,34 @@ func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 		t.Fatalf("DeleteTask cross-workspace: %v", err)
 	}
 
-	// Task should still exist when read from workspace A.
-	tasks, _ := storeA.Tasks(ctx, nil)
-	found := false
+	// Assertion 1: parent task still exists when read from workspace A.
+	assertTaskStillVisible(t, storeA, ctx, task.ID)
+
+	// Assertion 2: workspace-A join row MUST still be present (proves the
+	// task_id-only cleanup DELETE was guarded by the workspace pre-check).
+	assertJoinRowsSurvived(t, dA, ctx, task.ID.String(), 1)
+
+	// Assertion 3: workspace A's work_sessions.current_task_id MUST still
+	// point at the original task (proves the task_id-only cleanup UPDATE
+	// was guarded by the workspace pre-check).
+	assertCurrentTaskIDPreserved(t, dA, ctx, sessionID, task.ID.String())
+}
+
+// assertTaskStillVisible fails the test if the named task has disappeared
+// from the workspace's Tasks() listing. Used by the cross-workspace delete
+// test as a positive assertion that the parent DELETE was correctly 0-rowed.
+func assertTaskStillVisible(t *testing.T, store *sqlite.GTDStore, ctx context.Context, taskID uuid.UUID) {
+	t.Helper()
+	tasks, err := store.Tasks(ctx, nil)
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
 	for _, tk := range tasks {
-		if tk.ID == task.ID {
-			found = true
-			break
+		if tk.ID == taskID {
+			return
 		}
 	}
-	if !found {
-		t.Error("task should NOT have been deleted (workspace mismatch); it disappeared")
-	}
+	t.Error("task should NOT have been deleted (workspace mismatch); it disappeared")
 }
 
 func TestGTDStore_LogActivityAndUpdateStatus(t *testing.T) {

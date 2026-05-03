@@ -2,10 +2,15 @@
 --
 -- Links work_sessions to tasks with a role classification.
 -- Referential integrity in code (red line #9; see migration 000026).
--- GTDStore.DeleteTask deletes link rows on parent task delete; if a
--- DeleteWorkSession handler is added, it MUST do the same for session_id.
+-- GTDStore.DeleteTask deletes link rows on parent task delete.
+-- A future DeleteWorkSession handler MUST cleanup work_session_tasks rows
+-- referencing session_id (mirrors GTDStore.DeleteTask precedent for tasks;
+-- matches the SQLite-side schema.sql guidance).
 
 CREATE TABLE IF NOT EXISTS work_session_tasks (
+    -- Both columns: referential integrity in code (red line #9; see migration 000026).
+    -- task_id cleanup happens in GTDStore.DeleteTask; session_id cleanup MUST be
+    -- mirrored in a future DeleteWorkSession handler.
     session_id  UUID    NOT NULL,
     task_id     UUID    NOT NULL,
     role        TEXT    NOT NULL CHECK (role IN ('primary','follow_up','blocker','generated')),

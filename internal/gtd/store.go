@@ -283,12 +283,14 @@ type txBeginner interface {
 //   - work_sessions.current_task_id pointing at the deleted task is set NULL
 //     (was ON DELETE SET NULL)
 //
-// All three statements run inside a single transaction so a partial state is
-// impossible. If the workspace filter does not match (cross-workspace delete
-// attempt), the parent DELETE affects 0 rows and the cleanup statements still
-// run keyed by `task_id = $1`; that is safe because task IDs are
-// globally-unique UUIDs and the row would not exist outside the configured
-// workspace anyway.
+// All statements run inside a single transaction so a partial state is
+// impossible. Workspace authorisation is enforced by an explicit pre-check
+// inside the tx BEFORE any cleanup runs: if the task does not exist in the
+// configured workspace the tx is rolled back and the call is a silent no-op
+// (matching the pre-fix behaviour where a workspace-mismatched DELETE simply
+// affected 0 rows). The pre-check ensures cleanup never touches another
+// workspace's join rows or work_sessions; the parent DELETE's workspace
+// filter is now redundant defence-in-depth.
 func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	beginner, ok := s.dbtx.(txBeginner)
 	if !ok {
@@ -307,6 +309,32 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 			_ = tx.Rollback(ctx)
 		}
 	}()
+
+	// 0. Workspace authorisation pre-check. The cleanup statements below are
+	// keyed only by task_id, so without this guard a cross-workspace caller
+	// could delete another workspace's join rows / NULL its current_task_id
+	// pointer (the parent DELETE's workspace filter would 0-row but the
+	// damage to neighbouring tables would already be done).
+	var exists bool
+	if err = tx.QueryRow(ctx,
+		`SELECT EXISTS(
+		    SELECT 1 FROM tasks
+		     WHERE id = $1
+		       AND ($2::uuid IS NULL OR workspace_id = $2)
+		 )`, id, s.workspaceID,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("deleting task %s: workspace pre-check: %w", id, err)
+	}
+	if !exists {
+		// Roll back the empty tx and silently no-op, matching the pre-fix
+		// behaviour where a missing / workspace-mismatched task simply
+		// affected 0 rows on the parent DELETE.
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			return fmt.Errorf("deleting task %s: rollback after workspace miss: %w", id, rbErr)
+		}
+		committed = true // suppress the deferred Rollback (already done).
+		return nil
+	}
 
 	// 1. Remove join-table rows (was ON DELETE CASCADE on work_session_tasks.task_id).
 	if _, err = tx.Exec(ctx,

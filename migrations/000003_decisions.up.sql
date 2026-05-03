@@ -1,6 +1,9 @@
 CREATE TABLE decisions (
     id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    project_id   UUID, -- referential integrity in code (red line #9; see migration 000026)
+    project_id   UUID, -- referential integrity in code (red line #9; see migration 000026).
+                       -- A future DeleteProject handler MUST cleanup decisions
+                       -- referencing this project_id (mirrors GTDStore.DeleteTask
+                       -- precedent for tasks).
     repo_name    TEXT,
     title        TEXT NOT NULL,
     context      TEXT NOT NULL,

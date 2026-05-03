@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id        UUID        NOT NULL,
     repo_name           TEXT        NOT NULL,
-    project_id          UUID,        -- referential integrity in code (red line #9; see migration 000026)
+    project_id          UUID,        -- referential integrity in code (red line #9; see migration 000026).
+                                     -- A future DeleteProject handler MUST cleanup work_sessions
+                                     -- referencing this project_id (mirrors GTDStore.DeleteTask
+                                     -- precedent for tasks).
     title               TEXT        NOT NULL,
     goal                TEXT        NOT NULL,
     status              TEXT        NOT NULL CHECK (status IN (
@@ -22,7 +25,10 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     -- for future linking to a first-class plans table (not yet implemented in P0a-α).
     -- Do not set this field until the plans table exists and is migrated.
     confirmed_plan_id   UUID        NULL,
-    current_task_id     UUID,        -- referential integrity in code (red line #9); GTD store NULLs this on parent task delete
+    current_task_id     UUID,        -- referential integrity in code (red line #9); GTDStore.DeleteTask
+                                     -- NULLs this column on parent task delete. Any future Delete<Parent>
+                                     -- handler MUST cleanup downstream rows referencing this column
+                                     -- (matches the SQLite-side schema.sql guidance).
     final_summary       TEXT        NULL,
     started_at          TIMESTAMPTZ NULL,
     last_checkpoint_at  TIMESTAMPTZ NULL,
