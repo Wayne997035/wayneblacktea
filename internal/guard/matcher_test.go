@@ -2,6 +2,9 @@ package guard
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -311,5 +314,127 @@ func TestClassifyFilePath_EdgeCases(t *testing.T) {
 				t.Errorf("classifyFilePath(%q, %q) = T%d, want T%d", tc.filePath, cwd, tier, tc.wantTier)
 			}
 		})
+	}
+}
+
+// TestClassifyFilePath_ControlChars verifies paths with embedded \x00, \r,
+// or \n are rejected at T7 with a clear reason. These characters break path
+// semantics across OS layers (Linux honours the null terminator; macOS may
+// not; auditing tools display only the prefix).
+func TestClassifyFilePath_ControlChars(t *testing.T) {
+	t.Parallel()
+	const cwd = "/home/user/repo"
+	tests := []struct {
+		name     string
+		filePath string
+	}{
+		{"null byte", "/home/user/repo/foo\x00.go"},
+		{"carriage return", "/home/user/repo/foo\r.go"},
+		{"newline", "/home/user/repo/foo\n.go"},
+		{"null in relative", "foo\x00bar"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tier, reason := classifyFilePath(tc.filePath, cwd, "Test")
+			if tier != T7 {
+				t.Errorf("classifyFilePath(%q) tier = T%d, want T7 (reason=%q)", tc.filePath, tier, reason)
+			}
+		})
+	}
+}
+
+// TestClassifyFilePath_TildeRejected verifies leading "~" is rejected at T7
+// with a reason explaining the operator must pass an absolute or repo-
+// relative path. filepath.Join does NOT shell-expand tilde.
+func TestClassifyFilePath_TildeRejected(t *testing.T) {
+	t.Parallel()
+	const cwd = "/home/user/repo"
+	tests := []string{
+		"~/secrets",
+		"~root/.ssh/authorized_keys",
+		"~",
+	}
+	for _, fp := range tests {
+		t.Run(fp, func(t *testing.T) {
+			t.Parallel()
+			tier, reason := classifyFilePath(fp, cwd, "Test")
+			if tier != T7 {
+				t.Errorf("classifyFilePath(%q) tier = T%d, want T7 (reason=%q)", fp, tier, reason)
+			}
+		})
+	}
+}
+
+// TestClassifyFilePath_NewFileWriteInRepo verifies that a write to a
+// not-yet-existing path inside the repo still classifies as T1 (regression
+// guard for the EvalSymlinks fallback: it must not mis-flag new files).
+func TestClassifyFilePath_NewFileWriteInRepo(t *testing.T) {
+	t.Parallel()
+	repoDir := t.TempDir()
+	// Path that does not exist yet — typical Write tool case.
+	target := filepath.Join(repoDir, "newfile", "deeper.go")
+	tier, reason := classifyFilePath(target, repoDir, "Write")
+	if tier != T1 {
+		t.Errorf("classifyFilePath(non-existent in-repo) tier = T%d, want T1 (reason=%q)", tier, reason)
+	}
+}
+
+// TestClassifyFilePath_SymlinkOutsideRepo verifies that an in-repo symlink
+// pointing outside the repo is classified as T5 — Clean alone wouldn't catch
+// this, EvalSymlinks does.
+func TestClassifyFilePath_SymlinkOutsideRepo(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture relies on POSIX permissions")
+	}
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	outsideDir := filepath.Join(root, "outside")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o750); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	target := filepath.Join(outsideDir, "secrets.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(repoDir, "symlink-to-outside")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	tier, reason := classifyFilePath(link, repoDir, "Edit")
+	if tier != T5 {
+		t.Errorf("classifyFilePath(in-repo symlink → outside) tier = T%d, want T5 (reason=%q)", tier, reason)
+	}
+}
+
+// TestClassifyFilePath_SymlinkInsideRepo verifies an in-repo symlink to
+// another in-repo path stays at T1.
+func TestClassifyFilePath_SymlinkInsideRepo(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture relies on POSIX permissions")
+	}
+	repoDir := t.TempDir()
+	subDir := filepath.Join(repoDir, "sub")
+	if err := os.MkdirAll(subDir, 0o750); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	target := filepath.Join(subDir, "real.go")
+	if err := os.WriteFile(target, []byte("// real"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(repoDir, "alias.go")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	tier, reason := classifyFilePath(link, repoDir, "Edit")
+	if tier != T1 {
+		t.Errorf("classifyFilePath(in-repo symlink → in-repo) tier = T%d, want T1 (reason=%q)", tier, reason)
 	}
 }

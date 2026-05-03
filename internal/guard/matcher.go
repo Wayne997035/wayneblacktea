@@ -152,23 +152,101 @@ func matchTask(raw json.RawMessage) MatchResult {
 
 // classifyFilePath resolves a file path and checks whether it is inside cwd.
 // Paths outside the repo root are classified as T5 (path traversal risk).
+//
+// Defence-in-depth checks (in order):
+//  1. Reject control characters (\x00, \r, \n) — these break path semantics
+//     in different OS layers (Linux honours the null terminator; macOS may
+//     not; auditing tools display only the prefix).
+//  2. Reject leading "~" — filepath.Join does NOT shell-expand tilde, so
+//     "~/secrets" would resolve relative to cwd as "<cwd>/~/secrets" and
+//     create a literal "~" directory if written. The operator must pass
+//     either an absolute path or a repo-relative path.
+//  3. Resolve to absolute via filepath.Clean.
+//  4. Resolve symlinks via filepath.EvalSymlinks: a symlink inside the repo
+//     pointing OUT of the repo is a path-traversal vector that Clean alone
+//     cannot detect. EvalSymlinks fails for non-existent paths (which is
+//     the normal case for new file writes) — we fall back to the Clean'd
+//     path because no symlink can be followed for a path that does not
+//     yet exist.
+//  5. Check prefix against cwd using HasPrefix(abs, cwd+sep) || abs==cwd
+//     to avoid sibling-prefix matches like "/repohijack" against "/repo".
 func classifyFilePath(filePath, cwd, matcherName string) (RiskTier, string) {
-	// Resolve to absolute path to handle ".." traversal.
+	// Step 1: control-character rejection.
+	if strings.ContainsAny(filePath, "\x00\r\n") {
+		return T7, fmt.Sprintf("%s: path contains control char (\\x00 / \\r / \\n)", matcherName)
+	}
+
+	// Step 2: tilde rejection. filepath.Join does not expand ~ — tilde is
+	// a shell-only abstraction. An operator passing "~/foo" expects shell
+	// semantics; without expansion we'd silently create a literal "~" dir.
+	// Reject and demand the absolute form.
+	if strings.HasPrefix(filePath, "~") {
+		return T7, fmt.Sprintf("%s: tilde (~) is not shell-expanded; pass absolute or repo-relative path", matcherName)
+	}
+
+	// Step 3: resolve to absolute and Clean.
 	abs := filePath
 	if !filepath.IsAbs(filePath) {
 		abs = filepath.Join(cwd, filePath)
 	}
 	abs = filepath.Clean(abs)
 
-	// Normalise cwd.
-	cwdClean := filepath.Clean(cwd)
+	// Step 4: follow symlinks. For a path that doesn't exist yet (typical
+	// Write tool case), EvalSymlinks fails — but we still need symlink
+	// resolution applied to the deepest existing PARENT so the prefix check
+	// compares apples-to-apples with cwd. macOS, for example, symlinks
+	// /var → /private/var, so a tempdir-based Write target needs the
+	// /private/var prefix consistently on both sides of the comparison.
+	abs = resolveExistingPrefix(abs)
 
-	// Check prefix: abs must be inside cwdClean.
-	// Use os.PathSeparator to avoid false positives like /foo/barbaz when
-	// cwd is /foo/bar.
+	// Step 5: cwd is operator-controlled (from PreToolUse payload). EvalSymlinks
+	// it too so a symlinked cwd doesn't false-positive against its real target.
+	cwdClean := filepath.Clean(cwd)
+	cwdClean = resolveExistingPrefix(cwdClean)
+
+	// Step 6: prefix check. The "+sep" guard prevents sibling-prefix attacks
+	// (e.g. "/repohijack" matching "/repo").
 	if !strings.HasPrefix(abs, cwdClean+string(filepath.Separator)) && abs != cwdClean {
 		return T5, fmt.Sprintf("%s: file_path %q resolves outside repo root %q (path traversal risk)", matcherName, filePath, cwd)
 	}
 
 	return T1, matcherName + ": in-repo edit"
+}
+
+// resolveExistingPrefix returns p with symlinks resolved on the deepest
+// existing prefix, then re-joins the unresolved suffix. This handles the
+// common Write-tool case where the target file does not yet exist (so
+// EvalSymlinks(p) fails) but its parent directories do — and the parent
+// chain may include OS symlinks (e.g. /var → /private/var on macOS) that
+// must be resolved for the prefix check to be correct.
+//
+// Algorithm:
+//  1. Start with p; if EvalSymlinks succeeds, return that.
+//  2. Walk one path component up at a time until EvalSymlinks succeeds
+//     or we hit the root. Re-join the unresolved tail to the resolved
+//     prefix.
+//  3. If nothing resolves (rare; pathological FS), return Clean(p).
+func resolveExistingPrefix(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	// Walk up; cap iterations to len(path) to avoid pathological loops.
+	cur := p
+	suffixes := []string{}
+	for i := 0; i < 4096; i++ {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		suffixes = append([]string{filepath.Base(cur)}, suffixes...)
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			joined := resolved
+			for _, s := range suffixes {
+				joined = filepath.Join(joined, s)
+			}
+			return filepath.Clean(joined)
+		}
+		cur = parent
+	}
+	return filepath.Clean(p)
 }
