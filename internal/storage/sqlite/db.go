@@ -31,7 +31,12 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite ping %q: %w", dsn, err)
 	}
-	// Foreign keys are off by default in SQLite. Enable per-connection.
+	// Foreign keys are off by default in SQLite. We keep this PRAGMA ON as
+	// defence-in-depth in case migration 000026.down.sql is rolled back at
+	// runtime and historical FK declarations resurface; the app itself no
+	// longer relies on FK behaviour (red line #9 — referential integrity in
+	// code, not in the DB; see sql/queries/gtd.sql DeleteTask comment and
+	// internal/gtd/store.go DeleteTask).
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite enable FK: %w", err)
@@ -73,12 +78,21 @@ func (d *DB) workspaceArg() any {
 }
 
 // ExecContext executes a query on the underlying connection. Exported so
-// integration tests in sibling packages can insert fixture rows (e.g. tasks
-// to satisfy FK constraints) without depending on production write paths.
+// integration tests in sibling packages can insert fixture rows (e.g. parent
+// tasks / sessions for cascade-cleanup tests) without depending on production
+// write paths.
 func (d *DB) ExecContext(ctx context.Context, query string, args ...any) error {
 	_, err := d.conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("sqlite ExecContext: %w", err)
 	}
 	return nil
+}
+
+// QueryRowContext is a thin wrapper exposed for sibling-package tests to
+// assert post-condition state (e.g. that a referential cleanup performed by
+// a service-layer DeleteTask actually NULL'd a column / removed a row).
+// Production code paths inside the package use s.db.conn directly.
+func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return d.conn.QueryRowContext(ctx, query, args...)
 }

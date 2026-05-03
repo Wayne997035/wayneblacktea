@@ -506,14 +506,100 @@ func (s *GTDStore) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status
 	return s.projectByID(ctx, id)
 }
 
-// DeleteTask permanently removes a task by ID.
+// DeleteTask permanently removes a task by ID and replicates the cascade
+// behaviour previously enforced by foreign keys (red line #9; see migration
+// 000026):
+//
+//   - work_session_tasks rows referencing the deleted task are removed
+//     (was ON DELETE CASCADE)
+//   - work_sessions.current_task_id pointing at the deleted task is set NULL
+//     (was ON DELETE SET NULL)
+//
+// All statements run inside a single SQLite transaction so a partial state is
+// impossible. Tx pattern matches WorkSessionStore.Create (manual Begin +
+// defer Rollback + Commit). Workspace authorisation is enforced by an
+// explicit pre-check inside the tx BEFORE any cleanup runs: if the task does
+// not exist in the configured workspace the tx is rolled back and the call is
+// a silent no-op (matching the pre-fix behaviour where a workspace-mismatched
+// DELETE simply affected 0 rows on the parent table). The pre-check ensures
+// cleanup never touches another workspace's join rows or work_sessions; the
+// parent DELETE's workspace filter is now redundant defence-in-depth.
 func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	const q = `DELETE FROM tasks
-		WHERE id = ?1
-		  AND (?2 IS NULL OR workspace_id = ?2)`
-	if _, err := s.db.conn.ExecContext(ctx, q, id.String(), s.db.workspaceArg()); err != nil {
+	idStr := id.String()
+
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return errWrap("DeleteTask begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Best-effort rollback; ignore err because tx may already be
+			// closed if Commit succeeded between the check and this defer.
+			_ = tx.Rollback()
+		}
+	}()
+
+	// 0. Workspace authorisation pre-check. The cleanup statements below are
+	// keyed only by task_id, so without this guard a cross-workspace caller
+	// could delete another workspace's join rows / NULL its current_task_id
+	// pointer (the parent DELETE's workspace filter would 0-row but the
+	// damage to neighbouring tables would already be done).
+	var exists int
+	row := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(
+		    SELECT 1 FROM tasks
+		     WHERE id = ?1
+		       AND (?2 IS NULL OR workspace_id = ?2)
+		 )`,
+		idStr, s.db.workspaceArg(),
+	)
+	if err = row.Scan(&exists); err != nil {
+		return errWrap("DeleteTask workspace pre-check", err)
+	}
+	if exists == 0 {
+		// Roll back the empty tx and silently no-op, matching the pre-fix
+		// behaviour where a missing / workspace-mismatched task simply
+		// affected 0 rows on the parent DELETE.
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return errWrap("DeleteTask rollback after workspace miss", rbErr)
+		}
+		committed = true // suppress the deferred Rollback (already done).
+		return nil
+	}
+
+	// 1. Remove join-table rows (was ON DELETE CASCADE on work_session_tasks.task_id).
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM work_session_tasks WHERE task_id = ?1`, idStr,
+	); err != nil {
+		return errWrap("DeleteTask cleanup work_session_tasks", err)
+	}
+
+	// 2. NULL out work_sessions.current_task_id (was ON DELETE SET NULL).
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE work_sessions
+		    SET current_task_id = NULL,
+		        updated_at      = ?2
+		  WHERE current_task_id = ?1`,
+		idStr, nowRFC3339(),
+	); err != nil {
+		return errWrap("DeleteTask nullify work_sessions.current_task_id", err)
+	}
+
+	// 3. Delete the task itself, scoped to the configured workspace.
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM tasks
+		   WHERE id = ?1
+		     AND (?2 IS NULL OR workspace_id = ?2)`,
+		idStr, s.db.workspaceArg(),
+	); err != nil {
 		return errWrap("DeleteTask", err)
 	}
+
+	if err = tx.Commit(); err != nil {
+		return errWrap("DeleteTask commit", err)
+	}
+	committed = true
 	return nil
 }
 

@@ -13,7 +13,7 @@ CREATE TABLE goals (
 
 CREATE TABLE projects (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    goal_id     UUID REFERENCES goals(id),
+    goal_id     UUID, -- referential integrity in code (red line #9; see migration 000026)
     name        TEXT NOT NULL UNIQUE,
     title       TEXT NOT NULL,
     description TEXT,
@@ -26,7 +26,7 @@ CREATE TABLE projects (
 
 CREATE TABLE tasks (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    project_id  UUID REFERENCES projects(id),
+    project_id  UUID, -- referential integrity in code (red line #9; see migration 000026)
     title       TEXT NOT NULL,
     description TEXT,
     status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','cancelled')),
@@ -41,7 +41,7 @@ CREATE TABLE tasks (
 CREATE TABLE activity_log (
     id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     actor      TEXT NOT NULL,
-    project_id UUID REFERENCES projects(id),
+    project_id UUID, -- referential integrity in code (red line #9; see migration 000026)
     action     TEXT NOT NULL,
     notes      TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
