@@ -22,7 +22,7 @@ CREATE INDEX idx_guard_bypasses_expires_at
     ON guard_bypasses (expires_at)
     WHERE expires_at IS NOT NULL;
 
--- Add FK from guard_events.bypass_id → guard_bypasses.id now that both tables exist.
-ALTER TABLE guard_events
-    ADD CONSTRAINT fk_guard_events_bypass
-    FOREIGN KEY (bypass_id) REFERENCES guard_bypasses(id);
+-- NOTE: guard_events.bypass_id is intentionally NOT a FK to guard_bypasses.id.
+-- Operator preference (5/3): no FK constraints in this schema. RevokeBypass uses
+-- a hard DELETE; older guard_events rows may keep a stale bypass_id UUID after
+-- revocation — that's accepted as audit drift, queried via JOIN nullability.

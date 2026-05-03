@@ -219,12 +219,14 @@ func TestIntegration_BypassReasonEmpty(t *testing.T) {
 	}
 }
 
-// TestIntegration_BypassResolutionOrder verifies narrowest scope wins.
+// TestIntegration_BypassResolutionOrder verifies narrowest scope wins across
+// the full file > dir > repo > global precedence chain.
 func TestIntegration_BypassResolutionOrder(t *testing.T) {
 	store := setupTestDB(t)
 	ctx := context.Background()
 
 	cwd := "/home/user/myrepo"
+	dirTarget := "/home/user/myrepo/internal"
 	filePath := "/home/user/myrepo/internal/foo.go"
 
 	if _, err := store.AddBypass(ctx, "global", "global", nil, "global bypass", "testuser", nil); err != nil {
@@ -233,17 +235,31 @@ func TestIntegration_BypassResolutionOrder(t *testing.T) {
 	if _, err := store.AddBypass(ctx, "repo", "myrepo", nil, "repo bypass", "testuser", nil); err != nil {
 		t.Fatalf("AddBypass repo: %v", err)
 	}
+	dirID, err := store.AddBypass(ctx, "dir", dirTarget, nil, "dir bypass", "testuser", nil)
+	if err != nil {
+		t.Fatalf("AddBypass dir: %v", err)
+	}
+
+	// Without a file bypass, dir scope must win over repo + global.
+	b := ResolveBypass(ctx, store, cwd, filePath, "Edit")
+	if b == nil {
+		t.Fatal("ResolveBypass returned nil, want dir-level bypass")
+	}
+	if b.ID != dirID {
+		t.Errorf("ResolveBypass (no file scope) returned %s, want dir bypass %s", b.ID, dirID)
+	}
+
+	// Adding a file bypass must take precedence over dir.
 	fileID, err := store.AddBypass(ctx, "file", filePath, nil, "file bypass", "testuser", nil)
 	if err != nil {
 		t.Fatalf("AddBypass file: %v", err)
 	}
-
-	b := ResolveBypass(ctx, store, cwd, filePath, "Edit")
+	b = ResolveBypass(ctx, store, cwd, filePath, "Edit")
 	if b == nil {
 		t.Fatal("ResolveBypass returned nil, want file-level bypass")
 	}
 	if b.ID != fileID {
-		t.Errorf("ResolveBypass returned %s, want file bypass %s", b.ID, fileID)
+		t.Errorf("ResolveBypass (with file scope) returned %s, want file bypass %s", b.ID, fileID)
 	}
 }
 
