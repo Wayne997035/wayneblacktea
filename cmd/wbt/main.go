@@ -4,6 +4,7 @@
 //
 //	wbt init   — interactive wizard that writes .env and .mcp.json
 //	wbt serve  — loads .env and starts the wayneblacktea-server binary
+//	wbt guard  — manage guard bypass rules
 package main
 
 import (
@@ -12,13 +13,17 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/guard"
 	"github.com/Wayne997035/wayneblacktea/internal/mcprunner"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 )
 
@@ -30,6 +35,17 @@ Commands:
   wbt mcp    Serve MCP stdio (wired into .mcp.json by ` + "`wbt init`" + `;
              register with Claude Code via:
                claude mcp add --scope user wayneblacktea -- wbt mcp)
+  wbt guard  Manage guard bypass rules (see: wbt guard --help)
+`
+
+const guardUsage = `wbt guard — manage wbt-guard bypass rules
+
+Subcommands:
+  wbt guard bypass add   --scope <s> --target <t> [--tool <name>] [--ttl <duration>] --reason <text>
+  wbt guard bypass list  [--scope <s>]
+  wbt guard bypass revoke <id>
+
+Scopes: global, repo, dir, file
 `
 
 func main() {
@@ -45,6 +61,8 @@ func main() {
 		err = runServe()
 	case "mcp":
 		err = runMCP()
+	case "guard":
+		err = runGuard(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n%s", os.Args[1], usage)
 		os.Exit(1)
@@ -53,6 +71,188 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runGuard dispatches wbt guard subcommands.
+func runGuard(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "%s", guardUsage)
+		return fmt.Errorf("guard: missing subcommand")
+	}
+	if args[0] == "--help" || args[0] == "-h" {
+		fmt.Fprintf(os.Stdout, "%s", guardUsage)
+		return nil
+	}
+	if args[0] != "bypass" {
+		return fmt.Errorf("guard: unknown subcommand %q", args[0])
+	}
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "%s", guardUsage)
+		return fmt.Errorf("guard bypass: missing action (add|list|revoke)")
+	}
+
+	// Load .env for DATABASE_URL if present — non-fatal.
+	_ = godotenv.Load()
+
+	switch args[1] {
+	case "add":
+		return runGuardBypassAdd(args[2:])
+	case "list":
+		return runGuardBypassList(args[2:])
+	case "revoke":
+		return runGuardBypassRevoke(args[2:])
+	default:
+		return fmt.Errorf("guard bypass: unknown action %q (want add|list|revoke)", args[1])
+	}
+}
+
+// runGuardBypassAdd adds a bypass rule.
+func runGuardBypassAdd(args []string) error {
+	fs := flag.NewFlagSet("guard bypass add", flag.ContinueOnError)
+	scopeFlag := fs.String("scope", "", "bypass scope: global|repo|dir|file (required)")
+	targetFlag := fs.String("target", "", "bypass target value (required)")
+	toolFlag := fs.String("tool", "", "tool name to bypass (empty = all tools)")
+	ttlFlag := fs.String("ttl", "", "bypass TTL duration (e.g. 1h, 24h, 7d); empty = no expiry")
+	reasonFlag := fs.String("reason", "", "reason for bypass (required, must not be empty)")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("guard bypass add: %w", err)
+	}
+
+	if *scopeFlag == "" {
+		return fmt.Errorf("guard bypass add: --scope is required (global|repo|dir|file)")
+	}
+	if *targetFlag == "" {
+		return fmt.Errorf("guard bypass add: --target is required")
+	}
+	if guard.IsWhitespacesOnly(*reasonFlag) {
+		return fmt.Errorf("guard bypass add: --reason is required and must not be empty or whitespace-only")
+	}
+
+	var expiresAt *time.Time
+	if *ttlFlag != "" {
+		dur, err := parseDuration(*ttlFlag)
+		if err != nil {
+			return fmt.Errorf("guard bypass add: --ttl %q: %w", *ttlFlag, err)
+		}
+		exp := time.Now().UTC().Add(dur)
+		expiresAt = &exp
+	}
+
+	var toolName *string
+	if *toolFlag != "" {
+		toolName = toolFlag
+	}
+
+	ctx := context.Background()
+	dbURL := os.Getenv("DATABASE_URL")
+	pool, _ := guard.OpenPool(ctx, dbURL)
+	if pool == nil {
+		return fmt.Errorf("guard bypass add: database unavailable (set DATABASE_URL)")
+	}
+	store := guard.NewStore(pool)
+
+	id, err := store.AddBypass(ctx, *scopeFlag, *targetFlag, toolName, *reasonFlag, currentUser(), expiresAt)
+	if err != nil {
+		return fmt.Errorf("guard bypass add: %w", err)
+	}
+
+	fmt.Printf("bypass added: %s\n", id)
+	return nil
+}
+
+// runGuardBypassList lists active bypass rules.
+func runGuardBypassList(args []string) error {
+	fs := flag.NewFlagSet("guard bypass list", flag.ContinueOnError)
+	scopeFlag := fs.String("scope", "", "filter by scope (optional)")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("guard bypass list: %w", err)
+	}
+
+	ctx := context.Background()
+	dbURL := os.Getenv("DATABASE_URL")
+	pool, _ := guard.OpenPool(ctx, dbURL)
+	if pool == nil {
+		return fmt.Errorf("guard bypass list: database unavailable (set DATABASE_URL)")
+	}
+	store := guard.NewStore(pool)
+
+	bypasses, err := store.ListBypasses(ctx, *scopeFlag)
+	if err != nil {
+		return fmt.Errorf("guard bypass list: %w", err)
+	}
+
+	if len(bypasses) == 0 {
+		fmt.Println("no active bypasses")
+		return nil
+	}
+
+	fmt.Printf("%-36s  %-6s  %-30s  %-10s  %s\n", "ID", "SCOPE", "TARGET", "TOOL", "REASON")
+	fmt.Println(strings.Repeat("-", 110))
+	for _, b := range bypasses {
+		toolDisplay := "(all)"
+		if b.ToolName != nil {
+			toolDisplay = *b.ToolName
+		}
+		fmt.Printf("%-36s  %-6s  %-30s  %-10s  %s\n",
+			b.ID.String(), b.Scope, b.Target, toolDisplay, b.Reason)
+	}
+	return nil
+}
+
+// runGuardBypassRevoke revokes a bypass by ID.
+func runGuardBypassRevoke(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("guard bypass revoke: missing bypass ID")
+	}
+	idStr := args[0]
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		return fmt.Errorf("guard bypass revoke: invalid UUID %q: %w", idStr, err)
+	}
+
+	ctx := context.Background()
+	dbURL := os.Getenv("DATABASE_URL")
+	pool, _ := guard.OpenPool(ctx, dbURL)
+	if pool == nil {
+		return fmt.Errorf("guard bypass revoke: database unavailable (set DATABASE_URL)")
+	}
+	store := guard.NewStore(pool)
+
+	if err := store.RevokeBypass(ctx, id); err != nil {
+		return fmt.Errorf("guard bypass revoke: %w", err)
+	}
+
+	fmt.Printf("bypass %s revoked\n", id)
+	return nil
+}
+
+// parseDuration extends time.ParseDuration to accept "d" for days.
+func parseDuration(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		days := strings.TrimSuffix(s, "d")
+		d, err := time.ParseDuration(days + "h")
+		if err != nil {
+			return 0, fmt.Errorf("invalid day duration %q", s)
+		}
+		return d * 24, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("parsing duration %q: %w", s, err)
+	}
+	return d, nil
+}
+
+// currentUser returns the current OS user or "unknown".
+func currentUser() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u := os.Getenv("USERNAME"); u != "" {
+		return u
+	}
+	return "unknown"
 }
 
 // runMCP serves MCP stdio by delegating to the shared mcprunner package
