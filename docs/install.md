@@ -16,8 +16,8 @@ Optional integrations (none are required to start the server):
 
 | Integration | Variable | Degrades to |
 |-------------|----------|-------------|
-| Claude AI | `CLAUDE_API_KEY` | No AI summarisation or activity classification |
-| Gemini | `GEMINI_API_KEY` | No vector embeddings; knowledge dedup falls back to URL-only |
+| Claude AI | `CLAUDE_API_KEY` | No advanced automation: AI activity classification, reflection, snapshots, or review suggestions |
+| Gemini | `GEMINI_API_KEY` | No knowledge vector embeddings; knowledge dedup falls back to URL-only |
 | Groq | `GROQ_API_KEY` | Discord bot `/analyze` command unavailable |
 | Discord | `DISCORD_BOT_TOKEN` | Bot disabled entirely |
 | Notion | `NOTION_INTEGRATION_SECRET` + `NOTION_DATABASE_ID` | `sync_to_notion` tool errors gracefully |
@@ -37,7 +37,7 @@ go build -o bin/wbt ./cmd/wbt
 ./bin/wbt init
 # Wizard writes:
 #   .env       (STORAGE_BACKEND=sqlite, SQLITE_PATH=~/.wayneblacktea/data.db, API_KEY=<random>)
-#   .mcp.json  (points Claude Code at wayneblacktea-mcp)
+#   .mcp.json  (points Claude Code at wbt mcp)
 
 # Build and start the server
 cd build && task build-server build-mcp && cd ..
@@ -47,11 +47,12 @@ cd build && task build-server build-mcp && cd ..
 
 What `wbt init` asks:
 
-1. `CLAUDE_API_KEY` -- your Anthropic API key (required for AI features)
-2. Database: `[1] SQLite` or `[2] Postgres`
-3. For SQLite: local file path (default `~/.wayneblacktea/data.db`)
-4. Server port (default `8080`)
-5. `API_KEY` -- auto-generates a random key if you press Enter
+1. Database: `[1] SQLite` or `[2] Postgres`
+2. For SQLite: local file path (default `~/.wayneblacktea/data.db`)
+3. Server port (default `8080`)
+4. `API_KEY` -- auto-generates a random key if you press Enter
+
+No AI provider key is required for core MCP memory features. Add optional provider keys to `.env` later only when enabling the integrations above.
 
 ## Mode 2: PostgreSQL
 
@@ -153,10 +154,11 @@ For manual setup, `.mcp.json` has this shape:
 {
   "mcpServers": {
     "wayneblacktea": {
-      "command": "/path/to/bin/wayneblacktea-mcp",
+      "command": "wbt",
+      "args": ["mcp"],
       "env": {
-        "API_KEY": "your-api-key",
-        "SERVER_URL": "http://localhost:8080"
+        "STORAGE_BACKEND": "sqlite",
+        "SQLITE_PATH": "/path/to/data.db"
       }
     }
   }

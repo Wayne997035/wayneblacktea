@@ -22,43 +22,43 @@ func TestBuildEnvFile(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		claudeKey string
 		apiKey    string
 		port      string
 		db        dbConfig
 		wantLines []string
+		noLines   []string
 	}{
 		{
-			name:      "sqlite config",
-			claudeKey: "sk-claude-test",
-			apiKey:    "myapikey123",
-			port:      "8080",
-			db:        dbConfig{storageBackend: "sqlite", sqlitePath: "/home/user/.wayneblacktea/data.db"},
+			name:   "sqlite config",
+			apiKey: "myapikey123",
+			port:   "8080",
+			db:     dbConfig{storageBackend: "sqlite", sqlitePath: "/home/user/.wayneblacktea/data.db"},
 			wantLines: []string{
-				"CLAUDE_API_KEY=sk-claude-test",
 				"API_KEY=myapikey123",
 				"PORT=8080",
 				"STORAGE_BACKEND=sqlite",
 				"SQLITE_PATH=/home/user/.wayneblacktea/data.db",
 			},
+			// CLAUDE_API_KEY must NOT be written as an active line — only
+			// referenced in the commented hint. Regression guard against the
+			// init wizard re-introducing a mandatory prompt.
+			noLines: []string{"\nCLAUDE_API_KEY="},
 		},
 		{
-			name:      "postgres config",
-			claudeKey: "sk-claude-prod",
-			apiKey:    "prodapikey456",
-			port:      "9090",
-			db:        dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSN},
+			name:   "postgres config",
+			apiKey: "prodapikey456",
+			port:   "9090",
+			db:     dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSN},
 			wantLines: []string{
-				"CLAUDE_API_KEY=sk-claude-prod",
 				"API_KEY=prodapikey456",
 				"PORT=9090",
 				"STORAGE_BACKEND=postgres",
 				"DATABASE_URL=" + fakePostgresDSN,
 			},
+			noLines: []string{"\nCLAUDE_API_KEY="},
 		},
 		{
 			name:      "sqlite config omits DATABASE_URL",
-			claudeKey: "sk-test",
 			apiKey:    "akey",
 			port:      "8080",
 			db:        dbConfig{storageBackend: "sqlite", sqlitePath: "./data.db"},
@@ -69,10 +69,15 @@ func TestBuildEnvFile(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildEnvFile(tc.claudeKey, tc.apiKey, tc.port, tc.db)
+			got := buildEnvFile(tc.apiKey, tc.port, tc.db)
 			for _, want := range tc.wantLines {
 				if !strings.Contains(got, want) {
 					t.Errorf("buildEnvFile output missing %q; got:\n%s", want, got)
+				}
+			}
+			for _, deny := range tc.noLines {
+				if strings.Contains(got, deny) {
+					t.Errorf("buildEnvFile output should not contain %q; got:\n%s", deny, got)
 				}
 			}
 		})
@@ -82,7 +87,7 @@ func TestBuildEnvFile(t *testing.T) {
 // TestBuildEnvFile_NoURLForSQLite verifies DATABASE_URL is absent for sqlite backend.
 func TestBuildEnvFile_NoURLForSQLite(t *testing.T) {
 	t.Parallel()
-	got := buildEnvFile("k", "k", "8080", dbConfig{storageBackend: "sqlite", sqlitePath: "./data.db"})
+	got := buildEnvFile("k", "8080", dbConfig{storageBackend: "sqlite", sqlitePath: "./data.db"})
 	if strings.Contains(got, "DATABASE_URL") {
 		t.Errorf("expected no DATABASE_URL in sqlite env, got:\n%s", got)
 	}
@@ -93,51 +98,46 @@ func TestBuildMCPJSON(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		claudeKey string
-		db        dbConfig
-		wantKeys  []string
-		noKeys    []string
+		name     string
+		db       dbConfig
+		wantKeys []string
+		noKeys   []string
 	}{
 		{
-			name:      "sqlite backend",
-			claudeKey: "sk-test",
-			db:        dbConfig{storageBackend: "sqlite", sqlitePath: "/tmp/test.db"},
+			name: "sqlite backend",
+			db:   dbConfig{storageBackend: "sqlite", sqlitePath: "/tmp/test.db"},
 			wantKeys: []string{
 				"wayneblacktea",
 				`"command": "wbt"`,
 				`"args": [`,
 				`"mcp"`,
-				"CLAUDE_API_KEY",
 				"SQLITE_PATH",
 				"STORAGE_BACKEND",
 			},
 			// Regression guard: legacy binary name must not appear — `go install
 			// .../cmd/wbt@latest` does not produce a `wayneblacktea-mcp` binary,
 			// so the .mcp.json must point at `wbt mcp` instead.
-			noKeys: []string{"DATABASE_URL", "wayneblacktea-mcp"},
+			noKeys: []string{"CLAUDE_API_KEY", "DATABASE_URL", "wayneblacktea-mcp"},
 		},
 		{
-			name:      "postgres backend",
-			claudeKey: "sk-prod",
-			db:        dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSNShort},
+			name: "postgres backend",
+			db:   dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSNShort},
 			wantKeys: []string{
 				"wayneblacktea",
 				`"command": "wbt"`,
 				`"args": [`,
 				`"mcp"`,
-				"CLAUDE_API_KEY",
 				"DATABASE_URL",
 				"STORAGE_BACKEND",
 			},
-			noKeys: []string{"SQLITE_PATH", "wayneblacktea-mcp"},
+			noKeys: []string{"CLAUDE_API_KEY", "SQLITE_PATH", "wayneblacktea-mcp"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			b, err := buildMCPJSON(tc.claudeKey, tc.db)
+			b, err := buildMCPJSON(tc.db)
 			if err != nil {
 				t.Fatalf("buildMCPJSON returned error: %v", err)
 			}
@@ -249,8 +249,8 @@ func TestRunServe_MissingBinary(t *testing.T) {
 	}
 }
 
-// TestRunServe_MissingEnvVars verifies runServe returns an error when neither
-// API_KEY nor CLAUDE_API_KEY is set.
+// TestRunServe_MissingEnvVars verifies runServe returns an error when API_KEY
+// is not set. CLAUDE_API_KEY is optional and must not satisfy HTTP auth config.
 // Cannot use t.Parallel because t.Setenv mutates process-global state.
 func TestRunServe_MissingEnvVars(t *testing.T) {
 	t.Setenv("API_KEY", "")
@@ -260,8 +260,67 @@ func TestRunServe_MissingEnvVars(t *testing.T) {
 	if err == nil {
 		t.Fatal("runServe: expected error when env vars missing, got nil")
 	}
-	if !strings.Contains(err.Error(), "API_KEY or CLAUDE_API_KEY must be set") {
-		t.Errorf("runServe error = %q, want substring about API_KEY/CLAUDE_API_KEY", err.Error())
+	if !strings.Contains(err.Error(), "API_KEY must be set") {
+		t.Errorf("runServe error = %q, want substring about API_KEY", err.Error())
+	}
+}
+
+// TestRunInit_DoesNotPromptForClaudeAPIKey proves the init wizard can complete
+// with only database, port, and HTTP API key answers. CLAUDE_API_KEY remains an
+// optional feature flag the user may add later.
+func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+
+	oldStdin := os.Stdin
+	oldStdout := os.Stdout
+	defer func() {
+		os.Stdin = oldStdin
+		os.Stdout = oldStdout
+	}()
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdin: %v", err)
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdout: %v", err)
+	}
+	os.Stdin = stdinR
+	os.Stdout = stdoutW
+
+	_, _ = stdinW.WriteString("\n\n8080\n\n")
+	_ = stdinW.Close()
+
+	err = runInit()
+	_ = stdoutW.Close()
+	if err != nil {
+		t.Fatalf("runInit returned error: %v", err)
+	}
+
+	out, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("reading stdout: %v", err)
+	}
+	if strings.Contains(string(out), "API key for Claude") {
+		t.Fatalf("runInit prompted for CLAUDE_API_KEY:\n%s", string(out))
+	}
+
+	envContent, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatalf("reading generated .env: %v", err)
+	}
+	if strings.Contains(string(envContent), "\nCLAUDE_API_KEY=") {
+		t.Fatalf(".env should not contain active CLAUDE_API_KEY:\n%s", string(envContent))
+	}
+
+	mcpContent, err := os.ReadFile(".mcp.json")
+	if err != nil {
+		t.Fatalf("reading generated .mcp.json: %v", err)
+	}
+	if strings.Contains(string(mcpContent), "CLAUDE_API_KEY") {
+		t.Fatalf(".mcp.json should not contain CLAUDE_API_KEY:\n%s", string(mcpContent))
 	}
 }
 

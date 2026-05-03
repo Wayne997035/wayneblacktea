@@ -24,16 +24,12 @@
 
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # 問你 CLAUDE_API_KEY、選 SQLite 或 Postgres、寫 .env 跟 .mcp.json
+wbt init    # 選 SQLite 或 Postgres、寫 .env 跟 .mcp.json
 ```
 
-然後把 MCP server 註冊給 Claude Code：
+從產生 `.mcp.json` 的目錄開 Claude Code；核准 project MCP server 後，Claude Code 會自動啟動 `wbt mcp`。
 
-```bash
-claude mcp add --scope user wayneblacktea -- wbt mcp
-```
-
-完 — 單一 binary、單一指令。`wbt mcp` 是 MCP stdio entry；`wbt serve`（選用）跑 dashboard HTTP API，想要 web UI 才開。
+完。核心 MCP 記憶功能不需要 Anthropic API key。`wbt serve`（選用）跑 dashboard HTTP API，想要 web UI 才開。
 
 ## 你會得到
 
