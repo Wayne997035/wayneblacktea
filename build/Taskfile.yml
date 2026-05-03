@@ -24,6 +24,7 @@ tasks:
       - task: build-wbt
       - task: build-wbt-context
       - task: build-wbt-hook
+      - task: build-wbt-guard
     silent: false
 
   vuln:
@@ -86,6 +87,15 @@ tasks:
       - go build -o bin/wbt-hook ./cmd/wbt-hook/
     dir: ..
 
+  build-wbt-guard:
+    desc: "Build the wbt-guard PreToolUse hook binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-guard ./cmd/wbt-guard/
+    dir: ..
+
   lint:
     desc: "Run golangci-lint"
     deps:
@@ -94,7 +104,7 @@ tasks:
       - |
         # cmd/server embeds web/dist which requires a prior `npm run build`.
         # Exclude it so lint is not blocked by a missing frontend build artifact.
-        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/..."
+        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
         if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
           GOPROXY=off golangci-lint run --config build/.golangci.yml $PKGS
         else
@@ -110,7 +120,7 @@ tasks:
       # cmd/server embeds web/dist which requires a prior `npm run build`.
       # Exclude it so tests are not blocked by a missing frontend build artifact.
       # -short skips testcontainers-based integration tests that require Docker.
-      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/...
+      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   go-cache:
@@ -123,7 +133,7 @@ tasks:
     desc: "Run integration tests (requires Docker for testcontainers)"
     cmds:
       # No -short flag: runs all tests including testcontainers-based integration tests.
-      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/...
+      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:
@@ -134,6 +144,21 @@ tasks:
         msg: "DATABASE_URL is not set — add it to .env"
     cmds:
       - migrate -path migrations/ -database "{{.DATABASE_URL}}" up
+    dir: ..
+
+  guard-prune:
+    desc: "Prune guard_events / guard_bypasses older than 30 days (run via cron)"
+    dotenv: ['../.env.local']
+    preconditions:
+      - sh: test -n "{{.DATABASE_URL}}"
+        msg: "DATABASE_URL is not set — add it to .env or export it"
+    cmds:
+      # 30-day TTL on observability tables, codified by docs/p0a-design-rationale.md §6.1.
+      # Postgres-only: SQLite is dev-local single-tenant, no growth concern.
+      - |
+        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM guard_events WHERE created_at < NOW() - INTERVAL '30 days';"
+      - |
+        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM guard_bypasses WHERE expires_at IS NOT NULL AND expires_at < NOW() - INTERVAL '30 days';"
     dir: ..
 
   migrate-down:

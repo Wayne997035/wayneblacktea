@@ -9,8 +9,8 @@ wayneblacktea runs as three binaries from a single Go module:
 | Binary | Role |
 |--------|------|
 | `wayneblacktea-server` | HTTP REST API + embedded React dashboard + Discord bot + background scheduler |
-| `wayneblacktea-mcp` | MCP stdio server -- wired into editor via `.mcp.json` |
-| `wbt` | One-click installer CLI (`wbt init` / `wbt serve`) |
+| `wayneblacktea-mcp` | Standalone MCP stdio server for systemd / Docker deployments |
+| `wbt` | One-click installer CLI (`wbt init` / `wbt serve` / `wbt mcp`) |
 
 A fourth binary, `wbt-doctor`, is a one-shot health snapshot tool invoked by the editor Stop hook.
 
@@ -33,7 +33,7 @@ graph TD
         BOT[Discord bot]
     end
 
-    subgraph wayneblacktea-mcp
+    subgraph MCP runtime
         MCP[MCP stdio server]
     end
 
@@ -53,7 +53,8 @@ graph TD
     FE -->|HTTPS + X-API-Key| AUTH
     DISC -->|slash commands| BOT
 
-    MCP -->|HTTP| API
+    MCP --> PG
+    MCP --> SQ
     AUTH --> API
     API --> ALOG
     API --> PG
@@ -77,15 +78,12 @@ sequenceDiagram
     participant User
     participant Editor as Claude Code
     participant MCP as MCP server
-    participant API as HTTP API
     participant DB as PostgreSQL
 
     User->>Editor: opens project
     Editor->>MCP: get_today_context
-    MCP->>API: GET /api/context/today
-    API->>DB: query goals, projects, progress, handoff
-    DB-->>API: rows
-    API-->>MCP: JSON response
+    MCP->>DB: query goals, projects, progress, handoff
+    DB-->>MCP: rows
     MCP-->>Editor: today's context
     Editor-->>User: active work + pending handoff
 ```
@@ -150,9 +148,9 @@ Seven bounded contexts; each owns its schema tables and service layer. They shar
 
 ## MCP server wiring
 
-`wayneblacktea-mcp` is a stdio binary. The editor spawns it as a subprocess via `.mcp.json`. It translates JSON-RPC tool calls into HTTP requests against the running `wayneblacktea-server`.
+`wbt mcp` is the end-user MCP stdio entry point. The standalone `wayneblacktea-mcp` binary is kept for systemd / Docker-style deployments; both call the same `internal/mcprunner.Run` wiring.
 
-`wbt init` writes `.mcp.json` automatically, pointing `command` at the `wayneblacktea-mcp` binary and injecting the required environment variables.
+`wbt init` writes `.mcp.json` automatically, pointing `command` at `wbt` with `args: ["mcp"]` and injecting only the storage environment. Provider keys stay in `.env` / process environment when present. The init wizard is memory-only; optional AI integrations are enabled later by editing `.env`.
 
 ## Dashboard
 

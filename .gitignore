@@ -5,6 +5,10 @@ AGENTS.md
 !.claude/settings.json
 .mcp.json
 
+# wbt-guard per-repo marker file — contains optional db_url, must not be committed.
+# See internal/guard/config.go for schema documentation.
+.wayneblacktea/config.json
+
 .env
 .env.local
 *.env.local

@@ -24,16 +24,12 @@ Single binary, interactive wizard, SQLite-by-default — no infra to provision.
 
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # asks for your CLAUDE_API_KEY, picks SQLite or Postgres, writes .env + .mcp.json
+wbt init    # picks SQLite or Postgres, writes .env + .mcp.json
 ```
 
-Then register the MCP server with Claude Code:
+Open Claude Code from the directory containing the generated `.mcp.json`; it will start `wbt mcp` automatically after you approve the project MCP server.
 
-```bash
-claude mcp add --scope user wayneblacktea -- wbt mcp
-```
-
-That's it — single binary, single command. `wbt mcp` is the MCP stdio entry; `wbt serve` (optional) runs the dashboard's HTTP API alongside if you want the web UI.
+That's it. No Anthropic API key is required for core MCP memory features. `wbt serve` (optional) runs the dashboard's HTTP API alongside if you want the web UI.
 
 ## What you get
 

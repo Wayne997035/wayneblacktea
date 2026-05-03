@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
@@ -42,11 +43,19 @@ func Run() error {
 		return fmt.Errorf("initializing MCP server: %w", err)
 	}
 
-	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
-		s.WithClassifier(ai.NewActivityClassifier(claudeKey))
+	// Build the provider-neutral chain from env. Backward compat: with only
+	// CLAUDE_API_KEY set, this resolves to a single-Claude chain identical
+	// to the pre-refactor behaviour.
+	llmChain := llm.BuildChainFromEnv()
+	if llmChain.Len() > 0 {
+		s.WithClassifier(ai.NewActivityClassifierFromLLM(llmChain))
+		log.Printf("llm: provider chain = %v", llmChain.Names())
+	} else {
+		log.Println("llm: memory-only mode (no provider configured)")
 	}
 
 	// Wire snapshot store + generator when CLAUDE_API_KEY is set.
+	// Snapshot generation is Phase-5 deferred and remains Claude-only.
 	// The snapshot store requires a Postgres pool; on SQLite the feature is
 	// silently disabled — the tool returns a "not configured" error message.
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {

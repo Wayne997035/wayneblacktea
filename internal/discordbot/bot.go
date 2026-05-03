@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
 // Bot listens for commands and bridges Discord → wayneblacktea REST API.
@@ -64,16 +66,22 @@ var slashCommands = []*discordgo.ApplicationCommand{
 }
 
 // New creates and configures a Bot but does not connect yet.
-// guildID: if non-empty, slash commands are registered guild-scoped (visible instantly);
-// if empty, they are registered globally (up to 1 hour to propagate).
-func New(botToken, groqAPIKey, apiURL, apiKey, guildID string) (*Bot, error) {
+//
+// llmClient is the provider-neutral chain used by /analyze. Pass nil to run
+// the bot in memory-only mode — /analyze will reply with a "no provider
+// configured" message instead of panicking.
+//
+// guildID: if non-empty, slash commands are registered guild-scoped (visible
+// instantly); if empty, they are registered globally (up to 1 hour to
+// propagate).
+func New(botToken, apiURL, apiKey, guildID string, llmClient llm.JSONClient) (*Bot, error) {
 	s, err := discordgo.New("Bot " + botToken)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 	b := &Bot{
 		session:    s,
-		analyzer:   NewAnalyzer(groqAPIKey),
+		analyzer:   NewAnalyzer(llmClient),
 		apiURL:     strings.TrimRight(apiURL, "/"),
 		apiKey:     apiKey,
 		guildID:    guildID,

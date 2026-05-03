@@ -1,0 +1,11 @@
+-- SQLite no-op: wbt-guard targets the production Aiven Postgres backend only.
+--
+-- The PreToolUse hook (cmd/wbt-guard) opens a pgxpool against DATABASE_URL or
+-- the per-repo marker's db_url and writes guard_events rows there. SQLite is
+-- only used for local single-tenant dev of the main server — guard events are
+-- centralised observability data and never land in the local SQLite file.
+--
+-- This file exists only so the postgres↔sqlite migration numbering stays in
+-- lockstep. Adding a real schema here would imply a feature that does not
+-- exist; keep this a no-op until guard ever needs SQLite.
+SELECT 1;

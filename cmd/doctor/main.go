@@ -339,6 +339,9 @@ func detectSignals(s snapshot) []string {
 	if s.StuckCount > 0 {
 		sig = append(sig, fmt.Sprintf("%d stuck in-progress task(s) — likely missing complete_task call", s.StuckCount))
 	}
+	if active := s.InProgressCount - s.StuckCount; active > 0 {
+		sig = append(sig, fmt.Sprintf("%d active in_progress task(s) — close with complete_task or set_session_handoff", active))
+	}
 	if s.PendingProposals >= 5 {
 		sig = append(sig, fmt.Sprintf("%d pending proposals queued — triage backlog", s.PendingProposals))
 	}
