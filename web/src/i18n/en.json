@@ -114,7 +114,9 @@
       "rejectedToast": "Proposal rejected",
       "confirmReject": "Reject this proposal?",
       "expand": "Expand proposals section",
-      "collapse": "Collapse proposals section"
+      "collapse": "Collapse proposals section",
+      "batchAcceptedToast": "{{count}} proposals accepted",
+      "batchRejectedToast": "{{count}} proposals rejected"
     },
     "form": {
       "type": "Type",

@@ -184,3 +184,125 @@ func TestProposalStore_ContextCanceled(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+// ----- BatchConfirm tests -----
+
+// TestProposalStore_BatchConfirm_AllAccepted verifies that all proposals are
+// resolved when every ID is valid and pending.
+func TestProposalStore_BatchConfirm_AllAccepted(t *testing.T) {
+	s := openProposalStore(t, ":memory:", "")
+	ctx := context.Background()
+
+	// create 3 proposals
+	ids := make([]uuid.UUID, 3)
+	for i := range ids {
+		p, err := s.Create(ctx, proposal.CreateParams{
+			Type: proposal.TypeGoal, Payload: []byte(`{"title":"batch-goal"}`),
+		})
+		if err != nil {
+			t.Fatalf("Create[%d]: %v", i, err)
+		}
+		ids[i] = p.ID
+	}
+
+	result, err := s.BatchConfirm(ctx, ids, proposal.StatusAccepted)
+	if err != nil {
+		t.Fatalf("BatchConfirm: %v", err)
+	}
+	if result.Accepted != 3 || result.Failed != 0 {
+		t.Errorf("expected 3 accepted 0 failed, got %+v", result)
+	}
+	for i, r := range result.Results {
+		if !r.OK {
+			t.Errorf("result[%d] should be OK: %+v", i, r)
+		}
+	}
+
+	// none remain pending
+	pending, err := s.ListPending(ctx)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending after batch accept, got %d", len(pending))
+	}
+}
+
+// TestProposalStore_BatchConfirm_PartialFailure verifies that SQLite best-effort
+// path resolves what it can and records per-item errors.
+func TestProposalStore_BatchConfirm_PartialFailure(t *testing.T) {
+	s := openProposalStore(t, ":memory:", "")
+	ctx := context.Background()
+
+	good, err := s.Create(ctx, proposal.CreateParams{
+		Type: proposal.TypeTask, Payload: []byte(`{"title":"good"}`),
+	})
+	if err != nil {
+		t.Fatalf("Create good: %v", err)
+	}
+	missingID := uuid.New()
+
+	ids := []uuid.UUID{good.ID, missingID}
+	result, err := s.BatchConfirm(ctx, ids, proposal.StatusRejected)
+	if err != nil {
+		t.Fatalf("BatchConfirm: %v", err)
+	}
+	if result.Accepted != 1 || result.Failed != 1 {
+		t.Errorf("expected 1 accepted 1 failed, got %+v", result)
+	}
+	// find which entry has the error
+	for _, r := range result.Results {
+		if r.ID == missingID.String() {
+			if r.OK {
+				t.Errorf("missing ID should have failed")
+			}
+			if r.ErrMsg == "" {
+				t.Errorf("missing ID should have error message")
+			}
+		}
+		if r.ID == good.ID.String() && !r.OK {
+			t.Errorf("good ID should have succeeded")
+		}
+	}
+}
+
+// TestProposalStore_BatchConfirm_AllAlreadyResolved verifies that already-resolved
+// proposals produce ErrNotFound-style per-item errors without panicking.
+func TestProposalStore_BatchConfirm_AllAlreadyResolved(t *testing.T) {
+	s := openProposalStore(t, ":memory:", "")
+	ctx := context.Background()
+
+	p, err := s.Create(ctx, proposal.CreateParams{
+		Type: proposal.TypeConcept, Payload: []byte(`{"title":"already"}`),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// resolve first time
+	if _, err := s.Resolve(ctx, p.ID, proposal.StatusAccepted); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// batch confirm again — should fail with not-found per-item
+	result, err := s.BatchConfirm(ctx, []uuid.UUID{p.ID}, proposal.StatusAccepted)
+	if err != nil {
+		t.Fatalf("BatchConfirm (already resolved): %v", err)
+	}
+	if result.Failed != 1 || result.Accepted != 0 {
+		t.Errorf("expected 1 failed, got %+v", result)
+	}
+	if len(result.Results) != 1 || result.Results[0].OK {
+		t.Errorf("expected single failed result, got %+v", result.Results)
+	}
+}
+
+// TestProposalStore_BatchConfirm_InvalidStatus verifies that an invalid status
+// is rejected before any DB operations are attempted.
+func TestProposalStore_BatchConfirm_InvalidStatus(t *testing.T) {
+	s := openProposalStore(t, ":memory:", "")
+	ctx := context.Background()
+
+	_, err := s.BatchConfirm(ctx, []uuid.UUID{uuid.New()}, proposal.StatusPending)
+	if err == nil {
+		t.Fatal("expected error for invalid status, got nil")
+	}
+}

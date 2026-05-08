@@ -260,6 +260,27 @@ func (s *KnowledgeStore) GetByID(ctx context.Context, id uuid.UUID) (*db.Knowled
 	return &item, nil
 }
 
+// UpdateLearningValue sets the star-rating (1–5) for the given knowledge item.
+// Returns knowledge.ErrNotFound when no row matches within the workspace scope.
+func (s *KnowledgeStore) UpdateLearningValue(ctx context.Context, id uuid.UUID, value int) error {
+	const q = `UPDATE knowledge_items
+		SET learning_value = ?1, updated_at = ?2
+		WHERE id = ?3
+		  AND (?4 IS NULL OR workspace_id = ?4)`
+	res, err := s.db.conn.ExecContext(ctx, q, value, sqliteNowMillis(), id.String(), s.db.workspaceArg())
+	if err != nil {
+		return errWrap("UpdateLearningValue", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return errWrap("UpdateLearningValue rows", err)
+	}
+	if n == 0 {
+		return knowledge.ErrNotFound
+	}
+	return nil
+}
+
 // UpdateEmbedding writes the embedding bytes to the knowledge_items row
 // matching id within the current workspace scope. Best-effort: returns nil
 // when no row matches. Used by tests + the future Stop-hook integration that

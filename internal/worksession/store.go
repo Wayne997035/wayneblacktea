@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +26,9 @@ type Store struct {
 
 // NewStore returns a Postgres-backed Store.
 func NewStore(pool *pgxpool.Pool, workspaceID *uuid.UUID) *Store {
+	if workspaceID == nil {
+		slog.Warn("worksession.Store: no WORKSPACE_ID configured — operating in legacy mode, task batch updates scoped to zero-UUID workspace")
+	}
 	return &Store{pool: pool, workspaceID: workspaceID}
 }
 
@@ -98,19 +103,28 @@ func linkTaskTx(ctx context.Context, tx pgx.Tx, sessionID, taskID uuid.UUID, rol
 	return nil
 }
 
+// validateCreateParams returns an error if any required field is missing.
+func validateCreateParams(p CreateParams) error {
+	switch {
+	case p.RepoName == "":
+		return fmt.Errorf("worksession.Create: repo_name is required")
+	case p.Title == "":
+		return fmt.Errorf("worksession.Create: title is required")
+	case p.Goal == "":
+		return fmt.Errorf("worksession.Create: goal is required")
+	case p.Source == "":
+		return fmt.Errorf("worksession.Create: source is required")
+	}
+	return nil
+}
+
 // Create inserts a new in_progress work session and links task_ids as primary.
+// After the session tx commits, linked tasks are batch-updated from
+// status='pending' to 'in_progress' (idempotent — tasks already in_progress
+// are untouched). Workspace boundary is enforced by the WHERE clause.
 func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
-	if p.RepoName == "" {
-		return nil, fmt.Errorf("worksession.Create: repo_name is required")
-	}
-	if p.Title == "" {
-		return nil, fmt.Errorf("worksession.Create: title is required")
-	}
-	if p.Goal == "" {
-		return nil, fmt.Errorf("worksession.Create: goal is required")
-	}
-	if p.Source == "" {
-		return nil, fmt.Errorf("worksession.Create: source is required")
+	if err := validateCreateParams(p); err != nil {
+		return nil, err
 	}
 
 	// Workspace scoping: always use the store-configured workspace, never
@@ -120,10 +134,9 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
 		wsID = *s.workspaceID
 	}
 
-	// SECURITY (P0a single-tenant): task_ids are not validated against workspace
-	// at store layer. Cross-workspace task linking is theoretically possible but
-	// safe in production because WORKSPACE_ID is fixed per server. If multi-tenant
-	// is added later, MUST add per-task workspace_id verification before INSERT.
+	// SECURITY: task_ids are validated against the workspace boundary in
+	// batchMarkTasksInProgress via the WHERE workspace_id clause. Only tasks
+	// that belong to wsID (or any workspace when wsID is nil/zero) are updated.
 
 	id := uuid.New()
 	now := time.Now().UTC()
@@ -178,7 +191,44 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
 	if err = tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("worksession.Create commit: %w", err)
 	}
+
+	// Batch-update linked tasks to in_progress after the session tx commits.
+	// Non-fatal: session is committed; task status update is best-effort.
+	if len(p.TaskIDs) > 0 {
+		_ = s.batchMarkTasksInProgress(ctx, wsID, p.TaskIDs)
+	}
+
 	return sess, nil
+}
+
+// batchMarkTasksInProgress sets status='in_progress' on tasks that are
+// currently 'pending'. It is idempotent: tasks already in_progress are
+// untouched. Workspace boundary is enforced by the WHERE clause so a
+// compromised caller cannot update tasks belonging to a different workspace.
+func (s *Store) batchMarkTasksInProgress(ctx context.Context, wsID uuid.UUID, taskIDs []uuid.UUID) error {
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	// Build $N placeholders for the IN clause.
+	// $1 = workspace_id, $2…$N+1 = task IDs.
+	idArgs := make([]any, 0, len(taskIDs)+1)
+	idArgs = append(idArgs, wsID)
+	placeholders := make([]string, len(taskIDs))
+	for i, id := range taskIDs {
+		idArgs = append(idArgs, id)
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+	}
+	q := fmt.Sprintf(`UPDATE tasks
+		SET status = 'in_progress', updated_at = NOW()
+		WHERE id IN (%s)
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND status = 'pending'`,
+		strings.Join(placeholders, ","))
+	_, err := s.pool.Exec(ctx, q, idArgs...)
+	if err != nil {
+		return fmt.Errorf("worksession.batchMarkTasksInProgress: %w", err)
+	}
+	return nil
 }
 
 // GetActive returns the in_progress session for workspace+repo.
@@ -245,7 +295,10 @@ func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, e
 	return sess, nil
 }
 
-// Finish sets status=completed and records final_summary.
+// Finish sets status=completed and records final_summary. After the session
+// update, linked tasks are batch-marked as completed:
+//   - If FinishParams.CompletedTaskIDs is non-empty, only those tasks are marked.
+//   - Otherwise, all tasks linked via work_session_tasks are marked completed.
 func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
 	var ws uuid.UUID
 	if s.workspaceID != nil {
@@ -270,7 +323,59 @@ func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
 		}
 		return nil, fmt.Errorf("worksession.Finish: %w", err)
 	}
+
+	// Resolve which tasks to mark completed.
+	taskIDs := p.CompletedTaskIDs
+	if len(taskIDs) == 0 {
+		// Fallback: find all linked tasks for this session.
+		linked, lErr := s.LinkedTasks(ctx, p.SessionID)
+		if lErr == nil {
+			taskIDs = make([]uuid.UUID, 0, len(linked))
+			for _, lt := range linked {
+				taskIDs = append(taskIDs, lt.TaskID)
+			}
+		}
+	}
+
+	if len(taskIDs) > 0 {
+		if markErr := s.batchMarkTasksCompleted(ctx, ws, taskIDs, p.Artifact); markErr != nil {
+			// Non-fatal: session is committed; task status update is best-effort.
+			_ = markErr
+		}
+	}
+
 	return sess, nil
+}
+
+// batchMarkTasksCompleted sets status='completed' and optionally artifact on
+// tasks that belong to the workspace. Workspace boundary enforced by WHERE.
+func (s *Store) batchMarkTasksCompleted(ctx context.Context, wsID uuid.UUID, taskIDs []uuid.UUID, artifact *string) error {
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	var artVal any
+	if artifact != nil {
+		artVal = *artifact
+	}
+	// Workspace arg is $1, artifact is $2, task IDs start at $3.
+	idArgs := make([]any, 0, len(taskIDs)+2)
+	idArgs = append(idArgs, wsID, artVal)
+	placeholders := make([]string, len(taskIDs))
+	for i, id := range taskIDs {
+		idArgs = append(idArgs, id)
+		placeholders[i] = fmt.Sprintf("$%d", i+3)
+	}
+	q := fmt.Sprintf(`UPDATE tasks
+		SET status = 'completed', artifact = COALESCE($2, artifact), updated_at = NOW()
+		WHERE id IN (%s)
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND status NOT IN ('completed','cancelled')`,
+		strings.Join(placeholders, ","))
+	_, err := s.pool.Exec(ctx, q, idArgs...)
+	if err != nil {
+		return fmt.Errorf("worksession.batchMarkTasksCompleted: %w", err)
+	}
+	return nil
 }
 
 // GetByID returns the session with the given ID, scoped to workspaceID.

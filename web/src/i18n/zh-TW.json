@@ -114,7 +114,9 @@
       "rejectedToast": "提案已拒絕",
       "confirmReject": "確認拒絕此提案？",
       "expand": "展開提案區塊",
-      "collapse": "收起提案區塊"
+      "collapse": "收起提案區塊",
+      "batchAcceptedToast": "{{count}} 筆提案已接受",
+      "batchRejectedToast": "{{count}} 筆提案已拒絕"
     },
     "form": {
       "type": "類型",

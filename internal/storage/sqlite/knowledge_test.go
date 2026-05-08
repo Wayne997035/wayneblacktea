@@ -153,3 +153,32 @@ func TestKnowledgeStore_ContextCanceled(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestKnowledgeStore_UpdateLearningValue(t *testing.T) {
+	s := openKnowledgeStore(t, ":memory:", "")
+	ctx := context.Background()
+
+	item, err := s.AddItem(ctx, knowledge.AddItemParams{
+		Type: "til", Title: "Spaced repetition", Content: "Ebbinghaus curve",
+	})
+	if err != nil {
+		t.Fatalf("AddItem: %v", err)
+	}
+
+	for _, v := range []int{1, 3, 5} {
+		if err := s.UpdateLearningValue(ctx, item.ID, v); err != nil {
+			t.Errorf("UpdateLearningValue(%d): %v", v, err)
+		}
+		got, err := s.GetByID(ctx, item.ID)
+		if err != nil {
+			t.Fatalf("GetByID after update to %d: %v", v, err)
+		}
+		if !got.LearningValue.Valid || int(got.LearningValue.Int32) != v {
+			t.Errorf("after UpdateLearningValue(%d): got LearningValue=%+v", v, got.LearningValue)
+		}
+	}
+
+	if err := s.UpdateLearningValue(ctx, uuid.New(), 3); !errors.Is(err, knowledge.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown ID, got %v", err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 const (
 	statusCheckpointed = "checkpointed"
 	statusCompleted    = "completed"
+	statusInProgress   = "in_progress"
 )
 
 // openTestDB opens an in-memory SQLite DB for testing.
@@ -149,7 +150,7 @@ func TestWorkSessionStore_StatusTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if sess.Status != "in_progress" {
+	if sess.Status != statusInProgress {
 		t.Errorf("initial status: got %q, want in_progress", sess.Status)
 	}
 
@@ -359,5 +360,153 @@ func TestWorkSessionStore_Checkpoint_NotFound(t *testing.T) {
 	})
 	if err != worksession.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// ---- task auto-status tests ----
+
+// queryTaskStatus reads the status column for a task directly from the SQLite DB.
+func queryTaskStatus(t *testing.T, db *wbtsqlite.DB, taskID string) string {
+	t.Helper()
+	row := db.QueryRowContext(context.Background(),
+		`SELECT status FROM tasks WHERE id = ?1`, taskID)
+	var status string
+	if err := row.Scan(&status); err != nil {
+		t.Fatalf("queryTaskStatus %s: %v", taskID, err)
+	}
+	return status
+}
+
+// TestStartWork_AutoMarksTasksInProgress verifies that start_work (Create)
+// transitions linked tasks from pending → in_progress.
+func TestStartWork_AutoMarksTasksInProgress(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "auto-in-progress-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+
+	_, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got != statusInProgress {
+		t.Errorf("taskB status: got %q, want in_progress", got)
+	}
+}
+
+// TestStartWork_Idempotent verifies that tasks already in_progress are not
+// downgraded when start_work links them again.
+func TestStartWork_Idempotent(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+
+	// Manually set the task to in_progress before start_work.
+	if err := db.ExecContext(ctx,
+		`UPDATE tasks SET status = 'in_progress' WHERE id = ?1`, taskA.String(),
+	); err != nil {
+		t.Fatalf("pre-set in_progress: %v", err)
+	}
+
+	p := makeCreateParams(uuid.MustParse(wsID), "idempotent-repo")
+	p.TaskIDs = []uuid.UUID{taskA}
+	_, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Task was already in_progress; it must remain in_progress (not downgraded).
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress (must stay)", got)
+	}
+}
+
+// TestFinishWork_AutoMarksTasksCompleted verifies that finish_work (Finish)
+// marks linked tasks as completed when CompletedTaskIDs is provided.
+func TestFinishWork_AutoMarksTasksCompleted(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "auto-completed-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = store.Finish(ctx, worksession.FinishParams{
+		SessionID:        sess.ID,
+		Summary:          "done",
+		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got != statusCompleted {
+		t.Errorf("taskB status: got %q, want completed", got)
+	}
+}
+
+// TestFinishWork_NoTaskIDs verifies that finish_work (Finish) marks ALL linked
+// session tasks as completed when CompletedTaskIDs is empty.
+func TestFinishWork_NoTaskIDs(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "no-task-ids-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Finish with no CompletedTaskIDs — store must discover linked tasks automatically.
+	_, err = store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "done without explicit task ids",
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got != statusCompleted {
+		t.Errorf("taskB status: got %q, want completed", got)
 	}
 }

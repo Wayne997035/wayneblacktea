@@ -10,6 +10,26 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
+// typeBookmark is the suggested_type value for bookmark knowledge items.
+const typeBookmark = "bookmark"
+
+// ApplyGitHubBookmarkRule post-processes an AnalysisResult for GitHub repo
+// URLs. If the source URL is a bare GitHub repo (github.com/{owner}/{repo})
+// and LearningValue >= 2, it forces suggested_type=bookmark and
+// worth_saving=true regardless of the LLM's assessment.
+//
+// The sourceURL parameter is the original URL passed to /analyze.
+// This function is a no-op when sourceURL is not a bare GitHub repo URL.
+func ApplyGitHubBookmarkRule(result *AnalysisResult, sourceURL string) {
+	if result == nil {
+		return
+	}
+	if githubRepoPattern.MatchString(sourceURL) && result.LearningValue >= 2 {
+		result.SuggestedType = typeBookmark
+		result.WorthSaving = true
+	}
+}
+
 // AnalysisResult is the structured assessment produced by the Discord
 // /analyze command. The shape is part of the public Discord bot contract —
 // changes to fields here are user-visible and MUST be coordinated with the
@@ -71,9 +91,9 @@ Return ONLY a JSON object with this schema (no markdown, no explanation):
 
 Rules:
 - learning_value 1-5 (1=noise/marketing, 3=useful, 5=must-save deep insight)
-- worth_saving = true if learning_value >= 3
+- worth_saving = true if learning_value >= 2
 - suggested_type: "article" for long-form, "til" for short facts, ` +
-	`"zettelkasten" for ideas/concepts, "bookmark" for tools/refs
+	`"zettelkasten" for ideas/concepts, "` + typeBookmark + `" for tools/refs
 - tags: 2-5 lowercase keywords
 - skip_reason: brief reason only when worth_saving=false, otherwise ""
 - summary must be in the same language as the content
@@ -115,6 +135,10 @@ func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult
 	var result AnalysisResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		return nil, fmt.Errorf("parse analysis json: %w", err)
+	}
+	// Enforce code-level threshold: LV≥2 always worth_saving regardless of model output.
+	if result.LearningValue >= 2 {
+		result.WorthSaving = true
 	}
 	return &result, nil
 }

@@ -205,10 +205,14 @@ func run() error {
 	knowledgeRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20))
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
+	api.PATCH("/knowledge/:id", knowledgeH.UpdateLearningValue, knowledgeRL)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge, knowledgeRL)
 
 	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/proposals/pending", proposalH.ListPendingProposals, proposalRL)
+	// confirm-batch registered before /:id/confirm so Echo's router matches the
+	// literal segment before the :id wildcard.
+	api.POST("/proposals/confirm-batch", proposalH.ConfirmBatch, proposalRL)
 	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal, proposalRL)
 
 	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))

@@ -462,6 +462,23 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 	return s.vectorSearch(ctx, queryEmbedding, limit)
 }
 
+// UpdateLearningValue sets the star-rating (1–5) for the given knowledge item.
+// Returns ErrNotFound when no row matches within the workspace scope.
+func (s *Store) UpdateLearningValue(ctx context.Context, id uuid.UUID, value int) error {
+	const q = `UPDATE knowledge_items
+		SET learning_value = $1, updated_at = NOW()
+		WHERE id = $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)`
+	tag, err := s.pool.Exec(ctx, q, int32(value), id, s.workspaceID) //nolint:gosec // G115: value validated 1–5 by handler
+	if err != nil {
+		return fmt.Errorf("updating learning_value for %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // GetByID returns a single knowledge item by ID within the current workspace
 // scope. Returns ErrNotFound when the item does not exist or belongs to a
 // different workspace.

@@ -192,10 +192,24 @@ func safeDial(ctx context.Context, network, addr string) (net.Conn, error) {
 // See fetcher.go:FetchURL for the maxFetchBytes pattern.
 func NewSafeHTTPClient() *http.Client {
 	transport := &http.Transport{
-		DialContext: safeDial,
+		DialContext:           safeDial,
+		ResponseHeaderTimeout: 5 * time.Second,
+		IdleConnTimeout:       15 * time.Second,
 	}
 	return &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: transport,
+		// Explicit CheckRedirect re-validates the target URL at the application
+		// layer so the SSRF defence is visible and regression-proof regardless
+		// of future Transport changes.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if _, err := IsSafeURL(req.Context(), req.URL.String()); err != nil {
+				return err
+			}
+			return nil
+		},
 	}
 }

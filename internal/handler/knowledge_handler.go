@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -69,6 +70,9 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 	if !validTypes[req.Type] {
 		return c.JSON(http.StatusBadRequest, errResp("type must be one of: article, til, bookmark, zettelkasten"))
 	}
+	if req.LearningValue != 0 && (req.LearningValue < 1 || req.LearningValue > 5) {
+		return c.JSON(http.StatusBadRequest, errResp("learning_value must be between 1 and 5"))
+	}
 
 	item, err := h.store.AddItem(c.Request().Context(), knowledge.AddItemParams{
 		Type:          req.Type,
@@ -98,6 +102,38 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusCreated, item)
+}
+
+type updateLearningValueRequest struct {
+	LearningValue int `json:"learning_value"`
+}
+
+// UpdateLearningValue handles PATCH /api/knowledge/:id.
+// Body: { "learning_value": N } where 1 ≤ N ≤ 5.
+func (h *KnowledgeHandler) UpdateLearningValue(c echo.Context) error {
+	rawID := c.Param("id")
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid knowledge id"))
+	}
+
+	var req updateLearningValueRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+
+	if req.LearningValue < 1 || req.LearningValue > 5 {
+		return c.JSON(http.StatusBadRequest, errResp("learning_value must be between 1 and 5"))
+	}
+
+	if err := h.store.UpdateLearningValue(c.Request().Context(), id, req.LearningValue); err != nil {
+		if errors.Is(err, knowledge.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("knowledge item not found"))
+		}
+		c.Logger().Errorf("UpdateLearningValue %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, map[string]int{"learning_value": req.LearningValue})
 }
 
 // SearchKnowledge searches knowledge items by full-text query.

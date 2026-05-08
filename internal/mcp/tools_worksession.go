@@ -94,29 +94,35 @@ func parseOptionalUUID(args map[string]any, field string) (*uuid.UUID, *mcp.Call
 	return &id, nil
 }
 
-// parseTaskIDs parses the task_ids JSON array (max 50 elements) from args.
-// Returns (nil, errResult) on validation error.
-func parseTaskIDs(args map[string]any) ([]uuid.UUID, *mcp.CallToolResult) {
-	raw := stringArg(args, "task_ids")
+// parseTaskIDsFromField parses a JSON UUID array from the named field (max 50
+// elements). Returns (nil, nil) when the field is absent or empty.
+func parseTaskIDsFromField(args map[string]any, field string) ([]uuid.UUID, *mcp.CallToolResult) {
+	raw := stringArg(args, field)
 	if raw == "" {
 		return nil, nil
 	}
 	var rawIDs []string
 	if err := json.Unmarshal([]byte(raw), &rawIDs); err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid task_ids JSON: %v", err))
+		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid %s JSON: %v", field, err))
 	}
 	if len(rawIDs) > 50 {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("task_ids exceeds limit: got %d, max 50", len(rawIDs)))
+		return nil, mcp.NewToolResultError(fmt.Sprintf("%s exceeds limit: got %d, max 50", field, len(rawIDs)))
 	}
 	ids := make([]uuid.UUID, 0, len(rawIDs))
 	for _, rawID := range rawIDs {
 		id, err := uuid.Parse(rawID)
 		if err != nil {
-			return nil, mcp.NewToolResultError(fmt.Sprintf("invalid task_id UUID %q: %v", rawID, err))
+			return nil, mcp.NewToolResultError(fmt.Sprintf("invalid UUID in %s %q: %v", field, rawID, err))
 		}
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// parseTaskIDs parses the task_ids JSON array (max 50 elements) from args.
+// Returns (nil, errResult) on validation error.
+func parseTaskIDs(args map[string]any) ([]uuid.UUID, *mcp.CallToolResult) {
+	return parseTaskIDsFromField(args, "task_ids")
 }
 
 func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -278,10 +284,22 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("invalid session_id UUID"), nil
 	}
 
+	completedTaskIDs, errRes := parseTaskIDsFromField(args, "completed_task_ids")
+	if errRes != nil {
+		return errRes, nil
+	}
+
+	var artifact *string
+	if raw := stringArg(args, "artifact"); raw != "" {
+		artifact = &raw
+	}
+
 	slog.Info("finish_work", "session_id", sessID, "workspace_id", s.workspaceUUIDVal())
 	sess, err := s.workSession.Finish(ctx, worksession.FinishParams{
-		SessionID: sessID,
-		Summary:   summary,
+		SessionID:        sessID,
+		Summary:          summary,
+		CompletedTaskIDs: completedTaskIDs,
+		Artifact:         artifact,
 	})
 	if err != nil {
 		if errors.Is(err, worksession.ErrNotFound) {

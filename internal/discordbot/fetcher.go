@@ -17,13 +17,77 @@ var sessionNoise = regexp.MustCompile(
 		`open more actions menu|repository files navigation|change notification settings)`,
 )
 
-// maxFetchBytes caps response body reads to 1 MB to prevent memory exhaustion.
-const maxFetchBytes = 1 * 1024 * 1024
+// githubRepoPattern matches bare GitHub repo URLs: github.com/{owner}/{repo}
+// with no sub-path. Captures owner and repo name.
+var githubRepoPattern = regexp.MustCompile(
+	`^https?://github\.com/([^/]+)/([^/?#]+)/?$`,
+)
+
+// maxFetchBytes caps response body reads to 4 MB to prevent memory exhaustion.
+const maxFetchBytes = 4 * 1024 * 1024
 
 // fetchClient uses a safe dialer that enforces SSRF protection at the TCP layer.
 var fetchClient = NewSafeHTTPClient()
 
+// FetchURL fetches the URL and returns extracted title and text content.
+// For bare GitHub repo URLs (github.com/{owner}/{repo}) it first attempts to
+// fetch the raw README from raw.githubusercontent.com and falls back to the
+// original HTML URL if that fails.
 func FetchURL(ctx context.Context, rawURL string) (title, text string, err error) {
+	// For bare GitHub repo URLs, try raw README first.
+	if m := githubRepoPattern.FindStringSubmatch(rawURL); m != nil {
+		owner, repo := m[1], m[2]
+		rawReadmeURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/HEAD/README.md", owner, repo)
+		t, tx, readmeErr := fetchRaw(ctx, rawReadmeURL)
+		if readmeErr == nil && len(tx) >= 100 {
+			if t == "" {
+				t = repo + " — README"
+			}
+			if len(tx) > 8000 {
+				tx = tx[:8000] + "…"
+			}
+			return t, tx, nil
+		}
+		// Fallback to original HTML path.
+	}
+
+	return fetchHTML(ctx, rawURL)
+}
+
+// fetchRaw fetches a plain-text URL (e.g. raw.githubusercontent.com) and
+// returns its content as title="" and text=body.
+func fetchRaw(ctx context.Context, rawURL string) (title, text string, err error) {
+	// Gate: validate URL scheme and resolve DNS before opening any connection.
+	if _, ssrfErr := IsSafeURL(ctx, rawURL); ssrfErr != nil {
+		return "", "", fmt.Errorf("URL blocked: %w", ssrfErr)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 wayneblacktea-bot/1.0")
+
+	resp, err := fetchClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("fetch %s: %w", rawURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return "", "", fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
+	if err != nil {
+		return "", "", fmt.Errorf("read body: %w", err)
+	}
+
+	return "", strings.TrimSpace(string(body)), nil
+}
+
+// fetchHTML fetches an HTML URL and extracts title and text via HTML parsing.
+func fetchHTML(ctx context.Context, rawURL string) (title, text string, err error) {
 	// Gate: validate URL scheme and resolve DNS before opening any connection.
 	if _, ssrfErr := IsSafeURL(ctx, rawURL); ssrfErr != nil {
 		return "", "", fmt.Errorf("URL blocked: %w", ssrfErr)

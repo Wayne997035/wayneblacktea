@@ -63,6 +63,13 @@ var slashCommands = []*discordgo.ApplicationCommand{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "tags", Description: "Comma-separated tags (optional)"},
 		},
 	},
+	{
+		Name:        "save-anyway",
+		Description: "Force-save a URL or text as a bookmark, skipping analysis (LV=null)",
+		Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "input", Description: "URL or text to save directly", Required: true},
+		},
+	},
 }
 
 // New creates and configures a Bot but does not connect yet.
@@ -147,6 +154,8 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		msg = b.runRecent()
 	case "review":
 		msg = b.runReview(optStr("title"), optStr("content"), optStr("tags"))
+	case "save-anyway":
+		msg = b.runSaveAnyway(optStr("input"))
 	}
 
 	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: msg})
@@ -290,6 +299,11 @@ func (b *Bot) runAnalyze(input string) string {
 		return fmt.Sprintf("Analysis failed: %v", err)
 	}
 
+	// Post-process: GitHub repo URLs with LV≥2 are forced to bookmark.
+	if isURL {
+		ApplyGitHubBookmarkRule(result, input)
+	}
+
 	if !result.WorthSaving {
 		return fmt.Sprintf("[%d/5] Skipped\nReason: %s", result.LearningValue, result.SkipReason)
 	}
@@ -326,6 +340,38 @@ func (b *Bot) runAnalyze(input string) string {
 	}
 	fmt.Fprintf(&msg, "Saved — type: %s | tags: %s", result.SuggestedType, strings.Join(result.Tags, ", "))
 	return msg.String()
+}
+
+// runSaveAnyway bypasses the analyzer and saves the input directly as a
+// bookmark with LearningValue=0 (null equivalent). Intended for cases where
+// the analyzer would skip something the user explicitly wants to keep.
+func (b *Bot) runSaveAnyway(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "Please provide a URL or text to save."
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	title := truncate(input, 80)
+	content := input
+	rawURL := ""
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		rawURL = input
+	}
+
+	if err := b.saveKnowledge(ctx, saveParams{
+		Type: typeBookmark, Title: title, Content: content,
+		URL: rawURL, Source: "discord", LearningValue: 0,
+	}); err != nil {
+		var dupErr *errDuplicate
+		if errors.As(err, &dupErr) {
+			return fmt.Sprintf("Already saved: %s", dupErr.message)
+		}
+		return fmt.Sprintf("Save failed: %v", err)
+	}
+	return fmt.Sprintf("Saved as bookmark (analysis skipped)\n%s", title)
 }
 
 func (b *Bot) runNote(text string) string {
