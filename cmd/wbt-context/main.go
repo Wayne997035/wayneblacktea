@@ -121,7 +121,7 @@ func buildContextMessage(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 	}
 
 	// 4. Semantic recall: top-K similar handoffs, decisions, and knowledge items.
-	// V1: uses hashed embedding (deterministic SHA-256, not semantic).
+	// Uses real Gemini 768-dim semantic embeddings (requires GEMINI_API_KEY).
 	// The query embedding is derived from the last session handoff summary text
 	// so the recall is contextualised to the previous session.
 	if recall := fetchSemanticRecall(ctx, pool, wsID); recall != "" {

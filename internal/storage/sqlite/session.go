@@ -126,6 +126,17 @@ func (s *SessionStore) UpdateSummary(ctx context.Context, summary string) error 
 	return nil
 }
 
+// UpdateEmbeddingByID writes the embedding bytes to the session handoff with
+// the given ID (SQLite version).  Best-effort.
+func (s *SessionStore) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error {
+	const q = `UPDATE session_handoffs SET embedding = ?1 WHERE id = ?2`
+	_, err := s.db.conn.ExecContext(ctx, q, embedding, id.String())
+	if err != nil {
+		return errWrap("UpdateEmbeddingByID", err)
+	}
+	return nil
+}
+
 // UpdateEmbedding writes the embedding bytes to the most recent unresolved
 // session handoff (SQLite version, uses BLOB column).  Best-effort.
 func (s *SessionStore) UpdateEmbedding(ctx context.Context, embedding []byte) error {

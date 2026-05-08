@@ -103,6 +103,16 @@ func (s *Store) UpdateSummary(ctx context.Context, summary string) error {
 	return nil
 }
 
+// UpdateEmbeddingByID writes the serialized embedding bytes to the session
+// handoff with the given ID.  Best-effort: 0 rows updated is not an error.
+func (s *Store) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error {
+	const q = `UPDATE session_handoffs SET embedding = $1 WHERE id = $2`
+	if _, err := s.dbtx.Exec(ctx, q, embedding, id); err != nil {
+		return fmt.Errorf("updating session embedding by id: %w", err)
+	}
+	return nil
+}
+
 // UpdateEmbedding writes the serialized embedding bytes to the most recent
 // unresolved session handoff.  Best-effort: 0 rows updated (no unresolved
 // handoff) is not an error.

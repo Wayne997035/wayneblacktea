@@ -198,7 +198,7 @@ func run() error {
 	api.POST("/workspace/repos", wsH.UpsertRepo)
 
 	api.GET("/session/handoff", sessH.GetHandoff)
-	api.POST("/session/handoff", sessH.SetHandoff)
+	api.POST("/session/handoff", sessH.SetHandoff, handoffRL)
 
 	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
 

@@ -5,12 +5,18 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
+
+// embedTimeout caps the Gemini HTTP call + DB write inside the async goroutine.
+// Gemini embedding-001 p99 is ~2 s; 25 s leaves ample room while ensuring
+// goroutines do not outlive a Railway SIGTERM drain window (~30 s default).
+const embedTimeout = 25 * time.Second
 
 // SessionHandler handles the /api/session endpoints.
 type SessionHandler struct {
@@ -78,20 +84,25 @@ func (h *SessionHandler) SetHandoff(c echo.Context) error {
 		if req.ContextSummary != "" {
 			text += "\n" + req.ContextSummary
 		}
+		handoffID := handoff.ID
 		store := h.store
 		embedder := h.embedder
-		go func() {
-			vec, err := embedder.Embed(context.Background(), text)
+		go func(id uuid.UUID) {
+			// Bounded context: goroutine must not outlive server shutdown drain.
+			// request ctx is cancelled on response — use independent timeout.
+			ctx, cancel := context.WithTimeout(context.Background(), embedTimeout)
+			defer cancel()
+			vec, err := embedder.Embed(ctx, text)
 			if err != nil || len(vec) == 0 {
 				if err != nil {
 					slog.Warn("session embed: embedding failed", "err", err)
 				}
 				return
 			}
-			if err := store.UpdateEmbedding(context.Background(), localai.SerializeEmbedding(vec)); err != nil {
-				slog.Warn("session embed: UpdateEmbedding failed", "err", err)
+			if err := store.UpdateEmbeddingByID(ctx, id, localai.SerializeEmbedding(vec)); err != nil {
+				slog.Warn("session embed: UpdateEmbeddingByID failed", "err", err)
 			}
-		}()
+		}(handoffID)
 	}
 
 	return c.JSON(http.StatusCreated, handoff)
