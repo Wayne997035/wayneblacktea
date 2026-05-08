@@ -264,7 +264,7 @@ func run() error {
 	}
 	mcpServer.WithSnapshot(snapStore, snapGen)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
-	e.Any("/mcp", echo.WrapHandler(httpMCPHandler))
+	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {
