@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -99,8 +98,9 @@ func (c *ClaudeClient) CompleteJSON(ctx context.Context, req JSONRequest) (strin
 }
 
 // classifyClaudeErr maps an Anthropic SDK error to a chain reason label.
-// We avoid importing the SDK's typed error tree to keep this layer thin;
-// the error string already includes "429" / "5xx" markers when relevant.
+// Uses the SDK's typed *anthropic.Error (which exposes StatusCode) so that
+// the classification is not confused by port numbers in the request URL that
+// the SDK includes in its Error() string.
 func classifyClaudeErr(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return reasonTimeout
@@ -113,15 +113,15 @@ func classifyClaudeErr(err error) string {
 	if errors.As(err, &te) && te.Timeout() {
 		return reasonTimeout
 	}
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "429"):
-		return reasonHTTP429
-	case strings.Contains(msg, "500"),
-		strings.Contains(msg, "502"),
-		strings.Contains(msg, "503"),
-		strings.Contains(msg, "504"):
-		return reasonHTTP5xx
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == 429:
+			return reasonHTTP429
+		case apiErr.StatusCode >= 500:
+			return reasonHTTP5xx
+		}
+		return reasonProviderErr
 	}
 	return reasonProviderErr
 }
