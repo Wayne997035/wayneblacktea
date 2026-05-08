@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { useDueReviewsDashboard } from '../../hooks/useDueReviewsDashboard'
@@ -7,6 +8,7 @@ interface DueReviewsCardProps {
 }
 
 export function DueReviewsCard({ onClick }: DueReviewsCardProps) {
+  const { t } = useTranslation()
   const { data, isLoading } = useDueReviewsDashboard()
 
   if (isLoading) {
@@ -46,7 +48,7 @@ export function DueReviewsCard({ onClick }: DueReviewsCardProps) {
         }}
       >
         <div className="text-label mb-2" style={{ color: 'var(--color-text-muted)' }}>
-          DUE REVIEWS
+          {t('dashboard.widgets.dueReviews')}
         </div>
         <EmptyState messageKey="reviews.noDue" />
       </div>
@@ -86,7 +88,7 @@ export function DueReviewsCard({ onClick }: DueReviewsCardProps) {
     >
       <div className="flex items-center justify-between mb-3">
         <span className="text-label" style={{ color: 'var(--color-text-muted)' }}>
-          DUE REVIEWS
+          {t('dashboard.widgets.dueReviews')}
         </span>
         <span
           className="rounded-full font-mono text-caption px-2 py-0.5"
@@ -96,7 +98,7 @@ export function DueReviewsCard({ onClick }: DueReviewsCardProps) {
             border: '1px solid var(--color-accent-blue)',
           }}
         >
-          {count} due
+          {t('dashboard.widgets.dueReviewsCount', { count })}
         </span>
       </div>
 

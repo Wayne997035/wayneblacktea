@@ -1,4 +1,5 @@
 import { CheckSquare } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { useDashboardNextTask } from '../../hooks/useDashboardNextTask'
@@ -49,6 +50,7 @@ function formatDueDate(due: string): string {
 }
 
 export function NextTaskCard({ onNavigate }: NextTaskCardProps) {
+  const { t } = useTranslation()
   const { data, isLoading } = useDashboardNextTask()
 
   // Loading state
@@ -128,7 +130,7 @@ export function NextTaskCard({ onNavigate }: NextTaskCardProps) {
       <div className="flex items-center gap-2 mb-2">
         <CheckSquare size={16} aria-hidden="true" style={{ color: 'var(--color-accent-blue)' }} />
         <span className="text-label" style={{ color: 'var(--color-text-muted)' }}>
-          Next Task
+          {t('dashboard.widgets.nextTask')}
         </span>
         {priorityStyle && (
           <span
@@ -150,7 +152,7 @@ export function NextTaskCard({ onNavigate }: NextTaskCardProps) {
 
       {task.due_date && (
         <p className="text-caption" style={{ color: 'var(--color-text-muted)' }}>
-          Due: {formatDueDate(task.due_date)}
+          {t('dashboard.widgets.dueDate', { date: formatDueDate(task.due_date) })}
         </p>
       )}
     </article>

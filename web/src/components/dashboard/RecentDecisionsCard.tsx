@@ -1,4 +1,5 @@
 import { useId } from 'react'
+import { useTranslation } from 'react-i18next'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { useDashboardRecentDecisions } from '../../hooks/useDashboardRecentDecisions'
@@ -10,6 +11,7 @@ interface RecentDecisionsCardProps {
 
 export function RecentDecisionsCard({ onSeeAll }: RecentDecisionsCardProps) {
   const headerId = useId()
+  const { t } = useTranslation()
   const { data, isLoading } = useDashboardRecentDecisions()
 
   if (isLoading) {
@@ -24,7 +26,7 @@ export function RecentDecisionsCard({ onSeeAll }: RecentDecisionsCardProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-4 pt-4 pb-3">
           <span className="text-label" style={{ color: 'var(--color-text-muted)' }}>
-            RECENT DECISIONS
+            {t('dashboard.widgets.recentDecisions')}
           </span>
         </div>
         {/* Skeleton rows */}
@@ -81,14 +83,14 @@ export function RecentDecisionsCard({ onSeeAll }: RecentDecisionsCardProps) {
               e.currentTarget.style.background = 'transparent'
             }}
           >
-            See all
+            {t('dashboard.widgets.seeAll')}
           </button>
         )}
       </div>
 
       {decisions.length === 0 ? (
         <div style={{ borderTop: '1px solid var(--color-border)' }}>
-          <EmptyState messageKey="dashboard.noHandoff" />
+          <EmptyState messageKey="decisions.noDecisions" />
         </div>
       ) : (
         <div role="list">

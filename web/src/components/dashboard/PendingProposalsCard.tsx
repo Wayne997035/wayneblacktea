@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { usePendingProposals } from '../../hooks/usePendingProposals'
@@ -26,6 +27,7 @@ function getChipStyle(type: ProposalType): ChipStyle {
 }
 
 export function PendingProposalsCard({ onClick }: PendingProposalsCardProps) {
+  const { t } = useTranslation()
   const { data, isLoading } = usePendingProposals()
 
   if (isLoading) {
@@ -62,7 +64,7 @@ export function PendingProposalsCard({ onClick }: PendingProposalsCardProps) {
         }}
       >
         <div className="text-label mb-2" style={{ color: 'var(--color-text-muted)' }}>
-          PENDING PROPOSALS
+          {t('dashboard.widgets.pendingProposals')}
         </div>
         <EmptyState messageKey="proposals.allCaughtUp" />
       </div>
@@ -102,7 +104,7 @@ export function PendingProposalsCard({ onClick }: PendingProposalsCardProps) {
     >
       <div className="flex items-center justify-between">
         <span className="text-label" style={{ color: 'var(--color-text-muted)' }}>
-          PENDING PROPOSALS
+          {t('dashboard.widgets.pendingProposals')}
         </span>
         <span
           className="rounded-full font-mono text-caption px-2 py-0.5"

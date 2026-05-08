@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { useRecentKnowledge } from '../../hooks/useRecentKnowledge'
@@ -26,6 +27,7 @@ function getTypeBadgeStyle(type: KnowledgeType): TypeBadgeStyle {
 }
 
 export function RecentKnowledgeCard({ onClick }: RecentKnowledgeCardProps) {
+  const { t } = useTranslation()
   const { data, isLoading } = useRecentKnowledge()
 
   if (isLoading) {
@@ -72,7 +74,7 @@ export function RecentKnowledgeCard({ onClick }: RecentKnowledgeCardProps) {
         }}
       >
         <div className="px-4 pt-4 pb-3 text-label" style={{ color: 'var(--color-text-muted)' }}>
-          RECENT KNOWLEDGE
+          {t('dashboard.widgets.recentKnowledge')}
         </div>
         <div style={{ borderTop: '1px solid var(--color-border)' }}>
           <EmptyState messageKey="knowledge.noItems" />

@@ -26,7 +26,17 @@
     "noTasksThisWeek": "No tasks this week",
     "noHandoff": "No pending handoff",
     "noNextTask": "No pending tasks",
-    "tasksDone": "tasks done"
+    "tasksDone": "tasks done",
+    "widgets": {
+      "nextTask": "NEXT TASK",
+      "dueDate": "Due: {{date}}",
+      "recentDecisions": "RECENT DECISIONS",
+      "seeAll": "See all",
+      "pendingProposals": "PENDING PROPOSALS",
+      "dueReviews": "DUE REVIEWS",
+      "dueReviewsCount": "{{count}} due",
+      "recentKnowledge": "RECENT KNOWLEDGE"
+    }
   },
   "gtd": {
     "title": "GTD",

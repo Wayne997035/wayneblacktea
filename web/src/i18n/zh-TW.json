@@ -26,7 +26,17 @@
     "noTasksThisWeek": "本週沒有任務",
     "noHandoff": "沒有待辦的交接事項",
     "noNextTask": "沒有待辦任務",
-    "tasksDone": "個任務完成"
+    "tasksDone": "個任務完成",
+    "widgets": {
+      "nextTask": "下個任務",
+      "dueDate": "截止：{{date}}",
+      "recentDecisions": "最近決策",
+      "seeAll": "查看全部",
+      "pendingProposals": "待確認提案",
+      "dueReviews": "待複習",
+      "dueReviewsCount": "{{count}} 筆",
+      "recentKnowledge": "最近知識"
+    }
   },
   "gtd": {
     "title": "GTD",

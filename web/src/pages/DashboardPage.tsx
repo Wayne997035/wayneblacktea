@@ -16,6 +16,8 @@ import { RecentKnowledgeCard } from '../components/dashboard/RecentKnowledgeCard
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function getGreetingKey(): string {
   const hour = new Date().getHours()
   if (hour < 12) return 'dashboard.greeting.morning'
@@ -93,7 +95,7 @@ export function DashboardPage() {
                     key={project.id}
                     project={project}
                     variant="compact"
-                    onClick={() => navigate(`/workspace/projects/${project.id}`)}
+                    onClick={() => { if (UUID_RE.test(project.id)) navigate(`/workspace/projects/${project.id}`) }}
                   />
                 ))}
               </div>
@@ -105,7 +107,7 @@ export function DashboardPage() {
             <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
               {t('dashboard.sections.nextTask')}
             </div>
-            <NextTaskCard onNavigate={(id) => navigate(`/gtd?task_id=${id}`)} />
+            <NextTaskCard onNavigate={(id) => { if (UUID_RE.test(id)) navigate(`/gtd?task_id=${id}`) }} />
           </section>
 
           {/* D2: Recent Decisions */}
