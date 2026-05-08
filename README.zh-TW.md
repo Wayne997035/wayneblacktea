@@ -22,27 +22,97 @@
 
 單一 binary、互動 wizard、預設 SQLite — 不用自己起任何 infra。
 
+**MCP stdio（最簡 — 不需要跑 server process）：**
+
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # 選 SQLite 或 Postgres、寫 .env 跟 .mcp.json
+wbt init    # wizard：選 SQLite 或 Postgres，寫 .env 跟 .mcp.json
 ```
 
 從產生 `.mcp.json` 的目錄開 Claude Code；核准 project MCP server 後，Claude Code 會自動啟動 `wbt mcp`。
 
-完。核心 MCP 記憶功能不需要 Anthropic API key。`wbt serve`（選用）跑 dashboard HTTP API，想要 web UI 才開。
+**含 dashboard + HTTP MCP transport：**
+
+```bash
+# 另外 build server binary
+go build -o "$(go env GOPATH)/bin/wayneblacktea-server" ./cmd/server
+
+wbt serve   # 載入 config → 啟動 server → 自動開瀏覽器 http://localhost:8080
+```
+
+server 跑起來後，把 HTTP transport 加進 Claude Code：
+
+```bash
+claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+```
+
+核心 MCP 記憶功能不需要 Anthropic API key。Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)。
+
+## 5 分鐘 onboarding
+
+`wbt init` 完成後，從有 `.mcp.json` 的目錄開 Claude Code，試試：
+
+```
+# 看看 server 現在記得什麼
+> get_today_context
+
+# 記錄一個決策（永久儲存，可依 repo 查詢）
+> log_decision "選 SQLite 是因為..."
+
+# 加任務
+> add_task "實作登入流程" --project my-project
+
+# 原子確認多步計畫
+> confirm_plan {phases: [...], decisions: [...]}
+
+# 加一條知識筆記（支援關鍵字 + semantic vector 搜尋）
+> add_knowledge {title: "JWT 過期最佳實踐", content: "..."}
+
+# 記錄現在還不能做的想法
+> add_vision_item {title: "多 agent 協作協定", why_blocked: "要等 E1 provider interface 完成"}
+```
+
+完整工具列表：[`docs/mcp-tools.md`](./docs/mcp-tools.md)。
+
+## 架構
+
+```mermaid
+flowchart TD
+    CC["Claude Code\n(wbt mcp — stdio)"]
+    CURL["HTTP 客戶端\n(dashboard / curl)"]
+    HTTPMCP["HTTP MCP transport\n(/mcp)"]
+
+    CC   -->|MCP stdio|        SRV
+    CURL -->|REST /api/star|   SRV
+    HTTPMCP -->|MCP over HTTP| SRV
+
+    SRV["wayneblacktea-server\n(Echo HTTP + mcp-go)"]
+
+    SRV --> STORES["Store interfaces\ngtd · decision · knowledge · session\nproposal · vision · learning · workspace"]
+
+    STORES --> SQLITE["SQLite\n(本機開發，零 infra)"]
+    STORES --> PG["Postgres + pgvector\n(Aiven / Railway)"]
+
+    SRV --> AI["AI providers\nAnthropic · Gemini embeddings\nGroq (Discord bot)"]
+    SRV --> SCHED["Scheduler\n週六 reflection\nauto-consolidation · decay prune"]
+    SRV --> DISCORD["Discord bot"]
+```
+
+同一個 process 同時服務 MCP stdio、HTTP REST、HTTP MCP — 不用跑多個元件。
 
 ## 你會得到
 
 Claude Code 連上 `wbt mcp` 後，所有支援 MCP 的 agent 都讀寫同一份儲存：
 
 | Context | 擁有什麼 |
-|---|---|
+|---------|---------|
 | **GTD** | 目標 → 專案 → 任務（含重要性與討論脈絡），加 activity log |
 | **Decisions** | 架構與設計決策，含理由與替代方案，可依 repo 查詢 |
-| **Knowledge** | 文章、TIL、書籤、Zettelkasten 筆記 — 全文與 pgvector 語意搜尋 |
+| **Knowledge** | 文章、TIL、書籤、筆記 — 全文與 pgvector 語意搜尋；Markdown heading 自動 fan-out 成可獨立搜尋的子節點 |
 | **Learning** | 間隔重複概念卡，跑 FSRS 排程，可從新存的知識自動提案 |
 | **Sessions** | 跨 session 的交接筆記 — 「下次要繼續什麼」 |
 | **Proposals** | Agent 原創、等使用者確認的物件 |
+| **Vision** | 還沒準備好成為 task 的想法 — `open → discussing → maturing → promoted → dismissed` |
 | **Workspace** | 追蹤的 Git repo，含狀態、已知問題、下一步計畫 |
 
 ## 自動記憶（不用你提醒）
@@ -64,6 +134,35 @@ Agent 不需要記得呼叫工具，server 會自動接住：
 **讓遺忘可見。** 再自律的 agent 都會忘記收尾。Server 把每次工具呼叫都記下來，把模式講出來 — 卡住的 in-progress 任務、累積的 pending 提案、登錄了決策卻沒做 session 開頭 recall。
 
 **Workflow 工具，不是原始 CRUD。** Agent 接觸面提供「拿今天的 context」、「確認一個計畫」、「登錄一個決策」這種動詞操作。規則住在工具層，而不是散落在每個 client 的 prompt 裡。
+
+## 與類似工具比較
+
+| | wayneblacktea | claude-mem | Hermes Agent Memory |
+|---|---|---|---|
+| **範圍** | 完整 personal OS（GTD + 決策 + 知識 + 學習 + 願景） | 對話記憶 | 對話 + entity 記憶 |
+| **儲存** | SQLite（本機）或 Postgres+pgvector（雲端） | 託管雲端 | 託管雲端 |
+| **掌控** | Self-hosted，資料自有 | 第三方 | 第三方 |
+| **提案閘門** | Agent 提案 → 使用者確認 | 無 | 無 |
+| **間隔重複** | FSRS 學習卡 | 無 | 無 |
+| **儀表板** | Web UI + Discord bot | 無 | 無 |
+| **取捨** | 設定較多，功能面更廣 | 零設定 | 零設定 |
+
+## 驗證 release binary
+
+Release binary 用 [cosign](https://docs.sigstore.dev/cosign/overview/) keyless 簽章（GitHub OIDC）。下載後驗證：
+
+```bash
+# 安裝 cosign：https://docs.sigstore.dev/cosign/system_config/installation/
+
+cosign verify-blob \
+  --certificate-identity-regexp "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --signature wayneblacktea_checksums.txt.sig \
+  --certificate wayneblacktea_checksums.txt.pem \
+  wayneblacktea_checksums.txt
+```
+
+`.sig` 和 `.pem` 檔案隨每個 GitHub Release 的 binary 一起附上。
 
 ## 這 *不是* 什麼
 
