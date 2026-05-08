@@ -192,7 +192,9 @@ func safeDial(ctx context.Context, network, addr string) (net.Conn, error) {
 // See fetcher.go:FetchURL for the maxFetchBytes pattern.
 func NewSafeHTTPClient() *http.Client {
 	transport := &http.Transport{
-		DialContext: safeDial,
+		DialContext:           safeDial,
+		ResponseHeaderTimeout: 5 * time.Second,
+		IdleConnTimeout:       15 * time.Second,
 	}
 	return &http.Client{
 		Timeout:   10 * time.Second,

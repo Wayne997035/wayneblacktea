@@ -473,5 +473,14 @@ func decodeConceptPayload(payload []byte) (conceptPayload, string) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return conceptPayload{}, fmt.Sprintf("decoding concept payload: %v", err)
 	}
+	if len(p.Title) > 512 {
+		return conceptPayload{}, "concept title exceeds 512 bytes"
+	}
+	if len(p.Content) > 65536 {
+		return conceptPayload{}, "concept content exceeds 64 KB"
+	}
+	if len(p.Tags) > 50 {
+		return conceptPayload{}, "too many tags (max 50)"
+	}
 	return p, ""
 }

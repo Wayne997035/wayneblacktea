@@ -261,9 +261,11 @@ func (h *ProposalHandler) ConfirmBatch(c echo.Context) error {
 	for _, raw := range req.IDs {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return c.JSON(http.StatusBadRequest, errResp(
-				raw+" is not a valid UUID",
-			))
+			sanitized := raw
+			if len(sanitized) > 36 {
+				sanitized = sanitized[:36]
+			}
+			return c.JSON(http.StatusBadRequest, errResp(sanitized+" is not a valid UUID"))
 		}
 		ids = append(ids, id)
 	}

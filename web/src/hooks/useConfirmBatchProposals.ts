@@ -8,7 +8,8 @@ interface BatchConfirmRequest {
 
 interface BatchConfirmResponse {
   accepted?: number
-  rejected?: number
+  failed?: number
+  results?: Array<{ id: string; ok: boolean; error?: string }>
 }
 
 export function useConfirmBatchProposals() {

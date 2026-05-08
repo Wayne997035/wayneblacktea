@@ -77,10 +77,11 @@ export function SourceBadge({ type, sourceTitle, sourceContent, sourceItemId }: 
   const hasTooltipContent = Boolean(sourceTitle || sourceContent)
   const contentPreview = sourceContent ? sourceContent.slice(0, 100) + (sourceContent.length > 100 ? '…' : '') : ''
 
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
   function handleClick() {
-    if (sourceItemId) {
+    if (sourceItemId && UUID_RE.test(sourceItemId)) {
       const url = `/knowledge?id=${encodeURIComponent(sourceItemId)}`
-      // Use client-side navigation if available, else open in same tab
       window.open(url, '_self')
     } else if (hasTooltipContent) {
       setShowTooltip((v) => !v)

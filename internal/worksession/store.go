@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ type Store struct {
 
 // NewStore returns a Postgres-backed Store.
 func NewStore(pool *pgxpool.Pool, workspaceID *uuid.UUID) *Store {
+	if workspaceID == nil {
+		slog.Warn("worksession.Store: no WORKSPACE_ID configured — operating in legacy mode, task batch updates scoped to zero-UUID workspace")
+	}
 	return &Store{pool: pool, workspaceID: workspaceID}
 }
 
@@ -206,7 +210,7 @@ func (s *Store) batchMarkTasksInProgress(ctx context.Context, wsID uuid.UUID, ta
 		return nil
 	}
 	// Build $N placeholders for the IN clause.
-	// Use $2 for workspace and $3…$N for task IDs.
+	// $1 = workspace_id, $2…$N+1 = task IDs.
 	idArgs := make([]any, 0, len(taskIDs)+1)
 	idArgs = append(idArgs, wsID)
 	placeholders := make([]string, len(taskIDs))
