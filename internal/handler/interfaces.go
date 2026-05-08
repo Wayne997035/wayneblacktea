@@ -74,6 +74,8 @@ type learningStore interface {
 	DueReviews(ctx context.Context, limit int) ([]learning.DueReview, error)
 	SubmitReview(ctx context.Context, scheduleID uuid.UUID, state learning.CardState, rating learning.Rating) error
 	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
+	ReviewHistory(ctx context.Context) ([]learning.ConceptHistoryRow, error)
+	LearningStats(ctx context.Context) (*learning.LearningStatsResult, error)
 }
 
 // autologGTDStore covers the subset of gtd.StoreIface used by AutologHandler.

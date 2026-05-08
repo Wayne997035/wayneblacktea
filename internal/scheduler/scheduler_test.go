@@ -48,6 +48,14 @@ func (s *stubLearningStore) UpdateConceptStatus(_ context.Context, id uuid.UUID,
 	return s.updateErr
 }
 
+func (s *stubLearningStore) ReviewHistory(_ context.Context) ([]learning.ConceptHistoryRow, error) {
+	return nil, nil
+}
+
+func (s *stubLearningStore) LearningStats(_ context.Context) (*learning.LearningStatsResult, error) {
+	return &learning.LearningStatsResult{}, nil
+}
+
 // --- ai.ConceptReviewerIface stub ---
 
 type stubReviewer struct {

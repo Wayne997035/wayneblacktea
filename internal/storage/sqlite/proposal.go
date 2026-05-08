@@ -84,6 +84,31 @@ func (s *ProposalStore) Get(ctx context.Context, id uuid.UUID) (*db.PendingPropo
 	return &p, nil
 }
 
+// ListAll returns all proposals of the given type regardless of status, newest
+// first, up to limit rows. Status filtering is done in Go by the caller.
+// Using parameterized query prevents SQL injection.
+func (s *ProposalStore) ListAll(ctx context.Context, proposalType string, limit int32) ([]db.PendingProposal, error) {
+	const q = `SELECT ` + pendingProposalsSelectCols + ` FROM pending_proposals
+		WHERE type = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, proposalType, s.db.workspaceArg(), limit)
+	if err != nil {
+		return nil, errWrap("ListAllProposals", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.PendingProposal
+	for rows.Next() {
+		p, err := scanPendingProposal(rows.Scan)
+		if err != nil {
+			return nil, errWrap("ListAllProposals scan", err)
+		}
+		out = append(out, p)
+	}
+	return out, errWrap("ListAllProposals iter", rows.Err())
+}
+
 // ListPending returns all pending proposals, newest first.
 func (s *ProposalStore) ListPending(ctx context.Context) ([]db.PendingProposal, error) {
 	const q = `SELECT ` + pendingProposalsSelectCols + ` FROM pending_proposals

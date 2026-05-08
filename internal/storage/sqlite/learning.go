@@ -229,6 +229,146 @@ func (s *LearningStore) UpdateConceptStatus(ctx context.Context, id uuid.UUID, s
 	return nil
 }
 
+// ReviewHistory returns all non-archived concepts joined with their review
+// schedule, sorted by last_review_at DESC NULLS LAST.
+// interval_days is approximated as stability * 9 (same FSRS formula as the
+// Postgres store), since the review_schedule table has no interval_days column.
+func (s *LearningStore) ReviewHistory(ctx context.Context) ([]learning.ConceptHistoryRow, error) {
+	const q = `SELECT c.id, c.title, c.tags,
+		       COALESCE(rs.review_count, 0)        AS review_count,
+		       rs.created_at                       AS first_reviewed_at,
+		       rs.last_review_at,
+		       COALESCE(rs.stability * 9, 0.0)     AS interval_days,
+		       rs.due_date                         AS next_review_at
+		FROM concepts c
+		LEFT JOIN review_schedule rs ON rs.concept_id = c.id
+		WHERE c.archived_at IS NULL
+		  AND (?1 IS NULL OR c.workspace_id = ?1)
+		ORDER BY rs.last_review_at DESC, c.created_at DESC`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("ReviewHistory", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []learning.ConceptHistoryRow
+	for rows.Next() {
+		var (
+			row             learning.ConceptHistoryRow
+			idStr           string
+			tagsNS          sql.NullString
+			firstReviewedNS sql.NullString
+			lastReviewedNS  sql.NullString
+			nextReviewNS    sql.NullString
+		)
+		if err := rows.Scan(
+			&idStr, &row.Title, &tagsNS,
+			&row.ReviewCount,
+			&firstReviewedNS,
+			&lastReviewedNS,
+			&row.IntervalDays,
+			&nextReviewNS,
+		); err != nil {
+			return nil, errWrap("ReviewHistory scan", err)
+		}
+		if id, err := uuid.Parse(idStr); err == nil {
+			row.ID = id
+		}
+		tags, _ := decodeStringSlice(tagsNS)
+		if tags == nil {
+			tags = []string{}
+		}
+		row.Tags = tags
+		if ts := parseTimestamptz(firstReviewedNS); ts.Valid {
+			t := ts.Time
+			row.FirstReviewedAt = &t
+		}
+		if ts := parseTimestamptz(lastReviewedNS); ts.Valid {
+			t := ts.Time
+			row.LastReviewedAt = &t
+		}
+		if ts := parseTimestamptz(nextReviewNS); ts.Valid {
+			t := ts.Time
+			row.NextReviewAt = &t
+		}
+		row.Status = learning.ComputeConceptStatus(row.ReviewCount, row.IntervalDays)
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("ReviewHistory iter", err)
+	}
+	if out == nil {
+		out = []learning.ConceptHistoryRow{}
+	}
+	return out, nil
+}
+
+// LearningStats returns aggregate learning stats for the workspace.
+func (s *LearningStore) LearningStats(ctx context.Context) (*learning.LearningStatsResult, error) {
+	const statsQ = `SELECT
+		       COALESCE(SUM(rs.review_count), 0)   AS total_reviews,
+		       COUNT(CASE WHEN rs.last_review_at >= ?1
+		                   AND rs.review_count > 0 THEN 1 END) AS reviews_7d,
+		       COUNT(CASE WHEN rs.review_count >= 15
+		                   AND rs.stability * 9 > 30 THEN 1 END) AS mastered,
+		       (SELECT COUNT(*) FROM concepts c2
+		         WHERE c2.archived_at IS NULL
+		           AND (?2 IS NULL OR c2.workspace_id = ?2)) AS total_concepts
+		FROM review_schedule rs
+		WHERE (?2 IS NULL OR rs.workspace_id = ?2)`
+
+	sevenDaysAgo := time.Now().UTC().Add(-7 * 24 * time.Hour).Format(sqliteMillisLayout)
+	var result learning.LearningStatsResult
+	if err := s.db.conn.QueryRowContext(ctx, statsQ, sevenDaysAgo, s.db.workspaceArg()).Scan(
+		&result.TotalReviews,
+		&result.Reviews7d,
+		&result.Mastered,
+		&result.TotalConcepts,
+	); err != nil {
+		return nil, errWrap("LearningStats", err)
+	}
+
+	// Compute streak: count consecutive days ending today with ≥1 review.
+	const streakQ = `SELECT DISTINCT DATE(last_review_at) AS review_day
+		FROM review_schedule
+		WHERE review_count > 0
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY review_day DESC`
+	streakRows, err := s.db.conn.QueryContext(ctx, streakQ, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("LearningStats streak query", err)
+	}
+	defer func() { _ = streakRows.Close() }()
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	streak := 0
+	expected := today
+	for streakRows.Next() {
+		var dayStr sql.NullString
+		if err := streakRows.Scan(&dayStr); err != nil {
+			return nil, errWrap("LearningStats streak scan", err)
+		}
+		if !dayStr.Valid {
+			continue
+		}
+		reviewDay, err := time.Parse("2006-01-02", dayStr.String)
+		if err != nil {
+			continue
+		}
+		reviewDay = reviewDay.UTC()
+		if !reviewDay.Equal(expected) {
+			break
+		}
+		streak++
+		expected = expected.Add(-24 * time.Hour)
+	}
+	if err := streakRows.Err(); err != nil {
+		return nil, errWrap("LearningStats streak iter", err)
+	}
+	result.StreakDays = streak
+	return &result, nil
+}
+
 func (s *LearningStore) conceptByID(ctx context.Context, id uuid.UUID) (*db.Concept, error) {
 	const q = `SELECT ` + conceptsSelectCols + ` FROM concepts
 		WHERE id = ?1

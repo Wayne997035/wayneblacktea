@@ -188,6 +188,142 @@ func (s *Store) UpdateConceptStatus(ctx context.Context, id uuid.UUID, status st
 	return nil
 }
 
+// ReviewHistory returns all concepts joined with their review schedule,
+// sorted by last_review_at DESC NULLS LAST (un-reviewed concepts appear last).
+// interval_days is approximated as stability * 9 (the FSRS target-90%-retention
+// formula used in NextState). Status is computed in Go from review_count and
+// the derived interval.
+func (s *Store) ReviewHistory(ctx context.Context) ([]ConceptHistoryRow, error) {
+	const q = `
+		SELECT c.id, c.title, c.tags,
+		       COALESCE(rs.review_count, 0)                    AS review_count,
+		       rs.created_at                                   AS first_reviewed_at,
+		       rs.last_review_at,
+		       COALESCE(rs.stability * 9, 0)                   AS interval_days,
+		       rs.due_date                                     AS next_review_at
+		FROM concepts c
+		LEFT JOIN review_schedule rs ON rs.concept_id = c.id
+		WHERE c.archived_at IS NULL
+		  AND ($1::uuid IS NULL OR c.workspace_id = $1)
+		ORDER BY rs.last_review_at DESC NULLS LAST, c.created_at DESC`
+	rows, err := s.pool.Query(ctx, q, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("review history: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ConceptHistoryRow
+	for rows.Next() {
+		var (
+			row             ConceptHistoryRow
+			firstReviewedAt pgtype.Timestamptz
+			lastReviewedAt  pgtype.Timestamptz
+			nextReviewAt    pgtype.Timestamptz
+		)
+		if err := rows.Scan(
+			&row.ID, &row.Title, &row.Tags,
+			&row.ReviewCount,
+			&firstReviewedAt,
+			&lastReviewedAt,
+			&row.IntervalDays,
+			&nextReviewAt,
+		); err != nil {
+			return nil, fmt.Errorf("review history scan: %w", err)
+		}
+		if firstReviewedAt.Valid {
+			t := firstReviewedAt.Time
+			row.FirstReviewedAt = &t
+		}
+		if lastReviewedAt.Valid {
+			t := lastReviewedAt.Time
+			row.LastReviewedAt = &t
+		}
+		if nextReviewAt.Valid {
+			t := nextReviewAt.Time
+			row.NextReviewAt = &t
+		}
+		row.Status = ComputeConceptStatus(row.ReviewCount, row.IntervalDays)
+		if row.Tags == nil {
+			row.Tags = []string{}
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("review history iter: %w", err)
+	}
+	if out == nil {
+		out = []ConceptHistoryRow{}
+	}
+	return out, nil
+}
+
+// LearningStats returns aggregate learning statistics.
+// interval is approximated as stability * 9 (FSRS target-90% formula).
+// StreakDays counts consecutive days (ending today) on which at least one
+// review was submitted, based on last_review_at in review_schedule.
+func (s *Store) LearningStats(ctx context.Context) (*LearningStatsResult, error) {
+	const statsQ = `
+		SELECT
+		  COALESCE(SUM(rs.review_count), 0)                                      AS total_reviews,
+		  COUNT(*) FILTER (WHERE rs.last_review_at > NOW() - INTERVAL '7 days'
+		                    AND rs.review_count > 0)                              AS reviews_7d,
+		  COUNT(*) FILTER (WHERE rs.review_count >= 15
+		                    AND rs.stability * 9 > 30)                            AS mastered,
+		  (SELECT COUNT(*) FROM concepts c2
+		    WHERE c2.archived_at IS NULL
+		      AND ($1::uuid IS NULL OR c2.workspace_id = $1))                    AS total_concepts
+		FROM review_schedule rs
+		WHERE ($1::uuid IS NULL OR rs.workspace_id = $1)`
+
+	var result LearningStatsResult
+	statsRow := s.pool.QueryRow(ctx, statsQ, s.workspaceID)
+	if err := statsRow.Scan(
+		&result.TotalReviews,
+		&result.Reviews7d,
+		&result.Mastered,
+		&result.TotalConcepts,
+	); err != nil {
+		return nil, fmt.Errorf("learning stats: %w", err)
+	}
+
+	// Compute streak: count consecutive days ending today where ≥1 review occurred.
+	const streakQ = `
+		SELECT DISTINCT DATE(last_review_at AT TIME ZONE 'UTC') AS review_day
+		FROM review_schedule
+		WHERE review_count > 0
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY review_day DESC`
+	streakRows, err := s.pool.Query(ctx, streakQ, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("learning stats streak query: %w", err)
+	}
+	defer streakRows.Close()
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	streak := 0
+	expected := today
+	for streakRows.Next() {
+		var d pgtype.Date
+		if err := streakRows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("learning stats streak scan: %w", err)
+		}
+		if !d.Valid {
+			continue
+		}
+		reviewDay := time.Date(int(d.Time.Year()), d.Time.Month(), int(d.Time.Day()), 0, 0, 0, 0, time.UTC)
+		if !reviewDay.Equal(expected) {
+			break
+		}
+		streak++
+		expected = expected.Add(-24 * time.Hour)
+	}
+	if err := streakRows.Err(); err != nil {
+		return nil, fmt.Errorf("learning stats streak iter: %w", err)
+	}
+	result.StreakDays = streak
+	return &result, nil
+}
+
 // SoftPruneDecayed implements decay.PrunerStore for the concepts table.
 // It sets archived_at=NOW() on concepts that are:
 //   - not already archived (archived_at IS NULL)

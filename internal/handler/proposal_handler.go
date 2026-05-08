@@ -23,6 +23,7 @@ const (
 // proposalListStore covers the operations needed to list and resolve proposals.
 type proposalListStore interface {
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
+	ListAll(ctx context.Context, proposalType string, limit int32) ([]db.PendingProposal, error)
 	Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error)
 	Resolve(ctx context.Context, id uuid.UUID, status proposal.Status) (*db.PendingProposal, error)
 }
@@ -97,6 +98,45 @@ func (h *ProposalHandler) ListPendingProposals(c echo.Context) error {
 			continue
 		}
 		out = append(out, toResponse(row))
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// allowedProposalStatuses is the validated set of values for the ?status= query param.
+var allowedProposalStatuses = map[string]bool{
+	"pending":  true,
+	"accepted": true,
+	"rejected": true,
+	"all":      true,
+}
+
+// ListProposals handles GET /api/proposals?status=pending|accepted|rejected|all.
+// Omitting ?status defaults to "pending" for backward compat with the old endpoint.
+// The ?type= param is also supported to filter by proposal type.
+func (h *ProposalHandler) ListProposals(c echo.Context) error {
+	status := c.QueryParam("status")
+	if status == "" {
+		status = "pending"
+	} else if !allowedProposalStatuses[status] {
+		return c.JSON(http.StatusBadRequest, errResp("status must be pending, accepted, rejected, or all"))
+	}
+
+	proposalType := c.QueryParam("type")
+	if proposalType == "" {
+		proposalType = "concept"
+	}
+
+	rows, err := h.proposal.ListAll(c.Request().Context(), proposalType, 200)
+	if err != nil {
+		c.Logger().Errorf("ListProposals: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	out := make([]pendingProposalResponse, 0, len(rows))
+	for _, p := range rows {
+		if status == "all" || p.Status == status {
+			out = append(out, toResponse(p))
+		}
 	}
 	return c.JSON(http.StatusOK, out)
 }

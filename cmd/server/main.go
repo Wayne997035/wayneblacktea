@@ -209,6 +209,9 @@ func run() error {
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge, knowledgeRL)
 
 	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
+	// GET /api/proposals supports ?status=pending|accepted|rejected|all (UX-5).
+	api.GET("/proposals", proposalH.ListProposals, proposalRL)
+	// Legacy endpoint kept for backward compat; clients can migrate to /proposals?status=pending.
 	api.GET("/proposals/pending", proposalH.ListPendingProposals, proposalRL)
 	// confirm-batch registered before /:id/confirm so Echo's router matches the
 	// literal segment before the :id wildcard.
@@ -229,6 +232,9 @@ func run() error {
 	api.POST("/learning/concepts", learningH.CreateConcept)
 	api.GET("/learning/suggestions", learningH.GetSuggestions)
 	api.POST("/learning/from-knowledge", learningH.CreateConceptFromKnowledge)
+	// UX-6: learning history and stats.
+	api.GET("/learning/history", learningH.GetHistory)
+	api.GET("/learning/stats", learningH.GetStats)
 
 	activityRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
 	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
