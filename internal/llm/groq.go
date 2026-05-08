@@ -112,20 +112,20 @@ func (c *GroqClient) CompleteJSON(ctx context.Context, req JSONRequest) (string,
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", &Retryable{
 			Provider: c.Name(), Reason: reasonHTTP429,
-			Err: fmt.Errorf("status 429: %s", truncate(raw, 256)),
+			Err: fmt.Errorf("status 429: %s", redactBearer(truncate(raw, 256))),
 		}
 	}
 	if resp.StatusCode >= 500 {
 		return "", &Retryable{
 			Provider: c.Name(), Reason: reasonHTTP5xx,
-			Err: fmt.Errorf("status %d: %s", resp.StatusCode, truncate(raw, 256)),
+			Err: fmt.Errorf("status %d: %s", resp.StatusCode, redactBearer(truncate(raw, 256))),
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", &Retryable{
 			Provider: c.Name(),
 			Reason:   fmt.Sprintf("http_%d", resp.StatusCode),
-			Err:      fmt.Errorf("status %d: %s", resp.StatusCode, truncate(raw, 256)),
+			Err:      fmt.Errorf("status %d: %s", resp.StatusCode, redactBearer(truncate(raw, 256))),
 		}
 	}
 

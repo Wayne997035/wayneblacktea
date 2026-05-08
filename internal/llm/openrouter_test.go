@@ -257,3 +257,118 @@ func TestNewOpenRouterClient_NilOnMissingKey(t *testing.T) {
 		t.Errorf("client = %v, want nil (missing key sentinel)", c)
 	}
 }
+
+// TestSanitiseTransportErr_WidenedPatterns verifies that sanitiseTransportErr
+// redacts x-api-key, Authorization, and anthropic-organization-id credential
+// patterns in addition to Bearer tokens.
+func TestSanitiseTransportErr_WidenedPatterns(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name            string
+		errMsg          string
+		wantContains    string // expected substring after redaction
+		wantNotContains string // must NOT appear after redaction
+	}{
+		{
+			name:            "x-api-key stripped",
+			errMsg:          `request failed: x-api-key: sk-abcd1234 (unauthorized)`,
+			wantContains:    "x-api-key: [REDACTED]",
+			wantNotContains: "sk-abcd1234",
+		},
+		{
+			name:            "anthropic-organization-id stripped",
+			errMsg:          `transport error: anthropic-organization-id: org-xyz789`,
+			wantContains:    "anthropic-organization-id: [REDACTED]",
+			wantNotContains: "org-xyz789",
+		},
+		{
+			name:            "Authorization header stripped",
+			errMsg:          `dial error: Authorization: Bearer sk-secret99`,
+			wantContains:    "[REDACTED]",
+			wantNotContains: "sk-secret99",
+		},
+		{
+			name:            "no credentials passes through unchanged",
+			errMsg:          `connect: connection refused`,
+			wantContains:    "connection refused",
+			wantNotContains: "",
+		},
+		{
+			name:            "Bearer pattern still redacted",
+			errMsg:          `auth failed: Bearer tok-abc-123 reason`,
+			wantContains:    "Bearer [REDACTED]",
+			wantNotContains: "tok-abc-123",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			original := errors.New(tc.errMsg)
+			result := sanitiseTransportErr(original)
+			if result == nil {
+				t.Fatal("sanitiseTransportErr returned nil for non-nil error")
+			}
+			got := result.Error()
+			if !strings.Contains(got, tc.wantContains) {
+				t.Errorf("sanitised error %q does not contain expected %q", got, tc.wantContains)
+			}
+			if tc.wantNotContains != "" && strings.Contains(got, tc.wantNotContains) {
+				t.Errorf("sanitised error %q still contains sensitive value %q", got, tc.wantNotContains)
+			}
+		})
+	}
+}
+
+// TestSanitiseTransportErr_Nil verifies that nil input returns nil.
+func TestSanitiseTransportErr_Nil(t *testing.T) {
+	if got := sanitiseTransportErr(nil); got != nil {
+		t.Errorf("sanitiseTransportErr(nil) = %v, want nil", got)
+	}
+}
+
+// TestRedactHeader verifies the redactHeader helper strips header values.
+func TestRedactHeader(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		input  string
+		header string
+		want   string
+	}{
+		{
+			name:   "simple value",
+			input:  "x-api-key: sk-secret123",
+			header: "x-api-key",
+			want:   "x-api-key: [REDACTED]",
+		},
+		{
+			name:   "value followed by space then more text",
+			input:  "x-api-key: sk-secret123 rest",
+			header: "x-api-key",
+			want:   "x-api-key: [REDACTED] rest",
+		},
+		{
+			name:   "no match passes through unchanged",
+			input:  "some ordinary error message",
+			header: "x-api-key",
+			want:   "some ordinary error message",
+		},
+		{
+			name:   "multiple occurrences both redacted",
+			input:  "x-api-key: key1 and x-api-key: key2",
+			header: "x-api-key",
+			want:   "x-api-key: [REDACTED] and x-api-key: [REDACTED]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := redactHeader(tc.input, tc.header)
+			if got != tc.want {
+				t.Errorf("redactHeader(%q, %q) = %q, want %q", tc.input, tc.header, got, tc.want)
+			}
+		})
+	}
+}

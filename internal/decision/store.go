@@ -7,6 +7,7 @@ import (
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -42,7 +43,22 @@ func toUUID(id *uuid.UUID) pgtype.UUID {
 }
 
 // Log records a new architectural decision.
+// Returns a descriptive error wrapping sanitize.ErrTagNoise if any text field
+// contains tool-call serialization fragments (XML tags leaked from the MCP
+// harness), which are never valid user input.
 func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
+	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
+		return nil, fmt.Errorf("log_decision: rationale %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Alternatives); err != nil {
+		return nil, fmt.Errorf("log_decision: alternatives %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Context); err != nil {
+		return nil, fmt.Errorf("log_decision: context %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Decision); err != nil {
+		return nil, fmt.Errorf("log_decision: decision %w", err)
+	}
 	row, err := s.q.CreateDecision(ctx, db.CreateDecisionParams{
 		ProjectID:    toUUID(p.ProjectID),
 		RepoName:     toText(p.RepoName),
