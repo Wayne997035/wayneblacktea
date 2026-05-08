@@ -529,3 +529,61 @@ func TestGTDStore_GetProjectByID_NotFound(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
+
+// TestGTDStore_TopPendingTask verifies ordering and nil return for empty set.
+func TestGTDStore_TopPendingTask(t *testing.T) {
+	t.Run("multiple pending tasks → returns lowest priority then importance", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		// Create three pending tasks with different priorities.
+		// TopPendingTask should return priority=1 (lowest number = highest priority).
+		imp2 := int16(2)
+		imp1 := int16(1)
+		_, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "low-prio", Priority: 5, Importance: &imp2})
+		if err != nil {
+			t.Fatalf("CreateTask low-prio: %v", err)
+		}
+		top, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "top-prio", Priority: 1, Importance: &imp1})
+		if err != nil {
+			t.Fatalf("CreateTask top-prio: %v", err)
+		}
+		_, err = s.CreateTask(ctx, gtd.CreateTaskParams{Title: "mid-prio", Priority: 3, Importance: &imp2})
+		if err != nil {
+			t.Fatalf("CreateTask mid-prio: %v", err)
+		}
+
+		got, err := s.TopPendingTask(ctx)
+		if err != nil {
+			t.Fatalf("TopPendingTask: %v", err)
+		}
+		if got == nil {
+			t.Fatal("expected a task, got nil")
+		}
+		if got.ID != top.ID {
+			t.Errorf("expected task ID %s (priority 1), got %s (title: %q)", top.ID, got.ID, got.Title)
+		}
+	})
+
+	t.Run("no pending tasks → nil, nil", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		// Create a completed task — should not be returned.
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "done", Priority: 1})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		if _, err := s.CompleteTask(ctx, task.ID, nil); err != nil {
+			t.Fatalf("CompleteTask: %v", err)
+		}
+
+		got, err := s.TopPendingTask(ctx)
+		if err != nil {
+			t.Fatalf("TopPendingTask: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil task for empty pending set, got: %+v", got)
+		}
+	})
+}

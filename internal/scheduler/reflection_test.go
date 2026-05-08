@@ -70,6 +70,7 @@ func (s *stubGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd
 }
 func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error        { return nil }
 func (s *stubGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) { return 0, 0, nil }
+func (s *stubGTDStore) TopPendingTask(_ context.Context) (*db.Task, error)     { return nil, nil }
 func (s *stubGTDStore) WorkspaceID() pgtype.UUID                               { return pgtype.UUID{} }
 
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.

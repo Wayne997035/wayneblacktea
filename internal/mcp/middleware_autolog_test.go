@@ -106,6 +106,10 @@ func (m *mockGTDStore) ListActivityLogsSince(_ context.Context, _ time.Time, _ i
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) TopPendingTask(_ context.Context) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) WorkspaceID() pgtype.UUID { return pgtype.UUID{} }
 
 // successHandler returns a fixed success result — simulates a tool that completed OK.

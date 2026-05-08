@@ -657,6 +657,26 @@ func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// TopPendingTask returns the single highest-priority pending task in the
+// configured workspace, ordered by priority ASC NULLS LAST, importance ASC
+// NULLS LAST, created_at ASC. Returns nil, nil when no pending task exists.
+func (s *GTDStore) TopPendingTask(ctx context.Context) (*db.Task, error) {
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE status = 'pending'
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY priority ASC NULLS LAST, importance ASC NULLS LAST, created_at ASC
+		LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, q, s.db.workspaceArg())
+	t, err := scanTask(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil //nolint:nilnil // sentinel: no pending task is not an error; callers render {"task":null}
+	}
+	if err != nil {
+		return nil, errWrap("TopPendingTask", err)
+	}
+	return &t, nil
+}
+
 // WeeklyProgress returns completed-this-week and total-active counts.
 func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	// SQLite has no date_trunc; compute Monday 00:00 UTC of this week in Go.

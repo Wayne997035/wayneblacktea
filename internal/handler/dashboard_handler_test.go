@@ -16,12 +16,18 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// jsonNull is the JSON encoding of null, used by tests that assert a nil value
+// is serialised correctly across multiple test cases.
+const jsonNull = "null"
+
 // fakeDashboardGTDStore satisfies dashboardGTDStore (unexported; tested via exported handler).
 type fakeDashboardGTDStore struct {
-	projects  []db.Project
-	completed int64
-	total     int64
-	err       error
+	projects   []db.Project
+	completed  int64
+	total      int64
+	topTask    *db.Task
+	topTaskErr error
+	err        error
 }
 
 func (f *fakeDashboardGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
@@ -30,6 +36,10 @@ func (f *fakeDashboardGTDStore) WeeklyProgress(_ context.Context) (int64, int64,
 
 func (f *fakeDashboardGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) {
 	return f.projects, f.err
+}
+
+func (f *fakeDashboardGTDStore) TopPendingTask(_ context.Context) (*db.Task, error) {
+	return f.topTask, f.topTaskErr
 }
 
 // fakeDashboardDecisionStore satisfies dashboardDecisionStore.
@@ -413,6 +423,90 @@ func TestDashboardHandler_GetPendingKnowledgeProposals(t *testing.T) {
 			h := handler.NewDashboardHandler(&fakeDashboardGTDStore{}, &fakeDashboardDecisionStore{}, tc.propStore)
 			e.GET("/api/dashboard/pending-knowledge-proposals", h.GetPendingKnowledgeProposals)
 			rec := performRequest(e, http.MethodGet, "/api/dashboard/pending-knowledge-proposals", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.checkBody != nil && rec.Code == http.StatusOK {
+				tc.checkBody(t, rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// ---- D6: GetNextTask ----
+
+func TestDashboardHandler_GetNextTask(t *testing.T) {
+	taskID := uuid.New()
+	task := &db.Task{
+		ID:       taskID,
+		Title:    "Ship next-task endpoint",
+		Status:   "pending",
+		Priority: 1,
+	}
+	cases := []struct {
+		name      string
+		gtdStore  *fakeDashboardGTDStore
+		wantCode  int
+		checkBody func(t *testing.T, body []byte)
+	}{
+		{
+			name:     "task exists → 200 with task JSON",
+			gtdStore: &fakeDashboardGTDStore{topTask: task},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp map[string]json.RawMessage
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				taskRaw, ok := resp["task"]
+				if !ok {
+					t.Fatal("missing key \"task\" in response")
+				}
+				if string(taskRaw) == jsonNull {
+					t.Error("expected task object, got null")
+				}
+				var taskObj map[string]json.RawMessage
+				if err := json.Unmarshal(taskRaw, &taskObj); err != nil {
+					t.Fatalf("task is not a JSON object: %v", err)
+				}
+				if _, ok := taskObj["id"]; !ok {
+					t.Error("task object missing \"id\" field")
+				}
+			},
+		},
+		{
+			name:     "no pending task → 200 with null task",
+			gtdStore: &fakeDashboardGTDStore{topTask: nil},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp map[string]json.RawMessage
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				taskRaw, ok := resp["task"]
+				if !ok {
+					t.Fatal("missing key \"task\" in response")
+				}
+				if string(taskRaw) != jsonNull {
+					t.Errorf("expected null task, got: %s", taskRaw)
+				}
+			},
+		},
+		{
+			name:     "store error → 500",
+			gtdStore: &fakeDashboardGTDStore{topTaskErr: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(tc.gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+			e.GET("/api/dashboard/next-task", h.GetNextTask)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/next-task", "")
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

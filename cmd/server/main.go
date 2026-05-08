@@ -30,6 +30,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
+	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
@@ -91,7 +92,7 @@ func run() error {
 	gtdH := handler.NewGTDHandler(stores.GTD())
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
 	decH := handler.NewDecisionHandler(stores.Decision())
-	sessH := handler.NewSessionHandler(stores.Session())
+	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClient())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
@@ -196,8 +197,12 @@ func run() error {
 	api.GET("/workspace/repos", wsH.ListRepos)
 	api.POST("/workspace/repos", wsH.UpsertRepo)
 
+	// handoffRL caps POST /session/handoff at 5 req/min — each request may
+	// spawn a Gemini embedding call; keep well below Gemini free-tier quota.
+	// Also applied to /auto-handoff which shares the same goroutine budget.
+	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
 	api.GET("/session/handoff", sessH.GetHandoff)
-	api.POST("/session/handoff", sessH.SetHandoff)
+	api.POST("/session/handoff", sessH.SetHandoff, handoffRL)
 
 	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
 
@@ -233,6 +238,7 @@ func run() error {
 	api.GET("/dashboard/active-projects", dashH.GetActiveProjects, dashboardRL)
 	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress, dashboardRL)
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
+	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
@@ -244,7 +250,6 @@ func run() error {
 	api.GET("/learning/stats", learningH.GetStats)
 
 	activityRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
-	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
 	// postToolUseRL is deliberately more permissive (120 req/min) because
 	// wbt-hook fires on every Claude Code tool call, including fast loops.
 	postToolUseRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(120))

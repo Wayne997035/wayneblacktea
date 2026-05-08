@@ -21,6 +21,10 @@ type StoreIface interface {
 	// UpdateEmbedding writes serialized embedding bytes to the most recent
 	// unresolved handoff for cosine similarity recall at SessionStart.
 	UpdateEmbedding(ctx context.Context, embedding []byte) error
+	// UpdateEmbeddingByID writes serialized embedding bytes to the handoff with
+	// the given ID. Preferred over UpdateEmbedding when the caller holds the
+	// specific row ID (avoids race under concurrent SetHandoff calls).
+	UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error
 	// SearchByCosine returns the top-limit handoffs most similar to queryEmbedding.
 	// SECURITY: scoped to workspace_id.
 	SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.SessionHandoff, error)
