@@ -125,20 +125,20 @@ func (c *OpenRouterClient) CompleteJSON(ctx context.Context, req JSONRequest) (s
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", &Retryable{
 			Provider: c.Name(), Reason: reasonHTTP429,
-			Err: fmt.Errorf("status 429: %s", truncate(raw, 256)),
+			Err: fmt.Errorf("status 429: %s", redactBearer(truncate(raw, 256))),
 		}
 	}
 	if resp.StatusCode >= 500 {
 		return "", &Retryable{
 			Provider: c.Name(), Reason: reasonHTTP5xx,
-			Err: fmt.Errorf("status %d: %s", resp.StatusCode, truncate(raw, 256)),
+			Err: fmt.Errorf("status %d: %s", resp.StatusCode, redactBearer(truncate(raw, 256))),
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", &Retryable{
 			Provider: c.Name(),
 			Reason:   fmt.Sprintf("http_%d", resp.StatusCode),
-			Err:      fmt.Errorf("status %d: %s", resp.StatusCode, truncate(raw, 256)),
+			Err:      fmt.Errorf("status %d: %s", resp.StatusCode, redactBearer(truncate(raw, 256))),
 		}
 	}
 
@@ -210,18 +210,52 @@ func classifyTransport(err error) string {
 	return reasonNetwork
 }
 
-// sanitiseTransportErr strips bearer tokens / Authorization markers from a
-// transport error message. The Go stdlib already redacts URL credentials in
-// url.Error; we add belt-and-braces filtering for "Bearer " substrings.
+// sanitiseTransportErr strips credential patterns from a transport error
+// message. The Go stdlib already redacts URL credentials in url.Error; we add
+// belt-and-braces filtering for Bearer tokens and common credential header names.
 func sanitiseTransportErr(err error) error {
 	if err == nil {
 		return nil
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "Bearer ") {
-		return errors.New(redactBearer(msg))
+	if strings.Contains(msg, "Bearer ") ||
+		strings.Contains(msg, "x-api-key:") ||
+		strings.Contains(msg, "Authorization:") ||
+		strings.Contains(msg, "anthropic-organization-id:") {
+		msg = redactBearer(msg)
+		msg = redactHeader(msg, "x-api-key")
+		msg = redactHeader(msg, "Authorization")
+		msg = redactHeader(msg, "anthropic-organization-id")
+		return errors.New(msg)
 	}
 	return err
+}
+
+// redactHeader strips "HeaderName: <value>" from error strings, replacing the
+// value with "[REDACTED]". The value is considered to end at the next
+// whitespace, carriage return, or newline character.
+func redactHeader(s, header string) string {
+	marker := header + ": "
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		idx := strings.Index(s[i:], marker)
+		if idx < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		// Write everything up to and including the marker.
+		b.WriteString(s[i : i+idx+len(marker)])
+		b.WriteString("[REDACTED]")
+		// Skip the header value until whitespace or end-of-string.
+		j := i + idx + len(marker)
+		for j < len(s) && s[j] != '\n' && s[j] != '\r' && s[j] != ' ' {
+			j++
+		}
+		i = j
+	}
+	return b.String()
 }
 
 // redactBearer replaces "Bearer <token>" with "Bearer [REDACTED]" wherever

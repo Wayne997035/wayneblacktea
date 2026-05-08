@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -20,14 +20,15 @@ import (
 // Store handles all database operations for the Knowledge bounded context.
 type Store struct {
 	q           *db.Queries
-	embed       *search.EmbeddingClient
+	embed       ai.ContextEmbeddingProvider
 	pool        *pgxpool.Pool
 	workspaceID pgtype.UUID
 }
 
 // NewStore returns a Store backed by the given connection pool, scoped to the
 // optional workspace. nil workspaceID = legacy unscoped mode.
-func NewStore(pool *pgxpool.Pool, embed *search.EmbeddingClient, workspaceID *uuid.UUID) *Store {
+// embed may be nil — embedding operations are skipped gracefully when absent.
+func NewStore(pool *pgxpool.Pool, embed ai.ContextEmbeddingProvider, workspaceID *uuid.UUID) *Store {
 	var ws pgtype.UUID
 	if workspaceID != nil {
 		ws = pgtype.UUID{Bytes: [16]byte(*workspaceID), Valid: true}

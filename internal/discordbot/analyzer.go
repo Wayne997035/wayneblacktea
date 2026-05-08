@@ -7,11 +7,22 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
 // typeBookmark is the suggested_type value for bookmark knowledge items.
 const typeBookmark = "bookmark"
+
+// AnalysisResult is an alias for ai.AnalysisResult so existing callers within
+// this package can continue to use the unqualified name without change.
+//
+// The canonical definition lives in internal/ai/provider.go; this alias keeps
+// the discordbot package API stable while the type is shared via the interface.
+type AnalysisResult = ai.AnalysisResult
+
+// compile-time assertion: *Analyzer must satisfy ai.AnalyzerProvider.
+var _ ai.AnalyzerProvider = (*Analyzer)(nil)
 
 // ApplyGitHubBookmarkRule post-processes an AnalysisResult for GitHub repo
 // URLs. If the source URL is a bare GitHub repo (github.com/{owner}/{repo})
@@ -28,20 +39,6 @@ func ApplyGitHubBookmarkRule(result *AnalysisResult, sourceURL string) {
 		result.SuggestedType = typeBookmark
 		result.WorthSaving = true
 	}
-}
-
-// AnalysisResult is the structured assessment produced by the Discord
-// /analyze command. The shape is part of the public Discord bot contract —
-// changes to fields here are user-visible and MUST be coordinated with the
-// downstream knowledge-save handler.
-type AnalysisResult struct {
-	Summary       string   `json:"summary"`
-	KeyConcepts   []string `json:"key_concepts"`
-	LearningValue int      `json:"learning_value"` // 1-5
-	WorthSaving   bool     `json:"worth_saving"`
-	SuggestedType string   `json:"suggested_type"` // article|til|zettelkasten|bookmark
-	Tags          []string `json:"tags"`
-	SkipReason    string   `json:"skip_reason,omitempty"`
 }
 
 // Analyzer evaluates content for learning value via an LLM provider chain.

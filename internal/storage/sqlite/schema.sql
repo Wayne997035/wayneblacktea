@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS review_schedule (
 CREATE TABLE IF NOT EXISTS pending_proposals (
     id            TEXT PRIMARY KEY,
     workspace_id  TEXT,
-    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept','knowledge')),
+    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept','knowledge','playbook')),
     payload       TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
     proposed_by   TEXT,
@@ -338,4 +338,21 @@ CREATE INDEX IF NOT EXISTS idx_vision_items_status
 
 CREATE INDEX IF NOT EXISTS idx_vision_items_initiative
     ON vision_items(parent_initiative) WHERE parent_initiative IS NOT NULL;
+
+-- Mirrored from migrations/000030_playbooks. Procedural memory: trigger→action rules.
+-- No FK constraints (CLAUDE.md #9). Confidence managed in application code.
+CREATE TABLE IF NOT EXISTS playbooks (
+    id                  TEXT        PRIMARY KEY,
+    workspace_id        TEXT,
+    trigger_pattern     TEXT        NOT NULL,
+    action_template     TEXT        NOT NULL,
+    source_decision_ids TEXT        NOT NULL DEFAULT '[]',
+    confidence          REAL        NOT NULL DEFAULT 0.50,
+    hits                INTEGER     NOT NULL DEFAULT 0,
+    last_used_at        TEXT,
+    created_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_playbooks_workspace_id ON playbooks (workspace_id);
+CREATE INDEX IF NOT EXISTS idx_playbooks_confidence   ON playbooks (confidence DESC);
 

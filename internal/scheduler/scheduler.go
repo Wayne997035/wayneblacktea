@@ -13,6 +13,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
+	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/go-co-op/gocron/v2"
@@ -45,6 +46,7 @@ type Scheduler struct {
 	consolidDeps   *consolidationDeps
 	statusDeps     *statusSnapshotDeps
 	pruner         *decay.Pruner
+	playbookDeps   *playbookDeps
 }
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
@@ -55,6 +57,52 @@ type statusSnapshotDeps struct {
 	store       snapshot.StoreIface
 	generator   snapshot.GeneratorIface
 	workspaceID *uuid.UUID
+}
+
+// buildSchedulerDeps initialises all optional dep bundles from the flat
+// parameter list passed to New. Extracted to keep New's cyclomatic complexity
+// below the gocyclo threshold of 15.
+func buildSchedulerDeps(
+	reflector ai.ReflectorIface,
+	gtdStore gtd.StoreIface,
+	decStore decision.StoreIface,
+	propStore proposal.StoreIface,
+	pbStore playbook.StoreIface,
+	snapStore snapshot.StoreIface,
+	snapGen snapshot.GeneratorIface,
+	workspaceID *uuid.UUID,
+) (rDeps *reflectionDeps, cDeps *consolidationDeps, pbDeps *playbookDeps, sDeps *statusSnapshotDeps) {
+	if reflector != nil && gtdStore != nil && decStore != nil && propStore != nil {
+		rDeps = &reflectionDeps{
+			gtd:       gtdStore,
+			decision:  decStore,
+			proposal:  propStore,
+			reflector: reflector,
+		}
+		cDeps = &consolidationDeps{
+			gtd:       gtdStore,
+			proposal:  propStore,
+			reflector: reflector,
+		}
+	}
+	if reflector != nil && decStore != nil && propStore != nil && pbStore != nil {
+		pbDeps = &playbookDeps{
+			decision:  decStore,
+			playbook:  pbStore,
+			proposal:  propStore,
+			reflector: reflector,
+		}
+	}
+	if snapStore != nil && snapGen != nil && gtdStore != nil && decStore != nil {
+		sDeps = &statusSnapshotDeps{
+			gtd:         gtdStore,
+			decision:    decStore,
+			store:       snapStore,
+			generator:   snapGen,
+			workspaceID: workspaceID,
+		}
+	}
+	return rDeps, cDeps, pbDeps, sDeps
 }
 
 // New creates and configures the Scheduler with all registered jobs.
@@ -75,6 +123,9 @@ type statusSnapshotDeps struct {
 // snapshot job is skipped. Both are set when CLAUDE_API_KEY is configured.
 //
 // pruner is optional: when nil the daily decay soft-prune job is skipped.
+//
+// pbStore is optional: when nil (or when reflector/decStore/propStore is also
+// nil) the Sunday playbook promoter job is skipped.
 func New(
 	ls learning.StoreIface,
 	dc *discord.Client,
@@ -89,6 +140,7 @@ func New(
 	snapGen snapshot.GeneratorIface,
 	workspaceID *uuid.UUID,
 	pruner *decay.Pruner,
+	pbStore playbook.StoreIface,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -100,32 +152,10 @@ func New(
 		return nil, fmt.Errorf("creating gocron scheduler: %w", err)
 	}
 
-	var rDeps *reflectionDeps
-	var cDeps *consolidationDeps
-	if reflector != nil && gtdStore != nil && decStore != nil && propStore != nil {
-		rDeps = &reflectionDeps{
-			gtd:       gtdStore,
-			decision:  decStore,
-			proposal:  propStore,
-			reflector: reflector,
-		}
-		cDeps = &consolidationDeps{
-			gtd:       gtdStore,
-			proposal:  propStore,
-			reflector: reflector,
-		}
-	}
-
-	var sDeps *statusSnapshotDeps
-	if snapStore != nil && snapGen != nil && gtdStore != nil && decStore != nil {
-		sDeps = &statusSnapshotDeps{
-			gtd:         gtdStore,
-			decision:    decStore,
-			store:       snapStore,
-			generator:   snapGen,
-			workspaceID: workspaceID,
-		}
-	}
+	rDeps, cDeps, pbDeps, sDeps := buildSchedulerDeps(
+		reflector, gtdStore, decStore, propStore, pbStore,
+		snapStore, snapGen, workspaceID,
+	)
 
 	sc := &Scheduler{
 		s:              s,
@@ -138,6 +168,7 @@ func New(
 		consolidDeps:   cDeps,
 		statusDeps:     sDeps,
 		pruner:         pruner,
+		playbookDeps:   pbDeps,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -216,6 +247,10 @@ func (sc *Scheduler) registerWeeklyJobs(s gocron.Scheduler) error {
 		slog.Info("scheduler: WeeklyAIConceptReview skipped (Claude API key not configured)")
 	}
 
+	if err := sc.registerSundayPlaybookPromoter(s); err != nil {
+		return err
+	}
+
 	if sc.reflectionDeps == nil {
 		slog.Info("scheduler: SaturdayReflection + SaturdayConsolidation + SaturdayStatusSnapshot skipped (reflector or stores not configured)")
 		return nil
@@ -270,6 +305,34 @@ func (sc *Scheduler) registerSaturdayJobs(s gocron.Scheduler) error {
 	}
 
 	return nil
+}
+
+// registerSundayPlaybookPromoter adds the Sunday 03:00 playbook promoter job.
+func (sc *Scheduler) registerSundayPlaybookPromoter(s gocron.Scheduler) error {
+	if sc.playbookDeps == nil {
+		slog.Info("scheduler: SundayPlaybookPromoter skipped (reflector, decision, proposal or playbook store not configured)")
+		return nil
+	}
+	_, err := s.NewJob(
+		gocron.WeeklyJob(1, gocron.NewWeekdays(time.Sunday), gocron.NewAtTimes(gocron.NewAtTime(3, 0, 0))),
+		gocron.NewTask(sc.sundayPlaybookPromoter),
+		gocron.WithName("sunday-playbook-promoter"),
+		// LimitModeReschedule: drop a run if the previous one is still executing.
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering Sunday playbook promoter job: %w", err)
+	}
+	slog.Info("scheduler: SundayPlaybookPromoter scheduled at Sunday 03:00 Asia/Taipei")
+	return nil
+}
+
+// sundayPlaybookPromoter wraps runPlaybookPromoter for the scheduler method signature.
+func (s *Scheduler) sundayPlaybookPromoter() {
+	if s.playbookDeps == nil {
+		return
+	}
+	runPlaybookPromoter(*s.playbookDeps)
 }
 
 // Start begins executing scheduled jobs (non-blocking).

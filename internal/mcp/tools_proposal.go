@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -439,6 +440,21 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 		return map[string]string{"id": conceptID.String(), "title": cp.Title}, ""
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
+	case proposal.TypePlaybook:
+		wsID := (*uuid.UUID)(nil)
+		if prop.WorkspaceID.Valid {
+			id := uuid.UUID(prop.WorkspaceID.Bytes)
+			wsID = &id
+		}
+		cp, errMsg := decodePlaybookPayload(prop.Payload, wsID)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		pb, err := s.playbook.Create(ctx, cp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating playbook: %v", err)
+		}
+		return pb, ""
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
@@ -481,6 +497,21 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 		return concept, ""
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
+	case proposal.TypePlaybook:
+		wsID := (*uuid.UUID)(nil)
+		if prop.WorkspaceID.Valid {
+			id := uuid.UUID(prop.WorkspaceID.Bytes)
+			wsID = &id
+		}
+		cp, errMsg := decodePlaybookPayload(prop.Payload, wsID)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		pb, err := s.playbook.Create(ctx, cp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating playbook: %v", err)
+		}
+		return pb, ""
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
@@ -523,6 +554,21 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 		return concept, ""
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
+	case proposal.TypePlaybook:
+		wsID := (*uuid.UUID)(nil)
+		if prop.WorkspaceID.Valid {
+			id := uuid.UUID(prop.WorkspaceID.Bytes)
+			wsID = &id
+		}
+		cp, errMsg := decodePlaybookPayload(prop.Payload, wsID)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		pb, err := s.playbook.Create(ctx, cp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating playbook: %v", err)
+		}
+		return pb, ""
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
@@ -587,4 +633,31 @@ func decodeConceptPayload(payload []byte) (conceptPayload, string) {
 		return conceptPayload{}, "too many tags (max 50)"
 	}
 	return p, ""
+}
+
+// decodePlaybookPayload extracts a playbook.CreateParams from a proposal payload JSON.
+func decodePlaybookPayload(payload []byte, wsID *uuid.UUID) (playbook.CreateParams, string) {
+	var p struct {
+		TriggerPattern    string      `json:"trigger_pattern"`
+		ActionTemplate    string      `json:"action_template"`
+		SourceDecisionIDs []uuid.UUID `json:"source_decision_ids"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return playbook.CreateParams{}, fmt.Sprintf("decoding playbook payload: %v", err)
+	}
+	if p.TriggerPattern == "" || p.ActionTemplate == "" {
+		return playbook.CreateParams{}, "playbook payload missing trigger_pattern or action_template"
+	}
+	const maxTriggerLen = 500
+	const maxContentLen = 600
+	if len([]rune(p.TriggerPattern)) > maxTriggerLen || len([]rune(p.ActionTemplate)) > maxContentLen {
+		return playbook.CreateParams{}, "playbook payload fields exceed length limits"
+	}
+	return playbook.CreateParams{
+		WorkspaceID:       wsID,
+		TriggerPattern:    p.TriggerPattern,
+		ActionTemplate:    p.ActionTemplate,
+		SourceDecisionIDs: p.SourceDecisionIDs,
+		Confidence:        0.50,
+	}, ""
 }
