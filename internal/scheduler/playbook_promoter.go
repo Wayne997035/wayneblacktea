@@ -212,28 +212,6 @@ func processPlaybookProposals(
 	return created
 }
 
-// buildAdaptedPlaybookPrompt builds a prompt that instructs Haiku to return
-// KnowledgeProposal-compatible JSON (title/content/tags) so the existing
-// Reflector.Propose parser can handle the response without a new AI interface.
-// We map: title → trigger_pattern, content → action_template,
-//
-//	tags  → source_decision_ids (UUID strings).
-func buildAdaptedPlaybookPrompt(decisionsJSON string) string {
-	return fmt.Sprintf(
-		"You are analyzing a person's recent architectural and technical decisions "+
-			"to find recurring patterns that can be turned into procedural playbooks.\n\n"+
-			"Here are the recent decisions (JSON):\n"+
-			"[BEGIN ACTIVITIES]\n%s\n[END ACTIVITIES]\n\n"+
-			"Produce 2–5 playbook candidates derived from 2+ related decisions.\n"+
-			"Return ONLY a JSON array (no markdown) where each object has:\n"+
-			"  \"title\": one-sentence description of when to apply this rule\n"+
-			"  \"content\": concrete steps to take (≤300 chars)\n"+
-			"  \"tags\": array of source decision UUID strings\n\n"+
-			"Return [] if no patterns are worth capturing.",
-		decisionsJSON,
-	)
-}
-
 // PlaybookProposalPayload is the JSON shape stored in pending_proposals.payload
 // when type='playbook'.
 type PlaybookProposalPayload struct {

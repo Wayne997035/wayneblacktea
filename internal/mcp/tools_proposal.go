@@ -648,6 +648,11 @@ func decodePlaybookPayload(payload []byte, wsID *uuid.UUID) (playbook.CreatePara
 	if p.TriggerPattern == "" || p.ActionTemplate == "" {
 		return playbook.CreateParams{}, "playbook payload missing trigger_pattern or action_template"
 	}
+	const maxTriggerLen = 500
+	const maxContentLen = 600
+	if len([]rune(p.TriggerPattern)) > maxTriggerLen || len([]rune(p.ActionTemplate)) > maxContentLen {
+		return playbook.CreateParams{}, "playbook payload fields exceed length limits"
+	}
 	return playbook.CreateParams{
 		WorkspaceID:       wsID,
 		TriggerPattern:    p.TriggerPattern,

@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -260,16 +259,5 @@ func TestMarshalPlaybookPayload(t *testing.T) {
 	}
 	if len(payload2) == 0 {
 		t.Error("payload2 should not be empty")
-	}
-}
-
-func TestBuildAdaptedPlaybookPrompt(t *testing.T) {
-	prompt := buildAdaptedPlaybookPrompt(`[{"id":"abc","title":"T"}]`)
-	if len(prompt) == 0 {
-		t.Error("prompt should not be empty")
-	}
-	// Verify decision JSON is embedded in the prompt.
-	if !strings.Contains(prompt, "abc") {
-		t.Error("prompt should contain the decision JSON content")
 	}
 }
