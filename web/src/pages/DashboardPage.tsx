@@ -8,6 +8,11 @@ import { GoalProgress } from '../components/dashboard/GoalProgress'
 import { HandoffCard } from '../components/dashboard/HandoffCard'
 import { QuickStats } from '../components/dashboard/QuickStats'
 import { SystemHealth } from '../components/dashboard/SystemHealth'
+import { NextTaskCard } from '../components/dashboard/NextTaskCard'
+import { RecentDecisionsCard } from '../components/dashboard/RecentDecisionsCard'
+import { PendingProposalsCard } from '../components/dashboard/PendingProposalsCard'
+import { DueReviewsCard } from '../components/dashboard/DueReviewsCard'
+import { RecentKnowledgeCard } from '../components/dashboard/RecentKnowledgeCard'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
@@ -94,6 +99,19 @@ export function DashboardPage() {
           )}
         </section>
 
+        {/* D1: Next Task */}
+        <section>
+          <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
+            Next Task
+          </div>
+          <NextTaskCard onNavigate={(id) => navigate(`/gtd?task_id=${id}`)} />
+        </section>
+
+        {/* D2: Recent Decisions */}
+        <section>
+          <RecentDecisionsCard onSeeAll={() => navigate('/decisions')} />
+        </section>
+
         {/* Right: Progress + Handoff + Stats + Health */}
         <div className="flex flex-col gap-6">
           {/* Weekly Progress */}
@@ -125,6 +143,21 @@ export function DashboardPage() {
             ) : (
               <HandoffCard handoff={data?.pending_handoff ?? null} />
             )}
+          </section>
+
+          {/* D3: Pending Proposals */}
+          <section>
+            <PendingProposalsCard onClick={() => navigate('/proposals')} />
+          </section>
+
+          {/* D4: Due Reviews */}
+          <section>
+            <DueReviewsCard onClick={() => navigate('/reviews')} />
+          </section>
+
+          {/* D5: Recent Knowledge */}
+          <section>
+            <RecentKnowledgeCard onClick={() => navigate('/knowledge')} />
           </section>
 
           {/* Quick Stats — now uses real API data */}
