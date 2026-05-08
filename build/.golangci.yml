@@ -109,6 +109,12 @@ linters:
           - dupl       # test helpers are intentionally repetitive
           - contextcheck # test setup often uses context.Background() legitimately
           - nilnil     # test stubs legitimately return (nil, nil) for unexercised methods
+      - path: "internal/mcp/"
+        linters:
+          - nilerr     # MCP tool handlers return (*ToolResult, nil) — ToolResult carries user-facing error, nil Go error is correct by mcp-go convention
+      - path: "internal/storage/sqlite/db.go"
+        linters:
+          - unqueryvet # ExecContext/QueryRowContext are generic wrappers; schemaSQL is embedded constant; all call sites use parameterized args (no interpolation)
 
 issues:
   max-issues-per-linter: 0

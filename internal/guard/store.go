@@ -216,7 +216,7 @@ func (s *Store) FindBypass(ctx context.Context, scope, target, toolName string) 
 	err := row.Scan(&b.ID, &b.Scope, &b.Target, &toolNameVal, &b.Reason, &createdBy, &expiresAt)
 	if err != nil {
 		// pgx returns pgx.ErrNoRows when no row matches — that's normal.
-		return nil, nil //nolint:nilnil // intentional: nil means no bypass found; not an error
+		return nil, nil //nolint:nilnil,nilerr // intentional: nil means no bypass found; not an error condition
 	}
 	b.ToolName = toolNameVal
 	b.CreatedBy = createdBy
