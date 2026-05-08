@@ -64,7 +64,7 @@ export function PendingProposalsCard({ onClick }: PendingProposalsCardProps) {
         <div className="text-label mb-2" style={{ color: 'var(--color-text-muted)' }}>
           PENDING PROPOSALS
         </div>
-        <EmptyState messageKey="dashboard.noHandoff" />
+        <EmptyState messageKey="proposals.allCaughtUp" />
       </div>
     )
   }

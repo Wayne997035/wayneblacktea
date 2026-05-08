@@ -114,9 +114,8 @@ export function RecentKnowledgeCard({ onClick }: RecentKnowledgeCardProps) {
 
       {items.map((item) => {
         const badgeStyle = getTypeBadgeStyle(item.type)
-        const visibleTags = item.tags.slice(0, 3)
         const extraTags = item.tags.length > 3 ? item.tags.length - 2 : 0
-        const displayTags = extraTags > 0 ? item.tags.slice(0, 2) : visibleTags
+        const displayTags = item.tags.slice(0, extraTags > 0 ? 2 : 3)
 
         return (
           <div

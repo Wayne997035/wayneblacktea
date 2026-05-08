@@ -18,12 +18,14 @@
       "activeProjects": "ACTIVE PROJECTS",
       "weeklyProgress": "WEEKLY PROGRESS",
       "nextSession": "NEXT SESSION",
+      "nextTask": "NEXT TASK",
       "pendingTasks": "Pending Tasks",
       "decisionsToday": "Decisions Today"
     },
     "noProjects": "No active projects",
     "noTasksThisWeek": "No tasks this week",
     "noHandoff": "No pending handoff",
+    "noNextTask": "No pending tasks",
     "tasksDone": "tasks done"
   },
   "gtd": {
@@ -209,6 +211,7 @@
     "noItems": "No learning history yet"
   },
   "proposals": {
+    "allCaughtUp": "All caught up",
     "tabs": {
       "pending": "Pending",
       "accepted": "Accepted",

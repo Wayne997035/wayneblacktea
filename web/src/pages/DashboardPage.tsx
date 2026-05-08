@@ -72,47 +72,49 @@ export function DashboardPage() {
 
       {/* 2-col layout on desktop/tablet */}
       <div className="grid grid-cols-1 lg:grid-cols-[60%_40%] gap-6">
-        {/* Left: Active Projects */}
-        <section>
-          <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
-            {t('dashboard.sections.activeProjects')}
-          </div>
-          {isLoading ? (
-            <div className="flex flex-col gap-3">
-              {Array.from({ length: 3 }, (_, i) => (
-                <LoadingSkeleton key={i} className="w-full" style={{ height: '96px' }} />
-              ))}
+        {/* Left column: Active Projects + D1 Next Task + D2 Recent Decisions */}
+        <div className="flex flex-col gap-6">
+          <section>
+            <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
+              {t('dashboard.sections.activeProjects')}
             </div>
-          ) : activeProjects.length === 0 ? (
-            <EmptyState messageKey="dashboard.noProjects" />
-          ) : (
-            <div className="flex flex-col gap-3">
-              {activeProjects.map((project) => (
-                <ProjectCard
-                  key={project.id}
-                  project={project}
-                  variant="compact"
-                  onClick={() => navigate(`/workspace/projects/${project.id}`)}
-                />
-              ))}
+            {isLoading ? (
+              <div className="flex flex-col gap-3">
+                {Array.from({ length: 3 }, (_, i) => (
+                  <LoadingSkeleton key={i} className="w-full" style={{ height: '96px' }} />
+                ))}
+              </div>
+            ) : activeProjects.length === 0 ? (
+              <EmptyState messageKey="dashboard.noProjects" />
+            ) : (
+              <div className="flex flex-col gap-3">
+                {activeProjects.map((project) => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    variant="compact"
+                    onClick={() => navigate(`/workspace/projects/${project.id}`)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* D1: Next Task */}
+          <section>
+            <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
+              {t('dashboard.sections.nextTask')}
             </div>
-          )}
-        </section>
+            <NextTaskCard onNavigate={(id) => navigate(`/gtd?task_id=${id}`)} />
+          </section>
 
-        {/* D1: Next Task */}
-        <section>
-          <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
-            Next Task
-          </div>
-          <NextTaskCard onNavigate={(id) => navigate(`/gtd?task_id=${id}`)} />
-        </section>
+          {/* D2: Recent Decisions */}
+          <section>
+            <RecentDecisionsCard onSeeAll={() => navigate('/decisions')} />
+          </section>
+        </div>
 
-        {/* D2: Recent Decisions */}
-        <section>
-          <RecentDecisionsCard onSeeAll={() => navigate('/decisions')} />
-        </section>
-
-        {/* Right: Progress + Handoff + Stats + Health */}
+        {/* Right column: Progress + Handoff + Stats + Health */}
         <div className="flex flex-col gap-6">
           {/* Weekly Progress */}
           <section>

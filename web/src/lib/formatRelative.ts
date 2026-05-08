@@ -2,8 +2,11 @@
  * Formats a date string or Date into a relative time string using Intl.RelativeTimeFormat.
  * Examples: "just now", "5 minutes ago", "2 hours ago", "3 days ago", "2 weeks ago"
  */
-export function formatRelative(dateInput: string | Date): string {
+export function formatRelative(dateInput: string | Date | null | undefined): string {
+  if (!dateInput) return '—'
   const date = typeof dateInput === 'string' ? new Date(dateInput) : dateInput
+  if (isNaN(date.getTime())) return '—'
+
   const now = new Date()
   const diffMs = date.getTime() - now.getTime()
   const diffSeconds = Math.round(diffMs / 1000)
@@ -15,31 +18,31 @@ export function formatRelative(dateInput: string | Date): string {
     return 'just now'
   }
 
-  const absDiffMinutes = Math.round(absDiffSeconds / 60)
-  if (absDiffMinutes < 60) {
-    return rtf.format(-absDiffMinutes, 'minute')
+  const diffMinutes = Math.round(diffSeconds / 60)
+  if (Math.abs(diffMinutes) < 60) {
+    return rtf.format(diffMinutes, 'minute')
   }
 
-  const absDiffHours = Math.round(absDiffMinutes / 60)
-  if (absDiffHours < 24) {
-    return rtf.format(-absDiffHours, 'hour')
+  const diffHours = Math.round(diffMinutes / 60)
+  if (Math.abs(diffHours) < 24) {
+    return rtf.format(diffHours, 'hour')
   }
 
-  const absDiffDays = Math.round(absDiffHours / 24)
-  if (absDiffDays < 7) {
-    return rtf.format(-absDiffDays, 'day')
+  const diffDays = Math.round(diffHours / 24)
+  if (Math.abs(diffDays) < 7) {
+    return rtf.format(diffDays, 'day')
   }
 
-  const absDiffWeeks = Math.round(absDiffDays / 7)
-  if (absDiffWeeks < 5) {
-    return rtf.format(-absDiffWeeks, 'week')
+  const diffWeeks = Math.round(diffDays / 7)
+  if (Math.abs(diffWeeks) < 5) {
+    return rtf.format(diffWeeks, 'week')
   }
 
-  const absDiffMonths = Math.round(absDiffDays / 30)
-  if (absDiffMonths < 12) {
-    return rtf.format(-absDiffMonths, 'month')
+  const diffMonths = Math.round(diffDays / 30)
+  if (Math.abs(diffMonths) < 12) {
+    return rtf.format(diffMonths, 'month')
   }
 
-  const absDiffYears = Math.round(absDiffDays / 365)
-  return rtf.format(-absDiffYears, 'year')
+  const diffYears = Math.round(diffDays / 365)
+  return rtf.format(diffYears, 'year')
 }
