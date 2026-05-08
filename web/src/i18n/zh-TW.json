@@ -18,13 +18,26 @@
       "activeProjects": "進行中專案",
       "weeklyProgress": "本週進度",
       "nextSession": "下次工作",
+      "nextTask": "下個任務",
       "pendingTasks": "待辦事項",
       "decisionsToday": "今日決策"
     },
     "noProjects": "目前沒有進行中的專案",
     "noTasksThisWeek": "本週沒有任務",
     "noHandoff": "沒有待辦的交接事項",
-    "tasksDone": "個任務完成"
+    "noNextTask": "沒有待辦任務",
+    "tasksDone": "個任務完成",
+    "widgets": {
+      "nextTask": "下個任務",
+      "dueDate": "截止：{{date}}",
+      "recentDecisions": "最近決策",
+      "seeAll": "查看全部",
+      "pendingProposals": "待確認提案",
+      "dueReviews": "待複習",
+      "dueReviewsCount": "{{count}} 筆",
+      "recentKnowledge": "最近知識",
+      "moreItems": "+ {{count}} 筆"
+    }
   },
   "gtd": {
     "title": "GTD",
@@ -209,6 +222,7 @@
     "noItems": "尚無學習紀錄"
   },
   "proposals": {
+    "allCaughtUp": "無待處理提案",
     "tabs": {
       "pending": "待處理",
       "accepted": "已接受",

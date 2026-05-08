@@ -18,13 +18,26 @@
       "activeProjects": "ACTIVE PROJECTS",
       "weeklyProgress": "WEEKLY PROGRESS",
       "nextSession": "NEXT SESSION",
+      "nextTask": "NEXT TASK",
       "pendingTasks": "Pending Tasks",
       "decisionsToday": "Decisions Today"
     },
     "noProjects": "No active projects",
     "noTasksThisWeek": "No tasks this week",
     "noHandoff": "No pending handoff",
-    "tasksDone": "tasks done"
+    "noNextTask": "No pending tasks",
+    "tasksDone": "tasks done",
+    "widgets": {
+      "nextTask": "NEXT TASK",
+      "dueDate": "Due: {{date}}",
+      "recentDecisions": "RECENT DECISIONS",
+      "seeAll": "See all",
+      "pendingProposals": "PENDING PROPOSALS",
+      "dueReviews": "DUE REVIEWS",
+      "dueReviewsCount": "{{count}} due",
+      "recentKnowledge": "RECENT KNOWLEDGE",
+      "moreItems": "+ {{count}} more"
+    }
   },
   "gtd": {
     "title": "GTD",
@@ -209,6 +222,7 @@
     "noItems": "No learning history yet"
   },
   "proposals": {
+    "allCaughtUp": "All caught up",
     "tabs": {
       "pending": "Pending",
       "accepted": "Accepted",
