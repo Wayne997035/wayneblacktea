@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Fake DSNs used as test fixtures. Centralised so gosec G101 only needs to be
@@ -253,6 +255,9 @@ func TestRunServe_MissingBinary(t *testing.T) {
 // is not set. CLAUDE_API_KEY is optional and must not satisfy HTTP auth config.
 // Cannot use t.Parallel because t.Setenv mutates process-global state.
 func TestRunServe_MissingEnvVars(t *testing.T) {
+	// Point XDG_CONFIG_HOME at an empty dir so no global config can supply API_KEY.
+	emptyConfig := t.TempDir()
+	setXDGConfigHome(t, emptyConfig)
 	t.Setenv("API_KEY", "")
 	t.Setenv("CLAUDE_API_KEY", "")
 
@@ -271,6 +276,8 @@ func TestRunServe_MissingEnvVars(t *testing.T) {
 func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 	tmp := t.TempDir()
 	t.Chdir(tmp)
+	// Redirect XDG_CONFIG_HOME so we don't write to the real user config dir.
+	setXDGConfigHome(t, tmp)
 
 	oldStdin := os.Stdin
 	oldStdout := os.Stdout
@@ -389,8 +396,8 @@ func TestCollectDBConfig_SQLiteDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectDBConfig error: %v", err)
 	}
-	if got.storageBackend != "sqlite" {
-		t.Errorf("storageBackend = %q, want %q", got.storageBackend, "sqlite")
+	if got.storageBackend != sqliteBackend {
+		t.Errorf("storageBackend = %q, want %q", got.storageBackend, sqliteBackend)
 	}
 	if got.sqlitePath == "" {
 		t.Error("sqlitePath should not be empty for sqlite backend")
@@ -411,6 +418,312 @@ func TestCollectDBConfig_PostgresEmptyDSN(t *testing.T) {
 // newBufReader is a test helper to create a *bufio.Reader from an io.Reader.
 func newBufReader(r io.Reader) *bufio.Reader {
 	return bufio.NewReader(r)
+}
+
+// sqliteBackend is used in multiple test cases; named constant avoids goconst.
+const sqliteBackend = "sqlite"
+
+// setXDGConfigHome overrides XDG_CONFIG_HOME (used by os.UserConfigDir on
+// Linux) and HOME (used as fallback on macOS) to point at a temp dir.
+// It restores both on test cleanup.
+func setXDGConfigHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir) // macOS fallback: os.UserConfigDir → $HOME/.config
+}
+
+// TestConfigPath_UserConfigDir verifies configPath() returns a path inside the
+// OS user-config directory with the expected sub-path and that the directory
+// is created automatically.
+func TestConfigPath_UserConfigDir(t *testing.T) {
+	// Override XDG_CONFIG_HOME so we don't pollute the real config directory.
+	tmp := t.TempDir()
+	setXDGConfigHome(t, tmp)
+
+	got, err := configPath()
+	if err != nil {
+		t.Fatalf("configPath() error: %v", err)
+	}
+	// Path must end with wayneblacktea/config.yaml
+	if !strings.HasSuffix(got, filepath.Join("wayneblacktea", "config.yaml")) {
+		t.Errorf("configPath() = %q; want suffix %q", got, filepath.Join("wayneblacktea", "config.yaml"))
+	}
+	// The parent directory must exist after the call.
+	dir := filepath.Dir(got)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Errorf("configPath() did not create directory %q", dir)
+	}
+}
+
+// TestConfigPath_UserConfigDir_AlreadyExists verifies configPath() is
+// idempotent when the directory already exists (no EEXIST error).
+func TestConfigPath_UserConfigDir_AlreadyExists(t *testing.T) {
+	tmp := t.TempDir()
+	setXDGConfigHome(t, tmp)
+
+	// Call twice; second call must not error.
+	if _, err := configPath(); err != nil {
+		t.Fatalf("first configPath() error: %v", err)
+	}
+	if _, err := configPath(); err != nil {
+		t.Fatalf("second configPath() error: %v", err)
+	}
+}
+
+// TestWriteGlobalConfig_RoundTrip verifies that writeGlobalConfig writes a
+// valid YAML file that can be parsed back by loadGlobalConfig.
+func TestWriteGlobalConfig_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	setXDGConfigHome(t, tmp)
+
+	cfg := wbtConfig{
+		APIKey:         "testapikey",
+		DatabaseURL:    fakePostgresDSN,
+		Port:           "9090",
+		StorageBackend: "postgres",
+	}
+	if err := writeGlobalConfig(cfg); err != nil {
+		t.Fatalf("writeGlobalConfig error: %v", err)
+	}
+
+	// Verify file permissions: must be 0600 (credential-bearing file).
+	p, _ := configPath()
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat config file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config file mode = %o, want 0600", perm)
+	}
+
+	// Parse back and verify fields.
+	b, err := os.ReadFile(p) //nolint:gosec // G304: p is derived from configPath() pointing at a test-controlled temp dir
+	if err != nil {
+		t.Fatalf("reading config file: %v", err)
+	}
+	var got wbtConfig
+	if err := yaml.Unmarshal(b, &got); err != nil {
+		t.Fatalf("yaml.Unmarshal error: %v", err)
+	}
+	if got.APIKey != cfg.APIKey {
+		t.Errorf("api_key = %q, want %q", got.APIKey, cfg.APIKey)
+	}
+	if got.Port != cfg.Port {
+		t.Errorf("port = %q, want %q", got.Port, cfg.Port)
+	}
+	if got.DatabaseURL != cfg.DatabaseURL {
+		t.Errorf("database_url = %q, want %q", got.DatabaseURL, cfg.DatabaseURL)
+	}
+}
+
+// TestRunInit_WritesConfigFile verifies that runInit writes the global config
+// file at ~/.config/wayneblacktea/config.yaml in addition to .env.
+// Cannot use t.Parallel because runInit uses os.Stdin/os.Stdout globals and
+// t.Chdir.
+func TestRunInit_WritesConfigFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	setXDGConfigHome(t, tmp)
+
+	oldStdin := os.Stdin
+	oldStdout := os.Stdout
+	defer func() {
+		os.Stdin = oldStdin
+		os.Stdout = oldStdout
+	}()
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdin: %v", err)
+	}
+	_, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdout: %v", err)
+	}
+	os.Stdin = stdinR
+	os.Stdout = stdoutW
+
+	// Inputs: default SQLite, default path, port=8080, empty (generate key).
+	_, _ = stdinW.WriteString("\n\n8080\n\n")
+	_ = stdinW.Close()
+
+	if err := runInit(); err != nil {
+		_ = stdoutW.Close()
+		t.Fatalf("runInit error: %v", err)
+	}
+	_ = stdoutW.Close()
+
+	// Verify the global config file exists.
+	cfgPath, err := configPath()
+	if err != nil {
+		t.Fatalf("configPath error: %v", err)
+	}
+	b, err := os.ReadFile(cfgPath) //nolint:gosec // G304: cfgPath is derived from configPath() pointing at a test-controlled temp dir
+	if err != nil {
+		t.Fatalf("global config not created at %s: %v", cfgPath, err)
+	}
+	var cfg wbtConfig
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("parsing global config: %v", err)
+	}
+	if cfg.APIKey == "" {
+		t.Error("global config api_key must not be empty after wbt init")
+	}
+	if cfg.Port != "8080" {
+		t.Errorf("global config port = %q, want 8080", cfg.Port)
+	}
+	if cfg.StorageBackend != sqliteBackend {
+		t.Errorf("global config storage_backend = %q, want %q", cfg.StorageBackend, sqliteBackend)
+	}
+}
+
+// TestRunServe_LoadsGlobalConfig verifies that runServe reads API_KEY from
+// ~/.config/wayneblacktea/config.yaml when the env var is not set and .env
+// does not exist. The binary lookup will fail, but the config loading path
+// (which happens before the binary lookup) must succeed.
+// Cannot use t.Parallel because t.Setenv mutates process-global state.
+func TestRunServe_LoadsGlobalConfig(t *testing.T) {
+	tmp := t.TempDir()
+	setXDGConfigHome(t, tmp)
+
+	// Clear API_KEY from the environment so loadGlobalConfig must supply it.
+	t.Setenv("API_KEY", "")
+
+	// Write a global config with an API key.
+	cfg := wbtConfig{
+		APIKey: "globalconfigkey",
+		Port:   "8080",
+	}
+	if err := writeGlobalConfig(cfg); err != nil {
+		t.Fatalf("writeGlobalConfig: %v", err)
+	}
+
+	// Override PATH so wayneblacktea-server is not found — ensures the test
+	// doesn't accidentally start a real server.
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+
+	err := runServe([]string{})
+	// We expect "not found in PATH" error — NOT "API_KEY must be set".
+	if err == nil {
+		t.Fatal("runServe: expected error (binary not in PATH), got nil")
+	}
+	if strings.Contains(err.Error(), "API_KEY must be set") {
+		t.Errorf("runServe should have loaded API_KEY from global config, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "wayneblacktea-server not found") {
+		t.Errorf("runServe error = %q; want 'wayneblacktea-server not found'", err.Error())
+	}
+}
+
+// TestRunServe_GlobalConfigFallsBackToDotEnv verifies that when global config
+// is absent, .env values are still loaded (backward compat).
+// Cannot use t.Parallel because t.Setenv mutates process-global state.
+func TestRunServe_GlobalConfigFallsBackToDotEnv(t *testing.T) {
+	// Point XDG_CONFIG_HOME at an empty dir so no global config file exists.
+	empty := t.TempDir()
+	setXDGConfigHome(t, empty)
+	t.Setenv("API_KEY", "")
+
+	// Create a .env file in CWD.
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	dotEnv := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(dotEnv, []byte("API_KEY=envfilekey\n"), 0o600); err != nil {
+		t.Fatalf("writing .env: %v", err)
+	}
+
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+
+	err := runServe([]string{})
+	// Should reach "binary not found", not "API_KEY must be set".
+	if err == nil {
+		t.Fatal("runServe: expected error, got nil")
+	}
+	if strings.Contains(err.Error(), "API_KEY must be set") {
+		t.Errorf("runServe should have loaded API_KEY from .env fallback, got: %v", err)
+	}
+}
+
+// TestLoadGlobalConfig_MissingFile verifies loadGlobalConfig is a no-op when
+// the config file does not exist.
+func TestLoadGlobalConfig_MissingFile(t *testing.T) {
+	tmp := t.TempDir()
+	setXDGConfigHome(t, tmp)
+	t.Setenv("API_KEY", "")
+
+	if err := loadGlobalConfig(); err != nil {
+		t.Fatalf("loadGlobalConfig: unexpected error for missing file: %v", err)
+	}
+	// API_KEY must remain unset.
+	if v := os.Getenv("API_KEY"); v != "" {
+		t.Errorf("API_KEY = %q after loadGlobalConfig on missing file; want empty", v)
+	}
+}
+
+// TestLoadGlobalConfig_DoesNotOverrideExisting verifies that setIfAbsent does
+// not clobber an env var that was already set before loadGlobalConfig runs.
+func TestLoadGlobalConfig_DoesNotOverrideExisting(t *testing.T) {
+	tmp := t.TempDir()
+	setXDGConfigHome(t, tmp)
+
+	// Pre-set the env var.
+	t.Setenv("API_KEY", "presharedkey")
+
+	// Write a global config with a different key.
+	if err := writeGlobalConfig(wbtConfig{APIKey: "configkey"}); err != nil {
+		t.Fatalf("writeGlobalConfig: %v", err)
+	}
+	if err := loadGlobalConfig(); err != nil {
+		t.Fatalf("loadGlobalConfig: %v", err)
+	}
+	if got := os.Getenv("API_KEY"); got != "presharedkey" {
+		t.Errorf("API_KEY = %q; want presharedkey (existing value should not be overridden)", got)
+	}
+}
+
+// TestSetIfAbsent exercises the three branches: empty value, already set, and unset.
+func TestSetIfAbsent(t *testing.T) {
+	// Case 1: value is empty — no change even if env is unset.
+	t.Setenv("WBT_TEST_KEY1", "")
+	setIfAbsent("WBT_TEST_KEY1", "")
+	if got := os.Getenv("WBT_TEST_KEY1"); got != "" {
+		t.Errorf("setIfAbsent with empty value: WBT_TEST_KEY1 = %q, want empty", got)
+	}
+
+	// Case 2: env var already has a value — must not overwrite.
+	t.Setenv("WBT_TEST_KEY2", "existing")
+	setIfAbsent("WBT_TEST_KEY2", "newvalue")
+	if got := os.Getenv("WBT_TEST_KEY2"); got != "existing" {
+		t.Errorf("setIfAbsent should not overwrite: WBT_TEST_KEY2 = %q, want existing", got)
+	}
+
+	// Case 3: env var is unset — must set it.
+	t.Setenv("WBT_TEST_KEY3", "")
+	setIfAbsent("WBT_TEST_KEY3", "injected")
+	if got := os.Getenv("WBT_TEST_KEY3"); got != "injected" {
+		t.Errorf("setIfAbsent on unset key: WBT_TEST_KEY3 = %q, want injected", got)
+	}
+}
+
+// TestDbConfigToWbtConfig verifies the struct conversion covers all fields.
+func TestDbConfigToWbtConfig(t *testing.T) {
+	t.Parallel()
+	db := dbConfig{storageBackend: sqliteBackend, sqlitePath: "/tmp/test.db"}
+	got := dbConfigToWbtConfig("mykey", "9090", db)
+	if got.APIKey != "mykey" {
+		t.Errorf("APIKey = %q, want mykey", got.APIKey)
+	}
+	if got.Port != "9090" {
+		t.Errorf("Port = %q, want 9090", got.Port)
+	}
+	if got.StorageBackend != sqliteBackend {
+		t.Errorf("StorageBackend = %q, want %q", got.StorageBackend, sqliteBackend)
+	}
+	if got.SQLitePath != "/tmp/test.db" {
+		t.Errorf("SQLitePath = %q, want /tmp/test.db", got.SQLitePath)
+	}
 }
 
 // TestValidateGuardBypassFlags exercises every accept/reject branch of the

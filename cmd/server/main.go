@@ -25,6 +25,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
+	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -34,6 +35,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
+	mcphttp "github.com/mark3labs/mcp-go/server"
 )
 
 //go:embed web/dist
@@ -249,6 +251,20 @@ func run() error {
 	api.POST("/activity", autologH.LogActivity, activityRL)
 	api.POST("/activity/posttooluse", postToolUseH.PostToolUse, postToolUseRL)
 	api.POST("/auto-handoff", autologH.AutoHandoff, handoffRL)
+
+	// HTTP MCP transport: mount the MCP server at /mcp so Claude Code can connect via:
+	//   claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+	// The same stores used by HTTP handlers are reused — no separate DB connections needed.
+	mcpServer, err := mcpsrv.New(stores)
+	if err != nil {
+		return fmt.Errorf("initializing MCP server: %w", err)
+	}
+	if llmChain.Len() > 0 {
+		mcpServer.WithClassifier(ai.NewActivityClassifierFromLLM(llmChain))
+	}
+	mcpServer.WithSnapshot(snapStore, snapGen)
+	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
+	e.Any("/mcp", echo.WrapHandler(httpMCPHandler))
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {

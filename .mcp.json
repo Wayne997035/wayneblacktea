@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wayneblacktea": {
+      "command": "/Users/waynechen/_project/wayneblacktea/scripts/run-mcp.sh"
+    },
+    "wayneblacktea-http": {
+      "transport": "http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
