@@ -33,14 +33,13 @@ import (
 
 const (
 	// cosineSimilarityThreshold is the minimum cosine similarity for a recalled
-	// item to be injected into the session context.
-	// V1 placeholder: hashed embeddings are not semantic so this threshold is
-	// intentionally low (effectively "take top-K regardless of similarity").
-	// TODO(5/5): raise to 0.5 when using a real semantic embedding provider.
-	cosineSimilarityThreshold = -1.0 // disabled for hashed v1 — take all top-K
+	// session to be injected into context. Requires GEMINI_API_KEY to be set so
+	// real semantic embeddings are stored; falls back to showing the most recent
+	// handoff when no embeddings exist.
+	cosineSimilarityThreshold = 0.5
 
-	// recallTopK is the number of similar items to inject per store.
-	recallTopK = 1
+	// recallTopK is the number of similar sessions to inject per recall pass.
+	recallTopK = 3
 
 	// contextWindowChars is the approximate char budget for injected recall lines.
 	contextWindowChars = 800

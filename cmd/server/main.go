@@ -31,6 +31,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
+	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -91,7 +92,7 @@ func run() error {
 	gtdH := handler.NewGTDHandler(stores.GTD())
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
 	decH := handler.NewDecisionHandler(stores.Decision())
-	sessH := handler.NewSessionHandler(stores.Session())
+	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClient())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())

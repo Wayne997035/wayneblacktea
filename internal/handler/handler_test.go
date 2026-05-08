@@ -107,6 +107,10 @@ func (f *fakeSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams
 	return f.setResult, f.err
 }
 
+func (f *fakeSessionStore) UpdateEmbedding(_ context.Context, _ []byte) error {
+	return nil
+}
+
 type fakeWorkspaceStore struct {
 	repos []db.Repo
 	repo  *db.Repo
