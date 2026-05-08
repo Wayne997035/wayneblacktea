@@ -43,6 +43,12 @@ The MCP server (`cmd/mcp`) connects Claude Code to wayneblacktea via `.mcp.json`
 | `system_health` | Health | R | No | No |
 | `upsert_project_arch` | Arch | W | Yes | No |
 | `get_project_arch` | Arch | R | No | No |
+| `add_vision_item` | Vision | W | No | No |
+| `list_vision_items` | Vision | R | No | No |
+| `update_vision_item` | Vision | W | No | No |
+| `promote_vision_to_task` | Vision + GTD | W | Yes | No |
+| `navigate_knowledge` | Knowledge | R | No | No |
+| `outline_knowledge` | Knowledge | R | No | No |
 
 **Significant:** triggers background classify middleware (auto-log implicit decisions/tasks, rate-limited to 60/window).
 **Confirm gate:** `propose_*` creates a pending proposal not materialised until `confirm_proposal(action=accept)`.
@@ -235,6 +241,66 @@ Optional `file_map` (JSON object, max 128 KB), `last_commit_sha`.
 ### `get_project_arch`
 
 `slug` required. Compare `last_commit_sha` with `git rev-parse HEAD` to check staleness.
+
+---
+
+### `add_vision_item`
+
+Call when user describes something conceptually important but currently blocked. Persists as a Vision item with status `open`.
+
+| Arg | Required |
+|-----|----------|
+| `title` | Yes |
+| `why_blocked` | Yes — what is blocking it |
+| `depends_on` | No — JSON array of strings (e.g. `'["task-abc"]'`) |
+| `parent_initiative` | No — broader roadmap or initiative name |
+| `context_md` | No — additional markdown notes |
+| `repo_name` | No — repository or project slug |
+
+### `list_vision_items`
+
+Optional `status` filter (`open` `discussing` `maturing` `promoted` `dismissed`; default: all non-dismissed).
+Optional `parent_initiative` filter. Returns summary view (no `context_md`).
+
+### `update_vision_item`
+
+`id` (UUID) required. All other args optional.
+
+| Arg | Notes |
+|-----|-------|
+| `status` | `open` `discussing` `maturing` `promoted` `dismissed` |
+| `context_md` | Replaces existing markdown notes |
+| `last_discussed_at` | RFC3339; defaults to NOW() if omitted when called |
+
+If `last_discussed_at` is not supplied the server sets it to the current time automatically.
+
+### `promote_vision_to_task`
+
+Atomically creates a GTD task and marks the vision item `status=promoted`. **Significant.**
+
+`id` (vision item UUID) required.
+
+| Arg | Notes |
+|-----|-------|
+| `title` | GTD task title; defaults to vision item title if omitted |
+| `description` | GTD task description |
+| `priority` | 1–5 (lower = higher priority). Default: 3 |
+
+Returns `{task, vision_item}`.
+
+---
+
+### `navigate_knowledge`
+
+Browses the knowledge tree. With no arguments returns all root-level items. Supply `parent_id` (UUID) to list direct children (section headings of a document). Returns lightweight metadata only — no content.
+
+Optional `parent_id` (UUID).
+
+### `outline_knowledge`
+
+Returns the full heading tree for a root knowledge document — useful as a table of contents before choosing which section to read. Returns no content, only headings ordered by level.
+
+`item_id` (UUID of the root knowledge item) required.
 
 ---
 

@@ -51,6 +51,10 @@ All `/api/*` routes require auth. Replace `https://your-host` and `YOUR_API_KEY`
 | POST | `/api/workspace/repos` | Yes | — | Create/update repository |
 | GET | `/api/session/handoff` | Yes | — | Latest unresolved handoff |
 | POST | `/api/session/handoff` | Yes | — | Create session handoff |
+| GET | `/api/vision` | Yes | — | List vision items (`?status=`, `?initiative=`) |
+| POST | `/api/vision` | Yes | — | Add vision item |
+| PATCH | `/api/vision/:id` | Yes | — | Update vision item |
+| GET/POST | `/mcp` | X-API-Key | — | HTTP MCP transport (streamable HTTP) |
 
 ---
 
@@ -174,6 +178,22 @@ Ratings: 1=Again 2=Hard 3=Good 4=Easy.
 ```json
 {"intent": "Finish runbook PR", "repo_name": "wayneblacktea", "context_summary": "api.md done"}
 ```
+
+### POST /api/vision
+
+```json
+{"title": "Multi-tenant support", "why_blocked": "Waiting for auth redesign", "depends_on": ["task-uuid"], "parent_initiative": "platform-v2", "context_md": "# Notes\n..."}
+```
+
+`title` and `why_blocked` required. `depends_on` is a JSON array of strings. All other fields optional.
+
+### PATCH /api/vision/:id
+
+```json
+{"status": "discussing", "context_md": "Updated notes", "last_discussed_at": "2026-05-09T10:00:00Z"}
+```
+
+All fields optional. Status values: `open` `discussing` `maturing` `promoted` `dismissed`. `last_discussed_at` in RFC3339.
 
 ---
 
