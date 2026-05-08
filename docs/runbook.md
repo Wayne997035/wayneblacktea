@@ -232,10 +232,68 @@ The next session's `get_today_context` will surface the pending handoff automati
 | `DISCORD_GUILD_ID` | No | Restricts Discord bot to one server |
 | `NOTION_INTEGRATION_SECRET` | No | `sync_to_notion` MCP tool |
 | `NOTION_DATABASE_ID` | No | Target Notion database |
-| `PGSSLROOTCERT` | No | Postgres CA cert (if not in system trust store) |
-| `POSTGRES_INSECURE_TLS` | No | `true` for managed providers (Railway, Aiven) |
+| `PGSSLROOTCERT` | No | Path to Postgres CA cert bundle. Required when `APP_ENV=production` and your provider uses a custom CA (Aiven). Railway standard Postgres uses system CAs — leave unset. |
 | `PORT` | No | Server port (default `8080`) |
 
 Check Railway vars: `railway variables`
 
 Never commit any of these values. Verify `.gitignore` covers `.env`, `.env.local`, `local.yaml` before every `git add`.
+
+---
+
+## 8. Common troubleshooting
+
+### Server fails to start: `ErrMissingPGSSLROOTCERT`
+
+```
+storage: PGSSLROOTCERT required in production
+```
+
+Set `APP_ENV=production` only if you have `PGSSLROOTCERT` pointing to the CA cert file for your Postgres provider. Railway standard Postgres uses public CAs — either unset `APP_ENV` or set it to any value other than `production`.
+
+For Aiven Postgres: download the CA bundle from the Aiven console → Connection Information → CA Certificate, then:
+
+```bash
+railway variables --set PGSSLROOTCERT=/app/ca.pem
+```
+And include the cert file in your Docker image or bind-mount it.
+
+### MCP tool call returns 401
+
+The HTTP MCP transport at `/mcp` requires `X-API-Key: <API_KEY>` on every request. Verify the key matches `API_KEY` env var.
+
+```bash
+curl -H "X-API-Key: $API_KEY" -X POST https://your-host/mcp
+```
+
+### Vision items not showing after `add_vision_item`
+
+Check migration 000029 ran on your database:
+
+```bash
+psql "$DATABASE_URL" -c "\d vision_items"  # should print the table schema
+```
+
+If missing, apply it:
+
+```bash
+psql "$DATABASE_URL" -f migrations/000029_vision_items.up.sql
+```
+
+SQLite: schema is applied automatically at boot via `internal/storage/sqlite/schema.sql`.
+
+### Knowledge navigate returns empty
+
+Migration 000027 adds `parent_id`, `heading_path`, `heading_level` columns. Existing rows default to `NULL` — they behave as root items. Only new items added after the migration fan out to child nodes.
+
+### `wbt serve` exits: `wayneblacktea-server not found in PATH`
+
+Build the server binary and put it in your PATH:
+
+```bash
+go build -o "$(go env GOPATH)/bin/wayneblacktea-server" ./cmd/server
+```
+
+### Migrations: schema_migrations table vs idempotent up scripts
+
+golang-migrate records applied migrations in `schema_migrations`. Re-running an already-applied up script directly with `psql -f` is safe (uses `IF NOT EXISTS` / `IF EXISTS`), but golang-migrate's `migrate up` will skip already-recorded versions. Use `migrate version` to check current version.
