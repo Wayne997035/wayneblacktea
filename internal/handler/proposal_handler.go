@@ -110,6 +110,14 @@ var allowedProposalStatuses = map[string]bool{
 	"all":      true,
 }
 
+// allowedProposalTypes is the validated set of values for the ?type= query param.
+var allowedProposalTypes = map[string]bool{
+	"concept": true,
+	"goal":    true,
+	"project": true,
+	"task":    true,
+}
+
 // ListProposals handles GET /api/proposals?status=pending|accepted|rejected|all.
 // Omitting ?status defaults to "pending" for backward compat with the old endpoint.
 // The ?type= param is also supported to filter by proposal type.
@@ -124,6 +132,8 @@ func (h *ProposalHandler) ListProposals(c echo.Context) error {
 	proposalType := c.QueryParam("type")
 	if proposalType == "" {
 		proposalType = "concept"
+	} else if !allowedProposalTypes[proposalType] {
+		return c.JSON(http.StatusBadRequest, errResp("type must be concept, goal, project, or task"))
 	}
 
 	rows, err := h.proposal.ListAll(c.Request().Context(), proposalType, 200)

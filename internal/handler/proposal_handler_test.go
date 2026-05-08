@@ -455,6 +455,12 @@ func TestProposalHandler_ListProposals(t *testing.T) {
 			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, listAllErr: errors.New("db error")},
 			wantCode: http.StatusInternalServerError,
 		},
+		{
+			name:     "invalid type → 400",
+			query:    "?type=invalid",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusBadRequest,
+		},
 	}
 
 	for _, tc := range cases {
