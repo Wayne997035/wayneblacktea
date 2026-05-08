@@ -7,9 +7,7 @@ interface BatchConfirmRequest {
 }
 
 interface BatchConfirmResponse {
-  accepted?: number
-  failed?: number
-  results?: Array<{ id: string; ok: boolean; error?: string }>
+  results?: Array<{ id: string; ok: boolean; skipped?: boolean; error?: string }>
 }
 
 export function useConfirmBatchProposals() {

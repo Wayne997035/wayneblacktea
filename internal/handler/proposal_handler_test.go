@@ -246,8 +246,8 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
 			h := handler.NewProposalHandler(tc.store, tc.learning)
-			e.POST("/api/proposals/batch-confirm", h.ConfirmBatch)
-			rec := performRequest(e, http.MethodPost, "/api/proposals/batch-confirm", tc.body)
+			e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
+			rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 				return

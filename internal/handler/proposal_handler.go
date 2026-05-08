@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -330,14 +331,10 @@ func (h *ProposalHandler) ConfirmBatch(c echo.Context) error {
 	}
 
 	ids := make([]uuid.UUID, 0, len(req.IDs))
-	for _, raw := range req.IDs {
+	for i, raw := range req.IDs {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			sanitized := raw
-			if len(sanitized) > 36 {
-				sanitized = sanitized[:36]
-			}
-			return c.JSON(http.StatusBadRequest, errResp(sanitized+" is not a valid UUID"))
+			return c.JSON(http.StatusBadRequest, errResp(fmt.Sprintf("ids[%d] is not a valid UUID", i)))
 		}
 		ids = append(ids, id)
 	}

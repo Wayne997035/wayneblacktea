@@ -205,7 +205,7 @@ func run() error {
 	knowledgeRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20))
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
 	api.POST("/knowledge", knowledgeH.AddKnowledge)
-	api.PATCH("/knowledge/:id", knowledgeH.UpdateLearningValue)
+	api.PATCH("/knowledge/:id", knowledgeH.UpdateLearningValue, knowledgeRL)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge, knowledgeRL)
 
 	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))

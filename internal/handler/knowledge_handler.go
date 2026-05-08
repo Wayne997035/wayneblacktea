@@ -70,6 +70,9 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 	if !validTypes[req.Type] {
 		return c.JSON(http.StatusBadRequest, errResp("type must be one of: article, til, bookmark, zettelkasten"))
 	}
+	if req.LearningValue != 0 && (req.LearningValue < 1 || req.LearningValue > 5) {
+		return c.JSON(http.StatusBadRequest, errResp("learning_value must be between 1 and 5"))
+	}
 
 	item, err := h.store.AddItem(c.Request().Context(), knowledge.AddItemParams{
 		Type:          req.Type,

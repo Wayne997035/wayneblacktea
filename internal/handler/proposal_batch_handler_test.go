@@ -19,7 +19,6 @@ type fakeProposalListStore struct {
 	pending       []db.PendingProposal
 	getResult     *db.PendingProposal
 	resolveResult *db.PendingProposal
-	batchResult   proposal.BatchConfirmResult
 	err           error
 	getErr        error
 }
@@ -37,21 +36,6 @@ func (f *fakeProposalListStore) Get(_ context.Context, _ uuid.UUID) (*db.Pending
 
 func (f *fakeProposalListStore) Resolve(_ context.Context, _ uuid.UUID, _ proposal.Status) (*db.PendingProposal, error) {
 	return f.resolveResult, f.err
-}
-
-func (f *fakeProposalListStore) BatchConfirm(_ context.Context, ids []uuid.UUID, _ proposal.Status) (proposal.BatchConfirmResult, error) {
-	if f.err != nil {
-		return proposal.BatchConfirmResult{}, f.err
-	}
-	// If batchResult is pre-set use it; otherwise build default all-OK result.
-	if len(f.batchResult.Results) > 0 {
-		return f.batchResult, nil
-	}
-	results := make([]proposal.BatchItemResult, 0, len(ids))
-	for _, id := range ids {
-		results = append(results, proposal.BatchItemResult{ID: id.String(), OK: true})
-	}
-	return proposal.BatchConfirmResult{Results: results, Accepted: len(ids)}, nil
 }
 
 // fakeLearningStoreForProposal satisfies the proposalConceptStore interface.
@@ -174,30 +158,19 @@ func TestConfirmBatch_StoreError(t *testing.T) {
 	}
 }
 
-// TestConfirmBatch_PartialFailureReturns200 verifies that partial failure (e.g.
-// SQLite best-effort) still returns 200 with the per-id error details.
+// TestConfirmBatch_PartialFailureReturns200 verifies that when Resolve returns
+// ErrNotFound for all items the batch still returns 200 with skipped entries
+// (per-item failure model: HTTP 200 always, error per entry).
 func TestConfirmBatch_PartialFailureReturns200(t *testing.T) {
-	goodID := uuid.New()
-	badID := uuid.New()
-
-	partialResult := proposal.BatchConfirmResult{
-		Results: []proposal.BatchItemResult{
-			{ID: goodID.String(), OK: true},
-			{ID: badID.String(), OK: false, ErrMsg: "not found"},
-		},
-		Accepted: 1,
-		Failed:   1,
-	}
-
 	e := echo.New()
-	store := &fakeProposalListStore{batchResult: partialResult}
+	store := &fakeProposalListStore{err: proposal.ErrNotFound}
 	h := newProposalHandler(store)
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 
-	body := `{"ids":["` + goodID.String() + `","` + badID.String() + `"],"action":"reject"}`
+	body := `{"ids":["` + uuid.New().String() + `","` + uuid.New().String() + `"],"action":"reject"}`
 	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
 	if rec.Code != http.StatusOK {
-		t.Errorf("got %d, want 200 (partial failure still returns 200): %s", rec.Code, rec.Body.String())
+		t.Errorf("got %d, want 200 (per-item ErrNotFound still returns 200): %s", rec.Code, rec.Body.String())
 	}
 }
 

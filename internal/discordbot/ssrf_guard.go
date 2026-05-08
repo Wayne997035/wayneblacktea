@@ -199,5 +199,17 @@ func NewSafeHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: transport,
+		// Explicit CheckRedirect re-validates the target URL at the application
+		// layer so the SSRF defence is visible and regression-proof regardless
+		// of future Transport changes.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if _, err := IsSafeURL(req.Context(), req.URL.String()); err != nil {
+				return err
+			}
+			return nil
+		},
 	}
 }
