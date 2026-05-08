@@ -11,6 +11,81 @@ import (
 	"github.com/google/uuid"
 )
 
+// sqliteInClause builds positional-placeholder strings "?1,?2,...,?N" for
+// SQLite batch updates. Returns the IN clause string (task ID args must be
+// provided by the caller starting at position 1).
+func sqliteInClause(n int) string {
+	placeholders := make([]string, n)
+	for i := range n {
+		placeholders[i] = fmt.Sprintf("?%d", i+1)
+	}
+	return strings.Join(placeholders, ",")
+}
+
+// batchMarkTasksInProgressSQLite sets status='in_progress' WHERE status='pending'
+// for the given task IDs, scoped to workspace ws.
+// Arg layout: ?1..?N = task IDs, ?N+1 = workspace (nil or string), ?N+2 = now.
+func batchMarkTasksInProgressSQLite(ctx context.Context, conn interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, ws any, taskIDs []uuid.UUID,
+) error {
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	n := len(taskIDs)
+	// Pre-allocate the full args slice to avoid gocritic appendAssign.
+	args := make([]any, 0, n+2)
+	for _, id := range taskIDs {
+		args = append(args, id.String())
+	}
+	args = append(args, ws, nowRFC3339())
+	q := fmt.Sprintf(`UPDATE tasks
+		SET status = 'in_progress', updated_at = ?%d
+		WHERE id IN (%s)
+		  AND (?%d IS NULL OR workspace_id = ?%d)
+		  AND status = 'pending'`,
+		n+2, sqliteInClause(n), n+1, n+1)
+	if _, err := conn.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("batchMarkTasksInProgressSQLite: %w", err)
+	}
+	return nil
+}
+
+// batchMarkTasksCompletedSQLite sets status='completed' for tasks not already
+// completed or cancelled. Workspace boundary enforced by WHERE clause.
+// Arg layout: ?1..?N = task IDs, ?N+1 = workspace, ?N+2 = artifact (or nil), ?N+3 = now.
+func batchMarkTasksCompletedSQLite(ctx context.Context, conn interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, ws any, taskIDs []uuid.UUID, artifact *string,
+) error {
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	n := len(taskIDs)
+	var artVal any
+	if artifact != nil {
+		artVal = *artifact
+	}
+	// Pre-allocate the full args slice to avoid gocritic appendAssign.
+	args := make([]any, 0, n+3)
+	for _, id := range taskIDs {
+		args = append(args, id.String())
+	}
+	args = append(args, ws, artVal, nowRFC3339())
+	q := fmt.Sprintf(`UPDATE tasks
+		SET status = 'completed',
+		    artifact = COALESCE(?%d, artifact),
+		    updated_at = ?%d
+		WHERE id IN (%s)
+		  AND (?%d IS NULL OR workspace_id = ?%d)
+		  AND status NOT IN ('completed','cancelled')`,
+		n+2, n+3, sqliteInClause(n), n+1, n+1)
+	if _, err := conn.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("batchMarkTasksCompletedSQLite: %w", err)
+	}
+	return nil
+}
+
 // WorkSessionStore is the SQLite-backed implementation of worksession.StoreIface.
 type WorkSessionStore struct {
 	db *DB
@@ -159,6 +234,12 @@ func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParam
 		return nil, fmt.Errorf("worksession.Create commit: %w", err)
 	}
 
+	// Batch-update linked tasks to in_progress after the session tx commits.
+	// Non-fatal: session is committed; task status update is best-effort.
+	if len(p.TaskIDs) > 0 {
+		_ = batchMarkTasksInProgressSQLite(ctx, s.db.conn, s.db.workspaceArg(), p.TaskIDs)
+	}
+
 	return s.byID(ctx, id)
 }
 
@@ -230,7 +311,10 @@ func (s *WorkSessionStore) Checkpoint(ctx context.Context, p worksession.Checkpo
 	return s.byID(ctx, p.SessionID)
 }
 
-// Finish sets status=completed and stores final_summary.
+// Finish sets status=completed and stores final_summary. After the session
+// update, linked tasks are batch-marked as completed:
+//   - If FinishParams.CompletedTaskIDs is non-empty, only those tasks are marked.
+//   - Otherwise, all tasks linked via work_session_tasks are marked completed.
 func (s *WorkSessionStore) Finish(ctx context.Context, p worksession.FinishParams) (*worksession.Session, error) {
 	ws := s.db.workspaceArg()
 
@@ -253,6 +337,23 @@ func (s *WorkSessionStore) Finish(ctx context.Context, p worksession.FinishParam
 	if n == 0 {
 		return nil, worksession.ErrNotFound
 	}
+
+	// Resolve which tasks to mark completed.
+	taskIDs := p.CompletedTaskIDs
+	if len(taskIDs) == 0 {
+		// Fallback: find all tasks linked to this session.
+		linked, lErr := s.LinkedTasks(ctx, p.SessionID)
+		if lErr == nil {
+			taskIDs = make([]uuid.UUID, 0, len(linked))
+			for _, lt := range linked {
+				taskIDs = append(taskIDs, lt.TaskID)
+			}
+		}
+	}
+	if len(taskIDs) > 0 {
+		_ = batchMarkTasksCompletedSQLite(ctx, s.db.conn, ws, taskIDs, p.Artifact)
+	}
+
 	return s.byID(ctx, p.SessionID)
 }
 

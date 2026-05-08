@@ -60,10 +60,23 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 }
 
 // applyWorkSessionSchema creates the minimal schema required by worksession.Store.
-// It mirrors 000021_work_sessions.up.sql + 000022_work_session_tasks.up.sql
-// (only the tables and indexes needed by the store under test).
+// It mirrors 000021_work_sessions.up.sql + 000022_work_session_tasks.up.sql plus
+// the tasks table (needed for batchMarkTasksInProgress / batchMarkTasksCompleted).
 func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	ddl := `
+	CREATE TABLE IF NOT EXISTS tasks (
+	    id           UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+	    workspace_id UUID,
+	    project_id   UUID,
+	    title        TEXT    NOT NULL,
+	    status       TEXT    NOT NULL DEFAULT 'pending'
+	                         CHECK (status IN ('pending','in_progress','completed','cancelled')),
+	    priority     INTEGER NOT NULL DEFAULT 3,
+	    artifact     TEXT,
+	    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
+
 	CREATE TABLE IF NOT EXISTS work_sessions (
 	    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
 	    workspace_id        UUID        NOT NULL,
@@ -103,6 +116,27 @@ func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// insertPgTestTask inserts a minimal tasks row for PG integration tests.
+func insertPgTestTask(t *testing.T, pool *pgxpool.Pool, wsID uuid.UUID, taskID uuid.UUID) {
+	t.Helper()
+	const q = `INSERT INTO tasks (id, workspace_id, title, status, priority)
+		VALUES ($1,$2,'test task','pending',3)`
+	if _, err := pool.Exec(context.Background(), q, taskID, wsID); err != nil {
+		t.Fatalf("insertPgTestTask %s: %v", taskID, err)
+	}
+}
+
+// queryPgTaskStatus reads the status of a task from Postgres.
+func queryPgTaskStatus(t *testing.T, pool *pgxpool.Pool, taskID uuid.UUID) string {
+	t.Helper()
+	row := pool.QueryRow(context.Background(), `SELECT status FROM tasks WHERE id = $1`, taskID)
+	var status string
+	if err := row.Scan(&status); err != nil {
+		t.Fatalf("queryPgTaskStatus %s: %v", taskID, err)
+	}
+	return status
+}
+
 // newPgStore returns a postgres-backed Store for the test pool.
 // workspaceID nil = no workspace scoping (single-tenant test).
 func newPgStore(pool *pgxpool.Pool, workspaceID *uuid.UUID) *worksession.Store {
@@ -130,7 +164,7 @@ func TestPgStore_Create(t *testing.T) {
 	if sess.ID == uuid.Nil {
 		t.Error("session ID should be set")
 	}
-	if sess.Status != "in_progress" {
+	if sess.Status != statusInProgress {
 		t.Errorf("initial status: got %q, want in_progress", sess.Status)
 	}
 	if sess.RepoName != "test-repo" {
@@ -465,5 +499,160 @@ func TestPgStore_Finish_NotFound(t *testing.T) {
 	})
 	if err != worksession.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// ---- task auto-status PG tests ----
+
+// TestPgStartWork_AutoMarksTasksInProgress verifies that Create transitions
+// linked tasks from pending → in_progress in Postgres.
+func TestPgStartWork_AutoMarksTasksInProgress(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-auto-in-progress-repo",
+		Title:       "PG start work",
+		Goal:        "verify in_progress auto-mark",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got != statusInProgress {
+		t.Errorf("taskB status: got %q, want in_progress", got)
+	}
+}
+
+// TestPgStartWork_Idempotent verifies that tasks already in_progress are not
+// downgraded when Create links them (WHERE status='pending' guard).
+func TestPgStartWork_Idempotent(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+
+	// Pre-set to in_progress before calling Create.
+	if _, err := pool.Exec(ctx,
+		`UPDATE tasks SET status = 'in_progress' WHERE id = $1`, taskA,
+	); err != nil {
+		t.Fatalf("pre-set in_progress: %v", err)
+	}
+
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-idempotent-repo",
+		Title:       "PG idempotent",
+		Goal:        "verify idempotency",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Task was already in_progress; must remain in_progress.
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress (must stay)", got)
+	}
+}
+
+// TestPgFinishWork_AutoMarksTasksCompleted verifies that Finish marks the
+// explicitly provided CompletedTaskIDs as completed in Postgres.
+func TestPgFinishWork_AutoMarksTasksCompleted(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-auto-completed-repo",
+		Title:       "PG finish work",
+		Goal:        "verify completed auto-mark",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = store.Finish(ctx, worksession.FinishParams{
+		SessionID:        sess.ID,
+		Summary:          "done",
+		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got != statusCompleted {
+		t.Errorf("taskB status: got %q, want completed", got)
+	}
+}
+
+// TestPgFinishWork_NoTaskIDs verifies that Finish discovers linked tasks via
+// work_session_tasks and marks them all completed when CompletedTaskIDs is empty.
+func TestPgFinishWork_NoTaskIDs(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-no-task-ids-repo",
+		Title:       "PG finish no ids",
+		Goal:        "verify fallback completion",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Finish with no CompletedTaskIDs — store discovers linked tasks automatically.
+	_, err = store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "done without explicit ids",
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got != statusCompleted {
+		t.Errorf("taskB status: got %q, want completed", got)
 	}
 }
