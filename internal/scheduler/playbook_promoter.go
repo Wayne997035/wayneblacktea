@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 )
 
@@ -143,7 +144,7 @@ func runPlaybookPromoter(deps playbookDeps) {
 	}
 
 	adaptedProposals, err := deps.reflector.Propose(
-		ctx, buildAdaptedPlaybookPrompt(string(decisionsJSON)),
+		ctx, string(decisionsJSON),
 	)
 	if err != nil {
 		slog.Warn("playbook promoter: AI call failed", "err", err)
@@ -164,6 +165,11 @@ func runPlaybookPromoter(deps playbookDeps) {
 	)
 }
 
+const (
+	maxTriggerLen = 500
+	maxContentLen = 600
+)
+
 // processPlaybookProposals iterates KnowledgeProposals from the AI, validates,
 // and creates pending_proposals rows. Returns the count of created proposals.
 func processPlaybookProposals(
@@ -174,6 +180,24 @@ func processPlaybookProposals(
 	created := 0
 	for _, kp := range proposals {
 		if kp.Title == "" || kp.Content == "" {
+			continue
+		}
+		if len([]rune(kp.Title)) > maxTriggerLen {
+			slog.Warn("playbook promoter: AI proposal trigger too long, skipping",
+				"trigger_len", len([]rune(kp.Title)))
+			continue
+		}
+		if len([]rune(kp.Content)) > maxContentLen {
+			slog.Warn("playbook promoter: AI proposal content too long, skipping",
+				"content_len", len([]rune(kp.Content)))
+			continue
+		}
+		if err := sanitize.ValidateNoTagNoise(kp.Title); err != nil {
+			slog.Warn("playbook promoter: tag noise in AI title, skipping", "err", err)
+			continue
+		}
+		if err := sanitize.ValidateNoTagNoise(kp.Content); err != nil {
+			slog.Warn("playbook promoter: tag noise in AI content, skipping", "err", err)
 			continue
 		}
 		if err := createPlaybookProposal(ctx, deps, kp); err != nil {

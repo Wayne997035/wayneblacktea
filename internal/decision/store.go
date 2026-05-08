@@ -47,6 +47,12 @@ func toUUID(id *uuid.UUID) pgtype.UUID {
 // contains tool-call serialization fragments (XML tags leaked from the MCP
 // harness), which are never valid user input.
 func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
+	if err := sanitize.ValidateNoTagNoise(p.Title); err != nil {
+		return nil, fmt.Errorf("log_decision: title %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
+		return nil, fmt.Errorf("log_decision: repo_name %w", err)
+	}
 	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
 		return nil, fmt.Errorf("log_decision: rationale %w", err)
 	}

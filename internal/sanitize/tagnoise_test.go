@@ -20,11 +20,12 @@ func TestContainsToolCallFragment(t *testing.T) {
 		{name: "markdown heading", input: "## Fix 1 — Tag-noise detection", want: false},
 		{name: "markdown bold", input: "Handler skeleton done, **repo layer** missing", want: false},
 
-		// HTML-style tags — the regex does match short single-letter closing tags
-		// like </b> because the data is plain text/markdown, not HTML. The false
-		// positive rate is acceptable compared to the security gain.
-		// Document explicitly: a closing tag like </b> IS flagged.
-		{name: "html bold closing tag", input: "some <b>bold</b> text", want: true},
+		// HTML-style tags: xmlTagRe uses an allowlist of known MCP field names,
+		// so short HTML tags like </b> are NOT flagged (not in the allowlist).
+		{name: "html bold closing tag", input: "some <b>bold</b> text", want: false},
+
+		// Case-insensitive: uppercase or mixed-case tags must still be detected.
+		{name: "uppercase tag bypasses old regex", input: "</Intent> fragment", want: true},
 
 		// Tool-call serialization fragments — all must be caught.
 		{name: "closing intent tag", input: "some text </intent> more", want: true},

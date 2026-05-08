@@ -41,6 +41,17 @@ func (s *Server) handleListPlaybooks(ctx context.Context, req mcp.CallToolReques
 		}
 	}
 
+	const maxKeywords = 10
+	const maxKeywordLen = 100
+	if len(keywords) > maxKeywords {
+		keywords = keywords[:maxKeywords]
+	}
+	for i, kw := range keywords {
+		if len([]rune(kw)) > maxKeywordLen {
+			keywords[i] = string([]rune(kw)[:maxKeywordLen])
+		}
+	}
+
 	params := playbook.ListParams{
 		ContextKeywords: keywords,
 	}

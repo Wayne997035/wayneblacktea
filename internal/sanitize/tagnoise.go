@@ -10,17 +10,15 @@ import (
 // never valid user input and indicate a caller bug, not user error.
 var ErrTagNoise = errors.New("input contains tool-call serialization fragments")
 
-// xmlTagRe matches closing XML tags like </intent>, </context_summary>, </invoke>.
-// These appear in corrupted MCP inputs when the harness serializes tool calls
-// directly into parameter values instead of proper tool_use content blocks.
-var xmlTagRe = regexp.MustCompile(`</[a-z_]+>`)
+// xmlTagRe matches closing tags of known MCP tool-call field names (case-insensitive).
+// Using an allowlist prevents false positives on legitimate HTML like </b>, </p>, </a>.
+var xmlTagRe = regexp.MustCompile(`(?i)</(?:intent|context_summary|repo_name|rationale|alternatives|invoke|parameter|decision|context)>`)
 
-// paramTagRe matches <parameter name= patterns that appear when tool call
-// parameters are serialized as literal XML text.
-var paramTagRe = regexp.MustCompile(`<parameter\s+name=`)
+// paramTagRe matches <parameter name= patterns (case-insensitive).
+var paramTagRe = regexp.MustCompile(`(?i)<parameter\s+name=`)
 
-// invokeTagRe matches <invoke name= or </invoke> serialization fragments.
-var invokeTagRe = regexp.MustCompile(`</?invoke[> ]`)
+// invokeTagRe matches <invoke...> or </invoke> serialization fragments (case-insensitive).
+var invokeTagRe = regexp.MustCompile(`(?i)</?invoke[> ]`)
 
 // ContainsToolCallFragment returns true when s contains known tool-call
 // serialization artifacts. Returns ErrTagNoise as a sentinel for callers
