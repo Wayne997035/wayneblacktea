@@ -167,3 +167,134 @@ func TestAnalyze_AnalysisResultShapePreserved(t *testing.T) {
 		t.Errorf("AnalysisResult fields not preserved: %+v", result)
 	}
 }
+
+// lv2JSON returns a valid JSON response where LearningValue=2 and worth_saving=false
+// (simulating an older prompt that uses LV≥3 threshold).
+func lv2JSON() string {
+	return `{
+		"summary": "A borderline useful article.",
+		"key_concepts": ["basics"],
+		"learning_value": 2,
+		"worth_saving": false,
+		"suggested_type": "article",
+		"tags": ["intro"],
+		"skip_reason": "low value"
+	}`
+}
+
+// TestAnalyzer_LV2_WorthSaving verifies that LV=2 results are forced to
+// worth_saving=true by the code-level threshold (LV≥2), even when the LLM
+// returns worth_saving=false.
+func TestAnalyzer_LV2_WorthSaving(t *testing.T) {
+	fake := &fakeLLM{name: "fake", out: lv2JSON()}
+	a := NewAnalyzer(fake)
+
+	result, err := a.Analyze(context.Background(), "some content")
+	if err != nil {
+		t.Fatalf("Analyze returned error: %v", err)
+	}
+	if result.LearningValue != 2 {
+		t.Errorf("expected LearningValue=2, got %d", result.LearningValue)
+	}
+	if !result.WorthSaving {
+		t.Error("expected WorthSaving=true for LV=2, got false")
+	}
+}
+
+// TestAnalyzer_LV1_NotWorthSaving verifies that LV=1 (noise) remains not worth saving.
+func TestAnalyzer_LV1_NotWorthSaving(t *testing.T) {
+	lv1JSON := `{
+		"summary": "Marketing noise.",
+		"key_concepts": [],
+		"learning_value": 1,
+		"worth_saving": false,
+		"suggested_type": "article",
+		"tags": [],
+		"skip_reason": "pure marketing"
+	}`
+	fake := &fakeLLM{name: "fake", out: lv1JSON}
+	a := NewAnalyzer(fake)
+
+	result, err := a.Analyze(context.Background(), "buy now limited offer")
+	if err != nil {
+		t.Fatalf("Analyze returned error: %v", err)
+	}
+	if result.WorthSaving {
+		t.Error("expected WorthSaving=false for LV=1, got true")
+	}
+}
+
+// TestAnalyzer_GitHub_ForcesBookmark verifies that a GitHub repo URL with LV≥2
+// is forced to suggested_type=bookmark and worth_saving=true by ApplyGitHubBookmarkRule.
+func TestAnalyzer_GitHub_ForcesBookmark(t *testing.T) {
+	type testCase struct {
+		name          string
+		sourceURL     string
+		lv            int
+		inputJSON     string
+		wantBookmark  bool
+		wantWorthSave bool
+	}
+	cases := []testCase{
+		{
+			name:          "github repo LV=2 forced to bookmark",
+			sourceURL:     "https://github.com/owner/repo",
+			lv:            2,
+			inputJSON:     lv2JSON(),
+			wantBookmark:  true,
+			wantWorthSave: true,
+		},
+		{
+			name:          "github repo LV=4 stays bookmark",
+			sourceURL:     "https://github.com/owner/repo",
+			lv:            4,
+			inputJSON:     validAnalysisJSON(), // LV=4 article
+			wantBookmark:  true,
+			wantWorthSave: true,
+		},
+		{
+			name:          "non-github URL not affected",
+			sourceURL:     "https://example.com/article",
+			lv:            4,
+			inputJSON:     validAnalysisJSON(),
+			wantBookmark:  false, // stays "article"
+			wantWorthSave: true,
+		},
+		{
+			name:          "github sub-path not forced to bookmark",
+			sourceURL:     "https://github.com/owner/repo/blob/main/README.md",
+			lv:            2,
+			inputJSON:     lv2JSON(),
+			wantBookmark:  false, // sub-path does not match bare repo pattern
+			wantWorthSave: true,  // LV=2 threshold still applies via Analyze()
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeLLM{name: "fake", out: tc.inputJSON}
+			a := NewAnalyzer(fake)
+			result, err := a.Analyze(context.Background(), "content")
+			if err != nil {
+				t.Fatalf("Analyze error: %v", err)
+			}
+			ApplyGitHubBookmarkRule(result, tc.sourceURL)
+
+			if tc.wantBookmark && result.SuggestedType != "bookmark" {
+				t.Errorf("expected suggested_type=bookmark, got %q", result.SuggestedType)
+			}
+			if !tc.wantBookmark && result.SuggestedType == "bookmark" {
+				t.Errorf("expected suggested_type != bookmark, got %q", result.SuggestedType)
+			}
+			if result.WorthSaving != tc.wantWorthSave {
+				t.Errorf("expected WorthSaving=%v, got %v", tc.wantWorthSave, result.WorthSaving)
+			}
+		})
+	}
+}
+
+// TestApplyGitHubBookmarkRule_NilSafe verifies that ApplyGitHubBookmarkRule does not panic on nil.
+func TestApplyGitHubBookmarkRule_NilSafe(t *testing.T) {
+	// Should not panic.
+	ApplyGitHubBookmarkRule(nil, "https://github.com/owner/repo")
+}
