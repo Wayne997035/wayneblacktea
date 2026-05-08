@@ -18,9 +18,13 @@ import (
 
 // fakeLearningStore implements the learningStore interface for testing.
 type fakeLearningStore struct {
-	reviews []learning.DueReview
-	concept *db.Concept
-	err     error
+	reviews    []learning.DueReview
+	concept    *db.Concept
+	err        error
+	history    []learning.ConceptHistoryRow
+	historyErr error
+	stats      *learning.LearningStatsResult
+	statsErr   error
 }
 
 // fakeSuggestionDecisionStore implements suggestionDecisionStore for testing.
@@ -45,6 +49,26 @@ func (f *fakeLearningStore) SubmitReview(
 
 func (f *fakeLearningStore) CreateConcept(_ context.Context, _, _ string, _ []string) (*db.Concept, error) {
 	return f.concept, f.err
+}
+
+func (f *fakeLearningStore) ReviewHistory(_ context.Context) ([]learning.ConceptHistoryRow, error) {
+	if f.historyErr != nil {
+		return nil, f.historyErr
+	}
+	if f.history == nil {
+		return []learning.ConceptHistoryRow{}, nil
+	}
+	return f.history, nil
+}
+
+func (f *fakeLearningStore) LearningStats(_ context.Context) (*learning.LearningStatsResult, error) {
+	if f.statsErr != nil {
+		return nil, f.statsErr
+	}
+	if f.stats == nil {
+		return &learning.LearningStatsResult{}, nil
+	}
+	return f.stats, nil
 }
 
 // ---- GetDueReviews tests ----
@@ -416,6 +440,204 @@ func TestLearningHandler_CreateConceptFromKnowledge(t *testing.T) {
 			rec := performRequest(e, http.MethodPost, "/api/learning/from-knowledge", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// ---- GetHistory tests (UX-6) ----
+
+func TestLearningHandler_GetHistory(t *testing.T) {
+	reviewCount5 := 5
+	intervalDays31 := 31.0
+	_ = reviewCount5
+	_ = intervalDays31
+
+	reviewingRow := learning.ConceptHistoryRow{
+		ID:           uuid.New(),
+		Title:        "FSRS",
+		Tags:         []string{"memory"},
+		ReviewCount:  7,
+		IntervalDays: 14.0,
+		Status:       "reviewing",
+	}
+	masteredRow := learning.ConceptHistoryRow{
+		ID:           uuid.New(),
+		Title:        "Ebbinghaus",
+		Tags:         []string{"psychology"},
+		ReviewCount:  16,
+		IntervalDays: 35.0,
+		Status:       "mastered",
+	}
+	newRow := learning.ConceptHistoryRow{
+		ID:     uuid.New(),
+		Title:  "Zeigarnik",
+		Tags:   []string{},
+		Status: "new",
+	}
+
+	cases := []struct {
+		name     string
+		query    string
+		store    *fakeLearningStore
+		wantCode int
+		wantLen  int
+	}{
+		{
+			name:     "no filter → all concepts",
+			store:    &fakeLearningStore{history: []learning.ConceptHistoryRow{reviewingRow, masteredRow, newRow}},
+			wantCode: http.StatusOK,
+			wantLen:  3,
+		},
+		{
+			name:     "status=all → all concepts",
+			query:    "?status=all",
+			store:    &fakeLearningStore{history: []learning.ConceptHistoryRow{reviewingRow, masteredRow, newRow}},
+			wantCode: http.StatusOK,
+			wantLen:  3,
+		},
+		{
+			name:     "status=mastered → only mastered",
+			query:    "?status=mastered",
+			store:    &fakeLearningStore{history: []learning.ConceptHistoryRow{reviewingRow, masteredRow, newRow}},
+			wantCode: http.StatusOK,
+			wantLen:  1,
+		},
+		{
+			name:     "status=reviewing → only reviewing",
+			query:    "?status=reviewing",
+			store:    &fakeLearningStore{history: []learning.ConceptHistoryRow{reviewingRow, masteredRow, newRow}},
+			wantCode: http.StatusOK,
+			wantLen:  1,
+		},
+		{
+			name:     "status=new → only new",
+			query:    "?status=new",
+			store:    &fakeLearningStore{history: []learning.ConceptHistoryRow{reviewingRow, masteredRow, newRow}},
+			wantCode: http.StatusOK,
+			wantLen:  1,
+		},
+		{
+			name:     "status=reviewed → concepts with review_count > 0",
+			query:    "?status=reviewed",
+			store:    &fakeLearningStore{history: []learning.ConceptHistoryRow{reviewingRow, masteredRow, newRow}},
+			wantCode: http.StatusOK,
+			wantLen:  2, // reviewingRow + masteredRow (newRow has review_count=0)
+		},
+		{
+			name:     "invalid status → 400",
+			query:    "?status=invalid",
+			store:    &fakeLearningStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "empty store → 200 empty array",
+			store:    &fakeLearningStore{},
+			wantCode: http.StatusOK,
+			wantLen:  0,
+		},
+		{
+			name:     "store error → 500",
+			store:    &fakeLearningStore{historyErr: errors.New("db error")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := echo.New()
+			h := handler.NewLearningHandler(tc.store)
+			e.GET("/api/learning/history", h.GetHistory)
+			rec := performRequest(e, http.MethodGet, "/api/learning/history"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+				return
+			}
+			if tc.wantCode == http.StatusOK {
+				var items []json.RawMessage
+				if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+					t.Fatalf("response not JSON array: %v (body: %s)", err, rec.Body.String())
+				}
+				if len(items) != tc.wantLen {
+					t.Errorf("got %d items, want %d", len(items), tc.wantLen)
+				}
+			}
+		})
+	}
+}
+
+// ---- GetStats tests (UX-6) ----
+
+func TestLearningHandler_GetStats(t *testing.T) {
+	cases := []struct {
+		name      string
+		store     *fakeLearningStore
+		wantCode  int
+		checkBody func(t *testing.T, body []byte)
+	}{
+		{
+			name:     "empty store → returns zeros",
+			store:    &fakeLearningStore{},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp learning.LearningStatsResult
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				if resp.TotalReviews != 0 || resp.TotalConcepts != 0 || resp.StreakDays != 0 {
+					t.Errorf("expected all zeros, got %+v", resp)
+				}
+			},
+		},
+		{
+			name: "with data → returns correct totals",
+			store: &fakeLearningStore{
+				stats: &learning.LearningStatsResult{
+					TotalReviews:  42,
+					Reviews7d:     5,
+					Mastered:      3,
+					TotalConcepts: 10,
+					StreakDays:    2,
+				},
+			},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp learning.LearningStatsResult
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				if resp.TotalReviews != 42 {
+					t.Errorf("want TotalReviews=42, got %d", resp.TotalReviews)
+				}
+				if resp.TotalConcepts != 10 {
+					t.Errorf("want TotalConcepts=10, got %d", resp.TotalConcepts)
+				}
+				if resp.StreakDays != 2 {
+					t.Errorf("want StreakDays=2, got %d", resp.StreakDays)
+				}
+			},
+		},
+		{
+			name:     "store error → 500",
+			store:    &fakeLearningStore{statsErr: errors.New("db error")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := echo.New()
+			h := handler.NewLearningHandler(tc.store)
+			e.GET("/api/learning/stats", h.GetStats)
+			rec := performRequest(e, http.MethodGet, "/api/learning/stats", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+				return
+			}
+			if tc.checkBody != nil && rec.Code == http.StatusOK {
+				tc.checkBody(t, rec.Body.Bytes())
 			}
 		})
 	}

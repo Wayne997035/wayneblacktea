@@ -39,15 +39,15 @@ CREATE TABLE IF NOT EXISTS work_sessions (
 
 -- Partial unique index: only one in_progress session per workspace+repo.
 -- Postgres supports partial unique indexes natively.
-CREATE UNIQUE INDEX idx_work_sessions_one_active
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_sessions_one_active
     ON work_sessions(workspace_id, repo_name)
     WHERE status = 'in_progress';
 
-CREATE INDEX idx_work_sessions_workspace_id
+CREATE INDEX IF NOT EXISTS idx_work_sessions_workspace_id
     ON work_sessions(workspace_id);
 
-CREATE INDEX idx_work_sessions_repo_name
+CREATE INDEX IF NOT EXISTS idx_work_sessions_repo_name
     ON work_sessions(workspace_id, repo_name, created_at DESC);
 
-CREATE INDEX idx_work_sessions_status
+CREATE INDEX IF NOT EXISTS idx_work_sessions_status
     ON work_sessions(workspace_id, status);

@@ -21,11 +21,13 @@ import (
 type fakeProposalStore struct {
 	pending    []db.PendingProposal
 	byID       map[uuid.UUID]*db.PendingProposal
-	resolveErr error           // error returned by Resolve
-	getErr     error           // error returned by Get
-	listErr    error           // error returned by ListPending
-	resolved   []uuid.UUID     // records which IDs were resolved
-	resolvedAs proposal.Status // last resolved status
+	resolveErr error                // error returned by Resolve
+	getErr     error                // error returned by Get
+	listErr    error                // error returned by ListPending
+	resolved   []uuid.UUID          // records which IDs were resolved
+	resolvedAs proposal.Status      // last resolved status
+	all        []db.PendingProposal // returned by ListAll; falls back to pending if nil
+	listAllErr error                // error returned by ListAll
 }
 
 func newFakeProposalStore(rows ...db.PendingProposal) *fakeProposalStore {
@@ -46,6 +48,16 @@ func (f *fakeProposalStore) Create(_ context.Context, _ proposal.CreateParams) (
 func (f *fakeProposalStore) ListPending(_ context.Context) ([]db.PendingProposal, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
+	}
+	return f.pending, nil
+}
+
+func (f *fakeProposalStore) ListAll(_ context.Context, _ string, _ int32) ([]db.PendingProposal, error) {
+	if f.listAllErr != nil {
+		return nil, f.listAllErr
+	}
+	if f.all != nil {
+		return f.all, nil
 	}
 	return f.pending, nil
 }
@@ -109,6 +121,14 @@ func (f *fakeProposalLearningStore) ListForAIReview(_ context.Context, _ int) ([
 
 func (f *fakeProposalLearningStore) UpdateConceptStatus(_ context.Context, _ uuid.UUID, _ string) error {
 	return nil
+}
+
+func (f *fakeProposalLearningStore) ReviewHistory(_ context.Context) ([]learning.ConceptHistoryRow, error) {
+	return nil, nil
+}
+
+func (f *fakeProposalLearningStore) LearningStats(_ context.Context) (*learning.LearningStatsResult, error) {
+	return &learning.LearningStatsResult{}, nil
 }
 
 // ---- helpers ----
@@ -354,6 +374,113 @@ func TestProposalHandler_ConfirmProposal_Accept(t *testing.T) {
 			rec := performRequest(e, http.MethodPost, "/api/proposals/"+tc.paramID+"/confirm", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// ---- ListProposals tests (UX-5: status filter) ----
+
+func TestProposalHandler_ListProposals(t *testing.T) {
+	pending1 := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "pending",
+		Payload: []byte(`{}`),
+	}
+	accepted1 := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "accepted",
+		Payload: []byte(`{}`),
+	}
+	rejected1 := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "rejected",
+		Payload: []byte(`{}`),
+	}
+	allRows := []db.PendingProposal{pending1, accepted1, rejected1}
+
+	cases := []struct {
+		name     string
+		query    string
+		store    *fakeProposalStore
+		wantCode int
+		wantLen  int
+	}{
+		{
+			name:     "no status → defaults to pending",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusOK,
+			wantLen:  1, // only pending1
+		},
+		{
+			name:     "status=pending → only pending",
+			query:    "?status=pending",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusOK,
+			wantLen:  1,
+		},
+		{
+			name:     "status=accepted → only accepted",
+			query:    "?status=accepted",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusOK,
+			wantLen:  1,
+		},
+		{
+			name:     "status=rejected → only rejected",
+			query:    "?status=rejected",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusOK,
+			wantLen:  1,
+		},
+		{
+			name:     "status=all → all proposals",
+			query:    "?status=all",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusOK,
+			wantLen:  3,
+		},
+		{
+			name:     "invalid status → 400",
+			query:    "?status=invalid",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "store error → 500",
+			query:    "?status=all",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, listAllErr: errors.New("db error")},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:     "invalid type → 400",
+			query:    "?type=invalid",
+			store:    &fakeProposalStore{byID: map[uuid.UUID]*db.PendingProposal{}, all: allRows},
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewProposalHandler(tc.store, &fakeProposalLearningStore{})
+			e.GET("/api/proposals", h.ListProposals)
+			rec := performRequest(e, http.MethodGet, "/api/proposals"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+				return
+			}
+			if tc.wantCode == http.StatusOK {
+				var items []json.RawMessage
+				if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+					t.Fatalf("response not JSON array: %v", err)
+				}
+				if len(items) != tc.wantLen {
+					t.Errorf("got %d items, want %d", len(items), tc.wantLen)
+				}
 			}
 		})
 	}

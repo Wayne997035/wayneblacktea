@@ -11,6 +11,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// openSessionStoreWithDB opens a DB and a SessionStore, returning both so
+// tests can execute raw SQL for fixture setup (e.g. custom timestamps).
+func openSessionStoreWithDB(t *testing.T, workspaceID string) (*sqlite.DB, *sqlite.SessionStore) {
+	t.Helper()
+	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return d, sqlite.NewSessionStore(d)
+}
+
 func openSessionStore(t *testing.T, workspaceID string) *sqlite.SessionStore {
 	t.Helper()
 	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
@@ -376,5 +388,109 @@ func TestSessionStore_SearchByCosine_WorkspaceIsolation(t *testing.T) {
 		if r.ID == hA.ID {
 			t.Errorf("storeB should not see wsA handoff id=%s", hA.ID)
 		}
+	}
+}
+
+// TestResolveHandoff_AlreadyResolved verifies that calling Resolve on an
+// already-resolved handoff returns session.ErrNotFound on the second call.
+// This exercises the AND resolved_at IS NULL predicate in the UPDATE query.
+func TestResolveHandoff_AlreadyResolved(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	h, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "parity: double-resolve should fail"})
+	if err != nil {
+		t.Fatalf("SetHandoff: %v", err)
+	}
+
+	// First resolve: must succeed.
+	if err := s.Resolve(ctx, h.ID); err != nil {
+		t.Fatalf("first Resolve: %v", err)
+	}
+
+	// Second resolve on the same (now-resolved) row: must return ErrNotFound.
+	if err := s.Resolve(ctx, h.ID); !errors.Is(err, session.ErrNotFound) {
+		t.Errorf("second Resolve on already-resolved handoff: want session.ErrNotFound, got %v", err)
+	}
+}
+
+// TestHandoff_ContextCancel verifies that a cancelled context is propagated
+// to all SessionStore operations (SetHandoff, LatestHandoff, Resolve).
+func TestHandoff_ContextCancel(t *testing.T) {
+	s := openSessionStore(t, "")
+
+	// First create a handoff using a live context so we have an ID to resolve.
+	liveCtx := context.Background()
+	h, err := s.SetHandoff(liveCtx, session.HandoffParams{Intent: "will be cancelled"})
+	if err != nil {
+		t.Fatalf("SetHandoff with live ctx: %v", err)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	t.Run("SetHandoff", func(t *testing.T) {
+		_, err := s.SetHandoff(cancelledCtx, session.HandoffParams{Intent: "should fail"})
+		if err == nil {
+			t.Error("expected error from cancelled context, got nil")
+		}
+		// The error must wrap context.Canceled.
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled in error chain, got: %v", err)
+		}
+	})
+
+	t.Run("LatestHandoff", func(t *testing.T) {
+		_, err := s.LatestHandoff(cancelledCtx)
+		if err == nil {
+			t.Error("expected error from cancelled context, got nil")
+		}
+		// Either context.Canceled or a wrapped form of it.
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled in error chain, got: %v", err)
+		}
+	})
+
+	t.Run("Resolve", func(t *testing.T) {
+		err := s.Resolve(cancelledCtx, h.ID)
+		if err == nil {
+			t.Error("expected error from cancelled context, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled in error chain, got: %v", err)
+		}
+	})
+}
+
+// TestHandoff_CrossYearOrdering verifies that LatestHandoff returns the
+// chronologically later handoff even when two rows span a year boundary
+// (e.g. 2025-12-31 vs 2026-01-01). This guards against naive string-sort
+// collation bugs in the ORDER BY created_at DESC clause.
+func TestHandoff_CrossYearOrdering(t *testing.T) {
+	ctx := context.Background()
+	d, s := openSessionStoreWithDB(t, "")
+
+	// Insert two handoffs directly with explicit timestamps spanning year boundary.
+	// We bypass SetHandoff (which always uses nowRFC3339) to pin deterministic values.
+	idA := uuid.New()
+	idB := uuid.New()
+	const q = `INSERT INTO session_handoffs (id, intent, created_at) VALUES (?, ?, ?)`
+	if err := d.ExecContext(ctx, q, idA.String(), "old year handoff", "2025-12-31T23:59:59.000Z"); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	if err := d.ExecContext(ctx, q, idB.String(), "new year handoff", "2026-01-01T00:00:00.000Z"); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+
+	latest, err := s.LatestHandoff(ctx)
+	if err != nil {
+		t.Fatalf("LatestHandoff: %v", err)
+	}
+	if latest.ID != idB {
+		t.Errorf("LatestHandoff should return the 2026-01-01 handoff (idB=%s), got id=%s (idA=%s)",
+			idB, latest.ID, idA)
+	}
+	if latest.Intent != "new year handoff" {
+		t.Errorf("unexpected intent: %q", latest.Intent)
 	}
 }

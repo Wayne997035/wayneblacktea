@@ -14,6 +14,8 @@ sql:
       - "migrations/000009_task_importance_context.up.sql"
       - "migrations/000010_pending_proposals.up.sql"
       - "migrations/000012_concept_status.up.sql"
+      - "migrations/000019_decay_columns.up.sql"
+      - "migrations/000027_knowledge_hierarchy.up.sql"
     gen:
       go:
         package: "db"

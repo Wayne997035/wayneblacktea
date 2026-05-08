@@ -142,6 +142,10 @@ func (s *stubProposalStore) AutoProposeConceptFromKnowledge(_ context.Context, _
 	return nil, nil
 }
 
+func (s *stubProposalStore) ListAll(_ context.Context, _ string, _ int32) ([]db.PendingProposal, error) {
+	return nil, nil
+}
+
 // stubReflector implements ai.ReflectorIface.
 type stubReflector struct {
 	proposals []ai.KnowledgeProposal

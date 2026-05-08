@@ -5,7 +5,8 @@
     "workspace": "工作區",
     "decisions": "決策紀錄",
     "knowledge": "知識庫",
-    "reviews": "學習回顧"
+    "reviews": "學習回顧",
+    "learningHistory": "學習歷史"
   },
   "dashboard": {
     "greeting": {
@@ -190,5 +191,37 @@
       "decision": "決策",
       "task": "任務"
     }
+  },
+  "learningHistory": {
+    "title": "學習歷史",
+    "statsTotal": "累積複習",
+    "statsStreak": "連續天數",
+    "statsMastered": "已精通",
+    "heatmapTitle": "學習活動（近 90 天）",
+    "filterAll": "全部",
+    "filterNew": "新",
+    "filterLearning": "學習中",
+    "filterReviewing": "複習中",
+    "filterMastered": "已精通",
+    "conceptReviewCount": "{{count}} 次複習",
+    "conceptNextReview": "下次：{{date}}",
+    "conceptDaysLearning": "學習 {{days}} 天",
+    "noItems": "尚無學習紀錄"
+  },
+  "proposals": {
+    "tabs": {
+      "pending": "待處理",
+      "accepted": "已接受",
+      "rejected": "已拒絕",
+      "all": "全部"
+    },
+    "movedToAccepted": "已移至「已接受」tab",
+    "movedToRejected": "已移至「已拒絕」tab",
+    "statusBadge": {
+      "accepted": "已接受",
+      "rejected": "已拒絕",
+      "pending": "待處理"
+    },
+    "resolvedAgo": "{{time}} 前"
   }
 }

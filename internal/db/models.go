@@ -21,15 +21,14 @@ type ActivityLog struct {
 }
 
 type Concept struct {
-	ID          uuid.UUID          `json:"id"`
-	Title       string             `json:"title"`
-	Content     string             `json:"content"`
-	Tags        []string           `json:"tags"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Status      string             `json:"status"`
-	// Ebbinghaus decay fields (migration 000019)
+	ID             uuid.UUID          `json:"id"`
+	Title          string             `json:"title"`
+	Content        string             `json:"content"`
+	Tags           []string           `json:"tags"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Status         string             `json:"status"`
 	Importance     float64            `json:"importance"`
 	RecallCount    int32              `json:"recall_count"`
 	LastRecalledAt pgtype.Timestamptz `json:"last_recalled_at"`
@@ -63,24 +62,47 @@ type Goal struct {
 }
 
 type KnowledgeItem struct {
-	ID            uuid.UUID          `json:"id"`
-	Type          string             `json:"type"`
-	Title         string             `json:"title"`
-	Content       string             `json:"content"`
-	Url           pgtype.Text        `json:"url"`
-	Tags          []string           `json:"tags"`
-	Embedding     pgvector.Vector    `json:"embedding"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	Source        string             `json:"source"`
-	LearningValue pgtype.Int4        `json:"learning_value"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	// Ebbinghaus decay fields (migration 000019)
+	ID             uuid.UUID          `json:"id"`
+	Type           string             `json:"type"`
+	Title          string             `json:"title"`
+	Content        string             `json:"content"`
+	Url            pgtype.Text        `json:"url"`
+	Tags           []string           `json:"tags"`
+	Embedding      pgvector.Vector    `json:"embedding"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Source         string             `json:"source"`
+	LearningValue  pgtype.Int4        `json:"learning_value"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
 	Importance     float64            `json:"importance"`
 	RecallCount    int32              `json:"recall_count"`
 	LastRecalledAt pgtype.Timestamptz `json:"last_recalled_at"`
 	BaseLambda     float64            `json:"base_lambda"`
 	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
+	ParentID       pgtype.UUID        `json:"parent_id"`
+	HeadingPath    pgtype.Text        `json:"heading_path"`
+	HeadingLevel   pgtype.Int4        `json:"heading_level"`
+}
+
+type KnowledgeRanked struct {
+	ID             uuid.UUID          `json:"id"`
+	Type           string             `json:"type"`
+	Title          string             `json:"title"`
+	Content        string             `json:"content"`
+	Url            pgtype.Text        `json:"url"`
+	Tags           []string           `json:"tags"`
+	Embedding      pgvector.Vector    `json:"embedding"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Source         string             `json:"source"`
+	LearningValue  pgtype.Int4        `json:"learning_value"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Importance     float64            `json:"importance"`
+	RecallCount    int32              `json:"recall_count"`
+	LastRecalledAt pgtype.Timestamptz `json:"last_recalled_at"`
+	BaseLambda     float64            `json:"base_lambda"`
+	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
+	Strength       interface{}        `json:"strength"`
 }
 
 type PendingProposal struct {

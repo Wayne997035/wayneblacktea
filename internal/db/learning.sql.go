@@ -15,7 +15,7 @@ import (
 const createConcept = `-- name: CreateConcept :one
 INSERT INTO concepts (title, content, tags, workspace_id)
 VALUES ($1, $2, $3, $4)
-RETURNING id, title, content, tags, created_at, updated_at, workspace_id, status
+RETURNING id, title, content, tags, created_at, updated_at, workspace_id, status, importance, recall_count, last_recalled_at, base_lambda, archived_at
 `
 
 type CreateConceptParams struct {
@@ -42,6 +42,11 @@ func (q *Queries) CreateConcept(ctx context.Context, arg CreateConceptParams) (C
 		&i.UpdatedAt,
 		&i.WorkspaceID,
 		&i.Status,
+		&i.Importance,
+		&i.RecallCount,
+		&i.LastRecalledAt,
+		&i.BaseLambda,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -76,7 +81,7 @@ func (q *Queries) CreateReviewSchedule(ctx context.Context, arg CreateReviewSche
 }
 
 const getConceptByID = `-- name: GetConceptByID :one
-SELECT id, title, content, tags, created_at, updated_at, workspace_id, status FROM concepts
+SELECT id, title, content, tags, created_at, updated_at, workspace_id, status, importance, recall_count, last_recalled_at, base_lambda, archived_at FROM concepts
 WHERE id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 `
@@ -98,6 +103,11 @@ func (q *Queries) GetConceptByID(ctx context.Context, arg GetConceptByIDParams) 
 		&i.UpdatedAt,
 		&i.WorkspaceID,
 		&i.Status,
+		&i.Importance,
+		&i.RecallCount,
+		&i.LastRecalledAt,
+		&i.BaseLambda,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -220,7 +230,7 @@ const updateConceptStatus = `-- name: UpdateConceptStatus :one
 UPDATE concepts
 SET status = $1, updated_at = NOW()
 WHERE id = $2
-RETURNING id, title, content, tags, created_at, updated_at, workspace_id, status
+RETURNING id, title, content, tags, created_at, updated_at, workspace_id, status, importance, recall_count, last_recalled_at, base_lambda, archived_at
 `
 
 type UpdateConceptStatusParams struct {
@@ -240,6 +250,11 @@ func (q *Queries) UpdateConceptStatus(ctx context.Context, arg UpdateConceptStat
 		&i.UpdatedAt,
 		&i.WorkspaceID,
 		&i.Status,
+		&i.Importance,
+		&i.RecallCount,
+		&i.LastRecalledAt,
+		&i.BaseLambda,
+		&i.ArchivedAt,
 	)
 	return i, err
 }

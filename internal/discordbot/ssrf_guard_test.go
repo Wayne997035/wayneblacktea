@@ -247,7 +247,6 @@ func TestFetchURL_BlockedSSRF(t *testing.T) {
 	}
 
 	for _, u := range blockedURLs {
-		u := u
 		t.Run(u, func(t *testing.T) {
 			t.Parallel()
 			_, _, err := FetchURL(t.Context(), u)

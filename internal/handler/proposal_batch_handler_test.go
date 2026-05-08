@@ -38,6 +38,10 @@ func (f *fakeProposalListStore) Resolve(_ context.Context, _ uuid.UUID, _ propos
 	return f.resolveResult, f.err
 }
 
+func (f *fakeProposalListStore) ListAll(_ context.Context, _ string, _ int32) ([]db.PendingProposal, error) {
+	return f.pending, f.err
+}
+
 // fakeLearningStoreForProposal satisfies the proposalConceptStore interface.
 type fakeLearningStoreForProposal struct{}
 

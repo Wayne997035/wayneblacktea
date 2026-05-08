@@ -14,6 +14,9 @@ type StoreIface interface {
 	Create(ctx context.Context, p CreateParams) (*db.PendingProposal, error)
 	Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error)
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
+	// ListAll returns all proposals of the given type regardless of status,
+	// newest first, up to limit rows. Used by GET /api/proposals?status=.
+	ListAll(ctx context.Context, proposalType string, limit int32) ([]db.PendingProposal, error)
 	Resolve(ctx context.Context, id uuid.UUID, status Status) (*db.PendingProposal, error)
 	// BatchConfirm resolves multiple proposals to the given status in a single
 	// operation. On Postgres the entire batch runs inside one transaction —

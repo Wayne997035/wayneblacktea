@@ -228,6 +228,58 @@ func (h *LearningHandler) SubmitReview(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// allowedHistoryStatuses is the validated set of values for the ?status= filter
+// on GET /api/learning/history.
+var allowedHistoryStatuses = map[string]bool{
+	"":          true,
+	"all":       true,
+	"new":       true,
+	"learning":  true,
+	"reviewing": true,
+	"mastered":  true,
+	"reviewed":  true, // alias: reviewed = learning|reviewing|mastered (review_count > 0)
+}
+
+// GetHistory handles GET /api/learning/history?status=all|new|learning|reviewing|mastered|reviewed.
+func (h *LearningHandler) GetHistory(c echo.Context) error {
+	statusFilter := c.QueryParam("status")
+	if !allowedHistoryStatuses[statusFilter] {
+		return c.JSON(http.StatusBadRequest, errResp("invalid status filter"))
+	}
+
+	rows, err := h.store.ReviewHistory(c.Request().Context())
+	if err != nil {
+		c.Logger().Errorf("GetHistory: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	if statusFilter == "" || statusFilter == "all" {
+		return c.JSON(http.StatusOK, rows)
+	}
+
+	filtered := rows[:0]
+	for _, r := range rows {
+		if statusFilter == "reviewed" {
+			if r.ReviewCount > 0 {
+				filtered = append(filtered, r)
+			}
+		} else if r.Status == statusFilter {
+			filtered = append(filtered, r)
+		}
+	}
+	return c.JSON(http.StatusOK, filtered)
+}
+
+// GetStats handles GET /api/learning/stats.
+func (h *LearningHandler) GetStats(c echo.Context) error {
+	stats, err := h.store.LearningStats(c.Request().Context())
+	if err != nil {
+		c.Logger().Errorf("GetStats: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, stats)
+}
+
 type createConceptRequest struct {
 	Title   string   `json:"title"`
 	Content string   `json:"content"`
