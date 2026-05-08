@@ -30,3 +30,42 @@ export function useCreateKnowledge() {
     },
   })
 }
+
+export interface UpdateKnowledgeRequest {
+  learning_value?: number | null
+}
+
+export function useUpdateKnowledge() {
+  const queryClient = useQueryClient()
+  return useMutation<KnowledgeItem, Error, { id: string } & UpdateKnowledgeRequest>({
+    mutationFn: ({ id, ...body }) =>
+      apiFetch<KnowledgeItem>(`/api/knowledge/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onMutate: async ({ id, learning_value }) => {
+      // Cancel any outgoing refetches so they don't overwrite our optimistic update
+      await queryClient.cancelQueries({ queryKey: ['knowledge'] })
+      const previousItems = queryClient.getQueryData<KnowledgeItem[]>(['knowledge'])
+      // Optimistically update the list
+      queryClient.setQueryData<KnowledgeItem[]>(['knowledge'], (old) =>
+        old?.map((item) =>
+          item.id === id
+            ? { ...item, learning_value: learning_value ?? null }
+            : item,
+        ) ?? [],
+      )
+      return { previousItems }
+    },
+    onError: (_err, _vars, context) => {
+      // Rollback on error
+      const ctx = context as { previousItems?: KnowledgeItem[] } | undefined
+      if (ctx?.previousItems) {
+        queryClient.setQueryData(['knowledge'], ctx.previousItems)
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledge'] })
+    },
+  })
+}

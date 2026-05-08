@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { KnowledgeItem } from '../../types/api'
 import { useCreateConceptFromKnowledge } from '../../hooks/useReviews'
+import { useUpdateKnowledge } from '../../hooks/useKnowledge'
 
 interface KnowledgeCardProps {
   item: KnowledgeItem;
@@ -22,18 +23,71 @@ function formatDate(dateStr: string): string {
   })
 }
 
-function StarRating({ value }: { value: number }) {
+interface InteractiveStarRatingProps {
+  value: number | null
+  itemId: string
+}
+
+function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
+  const [hovered, setHovered] = useState<number | null>(null)
+  const updateKnowledge = useUpdateKnowledge()
+
+  const displayValue = hovered ?? value
+
+  function handleClick(star: number) {
+    // Clicking the same star again resets to null
+    const newValue = value === star ? null : star
+    updateKnowledge.mutate({ id: itemId, learning_value: newValue })
+  }
+
+  if (value === null && hovered === null) {
+    return (
+      <span
+        className="text-caption"
+        style={{ color: 'var(--color-text-disabled)', cursor: 'pointer' }}
+        onMouseEnter={() => setHovered(1)}
+        aria-label="Rate this item"
+      >
+        評個分？
+      </span>
+    )
+  }
+
   return (
-    <span aria-label={`Learning value: ${value} out of 5`} className="text-caption">
-      {Array.from({ length: 5 }, (_, i) => (
-        <span
-          key={i}
-          aria-hidden="true"
-          style={{ color: i < value ? 'var(--color-warning)' : 'var(--color-text-disabled)' }}
-        >
-          ★
-        </span>
-      ))}
+    <span
+      aria-label={`Learning value: ${displayValue ?? 0} out of 5`}
+      className="text-caption inline-flex"
+      style={{ cursor: 'pointer' }}
+      onMouseLeave={() => setHovered(null)}
+    >
+      {Array.from({ length: 5 }, (_, i) => {
+        const starNum = i + 1
+        return (
+          <button
+            key={i}
+            type="button"
+            aria-label={`Rate ${starNum} out of 5`}
+            onClick={() => handleClick(starNum)}
+            onMouseEnter={() => setHovered(starNum)}
+            className="transition-colors"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: '0 1px',
+              cursor: updateKnowledge.isPending ? 'not-allowed' : 'pointer',
+              color:
+                displayValue !== null && i < displayValue
+                  ? 'var(--color-warning)'
+                  : 'var(--color-text-disabled)',
+              fontSize: '0.875rem',
+              lineHeight: 1,
+            }}
+            disabled={updateKnowledge.isPending}
+          >
+            ★
+          </button>
+        )
+      })}
     </span>
   )
 }
@@ -134,8 +188,8 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Learning value stars */}
-          {item.learning_value !== null && <StarRating value={item.learning_value} />}
+          {/* Interactive learning value stars */}
+          <InteractiveStarRating value={item.learning_value} itemId={item.id} />
 
           {/* Add to learning button */}
           <button
