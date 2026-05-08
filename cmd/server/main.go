@@ -30,8 +30,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
-	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/search"
+	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -234,6 +234,7 @@ func run() error {
 	api.GET("/dashboard/active-projects", dashH.GetActiveProjects, dashboardRL)
 	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress, dashboardRL)
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
+	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)

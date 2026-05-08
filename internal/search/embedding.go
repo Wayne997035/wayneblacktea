@@ -51,12 +51,27 @@ type embedResponse struct {
 	Embedding embedValues `json:"embedding"`
 }
 
+// credentialRe matches common credential patterns that should not be sent to
+// external APIs. Replacement is [REDACTED] per backend-security-design.md §3.1.
+var credentialRe = regexp.MustCompile(
+	`(?i)(ghp_[A-Za-z0-9]+` +
+		`|sk[-_]live[-_][A-Za-z0-9]+` +
+		`|xoxb-[A-Za-z0-9-]+` +
+		`|Bearer\s+ey[A-Za-z0-9._-]+` +
+		`|AKIA[0-9A-Z]{16}` +
+		`|postgres://[^:\s]+:[^@\s]+@` +
+		`|mongodb://[^:\s]+:[^@\s]+@` +
+		`|password[=:]\s*['"]?[^\s'"]{3,}` +
+		`|api[_-]?key[=:]\s*['"]?[^\s'"]{8,})`)
+
 // Embed returns a 768-dimension embedding vector for the given text (truncated via outputDimensionality).
 // Returns nil, nil if GEMINI_API_KEY is not set (graceful degradation).
+// Credential patterns are scrubbed from text before sending to the Gemini API.
 func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
 	if c.apiKey == "" {
 		return nil, nil
 	}
+	text = credentialRe.ReplaceAllString(text, "[REDACTED]")
 
 	body := embedRequest{
 		Model: "models/gemini-embedding-001",
@@ -70,8 +85,6 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 		return nil, fmt.Errorf("marshaling embed request: %w", err)
 	}
 
-	// G107: URL is constructed from a trusted constant + API key. Gemini API spec
-	// requires the key as a query parameter — using a header is not supported.
 	apiURL := geminiEmbedURL + "?key=" + c.apiKey
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {

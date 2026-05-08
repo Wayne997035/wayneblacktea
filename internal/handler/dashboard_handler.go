@@ -13,6 +13,7 @@ import (
 type dashboardGTDStore interface {
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
+	TopPendingTask(ctx context.Context) (*db.Task, error)
 }
 
 // dashboardDecisionStore covers the decision methods used by DashboardHandler.
@@ -234,4 +235,22 @@ func (h *DashboardHandler) GetPendingKnowledgeProposals(c echo.Context) error {
 		out = append(out, r)
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+// nextTaskResponse is the JSON shape for GET /api/dashboard/next-task.
+type nextTaskResponse struct {
+	Task *db.Task `json:"task"`
+}
+
+// GetNextTask handles GET /api/dashboard/next-task.
+// Returns 200 with {"task": <db.Task>} when a pending task exists, or
+// {"task": null} when none exist. Store errors yield 500.
+func (h *DashboardHandler) GetNextTask(c echo.Context) error {
+	ctx := c.Request().Context()
+	task, err := h.gtd.TopPendingTask(ctx)
+	if err != nil {
+		c.Logger().Errorf("GetNextTask: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, nextTaskResponse{Task: task})
 }

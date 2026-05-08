@@ -145,6 +145,10 @@ func (m *mockClassifyGTDStore) ListActivityLogsSince(_ context.Context, _ time.T
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) TopPendingTask(_ context.Context) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) WorkspaceID() pgtype.UUID { return pgtype.UUID{} }
 
 // TestMaybeClassifyToolCall_NilClassifier verifies that a nil classifier results in no-op.

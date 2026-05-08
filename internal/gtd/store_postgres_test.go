@@ -381,3 +381,63 @@ func TestStore_DeleteTask_NonExistentID(t *testing.T) {
 		t.Errorf("expected nil or ErrNotFound for unknown task, got: %v", err)
 	}
 }
+
+// TestStore_TopPendingTask verifies ordering and nil return on Postgres.
+func TestStore_TopPendingTask(t *testing.T) {
+	t.Run("multiple pending tasks → returns lowest priority then importance", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+
+		imp2 := int16(2)
+		imp1 := int16(1)
+		_, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "low-prio", Priority: 5, Importance: &imp2})
+		if err != nil {
+			t.Fatalf("CreateTask low-prio: %v", err)
+		}
+		top, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "top-prio", Priority: 1, Importance: &imp1})
+		if err != nil {
+			t.Fatalf("CreateTask top-prio: %v", err)
+		}
+		_, err = store.CreateTask(ctx, gtd.CreateTaskParams{Title: "mid-prio", Priority: 3, Importance: &imp2})
+		if err != nil {
+			t.Fatalf("CreateTask mid-prio: %v", err)
+		}
+
+		got, err := store.TopPendingTask(ctx)
+		if err != nil {
+			t.Fatalf("TopPendingTask: %v", err)
+		}
+		if got == nil {
+			t.Fatal("expected a task, got nil")
+		}
+		if got.ID != top.ID {
+			t.Errorf("expected task ID %s (priority 1), got %s (title: %q)", top.ID, got.ID, got.Title)
+		}
+	})
+
+	t.Run("no pending tasks → nil, nil", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+
+		// Create a task and complete it — pending set should be empty.
+		task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "done", Priority: 1})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		if _, err := store.CompleteTask(ctx, task.ID, nil); err != nil {
+			t.Fatalf("CompleteTask: %v", err)
+		}
+
+		got, err := store.TopPendingTask(ctx)
+		if err != nil {
+			t.Fatalf("TopPendingTask: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for empty pending set, got: %+v", got)
+		}
+	})
+}

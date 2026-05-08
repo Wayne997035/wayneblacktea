@@ -399,6 +399,38 @@ func (s *Store) ListActivityLogsSince(ctx context.Context, since time.Time, maxR
 	return out, nil
 }
 
+// TopPendingTask returns the single highest-priority pending task in the
+// configured workspace, ordered by priority ASC NULLS LAST, importance ASC
+// NULLS LAST, created_at ASC. Returns nil, nil when no pending task exists.
+func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		FROM tasks
+		WHERE status = 'pending'
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY priority ASC NULLS LAST, importance ASC NULLS LAST, created_at ASC
+		LIMIT 1`
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("querying top pending task: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterating top pending task: %w", err)
+		}
+		return nil, nil //nolint:nilnil // sentinel: no pending task is not an error; callers render {"task":null}
+	}
+	var t db.Task
+	if err := rows.Scan(
+		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+	); err != nil {
+		return nil, fmt.Errorf("scanning top pending task: %w", err)
+	}
+	return &t, nil
+}
+
 // WeeklyProgress returns completed task count this week and total active task count.
 func (s *Store) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	completed, err = s.q.CountCompletedTasksThisWeek(ctx, s.workspaceID)

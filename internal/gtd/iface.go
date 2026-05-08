@@ -36,6 +36,9 @@ type StoreIface interface {
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error)
 	DeleteTask(ctx context.Context, id uuid.UUID) error
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
+	// TopPendingTask returns the single highest-priority pending task scoped to
+	// the configured workspace. Returns nil, nil when none exist.
+	TopPendingTask(ctx context.Context) (*db.Task, error)
 	WorkspaceID() pgtype.UUID
 }
 

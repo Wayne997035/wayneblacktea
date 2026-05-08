@@ -107,7 +107,7 @@ func (f *fakeSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams
 	return f.setResult, f.err
 }
 
-func (f *fakeSessionStore) UpdateEmbedding(_ context.Context, _ []byte) error {
+func (f *fakeSessionStore) UpdateEmbeddingByID(_ context.Context, _ uuid.UUID, _ []byte) error {
 	return nil
 }
 
@@ -749,7 +749,7 @@ func TestSessionHandler_GetHandoff(t *testing.T) {
 			}
 			if tc.wantNull {
 				body := strings.TrimSpace(rec.Body.String())
-				if body != "null" {
+				if body != jsonNull {
 					t.Errorf("expected null body, got: %s", body)
 				}
 			}
