@@ -197,6 +197,10 @@ func run() error {
 	api.GET("/workspace/repos", wsH.ListRepos)
 	api.POST("/workspace/repos", wsH.UpsertRepo)
 
+	// handoffRL caps POST /session/handoff at 5 req/min — each request may
+	// spawn a Gemini embedding call; keep well below Gemini free-tier quota.
+	// Also applied to /auto-handoff which shares the same goroutine budget.
+	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
 	api.GET("/session/handoff", sessH.GetHandoff)
 	api.POST("/session/handoff", sessH.SetHandoff, handoffRL)
 
@@ -246,7 +250,6 @@ func run() error {
 	api.GET("/learning/stats", learningH.GetStats)
 
 	activityRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
-	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
 	// postToolUseRL is deliberately more permissive (120 req/min) because
 	// wbt-hook fires on every Claude Code tool call, including fast loops.
 	postToolUseRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(120))

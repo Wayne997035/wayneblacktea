@@ -55,6 +55,7 @@ type embedResponse struct {
 // external APIs. Replacement is [REDACTED] per backend-security-design.md §3.1.
 var credentialRe = regexp.MustCompile(
 	`(?i)(ghp_[A-Za-z0-9]+` +
+		`|sk-[A-Za-z0-9_-]{20,}` + // OpenAI sk-... / Anthropic sk-ant-... style keys
 		`|sk[-_]live[-_][A-Za-z0-9]+` +
 		`|xoxb-[A-Za-z0-9-]+` +
 		`|Bearer\s+ey[A-Za-z0-9._-]+` +

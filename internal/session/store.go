@@ -104,10 +104,13 @@ func (s *Store) UpdateSummary(ctx context.Context, summary string) error {
 }
 
 // UpdateEmbeddingByID writes the serialized embedding bytes to the session
-// handoff with the given ID.  Best-effort: 0 rows updated is not an error.
+// handoff with the given ID, scoped to workspace_id to prevent cross-workspace
+// overwrites.  Best-effort: 0 rows updated is not an error.
 func (s *Store) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error {
-	const q = `UPDATE session_handoffs SET embedding = $1 WHERE id = $2`
-	if _, err := s.dbtx.Exec(ctx, q, embedding, id); err != nil {
+	const q = `UPDATE session_handoffs SET embedding = $1
+		WHERE id = $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)`
+	if _, err := s.dbtx.Exec(ctx, q, embedding, id, s.workspaceID); err != nil {
 		return fmt.Errorf("updating session embedding by id: %w", err)
 	}
 	return nil
