@@ -184,6 +184,47 @@ func TestBatchConfirm_PG_SingleNotFoundRollsBackAll(t *testing.T) {
 	}
 }
 
+// TestBatchConfirm_PG_CrossWorkspaceBlocked verifies that workspace B cannot
+// resolve a proposal that belongs to workspace A.
+func TestBatchConfirm_PG_CrossWorkspaceBlocked(t *testing.T) {
+	pool := openBatchTestPgPool(t)
+	ctx := context.Background()
+
+	wsA := uuid.New()
+	storeA := proposal.NewStore(pool, &wsA)
+
+	p, err := storeA.Create(ctx, proposal.CreateParams{
+		Type:    proposal.TypeConcept,
+		Payload: []byte(`{"title":"workspace-a-proposal"}`),
+	})
+	if err != nil {
+		t.Fatalf("Create in workspace A: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", p.ID)
+	})
+
+	wsB := uuid.New()
+	storeB := proposal.NewStore(pool, &wsB)
+
+	result, err := storeB.BatchConfirm(ctx, []uuid.UUID{p.ID}, proposal.StatusAccepted)
+	if err != nil {
+		t.Fatalf("BatchConfirm from workspace B: %v", err)
+	}
+	if result.Accepted != 0 || result.Failed != 1 {
+		t.Errorf("workspace B should not resolve workspace A proposal; got accepted=%d failed=%d", result.Accepted, result.Failed)
+	}
+
+	// proposal must still be pending in workspace A
+	got, err := storeA.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get from workspace A after cross-workspace attempt: %v", err)
+	}
+	if got.Status != string(proposal.StatusPending) {
+		t.Errorf("proposal should still be pending in workspace A, got status=%s", got.Status)
+	}
+}
+
 // TestBatchConfirm_PG_InvalidStatus verifies that a non-accept/reject status
 // returns an error before any DB operation.
 func TestBatchConfirm_PG_InvalidStatus(t *testing.T) {

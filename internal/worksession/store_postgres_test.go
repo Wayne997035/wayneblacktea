@@ -103,7 +103,7 @@ func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	    WHERE status = 'in_progress';
 
 	CREATE TABLE IF NOT EXISTS work_session_tasks (
-	    session_id  UUID        NOT NULL REFERENCES work_sessions(id) ON DELETE CASCADE,
+	    session_id  UUID        NOT NULL,
 	    task_id     UUID        NOT NULL,
 	    role        TEXT        NOT NULL DEFAULT 'primary',
 	    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
