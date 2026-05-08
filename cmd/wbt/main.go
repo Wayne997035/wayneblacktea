@@ -507,20 +507,18 @@ func runServe(args []string) error {
 	serverURL := fmt.Sprintf("http://localhost:%s", port)
 	fmt.Printf("Starting wayneblacktea at %s\n", serverURL)
 
-	// Auto-open browser unless suppressed by flag or env.
+	serverBin, err := exec.LookPath("wayneblacktea-server")
+	if err != nil {
+		return fmt.Errorf("wayneblacktea-server not found in PATH: %w", err)
+	}
+
+	// Auto-open browser only after confirming the server binary exists.
 	// URL is constructed from server-controlled config (no user input) — no SSRF risk.
-	// Uses context.Background() goroutine: request lifecycle is not a concern for a CLI
-	// that blocks on cmd.Run(); the goroutine outlives no meaningful context boundary.
 	if !*noBrowserFlag && os.Getenv("WBT_NO_BROWSER") == "" {
 		go func() {
 			time.Sleep(500 * time.Millisecond)
 			openBrowser(serverURL)
 		}()
-	}
-
-	serverBin, err := exec.LookPath("wayneblacktea-server")
-	if err != nil {
-		return fmt.Errorf("wayneblacktea-server not found in PATH: %w", err)
 	}
 
 	cmd := exec.CommandContext(context.Background(), serverBin) //nolint:gosec // G204: serverBin resolved from exec.LookPath, not user input
