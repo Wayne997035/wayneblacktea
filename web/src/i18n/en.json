@@ -35,7 +35,8 @@
       "pendingProposals": "PENDING PROPOSALS",
       "dueReviews": "DUE REVIEWS",
       "dueReviewsCount": "{{count}} due",
-      "recentKnowledge": "RECENT KNOWLEDGE"
+      "recentKnowledge": "RECENT KNOWLEDGE",
+      "moreItems": "+ {{count}} more"
     }
   },
   "gtd": {

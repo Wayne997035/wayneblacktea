@@ -123,7 +123,7 @@ export function DueReviewsCard({ onClick }: DueReviewsCardProps) {
 
       {remaining > 0 && (
         <p className="text-caption mt-1" style={{ color: 'var(--color-text-muted)' }}>
-          + {remaining} more
+          {t('dashboard.widgets.moreItems', { count: remaining })}
         </p>
       )}
     </article>

@@ -65,7 +65,7 @@ export function RecentDecisionsCard({ onSeeAll }: RecentDecisionsCardProps) {
           className="text-label"
           style={{ color: 'var(--color-text-muted)' }}
         >
-          RECENT DECISIONS
+          {t('dashboard.widgets.recentDecisions')}
         </span>
         {decisions.length > 0 && (
           <button

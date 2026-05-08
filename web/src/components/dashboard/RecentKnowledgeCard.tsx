@@ -111,7 +111,7 @@ export function RecentKnowledgeCard({ onClick }: RecentKnowledgeCardProps) {
       }}
     >
       <div className="px-4 pt-4 pb-3 text-label" style={{ color: 'var(--color-text-muted)' }}>
-        RECENT KNOWLEDGE
+        {t('dashboard.widgets.recentKnowledge')}
       </div>
 
       {items.map((item) => {

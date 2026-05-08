@@ -35,7 +35,8 @@
       "pendingProposals": "待確認提案",
       "dueReviews": "待複習",
       "dueReviewsCount": "{{count}} 筆",
-      "recentKnowledge": "最近知識"
+      "recentKnowledge": "最近知識",
+      "moreItems": "+ {{count}} 筆"
     }
   },
   "gtd": {
