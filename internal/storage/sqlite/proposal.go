@@ -24,6 +24,11 @@ func NewProposalStore(d *DB) *ProposalStore {
 
 var _ proposal.StoreIface = (*ProposalStore)(nil)
 
+// DB returns the underlying *DB so callers in the mcp package can begin a
+// cross-store transaction via DB().BeginTx without the ProposalStore needing
+// to hold references to sibling stores.
+func (s *ProposalStore) DB() *DB { return s.db }
+
 const pendingProposalsSelectCols = `id, workspace_id, type, payload, status,
 	proposed_by, created_at, resolved_at`
 
@@ -151,6 +156,30 @@ func (s *ProposalStore) Resolve(ctx context.Context, id uuid.UUID, status propos
 		return nil, proposal.ErrNotFound
 	}
 	return s.Get(ctx, id)
+}
+
+// ResolveTx marks a pending proposal as accepted or rejected within an
+// existing *sql.Tx. Used by the confirm_proposal accept path to wrap
+// proposal-resolve plus entity-materialise in a single atomic transaction.
+func (s *ProposalStore) ResolveTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, status proposal.Status) error {
+	if status != proposal.StatusAccepted && status != proposal.StatusRejected {
+		return fmt.Errorf("ResolveTx: invalid status %q (want accepted or rejected)", status)
+	}
+	now := sqliteNowMillis()
+	const q = `UPDATE pending_proposals
+		SET status = ?2, resolved_at = ?3
+		WHERE id = ?1
+		  AND status = 'pending'
+		  AND (?4 IS NULL OR workspace_id = ?4)`
+	res, err := tx.ExecContext(ctx, q, id.String(), string(status), now, s.db.workspaceArg())
+	if err != nil {
+		return errWrap("ResolveTx", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return proposal.ErrNotFound
+	}
+	return nil
 }
 
 // BatchConfirm resolves multiple proposals independently (best-effort). Each ID

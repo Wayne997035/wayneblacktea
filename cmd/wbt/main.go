@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/pkg/browser"
+	"gopkg.in/yaml.v3"
 )
 
 const usage = `wbt — wayneblacktea one-click installer
@@ -380,6 +381,16 @@ func runInit() error {
 		return fmt.Errorf("writing .env: %w", err)
 	}
 
+	// Write global config so `wbt serve` works from any directory without -env.
+	cfg := dbConfigToWbtConfig(apiKey, port, db)
+	if err := writeGlobalConfig(cfg); err != nil {
+		// Non-fatal: user still has .env in the current dir.
+		fmt.Fprintf(os.Stderr, "wbt: warning: could not write global config: %v\n", err)
+	} else {
+		cfgP, _ := configPath()
+		fmt.Printf("Created global config at %s\n", cfgP)
+	}
+
 	mcpJSON, err := buildMCPJSON(db)
 	if err != nil {
 		return err
@@ -478,7 +489,12 @@ func collectAPIKey(r *bufio.Reader) (string, error) {
 	return key, nil
 }
 
-// runServe loads .env from the current directory and runs wayneblacktea-server.
+// runServe loads config and runs wayneblacktea-server.
+// Config is loaded in priority order (later source wins unless env var already set):
+//  1. ~/.config/wayneblacktea/config.yaml  (global, written by `wbt init`)
+//  2. .env in CWD  (legacy / per-project override)
+//  3. Existing environment variables  (Railway, CI, etc.)
+//
 // args is the slice of arguments after "serve" (i.e. os.Args[2:]).
 //
 // Flags:
@@ -491,8 +507,24 @@ func runServe(args []string) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 
-	// Non-fatal: if .env doesn't exist, existing env vars are used (Railway, etc.)
-	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
+	// Config priority (highest to lowest):
+	//   1. Already-set environment variables (Railway, CI, shell exports)
+	//   2. ~/.config/wayneblacktea/config.yaml (global, written by `wbt init`)
+	//   3. .env in CWD (legacy per-project file)
+	//
+	// loadGlobalConfig uses setIfAbsent so it never overwrites already-set vars.
+	if err := loadGlobalConfig(); err != nil {
+		return fmt.Errorf("loading global config: %w", err)
+	}
+
+	// Apply .env in CWD as fallback for any key not yet set.
+	// godotenv.Read parses without touching the process environment; we then
+	// call setIfAbsent so that global config values take precedence over .env.
+	if dotEnvMap, err := godotenv.Read(".env"); err == nil {
+		for k, v := range dotEnvMap {
+			setIfAbsent(k, v)
+		}
+	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("loading .env: %w", err)
 	}
 
@@ -590,6 +622,104 @@ func homeDir() string {
 		return h
 	}
 	return "."
+}
+
+// wbtConfig is the schema for ~/.config/wayneblacktea/config.yaml.
+// All fields are optional strings so that partial configs are accepted on
+// read without overriding env vars that are already set.
+type wbtConfig struct {
+	APIKey      string `yaml:"api_key"`
+	DatabaseURL string `yaml:"database_url"`
+	Port        string `yaml:"port"`
+	// storage
+	StorageBackend string `yaml:"storage_backend"`
+	SQLitePath     string `yaml:"sqlite_path"`
+}
+
+// configPath returns the canonical path to the global config file:
+// $XDG_CONFIG_HOME/wayneblacktea/config.yaml (defaults to ~/.config/…).
+// The parent directory is created if it does not exist.
+func configPath() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("locating user config dir: %w", err)
+	}
+	dir := filepath.Join(base, "wayneblacktea")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("creating config dir %s: %w", dir, err)
+	}
+	return filepath.Join(dir, "config.yaml"), nil
+}
+
+// writeGlobalConfig serialises cfg to ~/.config/wayneblacktea/config.yaml
+// with mode 0600 (credential-bearing file).
+func writeGlobalConfig(cfg wbtConfig) error {
+	path, err := configPath()
+	if err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(cfg) //nolint:gosec // G117: marshaling config struct to 0600 file; not a secret leak
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return fmt.Errorf("writing config %s: %w", path, err)
+	}
+	return nil
+}
+
+// loadGlobalConfig reads ~/.config/wayneblacktea/config.yaml and sets env vars
+// for any keys present in the file that are not already set. This makes
+// wbt serve work without a -env flag once wbt init has run.
+//
+// Missing file is silently ignored (user may still rely on .env or exported
+// env vars). Parse errors are returned so callers can surface them.
+func loadGlobalConfig() error {
+	path, err := configPath()
+	if err != nil {
+		// If we can't determine the config dir, treat as absent.
+		return nil //nolint:nilerr // best-effort: config dir unavailable, fall through to .env
+	}
+	b, err := os.ReadFile(path) //nolint:gosec // G304: path comes from os.UserConfigDir + known sub-path, not user input
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading global config %s: %w", path, err)
+	}
+	var cfg wbtConfig
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("parsing global config %s: %w", path, err)
+	}
+	setIfAbsent("API_KEY", cfg.APIKey)
+	setIfAbsent("DATABASE_URL", cfg.DatabaseURL)
+	setIfAbsent("PORT", cfg.Port)
+	setIfAbsent("STORAGE_BACKEND", cfg.StorageBackend)
+	setIfAbsent("SQLITE_PATH", cfg.SQLitePath)
+	return nil
+}
+
+// setIfAbsent sets the env var key to value only when value is non-empty and
+// the env var is not already set. This preserves explicit env var overrides.
+func setIfAbsent(key, value string) {
+	if value == "" {
+		return
+	}
+	if os.Getenv(key) == "" {
+		_ = os.Setenv(key, value)
+	}
+}
+
+// dbConfigToWbtConfig converts the wizard-collected dbConfig and other fields
+// into the wbtConfig struct written to ~/.config/wayneblacktea/config.yaml.
+func dbConfigToWbtConfig(apiKey, port string, db dbConfig) wbtConfig {
+	return wbtConfig{
+		APIKey:         apiKey,
+		Port:           port,
+		StorageBackend: db.storageBackend,
+		DatabaseURL:    db.databaseURL,
+		SQLitePath:     db.sqlitePath,
+	}
 }
 
 // buildEnvFile returns the contents of the .env file to write.

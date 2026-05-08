@@ -19,6 +19,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
@@ -54,6 +56,7 @@ type ServerStores interface {
 	Proposal() proposal.StoreIface
 	Arch() arch.StoreIface
 	WorkSession() worksession.StoreIface
+	Vision() vision.StoreIface
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil
 	// when operating in legacy single-workspace mode. Used by MCP tools that
@@ -72,4 +75,12 @@ type ServerStores interface {
 	PgGTD() *gtd.Store
 	PgProposal() *proposal.Store
 	PgLearning() *learning.Store
+
+	// SqliteGTD / SqliteProposal / SqliteLearning return concrete *Store
+	// handles only when the bundle is SQLite-backed, so callers can use the
+	// *Tx transactional helpers for atomic cross-store writes (e.g. the
+	// confirm_proposal accept path). They return nil on the Postgres bundle.
+	SqliteGTD() *wbtsqlite.GTDStore
+	SqliteProposal() *wbtsqlite.ProposalStore
+	SqliteLearning() *wbtsqlite.LearningStore
 }

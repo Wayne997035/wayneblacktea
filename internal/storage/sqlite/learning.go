@@ -97,6 +97,35 @@ func (s *LearningStore) CreateConcept(ctx context.Context, title, content string
 	return s.conceptByID(ctx, conceptID)
 }
 
+// CreateConceptTx inserts a concept and its initial review_schedule row within
+// the provided *sql.Tx. It is the transactional counterpart of CreateConcept
+// and is used by the confirm_proposal accept path so that concept creation and
+// proposal resolution are committed atomically.
+func (s *LearningStore) CreateConceptTx(ctx context.Context, tx *sql.Tx, title, content string, tags []string) (uuid.UUID, error) {
+	tagsJSON, err := encodeStringSlice(tags)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	conceptID := uuid.New()
+	scheduleID := uuid.New()
+	now := sqliteNowMillis()
+	const conceptQ = `INSERT INTO concepts
+		(id, workspace_id, title, content, tags, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`
+	if _, err = tx.ExecContext(ctx, conceptQ,
+		conceptID.String(), s.db.workspaceArg(), title, content, tagsJSON, now); err != nil {
+		return uuid.UUID{}, errWrap("CreateConceptTx concept", err)
+	}
+	const scheduleQ = `INSERT INTO review_schedule
+		(id, workspace_id, concept_id, due_date, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?4, ?4)`
+	if _, err = tx.ExecContext(ctx, scheduleQ,
+		scheduleID.String(), s.db.workspaceArg(), conceptID.String(), now); err != nil {
+		return uuid.UUID{}, errWrap("CreateConceptTx schedule", err)
+	}
+	return conceptID, nil
+}
+
 // DueReviews returns concepts whose review schedule is due and status is active.
 func (s *LearningStore) DueReviews(ctx context.Context, limit int) ([]learning.DueReview, error) {
 	const q = `SELECT c.id, rs.id, c.title, c.content, rs.stability, rs.difficulty,

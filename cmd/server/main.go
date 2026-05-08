@@ -25,6 +25,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
+	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -34,6 +35,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
+	mcphttp "github.com/mark3labs/mcp-go/server"
 )
 
 //go:embed web/dist
@@ -99,6 +101,7 @@ func run() error {
 	)
 	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
+	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	// LLM provider chain (Phase 1-4 of docs/openrouter-fallback.md):
 	// classifier + concept reviewer go through the provider abstraction so
@@ -198,6 +201,10 @@ func run() error {
 
 	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
 
+	api.GET("/vision", visionH.ListVision)
+	api.POST("/vision", visionH.AddVision)
+	api.PATCH("/vision/:id", visionH.UpdateVision)
+
 	// /knowledge/search has a side-effect (bumps recall_count + last_recalled_at
 	// on every hit) so a high-rate caller can permanently subvert the Ebbinghaus
 	// decay prune by inflating recall_count past the threshold. Cap at 20 RPS
@@ -244,6 +251,20 @@ func run() error {
 	api.POST("/activity", autologH.LogActivity, activityRL)
 	api.POST("/activity/posttooluse", postToolUseH.PostToolUse, postToolUseRL)
 	api.POST("/auto-handoff", autologH.AutoHandoff, handoffRL)
+
+	// HTTP MCP transport: mount the MCP server at /mcp so Claude Code can connect via:
+	//   claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+	// The same stores used by HTTP handlers are reused — no separate DB connections needed.
+	mcpServer, err := mcpsrv.New(stores)
+	if err != nil {
+		return fmt.Errorf("initializing MCP server: %w", err)
+	}
+	if llmChain.Len() > 0 {
+		mcpServer.WithClassifier(ai.NewActivityClassifierFromLLM(llmChain))
+	}
+	mcpServer.WithSnapshot(snapStore, snapGen)
+	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
+	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {

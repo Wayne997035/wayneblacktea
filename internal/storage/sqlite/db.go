@@ -77,6 +77,18 @@ func (d *DB) workspaceArg() any {
 	return d.workspaceID
 }
 
+// BeginTx starts a new database transaction scoped to ctx. The caller is
+// responsible for calling Commit or Rollback on the returned *sql.Tx.
+// Exported so multi-store cross-domain operations (e.g. the confirm_proposal
+// accept path) can wrap several store writes in one atomic SQLite transaction.
+func (d *DB) BeginTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite BeginTx: %w", err)
+	}
+	return tx, nil
+}
+
 // ExecContext executes a query on the underlying connection. Exported so
 // integration tests in sibling packages can insert fixture rows (e.g. parent
 // tasks / sessions for cascade-cleanup tests) without depending on production

@@ -14,6 +14,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
@@ -42,6 +44,7 @@ type Server struct {
 	proposal    proposal.StoreIface
 	arch        arch.StoreIface
 	workSession worksession.StoreIface
+	vision      vision.StoreIface
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
@@ -49,6 +52,13 @@ type Server struct {
 	pgGTD      *gtd.Store
 	pgProposal *proposal.Store
 	pgLearning *learning.Store
+
+	// sqlite* are concrete SQLite-backed Stores (or nil under Postgres) used
+	// by acceptProposalSQLite to run the materialise + resolve sequence inside
+	// a single *sql.Tx for atomicity.
+	sqliteGTD      *wbtsqlite.GTDStore
+	sqliteProposal *wbtsqlite.ProposalStore
+	sqliteLearning *wbtsqlite.LearningStore
 
 	notion     *notion.Client
 	watchdog   *watchdog.Watchdog
@@ -71,22 +81,26 @@ type Server struct {
 func New(stores storage.ServerStores) (*Server, error) {
 	wsID := stores.WorkspaceID()
 	return &Server{
-		pool:        stores.PgxPool(),
-		gtd:         stores.GTD(),
-		workspace:   stores.Workspace(),
-		decision:    stores.Decision(),
-		session:     stores.Session(),
-		knowledge:   stores.Knowledge(),
-		learning:    stores.Learning(),
-		proposal:    stores.Proposal(),
-		arch:        stores.Arch(),
-		workSession: stores.WorkSession(),
-		pgGTD:       stores.PgGTD(),
-		pgProposal:  stores.PgProposal(),
-		pgLearning:  stores.PgLearning(),
-		notion:      notion.NewClient(),
-		watchdog:    watchdog.New(200),
-		workspaceID: wsID,
+		pool:           stores.PgxPool(),
+		gtd:            stores.GTD(),
+		workspace:      stores.Workspace(),
+		decision:       stores.Decision(),
+		session:        stores.Session(),
+		knowledge:      stores.Knowledge(),
+		learning:       stores.Learning(),
+		proposal:       stores.Proposal(),
+		arch:           stores.Arch(),
+		workSession:    stores.WorkSession(),
+		vision:         stores.Vision(),
+		pgGTD:          stores.PgGTD(),
+		pgProposal:     stores.PgProposal(),
+		pgLearning:     stores.PgLearning(),
+		sqliteGTD:      stores.SqliteGTD(),
+		sqliteProposal: stores.SqliteProposal(),
+		sqliteLearning: stores.SqliteLearning(),
+		notion:         notion.NewClient(),
+		watchdog:       watchdog.New(200),
+		workspaceID:    wsID,
 	}, nil
 }
 
@@ -133,6 +147,22 @@ Call list_decisions with the relevant repo_name before answering. Always verify 
 | Scope/priority changes mid-session | log_decision + update_task + set_session_handoff |
 | New follow-up discovered | add_task immediately |
 | Question about saved knowledge | search_knowledge first |
+| "未來想做" / "之後再說" / "現在還不能" / "等 X 完成才能做" / "記一下以後" | add_vision_item immediately |
+
+## MANDATORY GTD DISCIPLINE (enforced on every task)
+
+Before dispatching any engineer/agent OR starting any Lead-direct implementation:
+→ MUST call update_task(task_id, status="in_progress") for EVERY task being worked
+
+When a task is done (build passes, PR merged, or Lead-direct commit pushed):
+→ MUST call complete_task(task_id, artifact="<PR URL or commit SHA>") immediately
+
+NEVER ask "should I update the GTD?" — just do it. Missing these calls = process bug.
+Triggers:
+- "dispatch engineer" → update_task in_progress first
+- "PR merged" → complete_task with PR URL
+- "commit SHA" → complete_task with SHA
+- "task check passes" → complete_task if this was the acceptance criterion
 
 ## confirm_plan triggers
 "可以" "好" "OK" "yes" "go" "對" "衝" "開工" "開始" "執行" "按這個" — or any single letter/number picking from a list the assistant just proposed.
@@ -185,6 +215,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerDecisionTools(ms)
 	s.registerSessionTools(ms)
 	s.registerKnowledgeTools(ms)
+	s.registerKnowledgeNavTools(ms)
 	s.registerLearningTools(ms)
 	s.registerPlanTools(ms)
 	s.registerProposalTools(ms)
@@ -192,6 +223,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerArchTools(ms)
 	s.registerStatusTools(ms)
 	s.registerWorkSessionTools(ms)
+	s.registerVisionTools(ms)
 	return ms
 }
 

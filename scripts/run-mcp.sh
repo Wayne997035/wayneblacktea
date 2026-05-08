@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Starts the wayneblacktea MCP server.
+# Starts the wayneblacktea MCP server (stdio transport).
 # Sources .env.local from the project root for DATABASE_URL.
+#
+# HTTP transport alternative: when the wayneblacktea server is running
+# (e.g. via `wbt serve` or `go run ./cmd/server`), Claude Code can also
+# connect via the HTTP MCP endpoint without this script:
+#
+#   claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+#
+# This stdio script remains the recommended approach for offline / no-server use.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
