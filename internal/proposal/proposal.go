@@ -17,6 +17,7 @@ const (
 	TypeTask      Type = "task"
 	TypeConcept   Type = "concept"
 	TypeKnowledge Type = "knowledge"
+	TypePlaybook  Type = "playbook"
 )
 
 // Status is the lifecycle of a proposal record.

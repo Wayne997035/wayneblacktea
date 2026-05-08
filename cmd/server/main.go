@@ -279,7 +279,7 @@ func run() error {
 	sched, err := scheduler.New(
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
-		snapStore, snapGen, stores.WorkspaceID(), pruner,
+		snapStore, snapGen, stores.WorkspaceID(), pruner, stores.Playbook(),
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)

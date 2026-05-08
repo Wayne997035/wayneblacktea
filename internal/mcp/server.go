@@ -10,6 +10,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
+	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
@@ -45,6 +46,7 @@ type Server struct {
 	arch        arch.StoreIface
 	workSession worksession.StoreIface
 	vision      vision.StoreIface
+	playbook    playbook.StoreIface
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
@@ -92,6 +94,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		arch:           stores.Arch(),
 		workSession:    stores.WorkSession(),
 		vision:         stores.Vision(),
+		playbook:       stores.Playbook(),
 		pgGTD:          stores.PgGTD(),
 		pgProposal:     stores.PgProposal(),
 		pgLearning:     stores.PgLearning(),
@@ -148,6 +151,7 @@ Call list_decisions with the relevant repo_name before answering. Always verify 
 | New follow-up discovered | add_task immediately |
 | Question about saved knowledge | search_knowledge first |
 | "未來想做" / "之後再說" / "現在還不能" / "等 X 完成才能做" / "記一下以後" | add_vision_item immediately |
+| "Before complex task" / finding relevant patterns | list_playbooks — returns procedural rules from past decisions |
 
 ## MANDATORY GTD DISCIPLINE (enforced on every task)
 
@@ -224,6 +228,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerStatusTools(ms)
 	s.registerWorkSessionTools(ms)
 	s.registerVisionTools(ms)
+	s.registerPlaybookTools(ms)
 	return ms
 }
 
