@@ -7,6 +7,7 @@ import { DecisionsPage } from './pages/DecisionsPage'
 import { KnowledgePage } from './pages/KnowledgePage'
 import { ReviewsPage } from './pages/ReviewsPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
+import { LearningHistoryPage } from './pages/LearningHistoryPage'
 
 const router = createBrowserRouter([
   {
@@ -20,6 +21,7 @@ const router = createBrowserRouter([
       { path: 'decisions', element: <DecisionsPage /> },
       { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'reviews', element: <ReviewsPage /> },
+      { path: 'learning/history', element: <LearningHistoryPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

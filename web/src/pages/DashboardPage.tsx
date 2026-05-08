@@ -1,8 +1,8 @@
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useContextToday } from '../hooks/useContextToday'
-import { useDecisions } from '../hooks/useDecisions'
 import { useApiPing } from '../hooks/useApiPing'
+import { useDashboardStats } from '../hooks/useDashboardStats'
 import { ProjectCard } from '../components/dashboard/ProjectCard'
 import { GoalProgress } from '../components/dashboard/GoalProgress'
 import { HandoffCard } from '../components/dashboard/HandoffCard'
@@ -27,32 +27,18 @@ function formatDate(date: Date): string {
   })
 }
 
-function isTodayDecision(createdAt: string): boolean {
-  const d = new Date(createdAt)
-  const now = new Date()
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  )
-}
-
 export function DashboardPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { data, isLoading, isError } = useContextToday()
-  const decisionsQuery = useDecisions()
   const pingQuery = useApiPing()
+  const statsQuery = useDashboardStats()
 
   const activeProjects = (data?.projects ?? [])
     .filter((p) => p.status === 'active')
     .sort((a, b) => b.priority - a.priority)
 
   const weeklyProgress = data?.weekly_progress ?? { completed: 0, total: 0 }
-
-  const todayDecisionsCount = decisionsQuery.isLoading
-    ? null
-    : (decisionsQuery.data ?? []).filter((d) => isTodayDecision(d.created_at)).length
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto">
@@ -141,11 +127,11 @@ export function DashboardPage() {
             )}
           </section>
 
-          {/* Quick Stats */}
+          {/* Quick Stats — now uses real API data */}
           <section>
             <QuickStats
-              pendingTasks={isLoading ? null : activeProjects.length}
-              decisionsToday={todayDecisionsCount}
+              pendingTasks={statsQuery.isLoading ? null : (statsQuery.data?.task_total ?? null)}
+              decisionsToday={statsQuery.isLoading ? null : (statsQuery.data?.decision_count ?? null)}
               onPendingTasksClick={() => navigate('/gtd')}
             />
           </section>

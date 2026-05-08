@@ -201,3 +201,37 @@ export interface PendingProposal {
 export interface ResolveProposalRequest {
   action: 'accept' | 'reject'
 }
+
+// --- Learning History ---
+
+export type ConceptLearningStatus = 'new' | 'learning' | 'reviewing' | 'mastered'
+
+export interface ConceptHistoryItem {
+  id: string
+  title: string
+  tags: string[]
+  review_count: number
+  first_reviewed_at?: string | null
+  last_reviewed_at?: string | null
+  interval_days: number
+  next_review_at?: string | null
+  status: ConceptLearningStatus
+}
+
+export interface LearningStats {
+  total_reviews: number
+  reviews_7d: number
+  mastered: number
+  total_concepts: number
+  streak_days: number
+}
+
+// --- Dashboard Stats ---
+
+export interface DashboardStats {
+  period: string
+  task_completed: number
+  task_total: number
+  decision_count: number
+  pending_proposals: number
+}

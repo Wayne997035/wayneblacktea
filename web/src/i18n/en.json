@@ -5,7 +5,8 @@
     "workspace": "Workspace",
     "decisions": "Decisions",
     "knowledge": "Knowledge",
-    "reviews": "Reviews"
+    "reviews": "Reviews",
+    "learningHistory": "Learning History"
   },
   "dashboard": {
     "greeting": {
@@ -190,5 +191,37 @@
       "decision": "Decision",
       "task": "Task"
     }
+  },
+  "learningHistory": {
+    "title": "Learning History",
+    "statsTotal": "Total Reviews",
+    "statsStreak": "Day Streak",
+    "statsMastered": "Mastered",
+    "heatmapTitle": "Activity (last 90 days)",
+    "filterAll": "All",
+    "filterNew": "New",
+    "filterLearning": "Learning",
+    "filterReviewing": "Reviewing",
+    "filterMastered": "Mastered",
+    "conceptReviewCount": "{{count}} reviews",
+    "conceptNextReview": "Next: {{date}}",
+    "conceptDaysLearning": "Learning {{days}} days",
+    "noItems": "No learning history yet"
+  },
+  "proposals": {
+    "tabs": {
+      "pending": "Pending",
+      "accepted": "Accepted",
+      "rejected": "Rejected",
+      "all": "All"
+    },
+    "movedToAccepted": "Moved to \"Accepted\" tab",
+    "movedToRejected": "Moved to \"Rejected\" tab",
+    "statusBadge": {
+      "accepted": "Accepted",
+      "rejected": "Rejected",
+      "pending": "Pending"
+    },
+    "resolvedAgo": "{{time}} ago"
   }
 }

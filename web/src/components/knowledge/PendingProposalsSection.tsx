@@ -1,18 +1,25 @@
 import { useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { usePendingProposals } from '../../hooks/usePendingProposals'
+import { usePendingProposals, useAllProposals } from '../../hooks/usePendingProposals'
 import { useResolveProposal } from '../../hooks/useResolveProposal'
 import { useConfirmBatchProposals } from '../../hooks/useConfirmBatchProposals'
 import { useToastStore } from '../../stores/toastStore'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { PendingProposalCard } from './PendingProposalCard'
-import type { PendingProposal, ProposalType } from '../../types/api'
+import type { PendingProposal, ProposalType, ProposalStatus } from '../../types/api'
 
 // ----- types -----
 
 interface GroupState {
   collapsed: boolean
+}
+
+// Optimistic override: tracks cards that have been acted on in "pending" tab
+interface OptimisticResolution {
+  status: ProposalStatus
+  resolvedAt: string
 }
 
 // ----- helpers -----
@@ -25,12 +32,21 @@ const TYPE_LABELS: Record<ProposalType, string> = {
   concept: 'Concepts',
 }
 
+const VALID_STATUSES = ['pending', 'accepted', 'rejected', 'all'] as const
+type TabStatus = typeof VALID_STATUSES[number]
+
+function isValidStatus(s: string | null): s is TabStatus {
+  return VALID_STATUSES.includes(s as TabStatus)
+}
+
 function groupByType(proposals: PendingProposal[]): Record<ProposalType, PendingProposal[]> {
   const result: Record<ProposalType, PendingProposal[]> = {
     goal: [], project: [], task: [], concept: [],
   }
   for (const p of proposals) {
-    result[p.type].push(p)
+    if (p.type in result) {
+      result[p.type as ProposalType].push(p)
+    }
   }
   return result
 }
@@ -40,6 +56,19 @@ function groupByType(proposals: PendingProposal[]): Record<ProposalType, Pending
 export function PendingProposalsSection() {
   const { t } = useTranslation()
   const { addToast } = useToastStore()
+
+  // URL search param for active tab status
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawStatus = searchParams.get('status')
+  const activeTab: TabStatus = isValidStatus(rawStatus) ? rawStatus : 'pending'
+
+  function setActiveTab(tab: TabStatus) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('status', tab)
+      return next
+    })
+  }
 
   // Section collapse
   const [sectionCollapsed, setSectionCollapsed] = useState(false)
@@ -56,6 +85,11 @@ export function PendingProposalsSection() {
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [errorId, setErrorId] = useState<string | null>(null)
 
+  // Optimistic resolutions: id -> { status, resolvedAt } for cards acted on in pending tab
+  const [optimisticResolutions, setOptimisticResolutions] = useState<
+    Map<string, OptimisticResolution>
+  >(new Map())
+
   // Batch selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
@@ -63,12 +97,44 @@ export function PendingProposalsSection() {
   const batchDialogRef = useRef<HTMLDialogElement>(null)
   const [pendingBatchAction, setPendingBatchAction] = useState<'accept' | 'reject' | null>(null)
 
-  const { data: proposals = [], isLoading, isError, refetch } = usePendingProposals()
+  // For pending tab: use the original hook (no regression)
+  const pendingQuery = usePendingProposals()
+
+  // For other tabs: use the new hook that supports status filtering
+  const allQuery = useAllProposals(activeTab)
+
+  const isLoading = activeTab === 'pending' ? pendingQuery.isLoading : allQuery.isLoading
+  const isError = activeTab === 'pending' ? pendingQuery.isError : allQuery.isError
+  const refetch = activeTab === 'pending' ? pendingQuery.refetch : allQuery.refetch
+
+  // Raw proposals from the query
+  const rawProposals: PendingProposal[] = activeTab === 'pending'
+    ? (pendingQuery.data ?? [])
+    : (allQuery.data ?? [])
+
+  // In the pending tab, merge optimistic resolutions into the card list
+  // Cards stay visible but show their new accepted/rejected state
+  const proposals: PendingProposal[] = activeTab === 'pending'
+    ? rawProposals.map((p) => {
+        const override = optimisticResolutions.get(p.id)
+        if (override) {
+          return { ...p, status: override.status, resolved_at: override.resolvedAt }
+        }
+        return p
+      })
+    : rawProposals
+
   const resolveMutation = useResolveProposal()
   const batchMutation = useConfirmBatchProposals()
 
+  // Tab counts: for pending tab use raw pending count; for others use query data
+  const pendingCount = pendingQuery.data?.length ?? 0
+  const acceptedCount = activeTab === 'accepted' ? rawProposals.length : null
+  const rejectedCount = activeTab === 'rejected' ? rawProposals.length : null
+  const allCount = activeTab === 'all' ? rawProposals.length : null
+
   // Only render when there's something to show
-  if (!isLoading && !isError && proposals.length === 0) {
+  if (!isLoading && !isError && proposals.length === 0 && activeTab === 'pending') {
     return null
   }
 
@@ -86,17 +152,24 @@ export function PendingProposalsSection() {
   }
 
   function toggleSelectAll() {
-    if (selectedIds.size === proposals.length) {
+    // Only allow selecting cards that are still pending
+    const selectablePending = proposals.filter((p) => {
+      const override = optimisticResolutions.get(p.id)
+      return !override
+    })
+    if (selectedIds.size === selectablePending.length && selectablePending.length > 0) {
       setSelectedIds(new Set())
     } else {
-      setSelectedIds(new Set(proposals.map((p) => p.id)))
+      setSelectedIds(new Set(selectablePending.map((p) => p.id)))
     }
   }
 
   function selectAllOfType(type: ProposalType) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      for (const p of grouped[type]) next.add(p.id)
+      for (const p of grouped[type]) {
+        if (!optimisticResolutions.has(p.id)) next.add(p.id)
+      }
       return next
     })
   }
@@ -105,13 +178,15 @@ export function PendingProposalsSection() {
     setSelectedIds((prev) => {
       const next = new Set(prev)
       for (const p of proposals) {
-        if (!p.payload.source_item_id) next.add(p.id) // agent-proposed
+        if (!p.payload.source_item_id && !optimisticResolutions.has(p.id)) next.add(p.id)
       }
       return next
     })
   }
 
-  const allSelected = proposals.length > 0 && selectedIds.size === proposals.length
+  // Cards still pending (not yet acted on)
+  const selectablePendingCount = proposals.filter((p) => !optimisticResolutions.has(p.id)).length
+  const allSelected = selectablePendingCount > 0 && selectedIds.size === selectablePendingCount
   const someSelected = selectedIds.size > 0 && !allSelected
   const selectedCount = selectedIds.size
 
@@ -126,7 +201,17 @@ export function PendingProposalsSection() {
         onSuccess: () => {
           setPendingId(null)
           setSelectedIds((prev) => { const n = new Set(prev); n.delete(id); return n })
+          // Optimistically update card state — keep it visible in pending tab
+          setOptimisticResolutions((prev) => {
+            const next = new Map(prev)
+            next.set(id, { status: 'accepted', resolvedAt: new Date().toISOString() })
+            return next
+          })
           addToast({ type: 'success', message: t('knowledge.proposals.acceptedToast') })
+          // After 3 seconds, show "moved to Accepted tab" toast
+          setTimeout(() => {
+            addToast({ type: 'info', message: t('proposals.movedToAccepted') })
+          }, 3000)
         },
         onError: () => {
           setPendingId(null)
@@ -145,7 +230,17 @@ export function PendingProposalsSection() {
         onSuccess: () => {
           setPendingId(null)
           setSelectedIds((prev) => { const n = new Set(prev); n.delete(id); return n })
+          // Optimistically update card state — keep it visible in pending tab
+          setOptimisticResolutions((prev) => {
+            const next = new Map(prev)
+            next.set(id, { status: 'rejected', resolvedAt: new Date().toISOString() })
+            return next
+          })
           addToast({ type: 'info', message: t('knowledge.proposals.rejectedToast') })
+          // After 3 seconds, show "moved to Rejected tab" toast
+          setTimeout(() => {
+            addToast({ type: 'info', message: t('proposals.movedToRejected') })
+          }, 3000)
         },
         onError: () => {
           setPendingId(null)
@@ -163,6 +258,14 @@ export function PendingProposalsSection() {
       { ids, action },
       {
         onSuccess: () => {
+          const now = new Date().toISOString()
+          setOptimisticResolutions((prev) => {
+            const next = new Map(prev)
+            for (const id of ids) {
+              next.set(id, { status: action === 'accept' ? 'accepted' : 'rejected', resolvedAt: now })
+            }
+            return next
+          })
           setSelectedIds(new Set())
           const msg = action === 'accept'
             ? t('knowledge.proposals.batchAcceptedToast', { count: ids.length, defaultValue: `${ids.length} proposals accepted` })
@@ -202,7 +305,15 @@ export function PendingProposalsSection() {
 
   const countLabel = isLoading
     ? '…'
-    : t('knowledge.proposals.awaiting', { count: proposals.length })
+    : t('knowledge.proposals.awaiting', { count: pendingCount })
+
+  // Tab definitions
+  const tabs: { key: TabStatus; labelKey: string; count: number | null }[] = [
+    { key: 'pending', labelKey: 'proposals.tabs.pending', count: pendingCount },
+    { key: 'accepted', labelKey: 'proposals.tabs.accepted', count: acceptedCount },
+    { key: 'rejected', labelKey: 'proposals.tabs.rejected', count: rejectedCount },
+    { key: 'all', labelKey: 'proposals.tabs.all', count: allCount },
+  ]
 
   return (
     <section
@@ -224,7 +335,7 @@ export function PendingProposalsSection() {
           >
             {t('knowledge.proposals.sectionTitle')}
           </h2>
-          {!isLoading && !isError && (
+          {!isLoading && !isError && activeTab === 'pending' && (
             <span
               className="text-label rounded-full px-2 py-0.5"
               style={{
@@ -235,8 +346,8 @@ export function PendingProposalsSection() {
               {countLabel}
             </span>
           )}
-          {/* Source summary */}
-          {!isLoading && !isError && proposals.length > 0 && (
+          {/* Source summary (only on pending tab) */}
+          {!isLoading && !isError && activeTab === 'pending' && proposals.length > 0 && (
             <span
               className="text-caption"
               style={{ color: 'var(--color-text-muted)' }}
@@ -269,6 +380,49 @@ export function PendingProposalsSection() {
             ? <ChevronRight size={14} aria-hidden="true" />
             : <ChevronDown size={14} aria-hidden="true" />}
         </button>
+      </div>
+
+      {/* Status tabs */}
+      <div
+        role="tablist"
+        aria-label="Proposal status tabs"
+        className="flex gap-1 mb-4 flex-wrap"
+      >
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.key
+          return (
+            <button
+              key={tab.key}
+              role="tab"
+              type="button"
+              aria-selected={isActive}
+              onClick={() => setActiveTab(tab.key)}
+              className="rounded-md px-3 py-1.5 text-body-sm transition-colors flex items-center gap-1.5"
+              style={{
+                background: isActive ? 'var(--color-accent-blue)' : 'var(--color-bg-hover)',
+                color: isActive ? 'var(--color-bg-base)' : 'var(--color-text-muted)',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: isActive ? 600 : 400,
+              }}
+            >
+              {t(tab.labelKey)}
+              {tab.count !== null && (
+                <span
+                  className="text-label rounded-full px-1.5 py-0.5"
+                  style={{
+                    background: isActive ? 'rgba(0,0,0,0.2)' : 'var(--color-bg-input)',
+                    color: isActive ? 'var(--color-bg-base)' : 'var(--color-text-muted)',
+                    minWidth: '20px',
+                    textAlign: 'center',
+                  }}
+                >
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {/* Body */}
@@ -304,58 +458,67 @@ export function PendingProposalsSection() {
                 {t('common.retry')}
               </button>
             </div>
+          ) : proposals.length === 0 ? (
+            <div
+              className="text-body-sm py-6 text-center"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {activeTab === 'pending' ? t('knowledge.proposals.awaiting', { count: 0 }) : t('common.empty')}
+            </div>
           ) : (
             <>
-              {/* Batch toolbar */}
-              <div className="flex items-center gap-3 mb-4 flex-wrap">
-                {/* Select all checkbox */}
-                <label className="flex items-center gap-2 text-body-sm" style={{ color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = someSelected
-                    }}
-                    onChange={toggleSelectAll}
-                    aria-label="Select all proposals"
-                    style={{
-                      width: '16px',
-                      height: '16px',
-                      cursor: 'pointer',
-                      accentColor: 'var(--color-accent-blue)',
-                    }}
-                  />
-                  Select all
-                </label>
+              {/* Batch toolbar — only show in pending tab */}
+              {activeTab === 'pending' && (
+                <div className="flex items-center gap-3 mb-4 flex-wrap">
+                  {/* Select all checkbox */}
+                  <label className="flex items-center gap-2 text-body-sm" style={{ color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someSelected
+                      }}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all proposals"
+                      style={{
+                        width: '16px',
+                        height: '16px',
+                        cursor: 'pointer',
+                        accentColor: 'var(--color-accent-blue)',
+                      }}
+                    />
+                    Select all
+                  </label>
 
-                {/* Quick filters */}
-                <button
-                  type="button"
-                  onClick={() => selectAllOfType('concept')}
-                  className="rounded px-2 py-0.5 text-label transition-opacity hover:opacity-80"
-                  style={{
-                    background: 'var(--color-bg-hover)',
-                    border: '1px solid var(--color-border)',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  All concepts
-                </button>
-                <button
-                  type="button"
-                  onClick={selectAllAutoSource}
-                  className="rounded px-2 py-0.5 text-label transition-opacity hover:opacity-80"
-                  style={{
-                    background: 'var(--color-bg-hover)',
-                    border: '1px solid var(--color-border)',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  All agent-proposed
-                </button>
-              </div>
+                  {/* Quick filters */}
+                  <button
+                    type="button"
+                    onClick={() => selectAllOfType('concept')}
+                    className="rounded px-2 py-0.5 text-label transition-opacity hover:opacity-80"
+                    style={{
+                      background: 'var(--color-bg-hover)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    All concepts
+                  </button>
+                  <button
+                    type="button"
+                    onClick={selectAllAutoSource}
+                    className="rounded px-2 py-0.5 text-label transition-opacity hover:opacity-80"
+                    style={{
+                      background: 'var(--color-bg-hover)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    All agent-proposed
+                  </button>
+                </div>
+              )}
 
               {/* Groups by type */}
               {TYPE_ORDER.map((type) => {
@@ -404,18 +567,23 @@ export function PendingProposalsSection() {
                     </button>
 
                     {/* Group cards */}
-                    {!isGroupCollapsed && group.map((p) => (
-                      <PendingProposalCard
-                        key={p.id}
-                        proposal={p}
-                        onAccept={handleAccept}
-                        onReject={handleReject}
-                        isPending={pendingId === p.id}
-                        error={errorId === p.id}
-                        selected={selectedIds.has(p.id)}
-                        onSelectChange={toggleSelect}
-                      />
-                    ))}
+                    {!isGroupCollapsed && group.map((p) => {
+                      const optimistic = optimisticResolutions.get(p.id)
+                      return (
+                        <PendingProposalCard
+                          key={p.id}
+                          proposal={p}
+                          onAccept={handleAccept}
+                          onReject={handleReject}
+                          isPending={pendingId === p.id}
+                          error={errorId === p.id}
+                          selected={selectedIds.has(p.id)}
+                          onSelectChange={toggleSelect}
+                          optimisticStatus={optimistic?.status ?? null}
+                          optimisticResolvedAt={optimistic?.resolvedAt ?? null}
+                        />
+                      )
+                    })}
                   </div>
                 )
               })}
@@ -425,7 +593,7 @@ export function PendingProposalsSection() {
       )}
 
       {/* Footer sticky bar — shown when items are selected */}
-      {selectedCount > 0 && !sectionCollapsed && !isLoading && !isError && (
+      {selectedCount > 0 && !sectionCollapsed && !isLoading && !isError && activeTab === 'pending' && (
         <div
           className="sticky bottom-0 flex items-center justify-between gap-3 mt-4 rounded-md px-4 py-3"
           style={{
