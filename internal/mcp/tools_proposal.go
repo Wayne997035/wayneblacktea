@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+const errTaskProposalNotMaterialized = "task proposals are not materialized via confirm_proposal in Phase B1; use add_task directly"
 
 // goalPayload is the JSONB shape stored in pending_proposals when type=goal.
 type goalPayload struct {
@@ -268,6 +271,9 @@ func (s *Server) acceptProposal(ctx context.Context, id uuid.UUID) (*mcp.CallToo
 	if s.pool != nil {
 		return s.acceptProposalPg(ctx, id)
 	}
+	if s.sqliteProposal != nil {
+		return s.acceptProposalSQLite(ctx, id)
+	}
 	return s.acceptProposalSequential(ctx, id)
 }
 
@@ -340,6 +346,104 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 	return jsonText(confirmResult{Proposal: resolved, Created: created})
 }
 
+// acceptProposalSQLite runs the materialise + resolve sequence inside a single
+// *sql.Tx begun on the shared SQLite connection. This eliminates the race
+// condition in acceptProposalSequential where two goroutines calling accept on
+// the same proposal can each see status='pending' and materialise the entity,
+// resulting in a duplicate with one proposal remaining pending.
+//
+// With this path:
+//   - The entity is written inside the tx.
+//   - ResolveTx atomically flips the proposal to accepted (WHERE status='pending').
+//   - If a concurrent goroutine already committed first, ResolveTx returns
+//     ErrNotFound and the whole tx is rolled back — no orphan entity is left.
+func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.CallToolResult, error) {
+	prop, err := s.proposal.Get(ctx, id)
+	if errors.Is(err, proposal.ErrNotFound) {
+		return mcp.NewToolResultError("proposal not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+	}
+	if prop.Status != string(proposal.StatusPending) {
+		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
+	}
+
+	tx, err := s.sqliteProposal.DB().BeginTx(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("beginning transaction: %v", err)), nil
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	created, errMsg := s.materializeFromPayloadSQLiteTx(ctx, tx, prop)
+	if errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
+	}
+
+	if err := s.sqliteProposal.ResolveTx(ctx, tx, id, proposal.StatusAccepted); err != nil {
+		if errors.Is(err, proposal.ErrNotFound) {
+			return mcp.NewToolResultError("proposal already resolved by concurrent request"), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal: %v", err)), nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("committing transaction: %v", err)), nil
+	}
+
+	// Fetch the resolved proposal for the response (committed tx is closed).
+	resolved, err := s.proposal.Get(ctx, id)
+	if err != nil {
+		// Commit succeeded — return partial result rather than an error.
+		return jsonText(confirmResult{Created: created})
+	}
+	return jsonText(confirmResult{Proposal: resolved, Created: created})
+}
+
+// materializeFromPayloadSQLiteTx creates the concrete entity for a proposal
+// inside the provided *sql.Tx, using the Tx-aware store methods. Returns the
+// created entity (or nil for types with no materialisation) plus an error
+// message string (empty = success). All writes go through the open tx so the
+// caller can atomically commit entity + proposal-resolve in one transaction.
+func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx, prop *db.PendingProposal) (any, string) {
+	switch proposal.Type(prop.Type) {
+	case proposal.TypeGoal:
+		gp, errMsg := decodeGoalParams(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		goalID, err := s.sqliteGTD.CreateGoalTx(ctx, tx, gp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating goal: %v", err)
+		}
+		return map[string]string{"id": goalID.String(), "title": gp.Title}, ""
+	case proposal.TypeProject:
+		pp, errMsg := decodeProjectParams(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		projectID, err := s.sqliteGTD.CreateProjectTx(ctx, tx, pp)
+		if err != nil {
+			return nil, fmt.Sprintf("creating project: %v", err)
+		}
+		return map[string]string{"id": projectID.String(), "name": pp.Name, "title": pp.Title}, ""
+	case proposal.TypeConcept:
+		cp, errMsg := decodeConceptPayload(prop.Payload)
+		if errMsg != "" {
+			return nil, errMsg
+		}
+		conceptID, err := s.sqliteLearning.CreateConceptTx(ctx, tx, cp.Title, cp.Content, cp.Tags)
+		if err != nil {
+			return nil, fmt.Sprintf("creating concept: %v", err)
+		}
+		return map[string]string{"id": conceptID.String(), "title": cp.Title}, ""
+	case proposal.TypeTask:
+		return nil, errTaskProposalNotMaterialized
+	default:
+		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
+	}
+}
+
 // materializeFromPayloadPg decodes the proposal's payload and creates the
 // concrete entity inside the given pgx transaction. Returns the created
 // entity or an error message string (empty = success). Postgres-only.
@@ -376,7 +480,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 		}
 		return concept, ""
 	case proposal.TypeTask:
-		return nil, "task proposals are not materialized via confirm_proposal in Phase B1; use add_task directly"
+		return nil, errTaskProposalNotMaterialized
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
@@ -418,7 +522,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 		}
 		return concept, ""
 	case proposal.TypeTask:
-		return nil, "task proposals are not materialized via confirm_proposal in Phase B1; use add_task directly"
+		return nil, errTaskProposalNotMaterialized
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}

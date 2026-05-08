@@ -31,10 +31,12 @@ var _ knowledge.StoreIface = (*KnowledgeStore)(nil)
 
 // knowledgeSelectCols is the explicit column list for all read queries.
 // Decay fields (importance, recall_count, last_recalled_at, base_lambda, archived_at)
-// were added in migration 000019.
+// were added in migration 000019. Hierarchy fields (parent_id, heading_path,
+// heading_level) were added in schema.sql alongside migration 000027.
 const knowledgeSelectCols = `id, type, title, content, url, tags,
 	created_at, updated_at, source, learning_value, workspace_id,
-	importance, recall_count, last_recalled_at, base_lambda, archived_at`
+	importance, recall_count, last_recalled_at, base_lambda, archived_at,
+	parent_id, heading_path, heading_level`
 
 func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	var (
@@ -46,11 +48,15 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 		learningValueNullableInteger sql.NullInt32
 		lastRecalledNS               sql.NullString
 		archivedNS                   sql.NullString
+		parentIDNS                   sql.NullString
+		headingPathNS                sql.NullString
+		headingLevelNS               sql.NullInt32
 	)
 	err := scan(
 		&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
 		&createdNS, &updatedNS, &item.Source, &learningValueNullableInteger, &workspaceNS,
 		&item.Importance, &item.RecallCount, &lastRecalledNS, &item.BaseLambda, &archivedNS,
+		&parentIDNS, &headingPathNS, &headingLevelNS,
 	)
 	if err != nil {
 		return db.KnowledgeItem{}, err
@@ -72,13 +78,25 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	item.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
 	item.LastRecalledAt = parseTimestamptz(lastRecalledNS)
 	item.ArchivedAt = parseTimestamptz(archivedNS)
+	item.ParentID = pgtypeUUID(nsString(parentIDNS))
+	if headingPathNS.Valid {
+		item.HeadingPath = pgtype.Text{String: headingPathNS.String, Valid: true}
+	}
+	if headingLevelNS.Valid {
+		item.HeadingLevel = pgtype.Int4{Int32: headingLevelNS.Int32, Valid: true}
+	}
 	return item, nil
 }
 
 // AddItem creates a knowledge item using LIKE/search-only SQLite v2 semantics.
+// When p.Content contains ATX Markdown headings and p.ParentID is nil, it also
+// inserts child rows for each section (fan-out). Fan-out failures are non-fatal.
 func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error) {
-	if err := s.urlDedupCheck(ctx, p.URL); err != nil {
-		return nil, err
+	// URL dedup only for top-level items.
+	if p.ParentID == nil {
+		if err := s.urlDedupCheck(ctx, p.URL); err != nil {
+			return nil, err
+		}
 	}
 
 	tagsJSON, err := encodeStringSlice(p.Tags)
@@ -96,16 +114,70 @@ func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams)
 
 	id := uuid.New()
 	now := sqliteNowMillis()
+
+	var parentIDArg any
+	if p.ParentID != nil {
+		parentIDArg = uuid.UUID(*p.ParentID).String()
+	}
+	var headingPathArg any
+	if p.HeadingPath != "" {
+		headingPathArg = p.HeadingPath
+	}
+	var headingLevelArg any
+	if p.HeadingLevel > 0 || p.ParentID != nil {
+		headingLevelArg = p.HeadingLevel
+	}
+
 	const q = `INSERT INTO knowledge_items
-		(id, workspace_id, type, title, content, url, tags, source, learning_value, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`
+		(id, workspace_id, type, title, content, url, tags, source, learning_value,
+		 created_at, updated_at, parent_id, heading_path, heading_level)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13)`
 	_, err = s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), p.Type, p.Title, p.Content,
-		nullStringIfEmpty(p.URL), tagsJSON, source, learningValue, now)
+		nullStringIfEmpty(p.URL), tagsJSON, source, learningValue, now,
+		parentIDArg, headingPathArg, headingLevelArg)
 	if err != nil {
 		return nil, errWrap("AddKnowledgeItem", err)
 	}
-	return s.GetByID(ctx, id)
+
+	item, err := s.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fan-out: insert section children for top-level Markdown items.
+	if p.ParentID == nil {
+		s.fanOutSections(ctx, item, p)
+	}
+
+	return item, nil
+}
+
+// fanOutSections parses Markdown headings from p.Content and inserts a child
+// knowledge item per section. Failures are logged at Warn only — the root item
+// is already committed.
+func (s *KnowledgeStore) fanOutSections(ctx context.Context, root *db.KnowledgeItem, p knowledge.AddItemParams) {
+	sections := knowledge.ParseMarkdownSections(p.Content)
+	if len(sections) == 0 {
+		return
+	}
+	parentBytes := [16]byte(root.ID)
+	for _, sec := range sections {
+		childP := knowledge.AddItemParams{
+			Type:         p.Type,
+			Title:        sec.Title,
+			Content:      sec.Content,
+			Tags:         p.Tags,
+			Source:       p.Source,
+			ParentID:     &parentBytes,
+			HeadingPath:  sec.HeadingPath,
+			HeadingLevel: sec.Level,
+		}
+		if _, err := s.AddItem(ctx, childP); err != nil {
+			slog.Warn("sqlite knowledge fan-out child insert failed",
+				"root_id", root.ID, "heading", sec.HeadingPath, "err", err)
+		}
+	}
 }
 
 func (s *KnowledgeStore) urlDedupCheck(ctx context.Context, url string) error {
@@ -147,6 +219,8 @@ type knowledgeWithStrength struct {
 // Search performs a portable LIKE search over title and content.
 // Results are sorted app-side by Ebbinghaus strength so fresh high-importance
 // items appear first. On each hit, recall_count is incremented atomically.
+//
+//nolint:dupl // intentionally similar to SearchCoarse but searches all levels; extraction would complicate the query
 func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
 	pattern := "%" + escapeLike(query) + "%"
 	// Fetch more candidates than limit so the strength reordering has room.
@@ -185,6 +259,55 @@ func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([
 	}
 
 	// Bump recall atomically for returned items.
+	out := make([]db.KnowledgeItem, 0, len(ranked))
+	ids := make([]string, 0, len(ranked))
+	for _, r := range ranked {
+		out = append(out, r.item)
+		ids = append(ids, r.item.ID.String())
+	}
+	s.bumpRecall(ctx, ids)
+	return out, nil
+}
+
+// SearchCoarse searches only root-level rows (parent_id IS NULL,
+// COALESCE(heading_level, 0) = 0) using LIKE. Used by search_knowledge mode="coarse".
+//
+//nolint:dupl // intentionally similar to Search but filtered to root-level rows; extraction would complicate the query
+func (s *KnowledgeStore) SearchCoarse(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	pattern := "%" + escapeLike(query) + "%"
+	fetchLimit := limit * 3
+	if fetchLimit < 50 {
+		fetchLimit = 50
+	}
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE (title LIKE ?1 ESCAPE '\' OR content LIKE ?1 ESCAPE '\')
+		  AND archived_at IS NULL
+		  AND parent_id IS NULL
+		  AND COALESCE(heading_level, 0) = 0
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY
+		  CASE WHEN title LIKE ?1 ESCAPE '\' THEN 0 ELSE 1 END,
+		  created_at DESC, id DESC
+		LIMIT ?3`
+	items, err := s.list(ctx, "SearchCoarse", q, pattern, s.db.workspaceArg(), fetchLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	ranked := make([]knowledgeWithStrength, 0, len(items))
+	for _, item := range items {
+		ageDays := computeAgeDays(item, now)
+		str := decay.ComputeStrength(item.Importance, item.BaseLambda, ageDays, int(item.RecallCount))
+		ranked = append(ranked, knowledgeWithStrength{item: item, strength: str})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		return ranked[i].strength > ranked[j].strength
+	})
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+
 	out := make([]db.KnowledgeItem, 0, len(ranked))
 	ids := make([]string, 0, len(ranked))
 	for _, r := range ranked {
@@ -323,21 +446,24 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 	}
 	var candidates []scored
 	for rows.Next() {
-		// SECURITY/correctness: scan list MUST match knowledgeSelectCols (16 cols)
-		// + trailing embedding BLOB = 17 destinations. Migration 000019 added
-		// 5 decay columns (importance, recall_count, last_recalled_at,
-		// base_lambda, archived_at); a 12-arg scan would silently fail every
-		// row and return zero results (security audit C-1).
+		// SECURITY/correctness: scan list MUST match knowledgeSelectCols (19 cols)
+		// + trailing embedding BLOB = 20 destinations. Migration 000019 added
+		// 5 decay columns; migration 000027 added 3 hierarchy columns
+		// (parent_id, heading_path, heading_level). A shorter scan silently
+		// fails and returns zero results (security audit C-1).
 		var item db.KnowledgeItem
 		var idStr string
 		var urlNS, tagsNS, createdNS, updatedNS, workspaceNS sql.NullString
 		var learningValue sql.NullInt32
 		var lastRecalledNS, archivedNS sql.NullString
+		var parentIDNS, headingPathNS sql.NullString
+		var headingLevelNS sql.NullInt32
 		var rawEmbed []byte
 		if err := rows.Scan(
 			&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
 			&createdNS, &updatedNS, &item.Source, &learningValue, &workspaceNS,
 			&item.Importance, &item.RecallCount, &lastRecalledNS, &item.BaseLambda, &archivedNS,
+			&parentIDNS, &headingPathNS, &headingLevelNS,
 			&rawEmbed,
 		); err != nil {
 			continue
@@ -356,6 +482,13 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 		item.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
 		item.LastRecalledAt = parseTimestamptz(lastRecalledNS)
 		item.ArchivedAt = parseTimestamptz(archivedNS)
+		item.ParentID = pgtypeUUID(nsString(parentIDNS))
+		if headingPathNS.Valid {
+			item.HeadingPath = pgtype.Text{String: headingPathNS.String, Valid: true}
+		}
+		if headingLevelNS.Valid {
+			item.HeadingLevel = pgtype.Int4{Int32: headingLevelNS.Int32, Valid: true}
+		}
 
 		vec := localai.DeserializeEmbedding(rawEmbed)
 		if vec == nil {
@@ -440,4 +573,42 @@ func (s *KnowledgeStore) list(ctx context.Context, op, q string, args ...any) ([
 		return []db.KnowledgeItem{}, nil
 	}
 	return out, nil
+}
+
+// ListChildren returns direct children of parentID ordered by heading_level, created_at.
+// Used by navigate_knowledge and outline_knowledge MCP tools.
+func (s *KnowledgeStore) ListChildren(ctx context.Context, parentID uuid.UUID) ([]*db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE parent_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY COALESCE(heading_level, 0) ASC, created_at ASC`
+	items, err := s.list(ctx, "ListChildren", q, parentID.String(), s.db.workspaceArg())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*db.KnowledgeItem, len(items))
+	for i := range items {
+		cp := items[i]
+		result[i] = &cp
+	}
+	return result, nil
+}
+
+// ListRoots returns top-level items (parent_id IS NULL) ordered by creation
+// date descending. Used by navigate_knowledge when no parent_id is supplied.
+func (s *KnowledgeStore) ListRoots(ctx context.Context) ([]*db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE parent_id IS NULL
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY created_at DESC`
+	items, err := s.list(ctx, "ListRoots", q, s.db.workspaceArg())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*db.KnowledgeItem, len(items))
+	for i := range items {
+		cp := items[i]
+		result[i] = &cp
+	}
+	return result, nil
 }

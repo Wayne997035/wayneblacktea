@@ -1,0 +1,229 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
+	"github.com/google/uuid"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func (s *Server) registerVisionTools(ms *server.MCPServer) {
+	ms.AddTool(mcp.NewTool("add_vision_item",
+		mcp.WithDescription(
+			"Records a future idea that cannot be acted on now. "+
+				"CALL when user says: '未來想做', '之後再說', '現在還不能', "+
+				"'等 X 完成才能做', '記一下以後', or anything that is conceptually "+
+				"valuable but currently blocked by dependencies, resources, or timing.",
+		),
+		mcp.WithString("title", mcp.Description("Short descriptive title of the vision item"), mcp.Required()),
+		mcp.WithString("why_blocked", mcp.Description("Why this cannot be acted on now — what is blocking it"), mcp.Required()),
+		mcp.WithString("depends_on", mcp.Description("JSON array of task IDs or strings this item depends on (e.g. '[\"task-abc\"]')")),
+		mcp.WithString("parent_initiative", mcp.Description("Name of the broader initiative or roadmap this belongs to")),
+		mcp.WithString("context_md", mcp.Description("Optional markdown notes with additional context")),
+		mcp.WithString("repo_name", mcp.Description("Repository or project slug this idea belongs to")),
+	), s.handleAddVisionItem)
+
+	ms.AddTool(mcp.NewTool("list_vision_items",
+		mcp.WithDescription("Lists vision items (future ideas). Returns summary view (no context_md) for brevity."),
+		mcp.WithString("parent_initiative", mcp.Description("Filter by initiative/roadmap name")),
+		mcp.WithString("status", mcp.Description(
+			"Filter by status: open, discussing, maturing, promoted, dismissed. Default: all non-dismissed.")),
+	), s.handleListVisionItems)
+
+	ms.AddTool(mcp.NewTool("update_vision_item",
+		mcp.WithDescription("Updates a vision item's status or context. Auto-sets last_discussed_at to NOW() if not provided."),
+		mcp.WithString("id", mcp.Description("Vision item UUID"), mcp.Required()),
+		mcp.WithString("status", mcp.Description("New status: open, discussing, maturing, promoted, dismissed")),
+		mcp.WithString("context_md", mcp.Description("Updated markdown context notes")),
+		mcp.WithString("last_discussed_at", mcp.Description("Override discussion timestamp in RFC3339 format")),
+	), s.handleUpdateVisionItem)
+
+	ms.AddTool(mcp.NewTool("promote_vision_to_task",
+		mcp.WithDescription(
+			"Promotes a vision item to a real GTD task. "+
+				"Creates the GTD task, marks vision item status='promoted', "+
+				"and links vision item to the new task via promoted_task_id.",
+		),
+		mcp.WithString("id", mcp.Description("Vision item UUID to promote"), mcp.Required()),
+		mcp.WithString("title", mcp.Description("GTD task title (defaults to vision item title if omitted)")),
+		mcp.WithString("description", mcp.Description("GTD task description")),
+		mcp.WithNumber("priority", mcp.Description("GTD task priority 1-5 (lower is higher). Default: 3.")),
+	), s.handlePromoteVisionToTask)
+}
+
+func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	title := stringArg(args, "title")
+	whyBlocked := stringArg(args, "why_blocked")
+	if title == "" {
+		return mcp.NewToolResultError("title is required"), nil
+	}
+	if whyBlocked == "" {
+		return mcp.NewToolResultError("why_blocked is required"), nil
+	}
+
+	var dependsOn []string
+	if raw := stringArg(args, "depends_on"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &dependsOn); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("depends_on must be a valid JSON array: %v", err)), nil
+		}
+	}
+
+	p := vision.AddVisionParams{
+		Title:            title,
+		WhyBlocked:       whyBlocked,
+		DependsOn:        dependsOn,
+		ParentInitiative: stringArg(args, "parent_initiative"),
+		ContextMD:        stringArg(args, "context_md"),
+		RepoName:         stringArg(args, "repo_name"),
+	}
+	// Scope to workspace if available.
+	if wsID := s.workspaceUUID(); wsID != nil {
+		p.WorkspaceID = wsID
+	}
+
+	item, err := s.vision.Add(ctx, p)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("adding vision item: %v", err)), nil
+	}
+	return jsonText(item)
+}
+
+func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	filter := vision.ListVisionFilter{
+		ParentInitiative: stringArg(args, "parent_initiative"),
+	}
+	if raw := stringArg(args, "status"); raw != "" {
+		s := vision.VisionStatus(raw)
+		switch s {
+		case vision.VisionStatusOpen, vision.VisionStatusDiscussing,
+			vision.VisionStatusMaturing, vision.VisionStatusPromoted,
+			vision.VisionStatusDismissed:
+		default:
+			return mcp.NewToolResultError("status must be one of: open, discussing, maturing, promoted, dismissed"), nil
+		}
+		filter.Status = s
+	}
+
+	items, err := s.vision.List(ctx, filter)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("listing vision items: %v", err)), nil
+	}
+	if items == nil {
+		items = []vision.VisionItemSummary{}
+	}
+	return jsonText(items)
+}
+
+func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawID := stringArg(args, "id")
+	if rawID == "" {
+		return mcp.NewToolResultError("id is required"), nil
+	}
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		return mcp.NewToolResultError("invalid id UUID"), nil
+	}
+
+	p := vision.UpdateVisionParams{}
+
+	if raw := stringArg(args, "status"); raw != "" {
+		st := vision.VisionStatus(raw)
+		switch st {
+		case vision.VisionStatusOpen, vision.VisionStatusDiscussing,
+			vision.VisionStatusMaturing, vision.VisionStatusPromoted,
+			vision.VisionStatusDismissed:
+		default:
+			return mcp.NewToolResultError("status must be one of: open, discussing, maturing, promoted, dismissed"), nil
+		}
+		p.Status = &st
+	}
+
+	if raw := stringArg(args, "context_md"); raw != "" {
+		v := raw
+		p.ContextMD = &v
+	}
+
+	if raw := stringArg(args, "last_discussed_at"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return mcp.NewToolResultError("invalid last_discussed_at: must be RFC3339"), nil
+		}
+		p.LastDiscussedAt = &t
+	}
+
+	item, err := s.vision.Update(ctx, id, p)
+	if errors.Is(err, vision.ErrNotFound) {
+		return mcp.NewToolResultError("vision item not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("updating vision item: %v", err)), nil
+	}
+	return jsonText(item)
+}
+
+func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawID := stringArg(args, "id")
+	if rawID == "" {
+		return mcp.NewToolResultError("id is required"), nil
+	}
+	visionID, err := uuid.Parse(rawID)
+	if err != nil {
+		return mcp.NewToolResultError("invalid id UUID"), nil
+	}
+
+	// Load vision item to get default title.
+	visionItem, err := s.vision.GetByID(ctx, visionID)
+	if errors.Is(err, vision.ErrNotFound) {
+		return mcp.NewToolResultError("vision item not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading vision item: %v", err)), nil
+	}
+
+	// Determine GTD task title.
+	title := stringArg(args, "title")
+	if title == "" {
+		title = visionItem.Title
+	}
+
+	// Create GTD task.
+	priority := numberArg(args, "priority")
+	if priority == 0 {
+		priority = 3
+	}
+	taskParams := gtd.CreateTaskParams{
+		Title:       title,
+		Description: stringArg(args, "description"),
+		Priority:    priority,
+	}
+	task, err := s.gtd.CreateTask(ctx, taskParams)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("creating GTD task: %v", err)), nil
+	}
+
+	// Mark vision item as promoted.
+	taskID := task.ID
+	promoted, err := s.vision.Promote(ctx, visionID, vision.PromoteParams{PromotedTaskID: taskID})
+	if errors.Is(err, vision.ErrNotFound) {
+		return mcp.NewToolResultError("vision item not found after task creation"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("promoting vision item: %v", err)), nil
+	}
+
+	return jsonText(map[string]any{
+		"task":        task,
+		"vision_item": promoted,
+	})
+}

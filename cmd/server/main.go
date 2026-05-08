@@ -99,6 +99,7 @@ func run() error {
 	)
 	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
+	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	// LLM provider chain (Phase 1-4 of docs/openrouter-fallback.md):
 	// classifier + concept reviewer go through the provider abstraction so
@@ -197,6 +198,10 @@ func run() error {
 	api.POST("/session/handoff", sessH.SetHandoff)
 
 	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
+
+	api.GET("/vision", visionH.ListVision)
+	api.POST("/vision", visionH.AddVision)
+	api.PATCH("/vision/:id", visionH.UpdateVision)
 
 	// /knowledge/search has a side-effect (bumps recall_count + last_recalled_at
 	// on every hit) so a high-rate caller can permanently subvert the Ebbinghaus

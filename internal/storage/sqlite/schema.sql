@@ -94,7 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_session_handoffs_workspace_id ON session_handoffs
 CREATE TABLE IF NOT EXISTS repos (
     id                TEXT PRIMARY KEY,
     workspace_id      TEXT,
-    name              TEXT NOT NULL UNIQUE,
+    name              TEXT NOT NULL,
     path              TEXT,
     description       TEXT,
     language          TEXT,
@@ -189,6 +189,13 @@ CREATE TABLE IF NOT EXISTS pending_proposals (
 CREATE INDEX IF NOT EXISTS idx_repos_status                         ON repos(status);
 CREATE INDEX IF NOT EXISTS idx_repos_last_activity                  ON repos(last_activity DESC);
 CREATE INDEX IF NOT EXISTS idx_repos_workspace_id                   ON repos(workspace_id) WHERE workspace_id IS NOT NULL;
+-- Per-workspace composite unique (migration 000028): two different workspaces
+-- may each have a repo with the same name; only (workspace_id, name) must be
+-- unique. Uses COALESCE(workspace_id,'') so that NULL workspace_ids (legacy
+-- single-tenant mode) also benefit from uniqueness enforcement — two NULLs
+-- would otherwise be considered distinct by SQLite's NULL != NULL semantics.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_repos_workspace_name_unique
+    ON repos(COALESCE(workspace_id, ''), name);
 CREATE INDEX IF NOT EXISTS idx_decisions_project_id                 ON decisions(project_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_repo_name                  ON decisions(repo_name);
 CREATE INDEX IF NOT EXISTS idx_decisions_created_at                 ON decisions(created_at DESC);
@@ -305,4 +312,30 @@ CREATE INDEX IF NOT EXISTS idx_work_session_tasks_session_id
 
 CREATE INDEX IF NOT EXISTS idx_work_session_tasks_task_id
     ON work_session_tasks(task_id);
+
+-- Mirrored from migrations/sqlite/000029_vision_items.up.sql.
+-- Vision items: future ideas that can't be acted on now. No FK constraints (CLAUDE.md #9).
+-- Referential integrity for workspace_id / project_id / promoted_task_id enforced in code.
+CREATE TABLE IF NOT EXISTS vision_items (
+    id                  TEXT    PRIMARY KEY,
+    workspace_id        TEXT,
+    repo_name           TEXT,
+    project_id          TEXT,
+    title               TEXT    NOT NULL,
+    why_blocked         TEXT    NOT NULL,
+    depends_on          TEXT    NOT NULL DEFAULT '[]',
+    parent_initiative   TEXT,
+    status              TEXT    NOT NULL DEFAULT 'open'
+                            CHECK (status IN ('open','discussing','maturing','promoted','dismissed')),
+    context_md          TEXT,
+    promoted_task_id    TEXT,
+    last_discussed_at   TEXT,
+    created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_vision_items_status
+    ON vision_items(status) WHERE status != 'dismissed';
+
+CREATE INDEX IF NOT EXISTS idx_vision_items_initiative
+    ON vision_items(parent_initiative) WHERE parent_initiative IS NOT NULL;
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -29,10 +30,14 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("search_knowledge",
 		mcp.WithDescription(
 			"CALL before fetching/analyzing a URL — check if content is already saved. "+
-				"Searches by full-text and vector similarity.",
+				"Searches by full-text and vector similarity. "+
+				"mode='coarse' searches only root-level documents (ignores section children) "+
+				"for a quick overview; mode='fine' (default) searches all rows including "+
+				"sections and returns heading_path in results.",
 		),
 		mcp.WithString("query", mcp.Description("Search query"), mcp.Required()),
 		mcp.WithNumber("limit", mcp.Description("Maximum results to return (default 10)")),
+		mcp.WithString("mode", mcp.Description("Search mode: 'fine' (default, all rows) or 'coarse' (root docs only)")),
 	), s.handleSearchKnowledge)
 
 	ms.AddTool(mcp.NewTool("list_knowledge",
@@ -119,7 +124,20 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 		limit = 10
 	}
 
-	items, err := s.knowledge.Search(ctx, query, limit)
+	mode := stringArg(args, "mode")
+	if mode != "" && mode != "fine" && mode != "coarse" {
+		return mcp.NewToolResultError("mode must be 'fine' or 'coarse'"), nil
+	}
+
+	var (
+		items []db.KnowledgeItem
+		err   error
+	)
+	if mode == "coarse" {
+		items, err = s.knowledge.SearchCoarse(ctx, query, limit)
+	} else {
+		items, err = s.knowledge.Search(ctx, query, limit)
+	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("searching knowledge: %v", err)), nil
 	}

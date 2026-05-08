@@ -44,11 +44,12 @@ func NewStore(pool *pgxpool.Pool, embed *search.EmbeddingClient, workspaceID *uu
 // embedding is intentionally excluded: rows may have NULL embedding (async generation),
 // and pgvector-go v0.3.0 DecodeBinary panics on empty bytes even with a pointer scan destination.
 // Decay fields (importance, recall_count, last_recalled_at, base_lambda, archived_at) added in
-// migration 000019.
+// migration 000019. Hierarchy fields (parent_id, heading_path, heading_level) added in 000027.
 const selectCols = `id, type, title, content, url, tags, created_at, updated_at, source, learning_value,
-	importance, recall_count, last_recalled_at, base_lambda, archived_at`
+	importance, recall_count, last_recalled_at, base_lambda, archived_at,
+	parent_id, heading_path, heading_level`
 
-// scanKnowledgeItem scans a row (15 columns, no embedding) into db.KnowledgeItem.
+// scanKnowledgeItem scans a row (18 columns, no embedding) into db.KnowledgeItem.
 func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	var i db.KnowledgeItem
 	err := scan(
@@ -57,6 +58,7 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 		&i.CreatedAt, &i.UpdatedAt,
 		&i.Source, &i.LearningValue,
 		&i.Importance, &i.RecallCount, &i.LastRecalledAt, &i.BaseLambda, &i.ArchivedAt,
+		&i.ParentID, &i.HeadingPath, &i.HeadingLevel,
 	)
 	return i, err
 }
@@ -68,10 +70,14 @@ const dedupSimilarityThreshold = 0.88
 // AddItem creates the knowledge item and synchronously generates and stores its embedding.
 // If an embedding client is available:
 //  1. URL exact-match check (fast, no Gemini call needed).
-//  2. Vector cosine similarity check (similarity >= 0.88 → ErrDuplicate).
+//  2. Vector cosine similarity check at the same heading_level (similarity >= 0.88 → ErrDuplicate).
 //  3. INSERT, then immediately store the embedding.
 //
+// When p.Content contains ATX Markdown headings and p.ParentID is nil, a root row is
+// inserted first, then each heading section is inserted as a child row (fan-out).
 // Any Gemini error or nil vector (no API key) → dedup skipped, item inserted normally.
+//
+//nolint:gocyclo // fan-out+dedup+parent wiring is inherently branchy; extraction would add indirection
 func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem, error) {
 	var itemURL pgtype.Text
 	if p.URL != "" {
@@ -90,22 +96,42 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		lv = pgtype.Int4{Int32: int32(p.LearningValue), Valid: true} //nolint:gosec // G115: LearningValue is bounded 1-5 by caller
 	}
 
-	if err := s.urlDedupCheck(ctx, p.URL); err != nil {
-		return nil, err
+	// URL dedup only for top-level items.
+	if p.ParentID == nil {
+		if err := s.urlDedupCheck(ctx, p.URL); err != nil {
+			return nil, err
+		}
 	}
 
-	vec, err := s.embedAndCheckDup(ctx, p.Title+" "+p.Content)
+	vec, err := s.embedAndCheckDupAtLevel(ctx, p.Title+" "+p.Content, p.HeadingLevel)
 	if err != nil {
 		return nil, err
 	}
 
-	const q = `INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	// Build hierarchy pgtype values.
+	var parentID pgtype.UUID
+	if p.ParentID != nil {
+		parentID = pgtype.UUID{Bytes: *p.ParentID, Valid: true}
+	}
+	var headingPath pgtype.Text
+	if p.HeadingPath != "" {
+		headingPath = pgtype.Text{String: p.HeadingPath, Valid: true}
+	}
+	var headingLevel pgtype.Int4
+	if p.HeadingLevel > 0 || p.ParentID != nil {
+		headingLevel = pgtype.Int4{Int32: int32(p.HeadingLevel), Valid: true} //nolint:gosec // G115: HeadingLevel is ATX depth 0-6
+	}
+
+	const q = `INSERT INTO knowledge_items
+		(type, title, content, url, tags, source, learning_value, workspace_id,
+		 parent_id, heading_path, heading_level)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING ` + selectCols
 
 	item, err := scanKnowledgeItem(func(args ...any) error {
 		return s.pool.QueryRow(ctx, q,
 			p.Type, p.Title, p.Content, itemURL, tags, source, lv, s.workspaceID,
+			parentID, headingPath, headingLevel,
 		).Scan(args...)
 	})
 	if err != nil {
@@ -121,7 +147,41 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		}
 	}
 
+	// Fan-out: insert section children for top-level Markdown items.
+	if p.ParentID == nil {
+		if err := s.fanOutSections(ctx, &item, p); err != nil {
+			slog.Warn("knowledge fan-out failed", "root_id", item.ID, "err", err)
+		}
+	}
+
 	return &item, nil
+}
+
+// fanOutSections parses Markdown headings from p.Content and inserts a child
+// knowledge item per section, with parent_id = root.ID.
+func (s *Store) fanOutSections(ctx context.Context, root *db.KnowledgeItem, p AddItemParams) error {
+	sections := ParseMarkdownSections(p.Content)
+	if len(sections) == 0 {
+		return nil
+	}
+	parentBytes := [16]byte(root.ID)
+	for _, sec := range sections {
+		childP := AddItemParams{
+			Type:         p.Type,
+			Title:        sec.Title,
+			Content:      sec.Content,
+			Tags:         p.Tags,
+			Source:       p.Source,
+			ParentID:     &parentBytes,
+			HeadingPath:  sec.HeadingPath,
+			HeadingLevel: sec.Level,
+		}
+		if _, err := s.AddItem(ctx, childP); err != nil {
+			slog.Warn("knowledge fan-out child insert failed",
+				"root_id", root.ID, "heading", sec.HeadingPath, "err", err)
+		}
+	}
+	return nil
 }
 
 // urlDedupCheck returns ErrDuplicate if an item with the same URL already
@@ -145,10 +205,10 @@ func (s *Store) urlDedupCheck(ctx context.Context, url string) error {
 	return nil
 }
 
-// embedAndCheckDup computes the embedding for text and checks cosine similarity against
-// existing items. Returns the vector for reuse (nil when embedding is unavailable).
-// Embedding or DB errors are logged and treated as non-fatal — dedup is best-effort.
-func (s *Store) embedAndCheckDup(ctx context.Context, text string) ([]float32, error) {
+// embedAndCheckDupAtLevel computes the embedding for text and checks cosine
+// similarity against existing items at the same heading_level. Dedup only
+// compares same-level rows so section children do not falsely match root docs.
+func (s *Store) embedAndCheckDupAtLevel(ctx context.Context, text string, level int) ([]float32, error) {
 	if s.embed == nil {
 		return nil, nil
 	}
@@ -161,7 +221,7 @@ func (s *Store) embedAndCheckDup(ctx context.Context, text string) ([]float32, e
 		return nil, nil
 	}
 
-	existingTitle, similarity, found, err := s.findSimilar(ctx, vec)
+	existingTitle, similarity, found, err := s.findSimilarAtLevel(ctx, vec, level)
 	if err != nil {
 		slog.Warn("similarity check failed, skipping dedup", "err", err)
 		return vec, nil
@@ -172,23 +232,27 @@ func (s *Store) embedAndCheckDup(ctx context.Context, text string) ([]float32, e
 	return vec, nil
 }
 
-// findSimilar returns the title and cosine similarity of the most similar
-// stored item within the current workspace scope. Returns found=false when no
-// items have embeddings yet (empty result → not a duplicate).
-func (s *Store) findSimilar(ctx context.Context, vec []float32) (
+// findSimilarAtLevel returns the title and cosine similarity of the most similar
+// stored item at the given heading_level within the current workspace scope.
+// Returns found=false when no items have embeddings at that level yet.
+// heading_level=0 matches rows where heading_level IS NULL or heading_level=0
+// (backward compat with pre-000027 rows).
+func (s *Store) findSimilarAtLevel(ctx context.Context, vec []float32, level int) (
 	title string, similarity float64, found bool, err error,
 ) {
 	const q = `SELECT title, 1 - (embedding <=> $1::vector) AS similarity
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
 		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		  AND (COALESCE(heading_level, 0) = $3)
 		ORDER BY embedding <=> $1::vector
 		LIMIT 1`
 
 	v := pgvector.NewVector(vec)
-	err = s.pool.QueryRow(ctx, q, v, s.workspaceID).Scan(&title, &similarity)
+	//nolint:gosec // G115: level is ATX heading depth 0-6, not user-controlled
+	err = s.pool.QueryRow(ctx, q, v, s.workspaceID, int32(level)).Scan(&title, &similarity)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, false, nil // no items with embeddings yet
+		return "", 0, false, nil // no items with embeddings at this level yet
 	}
 	if err != nil {
 		return "", 0, false, fmt.Errorf("similarity query: %w", err)
@@ -267,6 +331,48 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 	return merged, nil
 }
 
+// SearchCoarse searches only root rows (COALESCE(heading_level, 0) = 0 and
+// parent_id IS NULL) for a coarse-grained overview search. Used by the
+// search_knowledge MCP tool when mode="coarse".
+func (s *Store) SearchCoarse(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	const ftsQ = `SELECT ` + selectCols + `,
+		GREATEST(0.0, LEAST(1.0,
+			importance
+			* EXP(-base_lambda * (1.0 - importance * 0.8)
+				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+			* (1.0 + recall_count * 0.2)
+		)) AS strength,
+		ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS sim
+		FROM knowledge_items
+		WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+		  AND archived_at IS NULL
+		  AND parent_id IS NULL
+		  AND COALESCE(heading_level, 0) = 0
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		ORDER BY strength * sim DESC
+		LIMIT $2`
+
+	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec // G115: caller guarantees positive int32
+	if err != nil {
+		return nil, fmt.Errorf("coarse FTS search: %w", err)
+	}
+	defer rows.Close()
+
+	var items []db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItemWithScore(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning coarse FTS result: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating coarse FTS results: %w", err)
+	}
+	s.bumpRecall(ctx, items)
+	return items, nil
+}
+
 // vectorSearch executes a raw vector similarity query (only rows with non-null
 // embeddings within the current workspace scope). Results are ordered by
 // strength × cosine_similarity DESC so fresh high-importance items rank higher.
@@ -322,6 +428,7 @@ func scanKnowledgeItemWithScore(scan func(...any) error) (db.KnowledgeItem, erro
 		&i.CreatedAt, &i.UpdatedAt,
 		&i.Source, &i.LearningValue,
 		&i.Importance, &i.RecallCount, &i.LastRecalledAt, &i.BaseLambda, &i.ArchivedAt,
+		&i.ParentID, &i.HeadingPath, &i.HeadingLevel,
 		&strength, &sim,
 	)
 	return i, err
@@ -497,4 +604,71 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, e
 		return nil, fmt.Errorf("getting knowledge item %s: %w", id, err)
 	}
 	return &item, nil
+}
+
+// ListChildren returns direct child rows of parentID, ordered by heading_level
+// then created_at. Used by navigate_knowledge and outline_knowledge MCP tools.
+func (s *Store) ListChildren(ctx context.Context, parentID uuid.UUID) ([]*db.KnowledgeItem, error) {
+	const q = `SELECT ` + selectCols + `
+		FROM knowledge_items
+		WHERE parent_id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY COALESCE(heading_level, 0) ASC, created_at ASC`
+
+	rows, err := s.pool.Query(ctx, q, parentID, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing children of %s: %w", parentID, err)
+	}
+	defer rows.Close()
+
+	var items []*db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning child item: %w", err)
+		}
+		cp := item
+		items = append(items, &cp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating child items: %w", err)
+	}
+	if items == nil {
+		return []*db.KnowledgeItem{}, nil
+	}
+	return items, nil
+}
+
+// ListRoots returns top-level knowledge items (parent_id IS NULL) within the
+// workspace scope, ordered by creation date descending. Used by
+// navigate_knowledge when no parent_id is supplied.
+func (s *Store) ListRoots(ctx context.Context) ([]*db.KnowledgeItem, error) {
+	const q = `SELECT ` + selectCols + `
+		FROM knowledge_items
+		WHERE parent_id IS NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC`
+
+	rows, err := s.pool.Query(ctx, q, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing root knowledge items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning root item: %w", err)
+		}
+		cp := item
+		items = append(items, &cp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating root items: %w", err)
+	}
+	if items == nil {
+		return []*db.KnowledgeItem{}, nil
+	}
+	return items, nil
 }

@@ -247,6 +247,55 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 	return s.projectByID(ctx, id)
 }
 
+// CreateGoalTx inserts a new goal within the provided *sql.Tx.
+// It is the transactional counterpart of CreateGoal and is used by the
+// confirm_proposal accept path for atomic cross-store writes.
+func (s *GTDStore) CreateGoalTx(ctx context.Context, tx *sql.Tx, p gtd.CreateGoalParams) (uuid.UUID, error) {
+	id := uuid.New()
+	var dueVal any
+	if p.DueDate != nil {
+		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
+	}
+	const q = `INSERT INTO goals (id, workspace_id, title, description, area, due_date, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`
+	now := nowRFC3339()
+	_, err := tx.ExecContext(ctx, q,
+		id.String(), s.db.workspaceArg(), p.Title,
+		nullStringIfEmpty(p.Description), nullStringIfEmpty(p.Area), dueVal, now)
+	if err != nil {
+		return uuid.UUID{}, errWrap("CreateGoalTx", err)
+	}
+	return id, nil
+}
+
+// CreateProjectTx inserts a new project within the provided *sql.Tx.
+// It is the transactional counterpart of CreateProject and is used by the
+// confirm_proposal accept path for atomic cross-store writes.
+func (s *GTDStore) CreateProjectTx(ctx context.Context, tx *sql.Tx, p gtd.CreateProjectParams) (uuid.UUID, error) {
+	id := uuid.New()
+	area := p.Area
+	if area == "" {
+		area = "projects"
+	}
+	priority := p.Priority
+	if priority == 0 {
+		priority = 3
+	}
+	const q = `INSERT INTO projects (id, workspace_id, goal_id, name, title, description, area, priority, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`
+	now := nowRFC3339()
+	_, err := tx.ExecContext(ctx, q,
+		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.GoalID),
+		p.Name, p.Title, nullStringIfEmpty(p.Description), area, priority, now)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return uuid.UUID{}, gtd.ErrConflict
+		}
+		return uuid.UUID{}, errWrap("CreateProjectTx", err)
+	}
+	return id, nil
+}
+
 // GetProjectByID returns a single project by UUID, regardless of status.
 func (s *GTDStore) GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error) {
 	return s.projectByID(ctx, id)

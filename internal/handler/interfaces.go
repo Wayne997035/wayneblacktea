@@ -10,6 +10,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 )
@@ -117,6 +118,13 @@ type searchGTDStore interface {
 // *ai.ActivityClassifier satisfies this interface.
 type activityClassifier interface {
 	Classify(ctx context.Context, actor, action, notes string) ai.ClassifyResult
+}
+
+// visionStore covers the subset of vision.StoreIface used by VisionHandler.
+type visionStore interface {
+	Add(ctx context.Context, p vision.AddVisionParams) (*vision.VisionItem, error)
+	List(ctx context.Context, filter vision.ListVisionFilter) ([]vision.VisionItemSummary, error)
+	Update(ctx context.Context, id uuid.UUID, p vision.UpdateVisionParams) (*vision.VisionItem, error)
 }
 
 // errResp returns a standard error response body.

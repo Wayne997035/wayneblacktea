@@ -137,7 +137,7 @@ func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoP
 		(id, workspace_id, name, path, description, language, current_branch,
 		 known_issues, next_planned_step, last_activity, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)
-		ON CONFLICT(name) DO UPDATE SET
+		ON CONFLICT(COALESCE(workspace_id,''), name) DO UPDATE SET
 			path = excluded.path,
 			description = excluded.description,
 			language = excluded.language,
