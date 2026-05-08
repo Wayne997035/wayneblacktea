@@ -40,6 +40,10 @@ func (f *fakeKnowledgeStore) GetByID(_ context.Context, _ uuid.UUID) (*db.Knowle
 	return f.item, f.err
 }
 
+func (f *fakeKnowledgeStore) UpdateLearningValue(_ context.Context, _ uuid.UUID, _ int) error {
+	return f.err
+}
+
 // ---- ListKnowledge tests ----
 
 func TestKnowledgeHandler_ListKnowledge(t *testing.T) {
@@ -198,6 +202,102 @@ func TestKnowledgeHandler_SearchKnowledge(t *testing.T) {
 			h := handler.NewKnowledgeHandler(tc.store, nil)
 			e.GET("/api/knowledge/search", h.SearchKnowledge)
 			rec := performRequest(e, http.MethodGet, "/api/knowledge/search"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// ---- UpdateLearningValue tests ----
+
+func TestKnowledgeHandler_UpdateLearningValue(t *testing.T) {
+	validID := uuid.New().String()
+	cases := []struct {
+		name     string
+		paramID  string
+		body     string
+		store    *fakeKnowledgeStore
+		wantCode int
+	}{
+		{
+			name:     "valid value 1 → 200",
+			paramID:  validID,
+			body:     `{"learning_value":1}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "valid value 5 → 200",
+			paramID:  validID,
+			body:     `{"learning_value":5}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "valid value 3 → 200",
+			paramID:  validID,
+			body:     `{"learning_value":3}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "value 0 (below range) → 400",
+			paramID:  validID,
+			body:     `{"learning_value":0}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "value 6 (above range) → 400",
+			paramID:  validID,
+			body:     `{"learning_value":6}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "negative value → 400",
+			paramID:  validID,
+			body:     `{"learning_value":-1}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "invalid UUID → 400",
+			paramID:  "not-a-uuid",
+			body:     `{"learning_value":3}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "not found → 404",
+			paramID:  validID,
+			body:     `{"learning_value":3}`,
+			store:    &fakeKnowledgeStore{err: knowledge.ErrNotFound},
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "store error → 500",
+			paramID:  validID,
+			body:     `{"learning_value":3}`,
+			store:    &fakeKnowledgeStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:     "invalid JSON → 400",
+			paramID:  validID,
+			body:     `{bad`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewKnowledgeHandler(tc.store, nil)
+			e.PATCH("/api/knowledge/:id", h.UpdateLearningValue)
+			rec := performRequest(e, http.MethodPatch, "/api/knowledge/"+tc.paramID, tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

@@ -60,6 +60,7 @@ type knowledgeStore interface {
 	Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
 	List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*db.KnowledgeItem, error)
+	UpdateLearningValue(ctx context.Context, id uuid.UUID, value int) error
 }
 
 // suggestionDecisionStore covers the subset of decision.Store used by the

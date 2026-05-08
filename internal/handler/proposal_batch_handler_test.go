@@ -160,7 +160,8 @@ func TestConfirmBatch_ValidationErrors(t *testing.T) {
 	}
 }
 
-// TestConfirmBatch_StoreError verifies that a store error produces a 500.
+// TestConfirmBatch_StoreError verifies that a per-item resolve error returns 200
+// with an error entry (batch API: per-item failure is non-fatal for the overall request).
 func TestConfirmBatch_StoreError(t *testing.T) {
 	e := echo.New()
 	store := &fakeProposalListStore{err: errors.New("db exploded")}
@@ -168,8 +169,8 @@ func TestConfirmBatch_StoreError(t *testing.T) {
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch",
 		`{"ids":["`+uuid.New().String()+`"],"action":"accept"}`)
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("got %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Errorf("got %d, want 200 — batch API returns per-item errors, not 500 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
 

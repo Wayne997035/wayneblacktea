@@ -19,12 +19,11 @@ const (
 	actionReject      = "reject"
 )
 
-// proposalListStore covers the operations needed to list pending proposals.
+// proposalListStore covers the operations needed to list and resolve proposals.
 type proposalListStore interface {
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
 	Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error)
 	Resolve(ctx context.Context, id uuid.UUID, status proposal.Status) (*db.PendingProposal, error)
-	BatchConfirm(ctx context.Context, ids []uuid.UUID, status proposal.Status) (proposal.BatchConfirmResult, error)
 }
 
 // proposalConceptStore covers the learning operations needed when accepting a
@@ -236,9 +235,82 @@ type confirmBatchRequest struct {
 	Action string   `json:"action"`
 }
 
+// batchConfirmResultEntry records the per-ID outcome of a batch confirm.
+type batchConfirmResultEntry struct {
+	ID      string `json:"id"`
+	OK      bool   `json:"ok"`
+	Skipped bool   `json:"skipped,omitempty"` // true when proposal was already resolved
+	Error   string `json:"error,omitempty"`
+}
+
+// batchConfirmResponse is returned by ConfirmBatch.
+type batchConfirmResponse struct {
+	Results []batchConfirmResultEntry `json:"results"`
+}
+
+// proposalConceptMeta bundles pre-fetched concept payload for batch accept.
+type proposalConceptMeta struct {
+	isConcept bool
+	cp        conceptCandidatePayload
+}
+
+// batchConceptMeta pre-fetches concept payloads for the given IDs.
+// Missing or malformed proposals are silently skipped — the resolve loop surfaces them.
+func (h *ProposalHandler) batchConceptMeta(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]proposalConceptMeta {
+	meta := make(map[uuid.UUID]proposalConceptMeta, len(ids))
+	for _, id := range ids {
+		prop, err := h.proposal.Get(ctx, id)
+		if err != nil || prop == nil {
+			continue
+		}
+		if proposal.Type(prop.Type) != proposal.TypeConcept {
+			meta[id] = proposalConceptMeta{}
+			continue
+		}
+		cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
+		if errMsg != "" {
+			continue
+		}
+		meta[id] = proposalConceptMeta{isConcept: true, cp: cp}
+	}
+	return meta
+}
+
+// batchResolveOne resolves a single proposal and materialises a concept if applicable.
+// Concept materialisation failures are non-fatal.
+func (h *ProposalHandler) batchResolveOne(
+	c echo.Context,
+	ctx context.Context,
+	id uuid.UUID,
+	status proposal.Status,
+	meta map[uuid.UUID]proposalConceptMeta,
+) batchConfirmResultEntry {
+	entry := batchConfirmResultEntry{ID: id.String()}
+	if _, err := h.proposal.Resolve(ctx, id, status); err != nil {
+		if errors.Is(err, proposal.ErrNotFound) {
+			entry.Skipped = true
+			entry.Error = "not found or already resolved"
+		} else {
+			c.Logger().Errorf("ConfirmBatch resolve %s: %v", id, err)
+			entry.Error = "internal error"
+		}
+		return entry
+	}
+	entry.OK = true
+	if status == proposal.StatusAccepted {
+		if m, ok := meta[id]; ok && m.isConcept {
+			if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
+				c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
+			}
+		}
+	}
+	return entry
+}
+
 // ConfirmBatch handles POST /api/proposals/confirm-batch.
 // Body: { "ids": ["uuid1","uuid2",...], "action": "accept" | "reject" }
-// Scoping is enforced by the store's workspace_id — no cross-workspace mutation.
+// For each accepted concept proposal the handler materialises a Concept entity.
+// Concept creation failures are non-fatal.
 func (h *ProposalHandler) ConfirmBatch(c echo.Context) error {
 	var req confirmBatchRequest
 	limited := io.LimitReader(c.Request().Body, proposalBodyLimit)
@@ -270,15 +342,20 @@ func (h *ProposalHandler) ConfirmBatch(c echo.Context) error {
 		ids = append(ids, id)
 	}
 
+	ctx := c.Request().Context()
 	status := proposal.StatusRejected
 	if req.Action == actionAccept {
 		status = proposal.StatusAccepted
 	}
 
-	result, err := h.proposal.BatchConfirm(c.Request().Context(), ids, status)
-	if err != nil {
-		c.Logger().Errorf("ConfirmBatch: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	var meta map[uuid.UUID]proposalConceptMeta
+	if req.Action == actionAccept {
+		meta = h.batchConceptMeta(ctx, ids)
 	}
-	return c.JSON(http.StatusOK, result)
+
+	results := make([]batchConfirmResultEntry, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, h.batchResolveOne(c, ctx, id, status, meta))
+	}
+	return c.JSON(http.StatusOK, batchConfirmResponse{Results: results})
 }
