@@ -44,7 +44,26 @@ type conceptPayload struct {
 	SourceItemType string   `json:"source_item_type,omitempty"` // "article" / "til" / etc.
 }
 
+const (
+	maxBatchConfirmIDs = 100
+	minBatchConfirmIDs = 1
+
+	actionAccept = "accept"
+	actionReject = "reject"
+)
+
 func (s *Server) registerProposalTools(ms *server.MCPServer) {
+	ms.AddTool(mcp.NewTool("confirm_proposals",
+		mcp.WithDescription(
+			"Batch accept or reject multiple pending proposals in a single call. "+
+				"Accepts 1–100 proposal UUIDs and a single action ('accept' or 'reject'). "+
+				"On Postgres the batch is atomic — any single failure rolls back all. "+
+				"On SQLite each proposal is processed independently (best-effort).",
+		),
+		mcp.WithArray("ids", mcp.Description("Array of proposal UUID strings to resolve (1–100)"), mcp.Required()),
+		mcp.WithString("action", mcp.Description("'accept' or 'reject'"), mcp.Required()),
+	), s.handleConfirmProposals)
+
 	ms.AddTool(mcp.NewTool("propose_goal",
 		mcp.WithDescription(
 			"Propose a new goal for user confirmation. Stays pending until confirm_proposal "+
@@ -171,6 +190,46 @@ func (s *Server) handleListPendingProposals(ctx context.Context, _ mcp.CallToolR
 	return jsonText(rows)
 }
 
+func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	action := stringArg(args, "action")
+	if action != actionAccept && action != actionReject {
+		return mcp.NewToolResultError("action must be 'accept' or 'reject'"), nil
+	}
+
+	rawIDs, _ := args["ids"].([]any)
+	if len(rawIDs) < minBatchConfirmIDs {
+		return mcp.NewToolResultError("ids must contain at least 1 proposal UUID"), nil
+	}
+	if len(rawIDs) > maxBatchConfirmIDs {
+		return mcp.NewToolResultError(fmt.Sprintf("ids must contain at most %d proposal UUIDs", maxBatchConfirmIDs)), nil
+	}
+
+	ids := make([]uuid.UUID, 0, len(rawIDs))
+	for i, raw := range rawIDs {
+		rawStr, ok := raw.(string)
+		if !ok {
+			return mcp.NewToolResultError(fmt.Sprintf("ids[%d] is not a string", i)), nil
+		}
+		id, err := uuid.Parse(rawStr)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("ids[%d] %q is not a valid UUID", i, rawStr)), nil
+		}
+		ids = append(ids, id)
+	}
+
+	status := proposal.StatusRejected
+	if action == actionAccept {
+		status = proposal.StatusAccepted
+	}
+
+	result, err := s.proposal.BatchConfirm(ctx, ids, status)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("batch confirm: %v", err)), nil
+	}
+	return jsonText(result)
+}
+
 // confirmResult is what confirm_proposal returns when an entity is materialized.
 type confirmResult struct {
 	Proposal any `json:"proposal"`
@@ -189,7 +248,7 @@ func (s *Server) handleConfirmProposal(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	switch action {
-	case "reject":
+	case actionReject:
 		row, err := s.proposal.Resolve(ctx, id, proposal.StatusRejected)
 		if errors.Is(err, proposal.ErrNotFound) {
 			return mcp.NewToolResultError("proposal not found or already resolved"), nil
@@ -198,7 +257,7 @@ func (s *Server) handleConfirmProposal(ctx context.Context, req mcp.CallToolRequ
 			return mcp.NewToolResultError(fmt.Sprintf("rejecting: %v", err)), nil
 		}
 		return jsonText(confirmResult{Proposal: row})
-	case "accept":
+	case actionAccept:
 		return s.acceptProposal(ctx, id)
 	default:
 		return mcp.NewToolResultError("action must be 'accept' or 'reject'"), nil

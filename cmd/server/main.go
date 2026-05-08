@@ -210,6 +210,7 @@ func run() error {
 	proposalRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/proposals/pending", proposalH.ListPendingProposals, proposalRL)
 	api.POST("/proposals/:id/confirm", proposalH.ConfirmProposal, proposalRL)
+	api.POST("/proposals/confirm-batch", proposalH.ConfirmBatch, proposalRL)
 
 	api.GET("/search", searchH.Search, echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20)))
 

@@ -40,3 +40,21 @@ type CreateParams struct {
 	Payload     []byte // JSON-encoded proposal body (entity-specific shape)
 	ProposedBy  string // empty → NULL; e.g. "claude-code", "discord-bot"
 }
+
+// BatchItemResult reports the outcome of a single ID inside a BatchConfirm call.
+type BatchItemResult struct {
+	ID     string `json:"id"`
+	OK     bool   `json:"ok"`
+	ErrMsg string `json:"error,omitempty"`
+}
+
+// BatchConfirmResult is the aggregate result returned by BatchConfirm.
+type BatchConfirmResult struct {
+	Results []BatchItemResult `json:"results"`
+	// Accepted is the count of proposals successfully resolved to the requested action.
+	Accepted int `json:"accepted"`
+	// Failed is the count of proposals that could not be resolved (not found,
+	// already resolved, or other error). On the Postgres path a single failure
+	// triggers a full rollback and all entries become failed.
+	Failed int `json:"failed"`
+}

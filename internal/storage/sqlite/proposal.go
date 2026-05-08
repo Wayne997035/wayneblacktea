@@ -128,6 +128,29 @@ func (s *ProposalStore) Resolve(ctx context.Context, id uuid.UUID, status propos
 	return s.Get(ctx, id)
 }
 
+// BatchConfirm resolves multiple proposals independently (best-effort). Each ID
+// is processed in its own implicit SQLite transaction so a failure for one ID
+// does not roll back the others. The caller is responsible for input validation
+// (ids length 1–100, valid status).
+func (s *ProposalStore) BatchConfirm(ctx context.Context, ids []uuid.UUID, status proposal.Status) (proposal.BatchConfirmResult, error) {
+	if status != proposal.StatusAccepted && status != proposal.StatusRejected {
+		return proposal.BatchConfirmResult{}, fmt.Errorf("batch confirm: invalid status %q", status)
+	}
+	results := make([]proposal.BatchItemResult, 0, len(ids))
+	accepted, failed := 0, 0
+	for _, id := range ids {
+		_, err := s.Resolve(ctx, id, status)
+		if err != nil {
+			results = append(results, proposal.BatchItemResult{ID: id.String(), OK: false, ErrMsg: err.Error()})
+			failed++
+		} else {
+			results = append(results, proposal.BatchItemResult{ID: id.String(), OK: true})
+			accepted++
+		}
+	}
+	return proposal.BatchConfirmResult{Results: results, Accepted: accepted, Failed: failed}, nil
+}
+
 // AutoProposeConceptFromKnowledge creates a pending concept proposal from a
 // knowledge item when the item type is suitable for spaced repetition.
 func (s *ProposalStore) AutoProposeConceptFromKnowledge(

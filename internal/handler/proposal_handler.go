@@ -4,13 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+)
+
+const (
+	proposalBodyLimit = 32 * 1024 // 32 KB — enough for 100 UUIDs and action
+	actionAccept      = "accept"
+	actionReject      = "reject"
 )
 
 // proposalListStore covers the operations needed to list pending proposals.
@@ -18,6 +24,7 @@ type proposalListStore interface {
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
 	Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error)
 	Resolve(ctx context.Context, id uuid.UUID, status proposal.Status) (*db.PendingProposal, error)
+	BatchConfirm(ctx context.Context, ids []uuid.UUID, status proposal.Status) (proposal.BatchConfirmResult, error)
 }
 
 // proposalConceptStore covers the learning operations needed when accepting a
@@ -34,7 +41,7 @@ type ProposalHandler struct {
 }
 
 // NewProposalHandler creates a ProposalHandler.
-func NewProposalHandler(p proposal.StoreIface, l learning.StoreIface) *ProposalHandler {
+func NewProposalHandler(p proposalListStore, l proposalConceptStore) *ProposalHandler {
 	return &ProposalHandler{proposal: p, learning: l}
 }
 
@@ -120,7 +127,7 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 	ctx := c.Request().Context()
 
 	switch req.Action {
-	case "reject":
+	case actionReject:
 		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusRejected)
 		if errors.Is(err, proposal.ErrNotFound) {
 			return c.JSON(http.StatusConflict, errResp("proposal not found or already resolved"))
@@ -131,7 +138,7 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
 
-	case "accept":
+	case actionAccept:
 		return h.handleAccept(c, ctx, id)
 
 	default:
@@ -216,4 +223,60 @@ func decodeConceptCandidatePayload(payload []byte) (conceptCandidatePayload, str
 		return conceptCandidatePayload{}, "too many tags (max 50)"
 	}
 	return p, ""
+}
+
+const (
+	maxBatchConfirmIDs = 100
+	minBatchConfirmIDs = 1
+)
+
+// confirmBatchRequest is the JSON body for POST /api/proposals/confirm-batch.
+type confirmBatchRequest struct {
+	IDs    []string `json:"ids"`
+	Action string   `json:"action"`
+}
+
+// ConfirmBatch handles POST /api/proposals/confirm-batch.
+// Body: { "ids": ["uuid1","uuid2",...], "action": "accept" | "reject" }
+// Scoping is enforced by the store's workspace_id — no cross-workspace mutation.
+func (h *ProposalHandler) ConfirmBatch(c echo.Context) error {
+	var req confirmBatchRequest
+	limited := io.LimitReader(c.Request().Body, proposalBodyLimit)
+	if err := json.NewDecoder(limited).Decode(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+
+	if req.Action != actionAccept && req.Action != actionReject {
+		return c.JSON(http.StatusBadRequest, errResp("action must be 'accept' or 'reject'"))
+	}
+
+	if len(req.IDs) < minBatchConfirmIDs {
+		return c.JSON(http.StatusBadRequest, errResp("ids must contain at least 1 proposal UUID"))
+	}
+	if len(req.IDs) > maxBatchConfirmIDs {
+		return c.JSON(http.StatusBadRequest, errResp("ids must contain at most 100 proposal UUIDs"))
+	}
+
+	ids := make([]uuid.UUID, 0, len(req.IDs))
+	for _, raw := range req.IDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, errResp(
+				raw+" is not a valid UUID",
+			))
+		}
+		ids = append(ids, id)
+	}
+
+	status := proposal.StatusRejected
+	if req.Action == actionAccept {
+		status = proposal.StatusAccepted
+	}
+
+	result, err := h.proposal.BatchConfirm(c.Request().Context(), ids, status)
+	if err != nil {
+		c.Logger().Errorf("ConfirmBatch: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, result)
 }

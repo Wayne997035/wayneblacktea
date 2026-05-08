@@ -11,19 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// pgxBeginTx is the subset of pgxpool.Pool used by BatchConfirm so we can
+// inject a fake in tests without importing pgxpool directly.
+type pgxBeginTx interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 // Store handles all database operations for the Proposal bounded context.
 type Store struct {
 	q           *db.Queries
 	workspaceID pgtype.UUID
+	// pool is retained so BatchConfirm can begin its own transaction.
+	// nil when Store was constructed from a tx via WithTx.
+	pool pgxBeginTx
 }
 
 // NewStore returns a Store backed by the given DBTX scoped to the optional
 // workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
+	var pool pgxBeginTx
+	if p, ok := dbtx.(pgxBeginTx); ok {
+		pool = p
+	}
+	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID), pool: pool}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
+// The pool reference is intentionally dropped — tx-scoped stores must not
+// begin nested transactions.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
 }
@@ -104,4 +119,51 @@ func (s *Store) Resolve(ctx context.Context, id uuid.UUID, status Status) (*db.P
 		return nil, fmt.Errorf("resolving proposal %s: %w", id, err)
 	}
 	return &row, nil
+}
+
+// BatchConfirm resolves multiple proposals inside a single Postgres transaction.
+// If any individual Resolve fails (not found, already resolved, DB error) the
+// whole transaction is rolled back and all entries are reported as failed.
+// Callers must have already validated ids (len 1–100) and status.
+func (s *Store) BatchConfirm(ctx context.Context, ids []uuid.UUID, status Status) (BatchConfirmResult, error) {
+	if status != StatusAccepted && status != StatusRejected {
+		return BatchConfirmResult{}, fmt.Errorf("batch confirm: invalid status %q", status)
+	}
+	if s.pool == nil {
+		return BatchConfirmResult{}, fmt.Errorf("batch confirm: store has no pool (tx-scoped store cannot begin transaction)")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return BatchConfirmResult{}, fmt.Errorf("batch confirm: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
+
+	txStore := s.WithTx(tx)
+	results := make([]BatchItemResult, 0, len(ids))
+
+	for _, id := range ids {
+		_, err := txStore.Resolve(ctx, id, status)
+		if err != nil {
+			// Roll back the whole batch on any single failure.
+			_ = tx.Rollback(ctx)
+			failed := make([]BatchItemResult, 0, len(ids))
+			for _, fid := range ids {
+				msg := ""
+				if fid == id {
+					msg = err.Error()
+				} else {
+					msg = "rolled back due to sibling failure"
+				}
+				failed = append(failed, BatchItemResult{ID: fid.String(), OK: false, ErrMsg: msg})
+			}
+			return BatchConfirmResult{Results: failed, Failed: len(ids)}, nil
+		}
+		results = append(results, BatchItemResult{ID: id.String(), OK: true})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return BatchConfirmResult{}, fmt.Errorf("batch confirm: commit: %w", err)
+	}
+	return BatchConfirmResult{Results: results, Accepted: len(ids)}, nil
 }

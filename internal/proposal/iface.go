@@ -15,6 +15,12 @@ type StoreIface interface {
 	Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error)
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
 	Resolve(ctx context.Context, id uuid.UUID, status Status) (*db.PendingProposal, error)
+	// BatchConfirm resolves multiple proposals to the given status in a single
+	// operation. On Postgres the entire batch runs inside one transaction —
+	// any individual failure rolls back the whole batch. On SQLite each ID is
+	// processed independently (best-effort). Callers MUST validate ids length
+	// (1–100) and status before invoking.
+	BatchConfirm(ctx context.Context, ids []uuid.UUID, status Status) (BatchConfirmResult, error)
 	AutoProposeConceptFromKnowledge(ctx context.Context, item *db.KnowledgeItem, proposedBy string) (*db.PendingProposal, error)
 }
 

@@ -130,6 +130,14 @@ func (s *stubProposalStore) Resolve(_ context.Context, _ uuid.UUID, _ proposal.S
 	return nil, nil
 }
 
+func (s *stubProposalStore) BatchConfirm(_ context.Context, ids []uuid.UUID, _ proposal.Status) (proposal.BatchConfirmResult, error) {
+	results := make([]proposal.BatchItemResult, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, proposal.BatchItemResult{ID: id.String(), OK: true})
+	}
+	return proposal.BatchConfirmResult{Results: results, Accepted: len(ids)}, nil
+}
+
 func (s *stubProposalStore) AutoProposeConceptFromKnowledge(_ context.Context, _ *db.KnowledgeItem, _ string) (*db.PendingProposal, error) {
 	return nil, nil
 }
