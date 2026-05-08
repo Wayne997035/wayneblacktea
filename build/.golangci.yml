@@ -41,6 +41,14 @@ linters:
     # Context propagation
     - contextcheck # context must flow through call chain, not Background mid-stack
 
+    # Security hardening (Security-Critical Profile)
+    - bidichk      # detect dangerous unicode bidi characters (supply chain attack vector)
+    - copyloopvar  # loop variable capture safety
+    - nilerr       # detect returning nil error incorrectly (silent error drop)
+    - loggercheck  # structured logging key/value pairing mistakes
+    - unqueryvet   # SQL injection second-pass detection (golangci-lint v2.5+)
+    - depguard     # block known-dangerous package imports at lint time
+
   settings:
     wrapcheck:
       extra-ignore-sigs:
@@ -62,9 +70,29 @@ linters:
       require-explanation: true  # //nolint:lintername // reason: ... is required
       require-specific: true     # //nolint (no linter name) is rejected
     gosec:
+      severity: low      # report all severity levels
+      confidence: low    # report all confidence levels including taint analysis (G7xx)
       excludes:
         - G703 # seed CLI uses user-controlled PROJECT_ROOT intentionally
         - G706 # slog structured logging is not vulnerable to log injection
+    depguard:
+      rules:
+        security-sensitive:
+          deny:
+            - pkg: "crypto/md5"
+              desc: "MD5 is cryptographically broken; use crypto/sha256 or stronger"
+            - pkg: "crypto/des"
+              desc: "DES is broken; use AES-GCM"
+            - pkg: "crypto/rc4"
+              desc: "RC4 is broken; use AES-GCM"
+            - pkg: "crypto/sha1"
+              desc: "SHA1 is broken for security use; use crypto/sha256 or stronger"
+            - pkg: "net/http/cgi"
+              desc: "CGI has known security implications"
+            - pkg: "math/rand"
+              desc: "Use crypto/rand for security-sensitive randomness; math/rand is predictable"
+    unqueryvet:
+      check-sql-injection: true
     errcheck:
       exclude-functions:
         - fmt.Fprintf
