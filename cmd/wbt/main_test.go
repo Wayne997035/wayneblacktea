@@ -240,7 +240,7 @@ func TestRunServe_MissingBinary(t *testing.T) {
 	// Point godotenv at a non-existent file so Load is a no-op.
 	_ = os.Remove(filepath.Join(".", ".env"))
 
-	err := runServe()
+	err := runServe([]string{})
 	if err == nil {
 		t.Fatal("runServe: expected error when binary not in PATH, got nil")
 	}
@@ -256,7 +256,7 @@ func TestRunServe_MissingEnvVars(t *testing.T) {
 	t.Setenv("API_KEY", "")
 	t.Setenv("CLAUDE_API_KEY", "")
 
-	err := runServe()
+	err := runServe([]string{})
 	if err == nil {
 		t.Fatal("runServe: expected error when env vars missing, got nil")
 	}

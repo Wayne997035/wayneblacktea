@@ -138,7 +138,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     recall_count     INTEGER NOT NULL DEFAULT 0,
     last_recalled_at TEXT,
     base_lambda      REAL    NOT NULL DEFAULT 0.1,
-    archived_at      TEXT
+    archived_at      TEXT,
+    -- K1 hierarchy fields (migration 000027): self-referential parent, no FK (CLAUDE.md #9)
+    parent_id        TEXT    DEFAULT NULL, -- referential integrity in code (red line #9)
+    heading_path     TEXT    DEFAULT NULL, -- e.g. "Introduction › Key Concepts"
+    heading_level    INTEGER DEFAULT NULL  -- 0=root, 1=section, 2=subsection
 );
 
 CREATE TABLE IF NOT EXISTS concepts (
@@ -194,6 +198,11 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_created_at                 ON knowledge
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_workspace_id         ON knowledge_items(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_archived_at                ON knowledge_items(archived_at) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_last_recalled_at           ON knowledge_items(last_recalled_at);
+-- K1 hierarchy indexes (migration 000027): partial to avoid bloat on NULL-heavy columns.
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_parent_id
+    ON knowledge_items(parent_id) WHERE parent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_heading_path
+    ON knowledge_items(heading_path) WHERE heading_path IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_concepts_workspace_id                ON concepts(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_concepts_archived_at                 ON concepts(archived_at) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_concepts_last_recalled_at            ON concepts(last_recalled_at);

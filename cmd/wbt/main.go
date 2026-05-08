@@ -25,6 +25,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/mcprunner"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/pkg/browser"
 )
 
 const usage = `wbt — wayneblacktea one-click installer
@@ -57,7 +58,7 @@ func main() {
 	case "init":
 		err = runInit()
 	case "serve":
-		err = runServe()
+		err = runServe(os.Args[2:])
 	case "mcp":
 		err = runMCP()
 	case "guard":
@@ -478,7 +479,18 @@ func collectAPIKey(r *bufio.Reader) (string, error) {
 }
 
 // runServe loads .env from the current directory and runs wayneblacktea-server.
-func runServe() error {
+// args is the slice of arguments after "serve" (i.e. os.Args[2:]).
+//
+// Flags:
+//
+//	--no-browser   suppress automatic browser launch (also suppressed by WBT_NO_BROWSER=1)
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	noBrowserFlag := fs.Bool("no-browser", false, "disable automatic browser launch on startup")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+
 	// Non-fatal: if .env doesn't exist, existing env vars are used (Railway, etc.)
 	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("loading .env: %w", err)
@@ -492,7 +504,19 @@ func runServe() error {
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Printf("Starting wayneblacktea at http://localhost:%s\n", port)
+	serverURL := fmt.Sprintf("http://localhost:%s", port)
+	fmt.Printf("Starting wayneblacktea at %s\n", serverURL)
+
+	// Auto-open browser unless suppressed by flag or env.
+	// URL is constructed from server-controlled config (no user input) — no SSRF risk.
+	// Uses context.Background() goroutine: request lifecycle is not a concern for a CLI
+	// that blocks on cmd.Run(); the goroutine outlives no meaningful context boundary.
+	if !*noBrowserFlag && os.Getenv("WBT_NO_BROWSER") == "" {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			openBrowser(serverURL)
+		}()
+	}
 
 	serverBin, err := exec.LookPath("wayneblacktea-server")
 	if err != nil {
@@ -550,6 +574,16 @@ func randomHex(n int) (string, error) {
 		return "", fmt.Errorf("crypto/rand: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// openBrowser opens url in the system default browser. Best-effort: errors are
+// silently swallowed because a browser launch failure (headless env, no default
+// browser configured) must not abort the server start flow.
+func openBrowser(url string) {
+	if err := browser.OpenURL(url); err != nil {
+		// Non-fatal: headless environments (CI, Docker, SSH) commonly have no browser.
+		fmt.Fprintf(os.Stderr, "wbt: auto-open browser: %v (suppress with --no-browser or WBT_NO_BROWSER=1)\n", err)
+	}
 }
 
 // homeDir returns the user home directory, falling back to "." on error.

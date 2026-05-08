@@ -154,7 +154,12 @@ func parseTimestamptz(ns sql.NullString) pgtype.Timestamptz {
 	return pgtype.Timestamptz{}
 }
 
-func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+// nowRFC3339 returns the current UTC time in RFC3339 format with exactly
+// 3 millisecond digits (.000), matching SQLite's strftime('%Y-%m-%dT%H:%M:%fZ','now')
+// output which produces 3 fractional digits. Using time.RFC3339Nano would emit
+// up to 9 digits, causing length inconsistencies when comparing timestamps stored
+// by the app vs the DB default expression.
+func nowRFC3339() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
 
 // nullStringFromText collapses pgtype-style "" to NULL for inserts.
 func nullStringIfEmpty(s string) any {

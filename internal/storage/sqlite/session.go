@@ -68,11 +68,14 @@ func (s *SessionStore) SetHandoff(ctx context.Context, p session.HandoffParams) 
 }
 
 // LatestHandoff returns the most recent unresolved handoff, or session.ErrNotFound.
+// ORDER BY created_at DESC, rowid DESC: rowid is SQLite's monotonically-increasing
+// internal row counter and acts as a stable tiebreaker when two rows share the same
+// created_at millisecond (possible after the timestamp format change to .000).
 func (s *SessionStore) LatestHandoff(ctx context.Context) (*db.SessionHandoff, error) {
 	const q = `SELECT ` + sessionHandoffsSelectCols + ` FROM session_handoffs
 		WHERE resolved_at IS NULL
 		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, rowid DESC
 		LIMIT 1`
 	row := s.db.conn.QueryRowContext(ctx, q, s.db.workspaceArg())
 	h, err := scanSessionHandoff(row.Scan)

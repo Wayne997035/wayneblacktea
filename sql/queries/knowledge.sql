@@ -15,12 +15,18 @@ ORDER BY rank DESC
 LIMIT sqlc.arg('limit_n');
 
 -- name: GetKnowledgeByID :one
-SELECT * FROM knowledge_items
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
+       learning_value, workspace_id, importance, recall_count, last_recalled_at,
+       base_lambda, archived_at, parent_id, heading_path, heading_level
+FROM knowledge_items
 WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
 
 -- name: ListKnowledge :many
-SELECT * FROM knowledge_items
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
+       learning_value, workspace_id, importance, recall_count, last_recalled_at,
+       base_lambda, archived_at, parent_id, heading_path, heading_level
+FROM knowledge_items
 WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit_n') OFFSET sqlc.arg('offset_n');
