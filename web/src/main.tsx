@@ -5,7 +5,6 @@ import './i18n/index'
 import './index.css'
 import { App } from './App'
 import { ToastContainer } from './components/ui/Toast'
-import { initSession } from './lib/api'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,11 +18,6 @@ const queryClient = new QueryClient({
 
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Root element not found')
-
-// Kick off session establishment in the background — do NOT block rendering.
-// apiFetch retries automatically on 401, so first-load users are handled
-// without delaying the initial paint by a full Railway round-trip.
-initSession()
 
 createRoot(rootElement).render(
   <StrictMode>

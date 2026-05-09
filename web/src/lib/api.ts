@@ -1,24 +1,22 @@
+import { useAuthStore } from '../stores/authStore'
+
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
-// Singleton: at most one in-flight initSession at a time.
-let _sessionPromise: Promise<void> | null = null
-
-export function initSession(): Promise<void> {
-  if (!_sessionPromise) {
-    const apiKey = import.meta.env.VITE_API_KEY as string | undefined
-    _sessionPromise = fetch(`${BASE}/api/session`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'X-API-Key': apiKey ?? '' },
-    })
-      .then(() => undefined)
-      .catch(() => undefined)
-      .finally(() => {
-        // Allow re-issue after the session expires (next 401 will trigger again).
-        _sessionPromise = null
-      })
+export async function loginWithKey(key: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/session`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'X-API-Key': key },
+  })
+  if (res.status === 401) {
+    throw new Error('401')
   }
-  return _sessionPromise
+  if (res.status === 429) {
+    throw new Error('429')
+  }
+  if (!res.ok) {
+    throw new Error(`${res.status}`)
+  }
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -28,12 +26,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   }
 
-  let res = await fetch(`${BASE}${path}`, opts)
+  const res = await fetch(`${BASE}${path}`, opts)
 
   if (res.status === 401) {
-    // Cookie expired or not yet set — refresh session and retry once.
-    await initSession()
-    res = await fetch(`${BASE}${path}`, opts)
+    useAuthStore.getState().setStatus('unauthenticated')
+    throw new Error('401: session expired')
   }
 
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
