@@ -1,0 +1,35 @@
+package atom
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+)
+
+// StoreIface is the backend-agnostic contract for the MemoryAtom bounded
+// context. Postgres-backed *Store and SQLite-backed *AtomStore both satisfy
+// this interface.
+type StoreIface interface {
+	// AddAtom inserts a new atom and returns the persisted record.
+	AddAtom(ctx context.Context, p AddAtomParams) (*Atom, error)
+
+	// AddLink inserts a directed link between two atoms.
+	// If the (from_atom_id, to_atom_id, link_type) triple already exists the
+	// call is a no-op (ON CONFLICT DO NOTHING).
+	AddLink(ctx context.Context, p AddLinkParams) error
+
+	// ListByParent returns all atoms whose parent_table and parent_id match.
+	ListByParent(ctx context.Context, parentTable string, parentID uuid.UUID) ([]Atom, error)
+
+	// Traverse does BFS from startAtomID up to depth hops (capped at 5),
+	// returning all visited atoms and the links that connect them.
+	// Total atoms returned is capped at 50.
+	Traverse(ctx context.Context, startAtomID uuid.UUID, depth int) (*TraverseResult, error)
+
+	// Search returns atoms whose content, keywords, or tags contain query
+	// (ILIKE on Postgres, LIKE on SQLite). Scoped to workspaceID when non-nil.
+	Search(ctx context.Context, workspaceID *uuid.UUID, query string, limit int) ([]Atom, error)
+}
+
+// Compile-time assertion: Postgres Store satisfies StoreIface.
+var _ StoreIface = (*Store)(nil)

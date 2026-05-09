@@ -13,6 +13,7 @@ import (
 	"io"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -61,6 +62,7 @@ type ServerStores interface {
 	Vision() vision.StoreIface
 	Playbook() playbook.StoreIface
 	Procedural() procedural.StoreIface
+	Atom() atom.StoreIface
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil
 	// when operating in legacy single-workspace mode. Used by MCP tools that

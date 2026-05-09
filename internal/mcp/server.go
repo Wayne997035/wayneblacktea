@@ -5,6 +5,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -49,6 +50,11 @@ type Server struct {
 	vision      vision.StoreIface
 	playbook    playbook.StoreIface
 	procedural  procedural.StoreIface
+	atom        atom.StoreIface
+	atomizer    *ai.Atomizer
+	// atomizeSem limits concurrent background atomize goroutines to prevent
+	// API budget exhaustion from rapid add_* bursts. (security M4)
+	atomizeSem chan struct{}
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
@@ -98,6 +104,9 @@ func New(stores storage.ServerStores) (*Server, error) {
 		vision:         stores.Vision(),
 		playbook:       stores.Playbook(),
 		procedural:     stores.Procedural(),
+		atom:           stores.Atom(),
+		atomizer:       ai.NewAtomizer(),
+		atomizeSem:     make(chan struct{}, 5),
 		pgGTD:          stores.PgGTD(),
 		pgProposal:     stores.PgProposal(),
 		pgLearning:     stores.PgLearning(),
@@ -237,6 +246,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerVisionTools(ms)
 	s.registerPlaybookTools(ms)
 	s.registerProceduralTools(ms)
+	s.registerAtomTools(ms)
 	return ms
 }
 

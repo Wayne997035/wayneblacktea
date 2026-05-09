@@ -121,6 +121,8 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("adding knowledge item: %v", err)), nil
 	}
 
+	s.launchAtomize("knowledge_items", item.ID, item.Content)
+
 	// Auto-propose a concept card for review-eligible item types so the spaced
 	// repetition queue is fed without an explicit user step. Failure is logged
 	// but does not roll back the knowledge item.

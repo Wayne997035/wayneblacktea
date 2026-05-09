@@ -376,3 +376,31 @@ CREATE TABLE IF NOT EXISTS procedural_memories (
 CREATE INDEX IF NOT EXISTS idx_procedural_memories_workspace ON procedural_memories(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_procedural_memories_repo      ON procedural_memories(repo_name);
 
+-- Mirrored from migrations/sqlite/000033_memory_atoms. Atomic fact units extracted
+-- from decisions, knowledge items, and procedural memories.
+-- No FK constraints (CLAUDE.md #9). TTL: 90 days (enforced app-side via scheduled DELETE).
+CREATE TABLE IF NOT EXISTS memory_atoms (
+    id           TEXT        PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab', abs(random() % 4) + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+    workspace_id TEXT,
+    parent_table TEXT        NOT NULL,
+    parent_id    TEXT        NOT NULL,
+    content      TEXT        NOT NULL,
+    keywords     TEXT        NOT NULL DEFAULT '[]',
+    tags         TEXT        NOT NULL DEFAULT '[]',
+    created_at   DATETIME    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_atoms_parent    ON memory_atoms(parent_table, parent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_atoms_workspace ON memory_atoms(workspace_id);
+
+-- Mirrored from migrations/sqlite/000034_memory_links. Directed edges between atoms.
+-- No FK constraints (CLAUDE.md #9).
+CREATE TABLE IF NOT EXISTS memory_links (
+    from_atom_id TEXT    NOT NULL,
+    to_atom_id   TEXT    NOT NULL,
+    link_type    TEXT    NOT NULL CHECK (link_type IN ('same_entity','same_action','same_time','same_project')),
+    confidence   REAL    NOT NULL DEFAULT 0.5 CHECK (confidence BETWEEN 0.0 AND 1.0),
+    created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (from_atom_id, to_atom_id, link_type)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_links_from ON memory_links(from_atom_id);
+CREATE INDEX IF NOT EXISTS idx_memory_links_to   ON memory_links(to_atom_id);

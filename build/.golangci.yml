@@ -112,6 +112,7 @@ linters:
       - path: "internal/mcp/"
         linters:
           - nilerr     # MCP tool handlers return (*ToolResult, nil) — ToolResult carries user-facing error, nil Go error is correct by mcp-go convention
+          - contextcheck # launchAtomize goroutines intentionally use context.Background() — request context must not propagate to background writes
       - path: "internal/storage/sqlite/db.go"
         linters:
           - unqueryvet # ExecContext/QueryRowContext are generic wrappers; schemaSQL is embedded constant; all call sites use parameterized args (no interpolation)
