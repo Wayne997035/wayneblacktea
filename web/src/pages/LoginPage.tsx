@@ -14,6 +14,7 @@ export function LoginPage() {
     setLoading(true)
     try {
       await loginWithKey(key)
+      setKey('')
       setStatus('authenticated')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''

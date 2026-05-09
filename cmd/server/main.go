@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 	_ "time/tzdata" // embed IANA timezone DB so Asia/Taipei works on any base image
 
 	"github.com/joho/godotenv"
@@ -38,6 +39,7 @@ import (
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
 	mcphttp "github.com/mark3labs/mcp-go/server"
+	"golang.org/x/time/rate"
 )
 
 //go:embed web/dist
@@ -175,7 +177,11 @@ func run() error {
 	})
 	// Browser login page POSTs the user-entered key once to receive the wbt_session cookie.
 	// Rate-limited to 10 req/min per IP to mitigate brute-force on the key.
-	sessionRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
+	sessionRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStoreWithConfig(echolog.RateLimiterMemoryStoreConfig{
+		Rate:      rate.Limit(10.0 / 60.0), // 10 req/min per IP
+		Burst:     3,
+		ExpiresIn: 5 * time.Minute,
+	}))
 	e.POST("/api/session", authSessH.IssueSession, sessionRL)
 
 	api := e.Group("/api", apimw.APIKeyMiddleware(apiKey))
