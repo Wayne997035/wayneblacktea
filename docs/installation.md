@@ -7,8 +7,8 @@ first-time reader of the project.
 ## Prerequisites
 
 - Go 1.26.3+
-- PostgreSQL 14+ with the `pgvector` extension
 - Node 22+ (for the dashboard build step)
+- PostgreSQL 14+ with the `pgvector` extension (required only when `STORAGE_BACKEND=postgres`; SQLite works out of the box)
 - Optional integrations: Discord bot token, Gemini API key, Groq API
   key, Notion integration secret. None are required to bring the
   server up; the missing pipeline simply degrades gracefully (no
