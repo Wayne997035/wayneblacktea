@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/google/uuid"
@@ -310,4 +311,19 @@ func (s *AtomStore) linksFrom(ctx context.Context, fromID uuid.UUID) ([]atom.Lin
 		out = append(out, l)
 	}
 	return out, errWrap("AtomStore.linksFrom iter", rows.Err())
+}
+
+// PruneAtoms hard-deletes memory_atoms rows older than cutoff. Called by the
+// daily decay pruner to enforce the 90-day TTL.
+func (s *AtomStore) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM memory_atoms WHERE created_at < ?`
+	result, err := s.db.conn.ExecContext(ctx, q, cutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, fmt.Errorf("pruning atoms: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("pruning atoms rows affected: %w", err)
+	}
+	return n, nil
 }

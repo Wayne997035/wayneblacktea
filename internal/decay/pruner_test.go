@@ -24,10 +24,22 @@ func (s *stubPrunerStore) SoftPruneDecayed(ctx context.Context, cutoff time.Time
 	return s.n, s.err
 }
 
+// stubAtomPruner is a test double for AtomPruner.
+type stubAtomPruner struct {
+	n      int64
+	err    error
+	called bool
+}
+
+func (s *stubAtomPruner) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error) {
+	s.called = true
+	return s.n, s.err
+}
+
 func TestPruner_Run_HappyPath(t *testing.T) {
 	ks := &stubPrunerStore{n: 3}
 	cs := &stubPrunerStore{n: 1}
-	p := NewPruner(ks, cs)
+	p := NewPruner(ks, cs, nil)
 	p.Run() // must not panic
 
 	if !ks.called {
@@ -50,7 +62,7 @@ func TestPruner_Run_HappyPath(t *testing.T) {
 func TestPruner_Run_StoreError_Logged_NotPanic(t *testing.T) {
 	ks := &stubPrunerStore{err: errors.New("DB gone")}
 	cs := &stubPrunerStore{n: 2}
-	p := NewPruner(ks, cs)
+	p := NewPruner(ks, cs, nil)
 	// must not panic even when knowledge store errors
 	p.Run()
 	if !cs.called {
@@ -60,7 +72,7 @@ func TestPruner_Run_StoreError_Logged_NotPanic(t *testing.T) {
 
 func TestPruner_Run_NilKnowledgeStore(t *testing.T) {
 	cs := &stubPrunerStore{n: 1}
-	p := NewPruner(nil, cs)
+	p := NewPruner(nil, cs, nil)
 	p.Run() // must not panic with nil knowledge store
 	if !cs.called {
 		t.Error("concepts store should be called even when knowledge is nil")
@@ -69,11 +81,26 @@ func TestPruner_Run_NilKnowledgeStore(t *testing.T) {
 
 func TestPruner_Run_NilConceptsStore(t *testing.T) {
 	ks := &stubPrunerStore{n: 1}
-	p := NewPruner(ks, nil)
+	p := NewPruner(ks, nil, nil)
 	p.Run() // must not panic with nil concepts store
 	if !ks.called {
 		t.Error("knowledge store should be called even when concepts is nil")
 	}
+}
+
+func TestPruner_Run_AtomsStore(t *testing.T) {
+	as := &stubAtomPruner{n: 7}
+	p := NewPruner(nil, nil, as)
+	p.Run()
+	if !as.called {
+		t.Error("atom store PruneAtoms was not called")
+	}
+}
+
+func TestPruner_Run_AtomsStoreError_NotPanic(t *testing.T) {
+	as := &stubAtomPruner{err: errors.New("atoms DB gone")}
+	p := NewPruner(nil, nil, as)
+	p.Run() // must not panic on atom prune error
 }
 
 func TestPruner_Threshold_Is_LowEnough(t *testing.T) {
@@ -94,17 +121,13 @@ func TestPruner_AgeCutoff_Is_AtLeast90Days(t *testing.T) {
 // TestPruner_DecisionsNeverPruned verifies that Pruner has no field or method
 // that accepts a decisions store. The decisions table is an audit trail and
 // must never participate in decay pruning (P0a D3 design decision).
-//
-// This test is structural: it asserts the Pruner struct has exactly 2 fields
-// (knowledge and concepts) and that a stubPrunerStore passed only as knowledge
-// and concepts is the only one called — no mystery "decisions" field exists.
 func TestPruner_DecisionsNeverPruned(t *testing.T) {
 	// decisionsSpy would be called if any "decisions" path existed in Pruner.
 	decisionsSpy := &stubPrunerStore{}
 
 	ks := &stubPrunerStore{n: 1}
 	cs := &stubPrunerStore{n: 1}
-	p := NewPruner(ks, cs)
+	p := NewPruner(ks, cs, nil)
 	p.Run()
 
 	// decisionsSpy must NEVER have been called — Pruner has no decisions path.
@@ -130,7 +153,7 @@ func TestPruner_LowStrengthDecisions_NotPruned(t *testing.T) {
 	// Because Pruner has no decisions field, these items are never pruned.
 	ks := &stubPrunerStore{n: 5} // 5 knowledge items pruned
 	cs := &stubPrunerStore{n: 0} // 0 concepts pruned
-	p := NewPruner(ks, cs)
+	p := NewPruner(ks, cs, nil)
 	p.Run()
 
 	if ks.n != 5 {

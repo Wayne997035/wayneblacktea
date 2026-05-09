@@ -485,5 +485,5 @@ func buildPruner(stores storage.ServerStores) *decay.Pruner {
 	if kp == nil && cp == nil {
 		return nil
 	}
-	return decay.NewPruner(kp, cp)
+	return decay.NewPruner(kp, cp, stores.Atom())
 }

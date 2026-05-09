@@ -2,6 +2,7 @@ package atom
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -29,6 +30,10 @@ type StoreIface interface {
 	// Search returns atoms whose content, keywords, or tags contain query
 	// (ILIKE on Postgres, LIKE on SQLite). Scoped to workspaceID when non-nil.
 	Search(ctx context.Context, workspaceID *uuid.UUID, query string, limit int) ([]Atom, error)
+
+	// PruneAtoms hard-deletes memory_atoms rows older than cutoff.
+	// Called daily by the decay.Pruner to enforce the 90-day TTL.
+	PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // Compile-time assertion: Postgres Store satisfies StoreIface.

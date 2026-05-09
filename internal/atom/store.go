@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -361,6 +362,17 @@ func (s *Store) Search(ctx context.Context, workspaceID *uuid.UUID, query string
 		return nil, fmt.Errorf("searching atoms rows.Err: %w", err)
 	}
 	return out, nil
+}
+
+// PruneAtoms hard-deletes memory_atoms rows older than cutoff. Called by the
+// daily decay pruner to enforce the 90-day TTL.
+func (s *Store) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM memory_atoms WHERE created_at < $1`
+	tag, err := s.pool.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning atoms: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied

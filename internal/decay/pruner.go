@@ -18,6 +18,12 @@ const softPruneAgeCutoff = 90 * 24 * time.Hour
 // strengthThreshold is the Ebbinghaus strength below which an item is pruned.
 const strengthThreshold = 0.05
 
+// AtomPruner is the minimal interface the Pruner needs from the atom store.
+// atom.Store (Postgres) and sqlite.AtomStore (SQLite) both satisfy this via duck typing.
+type AtomPruner interface {
+	PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
 // PrunerStore is the minimal interface the Pruner needs from each table store.
 // Only knowledge_items and concepts implement this; decisions is excluded by
 // design (it is an audit trail / truth source).
@@ -35,14 +41,15 @@ type PrunerStore interface {
 type Pruner struct {
 	knowledge PrunerStore
 	concepts  PrunerStore
+	atoms     AtomPruner
 }
 
-// NewPruner creates a Pruner. Both stores are required; pass nil to skip a
-// store (e.g. SQLite builds that only have one backend).
-func NewPruner(knowledge, concepts PrunerStore) *Pruner {
+// NewPruner creates a Pruner. Pass nil for any store to skip pruning it.
+func NewPruner(knowledge, concepts PrunerStore, atoms AtomPruner) *Pruner {
 	return &Pruner{
 		knowledge: knowledge,
 		concepts:  concepts,
+		atoms:     atoms,
 	}
 }
 
@@ -73,6 +80,15 @@ func (p *Pruner) Run() {
 			slog.Warn("decay pruner: concepts prune failed", "err", err)
 		} else if n > 0 {
 			slog.Info("decay pruner: concepts soft-pruned", "count", n)
+		}
+	}
+
+	if p.atoms != nil {
+		n, err := p.atoms.PruneAtoms(ctx, cutoff)
+		if err != nil {
+			slog.Warn("decay pruner: memory_atoms prune failed", "err", err)
+		} else if n > 0 {
+			slog.Info("decay pruner: memory_atoms hard-pruned", "count", n)
 		}
 	}
 }
