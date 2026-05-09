@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+# Least-privilege: read-only token. Write access is only in release.yml.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: task check
