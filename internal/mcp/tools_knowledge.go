@@ -52,19 +52,44 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 	), s.handleSyncToNotion)
 }
 
+const (
+	mcpKnowledgeMaxTitleLen   = 200
+	mcpKnowledgeMaxContentLen = 10 * 1024 * 1024 // 10 MB
+	mcpKnowledgeMaxTagItemLen = 50
+)
+
+// validateKnowledgeArgs checks field-level invariants for add_knowledge tool
+// input. It returns a non-empty human-readable message on the first violation.
+func validateKnowledgeArgs(itemType, title, content, url string, tags []string) string {
+	validTypes := map[string]bool{"article": true, "til": true, "bookmark": true, "zettelkasten": true}
+	switch {
+	case itemType == "" || title == "":
+		return "type and title are required"
+	case !validTypes[itemType]:
+		return "type must be one of: article, til, bookmark, zettelkasten"
+	case len(title) > mcpKnowledgeMaxTitleLen:
+		return "title exceeds 200-character limit"
+	case len(content) > mcpKnowledgeMaxContentLen:
+		return "content exceeds 10 MB limit"
+	case url != "" && !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://"):
+		return "url must start with http:// or https://"
+	case len(tags) > maxTagCount:
+		return "tags array exceeds 20-entry limit"
+	}
+	for _, tag := range tags {
+		if len(tag) > mcpKnowledgeMaxTagItemLen {
+			return "each tag must be 50 characters or fewer"
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	itemType := stringArg(args, "type")
 	title := stringArg(args, "title")
-
-	if itemType == "" || title == "" {
-		return mcp.NewToolResultError("type and title are required"), nil
-	}
-
-	validTypes := map[string]bool{"article": true, "til": true, "bookmark": true, "zettelkasten": true}
-	if !validTypes[itemType] {
-		return mcp.NewToolResultError("type must be one of: article, til, bookmark, zettelkasten"), nil
-	}
+	content := stringArg(args, "content")
+	url := stringArg(args, "url")
 
 	var tags []string
 	if raw := stringArg(args, "tags"); raw != "" {
@@ -74,6 +99,11 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 			}
 		}
 	}
+
+	if msg := validateKnowledgeArgs(itemType, title, content, url, tags); msg != "" {
+		return mcp.NewToolResultError(msg), nil
+	}
+
 	cleanedTags, reason := sanitizeTags(tags)
 	if reason != "" {
 		return mcp.NewToolResultError(string(reason)), nil
@@ -83,8 +113,8 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	item, err := s.knowledge.AddItem(ctx, knowledge.AddItemParams{
 		Type:    itemType,
 		Title:   title,
-		Content: stringArg(args, "content"),
-		URL:     stringArg(args, "url"),
+		Content: content,
+		URL:     url,
 		Tags:    tags,
 	})
 	if err != nil {

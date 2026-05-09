@@ -56,22 +56,50 @@ type addKnowledgeRequest struct {
 	LearningValue int      `json:"learning_value"`
 }
 
+const (
+	knowledgeMaxTitleLen   = 200
+	knowledgeMaxContentLen = 1 * 1024 * 1024 // 1 MB — matches global BodyLimit("1M") middleware; raising requires per-route override
+	knowledgeMaxTagCount   = 20
+	knowledgeMaxTagItemLen = 50
+)
+
+// validateAddKnowledgeRequest checks field-level invariants for AddKnowledge.
+// It returns a non-empty human-readable message on the first violation, or an
+// empty string when all fields are valid.
+func validateAddKnowledgeRequest(req addKnowledgeRequest) string {
+	validTypes := map[string]bool{"article": true, "til": true, "bookmark": true, "zettelkasten": true}
+	switch {
+	case req.Type == "" || req.Title == "":
+		return "type and title are required"
+	case !validTypes[req.Type]:
+		return "type must be one of: article, til, bookmark, zettelkasten"
+	case req.LearningValue != 0 && (req.LearningValue < 1 || req.LearningValue > 5):
+		return "learning_value must be between 1 and 5"
+	case len(req.Title) > knowledgeMaxTitleLen:
+		return "title exceeds 200-character limit"
+	case len(req.Content) > knowledgeMaxContentLen:
+		return "content exceeds 1 MB limit"
+	case req.URL != "" && !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://"):
+		return "url must start with http:// or https://"
+	case len(req.Tags) > knowledgeMaxTagCount:
+		return "tags array exceeds 20-entry limit"
+	}
+	for _, tag := range req.Tags {
+		if len(tag) > knowledgeMaxTagItemLen {
+			return "each tag must be 50 characters or fewer"
+		}
+	}
+	return ""
+}
+
 // AddKnowledge creates a new knowledge item.
 func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 	var req addKnowledgeRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
 	}
-	if req.Type == "" || req.Title == "" {
-		return c.JSON(http.StatusBadRequest, errResp("type and title are required"))
-	}
-
-	validTypes := map[string]bool{"article": true, "til": true, "bookmark": true, "zettelkasten": true}
-	if !validTypes[req.Type] {
-		return c.JSON(http.StatusBadRequest, errResp("type must be one of: article, til, bookmark, zettelkasten"))
-	}
-	if req.LearningValue != 0 && (req.LearningValue < 1 || req.LearningValue > 5) {
-		return c.JSON(http.StatusBadRequest, errResp("learning_value must be between 1 and 5"))
+	if msg := validateAddKnowledgeRequest(req); msg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(msg))
 	}
 
 	item, err := h.store.AddItem(c.Request().Context(), knowledge.AddItemParams{

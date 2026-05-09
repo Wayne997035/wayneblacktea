@@ -7,63 +7,109 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 )
 
-func TestBackendFromEnv_DefaultPostgres(t *testing.T) {
-	t.Setenv("STORAGE_BACKEND", "")
-	got, err := storage.BackendFromEnv()
-	if err != nil {
-		t.Fatalf("BackendFromEnv: %v", err)
+// TestBackendFromEnv covers the five required cases.
+// Subtests are run sequentially (not parallel) because t.Setenv is used;
+// Go 1.26 panics if t.Parallel is combined with t.Setenv.
+func TestBackendFromEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		envVal  string
+		want    storage.Backend
+		wantErr bool
+		errIs   error
+	}{
+		{
+			name:   "unset (empty string) → SQLite default",
+			envVal: "",
+			want:   storage.BackendSQLite,
+		},
+		{
+			name:   "explicit sqlite → BackendSQLite",
+			envVal: "sqlite",
+			want:   storage.BackendSQLite,
+		},
+		{
+			name:   "explicit postgres → BackendPostgres",
+			envVal: "postgres",
+			want:   storage.BackendPostgres,
+		},
+		{
+			name:    "invalid value → ErrInvalidBackend",
+			envVal:  "mysql",
+			wantErr: true,
+			errIs:   storage.ErrInvalidBackend,
+		},
+		{
+			name:   "whitespace-padded postgres → trimmed to BackendPostgres",
+			envVal: "  postgres  ",
+			want:   storage.BackendPostgres,
+		},
 	}
-	if got != storage.BackendPostgres {
-		t.Errorf("expected default=postgres, got %q", got)
-	}
-}
 
-func TestBackendFromEnv_Postgres(t *testing.T) {
-	t.Setenv("STORAGE_BACKEND", "postgres")
-	got, _ := storage.BackendFromEnv()
-	if got != storage.BackendPostgres {
-		t.Errorf("expected postgres, got %q", got)
-	}
-}
-
-func TestBackendFromEnv_SQLite(t *testing.T) {
-	t.Setenv("STORAGE_BACKEND", "sqlite")
-	got, err := storage.BackendFromEnv()
-	if err != nil {
-		t.Fatalf("BackendFromEnv: %v", err)
-	}
-	if got != storage.BackendSQLite {
-		t.Errorf("expected sqlite, got %q", got)
-	}
-}
-
-func TestBackendFromEnv_Invalid(t *testing.T) {
-	t.Setenv("STORAGE_BACKEND", "mysql")
-	_, err := storage.BackendFromEnv()
-	if !errors.Is(err, storage.ErrInvalidBackend) {
-		t.Errorf("expected ErrInvalidBackend, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("STORAGE_BACKEND", tc.envVal)
+			got, err := storage.BackendFromEnv()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errIs != nil && !errors.Is(err, tc.errIs) {
+					t.Errorf("expected errors.Is(%v), got %v", tc.errIs, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("BackendFromEnv() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
 func TestEnsureSupported(t *testing.T) {
-	if err := storage.EnsureSupported(storage.BackendPostgres); err != nil {
-		t.Errorf("postgres should be supported, got %v", err)
-	}
-	if err := storage.EnsureSupported(storage.BackendSQLite); err != nil {
-		t.Errorf("sqlite should be supported (SQLite v2 cmd dispatch), got %v", err)
-	}
-	if err := storage.EnsureSupported("mysql"); !errors.Is(err, storage.ErrInvalidBackend) {
-		t.Errorf("invalid backend should report ErrInvalidBackend, got %v", err)
-	}
-}
+	t.Parallel()
 
-func TestBackendFromEnv_TrimsWhitespace(t *testing.T) {
-	t.Setenv("STORAGE_BACKEND", "  postgres  ")
-	got, err := storage.BackendFromEnv()
-	if err != nil {
-		t.Fatalf("BackendFromEnv: %v", err)
+	tests := []struct {
+		name    string
+		backend storage.Backend
+		wantErr bool
+		errIs   error
+	}{
+		{
+			name:    "postgres is supported",
+			backend: storage.BackendPostgres,
+		},
+		{
+			name:    "sqlite is supported",
+			backend: storage.BackendSQLite,
+		},
+		{
+			name:    "mysql is unsupported → ErrInvalidBackend",
+			backend: "mysql",
+			wantErr: true,
+			errIs:   storage.ErrInvalidBackend,
+		},
 	}
-	if got != storage.BackendPostgres {
-		t.Errorf("expected trimmed postgres, got %q", got)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := storage.EnsureSupported(tc.backend)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errIs != nil && !errors.Is(err, tc.errIs) {
+					t.Errorf("expected errors.Is(%v), got %v", tc.errIs, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

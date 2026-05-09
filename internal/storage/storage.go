@@ -42,11 +42,11 @@ const (
 var ErrInvalidBackend = errors.New("STORAGE_BACKEND must be 'postgres' or 'sqlite'")
 
 // BackendFromEnv reads the STORAGE_BACKEND environment variable and returns
-// the resolved Backend. Empty / unset → BackendPostgres (the default).
+// the resolved Backend. Empty / unset → BackendSQLite (local-first default).
 func BackendFromEnv() (Backend, error) {
 	raw := strings.TrimSpace(os.Getenv("STORAGE_BACKEND"))
 	if raw == "" {
-		return BackendPostgres, nil
+		return BackendSQLite, nil
 	}
 	switch Backend(raw) {
 	case BackendPostgres:

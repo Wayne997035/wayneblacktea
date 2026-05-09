@@ -12,7 +12,6 @@ before:
     - sh -c 'cd web && npm ci --ignore-scripts'
     - sh -c 'cd web && npm run build'
     - sh -c 'mkdir -p cmd/server/web && rm -rf cmd/server/web/dist && cp -r web/dist cmd/server/web/dist'
-    - go mod tidy
 
 builds:
   - id: mcp
@@ -52,6 +51,91 @@ builds:
   - id: seed
     binary: wayneblacktea-seed
     main: ./cmd/seed
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: wbt
+    binary: wbt
+    main: ./cmd/wbt
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: wbt-context
+    binary: wbt-context
+    main: ./cmd/wbt-context
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: wbt-hook
+    binary: wbt-hook
+    main: ./cmd/wbt-hook
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: wbt-guard
+    binary: wbt-guard
+    main: ./cmd/wbt-guard
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: wbt-doctor
+    binary: wbt-doctor
+    main: ./cmd/doctor
     env:
       - CGO_ENABLED=0
     flags:
@@ -106,6 +190,27 @@ archives:
       - seed
     name_template: >-
       wayneblacktea-seed_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+  - id: cli
+    ids:
+      - wbt
+      - wbt-context
+      - wbt-hook
+      - wbt-guard
+      - wbt-doctor
+    name_template: >-
+      wayneblacktea-cli_{{ .Version }}_
       {{- if eq .Os "darwin" }}macos
       {{- else }}{{ .Os }}{{ end }}_
       {{- if eq .Arch "amd64" }}x86_64

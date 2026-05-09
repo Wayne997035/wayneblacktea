@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	_ "time/tzdata" // embed IANA timezone DB so Asia/Taipei works on any base image
 
@@ -68,8 +69,10 @@ func run() error {
 	if port == "" {
 		port = "8080"
 	}
-	// allowedOrigins is validated by CORSMiddleware — empty or "*" will panic at startup.
-	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+	allowedOrigins, err := resolveAllowedOrigins(port)
+	if err != nil {
+		return err
+	}
 
 	stores, err := buildStores(backend)
 	if err != nil {
@@ -134,11 +137,11 @@ func run() error {
 
 	e := echo.New()
 	e.HideBanner = true
-	// Trust the Railway/proxy edge to provide the real client IP via X-Forwarded-For.
-	// Without this, c.RealIP() falls back to the connection peer (the proxy) and the
-	// per-IP rate limiter (e.g. dashboardRL) treats every authenticated caller as one
-	// IP, OR — worse — accepts any spoofed XFF header verbatim.
-	e.IPExtractor = echo.ExtractIPFromXFFHeader()
+	// Use X-Real-IP (set by Railway's edge proxy to the actual client IP).
+	// XFF is not used because clients can prepend arbitrary values to the
+	// X-Forwarded-For chain, allowing them to spoof the "leftmost" hop and
+	// bypass per-IP rate limiters. X-Real-IP is proxy-controlled only.
+	e.IPExtractor = echo.ExtractIPFromRealIPHeader()
 	e.Use(echolog.RequestLoggerWithConfig(echolog.RequestLoggerConfig{
 		LogMethod: true, LogURI: true, LogStatus: true,
 		LogLatency: true, LogHost: true, LogError: true,
@@ -216,7 +219,7 @@ func run() error {
 	// per IP — same tier as /search (security audit M-1).
 	knowledgeRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(20))
 	api.GET("/knowledge", knowledgeH.ListKnowledge)
-	api.POST("/knowledge", knowledgeH.AddKnowledge)
+	api.POST("/knowledge", knowledgeH.AddKnowledge, knowledgeRL)
 	api.PATCH("/knowledge/:id", knowledgeH.UpdateLearningValue, knowledgeRL)
 	api.GET("/knowledge/search", knowledgeH.SearchKnowledge, knowledgeRL)
 
@@ -311,6 +314,34 @@ func run() error {
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil
+}
+
+// resolveAllowedOrigins determines the CORS allowed origins at startup.
+//
+// Rules:
+//   - ALLOWED_ORIGINS="*" is always rejected (wildcard is unsafe with AllowCredentials=true).
+//   - ALLOWED_ORIGINS non-empty → returned as-is.
+//   - ALLOWED_ORIGINS empty + APP_ENV="production" → error (production must be explicit).
+//   - ALLOWED_ORIGINS empty + any other APP_ENV → default to localhost on the given port.
+func resolveAllowedOrigins(port string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS"))
+	appEnv := strings.TrimSpace(os.Getenv("APP_ENV"))
+
+	if raw == "*" {
+		return "", fmt.Errorf("ALLOWED_ORIGINS must not be '*' when AllowCredentials=true; set explicit origins")
+	}
+	if raw != "" {
+		return raw, nil
+	}
+	if appEnv == "production" {
+		return "", fmt.Errorf("ALLOWED_ORIGINS must be set in production (APP_ENV=production); got empty value")
+	}
+	// local / dev default — safe because AllowCredentials only grants access to
+	// origins that the browser has already confirmed are same-scheme/host.
+	// Warn unconditionally so that operators catch missing ALLOWED_ORIGINS in
+	// production environments that do not set APP_ENV=production.
+	log.Printf("WARN: ALLOWED_ORIGINS not set — defaulting to localhost:%s; set ALLOWED_ORIGINS explicitly in production", port)
+	return fmt.Sprintf("http://localhost:%s,http://127.0.0.1:%s", port, port), nil
 }
 
 func buildSPAHandler(distFS fs.FS) http.Handler {

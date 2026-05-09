@@ -16,10 +16,11 @@ tasks:
   check:
     desc: "Full quality gate — run before any commit"
     cmds:
+      - task: vuln
       - task: lint
       - task: test
       - task: build-mcp
-      # build-server requires web/dist from `npm run build` — skip in CI without frontend build
+      - task: build-server
       - task: build-doctor
       - task: build-wbt
       - task: build-wbt-context
@@ -32,6 +33,16 @@ tasks:
     cmds:
       - govulncheck ./...
     dir: ..
+
+  build-frontend:
+    desc: "Build frontend (required by cmd/server //go:embed) — run before task check locally"
+    cmds:
+      - npm ci --ignore-scripts
+      - npm run build
+      - mkdir -p ../cmd/server/web
+      - rm -rf ../cmd/server/web/dist
+      - cp -r dist ../cmd/server/web/dist
+    dir: ../web
 
   build-mcp:
     desc: "Build MCP binary to bin/"
