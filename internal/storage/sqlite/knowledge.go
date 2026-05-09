@@ -38,6 +38,14 @@ const knowledgeSelectCols = `id, type, title, content, url, tags,
 	importance, recall_count, last_recalled_at, base_lambda, archived_at,
 	parent_id, heading_path, heading_level`
 
+// knowledgeSelectColsKI is the same column list fully qualified with the "ki"
+// table alias, for use in FTS5 JOIN queries where bare column names are
+// ambiguous (knowledge_items_fts also exposes title and content columns).
+const knowledgeSelectColsKI = `ki.id, ki.type, ki.title, ki.content, ki.url, ki.tags,
+	ki.created_at, ki.updated_at, ki.source, ki.learning_value, ki.workspace_id,
+	ki.importance, ki.recall_count, ki.last_recalled_at, ki.base_lambda, ki.archived_at,
+	ki.parent_id, ki.heading_path, ki.heading_level`
+
 func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	var (
 		item                         db.KnowledgeItem
@@ -209,6 +217,27 @@ func escapeLike(s string) string {
 	return s
 }
 
+// toFTS5Query converts a user search string to an FTS5 MATCH expression.
+// Special characters are stripped; each word gets a * suffix for prefix
+// matching so "conf" matches "configuration" and "config".
+// Returns "" when no usable terms remain (caller should treat as empty result).
+func toFTS5Query(q string) string {
+	var terms []string
+	for _, word := range strings.Fields(q) {
+		clean := strings.Map(func(r rune) rune {
+			switch r {
+			case '"', '\'', '^', '*', ':', '-', '+', '(', ')', '.', '\\':
+				return -1
+			}
+			return r
+		}, word)
+		if clean != "" {
+			terms = append(terms, clean+"*")
+		}
+	}
+	return strings.Join(terms, " ")
+}
+
 // knowledgeWithStrength bundles a knowledge item with its computed strength for
 // in-memory sorting.
 type knowledgeWithStrength struct {
@@ -216,29 +245,53 @@ type knowledgeWithStrength struct {
 	strength float64
 }
 
-// Search performs a portable LIKE search over title and content.
+// Search performs FTS5 full-text search over title and content.
 // Results are sorted app-side by Ebbinghaus strength so fresh high-importance
 // items appear first. On each hit, recall_count is incremented atomically.
 //
-//nolint:dupl // intentionally similar to SearchCoarse but searches all levels; extraction would complicate the query
+// FTS5 provides BM25-ranked inverted-index search with porter stemming and
+// prefix matching (toFTS5Query appends * to each term). Falls back to nil
+// when the query produces no usable FTS5 terms (all-special-char input).
+//
+//nolint:dupl // intentionally similar to SearchCoarse; SQL WHERE differs in root-level filter; extraction would complicate the query
 func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	pattern := "%" + escapeLike(query) + "%"
+	ftsQuery := toFTS5Query(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
 	// Fetch more candidates than limit so the strength reordering has room.
 	fetchLimit := limit * 3
 	if fetchLimit < 50 {
 		fetchLimit = 50
 	}
-	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
-		WHERE (title LIKE ?1 ESCAPE '\' OR content LIKE ?1 ESCAPE '\')
-		  AND archived_at IS NULL
-		  AND (?2 IS NULL OR workspace_id = ?2)
-		ORDER BY
-		  CASE WHEN title LIKE ?1 ESCAPE '\' THEN 0 ELSE 1 END,
-		  created_at DESC, id DESC
+	// fts.rank is negative in FTS5 (closer to 0 = better match); ORDER BY rank ASC
+	// returns best matches first. The app-side Ebbinghaus re-sort runs after fetch.
+	const ftsQ = `SELECT ` + knowledgeSelectColsKI + `, fts.rank
+		FROM knowledge_items_fts fts
+		JOIN knowledge_items ki ON ki.rowid = fts.rowid
+		WHERE knowledge_items_fts MATCH ?1
+		  AND ki.archived_at IS NULL
+		  AND (?2 IS NULL OR ki.workspace_id = ?2)
+		ORDER BY fts.rank
 		LIMIT ?3`
-	items, err := s.list(ctx, "SearchKnowledge", q, pattern, s.db.workspaceArg(), fetchLimit)
+	rows, err := s.db.conn.QueryContext(ctx, ftsQ, ftsQuery, s.db.workspaceArg(), fetchLimit)
 	if err != nil {
-		return nil, err
+		return nil, errWrap("SearchKnowledge", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var items []db.KnowledgeItem
+	for rows.Next() {
+		var rank float64
+		item, scanErr := scanKnowledgeItem(func(dest ...any) error {
+			return rows.Scan(append(dest, &rank)...)
+		})
+		if scanErr != nil {
+			return nil, errWrap("SearchKnowledge scan", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("SearchKnowledge iter", err)
 	}
 
 	// Compute strength app-side (SQLite has no EXTRACT EPOCH).
@@ -270,28 +323,46 @@ func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([
 }
 
 // SearchCoarse searches only root-level rows (parent_id IS NULL,
-// COALESCE(heading_level, 0) = 0) using LIKE. Used by search_knowledge mode="coarse".
+// COALESCE(heading_level, 0) = 0) using FTS5. Used by search_knowledge mode="coarse".
 //
-//nolint:dupl // intentionally similar to Search but filtered to root-level rows; extraction would complicate the query
+//nolint:dupl // mirrors Search but adds root-level filter (parent_id IS NULL); extracting shared body would complicate callers
 func (s *KnowledgeStore) SearchCoarse(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	pattern := "%" + escapeLike(query) + "%"
+	ftsQuery := toFTS5Query(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
 	fetchLimit := limit * 3
 	if fetchLimit < 50 {
 		fetchLimit = 50
 	}
-	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
-		WHERE (title LIKE ?1 ESCAPE '\' OR content LIKE ?1 ESCAPE '\')
-		  AND archived_at IS NULL
-		  AND parent_id IS NULL
-		  AND COALESCE(heading_level, 0) = 0
-		  AND (?2 IS NULL OR workspace_id = ?2)
-		ORDER BY
-		  CASE WHEN title LIKE ?1 ESCAPE '\' THEN 0 ELSE 1 END,
-		  created_at DESC, id DESC
+	const ftsQ = `SELECT ` + knowledgeSelectColsKI + `, fts.rank
+		FROM knowledge_items_fts fts
+		JOIN knowledge_items ki ON ki.rowid = fts.rowid
+		WHERE knowledge_items_fts MATCH ?1
+		  AND ki.archived_at IS NULL
+		  AND ki.parent_id IS NULL
+		  AND COALESCE(ki.heading_level, 0) = 0
+		  AND (?2 IS NULL OR ki.workspace_id = ?2)
+		ORDER BY fts.rank
 		LIMIT ?3`
-	items, err := s.list(ctx, "SearchCoarse", q, pattern, s.db.workspaceArg(), fetchLimit)
+	rows, err := s.db.conn.QueryContext(ctx, ftsQ, ftsQuery, s.db.workspaceArg(), fetchLimit)
 	if err != nil {
-		return nil, err
+		return nil, errWrap("SearchCoarse", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var items []db.KnowledgeItem
+	for rows.Next() {
+		var rank float64
+		item, scanErr := scanKnowledgeItem(func(dest ...any) error {
+			return rows.Scan(append(dest, &rank)...)
+		})
+		if scanErr != nil {
+			return nil, errWrap("SearchCoarse scan", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("SearchCoarse iter", err)
 	}
 
 	now := time.Now().UTC()

@@ -56,6 +56,12 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite apply schema: %w", err)
 	}
+	// Rebuild FTS5 index so any existing knowledge_items rows (added before this
+	// schema version) are findable. This is a no-op when the index is already current.
+	if _, err := conn.ExecContext(ctx, `INSERT INTO knowledge_items_fts(knowledge_items_fts) VALUES('rebuild')`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sqlite fts5 rebuild: %w", err)
+	}
 	return &DB{conn: conn, workspaceID: workspaceID}, nil
 }
 
