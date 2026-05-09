@@ -6,9 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 const (
@@ -32,22 +36,55 @@ type OpenAICompatibleEmbeddingClient struct {
 	http     *http.Client
 }
 
-// NewOpenAICompatibleEmbeddingClient builds a client. Returns nil when BaseURL
-// is empty (graceful skip — callers treat nil as "no embedding available").
-func NewOpenAICompatibleEmbeddingClient(baseURL, model, apiKey string) *OpenAICompatibleEmbeddingClient {
+// NewOpenAICompatibleEmbeddingClient builds a client.
+// Returns (nil, nil) when BaseURL is empty (graceful skip — callers treat nil
+// as "no embedding available").
+// Returns (nil, error) when BaseURL is non-empty but fails scheme or IP validation.
+func NewOpenAICompatibleEmbeddingClient(baseURL, model, apiKey string) (*OpenAICompatibleEmbeddingClient, error) {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
-		return nil
+		return nil, nil //nolint:nilnil // documented "missing config, skip" sentinel
 	}
+
+	// Validate scheme and IP range BEFORE constructing the endpoint.
+	// Only scheme + constructor-blocked IPs (169.254/16, link-local) are
+	// rejected here; loopback and RFC-1918 ranges are intentionally allowed at
+	// construction time so Ollama/vLLM on localhost or a private network work.
+	// DNS-rebinding protection is enforced at connect time by SafeDial.
+	parsed, err := url.Parse(baseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("openai-compatible-embed: BASE_URL must be http or https, got %q", baseURL)
+	}
+	if host := parsed.Hostname(); host != "" {
+		if ip := net.ParseIP(host); ip != nil {
+			if blocked, reason := httpguard.IsConstructorBlockedIP(ip); blocked {
+				return nil, fmt.Errorf("openai-compatible-embed: BASE_URL blocked address: %s", reason)
+			}
+		}
+	}
+
 	if strings.TrimSpace(model) == "" {
 		model = "text-embedding-3-small" // sensible default for openai.com
 	}
+
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = openAIEmbedTimeout
+
 	return &OpenAICompatibleEmbeddingClient{
 		apiKey:   apiKey,
 		model:    strings.TrimSpace(model),
 		endpoint: strings.TrimRight(baseURL, "/") + "/v1/embeddings",
-		http:     &http.Client{Timeout: openAIEmbedTimeout},
+		http:     safeClient,
+	}, nil
+}
+
+// truncateBytes truncates a byte slice to at most n bytes, appending "…" when
+// truncation occurs. Used to limit error message length for non-OK responses.
+func truncateBytes(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
 	}
+	return string(b[:n]) + "…"
 }
 
 // Embed calls POST /v1/embeddings and returns the first embedding vector.
@@ -87,7 +124,8 @@ func (c *OpenAICompatibleEmbeddingClient) Embed(ctx context.Context, text string
 		return nil, fmt.Errorf("openai embed read body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openai embed API returned %d: %s", resp.StatusCode, raw)
+		return nil, fmt.Errorf("openai embed API returned %d: %s", resp.StatusCode,
+			credentialRe.ReplaceAllString(truncateBytes(raw, 256), "[REDACTED]"))
 	}
 
 	var result struct {

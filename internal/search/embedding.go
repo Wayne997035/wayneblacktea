@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -38,11 +39,15 @@ func NewEmbeddingClientFromEnv() ContextEmbedder {
 	provider := strings.TrimSpace(strings.ToLower(os.Getenv("EMBEDDING_PROVIDER")))
 	switch provider {
 	case "openai-compatible":
-		c := NewOpenAICompatibleEmbeddingClient(
+		c, err := NewOpenAICompatibleEmbeddingClient(
 			os.Getenv("EMBEDDING_BASE_URL"),
 			os.Getenv("EMBEDDING_MODEL"),
 			os.Getenv("EMBEDDING_API_KEY"),
 		)
+		if err != nil {
+			slog.Warn("search: openai-compatible embedding client misconfigured, embedding disabled", "err", err)
+			return nil
+		}
 		if c == nil {
 			return nil
 		}

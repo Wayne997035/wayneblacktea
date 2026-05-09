@@ -7,9 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 const (
@@ -55,11 +59,32 @@ func NewOpenAICompatibleClient(cfg OpenAICompatibleConfig) (*OpenAICompatibleCli
 	if model == "" {
 		return nil, errors.New("openai-compatible: OPENAI_COMPATIBLE_MODEL is required when OPENAI_COMPATIBLE_BASE_URL is set")
 	}
+
+	// Validate scheme and IP range BEFORE constructing the endpoint.
+	// Only scheme + constructor-blocked IPs (169.254/16, link-local) are
+	// rejected here; loopback and RFC-1918 ranges are intentionally allowed at
+	// construction time so Ollama/vLLM on localhost or a private network work.
+	// DNS-rebinding protection is enforced at connect time by SafeDial.
+	parsed, err := url.Parse(baseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("openai-compatible: BASE_URL must be http or https, got %q", baseURL)
+	}
+	if host := parsed.Hostname(); host != "" {
+		if ip := net.ParseIP(host); ip != nil {
+			if blocked, reason := httpguard.IsConstructorBlockedIP(ip); blocked {
+				return nil, fmt.Errorf("openai-compatible: BASE_URL blocked address: %s", reason)
+			}
+		}
+	}
+
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = openAICompatibleTimeout
+
 	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 	return &OpenAICompatibleClient{
 		apiKey:   cfg.APIKey,
 		model:    model,
-		http:     &http.Client{Timeout: openAICompatibleTimeout},
+		http:     safeClient,
 		endpoint: endpoint,
 	}, nil
 }
