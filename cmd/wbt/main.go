@@ -735,6 +735,10 @@ func buildEnvFile(apiKey, port string, db dbConfig) string {
 	if db.sqlitePath != "" {
 		writeEnvLine(&sb, "SQLITE_PATH", db.sqlitePath)
 	}
+	// ALLOWED_ORIGINS: defaults to localhost for local dev.
+	// In production (APP_ENV=production) this must be set to your public domain.
+	allowedOrigins := fmt.Sprintf("http://localhost:%s,http://127.0.0.1:%s", port, port)
+	writeEnvLine(&sb, "ALLOWED_ORIGINS", allowedOrigins)
 	sb.WriteString("\n# Optional AI features. Leave unset for memory-only mode.\n")
 	writeOptionalEnvLine(&sb, "GEMINI_API_KEY", "knowledge embeddings / dedup")
 	writeOptionalEnvLine(&sb, "GROQ_API_KEY", "Discord /analyze")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	_ "time/tzdata" // embed IANA timezone DB so Asia/Taipei works on any base image
 
@@ -68,8 +69,10 @@ func run() error {
 	if port == "" {
 		port = "8080"
 	}
-	// allowedOrigins is validated by CORSMiddleware — empty or "*" will panic at startup.
-	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+	allowedOrigins, err := resolveAllowedOrigins(port)
+	if err != nil {
+		return err
+	}
 
 	stores, err := buildStores(backend)
 	if err != nil {
@@ -311,6 +314,31 @@ func run() error {
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil
+}
+
+// resolveAllowedOrigins determines the CORS allowed origins at startup.
+//
+// Rules:
+//   - ALLOWED_ORIGINS="*" is always rejected (wildcard is unsafe with AllowCredentials=true).
+//   - ALLOWED_ORIGINS non-empty → returned as-is.
+//   - ALLOWED_ORIGINS empty + APP_ENV="production" → error (production must be explicit).
+//   - ALLOWED_ORIGINS empty + any other APP_ENV → default to localhost on the given port.
+func resolveAllowedOrigins(port string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS"))
+	appEnv := strings.TrimSpace(os.Getenv("APP_ENV"))
+
+	if raw == "*" {
+		return "", fmt.Errorf("ALLOWED_ORIGINS must not be '*' when AllowCredentials=true; set explicit origins")
+	}
+	if raw != "" {
+		return raw, nil
+	}
+	if appEnv == "production" {
+		return "", fmt.Errorf("ALLOWED_ORIGINS must be set in production (APP_ENV=production); got empty value")
+	}
+	// local / dev default — safe because AllowCredentials only grants access to
+	// origins that the browser has already confirmed are same-scheme/host.
+	return fmt.Sprintf("http://localhost:%s,http://127.0.0.1:%s", port, port), nil
 }
 
 func buildSPAHandler(distFS fs.FS) http.Handler {
