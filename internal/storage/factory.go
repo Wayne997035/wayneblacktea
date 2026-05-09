@@ -14,6 +14,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
+	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	wbtruntime "github.com/Wayne997035/wayneblacktea/internal/runtime"
 	"github.com/Wayne997035/wayneblacktea/internal/search"
@@ -127,17 +128,18 @@ type postgresServerStores struct {
 	pool        *pgxpool.Pool
 	workspaceID *uuid.UUID
 
-	gtd           *gtd.Store
-	workspace     *workspace.Store
-	decision      *decision.Store
-	session       *session.Store
-	knowledge     *knowledge.Store
-	learning      *learning.Store
-	proposal      *proposal.Store
-	archStore     *arch.Store
-	workSession   *worksession.Store
-	visionStore   *vision.Store
-	playbookStore *playbook.Store
+	gtd             *gtd.Store
+	workspace       *workspace.Store
+	decision        *decision.Store
+	session         *session.Store
+	knowledge       *knowledge.Store
+	learning        *learning.Store
+	proposal        *proposal.Store
+	archStore       *arch.Store
+	workSession     *worksession.Store
+	visionStore     *vision.Store
+	playbookStore   *playbook.Store
+	proceduralStore *procedural.Store
 }
 
 var _ ServerStores = (*postgresServerStores)(nil)
@@ -165,19 +167,20 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	}
 	embedClient := search.NewEmbeddingClient()
 	return &postgresServerStores{
-		pool:          pool,
-		workspaceID:   wsID,
-		gtd:           gtd.NewStore(pool, wsID),
-		workspace:     workspace.NewStore(pool, wsID),
-		decision:      decision.NewStore(pool, wsID),
-		session:       session.NewStore(pool, wsID),
-		knowledge:     knowledge.NewStore(pool, embedClient, wsID),
-		learning:      learning.NewStore(pool, wsID),
-		proposal:      proposal.NewStore(pool, wsID),
-		archStore:     arch.NewStore(pool),
-		workSession:   worksession.NewStore(pool, wsID),
-		visionStore:   vision.NewStore(pool, wsID),
-		playbookStore: playbook.NewStore(pool, wsID),
+		pool:            pool,
+		workspaceID:     wsID,
+		gtd:             gtd.NewStore(pool, wsID),
+		workspace:       workspace.NewStore(pool, wsID),
+		decision:        decision.NewStore(pool, wsID),
+		session:         session.NewStore(pool, wsID),
+		knowledge:       knowledge.NewStore(pool, embedClient, wsID),
+		learning:        learning.NewStore(pool, wsID),
+		proposal:        proposal.NewStore(pool, wsID),
+		archStore:       arch.NewStore(pool),
+		workSession:     worksession.NewStore(pool, wsID),
+		visionStore:     vision.NewStore(pool, wsID),
+		playbookStore:   playbook.NewStore(pool, wsID),
+		proceduralStore: procedural.New(pool, wsID),
 	}, nil
 }
 
@@ -200,6 +203,7 @@ func (p *postgresServerStores) Arch() arch.StoreIface                    { retur
 func (p *postgresServerStores) WorkSession() worksession.StoreIface      { return p.workSession }
 func (p *postgresServerStores) Vision() vision.StoreIface                { return p.visionStore }
 func (p *postgresServerStores) Playbook() playbook.StoreIface            { return p.playbookStore }
+func (p *postgresServerStores) Procedural() procedural.StoreIface        { return p.proceduralStore }
 func (p *postgresServerStores) WorkspaceID() *uuid.UUID                  { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { return p.pool }
 func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
@@ -245,17 +249,18 @@ type sqliteServerStores struct {
 	db          *wbtsqlite.DB
 	workspaceID *uuid.UUID
 
-	gtd           *wbtsqlite.GTDStore
-	workspace     *wbtsqlite.WorkspaceStore
-	decision      *wbtsqlite.DecisionStore
-	session       *wbtsqlite.SessionStore
-	knowledge     *wbtsqlite.KnowledgeStore
-	learning      *wbtsqlite.LearningStore
-	proposal      *wbtsqlite.ProposalStore
-	archStore     *wbtsqlite.ArchStore
-	workSession   *wbtsqlite.WorkSessionStore
-	visionStore   *wbtsqlite.VisionStore
-	playbookStore *wbtsqlite.PlaybookStore
+	gtd             *wbtsqlite.GTDStore
+	workspace       *wbtsqlite.WorkspaceStore
+	decision        *wbtsqlite.DecisionStore
+	session         *wbtsqlite.SessionStore
+	knowledge       *wbtsqlite.KnowledgeStore
+	learning        *wbtsqlite.LearningStore
+	proposal        *wbtsqlite.ProposalStore
+	archStore       *wbtsqlite.ArchStore
+	workSession     *wbtsqlite.WorkSessionStore
+	visionStore     *wbtsqlite.VisionStore
+	playbookStore   *wbtsqlite.PlaybookStore
+	proceduralStore *wbtsqlite.ProceduralStore
 }
 
 var _ ServerStores = (*sqliteServerStores)(nil)
@@ -277,19 +282,20 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		return nil, fmt.Errorf("opening sqlite at %q: %w", cfg.SQLitePath, err)
 	}
 	return &sqliteServerStores{
-		db:            sdb,
-		workspaceID:   wsID,
-		gtd:           wbtsqlite.NewGTDStore(sdb),
-		workspace:     wbtsqlite.NewWorkspaceStore(sdb),
-		decision:      wbtsqlite.NewDecisionStore(sdb),
-		session:       wbtsqlite.NewSessionStore(sdb),
-		knowledge:     wbtsqlite.NewKnowledgeStore(sdb),
-		learning:      wbtsqlite.NewLearningStore(sdb),
-		proposal:      wbtsqlite.NewProposalStore(sdb),
-		archStore:     wbtsqlite.NewArchStore(sdb),
-		workSession:   wbtsqlite.NewWorkSessionStore(sdb),
-		visionStore:   wbtsqlite.NewVisionStore(sdb),
-		playbookStore: wbtsqlite.NewPlaybookStore(sdb),
+		db:              sdb,
+		workspaceID:     wsID,
+		gtd:             wbtsqlite.NewGTDStore(sdb),
+		workspace:       wbtsqlite.NewWorkspaceStore(sdb),
+		decision:        wbtsqlite.NewDecisionStore(sdb),
+		session:         wbtsqlite.NewSessionStore(sdb),
+		knowledge:       wbtsqlite.NewKnowledgeStore(sdb),
+		learning:        wbtsqlite.NewLearningStore(sdb),
+		proposal:        wbtsqlite.NewProposalStore(sdb),
+		archStore:       wbtsqlite.NewArchStore(sdb),
+		workSession:     wbtsqlite.NewWorkSessionStore(sdb),
+		visionStore:     wbtsqlite.NewVisionStore(sdb),
+		playbookStore:   wbtsqlite.NewPlaybookStore(sdb),
+		proceduralStore: wbtsqlite.NewProceduralStore(sdb),
 	}, nil
 }
 
@@ -314,6 +320,7 @@ func (s *sqliteServerStores) Arch() arch.StoreIface                    { return 
 func (s *sqliteServerStores) WorkSession() worksession.StoreIface      { return s.workSession }
 func (s *sqliteServerStores) Vision() vision.StoreIface                { return s.visionStore }
 func (s *sqliteServerStores) Playbook() playbook.StoreIface            { return s.playbookStore }
+func (s *sqliteServerStores) Procedural() procedural.StoreIface        { return s.proceduralStore }
 func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                  { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return nil }
 func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }
