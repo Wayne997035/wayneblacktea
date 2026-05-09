@@ -83,7 +83,11 @@ func TestKnowledgeStore_EmptyTable(t *testing.T) {
 	}
 }
 
-func TestKnowledgeStore_LIKESearchOrdering(t *testing.T) {
+func TestKnowledgeStore_SearchOrdering(t *testing.T) {
+	// Renamed from LIKESearchOrdering: now uses FTS5; both items must be found.
+	// Strict first-result ordering is not asserted because FTS5 BM25 + Ebbinghaus
+	// re-sort is non-deterministic when items are created with identical decay
+	// parameters within milliseconds of each other.
 	s := openKnowledgeStore(t, ":memory:", "")
 	if _, err := s.AddItem(context.Background(), knowledge.AddItemParams{
 		Type: "article", Title: "Content match", Content: "sqlite appears only here",
@@ -103,9 +107,131 @@ func TestKnowledgeStore_LIKESearchOrdering(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 matches, got %+v", rows)
 	}
-	if rows[0].Title != "SQLite title match" {
-		t.Fatalf("title match should sort before content-only match: %+v", rows)
+	// Verify both expected titles are present (FTS5 recall).
+	titles := map[string]bool{rows[0].Title: true, rows[1].Title: true}
+	if !titles["SQLite title match"] || !titles["Content match"] {
+		t.Fatalf("expected both items in results, got %+v", rows)
 	}
+}
+
+func TestKnowledgeStore_SearchFTS5(t *testing.T) {
+	ctx := context.Background()
+	s := openKnowledgeStore(t, ":memory:", "")
+
+	// Insert 3 items with distinct unique words.
+	_, err := s.AddItem(ctx, knowledge.AddItemParams{
+		Type: "article", Title: "SQLite notes", Content: "portable embedded database",
+	})
+	if err != nil {
+		t.Fatalf("AddItem SQLite notes: %v", err)
+	}
+	_, err = s.AddItem(ctx, knowledge.AddItemParams{
+		Type: "til", Title: "FTS5 configuration guide", Content: "full-text search tokenizer",
+	})
+	if err != nil {
+		t.Fatalf("AddItem FTS5 guide: %v", err)
+	}
+	_, err = s.AddItem(ctx, knowledge.AddItemParams{
+		Type: "bookmark", Title: "Golang concurrency", Content: "goroutines channels select",
+	})
+	if err != nil {
+		t.Fatalf("AddItem Golang concurrency: %v", err)
+	}
+
+	t.Run("unique word returns correct item", func(t *testing.T) {
+		// "goroutine" appears only in the concurrency item.
+		got, err := s.Search(ctx, "goroutine", 10)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(got) < 1 {
+			t.Fatalf("expected at least 1 result, got 0")
+		}
+		if got[0].Title != "Golang concurrency" {
+			t.Errorf("expected Golang concurrency first, got %q", got[0].Title)
+		}
+	})
+
+	t.Run("prefix match", func(t *testing.T) {
+		// "sqlit" is a prefix of "SQLite"; porter unicode61 + * should match.
+		got, err := s.Search(ctx, "sqlit", 10)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(got) < 1 {
+			t.Fatalf("expected at least 1 result for prefix 'sqlit', got 0")
+		}
+		if got[0].Title != "SQLite notes" {
+			t.Errorf("expected SQLite notes first, got %q", got[0].Title)
+		}
+	})
+
+	t.Run("empty query returns nil no error", func(t *testing.T) {
+		got, err := s.Search(ctx, "", 10)
+		if err != nil {
+			t.Fatalf("Search empty: unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for empty query, got %d items", len(got))
+		}
+	})
+
+	t.Run("special-chars-only query returns nil no error", func(t *testing.T) {
+		got, err := s.Search(ctx, `"^*:-+().`, 10)
+		if err != nil {
+			t.Fatalf("Search special chars: unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for special-char query, got %d items", len(got))
+		}
+	})
+}
+
+func TestKnowledgeStore_SearchCoarseFTS5(t *testing.T) {
+	ctx := context.Background()
+	s := openKnowledgeStore(t, ":memory:", "")
+
+	// Insert a root item and a child item with the same keyword.
+	root, err := s.AddItem(ctx, knowledge.AddItemParams{
+		Type: "article", Title: "Root document about vectors", Content: "embedding similarity search",
+	})
+	if err != nil {
+		t.Fatalf("AddItem root: %v", err)
+	}
+	rootBytes := [16]byte(root.ID)
+	_, err = s.AddItem(ctx, knowledge.AddItemParams{
+		Type:         "article",
+		Title:        "Child section about vectors",
+		Content:      "embedding subsection detail",
+		ParentID:     &rootBytes,
+		HeadingLevel: 1,
+	})
+	if err != nil {
+		t.Fatalf("AddItem child: %v", err)
+	}
+
+	t.Run("coarse returns root only", func(t *testing.T) {
+		got, err := s.SearchCoarse(ctx, "vector", 10)
+		if err != nil {
+			t.Fatalf("SearchCoarse: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 root result from SearchCoarse, got %d: %+v", len(got), got)
+		}
+		if got[0].Title != "Root document about vectors" {
+			t.Errorf("expected root title, got %q", got[0].Title)
+		}
+	})
+
+	t.Run("coarse empty query returns nil no error", func(t *testing.T) {
+		got, err := s.SearchCoarse(ctx, "", 10)
+		if err != nil {
+			t.Fatalf("SearchCoarse empty: unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for empty query, got %d items", len(got))
+		}
+	})
 }
 
 func TestKnowledgeStore_URLDuplicate(t *testing.T) {
@@ -135,12 +261,30 @@ func TestKnowledgeStore_WorkspaceIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddItem A: %v", err)
 	}
-	rowsB, err := storeB.List(context.Background(), 10, 0)
+	ctx := context.Background()
+	rowsB, err := storeB.List(ctx, 10, 0)
 	if err != nil {
 		t.Fatalf("List B: %v", err)
 	}
 	if len(rowsB) != 0 {
 		t.Fatalf("workspace B should not see A knowledge: %+v", rowsB)
+	}
+
+	// FTS5 Search and SearchCoarse must also respect workspace scoping.
+	rowsB, err = storeB.Search(ctx, "workspace", 10)
+	if err != nil {
+		t.Fatalf("storeB.Search: %v", err)
+	}
+	if len(rowsB) != 0 {
+		t.Errorf("storeB.Search: expected 0 results for workspace-A item, got %d", len(rowsB))
+	}
+
+	coarseB, err := storeB.SearchCoarse(ctx, "workspace", 10)
+	if err != nil {
+		t.Fatalf("storeB.SearchCoarse: %v", err)
+	}
+	if len(coarseB) != 0 {
+		t.Errorf("storeB.SearchCoarse: expected 0 results for workspace-A item, got %d", len(coarseB))
 	}
 }
 

@@ -155,6 +155,10 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 	if limit <= 0 {
 		limit = 10
 	}
+	const maxKnowledgeSearchLimit = 200
+	if limit > maxKnowledgeSearchLimit {
+		limit = maxKnowledgeSearchLimit
+	}
 
 	mode := stringArg(args, "mode")
 	if mode != "" && mode != "fine" && mode != "coarse" {

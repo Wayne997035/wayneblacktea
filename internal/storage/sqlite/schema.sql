@@ -210,6 +210,34 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_items_parent_id
     ON knowledge_items(parent_id) WHERE parent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_heading_path
     ON knowledge_items(heading_path) WHERE heading_path IS NOT NULL;
+
+-- FTS5 virtual table (SQLite-only; Postgres uses pg_trgm/tsvector natively via sqlc queries).
+-- sqlite-vec (vector ANN) is deferred: modernc.org/sqlite cannot load C extensions.
+-- The current brute-force cosine in SearchByCosine is adequate for personal scale (<=200 rows).
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts
+    USING fts5(
+        title, content,
+        content='knowledge_items',
+        content_rowid='rowid',
+        tokenize='porter unicode61'
+    );
+
+CREATE TRIGGER IF NOT EXISTS knowledge_items_ai AFTER INSERT ON knowledge_items BEGIN
+    INSERT INTO knowledge_items_fts(rowid, title, content)
+    VALUES (new.rowid, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_items_ad AFTER DELETE ON knowledge_items BEGIN
+    INSERT INTO knowledge_items_fts(knowledge_items_fts, rowid, title, content)
+    VALUES ('delete', old.rowid, old.title, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_items_au AFTER UPDATE ON knowledge_items BEGIN
+    INSERT INTO knowledge_items_fts(knowledge_items_fts, rowid, title, content)
+    VALUES ('delete', old.rowid, old.title, old.content);
+    INSERT INTO knowledge_items_fts(rowid, title, content)
+    VALUES (new.rowid, new.title, new.content);
+END;
 CREATE INDEX IF NOT EXISTS idx_concepts_workspace_id                ON concepts(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_concepts_archived_at                 ON concepts(archived_at) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_concepts_last_recalled_at            ON concepts(last_recalled_at);
