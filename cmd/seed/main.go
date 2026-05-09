@@ -39,7 +39,7 @@ func run() error {
 	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL not set")
+		return fmt.Errorf("DATABASE_URL not set: cmd/seed requires a Postgres backend (set STORAGE_BACKEND=postgres and DATABASE_URL)")
 	}
 
 	cfg, err := pgxpool.ParseConfig(dsn)

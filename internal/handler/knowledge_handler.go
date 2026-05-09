@@ -58,7 +58,7 @@ type addKnowledgeRequest struct {
 
 const (
 	knowledgeMaxTitleLen   = 200
-	knowledgeMaxContentLen = 10 * 1024 * 1024 // 10 MB
+	knowledgeMaxContentLen = 1 * 1024 * 1024 // 1 MB — matches global BodyLimit("1M") middleware; raising requires per-route override
 	knowledgeMaxTagCount   = 20
 	knowledgeMaxTagItemLen = 50
 )

@@ -168,16 +168,16 @@ func TestKnowledgeHandler_AddKnowledge(t *testing.T) {
 			store:    &fakeKnowledgeStore{},
 			wantCode: http.StatusBadRequest,
 		},
-		// --- content size boundary ---
+		// --- content size boundary (1 MB — matches global BodyLimit) ---
 		{
-			name:     "content exactly 10 MB → 201",
-			body:     `{"type":"til","title":"big","content":"` + strings.Repeat("a", 10*1024*1024) + `"}`,
+			name:     "content exactly 1 MB → 201",
+			body:     `{"type":"til","title":"big","content":"` + strings.Repeat("a", 1*1024*1024) + `"}`,
 			store:    &fakeKnowledgeStore{item: item},
 			wantCode: http.StatusCreated,
 		},
 		{
-			name:     "content 10 MB + 1 byte → 400",
-			body:     `{"type":"til","title":"big","content":"` + strings.Repeat("a", 10*1024*1024+1) + `"}`,
+			name:     "content 1 MB + 1 byte → 400",
+			body:     `{"type":"til","title":"big","content":"` + strings.Repeat("a", 1*1024*1024+1) + `"}`,
 			store:    &fakeKnowledgeStore{},
 			wantCode: http.StatusBadRequest,
 		},

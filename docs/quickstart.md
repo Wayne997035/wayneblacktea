@@ -44,10 +44,12 @@ go run ./cmd/seed
 
 ### Demo mode
 
+> **Requires Postgres.** `cmd/seed` always connects via `DATABASE_URL` (pgxpool). If you are using the default SQLite backend, set `STORAGE_BACKEND=postgres` and provide a `DATABASE_URL` before running seed.
+
 Pass `--demo` to also seed **realistic demo data** so you can explore every feature immediately:
 
 ```bash
-go run ./cmd/seed --demo
+STORAGE_BACKEND=postgres go run ./cmd/seed --demo
 ```
 
 Demo mode seeds:
