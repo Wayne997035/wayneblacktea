@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
@@ -140,6 +141,7 @@ type postgresServerStores struct {
 	visionStore     *vision.Store
 	playbookStore   *playbook.Store
 	proceduralStore *procedural.Store
+	atomStore       *atom.Store
 }
 
 var _ ServerStores = (*postgresServerStores)(nil)
@@ -181,6 +183,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 		visionStore:     vision.NewStore(pool, wsID),
 		playbookStore:   playbook.NewStore(pool, wsID),
 		proceduralStore: procedural.New(pool, wsID),
+		atomStore:       atom.New(pool, wsID),
 	}, nil
 }
 
@@ -204,6 +207,7 @@ func (p *postgresServerStores) WorkSession() worksession.StoreIface      { retur
 func (p *postgresServerStores) Vision() vision.StoreIface                { return p.visionStore }
 func (p *postgresServerStores) Playbook() playbook.StoreIface            { return p.playbookStore }
 func (p *postgresServerStores) Procedural() procedural.StoreIface        { return p.proceduralStore }
+func (p *postgresServerStores) Atom() atom.StoreIface                    { return p.atomStore }
 func (p *postgresServerStores) WorkspaceID() *uuid.UUID                  { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { return p.pool }
 func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
@@ -261,6 +265,7 @@ type sqliteServerStores struct {
 	visionStore     *wbtsqlite.VisionStore
 	playbookStore   *wbtsqlite.PlaybookStore
 	proceduralStore *wbtsqlite.ProceduralStore
+	atomStore       *wbtsqlite.AtomStore
 }
 
 var _ ServerStores = (*sqliteServerStores)(nil)
@@ -296,6 +301,7 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		visionStore:     wbtsqlite.NewVisionStore(sdb),
 		playbookStore:   wbtsqlite.NewPlaybookStore(sdb),
 		proceduralStore: wbtsqlite.NewProceduralStore(sdb),
+		atomStore:       wbtsqlite.NewAtomStore(sdb),
 	}, nil
 }
 
@@ -321,6 +327,7 @@ func (s *sqliteServerStores) WorkSession() worksession.StoreIface      { return 
 func (s *sqliteServerStores) Vision() vision.StoreIface                { return s.visionStore }
 func (s *sqliteServerStores) Playbook() playbook.StoreIface            { return s.playbookStore }
 func (s *sqliteServerStores) Procedural() procedural.StoreIface        { return s.proceduralStore }
+func (s *sqliteServerStores) Atom() atom.StoreIface                    { return s.atomStore }
 func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                  { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return nil }
 func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }

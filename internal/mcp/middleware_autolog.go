@@ -35,7 +35,6 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// with its own significantTools check, so this is always safe.
 			argSummary := truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes)
 			resultSummary := extractResultText(res, mcpResultSummaryMaxRunes)
-			//nolint:contextcheck // maybeClassifyToolCall manages its own background context; context param not applicable here
 			s.maybeClassifyToolCall(tool, argSummary, resultSummary)
 
 			action, notes, ok := autoLogEntry(tool, args)
@@ -46,7 +45,7 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// Launch in a background goroutine so the log write cannot block
 			// or fail the tool response. Use context.Background() with a
 			// timeout so the write survives request-context cancellation.
-			//nolint:gosec,contextcheck // G118/contextcheck: intentional — goroutine must outlive request ctx to prevent DB write cancellation
+			//nolint:gosec // G118: intentional — goroutine must outlive request ctx to prevent DB write cancellation
 			go func() {
 				// Recover from any panic so a log failure never crashes the server.
 				defer func() {

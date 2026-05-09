@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -115,6 +116,7 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("adding procedural memory: %v", err)), nil
 	}
+	s.launchAtomize("procedural_memories", mem.ID, mem.Title+" "+mem.WhenToUse+" "+mem.ApproachMD)
 	return jsonText(mem)
 }
 
@@ -243,7 +245,26 @@ func (s *Server) handleRecall(ctx context.Context, req mcp.CallToolRequest) (*mc
 		result["procedural"] = proc
 	}
 
+	// Atoms: search memory_atoms by keyword.
+	result["atoms"] = recallAtoms(ctx, s, query)
+
 	return jsonText(result)
+}
+
+// recallAtoms searches memory atoms and returns a slice (never nil).
+func recallAtoms(ctx context.Context, s *Server, query string) []atom.Atom {
+	if s.atom == nil {
+		return []atom.Atom{}
+	}
+	atoms, err := s.atom.Search(ctx, s.workspaceUUID(), query, 5)
+	if err != nil {
+		slog.Warn("recall: atom search failed", "err", err)
+		return []atom.Atom{}
+	}
+	if atoms == nil {
+		return []atom.Atom{}
+	}
+	return atoms
 }
 
 // recallEpisodic retrieves the latest session handoff and filters by query.

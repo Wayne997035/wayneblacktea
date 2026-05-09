@@ -70,6 +70,7 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("logging decision: %v", err)), nil
 	}
+	s.launchAtomize("decisions", d.ID, d.Decision+" "+d.Rationale)
 	return jsonText(d)
 }
 
