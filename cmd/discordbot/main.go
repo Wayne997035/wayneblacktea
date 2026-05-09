@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
@@ -29,6 +30,13 @@ func main() {
 }
 
 func run() error {
+	// DISCORD_ENV=local skips bot startup so local dev never touches the
+	// production bot token. The REST API (cmd/server) remains unaffected.
+	if strings.EqualFold(os.Getenv("DISCORD_ENV"), "local") {
+		slog.Info("discordbot: DISCORD_ENV=local — skipping bot startup (local dev mode)")
+		return nil
+	}
+
 	botToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if botToken == "" {
 		return fmt.Errorf("DISCORD_BOT_TOKEN not set")

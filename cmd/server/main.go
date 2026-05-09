@@ -358,6 +358,10 @@ func buildSPAHandler(distFS fs.FS) http.Handler {
 }
 
 func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) (func(), error) {
+	if strings.EqualFold(os.Getenv("DISCORD_ENV"), "local") {
+		log.Println("discord bot: DISCORD_ENV=local — skipping bot startup (local dev mode)")
+		return func() {}, nil
+	}
 	botToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if botToken == "" {
 		return func() {}, nil
