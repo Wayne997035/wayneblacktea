@@ -16,6 +16,10 @@ const (
 	envClaudeKey         = "CLAUDE_API_KEY"
 	envGroqKey           = "GROQ_API_KEY"
 	envGroqModel         = "GROQ_MODEL"
+	// OpenAI-compatible provider (Ollama, vLLM, LM Studio, DeepSeek, OpenAI, …)
+	envOAICompatBaseURL = "OPENAI_COMPATIBLE_BASE_URL"
+	envOAICompatModel   = "OPENAI_COMPATIBLE_MODEL"
+	envOAICompatKey     = "OPENAI_COMPATIBLE_API_KEY"
 )
 
 // BuildChainFromEnv reads the provider routing env vars and returns a Chain
@@ -71,6 +75,19 @@ func BuildChainFromEnv() *Chain {
 			})
 			if err != nil {
 				slog.Warn("llm: groq provider config error, skipping", "err", err)
+				continue
+			}
+			if c != nil {
+				out = append(out, c)
+			}
+		case "openai-compatible":
+			c, err := NewOpenAICompatibleClient(OpenAICompatibleConfig{
+				BaseURL: os.Getenv(envOAICompatBaseURL),
+				Model:   os.Getenv(envOAICompatModel),
+				APIKey:  os.Getenv(envOAICompatKey),
+			})
+			if err != nil {
+				slog.Warn("llm: openai-compatible provider config error, skipping", "err", err)
 				continue
 			}
 			if c != nil {

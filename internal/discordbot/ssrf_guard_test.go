@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 // TestIsSafeURL_BlockedRanges covers SSRF block rules for IP literals, schemes,
@@ -177,7 +179,7 @@ func TestIsSafeURL_PublicDomain(t *testing.T) {
 	}
 }
 
-// TestIsBlockedIP_DirectChecks validates the isBlockedIP helper independently.
+// TestIsBlockedIP_DirectChecks validates the IsBlockedIP helper independently via httpguard.
 func TestIsBlockedIP_DirectChecks(t *testing.T) {
 	t.Parallel()
 
@@ -204,9 +206,9 @@ func TestIsBlockedIP_DirectChecks(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("invalid IP literal: %q", tc.ip)
 			}
-			blocked, reason := isBlockedIP(ip)
+			blocked, reason := httpguard.IsBlockedIP(ip)
 			if blocked != tc.blocked {
-				t.Errorf("isBlockedIP(%q) = %v (reason: %q), want %v", tc.ip, blocked, reason, tc.blocked)
+				t.Errorf("httpguard.IsBlockedIP(%q) = %v (reason: %q), want %v", tc.ip, blocked, reason, tc.blocked)
 			}
 		})
 	}

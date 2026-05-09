@@ -7,13 +7,59 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
 const geminiEmbedURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
+
+// ContextEmbedder is the minimal interface for context-aware text embeddings.
+// Both EmbeddingClient (Gemini) and OpenAICompatibleEmbeddingClient satisfy it.
+// It mirrors ai.ContextEmbeddingProvider — defined here to avoid an import cycle
+// (internal/ai already imports internal/search).
+type ContextEmbedder interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
+// NewEmbeddingClientFromEnv returns an embedding client selected by env vars.
+//
+// Resolution order:
+//  1. EMBEDDING_PROVIDER=openai-compatible → OpenAICompatibleEmbeddingClient
+//     using EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_API_KEY.
+//  2. EMBEDDING_PROVIDER=gemini (or unset) → Gemini EmbeddingClient
+//     using GEMINI_API_KEY. Returns nil if the key is absent.
+//
+// Returns nil when the selected provider is not configured; callers treat nil
+// as "no embedding available" and skip vector writes.
+func NewEmbeddingClientFromEnv() ContextEmbedder {
+	provider := strings.TrimSpace(strings.ToLower(os.Getenv("EMBEDDING_PROVIDER")))
+	switch provider {
+	case "openai-compatible":
+		c, err := NewOpenAICompatibleEmbeddingClient(
+			os.Getenv("EMBEDDING_BASE_URL"),
+			os.Getenv("EMBEDDING_MODEL"),
+			os.Getenv("EMBEDDING_API_KEY"),
+		)
+		if err != nil {
+			slog.Warn("search: openai-compatible embedding client misconfigured, embedding disabled", "err", err)
+			return nil
+		}
+		if c == nil {
+			return nil
+		}
+		return c
+	default: // "gemini" or unset
+		c := NewEmbeddingClient()
+		if c.apiKey == "" {
+			return nil
+		}
+		return c
+	}
+}
 
 // EmbeddingClient calls the Gemini embedding API to generate vector embeddings.
 type EmbeddingClient struct {

@@ -10,6 +10,50 @@ import (
 	"time"
 )
 
+// TestNewEmbeddingClientFromEnv covers the env-based factory for all branches.
+func TestNewEmbeddingClientFromEnv(t *testing.T) {
+	t.Run("EMBEDDING_PROVIDER unset, GEMINI_API_KEY unset → nil", func(t *testing.T) {
+		t.Setenv("EMBEDDING_PROVIDER", "")
+		t.Setenv("GEMINI_API_KEY", "")
+		c := NewEmbeddingClientFromEnv()
+		if c != nil {
+			t.Errorf("expected nil when no provider configured, got %T", c)
+		}
+	})
+
+	t.Run("EMBEDDING_PROVIDER unset, GEMINI_API_KEY set → non-nil Gemini client", func(t *testing.T) {
+		t.Setenv("EMBEDDING_PROVIDER", "")
+		t.Setenv("GEMINI_API_KEY", "fake-gemini-key")
+		c := NewEmbeddingClientFromEnv()
+		if c == nil {
+			t.Error("expected non-nil Gemini client when GEMINI_API_KEY is set, got nil")
+		}
+	})
+
+	t.Run("EMBEDDING_PROVIDER=openai-compatible, BASE_URL set → non-nil client", func(t *testing.T) {
+		// Use a non-IP hostname so constructor URL validation passes.
+		t.Setenv("EMBEDDING_PROVIDER", "openai-compatible")
+		t.Setenv("EMBEDDING_BASE_URL", "http://public-api.test:11434")
+		t.Setenv("EMBEDDING_MODEL", "nomic-embed-text")
+		t.Setenv("EMBEDDING_API_KEY", "")
+		c := NewEmbeddingClientFromEnv()
+		if c == nil {
+			t.Error("expected non-nil openai-compatible client when EMBEDDING_BASE_URL is set, got nil")
+		}
+	})
+
+	t.Run("EMBEDDING_PROVIDER=openai-compatible, BASE_URL empty → nil", func(t *testing.T) {
+		t.Setenv("EMBEDDING_PROVIDER", "openai-compatible")
+		t.Setenv("EMBEDDING_BASE_URL", "")
+		t.Setenv("EMBEDDING_MODEL", "")
+		t.Setenv("EMBEDDING_API_KEY", "")
+		c := NewEmbeddingClientFromEnv()
+		if c != nil {
+			t.Errorf("expected nil when BASE_URL is empty, got %T", c)
+		}
+	})
+}
+
 func TestEmbeddingClient_NoAPIKey(t *testing.T) {
 	t.Setenv("GEMINI_API_KEY", "")
 	c := NewEmbeddingClient()

@@ -95,7 +95,7 @@ func run() error {
 	gtdH := handler.NewGTDHandler(stores.GTD())
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
 	decH := handler.NewDecisionHandler(stores.Decision())
-	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClient())
+	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClientFromEnv())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())

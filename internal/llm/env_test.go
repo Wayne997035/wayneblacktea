@@ -92,6 +92,26 @@ func TestBuildChainFromEnv(t *testing.T) {
 			},
 			wantNames: []string{"claude"},
 		},
+		{
+			// Use a non-IP hostname so constructor URL validation passes (DNS is
+			// not resolved at construction time, only at SafeDial connect time).
+			// "public-api.test" is not in any blocked IP range as an IP literal.
+			name: "AI_PROVIDER=openai-compatible with BASE_URL+MODEL set → chain contains openai-compatible",
+			env: map[string]string{
+				"AI_PROVIDER":                "openai-compatible",
+				"OPENAI_COMPATIBLE_BASE_URL": "http://public-api.test:11434",
+				"OPENAI_COMPATIBLE_MODEL":    "llama3.2",
+			},
+			wantNames: []string{"openai-compatible"},
+		},
+		{
+			name: "AI_PROVIDER=openai-compatible with empty BASE_URL → empty chain",
+			env: map[string]string{
+				"AI_PROVIDER": "openai-compatible",
+				// OPENAI_COMPATIBLE_BASE_URL intentionally not set.
+			},
+			wantNames: []string{},
+		},
 	}
 
 	allKeys := []string{
@@ -99,6 +119,9 @@ func TestBuildChainFromEnv(t *testing.T) {
 		"CLAUDE_API_KEY",
 		"OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_MODELS",
 		"GROQ_API_KEY", "GROQ_MODEL",
+		"OPENAI_COMPATIBLE_BASE_URL",
+		"OPENAI_COMPATIBLE_MODEL",
+		"OPENAI_COMPATIBLE_API_KEY",
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

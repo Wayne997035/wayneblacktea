@@ -107,7 +107,7 @@ func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, erro
 	}
 	switch backend {
 	case BackendPostgres:
-		dsn := os.Getenv("DATABASE_URL")
+		dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 		if dsn == "" {
 			return nil, fmt.Errorf("DATABASE_URL not set")
 		}
@@ -167,7 +167,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 		pool.Close()
 		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
 	}
-	embedClient := search.NewEmbeddingClient()
+	embedClient := search.NewEmbeddingClientFromEnv()
 	return &postgresServerStores{
 		pool:            pool,
 		workspaceID:     wsID,

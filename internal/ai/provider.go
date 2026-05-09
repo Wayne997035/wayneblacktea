@@ -6,8 +6,11 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/search"
 )
 
-// compile-time assertion: *search.EmbeddingClient must satisfy ContextEmbeddingProvider.
-var _ ContextEmbeddingProvider = (*search.EmbeddingClient)(nil)
+// compile-time assertions: both embedding clients must satisfy ContextEmbeddingProvider.
+var (
+	_ ContextEmbeddingProvider = (*search.EmbeddingClient)(nil)
+	_ ContextEmbeddingProvider = (*search.OpenAICompatibleEmbeddingClient)(nil)
+)
 
 // ContextEmbeddingProvider computes dense vector embeddings for a text string.
 // Unlike EmbeddingProvider (the no-context variant used by the Stop hook /
