@@ -12,21 +12,30 @@ import (
 // Go 1.26 panics if t.Parallel is combined with t.Setenv.
 func TestBackendFromEnv(t *testing.T) {
 	tests := []struct {
-		name    string
-		envVal  string
-		want    storage.Backend
-		wantErr bool
-		errIs   error
+		name        string
+		envVal      string
+		databaseURL string // set DATABASE_URL to simulate cloud envs
+		want        storage.Backend
+		wantErr     bool
+		errIs       error
 	}{
 		{
-			name:   "unset (empty string) → SQLite default",
-			envVal: "",
-			want:   storage.BackendSQLite,
+			name:        "unset STORAGE_BACKEND, no DATABASE_URL → SQLite default",
+			envVal:      "",
+			databaseURL: "",
+			want:        storage.BackendSQLite,
 		},
 		{
-			name:   "explicit sqlite → BackendSQLite",
-			envVal: "sqlite",
-			want:   storage.BackendSQLite,
+			name:        "unset STORAGE_BACKEND, DATABASE_URL set → BackendPostgres (auto-detect)",
+			envVal:      "",
+			databaseURL: "postgres://localhost/testdb",
+			want:        storage.BackendPostgres,
+		},
+		{
+			name:        "explicit sqlite overrides DATABASE_URL",
+			envVal:      "sqlite",
+			databaseURL: "postgres://localhost/testdb",
+			want:        storage.BackendSQLite,
 		},
 		{
 			name:   "explicit postgres → BackendPostgres",
@@ -49,6 +58,7 @@ func TestBackendFromEnv(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("STORAGE_BACKEND", tc.envVal)
+			t.Setenv("DATABASE_URL", tc.databaseURL)
 			got, err := storage.BackendFromEnv()
 			if tc.wantErr {
 				if err == nil {
