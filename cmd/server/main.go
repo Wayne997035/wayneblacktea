@@ -173,9 +173,10 @@ func run() error {
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
-	// Browser SPA calls this once on startup to receive the wbt_session cookie.
-	// Requires X-API-Key header; the SPA reads the key from VITE_API_KEY at build time.
-	e.POST("/api/session", authSessH.IssueSession)
+	// Browser login page POSTs the user-entered key once to receive the wbt_session cookie.
+	// Rate-limited to 10 req/min per IP to mitigate brute-force on the key.
+	sessionRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
+	e.POST("/api/session", authSessH.IssueSession, sessionRL)
 
 	api := e.Group("/api", apimw.APIKeyMiddleware(apiKey))
 

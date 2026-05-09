@@ -1,13 +1,11 @@
 # Stage 1: Build the React/Vite frontend
 FROM node:22-alpine AS frontend
 
-ARG VITE_API_KEY
-
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-RUN VITE_API_KEY=${VITE_API_KEY} npm run build
+RUN npm run build
 
 # Stage 2: Build the Go binary (with embedded frontend)
 FROM golang:1.26.3-alpine AS builder
