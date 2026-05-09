@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -361,6 +362,37 @@ func (s *Store) Search(ctx context.Context, workspaceID *uuid.UUID, query string
 		return nil, fmt.Errorf("searching atoms rows.Err: %w", err)
 	}
 	return out, nil
+}
+
+// PruneAtoms hard-deletes memory_atoms rows older than cutoff. Called by the
+// daily decay pruner to enforce the 90-day TTL.
+// Link rows referencing pruned atoms are deleted first (no FK cascade per
+// project red-line #9; referential integrity is enforced in code).
+func (s *Store) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("pruning atoms begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const deleteLinks = `
+		DELETE FROM memory_links
+		WHERE from_atom_id IN (SELECT id FROM memory_atoms WHERE created_at < $1)
+		   OR to_atom_id   IN (SELECT id FROM memory_atoms WHERE created_at < $1)`
+	if _, err := tx.Exec(ctx, deleteLinks, cutoff); err != nil {
+		return 0, fmt.Errorf("pruning atom links: %w", err)
+	}
+
+	const deleteAtoms = `DELETE FROM memory_atoms WHERE created_at < $1`
+	tag, err := tx.Exec(ctx, deleteAtoms, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning atoms: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("pruning atoms commit: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied
