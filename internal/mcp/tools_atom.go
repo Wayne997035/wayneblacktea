@@ -133,7 +133,7 @@ func atomizeAndPersist(
 			WorkspaceID: wsID,
 			ParentTable: parentTable,
 			ParentID:    parentID,
-			Content:     c.Content,
+			Content:     ai.RedactCredentials(c.Content), // M1: scrub before persist
 			Keywords:    c.Keywords,
 			Tags:        c.Tags,
 		})
@@ -143,9 +143,33 @@ func atomizeAndPersist(
 		}
 		atomIDs = append(atomIDs, a.ID)
 	}
-	for _, l := range result.Links {
-		if l.FromIdx >= len(atomIDs) || l.ToIdx >= len(atomIDs) || l.FromIdx == l.ToIdx {
+
+	persistLinks(ctx, store, atomIDs, result.Links)
+}
+
+// allowedLinkTypes is the Go-layer allowlist for LLM-emitted link types (M2).
+var allowedLinkTypes = map[string]bool{
+	"same_entity": true, "same_action": true,
+	"same_time": true, "same_project": true,
+}
+
+// persistLinks validates and stores LLM-emitted link candidates.
+// Extracted to keep atomizeAndPersist under gocyclo limit.
+func persistLinks(ctx context.Context, store atom.StoreIface, atomIDs []uuid.UUID, links []ai.LinkCandidate) {
+	for _, l := range links {
+		// Guard negative, out-of-bounds, and self-loop indices (reviewer Major + M2).
+		if l.FromIdx < 0 || l.ToIdx < 0 || l.FromIdx >= len(atomIDs) || l.ToIdx >= len(atomIDs) || l.FromIdx == l.ToIdx {
 			continue
+		}
+		if !allowedLinkTypes[l.LinkType] {
+			slog.Warn("atomize: invalid link_type from LLM", "link_type", l.LinkType)
+			continue
+		}
+		// Clamp confidence to [0, 1] (M2).
+		if l.Confidence < 0 {
+			l.Confidence = 0
+		} else if l.Confidence > 1 {
+			l.Confidence = 1
 		}
 		if err := store.AddLink(ctx, atom.AddLinkParams{
 			FromAtomID: atomIDs[l.FromIdx],
@@ -159,12 +183,21 @@ func atomizeAndPersist(
 }
 
 // launchAtomize spawns atomizeAndPersist in a background goroutine with its own
-// independent timeout so the MCP request is never blocked.
+// independent timeout so the MCP request is never blocked. A 5-slot semaphore
+// (atomizeSem) caps concurrent Haiku API calls to prevent budget exhaustion on
+// rapid add_* bursts. (security M4)
 func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text string) {
 	if s.atomizer == nil || s.atom == nil {
 		return
 	}
 	go func(pid uuid.UUID, t string) {
+		select {
+		case s.atomizeSem <- struct{}{}:
+			defer func() { <-s.atomizeSem }()
+		default:
+			slog.Warn("launchAtomize: concurrency limit reached, skipping", "parent_id", pid)
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		atomizeAndPersist(ctx, s.atomizer, s.atom, s.workspaceUUID(), parentTable, pid, t)

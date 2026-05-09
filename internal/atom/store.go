@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -96,8 +97,6 @@ func scanAtomRow(rows pgx.Rows) (*Atom, error) {
 	a.Tags = parseStringSlice(tagsRaw)
 	return &a, nil
 }
-
-const linkSelectCols = `from_atom_id, to_atom_id, link_type, confidence, created_at`
 
 // scanLinkRow reads a full memory_links row into a Link.
 func scanLinkRow(rows pgx.Rows) (*Link, error) {
@@ -282,10 +281,14 @@ func (s *Store) traverseHop(
 	return nextQueue, nil
 }
 
-// getAtomByID fetches a single atom by primary key.
+// getAtomByID fetches a single atom by primary key, scoped to the store's workspace.
+// M3: workspace predicate prevents cross-tenant atom access in future multi-tenant mode.
 func (s *Store) getAtomByID(ctx context.Context, id uuid.UUID) (*Atom, error) {
-	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms WHERE id = $1 LIMIT 1`
-	rows, err := s.pool.Query(ctx, q, id)
+	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms
+		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		LIMIT 1`
+	rows, err := s.pool.Query(ctx, q, id, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("get atom %s: %w", id, err)
 	}
@@ -296,10 +299,15 @@ func (s *Store) getAtomByID(ctx context.Context, id uuid.UUID) (*Atom, error) {
 	return scanAtomRow(rows)
 }
 
-// linksFrom returns all outgoing links from a given atom.
+// linksFrom returns outgoing links from a given atom, filtering targets to this workspace.
+// M3: JOIN ensures BFS cannot traverse into atoms owned by other workspaces.
 func (s *Store) linksFrom(ctx context.Context, fromID uuid.UUID) ([]Link, error) {
-	const q = `SELECT ` + linkSelectCols + ` FROM memory_links WHERE from_atom_id = $1`
-	rows, err := s.pool.Query(ctx, q, fromID)
+	const q = `SELECT ml.from_atom_id, ml.to_atom_id, ml.link_type, ml.confidence, ml.created_at
+		FROM memory_links ml
+		JOIN memory_atoms ma ON ma.id = ml.to_atom_id
+		WHERE ml.from_atom_id = $1
+		  AND ($2::uuid IS NULL OR ma.workspace_id = $2)`
+	rows, err := s.pool.Query(ctx, q, fromID, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("links from %s: %w", fromID, err)
 	}
@@ -326,12 +334,12 @@ func (s *Store) Search(ctx context.Context, workspaceID *uuid.UUID, query string
 		limit = 10
 	}
 
-	pattern := "%" + query + "%"
+	pattern := "%" + escapeLikePostgres(query) + "%"
 	wsUUID := toUUID(workspaceID)
 
 	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms
 		WHERE ($1::uuid IS NULL OR workspace_id = $1)
-		  AND (content ILIKE $2 OR keywords::text ILIKE $2 OR tags::text ILIKE $2)
+		  AND (content ILIKE $2 ESCAPE '\' OR keywords::text ILIKE $2 ESCAPE '\' OR tags::text ILIKE $2 ESCAPE '\')
 		ORDER BY created_at DESC
 		LIMIT $3`
 
@@ -353,4 +361,13 @@ func (s *Store) Search(ctx context.Context, workspaceID *uuid.UUID, query string
 		return nil, fmt.Errorf("searching atoms rows.Err: %w", err)
 	}
 	return out, nil
+}
+
+// escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied
+// query strings are treated as literals. Pair with ESCAPE '\' in the SQL clause.
+func escapeLikePostgres(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }

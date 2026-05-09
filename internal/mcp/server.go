@@ -52,6 +52,9 @@ type Server struct {
 	procedural  procedural.StoreIface
 	atom        atom.StoreIface
 	atomizer    *ai.Atomizer
+	// atomizeSem limits concurrent background atomize goroutines to prevent
+	// API budget exhaustion from rapid add_* bursts. (security M4)
+	atomizeSem chan struct{}
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths
@@ -103,6 +106,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		procedural:     stores.Procedural(),
 		atom:           stores.Atom(),
 		atomizer:       ai.NewAtomizer(),
+		atomizeSem:     make(chan struct{}, 5),
 		pgGTD:          stores.PgGTD(),
 		pgProposal:     stores.PgProposal(),
 		pgLearning:     stores.PgLearning(),

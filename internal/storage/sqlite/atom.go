@@ -95,7 +95,7 @@ func (s *AtomStore) AddAtom(ctx context.Context, p atom.AddAtomParams) (*atom.At
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(),
-		s.db.workspaceArg(),
+		nullStringFromUUID(p.WorkspaceID), // use caller-supplied workspace (reviewer minor)
 		p.ParentTable,
 		p.ParentID.String(),
 		p.Content,
@@ -258,10 +258,12 @@ func (s *AtomStore) Search(ctx context.Context, workspaceID *uuid.UUID, query st
 }
 
 func (s *AtomStore) getByID(ctx context.Context, id uuid.UUID) (*atom.Atom, error) {
+	// M3: workspace predicate prevents cross-tenant atom access in future multi-tenant mode.
 	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms
 		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
 		LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id.String())
+	row := s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg())
 	a, err := scanAtomRow(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, atom.ErrNotFound
@@ -273,9 +275,13 @@ func (s *AtomStore) getByID(ctx context.Context, id uuid.UUID) (*atom.Atom, erro
 }
 
 func (s *AtomStore) linksFrom(ctx context.Context, fromID uuid.UUID) ([]atom.Link, error) {
-	const q = `SELECT from_atom_id, to_atom_id, link_type, confidence, created_at
-		FROM memory_links WHERE from_atom_id = ?1`
-	rows, err := s.db.conn.QueryContext(ctx, q, fromID.String())
+	// M3: JOIN ensures BFS cannot traverse into atoms owned by other workspaces.
+	const q = `SELECT ml.from_atom_id, ml.to_atom_id, ml.link_type, ml.confidence, ml.created_at
+		FROM memory_links ml
+		JOIN memory_atoms ma ON ma.id = ml.to_atom_id
+		WHERE ml.from_atom_id = ?1
+		  AND (?2 IS NULL OR ma.workspace_id = ?2)`
+	rows, err := s.db.conn.QueryContext(ctx, q, fromID.String(), s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("AtomStore.linksFrom", err)
 	}
