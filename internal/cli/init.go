@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,9 @@ func RunInit() error {
 	port, err := PromptWithDefault(r, "Server port [default: 8080]: ", "8080")
 	if err != nil {
 		return fmt.Errorf("reading server port: %w", err)
+	}
+	if p, atoiErr := strconv.Atoi(port); atoiErr != nil || p < 1 || p > 65535 {
+		return fmt.Errorf("invalid port %q: must be a number between 1 and 65535", port)
 	}
 
 	apiKey, err := CollectAPIKey(r)

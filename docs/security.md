@@ -33,7 +33,7 @@ Per-IP rate limiting is applied to write-heavy and high-frequency endpoints. IP 
 | Endpoint group | Limit |
 |---|---|
 | `POST /api/knowledge`, `PATCH /api/knowledge/:id`, `GET /api/knowledge/search` | 20 req/s |
-| `POST /api/session/handoff`, `POST /api/auto-handoff` | 5 req/min |
+| `POST /api/session/handoff`, `POST /api/auto-handoff` | 5 req/s |
 | `GET /api/proposals`, `POST /api/proposals/*` | 10 req/s |
 | `GET /api/search` | 20 req/s |
 | `GET /api/dashboard/*` | 30 req/s |
@@ -60,6 +60,8 @@ Binaries published in GitHub Releases are signed using Sigstore keyless signing 
 cosign verify-blob \
   --certificate <binary>.pem \
   --bundle <binary>.bundle \
+  --certificate-identity "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/<version>" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   <binary>
 ```
 
@@ -67,7 +69,7 @@ cosign verify-blob \
 
 ## Hook binary logging
 
-`cmd/wbt-hook` runs as a Claude Code `PostToolUse` hook and forwards a summary of each tool call to the server. Raw tool input is not stored: the hook caps stdin reads at 300 bytes and only forwards a content hash and tool name under normal operation. The server processes this through a classifier before any persistence. Log files written by hook binaries are placed in the OS temporary directory with mode `0600`.
+`cmd/wbt-hook` runs as a Claude Code `PostToolUse` hook and forwards a summary of each tool call to the server. Raw tool input is not stored: the hook caps stdin reads at 300 bytes and only forwards a content hash and tool name under normal operation. The server processes this through a classifier before any persistence. All hook binaries (`wbt-hook`, `wbt-context`, `wbt-doctor`) redirect `slog` output to a `0600` log file in the OS temporary directory at startup, preventing log messages from reaching the Claude Code terminal UI via stderr.
 
 ---
 

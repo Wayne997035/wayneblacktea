@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +15,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 )
+
+//nolint:gochecknoglobals // compiled once at init; used in sanitizeReason.
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 const guardUsage = `wbt guard — manage wbt-guard bypass rules
 
@@ -79,6 +84,11 @@ func runGuardBypassAdd(args []string) error {
 		return err
 	}
 
+	sanitized, err := sanitizeReason(*reasonFlag)
+	if err != nil {
+		return fmt.Errorf("guard bypass add: %w", err)
+	}
+
 	var expiresAt *time.Time
 	if *ttlFlag != "" {
 		dur, err := ParseDuration(*ttlFlag)
@@ -102,7 +112,7 @@ func runGuardBypassAdd(args []string) error {
 	}
 	store := guard.NewStore(pool)
 
-	id, err := store.AddBypass(ctx, *scopeFlag, *targetFlag, toolName, *reasonFlag, currentUser(), expiresAt)
+	id, err := store.AddBypass(ctx, *scopeFlag, *targetFlag, toolName, sanitized, currentUser(), expiresAt)
 	if err != nil {
 		return fmt.Errorf("guard bypass add: %w", err)
 	}
@@ -265,8 +275,31 @@ func ParseDuration(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// currentUser returns the current OS user or "unknown".
+// sanitizeReason rejects reasons with control characters or ANSI sequences and
+// caps length at 500 runes. Returns the sanitized string or an error.
+// This prevents terminal escape injection in `wbt guard bypass list` output.
+func sanitizeReason(r string) (string, error) {
+	if len([]rune(r)) > 500 {
+		return "", fmt.Errorf("--reason exceeds 500 rune limit")
+	}
+	for _, c := range r {
+		if c < 0x20 && c != '\t' {
+			return "", fmt.Errorf("--reason contains disallowed control character 0x%02x", c)
+		}
+	}
+	cleaned := ansiEscapeRe.ReplaceAllString(r, "")
+	if strings.TrimSpace(cleaned) == "" {
+		return "", fmt.Errorf("--reason is empty after stripping control characters")
+	}
+	return cleaned, nil
+}
+
+// currentUser returns the current OS user name.
+// Uses os/user.Current() for accuracy; falls back to env vars only if that fails.
 func currentUser() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
 	if u := os.Getenv("USER"); u != "" {
 		return u
 	}

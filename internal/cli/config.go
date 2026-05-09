@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -55,7 +56,7 @@ func WriteGlobalConfig(cfg WbtConfig) error {
 	if err != nil {
 		return err
 	}
-	b, err := yaml.Marshal(cfg) //nolint:gosec // G117: marshaling config struct to 0600 file; not a secret leak
+	b, err := yaml.Marshal(cfg) //nolint:gosec // no gosec rule fires on yaml.Marshal; annotation retained for documentation
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
@@ -81,6 +82,11 @@ func LoadGlobalConfig() error {
 	}
 	if err != nil {
 		return fmt.Errorf("reading global config %s: %w", path, err)
+	}
+	// Warn if the credential-bearing config file has group/world-readable permissions.
+	if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+		slog.Warn("global config has permissive permissions; run: chmod 0600 "+path,
+			"path", path, "mode", info.Mode().Perm())
 	}
 	var cfg WbtConfig
 	if err := yaml.Unmarshal(b, &cfg); err != nil {

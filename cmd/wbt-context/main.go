@@ -20,8 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,12 +48,27 @@ const (
 )
 
 func main() {
+	initHookSlog("wbt-context")
 	if len(os.Args) < 2 || os.Args[1] != "session-start" {
 		fmt.Fprintf(os.Stderr, "usage: wbt-context session-start\n")
 		// Exit 0 so an unknown subcommand never blocks Claude Code hooks.
 		os.Exit(0)
 	}
 	runSessionStart()
+}
+
+// initHookSlog redirects slog to a 0600 file in os.TempDir so the hook never
+// writes to stderr (Claude Code surfaces stderr as terminal warnings).
+// Falls back to io.Discard if the log file cannot be opened.
+func initHookSlog(name string) {
+	logPath := filepath.Join(os.TempDir(), name+".log")
+	//nolint:gosec // G304: logPath is os.TempDir() + constant suffix; not derived from user input
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelWarn})))
 }
 
 // sessionStartOutput matches the Claude Code hook spec: a JSON object with a

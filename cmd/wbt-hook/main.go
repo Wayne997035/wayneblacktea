@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -67,11 +68,25 @@ type postToolUseRequest struct {
 }
 
 func main() {
+	initHookSlog("wbt-hook")
 	if err := run(); err != nil {
 		slog.Warn("wbt-hook: exiting with warning", "err", err)
 	}
 	// Exit 0 always — MUST NOT block Claude Code.
 	os.Exit(0)
+}
+
+// initHookSlog redirects slog to a 0600 file in os.TempDir so the hook never
+// writes to stderr (Claude Code surfaces stderr as terminal warnings).
+// Falls back to io.Discard if the log file cannot be opened.
+func initHookSlog(name string) {
+	logPath := filepath.Join(os.TempDir(), name+".log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelWarn})))
 }
 
 func run() error {
