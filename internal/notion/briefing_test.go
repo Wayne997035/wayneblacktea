@@ -197,6 +197,25 @@ func TestBuildDailyBriefing(t *testing.T) {
 			},
 			briefingWant: briefingWant{now: now, wantDecisionCount: 0},
 		},
+		{
+			name: "decision rationale is propagated into DecisionBlock",
+			stores: &fakeBriefingStores{
+				decisions: []db.Decision{
+					{
+						ID:        decisionFreshID,
+						Title:     "use toggleBlock",
+						Rationale: "better mobile UX",
+						RepoName:  validText("wayneblacktea"),
+						CreatedAt: validTime(now.Add(-1 * time.Hour)),
+					},
+				},
+			},
+			briefingWant: briefingWant{
+				now:                   now,
+				wantDecisionCount:     1,
+				wantDecisionRationale: "better mobile UX",
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -224,34 +243,34 @@ func TestBuildDailyBriefing(t *testing.T) {
 // briefingWant captures per-test assertions for assertBriefing so we can
 // keep TestBuildDailyBriefing's complexity within the gocyclo limit.
 type briefingWant struct {
-	now                  time.Time
-	wantInProgress       int
-	wantStuckCount       int
-	wantStuckIDs         []string
-	wantDecisionCount    int
-	wantPendingCount     int
-	wantReviewCount      int
-	wantCompletedTasks   int64
-	wantTotalActiveTasks int64
-	wantImportance       int
+	now                   time.Time
+	wantInProgress        int
+	wantStuckCount        int
+	wantStuckIDs          []string
+	wantDecisionCount     int
+	wantDecisionRationale string // asserted on first RecentDecision when non-empty
+	wantPendingCount      int
+	wantReviewCount       int
+	wantCompletedTasks    int64
+	wantTotalActiveTasks  int64
+	wantImportance        int
 }
 
 func assertBriefing(t *testing.T, got *DailyBriefing, want briefingWant) {
+	t.Helper()
+	assertBriefingCounts(t, got, want)
+	assertBriefingHealth(t, got, want)
+	assertBriefingDetails(t, got, want)
+}
+
+// assertBriefingCounts checks section-level cardinality fields.
+func assertBriefingCounts(t *testing.T, got *DailyBriefing, want briefingWant) {
 	t.Helper()
 	if !got.Date.Equal(want.now) {
 		t.Errorf("Date = %v, want %v", got.Date, want.now)
 	}
 	if len(got.InProgressTasks) != want.wantInProgress {
 		t.Errorf("InProgressTasks count = %d, want %d", len(got.InProgressTasks), want.wantInProgress)
-	}
-	if got.SystemHealth.StuckTaskCount != want.wantStuckCount {
-		t.Errorf("StuckTaskCount = %d, want %d", got.SystemHealth.StuckTaskCount, want.wantStuckCount)
-	}
-	if len(want.wantStuckIDs) > 0 {
-		if len(got.SystemHealth.StuckTaskIDs) != len(want.wantStuckIDs) ||
-			got.SystemHealth.StuckTaskIDs[0] != want.wantStuckIDs[0] {
-			t.Errorf("StuckTaskIDs = %v, want %v", got.SystemHealth.StuckTaskIDs, want.wantStuckIDs)
-		}
 	}
 	if len(got.RecentDecisions) != want.wantDecisionCount {
 		t.Errorf("RecentDecisions count = %d, want %d", len(got.RecentDecisions), want.wantDecisionCount)
@@ -262,16 +281,40 @@ func assertBriefing(t *testing.T, got *DailyBriefing, want briefingWant) {
 	if len(got.DueReviews) != want.wantReviewCount {
 		t.Errorf("DueReviews count = %d, want %d", len(got.DueReviews), want.wantReviewCount)
 	}
+}
+
+// assertBriefingHealth checks stuck-task and weekly-progress health fields.
+func assertBriefingHealth(t *testing.T, got *DailyBriefing, want briefingWant) {
+	t.Helper()
+	if got.SystemHealth.StuckTaskCount != want.wantStuckCount {
+		t.Errorf("StuckTaskCount = %d, want %d", got.SystemHealth.StuckTaskCount, want.wantStuckCount)
+	}
+	if len(want.wantStuckIDs) > 0 {
+		if len(got.SystemHealth.StuckTaskIDs) != len(want.wantStuckIDs) ||
+			got.SystemHealth.StuckTaskIDs[0] != want.wantStuckIDs[0] {
+			t.Errorf("StuckTaskIDs = %v, want %v", got.SystemHealth.StuckTaskIDs, want.wantStuckIDs)
+		}
+	}
 	if got.SystemHealth.WeeklyCompletedTask != want.wantCompletedTasks {
 		t.Errorf("WeeklyCompletedTask = %d, want %d", got.SystemHealth.WeeklyCompletedTask, want.wantCompletedTasks)
 	}
 	if got.SystemHealth.WeeklyTotalActive != want.wantTotalActiveTasks {
 		t.Errorf("WeeklyTotalActive = %d, want %d", got.SystemHealth.WeeklyTotalActive, want.wantTotalActiveTasks)
 	}
+}
+
+// assertBriefingDetails checks per-item fields (importance, rationale).
+func assertBriefingDetails(t *testing.T, got *DailyBriefing, want briefingWant) {
+	t.Helper()
 	if want.wantImportance != 0 && len(got.InProgressTasks) > 0 &&
 		got.InProgressTasks[0].Importance != want.wantImportance {
 		t.Errorf("first InProgressTasks importance = %d, want %d",
 			got.InProgressTasks[0].Importance, want.wantImportance)
+	}
+	if want.wantDecisionRationale != "" && len(got.RecentDecisions) > 0 &&
+		got.RecentDecisions[0].Rationale != want.wantDecisionRationale {
+		t.Errorf("first RecentDecision.Rationale = %q, want %q",
+			got.RecentDecisions[0].Rationale, want.wantDecisionRationale)
 	}
 }
 
