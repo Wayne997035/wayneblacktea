@@ -19,6 +19,14 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Verify no FK constraints in migration SQL files
+        run: |
+          # Exclude comment-only lines (lines where content after filename:linenum: starts with --)
+          if grep -rn 'FOREIGN KEY\|REFERENCES\|ON DELETE\|ON UPDATE' migrations/ --include='*.sql' | grep -v ':[[:space:]]*--'; then
+            echo "ERROR: FK constraint found in migrations/ — workspace policy forbids FK constraints in any DB schema path (CLAUDE.md #9)"
+            exit 1
+          fi
+
       - name: Verify no VITE_*KEY in frontend source
         run: |
           if grep -r 'VITE_.*KEY' web/src/; then
