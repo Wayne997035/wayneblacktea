@@ -115,7 +115,7 @@ tasks:
       - |
         # cmd/server embeds web/dist which requires a prior `npm run build`.
         # Exclude it so lint is not blocked by a missing frontend build artifact.
-        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
+        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
         if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
           GOPROXY=off golangci-lint run --config build/.golangci.yml $PKGS
         else
@@ -131,7 +131,7 @@ tasks:
       # cmd/server embeds web/dist which requires a prior `npm run build`.
       # Exclude it so tests are not blocked by a missing frontend build artifact.
       # -short skips testcontainers-based integration tests that require Docker.
-      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   go-cache:
@@ -144,7 +144,7 @@ tasks:
     desc: "Run integration tests (requires Docker for testcontainers)"
     cmds:
       # No -short flag: runs all tests including testcontainers-based integration tests.
-      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:

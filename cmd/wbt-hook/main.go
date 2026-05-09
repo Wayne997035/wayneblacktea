@@ -81,6 +81,7 @@ func main() {
 // Falls back to io.Discard if the log file cannot be opened.
 func initHookSlog(name string) {
 	logPath := filepath.Join(os.TempDir(), name+".log")
+	//nolint:gosec // G304: logPath is os.TempDir() + constant suffix; not derived from user input
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))

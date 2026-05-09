@@ -79,6 +79,9 @@ func main() {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
+	cfg.MaxConns = 2
+	cfg.MinConns = 0
+	cfg.MaxConnLifetime = 30 * time.Second
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
 	if tlsErr != nil {
 		slog.Error("doctor DB TLS config failed; emitting empty snapshot", "err", tlsErr)

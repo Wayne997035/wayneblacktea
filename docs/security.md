@@ -69,7 +69,7 @@ cosign verify-blob \
 
 ## Hook binary logging
 
-`cmd/wbt-hook` runs as a Claude Code `PostToolUse` hook and forwards a summary of each tool call to the server. Raw tool input is not stored: the hook caps stdin reads at 300 bytes and only forwards a content hash and tool name under normal operation. The server processes this through a classifier before any persistence. All hook binaries (`wbt-hook`, `wbt-context`, `wbt-doctor`) redirect `slog` output to a `0600` log file in the OS temporary directory at startup, preventing log messages from reaching the Claude Code terminal UI via stderr.
+`cmd/wbt-hook` runs as a Claude Code `PostToolUse` hook and forwards a summary of each tool call to the server. Raw tool input is not stored: the hook caps stdin reads at 300 bytes and only forwards a content hash and tool name under normal operation. The server processes this through a classifier before any persistence. All hook binaries (`wbt-hook`, `wbt-context`, `wbt-doctor`) redirect `slog` output to a `0600` log file in the OS temporary directory at startup, preventing structured log messages from reaching the Claude Code terminal UI via stderr. Exception: `wbt-doctor` intentionally writes `ForgottenSignals` (stuck-task / overdue-review warnings) to stderr so they surface as operator-visible Stop-hook notices — this is by design and not a slog call.
 
 ---
 

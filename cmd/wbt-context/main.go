@@ -96,6 +96,9 @@ func runSessionStart() {
 		emitContext("")
 		return
 	}
+	cfg.MaxConns = 2
+	cfg.MinConns = 0
+	cfg.MaxConnLifetime = 30 * time.Second
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
 	if tlsErr != nil {
 		slog.Warn("wbt-context: TLS config error", "err", tlsErr)
