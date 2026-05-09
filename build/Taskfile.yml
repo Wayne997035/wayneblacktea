@@ -16,6 +16,7 @@ tasks:
   check:
     desc: "Full quality gate — run before any commit"
     cmds:
+      - task: frontend-check
       - task: vuln
       - task: lint
       - task: test
@@ -33,6 +34,18 @@ tasks:
     cmds:
       - govulncheck ./...
     dir: ..
+
+  frontend-check:
+    desc: "Frontend quality gate — lint, build, test, and copy dist for Go embed"
+    cmds:
+      - npm ci --ignore-scripts
+      - npm run lint
+      - npm run build
+      - npm test
+      - mkdir -p ../cmd/server/web
+      - rm -rf ../cmd/server/web/dist
+      - cp -r dist ../cmd/server/web/dist
+    dir: ../web
 
   build-frontend:
     desc: "Build frontend (required by cmd/server //go:embed) — run before task check locally"
