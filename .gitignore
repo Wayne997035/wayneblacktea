@@ -9,9 +9,9 @@ AGENTS.md
 # See internal/guard/config.go for schema documentation.
 .wayneblacktea/config.json
 
-.env
-.env.local
-*.env.local
+.env*
+!.env.example
+!.env.sample
 .cache/
 bin/
 dist/
