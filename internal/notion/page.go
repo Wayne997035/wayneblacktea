@@ -213,34 +213,40 @@ func (c *Client) deletePageChildren(ctx context.Context, pageID string) error {
 }
 
 // dailyBriefingChildren renders the briefing into Notion block children.
-// Layout:
+// Layout (mobile-optimised, N2 template):
 //
+//	[callout] YYYY-MM-DD — N tasks · N reviews · N proposals
 //	## In Progress (N)
-//	  - [importance] Title — context
+//	  [ ] [P1] Title — context   (to_do blocks, checkable on mobile)
 //
-//	## Past 24h Decisions (N)
-//	  - Title (repo)
+//	## Due Reviews (N)
+//	  - Title (due YYYY-MM-DD)
 //
 //	## Pending Proposals (N)
 //	  - Type — proposed_by
 //
-//	## Due Reviews (N)
-//	  - Title (due YYYY-MM-DD)
+//	## Past 24h Decisions (N)
+//	  > Title (repo)             (toggle blocks, rationale as child)
 //
 //	## System Health
 //	  - Stuck tasks: N
 //	  - Weekly: completed/total
 func dailyBriefingChildren(b *DailyBriefing) []map[string]any {
 	blocks := make([]map[string]any, 0, dailyBriefingMaxBlocks)
+
+	// Top-level callout: date + summary counts (mobile-first overview).
+	calloutText := fmt.Sprintf("%s — %d tasks · %d reviews · %d proposals",
+		b.Date.Format("2006-01-02"),
+		len(b.InProgressTasks),
+		len(b.DueReviews),
+		len(b.PendingProposals),
+	)
+	blocks = append(blocks, calloutBlock("📋", calloutText))
+	if len(blocks) >= dailyBriefingMaxBlocks {
+		return blocks
+	}
+
 	blocks = appendTaskSection(blocks, b.InProgressTasks)
-	if len(blocks) >= dailyBriefingMaxBlocks {
-		return blocks
-	}
-	blocks = appendDecisionSection(blocks, b.RecentDecisions)
-	if len(blocks) >= dailyBriefingMaxBlocks {
-		return blocks
-	}
-	blocks = appendProposalSection(blocks, b.PendingProposals)
 	if len(blocks) >= dailyBriefingMaxBlocks {
 		return blocks
 	}
@@ -248,10 +254,19 @@ func dailyBriefingChildren(b *DailyBriefing) []map[string]any {
 	if len(blocks) >= dailyBriefingMaxBlocks {
 		return blocks
 	}
+	blocks = appendProposalSection(blocks, b.PendingProposals)
+	if len(blocks) >= dailyBriefingMaxBlocks {
+		return blocks
+	}
+	blocks = appendDecisionSection(blocks, b.RecentDecisions)
+	if len(blocks) >= dailyBriefingMaxBlocks {
+		return blocks
+	}
 	return appendHealthSection(blocks, b.SystemHealth)
 }
 
-// appendTaskSection adds the "In Progress" heading + task bullets.
+// appendTaskSection adds the "In Progress" heading + to_do blocks (checkable
+// on mobile, replacing plain bullets).
 func appendTaskSection(blocks []map[string]any, tasks []TaskBlock) []map[string]any {
 	blocks = append(blocks, headingBlock(fmt.Sprintf("In Progress (%d)", len(tasks))))
 	if len(tasks) == 0 {
@@ -270,7 +285,7 @@ func appendTaskSection(blocks []map[string]any, tasks []TaskBlock) []map[string]
 		if t.Context != "" {
 			line += " — " + t.Context
 		}
-		blocks = append(blocks, bulletBlock(line))
+		blocks = append(blocks, todoBlock(line))
 		if len(blocks) >= dailyBriefingMaxBlocks {
 			return blocks
 		}
@@ -278,18 +293,24 @@ func appendTaskSection(blocks []map[string]any, tasks []TaskBlock) []map[string]
 	return blocks
 }
 
-// appendDecisionSection adds the "Past 24h Decisions" heading + decision bullets.
+// appendDecisionSection adds the "Past 24h Decisions" heading + toggle blocks.
+// Each toggle shows the decision title (+ repo) and, when a rationale is
+// available, expands to reveal a bullet with the rationale text.
 func appendDecisionSection(blocks []map[string]any, decisions []DecisionBlock) []map[string]any {
 	blocks = append(blocks, headingBlock(fmt.Sprintf("Past 24h Decisions (%d)", len(decisions))))
 	if len(decisions) == 0 {
 		return append(blocks, bulletBlock("(none)"))
 	}
 	for _, d := range decisions {
-		line := d.Title
+		header := d.Title
 		if d.RepoName != "" {
-			line += " (" + d.RepoName + ")"
+			header += " (" + d.RepoName + ")"
 		}
-		blocks = append(blocks, bulletBlock(line))
+		var children []map[string]any
+		if d.Rationale != "" {
+			children = []map[string]any{bulletBlock(d.Rationale)}
+		}
+		blocks = append(blocks, toggleBlock(header, children))
 		if len(blocks) >= dailyBriefingMaxBlocks {
 			return blocks
 		}
@@ -378,6 +399,67 @@ func bulletBlock(text string) map[string]any {
 					"text": map[string]any{"content": truncateForNotion(text)},
 				},
 			},
+		},
+	}
+}
+
+// calloutBlock returns a callout block (speech-bubble style, mobile-friendly
+// summary). The emoji is rendered as the block icon.
+func calloutBlock(emoji, text string) map[string]any {
+	return map[string]any{
+		"object": "block",
+		"type":   "callout",
+		"callout": map[string]any{
+			"icon": map[string]any{
+				"type":  "emoji",
+				"emoji": emoji,
+			},
+			"rich_text": []map[string]any{
+				{
+					"type": "text",
+					"text": map[string]any{"content": truncateForNotion(text)},
+				},
+			},
+		},
+	}
+}
+
+// todoBlock returns a to_do block (unchecked checkbox, checkable on mobile).
+func todoBlock(text string) map[string]any {
+	return map[string]any{
+		"object": "block",
+		"type":   "to_do",
+		"to_do": map[string]any{
+			"checked": false,
+			"rich_text": []map[string]any{
+				{
+					"type": "text",
+					"text": map[string]any{"content": truncateForNotion(text)},
+				},
+			},
+		},
+	}
+}
+
+// toggleBlock returns a toggle block with a header text and optional
+// collapsible children. When children is nil or empty, the toggle renders
+// with an empty children array (still collapsible on mobile). We always
+// send a non-nil slice so json.Marshal produces [] rather than null.
+func toggleBlock(headerText string, children []map[string]any) map[string]any {
+	if children == nil {
+		children = []map[string]any{}
+	}
+	return map[string]any{
+		"object": "block",
+		"type":   "toggle",
+		"toggle": map[string]any{
+			"rich_text": []map[string]any{
+				{
+					"type": "text",
+					"text": map[string]any{"content": truncateForNotion(headerText)},
+				},
+			},
+			"children": children,
 		},
 	}
 }

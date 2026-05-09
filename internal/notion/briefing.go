@@ -56,6 +56,7 @@ type ProposalBlock struct {
 type DecisionBlock struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
+	Rationale string    `json:"rationale,omitempty"`
 	RepoName  string    `json:"repo_name,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -223,7 +224,7 @@ func fillDecisions(ctx context.Context, stores BriefingStores, b *DailyBriefing,
 		if !d.CreatedAt.Valid || d.CreatedAt.Time.Before(cutoff) {
 			continue
 		}
-		block := DecisionBlock{ID: d.ID.String(), Title: d.Title, CreatedAt: d.CreatedAt.Time}
+		block := DecisionBlock{ID: d.ID.String(), Title: d.Title, Rationale: d.Rationale, CreatedAt: d.CreatedAt.Time}
 		if d.RepoName.Valid {
 			block.RepoName = d.RepoName.String
 		}

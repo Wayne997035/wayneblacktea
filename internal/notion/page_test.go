@@ -392,3 +392,155 @@ func callCount(calls []recordedCall, method, path string) int {
 	}
 	return n
 }
+
+// blockType extracts the "type" field from a Notion block map.
+func blockType(b map[string]any) string {
+	t, _ := b["type"].(string)
+	return t
+}
+
+// TestDailyBriefingChildren_CalloutIsFirstBlock asserts that the first block
+// rendered by dailyBriefingChildren is always a callout block containing the
+// date + count summary line. This is the N2 mobile-friendly overview callout.
+func TestDailyBriefingChildren_CalloutIsFirstBlock(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 10, 8, 0, 0, 0, time.UTC)
+	b := &DailyBriefing{
+		Date: now,
+		InProgressTasks: []TaskBlock{
+			{ID: "t1", Title: "alpha", Importance: 1},
+			{ID: "t2", Title: "beta", Importance: 2},
+		},
+		DueReviews:       []ReviewBlock{{ConceptID: "c1", Title: "review A"}},
+		PendingProposals: []ProposalBlock{{ID: "p1", Type: "concept"}},
+	}
+	out := dailyBriefingChildren(b)
+	if len(out) == 0 {
+		t.Fatal("expected at least one block, got none")
+	}
+	if got := blockType(out[0]); got != "callout" {
+		t.Errorf("first block type = %q, want %q", got, "callout")
+	}
+	// Verify callout content contains the date and task count.
+	callout, _ := out[0]["callout"].(map[string]any)
+	richText, _ := callout["rich_text"].([]map[string]any)
+	if len(richText) == 0 {
+		t.Fatal("callout rich_text is empty")
+	}
+	textObj, _ := richText[0]["text"].(map[string]any)
+	content, _ := textObj["content"].(string)
+	if !strings.Contains(content, "2026-05-10") {
+		t.Errorf("callout content %q does not contain date 2026-05-10", content)
+	}
+	if !strings.Contains(content, "2 tasks") {
+		t.Errorf("callout content %q does not contain '2 tasks'", content)
+	}
+}
+
+// TestDailyBriefingChildren_TasksUseToDoBlocks asserts that in-progress tasks
+// render as to_do blocks (not bulleted_list_item), enabling mobile checkbox UX.
+func TestDailyBriefingChildren_TasksUseToDoBlocks(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 10, 8, 0, 0, 0, time.UTC)
+	b := &DailyBriefing{
+		Date: now,
+		InProgressTasks: []TaskBlock{
+			{ID: "t1", Title: "first task", Importance: 1},
+			{ID: "t2", Title: "second task", Importance: 3},
+		},
+	}
+	out := dailyBriefingChildren(b)
+
+	// Collect all to_do blocks.
+	var todoCnt int
+	for _, blk := range out {
+		if blockType(blk) == "to_do" {
+			todoCnt++
+		}
+	}
+	if todoCnt != 2 {
+		t.Errorf("expected 2 to_do blocks for 2 tasks, got %d (all types: %v)", todoCnt, blockTypes(out))
+	}
+}
+
+// TestDailyBriefingChildren_DecisionWithRationaleHasToggleChildren asserts
+// that a decision with a non-empty Rationale produces a toggle block whose
+// children slice is non-empty (the rationale rendered as a bullet child).
+func TestDailyBriefingChildren_DecisionWithRationaleHasToggleChildren(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 10, 8, 0, 0, 0, time.UTC)
+	b := &DailyBriefing{
+		Date: now,
+		RecentDecisions: []DecisionBlock{
+			{
+				ID:        "dec1",
+				Title:     "use toggleBlock for decisions",
+				RepoName:  "wayneblacktea",
+				Rationale: "better mobile UX; collapsible rationale avoids wall-of-text",
+				CreatedAt: now.Add(-1 * time.Hour),
+			},
+		},
+	}
+	out := dailyBriefingChildren(b)
+
+	var toggles []map[string]any
+	for _, blk := range out {
+		if blockType(blk) == "toggle" {
+			toggles = append(toggles, blk)
+		}
+	}
+	if len(toggles) != 1 {
+		t.Fatalf("expected exactly 1 toggle block, got %d (all types: %v)", len(toggles), blockTypes(out))
+	}
+
+	inner, _ := toggles[0]["toggle"].(map[string]any)
+	children, _ := inner["children"].([]map[string]any)
+	if len(children) == 0 {
+		t.Errorf("toggle children is empty; expected rationale bullet child")
+	}
+}
+
+// TestDailyBriefingChildren_DecisionWithoutRationaleHasEmptyChildren asserts
+// that a decision with no Rationale produces a toggle with an empty children
+// slice (no child content, just the collapsible header).
+func TestDailyBriefingChildren_DecisionWithoutRationaleHasEmptyChildren(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 10, 8, 0, 0, 0, time.UTC)
+	b := &DailyBriefing{
+		Date: now,
+		RecentDecisions: []DecisionBlock{
+			{ID: "dec2", Title: "no rationale decision", CreatedAt: now.Add(-30 * time.Minute)},
+		},
+	}
+	out := dailyBriefingChildren(b)
+
+	var toggles []map[string]any
+	for _, blk := range out {
+		if blockType(blk) == "toggle" {
+			toggles = append(toggles, blk)
+		}
+	}
+	if len(toggles) != 1 {
+		t.Fatalf("expected exactly 1 toggle block, got %d", len(toggles))
+	}
+
+	inner, _ := toggles[0]["toggle"].(map[string]any)
+	children, _ := inner["children"].([]map[string]any)
+	if len(children) != 0 {
+		t.Errorf("expected empty children for decision without rationale, got %d children", len(children))
+	}
+}
+
+// blockTypes is a debug helper that returns all block type strings from a
+// slice of blocks, for use in test failure messages.
+func blockTypes(blocks []map[string]any) []string {
+	types := make([]string, len(blocks))
+	for i, b := range blocks {
+		types[i] = blockType(b)
+	}
+	return types
+}
