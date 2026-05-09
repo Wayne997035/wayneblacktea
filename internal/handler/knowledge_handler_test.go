@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -42,6 +43,15 @@ func (f *fakeKnowledgeStore) GetByID(_ context.Context, _ uuid.UUID) (*db.Knowle
 
 func (f *fakeKnowledgeStore) UpdateLearningValue(_ context.Context, _ uuid.UUID, _ int) error {
 	return f.err
+}
+
+// buildTagsBody builds a JSON body for AddKnowledge with n tags named "tag0" … "tag(n-1)".
+func buildTagsBody(n int) string {
+	tags := make([]string, n)
+	for i := range tags {
+		tags[i] = `"tag` + strings.Repeat("x", i%10) + `"`
+	}
+	return `{"type":"til","title":"t","tags":[` + strings.Join(tags, ",") + `]}`
 }
 
 // ---- ListKnowledge tests ----
@@ -144,6 +154,83 @@ func TestKnowledgeHandler_AddKnowledge(t *testing.T) {
 			body:     `{"type":"til","title":"Go generics"}`,
 			store:    &fakeKnowledgeStore{err: knowledge.ErrDuplicate{ExistingTitle: "Go generics", Similarity: 0.95}},
 			wantCode: http.StatusConflict,
+		},
+		// --- title length boundary ---
+		{
+			name:     "title exactly 200 chars → 201",
+			body:     `{"type":"til","title":"` + strings.Repeat("a", 200) + `"}`,
+			store:    &fakeKnowledgeStore{item: item},
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "title 201 chars → 400",
+			body:     `{"type":"til","title":"` + strings.Repeat("a", 201) + `"}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		// --- content size boundary ---
+		{
+			name:     "content exactly 10 MB → 201",
+			body:     `{"type":"til","title":"big","content":"` + strings.Repeat("a", 10*1024*1024) + `"}`,
+			store:    &fakeKnowledgeStore{item: item},
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "content 10 MB + 1 byte → 400",
+			body:     `{"type":"til","title":"big","content":"` + strings.Repeat("a", 10*1024*1024+1) + `"}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		// --- URL validation ---
+		{
+			name:     "valid https URL → 201",
+			body:     `{"type":"bookmark","title":"Go","url":"https://example.com"}`,
+			store:    &fakeKnowledgeStore{item: item},
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "valid http URL → 201",
+			body:     `{"type":"bookmark","title":"Go","url":"http://example.com"}`,
+			store:    &fakeKnowledgeStore{item: item},
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "ftp URL → 400",
+			body:     `{"type":"bookmark","title":"Go","url":"ftp://example.com"}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "relative URL → 400",
+			body:     `{"type":"bookmark","title":"Go","url":"/relative/path"}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		// --- tags count boundary ---
+		{
+			name:     "20 tags → 201",
+			body:     buildTagsBody(20),
+			store:    &fakeKnowledgeStore{item: item},
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "21 tags → 400",
+			body:     buildTagsBody(21),
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		// --- tag length boundary ---
+		{
+			name:     "tag exactly 50 chars → 201",
+			body:     `{"type":"til","title":"t","tags":["` + strings.Repeat("a", 50) + `"]}`,
+			store:    &fakeKnowledgeStore{item: item},
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "tag 51 chars → 400",
+			body:     `{"type":"til","title":"t","tags":["` + strings.Repeat("a", 51) + `"]}`,
+			store:    &fakeKnowledgeStore{},
+			wantCode: http.StatusBadRequest,
 		},
 	}
 
