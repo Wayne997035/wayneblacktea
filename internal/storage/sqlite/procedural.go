@@ -166,11 +166,11 @@ func (s *ProceduralStore) Query(ctx context.Context, f procedural.QueryFilter) (
 	}
 
 	if f.Keywords != "" {
-		kw := "%" + f.Keywords + "%"
+		kw := "%" + escapeLike(f.Keywords) + "%"
 		args = append(args, kw)
 		pos := len(args)
 		whereParts = append(whereParts,
-			fmt.Sprintf("(title LIKE ?%d OR when_to_use LIKE ?%d OR approach_md LIKE ?%d)",
+			fmt.Sprintf(`(title LIKE ?%d ESCAPE '\' OR when_to_use LIKE ?%d ESCAPE '\' OR approach_md LIKE ?%d ESCAPE '\')`,
 				pos, pos, pos))
 	}
 

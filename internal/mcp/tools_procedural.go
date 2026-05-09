@@ -22,12 +22,13 @@ func (s *Server) registerProceduralTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("title",
 			mcp.Description("Short descriptive title of the procedural memory"),
-			mcp.Required()),
+			mcp.Required(), mcp.MaxLength(200)),
 		mcp.WithString("when_to_use",
 			mcp.Description("Describe the situation or trigger that warrants this approach"),
-			mcp.Required()),
+			mcp.Required(), mcp.MaxLength(2000)),
 		mcp.WithString("approach_md",
-			mcp.Description("Markdown-formatted step-by-step approach or decision record")),
+			mcp.Description("Markdown-formatted step-by-step approach or decision record"),
+			mcp.MaxLength(20000)),
 		mcp.WithString("repo_name",
 			mcp.Description("Repository or project slug this memory belongs to")),
 		mcp.WithString("tools_used",
@@ -85,8 +86,17 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 	if title == "" {
 		return mcp.NewToolResultError("title is required"), nil
 	}
+	if len([]rune(title)) > 200 {
+		return mcp.NewToolResultError("title exceeds 200 character limit"), nil
+	}
 	if whenToUse == "" {
 		return mcp.NewToolResultError("when_to_use is required"), nil
+	}
+	if len([]rune(whenToUse)) > 2000 {
+		return mcp.NewToolResultError("when_to_use exceeds 2000 character limit"), nil
+	}
+	if approachMD := stringArg(args, "approach_md"); len([]rune(approachMD)) > 20000 {
+		return mcp.NewToolResultError("approach_md exceeds 20000 character limit"), nil
 	}
 
 	p := procedural.AddParams{
