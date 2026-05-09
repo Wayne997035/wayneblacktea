@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	echomw "github.com/labstack/echo/v4/middleware"
 )
 
 // fakeKnowledgeStore implements the knowledgeStore interface for testing.
@@ -389,5 +390,32 @@ func TestKnowledgeHandler_UpdateLearningValue(t *testing.T) {
 				t.Errorf("got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
 		})
+	}
+}
+
+// ---- Rate limiter tests ----
+
+// TestKnowledgeHandler_AddKnowledge_RateLimit verifies that POST /knowledge
+// returns 429 once the per-IP rate limit (burst=20) is exhausted.
+func TestKnowledgeHandler_AddKnowledge_RateLimit(t *testing.T) {
+	item := &db.KnowledgeItem{ID: uuid.New(), Type: "til", Title: "Go generics"}
+	store := &fakeKnowledgeStore{item: item}
+
+	e := echo.New()
+	h := handler.NewKnowledgeHandler(store, nil)
+	rl := echomw.RateLimiter(echomw.NewRateLimiterMemoryStore(20))
+	e.POST("/api/knowledge", h.AddKnowledge, rl)
+
+	body := `{"type":"til","title":"rate limit test"}`
+	got429 := false
+	for i := 0; i < 25; i++ {
+		rec := performRequest(e, http.MethodPost, "/api/knowledge", body)
+		if rec.Code == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Error("expected HTTP 429 after exhausting rate limit burst, but never received it")
 	}
 }

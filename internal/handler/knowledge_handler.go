@@ -78,7 +78,7 @@ func validateAddKnowledgeRequest(req addKnowledgeRequest) string {
 	case len(req.Title) > knowledgeMaxTitleLen:
 		return "title exceeds 200-character limit"
 	case len(req.Content) > knowledgeMaxContentLen:
-		return "content exceeds 10 MB limit"
+		return "content exceeds 1 MB limit"
 	case req.URL != "" && !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://"):
 		return "url must start with http:// or https://"
 	case len(req.Tags) > knowledgeMaxTagCount:
