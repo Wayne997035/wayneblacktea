@@ -261,12 +261,30 @@ func TestKnowledgeStore_WorkspaceIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddItem A: %v", err)
 	}
-	rowsB, err := storeB.List(context.Background(), 10, 0)
+	ctx := context.Background()
+	rowsB, err := storeB.List(ctx, 10, 0)
 	if err != nil {
 		t.Fatalf("List B: %v", err)
 	}
 	if len(rowsB) != 0 {
 		t.Fatalf("workspace B should not see A knowledge: %+v", rowsB)
+	}
+
+	// FTS5 Search and SearchCoarse must also respect workspace scoping.
+	rowsB, err = storeB.Search(ctx, "workspace", 10)
+	if err != nil {
+		t.Fatalf("storeB.Search: %v", err)
+	}
+	if len(rowsB) != 0 {
+		t.Errorf("storeB.Search: expected 0 results for workspace-A item, got %d", len(rowsB))
+	}
+
+	coarseB, err := storeB.SearchCoarse(ctx, "workspace", 10)
+	if err != nil {
+		t.Fatalf("storeB.SearchCoarse: %v", err)
+	}
+	if len(coarseB) != 0 {
+		t.Errorf("storeB.SearchCoarse: expected 0 results for workspace-A item, got %d", len(coarseB))
 	}
 }
 

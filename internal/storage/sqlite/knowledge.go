@@ -222,11 +222,14 @@ func escapeLike(s string) string {
 // matching so "conf" matches "configuration" and "config".
 // Returns "" when no usable terms remain (caller should treat as empty result).
 func toFTS5Query(q string) string {
+	if len(q) > 500 {
+		q = q[:500]
+	}
 	var terms []string
 	for _, word := range strings.Fields(q) {
 		clean := strings.Map(func(r rune) rune {
 			switch r {
-			case '"', '\'', '^', '*', ':', '-', '+', '(', ')', '.', '\\':
+			case '"', '\'', '^', '*', ':', '-', '+', '(', ')', '.', '\\', '{', '}', 0:
 				return -1
 			}
 			return r
