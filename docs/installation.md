@@ -6,7 +6,7 @@ first-time reader of the project.
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26.3+
 - PostgreSQL 14+ with the `pgvector` extension
 - Node 22+ (for the dashboard build step)
 - Optional integrations: Discord bot token, Gemini API key, Groq API
@@ -47,11 +47,11 @@ task check                       # lint + tests + build (~30 s)
 |---|---|---|
 | `DATABASE_URL` | yes | Postgres DSN (`postgres://user:pass@host/db?sslmode=require`). |
 | `API_KEY` | yes (server) | Bearer token for every `/api/*` route. |
-| `STORAGE_BACKEND` | no | `postgres` (default). `sqlite` is in progress; setting it errors at startup until the SQLite stores ship. |
+| `STORAGE_BACKEND` | no | `sqlite` (default when unset — good for local dev). Set to `postgres` for Postgres+pgvector backend. |
 | `WORKSPACE_ID` | no | UUID scoping every read and write. Unset → legacy unscoped mode. |
 | `USER_ID` | no | Identity tag used as `proposed_by` attribution. |
 | `PORT` | no | HTTP port (default `8080`). |
-| `ALLOWED_ORIGINS` | no | CORS list (default `*`). |
+| `ALLOWED_ORIGINS` | no | Comma-separated CORS origins (e.g. `https://app.example.com`). Defaults to `http://localhost:<PORT>,http://127.0.0.1:<PORT>` when unset; **must** be set explicitly in production. |
 | `GEMINI_API_KEY` | no | Vector embeddings for knowledge dedup + similarity search. |
 | `GROQ_API_KEY` | no | Discord bot LLM analyser for `/analyze`. |
 | `DISCORD_BOT_TOKEN` | no | Discord bot session token. Bot disabled if unset. |
