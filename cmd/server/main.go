@@ -482,8 +482,10 @@ func buildPruner(stores storage.ServerStores) *decay.Pruner {
 	if ps, ok := stores.Learning().(decay.PrunerStore); ok {
 		cp = ps
 	}
-	if kp == nil && cp == nil {
+	// atoms is always available from either backend.
+	ap := stores.Atom()
+	if kp == nil && cp == nil && ap == nil {
 		return nil
 	}
-	return decay.NewPruner(kp, cp, stores.Atom())
+	return decay.NewPruner(kp, cp, ap)
 }

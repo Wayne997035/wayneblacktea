@@ -26,13 +26,15 @@ func (s *stubPrunerStore) SoftPruneDecayed(ctx context.Context, cutoff time.Time
 
 // stubAtomPruner is a test double for AtomPruner.
 type stubAtomPruner struct {
-	n      int64
-	err    error
-	called bool
+	n          int64
+	err        error
+	called     bool
+	lastCutoff time.Time
 }
 
-func (s *stubAtomPruner) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error) {
+func (s *stubAtomPruner) PruneAtoms(_ context.Context, cutoff time.Time) (int64, error) {
 	s.called = true
+	s.lastCutoff = cutoff
 	return s.n, s.err
 }
 
@@ -94,6 +96,12 @@ func TestPruner_Run_AtomsStore(t *testing.T) {
 	p.Run()
 	if !as.called {
 		t.Error("atom store PruneAtoms was not called")
+	}
+	// cutoff must be roughly 90 days ago — mirrors the knowledge/concepts assertion.
+	expectedCutoff := time.Now().UTC().Add(-softPruneAgeCutoff)
+	diff := as.lastCutoff.Sub(expectedCutoff)
+	if diff < -2*time.Second || diff > 2*time.Second {
+		t.Errorf("atom cutoff %v not near expected %v", as.lastCutoff, expectedCutoff)
 	}
 }
 

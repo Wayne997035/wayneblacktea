@@ -315,12 +315,35 @@ func (s *AtomStore) linksFrom(ctx context.Context, fromID uuid.UUID) ([]atom.Lin
 
 // PruneAtoms hard-deletes memory_atoms rows older than cutoff. Called by the
 // daily decay pruner to enforce the 90-day TTL.
+// Link rows referencing pruned atoms are deleted first inside a transaction
+// (no FK cascade per project red-line #9; referential integrity enforced in code).
 func (s *AtomStore) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error) {
-	const q = `DELETE FROM memory_atoms WHERE created_at < ?`
-	result, err := s.db.conn.ExecContext(ctx, q, cutoff.UTC().Format(time.RFC3339))
+	cutoffStr := cutoff.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("pruning atoms begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const deleteLinks = `
+		DELETE FROM memory_links
+		WHERE from_atom_id IN (SELECT id FROM memory_atoms WHERE created_at < ?)
+		   OR to_atom_id   IN (SELECT id FROM memory_atoms WHERE created_at < ?)`
+	if _, err := tx.ExecContext(ctx, deleteLinks, cutoffStr, cutoffStr); err != nil {
+		return 0, fmt.Errorf("pruning atom links: %w", err)
+	}
+
+	const deleteAtoms = `DELETE FROM memory_atoms WHERE created_at < ?`
+	result, err := tx.ExecContext(ctx, deleteAtoms, cutoffStr)
 	if err != nil {
 		return 0, fmt.Errorf("pruning atoms: %w", err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("pruning atoms commit: %w", err)
+	}
+
 	n, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("pruning atoms rows affected: %w", err)

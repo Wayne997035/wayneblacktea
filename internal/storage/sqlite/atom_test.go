@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
@@ -355,6 +356,71 @@ func TestSQLiteAtomStore_Search(t *testing.T) {
 			t.Errorf("expected 0 results for different workspace, got %d", len(results))
 		}
 	})
+}
+
+func TestSQLiteAtomStore_PruneAtoms(t *testing.T) {
+	db := openAtomDB(t)
+	store := wbtsqlite.NewAtomStore(db)
+	ctx := context.Background()
+	parentID := uuid.New()
+
+	// Insert a recent atom via the store (created_at = now).
+	recentAtom, err := store.AddAtom(ctx, atom.AddAtomParams{
+		ParentTable: "decisions",
+		ParentID:    parentID,
+		Content:     "recent atom — must survive pruning",
+	})
+	if err != nil {
+		t.Fatalf("AddAtom recent: %v", err)
+	}
+
+	// Insert an old atom by backdating created_at directly.
+	oldID := uuid.New()
+	oldTimestamp := time.Now().UTC().Add(-91 * 24 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
+	if err := db.ExecContext(ctx,
+		`INSERT INTO memory_atoms (id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at)
+		 VALUES (?, NULL, 'decisions', ?, 'old atom — must be pruned', '[]', '[]', ?)`,
+		oldID.String(), parentID.String(), oldTimestamp,
+	); err != nil {
+		t.Fatalf("insert old atom: %v", err)
+	}
+
+	// Add a link from old → recent to verify orphan link cleanup.
+	if err := store.AddLink(ctx, atom.AddLinkParams{
+		FromAtomID: oldID,
+		ToAtomID:   recentAtom.ID,
+		LinkType:   "related",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("AddLink: %v", err)
+	}
+
+	cutoff := time.Now().UTC().Add(-90 * 24 * time.Hour)
+	n, err := store.PruneAtoms(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneAtoms: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("PruneAtoms returned %d deleted rows, want 1", n)
+	}
+
+	// The recent atom must still exist via Search.
+	results, err := store.Search(ctx, nil, "recent atom — must survive pruning", 5)
+	if err != nil {
+		t.Fatalf("Search after prune: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected recent atom to survive, got %d results", len(results))
+	}
+
+	// The old atom must be gone.
+	oldResults, err := store.Search(ctx, nil, "old atom — must be pruned", 5)
+	if err != nil {
+		t.Fatalf("Search old after prune: %v", err)
+	}
+	if len(oldResults) != 0 {
+		t.Errorf("expected old atom to be pruned, got %d results", len(oldResults))
+	}
 }
 
 func TestSQLiteAtomStore_ErrNotFound(t *testing.T) {
