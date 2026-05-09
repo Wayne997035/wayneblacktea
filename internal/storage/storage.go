@@ -42,10 +42,21 @@ const (
 var ErrInvalidBackend = errors.New("STORAGE_BACKEND must be 'postgres' or 'sqlite'")
 
 // BackendFromEnv reads the STORAGE_BACKEND environment variable and returns
-// the resolved Backend. Empty / unset → BackendSQLite (local-first default).
+// the resolved Backend.
+//
+// Resolution order:
+//  1. STORAGE_BACKEND is set → use its value (postgres|sqlite).
+//  2. STORAGE_BACKEND is unset and DATABASE_URL is set → BackendPostgres.
+//     This lets Railway / Heroku / Docker deployments work without requiring
+//     an extra STORAGE_BACKEND variable when DATABASE_URL is already present.
+//  3. STORAGE_BACKEND is unset and DATABASE_URL is unset → BackendSQLite
+//     (local-first default for zero-infra installs).
 func BackendFromEnv() (Backend, error) {
 	raw := strings.TrimSpace(os.Getenv("STORAGE_BACKEND"))
 	if raw == "" {
+		if strings.TrimSpace(os.Getenv("DATABASE_URL")) != "" {
+			return BackendPostgres, nil
+		}
 		return BackendSQLite, nil
 	}
 	switch Backend(raw) {
