@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/cli"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,7 +27,7 @@ func TestBuildEnvFile(t *testing.T) {
 		name      string
 		apiKey    string
 		port      string
-		db        dbConfig
+		db        cli.DBConfig
 		wantLines []string
 		noLines   []string
 	}{
@@ -34,7 +35,7 @@ func TestBuildEnvFile(t *testing.T) {
 			name:   "sqlite config",
 			apiKey: "myapikey123",
 			port:   "8080",
-			db:     dbConfig{storageBackend: "sqlite", sqlitePath: "/home/user/.wayneblacktea/data.db"},
+			db:     cli.DBConfig{StorageBackend: "sqlite", SQLitePath: "/home/user/.wayneblacktea/data.db"},
 			wantLines: []string{
 				"API_KEY=myapikey123",
 				"PORT=8080",
@@ -50,7 +51,7 @@ func TestBuildEnvFile(t *testing.T) {
 			name:   "postgres config",
 			apiKey: "prodapikey456",
 			port:   "9090",
-			db:     dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSN},
+			db:     cli.DBConfig{StorageBackend: "postgres", DatabaseURL: fakePostgresDSN},
 			wantLines: []string{
 				"API_KEY=prodapikey456",
 				"PORT=9090",
@@ -63,7 +64,7 @@ func TestBuildEnvFile(t *testing.T) {
 			name:      "sqlite config omits DATABASE_URL",
 			apiKey:    "akey",
 			port:      "8080",
-			db:        dbConfig{storageBackend: "sqlite", sqlitePath: "./data.db"},
+			db:        cli.DBConfig{StorageBackend: "sqlite", SQLitePath: "./data.db"},
 			wantLines: []string{"STORAGE_BACKEND=sqlite"},
 		},
 	}
@@ -71,15 +72,15 @@ func TestBuildEnvFile(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildEnvFile(tc.apiKey, tc.port, tc.db)
+			got := cli.GenerateEnvFile(tc.apiKey, tc.port, tc.db)
 			for _, want := range tc.wantLines {
 				if !strings.Contains(got, want) {
-					t.Errorf("buildEnvFile output missing %q; got:\n%s", want, got)
+					t.Errorf("GenerateEnvFile output missing %q; got:\n%s", want, got)
 				}
 			}
 			for _, deny := range tc.noLines {
 				if strings.Contains(got, deny) {
-					t.Errorf("buildEnvFile output should not contain %q; got:\n%s", deny, got)
+					t.Errorf("GenerateEnvFile output should not contain %q; got:\n%s", deny, got)
 				}
 			}
 		})
@@ -89,7 +90,7 @@ func TestBuildEnvFile(t *testing.T) {
 // TestBuildEnvFile_NoURLForSQLite verifies DATABASE_URL is absent for sqlite backend.
 func TestBuildEnvFile_NoURLForSQLite(t *testing.T) {
 	t.Parallel()
-	got := buildEnvFile("k", "8080", dbConfig{storageBackend: "sqlite", sqlitePath: "./data.db"})
+	got := cli.GenerateEnvFile("k", "8080", cli.DBConfig{StorageBackend: "sqlite", SQLitePath: "./data.db"})
 	if strings.Contains(got, "DATABASE_URL") {
 		t.Errorf("expected no DATABASE_URL in sqlite env, got:\n%s", got)
 	}
@@ -101,13 +102,13 @@ func TestBuildMCPJSON(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		db       dbConfig
+		db       cli.DBConfig
 		wantKeys []string
 		noKeys   []string
 	}{
 		{
 			name: "sqlite backend",
-			db:   dbConfig{storageBackend: "sqlite", sqlitePath: "/tmp/test.db"},
+			db:   cli.DBConfig{StorageBackend: "sqlite", SQLitePath: "/tmp/test.db"},
 			wantKeys: []string{
 				"wayneblacktea",
 				`"command": "wbt"`,
@@ -123,7 +124,7 @@ func TestBuildMCPJSON(t *testing.T) {
 		},
 		{
 			name: "postgres backend",
-			db:   dbConfig{storageBackend: "postgres", databaseURL: fakePostgresDSNShort},
+			db:   cli.DBConfig{StorageBackend: "postgres", DatabaseURL: fakePostgresDSNShort},
 			wantKeys: []string{
 				"wayneblacktea",
 				`"command": "wbt"`,
@@ -139,19 +140,19 @@ func TestBuildMCPJSON(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			b, err := buildMCPJSON(tc.db)
+			b, err := cli.WriteMCPJSON(tc.db)
 			if err != nil {
-				t.Fatalf("buildMCPJSON returned error: %v", err)
+				t.Fatalf("WriteMCPJSON returned error: %v", err)
 			}
 			got := string(b)
 			for _, key := range tc.wantKeys {
 				if !strings.Contains(got, key) {
-					t.Errorf("buildMCPJSON missing %q in output:\n%s", key, got)
+					t.Errorf("WriteMCPJSON missing %q in output:\n%s", key, got)
 				}
 			}
 			for _, key := range tc.noKeys {
 				if strings.Contains(got, key) {
-					t.Errorf("buildMCPJSON should not contain %q in output:\n%s", key, got)
+					t.Errorf("WriteMCPJSON should not contain %q in output:\n%s", key, got)
 				}
 			}
 		})
@@ -175,17 +176,17 @@ func TestRandomHex(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := randomHex(tc.n)
+			got, err := cli.RandomHex(tc.n)
 			if err != nil {
-				t.Fatalf("randomHex(%d) error: %v", tc.n, err)
+				t.Fatalf("RandomHex(%d) error: %v", tc.n, err)
 			}
 			if len(got) != tc.wantLen {
-				t.Errorf("randomHex(%d) len = %d, want %d", tc.n, len(got), tc.wantLen)
+				t.Errorf("RandomHex(%d) len = %d, want %d", tc.n, len(got), tc.wantLen)
 			}
 			// Verify all chars are valid hex.
 			for _, c := range got {
 				if !strings.ContainsRune("0123456789abcdef", c) {
-					t.Errorf("randomHex produced non-hex char %q in %q", c, got)
+					t.Errorf("RandomHex produced non-hex char %q in %q", c, got)
 				}
 			}
 		})
@@ -195,42 +196,20 @@ func TestRandomHex(t *testing.T) {
 // TestRandomHex_Uniqueness verifies two calls produce different values.
 func TestRandomHex_Uniqueness(t *testing.T) {
 	t.Parallel()
-	a, err := randomHex(32)
+	a, err := cli.RandomHex(32)
 	if err != nil {
-		t.Fatalf("randomHex error: %v", err)
+		t.Fatalf("RandomHex error: %v", err)
 	}
-	b, err := randomHex(32)
+	b, err := cli.RandomHex(32)
 	if err != nil {
-		t.Fatalf("randomHex error: %v", err)
+		t.Fatalf("RandomHex error: %v", err)
 	}
 	if a == b {
-		t.Error("randomHex produced identical values on two calls")
+		t.Error("RandomHex produced identical values on two calls")
 	}
 }
 
-// TestWriteEnvLine_QuotesSpaces verifies values with spaces are quoted.
-func TestWriteEnvLine_QuotesSpaces(t *testing.T) {
-	t.Parallel()
-	var sb strings.Builder
-	writeEnvLine(&sb, "FOO", "hello world")
-	got := sb.String()
-	if !strings.Contains(got, `"hello world"`) {
-		t.Errorf("writeEnvLine should quote value with space, got: %q", got)
-	}
-}
-
-// TestWriteEnvLine_NoQuoteNeeded verifies plain values are not quoted.
-func TestWriteEnvLine_NoQuoteNeeded(t *testing.T) {
-	t.Parallel()
-	var sb strings.Builder
-	writeEnvLine(&sb, "KEY", "plainvalue")
-	got := sb.String()
-	if got != "KEY=plainvalue\n" {
-		t.Errorf("writeEnvLine got %q, want %q", got, "KEY=plainvalue\n")
-	}
-}
-
-// TestRunServe_MissingBinary verifies runServe returns an error when
+// TestRunServe_MissingBinary verifies RunServe returns an error when
 // wayneblacktea-server is not in PATH.
 // Cannot use t.Parallel because t.Setenv mutates process-global state.
 func TestRunServe_MissingBinary(t *testing.T) {
@@ -242,16 +221,16 @@ func TestRunServe_MissingBinary(t *testing.T) {
 	// Point godotenv at a non-existent file so Load is a no-op.
 	_ = os.Remove(filepath.Join(".", ".env"))
 
-	err := runServe([]string{})
+	err := cli.RunServe([]string{})
 	if err == nil {
-		t.Fatal("runServe: expected error when binary not in PATH, got nil")
+		t.Fatal("RunServe: expected error when binary not in PATH, got nil")
 	}
 	if !strings.Contains(err.Error(), "wayneblacktea-server not found") {
-		t.Errorf("runServe error = %q, want substring 'wayneblacktea-server not found'", err.Error())
+		t.Errorf("RunServe error = %q, want substring 'wayneblacktea-server not found'", err.Error())
 	}
 }
 
-// TestRunServe_MissingEnvVars verifies runServe returns an error when API_KEY
+// TestRunServe_MissingEnvVars verifies RunServe returns an error when API_KEY
 // is not set. CLAUDE_API_KEY is optional and must not satisfy HTTP auth config.
 // Cannot use t.Parallel because t.Setenv mutates process-global state.
 func TestRunServe_MissingEnvVars(t *testing.T) {
@@ -261,12 +240,12 @@ func TestRunServe_MissingEnvVars(t *testing.T) {
 	t.Setenv("API_KEY", "")
 	t.Setenv("CLAUDE_API_KEY", "")
 
-	err := runServe([]string{})
+	err := cli.RunServe([]string{})
 	if err == nil {
-		t.Fatal("runServe: expected error when env vars missing, got nil")
+		t.Fatal("RunServe: expected error when env vars missing, got nil")
 	}
 	if !strings.Contains(err.Error(), "API_KEY must be set") {
-		t.Errorf("runServe error = %q, want substring about API_KEY", err.Error())
+		t.Errorf("RunServe error = %q, want substring about API_KEY", err.Error())
 	}
 }
 
@@ -300,10 +279,10 @@ func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 	_, _ = stdinW.WriteString("\n\n8080\n\n")
 	_ = stdinW.Close()
 
-	err = runInit()
+	err = cli.RunInit()
 	_ = stdoutW.Close()
 	if err != nil {
-		t.Fatalf("runInit returned error: %v", err)
+		t.Fatalf("RunInit returned error: %v", err)
 	}
 
 	out, err := io.ReadAll(stdoutR)
@@ -311,12 +290,12 @@ func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 		t.Fatalf("reading stdout: %v", err)
 	}
 	if strings.Contains(string(out), "API key for Claude") {
-		t.Fatalf("runInit prompted for CLAUDE_API_KEY:\n%s", string(out))
+		t.Fatalf("RunInit prompted for CLAUDE_API_KEY:\n%s", string(out))
 	}
 	// Phase 1-4 of docs/openrouter-fallback.md: the optional OpenRouter
 	// provider MUST NOT be prompted in the default install flow either.
 	if strings.Contains(string(out), "OpenRouter") || strings.Contains(string(out), "OPENROUTER") {
-		t.Fatalf("runInit prompted for OPENROUTER_API_KEY:\n%s", string(out))
+		t.Fatalf("RunInit prompted for OPENROUTER_API_KEY:\n%s", string(out))
 	}
 
 	envContent, err := os.ReadFile(".env")
@@ -346,12 +325,12 @@ func TestRunInit_DoesNotPromptForClaudeAPIKey(t *testing.T) {
 func TestPromptWithDefault_Empty(t *testing.T) {
 	t.Parallel()
 	r := strings.NewReader("\n") // simulates user pressing Enter
-	got, err := promptWithDefault(newBufReader(r), "question: ", "mydefault")
+	got, err := cli.PromptWithDefault(newBufReader(r), "question: ", "mydefault")
 	if err != nil {
-		t.Fatalf("promptWithDefault error: %v", err)
+		t.Fatalf("PromptWithDefault error: %v", err)
 	}
 	if got != "mydefault" {
-		t.Errorf("promptWithDefault = %q, want %q", got, "mydefault")
+		t.Errorf("PromptWithDefault = %q, want %q", got, "mydefault")
 	}
 }
 
@@ -359,12 +338,12 @@ func TestPromptWithDefault_Empty(t *testing.T) {
 func TestPromptRequired_Empty(t *testing.T) {
 	t.Parallel()
 	r := strings.NewReader("\n")
-	_, err := promptRequired(newBufReader(r), "question: ", "must not be empty")
+	_, err := cli.PromptRequired(newBufReader(r), "question: ", "must not be empty")
 	if err == nil {
-		t.Fatal("promptRequired: expected error on empty input, got nil")
+		t.Fatal("PromptRequired: expected error on empty input, got nil")
 	}
 	if !strings.Contains(err.Error(), "must not be empty") {
-		t.Errorf("promptRequired error = %q, want substring 'must not be empty'", err.Error())
+		t.Errorf("PromptRequired error = %q, want substring 'must not be empty'", err.Error())
 	}
 }
 
@@ -374,15 +353,15 @@ func TestCollectDBConfig_Postgres(t *testing.T) {
 	// Simulate: choose "2" then enter the DSN.
 	input := "2\n" + fakePostgresDSNShort + "\n"
 	r := newBufReader(strings.NewReader(input))
-	got, err := collectDBConfig(r)
+	got, err := cli.CollectDBConfig(r)
 	if err != nil {
-		t.Fatalf("collectDBConfig error: %v", err)
+		t.Fatalf("CollectDBConfig error: %v", err)
 	}
-	if got.storageBackend != "postgres" {
-		t.Errorf("storageBackend = %q, want %q", got.storageBackend, "postgres")
+	if got.StorageBackend != "postgres" {
+		t.Errorf("StorageBackend = %q, want %q", got.StorageBackend, "postgres")
 	}
-	if got.databaseURL != fakePostgresDSNShort {
-		t.Errorf("databaseURL = %q, want %q", got.databaseURL, fakePostgresDSNShort)
+	if got.DatabaseURL != fakePostgresDSNShort {
+		t.Errorf("DatabaseURL = %q, want %q", got.DatabaseURL, fakePostgresDSNShort)
 	}
 }
 
@@ -392,15 +371,15 @@ func TestCollectDBConfig_SQLiteDefault(t *testing.T) {
 	// Simulate: choose "" (default SQLite) then default path.
 	input := "\n\n"
 	r := newBufReader(strings.NewReader(input))
-	got, err := collectDBConfig(r)
+	got, err := cli.CollectDBConfig(r)
 	if err != nil {
-		t.Fatalf("collectDBConfig error: %v", err)
+		t.Fatalf("CollectDBConfig error: %v", err)
 	}
-	if got.storageBackend != sqliteBackend {
-		t.Errorf("storageBackend = %q, want %q", got.storageBackend, sqliteBackend)
+	if got.StorageBackend != sqliteBackend {
+		t.Errorf("StorageBackend = %q, want %q", got.StorageBackend, sqliteBackend)
 	}
-	if got.sqlitePath == "" {
-		t.Error("sqlitePath should not be empty for sqlite backend")
+	if got.SQLitePath == "" {
+		t.Error("SQLitePath should not be empty for sqlite backend")
 	}
 }
 
@@ -409,9 +388,9 @@ func TestCollectDBConfig_PostgresEmptyDSN(t *testing.T) {
 	t.Parallel()
 	input := "2\n\n" // choose Postgres, then empty DSN
 	r := newBufReader(strings.NewReader(input))
-	_, err := collectDBConfig(r)
+	_, err := cli.CollectDBConfig(r)
 	if err == nil {
-		t.Fatal("collectDBConfig: expected error for empty Postgres DSN, got nil")
+		t.Fatal("CollectDBConfig: expected error for empty Postgres DSN, got nil")
 	}
 }
 
@@ -432,7 +411,7 @@ func setXDGConfigHome(t *testing.T, dir string) {
 	t.Setenv("HOME", dir) // macOS fallback: os.UserConfigDir → $HOME/.config
 }
 
-// TestConfigPath_UserConfigDir verifies configPath() returns a path inside the
+// TestConfigPath_UserConfigDir verifies ConfigPath() returns a path inside the
 // OS user-config directory with the expected sub-path and that the directory
 // is created automatically.
 func TestConfigPath_UserConfigDir(t *testing.T) {
@@ -440,54 +419,54 @@ func TestConfigPath_UserConfigDir(t *testing.T) {
 	tmp := t.TempDir()
 	setXDGConfigHome(t, tmp)
 
-	got, err := configPath()
+	got, err := cli.ConfigPath()
 	if err != nil {
-		t.Fatalf("configPath() error: %v", err)
+		t.Fatalf("ConfigPath() error: %v", err)
 	}
 	// Path must end with wayneblacktea/config.yaml
 	if !strings.HasSuffix(got, filepath.Join("wayneblacktea", "config.yaml")) {
-		t.Errorf("configPath() = %q; want suffix %q", got, filepath.Join("wayneblacktea", "config.yaml"))
+		t.Errorf("ConfigPath() = %q; want suffix %q", got, filepath.Join("wayneblacktea", "config.yaml"))
 	}
 	// The parent directory must exist after the call.
 	dir := filepath.Dir(got)
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		t.Errorf("configPath() did not create directory %q", dir)
+		t.Errorf("ConfigPath() did not create directory %q", dir)
 	}
 }
 
-// TestConfigPath_UserConfigDir_AlreadyExists verifies configPath() is
+// TestConfigPath_UserConfigDir_AlreadyExists verifies ConfigPath() is
 // idempotent when the directory already exists (no EEXIST error).
 func TestConfigPath_UserConfigDir_AlreadyExists(t *testing.T) {
 	tmp := t.TempDir()
 	setXDGConfigHome(t, tmp)
 
 	// Call twice; second call must not error.
-	if _, err := configPath(); err != nil {
-		t.Fatalf("first configPath() error: %v", err)
+	if _, err := cli.ConfigPath(); err != nil {
+		t.Fatalf("first ConfigPath() error: %v", err)
 	}
-	if _, err := configPath(); err != nil {
-		t.Fatalf("second configPath() error: %v", err)
+	if _, err := cli.ConfigPath(); err != nil {
+		t.Fatalf("second ConfigPath() error: %v", err)
 	}
 }
 
-// TestWriteGlobalConfig_RoundTrip verifies that writeGlobalConfig writes a
-// valid YAML file that can be parsed back by loadGlobalConfig.
+// TestWriteGlobalConfig_RoundTrip verifies that WriteGlobalConfig writes a
+// valid YAML file that can be parsed back by LoadGlobalConfig.
 func TestWriteGlobalConfig_RoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	setXDGConfigHome(t, tmp)
 
-	cfg := wbtConfig{
+	cfg := cli.WbtConfig{
 		APIKey:         "testapikey",
 		DatabaseURL:    fakePostgresDSN,
 		Port:           "9090",
 		StorageBackend: "postgres",
 	}
-	if err := writeGlobalConfig(cfg); err != nil {
-		t.Fatalf("writeGlobalConfig error: %v", err)
+	if err := cli.WriteGlobalConfig(cfg); err != nil {
+		t.Fatalf("WriteGlobalConfig error: %v", err)
 	}
 
 	// Verify file permissions: must be 0600 (credential-bearing file).
-	p, _ := configPath()
+	p, _ := cli.ConfigPath()
 	info, err := os.Stat(p)
 	if err != nil {
 		t.Fatalf("stat config file: %v", err)
@@ -497,11 +476,11 @@ func TestWriteGlobalConfig_RoundTrip(t *testing.T) {
 	}
 
 	// Parse back and verify fields.
-	b, err := os.ReadFile(p) //nolint:gosec // G304: p is derived from configPath() pointing at a test-controlled temp dir
+	b, err := os.ReadFile(p) //nolint:gosec // G304: p is derived from ConfigPath() pointing at a test-controlled temp dir
 	if err != nil {
 		t.Fatalf("reading config file: %v", err)
 	}
-	var got wbtConfig
+	var got cli.WbtConfig
 	if err := yaml.Unmarshal(b, &got); err != nil {
 		t.Fatalf("yaml.Unmarshal error: %v", err)
 	}
@@ -516,9 +495,9 @@ func TestWriteGlobalConfig_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestRunInit_WritesConfigFile verifies that runInit writes the global config
+// TestRunInit_WritesConfigFile verifies that RunInit writes the global config
 // file at ~/.config/wayneblacktea/config.yaml in addition to .env.
-// Cannot use t.Parallel because runInit uses os.Stdin/os.Stdout globals and
+// Cannot use t.Parallel because RunInit uses os.Stdin/os.Stdout globals and
 // t.Chdir.
 func TestRunInit_WritesConfigFile(t *testing.T) {
 	tmp := t.TempDir()
@@ -547,22 +526,22 @@ func TestRunInit_WritesConfigFile(t *testing.T) {
 	_, _ = stdinW.WriteString("\n\n8080\n\n")
 	_ = stdinW.Close()
 
-	if err := runInit(); err != nil {
+	if err := cli.RunInit(); err != nil {
 		_ = stdoutW.Close()
-		t.Fatalf("runInit error: %v", err)
+		t.Fatalf("RunInit error: %v", err)
 	}
 	_ = stdoutW.Close()
 
 	// Verify the global config file exists.
-	cfgPath, err := configPath()
+	cfgPath, err := cli.ConfigPath()
 	if err != nil {
-		t.Fatalf("configPath error: %v", err)
+		t.Fatalf("ConfigPath error: %v", err)
 	}
-	b, err := os.ReadFile(cfgPath) //nolint:gosec // G304: cfgPath is derived from configPath() pointing at a test-controlled temp dir
+	b, err := os.ReadFile(cfgPath) //nolint:gosec // G304: cfgPath is derived from ConfigPath() pointing at a test-controlled temp dir
 	if err != nil {
 		t.Fatalf("global config not created at %s: %v", cfgPath, err)
 	}
-	var cfg wbtConfig
+	var cfg cli.WbtConfig
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		t.Fatalf("parsing global config: %v", err)
 	}
@@ -577,7 +556,7 @@ func TestRunInit_WritesConfigFile(t *testing.T) {
 	}
 }
 
-// TestRunServe_LoadsGlobalConfig verifies that runServe reads API_KEY from
+// TestRunServe_LoadsGlobalConfig verifies that RunServe reads API_KEY from
 // ~/.config/wayneblacktea/config.yaml when the env var is not set and .env
 // does not exist. The binary lookup will fail, but the config loading path
 // (which happens before the binary lookup) must succeed.
@@ -586,16 +565,16 @@ func TestRunServe_LoadsGlobalConfig(t *testing.T) {
 	tmp := t.TempDir()
 	setXDGConfigHome(t, tmp)
 
-	// Clear API_KEY from the environment so loadGlobalConfig must supply it.
+	// Clear API_KEY from the environment so LoadGlobalConfig must supply it.
 	t.Setenv("API_KEY", "")
 
 	// Write a global config with an API key.
-	cfg := wbtConfig{
+	cfg := cli.WbtConfig{
 		APIKey: "globalconfigkey",
 		Port:   "8080",
 	}
-	if err := writeGlobalConfig(cfg); err != nil {
-		t.Fatalf("writeGlobalConfig: %v", err)
+	if err := cli.WriteGlobalConfig(cfg); err != nil {
+		t.Fatalf("WriteGlobalConfig: %v", err)
 	}
 
 	// Override PATH so wayneblacktea-server is not found — ensures the test
@@ -603,16 +582,16 @@ func TestRunServe_LoadsGlobalConfig(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
 
-	err := runServe([]string{})
+	err := cli.RunServe([]string{})
 	// We expect "not found in PATH" error — NOT "API_KEY must be set".
 	if err == nil {
-		t.Fatal("runServe: expected error (binary not in PATH), got nil")
+		t.Fatal("RunServe: expected error (binary not in PATH), got nil")
 	}
 	if strings.Contains(err.Error(), "API_KEY must be set") {
-		t.Errorf("runServe should have loaded API_KEY from global config, got: %v", err)
+		t.Errorf("RunServe should have loaded API_KEY from global config, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "wayneblacktea-server not found") {
-		t.Errorf("runServe error = %q; want 'wayneblacktea-server not found'", err.Error())
+		t.Errorf("RunServe error = %q; want 'wayneblacktea-server not found'", err.Error())
 	}
 }
 
@@ -636,34 +615,34 @@ func TestRunServe_GlobalConfigFallsBackToDotEnv(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
 
-	err := runServe([]string{})
+	err := cli.RunServe([]string{})
 	// Should reach "binary not found", not "API_KEY must be set".
 	if err == nil {
-		t.Fatal("runServe: expected error, got nil")
+		t.Fatal("RunServe: expected error, got nil")
 	}
 	if strings.Contains(err.Error(), "API_KEY must be set") {
-		t.Errorf("runServe should have loaded API_KEY from .env fallback, got: %v", err)
+		t.Errorf("RunServe should have loaded API_KEY from .env fallback, got: %v", err)
 	}
 }
 
-// TestLoadGlobalConfig_MissingFile verifies loadGlobalConfig is a no-op when
+// TestLoadGlobalConfig_MissingFile verifies LoadGlobalConfig is a no-op when
 // the config file does not exist.
 func TestLoadGlobalConfig_MissingFile(t *testing.T) {
 	tmp := t.TempDir()
 	setXDGConfigHome(t, tmp)
 	t.Setenv("API_KEY", "")
 
-	if err := loadGlobalConfig(); err != nil {
-		t.Fatalf("loadGlobalConfig: unexpected error for missing file: %v", err)
+	if err := cli.LoadGlobalConfig(); err != nil {
+		t.Fatalf("LoadGlobalConfig: unexpected error for missing file: %v", err)
 	}
 	// API_KEY must remain unset.
 	if v := os.Getenv("API_KEY"); v != "" {
-		t.Errorf("API_KEY = %q after loadGlobalConfig on missing file; want empty", v)
+		t.Errorf("API_KEY = %q after LoadGlobalConfig on missing file; want empty", v)
 	}
 }
 
-// TestLoadGlobalConfig_DoesNotOverrideExisting verifies that setIfAbsent does
-// not clobber an env var that was already set before loadGlobalConfig runs.
+// TestLoadGlobalConfig_DoesNotOverrideExisting verifies that SetIfAbsent does
+// not clobber an env var that was already set before LoadGlobalConfig runs.
 func TestLoadGlobalConfig_DoesNotOverrideExisting(t *testing.T) {
 	tmp := t.TempDir()
 	setXDGConfigHome(t, tmp)
@@ -672,11 +651,11 @@ func TestLoadGlobalConfig_DoesNotOverrideExisting(t *testing.T) {
 	t.Setenv("API_KEY", "presharedkey")
 
 	// Write a global config with a different key.
-	if err := writeGlobalConfig(wbtConfig{APIKey: "configkey"}); err != nil {
-		t.Fatalf("writeGlobalConfig: %v", err)
+	if err := cli.WriteGlobalConfig(cli.WbtConfig{APIKey: "configkey"}); err != nil {
+		t.Fatalf("WriteGlobalConfig: %v", err)
 	}
-	if err := loadGlobalConfig(); err != nil {
-		t.Fatalf("loadGlobalConfig: %v", err)
+	if err := cli.LoadGlobalConfig(); err != nil {
+		t.Fatalf("LoadGlobalConfig: %v", err)
 	}
 	if got := os.Getenv("API_KEY"); got != "presharedkey" {
 		t.Errorf("API_KEY = %q; want presharedkey (existing value should not be overridden)", got)
@@ -687,31 +666,31 @@ func TestLoadGlobalConfig_DoesNotOverrideExisting(t *testing.T) {
 func TestSetIfAbsent(t *testing.T) {
 	// Case 1: value is empty — no change even if env is unset.
 	t.Setenv("WBT_TEST_KEY1", "")
-	setIfAbsent("WBT_TEST_KEY1", "")
+	cli.SetIfAbsent("WBT_TEST_KEY1", "")
 	if got := os.Getenv("WBT_TEST_KEY1"); got != "" {
-		t.Errorf("setIfAbsent with empty value: WBT_TEST_KEY1 = %q, want empty", got)
+		t.Errorf("SetIfAbsent with empty value: WBT_TEST_KEY1 = %q, want empty", got)
 	}
 
 	// Case 2: env var already has a value — must not overwrite.
 	t.Setenv("WBT_TEST_KEY2", "existing")
-	setIfAbsent("WBT_TEST_KEY2", "newvalue")
+	cli.SetIfAbsent("WBT_TEST_KEY2", "newvalue")
 	if got := os.Getenv("WBT_TEST_KEY2"); got != "existing" {
-		t.Errorf("setIfAbsent should not overwrite: WBT_TEST_KEY2 = %q, want existing", got)
+		t.Errorf("SetIfAbsent should not overwrite: WBT_TEST_KEY2 = %q, want existing", got)
 	}
 
 	// Case 3: env var is unset — must set it.
 	t.Setenv("WBT_TEST_KEY3", "")
-	setIfAbsent("WBT_TEST_KEY3", "injected")
+	cli.SetIfAbsent("WBT_TEST_KEY3", "injected")
 	if got := os.Getenv("WBT_TEST_KEY3"); got != "injected" {
-		t.Errorf("setIfAbsent on unset key: WBT_TEST_KEY3 = %q, want injected", got)
+		t.Errorf("SetIfAbsent on unset key: WBT_TEST_KEY3 = %q, want injected", got)
 	}
 }
 
 // TestDbConfigToWbtConfig verifies the struct conversion covers all fields.
 func TestDbConfigToWbtConfig(t *testing.T) {
 	t.Parallel()
-	db := dbConfig{storageBackend: sqliteBackend, sqlitePath: "/tmp/test.db"}
-	got := dbConfigToWbtConfig("mykey", "9090", db)
+	db := cli.DBConfig{StorageBackend: sqliteBackend, SQLitePath: "/tmp/test.db"}
+	got := cli.DBConfigToWbtConfig("mykey", "9090", db)
 	if got.APIKey != "mykey" {
 		t.Errorf("APIKey = %q, want mykey", got.APIKey)
 	}
@@ -811,15 +790,15 @@ func TestValidateGuardBypassFlags(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateGuardBypassFlags(tc.scope, tc.target, tc.reason, tc.iUnderG)
+			err := cli.ValidateGuardBypassFlags(tc.scope, tc.target, tc.reason, tc.iUnderG)
 			if tc.wantErr && err == nil {
-				t.Fatalf("validateGuardBypassFlags(%q,%q) expected error, got nil", tc.scope, tc.target)
+				t.Fatalf("ValidateGuardBypassFlags(%q,%q) expected error, got nil", tc.scope, tc.target)
 			}
 			if !tc.wantErr && err != nil {
-				t.Fatalf("validateGuardBypassFlags(%q,%q) unexpected error: %v", tc.scope, tc.target, err)
+				t.Fatalf("ValidateGuardBypassFlags(%q,%q) unexpected error: %v", tc.scope, tc.target, err)
 			}
 			if tc.wantErr && tc.wantInErr != "" && !strings.Contains(err.Error(), tc.wantInErr) {
-				t.Errorf("validateGuardBypassFlags error %q missing substring %q", err.Error(), tc.wantInErr)
+				t.Errorf("ValidateGuardBypassFlags error %q missing substring %q", err.Error(), tc.wantInErr)
 			}
 		})
 	}

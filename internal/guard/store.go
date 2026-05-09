@@ -54,6 +54,13 @@ func OpenPool(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 		return nil, nil //nolint:nilnil // intentional: nil pool means DB unavailable; caller fails open
 	}
 
+	// Cap connections per backend-security rule 5.3: CLI invocations are
+	// short-lived; default pgxpool MaxConns=4 can exhaust the Aiven free-tier
+	// 20-connection budget under automated tool invocations.
+	pgcfg.MaxConns = 2
+	pgcfg.MinConns = 0
+	pgcfg.MaxConnLifetime = 30 * time.Second
+
 	if tlsCfg != nil {
 		if pgcfg.ConnConfig.TLSConfig == nil {
 			pgcfg.ConnConfig.TLSConfig = tlsCfg

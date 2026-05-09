@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ type snapshot struct {
 }
 
 func main() {
+	initHookSlog("wbt-doctor")
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = dsnFromFallback()
@@ -77,6 +79,9 @@ func main() {
 		emit(snapshot{GeneratedAt: time.Now().UTC()})
 		return
 	}
+	cfg.MaxConns = 2
+	cfg.MinConns = 0
+	cfg.MaxConnLifetime = 30 * time.Second
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
 	if tlsErr != nil {
 		slog.Error("doctor DB TLS config failed; emitting empty snapshot", "err", tlsErr)
@@ -118,6 +123,20 @@ func main() {
 	snap.ForgottenSignals = detectSignals(snap)
 
 	emit(snap)
+}
+
+// initHookSlog redirects slog to a 0600 file in os.TempDir so the hook never
+// writes to stderr (Claude Code surfaces stderr as terminal warnings).
+// Falls back to io.Discard if the log file cannot be opened.
+func initHookSlog(name string) {
+	logPath := filepath.Join(os.TempDir(), name+".log")
+	//nolint:gosec // G304: logPath is os.TempDir() + constant suffix; not derived from user input
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelWarn})))
 }
 
 // processSummary reads stdin, summarises the transcript with Haiku, writes the
