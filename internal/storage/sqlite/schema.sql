@@ -356,3 +356,23 @@ CREATE TABLE IF NOT EXISTS playbooks (
 CREATE INDEX IF NOT EXISTS idx_playbooks_workspace_id ON playbooks (workspace_id);
 CREATE INDEX IF NOT EXISTS idx_playbooks_confidence   ON playbooks (confidence DESC);
 
+-- Mirrored from migrations/sqlite/000032_procedural_memories. Episodic/procedural
+-- memory: reusable how-to knowledge with usage tracking.
+-- No FK constraints (CLAUDE.md #9). Success count managed in application code.
+CREATE TABLE IF NOT EXISTS procedural_memories (
+    id            TEXT        PRIMARY KEY,
+    workspace_id  TEXT,
+    repo_name     TEXT        NOT NULL DEFAULT '',
+    project_id    TEXT,
+    title         TEXT        NOT NULL,
+    when_to_use   TEXT        NOT NULL DEFAULT '',
+    approach_md   TEXT        NOT NULL DEFAULT '',
+    tools_used    TEXT        NOT NULL DEFAULT '[]',
+    files_touched TEXT        NOT NULL DEFAULT '[]',
+    success_count INTEGER     NOT NULL DEFAULT 0,
+    last_used_at  TEXT,
+    created_at    TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_memories_workspace ON procedural_memories(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_procedural_memories_repo      ON procedural_memories(repo_name);
+
