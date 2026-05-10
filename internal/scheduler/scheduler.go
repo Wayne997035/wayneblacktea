@@ -18,7 +18,20 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/go-co-op/gocron/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// disciplinePruneTimeout caps the daily discipline_events DELETE. The query
+// is index-supported (idx_discipline_events_observed_at) and finishes well
+// under 5 s on personal-OS scale; the 60 s ceiling leaves room for a
+// momentarily slow Aiven Postgres without wedging the scheduler goroutine.
+const disciplinePruneTimeout = 60 * time.Second
+
+// disciplinePruneAge is the retention window enforced by the daily prune job.
+// 30 days mirrors `task discipline-prune` (build/Taskfile.yml) and
+// guard_events; codified by backend-security-design.md §1.3 as the mandatory
+// TTL for observability tables.
+const disciplinePruneAge = "30 days"
 
 // dailyBriefingTimeout caps each Notion morning briefing run. The aggregate
 // query + Notion upsert finishes well under 10 s in practice; we pick 60 s
@@ -47,6 +60,11 @@ type Scheduler struct {
 	statusDeps     *statusSnapshotDeps
 	pruner         *decay.Pruner
 	playbookDeps   *playbookDeps
+	// disciplinePool is the pgxpool used by the daily discipline_events
+	// prune job. nil when running under SQLite (or when no pool is wired
+	// in by the caller) — the prune job is skipped in that case because
+	// SQLite is dev-local single-tenant and has no growth concern.
+	disciplinePool *pgxpool.Pool
 }
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
@@ -141,6 +159,7 @@ func New(
 	workspaceID *uuid.UUID,
 	pruner *decay.Pruner,
 	pbStore playbook.StoreIface,
+	disciplinePool *pgxpool.Pool,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -169,6 +188,7 @@ func New(
 		statusDeps:     sDeps,
 		pruner:         pruner,
 		playbookDeps:   pbDeps,
+		disciplinePool: disciplinePool,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -224,6 +244,23 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		slog.Info("scheduler: DailyDecayPrune scheduled at 23:00 Asia/Taipei")
 	} else {
 		slog.Info("scheduler: DailyDecayPrune skipped (pruner not configured)")
+	}
+
+	if sc.disciplinePool != nil {
+		_, err = s.NewJob(
+			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(23, 0, 0))),
+			gocron.NewTask(sc.runDailyDisciplinePrune),
+			gocron.WithName("daily-discipline-prune"),
+			// LimitModeReschedule: a stuck DELETE shouldn't pile up nightly
+			// triggers. Same singleton policy as decay-prune.
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering daily discipline prune job: %w", err)
+		}
+		slog.Info("scheduler: DailyDisciplinePrune scheduled at 23:00 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: DailyDisciplinePrune skipped (postgres pool not configured; SQLite has no growth concern)")
 	}
 
 	return nil
@@ -445,6 +482,35 @@ func (s *Scheduler) runDailyDecayPrune() {
 		return
 	}
 	s.pruner.Run()
+}
+
+// runDailyDisciplinePrune deletes discipline_events rows older than 30 days
+// (TTL codified by backend-security-design.md §1.3). Mirrors the existing
+// `task discipline-prune` Taskfile target so operators don't need to wire a
+// separate cron in production. Runs at 23:00 Asia/Taipei alongside the decay
+// prune. Errors are logged at warn level — the scheduler MUST keep running
+// other jobs regardless of a single DB hiccup.
+func (s *Scheduler) runDailyDisciplinePrune() {
+	if s.disciplinePool == nil {
+		return
+	}
+	// Independent timeout — MUST NOT inherit any request context (none
+	// available here anyway, but explicit is safer than relying on caller).
+	ctx, cancel := context.WithTimeout(context.Background(), disciplinePruneTimeout)
+	defer cancel()
+
+	// 30-day TTL. Parameter binding is unnecessary because the interval
+	// literal is a code constant, not user input.
+	const q = `DELETE FROM discipline_events WHERE observed_at < NOW() - INTERVAL '` + disciplinePruneAge + `'`
+	tag, err := s.disciplinePool.Exec(ctx, q)
+	if err != nil {
+		slog.Warn("daily discipline prune: DELETE failed", "err", err)
+		return
+	}
+	slog.Info("daily discipline prune: completed",
+		"rows_deleted", tag.RowsAffected(),
+		"retention", disciplinePruneAge,
+	)
 }
 
 // weeklyAIConceptReview fetches active concepts with sufficient review history,

@@ -292,6 +292,10 @@ func run() error {
 	}
 	if llmChain.Len() > 0 {
 		mcpServer.WithClassifier(ai.NewActivityClassifierFromLLM(llmChain))
+		// Auto-decision proposer drafter shares the same chain — Haiku
+		// picks up first via the env-driven priority ordering. nil chain
+		// → drafter is inert and middleware short-circuits.
+		mcpServer.WithDecisionDrafter(ai.NewDecisionDrafter(llmChain))
 	}
 	mcpServer.WithSnapshot(snapStore, snapGen)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
@@ -311,6 +315,7 @@ func run() error {
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
 		snapStore, snapGen, stores.WorkspaceID(), pruner, stores.Playbook(),
+		stores.PgxPool(), // nil under SQLite → daily-discipline-prune skipped gracefully
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
