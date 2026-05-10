@@ -19,6 +19,82 @@ const (
 	fakePostgresDSNShort = "postgres://u:p@host/db"       //nolint:gosec // G101: test fixture
 )
 
+// TestIsVersionArg covers every flag form the install scripts may pass.
+func TestIsVersionArg(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{"version", true},
+		{"--version", true},
+		{"-v", true},
+		{"init", false},
+		{"serve", false},
+		{"", false},
+		{"VERSION", false},   // case-sensitive on purpose
+		{"--Version", false}, // case-sensitive on purpose
+	}
+	for _, tc := range tests {
+		t.Run(tc.arg, func(t *testing.T) {
+			t.Parallel()
+			if got := isVersionArg(tc.arg); got != tc.want {
+				t.Errorf("isVersionArg(%q) = %v, want %v", tc.arg, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrintVersion_Format verifies the version line matches the install
+// scripts' parser expectation: "<binary> <version> (<commit>)".
+// Install.sh extracts the version with `awk '{print $2}'`.
+func TestPrintVersion_Format(t *testing.T) {
+	// Save & restore process-global state mutated by this test.
+	origArgs := os.Args
+	origStdout := os.Stdout
+	origVersion := version
+	origCommit := commit
+	origDate := date
+	t.Cleanup(func() {
+		os.Args = origArgs
+		os.Stdout = origStdout
+		version = origVersion
+		commit = origCommit
+		date = origDate
+	})
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	os.Args = []string{"/usr/local/bin/wbt"}
+	version = "1.2.3"
+	commit = "abc123"
+	date = "unknown" // suppress the second line for parser test
+
+	printVersion()
+	_ = w.Close()
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	got := string(out)
+	want := "wbt 1.2.3 (abc123)\n"
+	if got != want {
+		t.Errorf("printVersion stdout = %q, want %q", got, want)
+	}
+
+	// Simulate install.sh awk parser to make sure the second whitespace
+	// token is the version (regression guard for R-M1).
+	fields := strings.Fields(strings.SplitN(got, "\n", 2)[0])
+	if len(fields) < 2 || fields[1] != "1.2.3" {
+		t.Errorf("printVersion: awk-style parse of %q did not yield version 1.2.3 (fields=%v)", got, fields)
+	}
+}
+
 // TestBuildEnvFile verifies .env generation for SQLite and Postgres configs.
 func TestBuildEnvFile(t *testing.T) {
 	t.Parallel()

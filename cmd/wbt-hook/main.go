@@ -67,8 +67,18 @@ type postToolUseRequest struct {
 	Notes  string `json:"notes"`
 }
 
+// Version metadata injected at link time via goreleaser ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
 	initHookSlog("wbt-hook")
+	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("%s %s (%s)\n", filepath.Base(os.Args[0]), version, commit)
+		return
+	}
 	if err := run(); err != nil {
 		slog.Warn("wbt-hook: exiting with warning", "err", err)
 	}

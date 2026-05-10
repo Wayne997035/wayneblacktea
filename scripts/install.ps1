@@ -7,28 +7,36 @@
         irm https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.ps1 | iex
 
     Downloads the latest release binaries (or pinned $env:WBT_VERSION),
-    verifies SHA256 against the published checksums.txt, extracts to
-    %LOCALAPPDATA%\wayneblacktea\bin, prepends that path to the user PATH,
-    writes a config .env (interactive prompt for DATABASE_URL + API_KEY),
-    and registers the MCP server with the claude CLI if available.
+    verifies SHA256 against the published checksums.txt, verifies the
+    cosign keyless signature on checksums.txt (when cosign is available),
+    extracts to %LOCALAPPDATA%\wayneblacktea\bin, prepends that path to the
+    user PATH, writes a config .env (interactive prompt for DATABASE_URL +
+    API_KEY), and registers the MCP server with the claude CLI if available.
+
+    IMPORTANT: when piping to iex, stdin is the pipeline output, not a
+    terminal — the script writes an EMPTY API_KEY= line and you MUST edit
+    %LOCALAPPDATA%\wayneblacktea\config\.env before starting the server.
+    To use the wizard, save the script to disk first and run it directly.
 
 .NOTES
     Environment overrides (set before piping to iex):
-        $env:WBT_VERSION    Pin a specific release (e.g. '1.2.3')
-        $env:WBT_NO_MCP     '1' = skip `claude mcp add`
-        $env:WBT_NO_PROMPT  '1' = skip wizard, write placeholders
+        $env:WBT_VERSION       Pin a specific release (e.g. '1.2.3')
+        $env:WBT_NO_MCP        '1' = skip `claude mcp add`
+        $env:WBT_NO_PROMPT     '1' = skip wizard, write empty placeholders
+        $env:WBT_STRICT_VERIFY '1' = abort when cosign unavailable
 
     Exit codes:
         0  success
         1  user-facing error
-        2  download / checksum failure
+        2  download / checksum / signature / archive-safety failure
 #>
 
 [CmdletBinding()]
 param(
-    [string]$Version  = $env:WBT_VERSION,
-    [switch]$NoMcp    = ($env:WBT_NO_MCP -eq '1'),
-    [switch]$NoPrompt = ($env:WBT_NO_PROMPT -eq '1')
+    [string]$Version       = $env:WBT_VERSION,
+    [switch]$NoMcp         = ($env:WBT_NO_MCP -eq '1'),
+    [switch]$NoPrompt      = ($env:WBT_NO_PROMPT -eq '1'),
+    [switch]$StrictVerify  = ($env:WBT_STRICT_VERIFY -eq '1')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,9 +55,18 @@ $RepoName  = 'wayneblacktea'
 $GitHubApi = "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
 $GitHubDl  = "https://github.com/$RepoOwner/$RepoName/releases/download"
 
+# cosign keyless verification — sigstore certificate identity / OIDC issuer
+$CosignCertIdentityRegex = 'https://github.com/Wayne997035/wayneblacktea/.*'
+$CosignOidcIssuer        = 'https://token.actions.githubusercontent.com'
+
 $InstallDir = Join-Path $env:LOCALAPPDATA 'wayneblacktea\bin'
 $ConfigDir  = Join-Path $env:LOCALAPPDATA 'wayneblacktea\config'
 $EnvFile    = Join-Path $ConfigDir '.env'
+
+# Binaries shipped in the cli archive (must stay in sync with .goreleaser.yaml
+# archive id "cli" `ids:` list).
+$CliBinaries = @('wbt.exe', 'wbt-context.exe', 'wbt-hook.exe', 'wbt-guard.exe', 'wbt-doctor.exe')
+$McpBinary   = 'wayneblacktea-mcp.exe'
 
 function Write-Info  { param([string]$Msg) Write-Host "[install] $Msg" -ForegroundColor Cyan }
 function Write-Warn2 { param([string]$Msg) Write-Host "[install] WARN: $Msg" -ForegroundColor Yellow }
@@ -127,6 +144,68 @@ function Invoke-VerifiedDownload {
     Test-FileSha256 -Path $OutFile -Expected $ChecksumMap[$name]
 }
 
+# Invoke-CosignVerify verifies checksums.txt authenticity using cosign keyless
+# mode. When cosign is unavailable: abort if -StrictVerify, otherwise warn and
+# continue. (Round 2 / S-M2)
+function Invoke-CosignVerify {
+    param(
+        [string]$ChecksumsPath,
+        [string]$SignaturePath,
+        [string]$CertificatePath
+    )
+    $cosign = Get-Command cosign -ErrorAction SilentlyContinue
+    if ($null -eq $cosign) {
+        if ($StrictVerify) {
+            Stop-WithError "cosign not installed and WBT_STRICT_VERIFY=1 — abort (install: https://docs.sigstore.dev/cosign/installation/)" 2
+        }
+        Write-Warn2 "cosign not installed; checksum integrity verified but authenticity NOT verified"
+        Write-Warn2 "set `$env:WBT_STRICT_VERIFY=1 to require cosign verification (recommended)"
+        return
+    }
+    if (-not (Test-Path $SignaturePath) -or ((Get-Item $SignaturePath).Length -eq 0)) {
+        if ($StrictVerify) {
+            Stop-WithError "WBT_STRICT_VERIFY=1 but signature artifact unavailable" 2
+        }
+        Write-Warn2 "signature file missing or empty — skipping cosign verification"
+        return
+    }
+    Write-Info "verifying checksums.txt signature with cosign"
+    $args = @(
+        'verify-blob',
+        '--certificate-identity-regexp', $CosignCertIdentityRegex,
+        '--certificate-oidc-issuer',     $CosignOidcIssuer,
+        '--signature',                   $SignaturePath
+    )
+    if ((Test-Path $CertificatePath) -and ((Get-Item $CertificatePath).Length -gt 0)) {
+        $args += @('--certificate', $CertificatePath)
+    }
+    $args += $ChecksumsPath
+    & cosign @args 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "cosign verify-blob failed — refusing to install unsigned/altered checksums" 2
+    }
+    Write-Info "cosign signature OK"
+}
+
+# Test-ArchiveSafe inspects every entry in a ZIP archive and rejects unsafe
+# paths (absolute, parent-traversal, drive letter, leading backslash).
+# (Round 2 / S-M3)
+function Test-ArchiveSafe {
+    param([string]$ArchivePath)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        foreach ($entry in $zip.Entries) {
+            # Reject: absolute paths (Unix or Windows), parent traversal, tilde, leading drive.
+            if ($entry.FullName -match '(^/|(^|/)\.\.($|/)|^[A-Za-z]:|^\\|^~)') {
+                Stop-WithError "archive contains unsafe path: $($entry.FullName)" 2
+            }
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
 function Add-ToUserPath {
     param([string]$Dir)
     $current = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -176,8 +255,13 @@ function Write-EnvFile {
     $workspaceId = ''
 
     if ($NoPrompt -or [Console]::IsInputRedirected) {
-        Write-Info "non-interactive install — writing .env with placeholders"
-        $apiKey = 'REPLACE_ME_RUN_openssl_rand_-hex_32'
+        # IMPORTANT: write empty API_KEY rather than a guessable placeholder.
+        # Earlier versions wrote `REPLACE_ME_RUN_openssl_rand_-hex_32` which
+        # any attacker can try literally. Empty value forces fail-closed
+        # behaviour at the server (API_KEY required at startup). (S-M4)
+        Write-Info "non-interactive install — writing .env with empty API_KEY"
+        Write-Warn2 "edit $EnvFile and set API_KEY before starting the server"
+        Write-Warn2 "  generate a random key with: openssl rand -hex 32"
     } else {
         Write-Host ""
         Write-Host "Enter DATABASE_URL (postgres://... — leave blank for SQLite local file):"
@@ -185,7 +269,11 @@ function Write-EnvFile {
 
         while ([string]::IsNullOrWhiteSpace($apiKey)) {
             Write-Host "Enter API_KEY (required; suggested: openssl rand -hex 32):"
-            $apiKey = Read-Host -Prompt '> '
+            # Read-Host -AsSecureString suppresses on-screen echo (CWE-200).
+            # We immediately decrypt and use the value, then clear locals.
+            # (Round 2 / S-M1)
+            $secure = Read-Host -Prompt '> ' -AsSecureString
+            $apiKey = [System.Net.NetworkCredential]::new('', $secure).Password
             if ([string]::IsNullOrWhiteSpace($apiKey)) {
                 Write-Warn2 "API_KEY cannot be empty"
             }
@@ -208,6 +296,9 @@ WORKSPACE_ID=$workspaceId
     # write as UTF-8 without BOM (compat with godotenv)
     [System.IO.File]::WriteAllText($EnvFile, $content, [System.Text.UTF8Encoding]::new($false))
     Set-CurrentUserOnlyAcl -Path $EnvFile
+    # Drop sensitive value from PowerShell variable scope after persisting.
+    $apiKey = ''
+    $secure = $null
     Write-Info "wrote $EnvFile (current-user-only ACL)"
 }
 
@@ -220,11 +311,11 @@ function Register-McpServer {
     if ($null -eq $claude) {
         Write-Warn2 "claude CLI not found — skipping MCP registration"
         Write-Warn2 "after installing Claude Code, run:"
-        Write-Warn2 "  claude mcp add wayneblacktea -- `"$InstallDir\wayneblacktea-mcp.exe`""
+        Write-Warn2 "  claude mcp add wayneblacktea -- `"$InstallDir\$McpBinary`""
         return
     }
     Write-Info "registering wayneblacktea MCP server with claude CLI"
-    $exe = Join-Path $InstallDir 'wayneblacktea-mcp.exe'
+    $exe = Join-Path $InstallDir $McpBinary
     & claude mcp add wayneblacktea -- $exe 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Info "MCP server registered"
@@ -245,12 +336,16 @@ Write-Info "installing wayneblacktea v$ver"
 $mcpArchive    = "wayneblacktea-mcp_${ver}_${os}_${arch}.zip"
 $cliArchive    = "wayneblacktea-cli_${ver}_${os}_${arch}.zip"
 $checksumsName = 'checksums.txt'
+$signatureName = 'checksums.txt.sig'
+$certName      = 'checksums.txt.pem'
 
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "wbt-install-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 
 try {
     $sumsPath = Join-Path $tmpDir $checksumsName
+    $sigPath  = Join-Path $tmpDir $signatureName
+    $certPath = Join-Path $tmpDir $certName
     Write-Info "fetching checksums.txt"
     try {
         Invoke-WebRequest -Uri "$GitHubDl/v$ver/$checksumsName" -OutFile $sumsPath -UseBasicParsing
@@ -258,12 +353,26 @@ try {
         Stop-WithError "failed to download checksums file ($($_.Exception.Message))" 2
     }
 
+    # Best-effort fetch for cosign artifacts — older releases may not have them.
+    try {
+        Invoke-WebRequest -Uri "$GitHubDl/v$ver/$signatureName" -OutFile $sigPath -UseBasicParsing -ErrorAction SilentlyContinue
+    } catch { }
+    try {
+        Invoke-WebRequest -Uri "$GitHubDl/v$ver/$certName" -OutFile $certPath -UseBasicParsing -ErrorAction SilentlyContinue
+    } catch { }
+
+    Invoke-CosignVerify -ChecksumsPath $sumsPath -SignaturePath $sigPath -CertificatePath $certPath
+
     $checksumMap = Get-ChecksumMap -ChecksumsPath $sumsPath
 
     $mcpZip = Join-Path $tmpDir $mcpArchive
     $cliZip = Join-Path $tmpDir $cliArchive
     Invoke-VerifiedDownload -Url "$GitHubDl/v$ver/$mcpArchive" -OutFile $mcpZip -ChecksumMap $checksumMap
     Invoke-VerifiedDownload -Url "$GitHubDl/v$ver/$cliArchive" -OutFile $cliZip -ChecksumMap $checksumMap
+
+    Write-Info "verifying archive contents are safe"
+    Test-ArchiveSafe -ArchivePath $mcpZip
+    Test-ArchiveSafe -ArchivePath $cliZip
 
     Write-Info "extracting archives"
     $extractDir = Join-Path $tmpDir 'extract'
@@ -275,7 +384,11 @@ try {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    foreach ($exe in @('wayneblacktea-mcp.exe', 'wbt.exe', 'wbt-context.exe', 'wbt-hook.exe')) {
+    # Install all 6 binaries: wayneblacktea-mcp + 5 CLI tools (wbt, wbt-context,
+    # wbt-hook, wbt-guard, wbt-doctor). MUST stay aligned with .goreleaser.yaml
+    # archive `cli` ids list. (Round 2 / R-M2)
+    $allBinaries = @($McpBinary) + $CliBinaries
+    foreach ($exe in $allBinaries) {
         $src = Join-Path $extractDir $exe
         if (-not (Test-Path $src)) {
             Stop-WithError "expected binary $exe missing from extracted archives" 2
@@ -292,7 +405,7 @@ try {
     Write-Info "wayneblacktea v$ver installed successfully"
     Write-Info "binaries:   $InstallDir"
     Write-Info "config:     $EnvFile"
-    Write-Info "next steps: edit $EnvFile if you skipped the wizard, then run: wbt --help"
+    Write-Info "next steps: edit $EnvFile (set API_KEY first) then run: wbt --help"
 }
 finally {
     Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue

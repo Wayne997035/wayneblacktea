@@ -61,7 +61,18 @@ type preToolUsePayload struct {
 	TranscriptPath string          `json:"transcript_path"`
 }
 
+// Version metadata injected at link time via goreleaser ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
+	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("%s %s (%s)\n", filepath.Base(os.Args[0]), version, commit)
+		return
+	}
+
 	// Step 0: redirect slog away from stderr BEFORE the first slog call.
 	// Claude Code surfaces stderr from PreToolUse hooks to the user terminal
 	// as warnings — we don't want every "DB unreachable" to look like a

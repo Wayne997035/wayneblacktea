@@ -4,17 +4,24 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh | bash
 #
+# IMPORTANT: when piping to bash there is NO interactive wizard — stdin is
+# the curl process, not your terminal. The script writes an EMPTY API_KEY=
+# line and you MUST edit ~/.config/wayneblacktea/.env before starting the
+# server. To use the wizard, save the script first then run it directly.
+#
 # Environment overrides:
-#   WBT_VERSION   Pin to a specific release (default: latest)
-#   WBT_PREFIX    Install prefix (default: $HOME/.local)
-#   WBT_CONFIG    Config dir (default: $HOME/.config/wayneblacktea)
-#   WBT_NO_MCP    If set to "1", skip `claude mcp add` registration
-#   WBT_NO_PROMPT If set to "1", skip interactive .env wizard (writes placeholders)
+#   WBT_VERSION         Pin to a specific release (default: latest)
+#   WBT_PREFIX          Install prefix (default: $HOME/.local)
+#   WBT_CONFIG          Config dir (default: $HOME/.config/wayneblacktea)
+#   WBT_NO_MCP          If set to "1", skip `claude mcp add` registration
+#   WBT_NO_PROMPT       If set to "1", force non-interactive (placeholders, empty API_KEY)
+#   WBT_STRICT_VERIFY   If set to "1", abort when cosign is unavailable
+#                       (default: warn-and-proceed with sha256-only)
 #
 # Exit codes:
 #   0  success
 #   1  user-facing error (printed to stderr)
-#   2  download / checksum verification failure
+#   2  download / checksum / signature verification failure
 
 set -euo pipefail
 
@@ -23,10 +30,20 @@ REPO_NAME="wayneblacktea"
 GITHUB_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
 GITHUB_DL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download"
 
+# cosign keyless verification — sigstore certificate identity / OIDC issuer
+# pinned to wayneblacktea repo + GitHub Actions OIDC issuer used by goreleaser.
+COSIGN_CERT_IDENTITY_REGEX='https://github.com/Wayne997035/wayneblacktea/.*'
+COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
+
 PREFIX="${WBT_PREFIX:-${HOME}/.local}"
 BIN_DIR="${PREFIX}/bin"
 CONFIG_DIR="${WBT_CONFIG:-${HOME}/.config/wayneblacktea}"
 ENV_FILE="${CONFIG_DIR}/.env"
+
+# Binaries shipped in the cli archive (must stay in sync with .goreleaser.yaml
+# archive id "cli" `ids:` list).
+CLI_BINARIES=(wbt wbt-context wbt-hook wbt-guard wbt-doctor)
+MCP_BINARY="wayneblacktea-mcp"
 
 # --- log helpers (stderr; stdout reserved for piped data only) ---
 log_info()  { printf '\033[1;34m[install]\033[0m %s\n' "$*" >&2; }
@@ -61,6 +78,55 @@ sha256_check() {
     log_error "checksum mismatch for ${file}"
     log_error "  expected: ${expected}"
     log_error "  actual:   ${actual}"
+    exit 2
+  fi
+}
+
+# verify_cosign verifies checksums.txt authenticity using cosign keyless mode
+# against the signature published by goreleaser. When cosign is unavailable
+# we either abort (WBT_STRICT_VERIFY=1) or warn loudly and continue with
+# SHA256-only protection.
+verify_cosign() {
+  local checksums_path="$1" sig_path="$2" cert_path="${3:-}"
+  if ! command -v cosign >/dev/null 2>&1; then
+    if [ "${WBT_STRICT_VERIFY:-0}" = "1" ]; then
+      die "cosign not installed and WBT_STRICT_VERIFY=1 — abort (install: https://docs.sigstore.dev/cosign/installation/)"
+    fi
+    log_warn "cosign not installed; checksum integrity verified but authenticity NOT verified"
+    log_warn "set WBT_STRICT_VERIFY=1 to require cosign verification (recommended)"
+    return 0
+  fi
+  if [ ! -s "${sig_path}" ]; then
+    log_warn "signature file ${sig_path} missing or empty — skipping cosign verification"
+    if [ "${WBT_STRICT_VERIFY:-0}" = "1" ]; then
+      die "WBT_STRICT_VERIFY=1 but signature artifact unavailable"
+    fi
+    return 0
+  fi
+  log_info "verifying checksums.txt signature with cosign"
+  local cert_args=()
+  if [ -n "${cert_path}" ] && [ -s "${cert_path}" ]; then
+    cert_args=(--certificate "${cert_path}")
+  fi
+  if ! cosign verify-blob \
+      --certificate-identity-regexp "${COSIGN_CERT_IDENTITY_REGEX}" \
+      --certificate-oidc-issuer "${COSIGN_OIDC_ISSUER}" \
+      --signature "${sig_path}" \
+      "${cert_args[@]}" \
+      "${checksums_path}" >/dev/null 2>&1; then
+    log_error "cosign verify-blob failed — refusing to install unsigned/altered checksums"
+    exit 2
+  fi
+  log_info "cosign signature OK"
+}
+
+# verify_archive_safe rejects tar archives containing absolute paths, parent
+# traversal segments (`..`), or `~`-prefixed entries. Defends against zip-slip
+# (CVE-2018-1002150 family).
+verify_archive_safe() {
+  local archive="$1"
+  if tar -tzf "${archive}" 2>/dev/null | grep -qE '(^/|(^|/)\.\.($|/)|^~)'; then
+    log_error "archive ${archive} contains unsafe paths (absolute / .. / ~) — refusing to extract"
     exit 2
   fi
 }
@@ -134,7 +200,13 @@ guard_existing_install() {
   if ! command -v wbt >/dev/null 2>&1; then
     return
   fi
-  existing="$(wbt --version 2>/dev/null | awk '{print $NF}' | head -n1 || true)"
+  # `wbt version` prints "<binary> <version> (<commit>)"; second whitespace
+  # token is the version. Falls back to `wbt --version` if the user runs
+  # this script against an old binary that didn't ship the subcommand.
+  existing="$(wbt version 2>/dev/null | head -n1 | awk '{print $2}' || true)"
+  if [ -z "${existing}" ]; then
+    existing="$(wbt --version 2>/dev/null | head -n1 | awk '{print $2}' || true)"
+  fi
   if [ -z "${existing}" ] || [ "${existing}" = "dev" ]; then
     return
   fi
@@ -169,7 +241,7 @@ ensure_bin_dir() {
   fi
 }
 
-# --- write .env interactively (or with placeholders if WBT_NO_PROMPT=1) ---
+# --- write .env interactively (or empty placeholders if WBT_NO_PROMPT=1) ---
 write_env_file() {
   if [ -e "${ENV_FILE}" ]; then
     log_info "config already exists at ${ENV_FILE} (skipping wizard)"
@@ -181,9 +253,16 @@ write_env_file() {
   local db_url="" api_key="" workspace_id=""
 
   if [ "${WBT_NO_PROMPT:-0}" = "1" ] || [ ! -t 0 ]; then
-    log_info "non-interactive install — writing .env with placeholders"
+    # IMPORTANT: do NOT write a guessable placeholder string here. Earlier
+    # versions wrote `REPLACE_ME_RUN_openssl_rand_-hex_32` which is now a
+    # known-bad credential — any attacker can try the literal string. Write
+    # an empty value so the server fails closed (API_KEY required) and the
+    # operator MUST edit the file before it starts. (Round 2 / S-M4)
+    log_info "non-interactive install — writing .env with empty API_KEY"
+    log_warn "edit ${ENV_FILE} and set API_KEY before starting the server"
+    log_warn "  generate a random key with: openssl rand -hex 32"
     db_url=""
-    api_key="REPLACE_ME_RUN_openssl_rand_-hex_32"
+    api_key=""
     workspace_id=""
   else
     printf '\n' >&2
@@ -194,7 +273,11 @@ write_env_file() {
     while [ -z "${api_key}" ]; do
       printf 'Enter API_KEY (required; suggested: openssl rand -hex 32):\n' >&2
       printf '> ' >&2
-      IFS= read -r api_key || api_key=""
+      # -s suppresses echo so the secret is not displayed on screen
+      # (CWE-200). After the silent read we emit a newline so the cursor
+      # moves to the next line. (Round 2 / S-M1)
+      IFS= read -rs api_key || api_key=""
+      printf '\n' >&2
       if [ -z "${api_key}" ]; then
         log_warn "API_KEY cannot be empty"
       fi
@@ -219,6 +302,8 @@ write_env_file() {
   } > "${tmp_env}"
   mv "${tmp_env}" "${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
+  # Clear sensitive value from environment as soon as it has been written.
+  api_key=""
   log_info "wrote ${ENV_FILE} (mode 0600)"
 }
 
@@ -231,11 +316,11 @@ register_mcp() {
   if ! command -v claude >/dev/null 2>&1; then
     log_warn "claude CLI not found — skipping MCP registration"
     log_warn "after installing Claude Code, run:"
-    log_warn "  claude mcp add wayneblacktea -- ${BIN_DIR}/wayneblacktea-mcp"
+    log_warn "  claude mcp add wayneblacktea -- ${BIN_DIR}/${MCP_BINARY}"
     return
   fi
   log_info "registering wayneblacktea MCP server with claude CLI"
-  if claude mcp add wayneblacktea -- "${BIN_DIR}/wayneblacktea-mcp" 2>/dev/null; then
+  if claude mcp add wayneblacktea -- "${BIN_DIR}/${MCP_BINARY}" 2>/dev/null; then
     log_info "MCP server registered"
   else
     log_warn "claude mcp add failed (already registered?) — verify with: claude mcp list"
@@ -254,18 +339,32 @@ main() {
   log_info "installing wayneblacktea v${version}"
   guard_existing_install "${version}"
 
-  local mcp_archive cli_archive checksums_file
+  local mcp_archive cli_archive checksums_file checksums_sig checksums_cert
   mcp_archive="wayneblacktea-mcp_${version}_${os}_${arch}.tar.gz"
   cli_archive="wayneblacktea-cli_${version}_${os}_${arch}.tar.gz"
   checksums_file="checksums.txt"
+  # goreleaser cosign signs/cmd publishes both .sig and .pem (cert).
+  checksums_sig="${checksums_file}.sig"
+  checksums_cert="${checksums_file}.pem"
 
   local sums_path="${TMP_DIR}/${checksums_file}"
+  local sig_path="${TMP_DIR}/${checksums_sig}"
+  local cert_path="${TMP_DIR}/${checksums_cert}"
   log_info "fetching checksums.txt"
   if ! curl -fsSL --retry 3 --retry-delay 2 \
       -o "${sums_path}" \
       "${GITHUB_DL}/v${version}/${checksums_file}"; then
     die "failed to download checksums file from release v${version}"
   fi
+
+  # Best-effort: fetch signature + certificate (some older releases may not
+  # have them). cosign verify happens before checksums are parsed.
+  curl -fsSL --retry 2 --retry-delay 2 -o "${sig_path}" \
+    "${GITHUB_DL}/v${version}/${checksums_sig}" 2>/dev/null || true
+  curl -fsSL --retry 2 --retry-delay 2 -o "${cert_path}" \
+    "${GITHUB_DL}/v${version}/${checksums_cert}" 2>/dev/null || true
+
+  verify_cosign "${sums_path}" "${sig_path}" "${cert_path}"
 
   download_and_verify \
     "${GITHUB_DL}/v${version}/${mcp_archive}" \
@@ -276,15 +375,23 @@ main() {
     "${TMP_DIR}/${cli_archive}" \
     "${sums_path}"
 
+  log_info "verifying archive contents are safe"
+  verify_archive_safe "${TMP_DIR}/${mcp_archive}"
+  verify_archive_safe "${TMP_DIR}/${cli_archive}"
+
   log_info "extracting archives"
-  tar -xzf "${TMP_DIR}/${mcp_archive}" -C "${TMP_DIR}"
-  tar -xzf "${TMP_DIR}/${cli_archive}" -C "${TMP_DIR}"
+  # --no-same-owner / --no-same-permissions ensure the install user owns
+  # the extracted files regardless of what the archive metadata claims.
+  tar -xzf "${TMP_DIR}/${mcp_archive}" -C "${TMP_DIR}" --no-same-owner --no-same-permissions
+  tar -xzf "${TMP_DIR}/${cli_archive}" -C "${TMP_DIR}" --no-same-owner --no-same-permissions
 
   ensure_bin_dir
 
-  # binaries live at the archive root after extract; install with mode 0755
+  # Install all 6 binaries: wayneblacktea-mcp + 5 CLI tools (wbt, wbt-context,
+  # wbt-hook, wbt-guard, wbt-doctor). MUST stay aligned with .goreleaser.yaml
+  # archive `cli` ids list. (Round 2 / R-M2)
   local bin
-  for bin in wayneblacktea-mcp wbt wbt-context wbt-hook; do
+  for bin in "${MCP_BINARY}" "${CLI_BINARIES[@]}"; do
     if [ ! -f "${TMP_DIR}/${bin}" ]; then
       die "expected binary ${bin} missing from extracted archives"
     fi
@@ -299,7 +406,7 @@ main() {
   log_info "wayneblacktea v${version} installed successfully"
   log_info "binaries:    ${BIN_DIR}"
   log_info "config:      ${ENV_FILE}"
-  log_info "next steps:  edit ${ENV_FILE} if you skipped the wizard, then run: wbt --help"
+  log_info "next steps:  edit ${ENV_FILE} (set API_KEY first) then run: wbt --help"
 }
 
 main "$@"
