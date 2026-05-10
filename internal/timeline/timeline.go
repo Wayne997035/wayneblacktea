@@ -20,6 +20,7 @@ type Kind string
 const (
 	KindTaskCreated     Kind = "task_created"
 	KindTaskCompleted   Kind = "task_completed"
+	KindTaskDue         Kind = "task_due"
 	KindDecision        Kind = "decision"
 	KindActivity        Kind = "activity"
 	KindKnowledge       Kind = "knowledge"
@@ -39,9 +40,17 @@ type Event struct {
 	ProjectID  string    `json:"project_id,omitempty"`
 }
 
-// TaskSource returns tasks optionally filtered by project.
+// TaskSource returns tasks optionally filtered by project, plus tasks
+// scheduled (due_date) inside an arbitrary range. The first method powers
+// historical task_created / task_completed events; the second powers
+// forward-looking task_due "planning" events used by the calendar to show
+// what is scheduled for tomorrow / next week.
 type TaskSource interface {
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	// TasksByDueDateRange returns tasks whose status is pending or
+	// in_progress AND whose due_date falls in [from, to] (inclusive on both
+	// ends). Workspace scoping is applied by the implementation.
+	TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error)
 }
 
 // DecisionSource returns recent decisions.
@@ -141,6 +150,24 @@ func (a *Aggregator) collectTasks(ctx context.Context, from, to time.Time) ([]Ev
 				e.ProjectID = uuidFromPgtype(t.ProjectID)
 				out = append(out, *e)
 			}
+		}
+	}
+
+	// Forward-looking planning events: pending / in_progress tasks whose
+	// due_date is inside the requested range. Querying via a separate store
+	// method lets implementations push the WHERE filter to the DB rather
+	// than scanning every task in the workspace.
+	dueTasks, err := a.Tasks.TasksByDueDateRange(ctx, from, to)
+	if err != nil {
+		return out, fmt.Errorf("timeline task_due: %w", err)
+	}
+	for _, t := range dueTasks {
+		if !t.DueDate.Valid {
+			continue
+		}
+		if e := newEvent(KindTaskDue, t.DueDate.Time, t.ID.String(), t.Title, from, to); e != nil {
+			e.ProjectID = uuidFromPgtype(t.ProjectID)
+			out = append(out, *e)
 		}
 	}
 	return out, nil

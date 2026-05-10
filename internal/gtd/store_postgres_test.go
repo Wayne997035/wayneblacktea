@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	migrationfs "github.com/Wayne997035/wayneblacktea/migrations"
 	"github.com/google/uuid"
@@ -673,4 +674,119 @@ func TestStore_RecentActivityByProject_PG(t *testing.T) {
 	if len(otherGot) != 0 {
 		t.Errorf("expected 0 rows for other workspace, got %d", len(otherGot))
 	}
+}
+
+// pgMustCreateTask is a tiny helper that keeps the TasksByDueDateRange
+// subtests focused on assertions and lets the outer function fit under the
+// gocyclo budget.
+func pgMustCreateTask(t *testing.T, store *gtd.Store, title string, due *time.Time) {
+	t.Helper()
+	_, err := store.CreateTask(context.Background(), gtd.CreateTaskParams{
+		Title: title, Priority: 3, DueDate: due,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask %s: %v", title, err)
+	}
+}
+
+func pgMustQueryDueRange(t *testing.T, store *gtd.Store, from, to time.Time) []db.Task {
+	t.Helper()
+	got, err := store.TasksByDueDateRange(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("TasksByDueDateRange: %v", err)
+	}
+	return got
+}
+
+// TestStore_TasksByDueDateRange exercises the calendar-planning query on
+// real Postgres (testcontainers). Mirrors the SQLite-side
+// TestGTDStore_TasksByDueDateRange — keeping both in sync per
+// backend-security-design.md §6.5 (dual-backend integration parity).
+func TestStore_TasksByDueDateRange(t *testing.T) {
+	pool := openTestPgPool(t)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	weekEnd := now.Add(7 * 24 * time.Hour)
+
+	t.Run("returns pending tasks with due_date inside range, ordered by due_date ASC", func(t *testing.T) {
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		dueLater := now.Add(5 * 24 * time.Hour)
+		dueSooner := now.Add(2 * 24 * time.Hour)
+		pgMustCreateTask(t, store, "later", &dueLater)
+		pgMustCreateTask(t, store, "sooner", &dueSooner)
+
+		got := pgMustQueryDueRange(t, store, now, weekEnd)
+		if len(got) != 2 {
+			t.Fatalf("want 2, got %d: %+v", len(got), got)
+		}
+		if got[0].Title != "sooner" || got[1].Title != "later" {
+			t.Errorf("want order [sooner, later], got [%s, %s]", got[0].Title, got[1].Title)
+		}
+	})
+
+	t.Run("excludes due_date outside range and tasks with NULL due_date", func(t *testing.T) {
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		insideDue := now.Add(2 * 24 * time.Hour)
+		outsideAfter := now.Add(30 * 24 * time.Hour)
+		pgMustCreateTask(t, store, "inside", &insideDue)
+		pgMustCreateTask(t, store, "after", &outsideAfter)
+		pgMustCreateTask(t, store, "no-due", nil)
+
+		got := pgMustQueryDueRange(t, store, now, weekEnd)
+		if len(got) != 1 || got[0].Title != "inside" {
+			t.Errorf("want [inside], got %+v", got)
+		}
+	})
+
+	t.Run("excludes completed tasks even when due_date is in range", func(t *testing.T) {
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+		due := now.Add(2 * 24 * time.Hour)
+		task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "to-complete", Priority: 3, DueDate: &due})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		if _, err := store.CompleteTask(ctx, task.ID, nil); err != nil {
+			t.Fatalf("CompleteTask: %v", err)
+		}
+		got := pgMustQueryDueRange(t, store, now, weekEnd)
+		if len(got) != 0 {
+			t.Errorf("want 0 (completed excluded), got %d", len(got))
+		}
+	})
+
+	t.Run("workspace isolation in shared DB", func(t *testing.T) {
+		// Both stores share the SAME pgxpool / DB schema (real cross-tenant
+		// scenario), so workspace scoping is the ONLY thing keeping them
+		// apart. SQLite tests use separate :memory: DBs and so cannot exercise
+		// this code path the same way.
+		wsA := uuid.New()
+		wsB := uuid.New()
+		storeA := newPgGTDStore(pool, &wsA)
+		storeB := newPgGTDStore(pool, &wsB)
+		due := now.Add(2 * 24 * time.Hour)
+		pgMustCreateTask(t, storeA, "isolated-A", &due)
+
+		gotA := pgMustQueryDueRange(t, storeA, now, weekEnd)
+		// May contain tasks from earlier subtests in this PG session; just
+		// verify "isolated-A" is in there.
+		found := false
+		for _, tk := range gotA {
+			if tk.Title == "isolated-A" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("want 'isolated-A' in workspace A results, got %+v", gotA)
+		}
+
+		gotB := pgMustQueryDueRange(t, storeB, now, weekEnd)
+		for _, tk := range gotB {
+			if tk.Title == "isolated-A" {
+				t.Errorf("workspace B leaked task from workspace A: %+v", tk)
+			}
+		}
+	})
 }

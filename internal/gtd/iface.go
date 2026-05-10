@@ -29,6 +29,12 @@ type StoreIface interface {
 	// to render the "completed" section alongside open tasks. The active-only
 	// Tasks variant remains the default for GTD list pages.
 	TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error)
+	// TasksByDueDateRange returns pending or in_progress tasks whose
+	// due_date falls inside [from, to] (inclusive on both ends), scoped to
+	// the configured workspace. Used by the calendar timeline to surface
+	// forward-looking "task_due" planning events. Results are ordered by
+	// due_date ASC, created_at ASC for stable pagination.
+	TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error)
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error

@@ -160,6 +160,10 @@ func (m *mockClassifyGTDStore) TopPendingTask(_ context.Context) (*db.Task, erro
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) WorkspaceID() pgtype.UUID { return pgtype.UUID{} }
 
 func (m *mockClassifyGTDStore) RecentCompletedTasks(_ context.Context, _ uuid.UUID, _ int32) ([]db.Task, error) {

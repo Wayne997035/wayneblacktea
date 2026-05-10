@@ -161,6 +161,46 @@ func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UU
 	return rows, nil
 }
 
+// TasksByDueDateRange returns pending / in_progress tasks whose due_date
+// falls inside [from, to] (inclusive on both ends), scoped to the
+// configured workspace. The status filter intentionally excludes
+// 'completed' so the calendar's planning view shows only work that still
+// needs to happen.
+//
+// Hand-rolled query (rather than sqlc-generated) keeps the timeline
+// feature self-contained without churning the queries.sql codegen surface.
+func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error) {
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		FROM tasks
+		WHERE status IN ('pending','in_progress')
+		  AND due_date IS NOT NULL
+		  AND due_date >= $1
+		  AND due_date <= $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		ORDER BY due_date ASC, created_at ASC`
+	rows, err := s.dbtx.Query(ctx, q, from, to, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tasks by due date range: %w", err)
+	}
+	defer rows.Close()
+	var out []db.Task
+	for rows.Next() {
+		var t db.Task
+		if err := rows.Scan(
+			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		); err != nil {
+			return nil, fmt.Errorf("scanning task by due date: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating tasks by due date: %w", err)
+	}
+	return out, nil
+}
+
 // CreateTask inserts a new task.
 func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error) {
 	priority := p.Priority

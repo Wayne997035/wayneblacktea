@@ -317,6 +317,41 @@ func (s *GTDStore) projectByID(ctx context.Context, id uuid.UUID) (*db.Project, 
 	return &p, nil
 }
 
+// TasksByDueDateRange returns pending / in_progress tasks whose due_date
+// falls inside [from, to] (inclusive on both ends), scoped to the
+// configured workspace. The status filter intentionally excludes
+// 'completed' so the calendar planning view shows only work that still
+// needs to happen.
+//
+// SQLite stores due_date as RFC3339 TEXT (see CreateTask), so range filters
+// rely on lexicographic comparison — RFC3339 sorts identically to chronologic
+// order at the same UTC offset, which CreateTask enforces (.UTC().Format(...)).
+func (s *GTDStore) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error) {
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE status IN ('pending','in_progress')
+		  AND due_date IS NOT NULL
+		  AND due_date >= ?1
+		  AND due_date <= ?2
+		  AND (?3 IS NULL OR workspace_id = ?3)
+		ORDER BY due_date ASC, created_at ASC`
+	fromStr := from.UTC().Format(time.RFC3339Nano)
+	toStr := to.UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.conn.QueryContext(ctx, q, fromStr, toStr, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("TasksByDueDateRange", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, errWrap("TasksByDueDateRange scan", err)
+		}
+		out = append(out, t)
+	}
+	return out, errWrap("TasksByDueDateRange iter", rows.Err())
+}
+
 // Tasks returns pending/in-progress tasks, optionally filtered by projectID.
 func (s *GTDStore) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error) {
 	var (

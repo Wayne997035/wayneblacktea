@@ -17,10 +17,18 @@ import (
 type fakeTaskSource struct {
 	tasks []db.Task
 	err   error
+	// dueTasks are returned by TasksByDueDateRange independently of Tasks();
+	// dueErr is the error path for that method.
+	dueTasks []db.Task
+	dueErr   error
 }
 
 func (f *fakeTaskSource) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
 	return f.tasks, f.err
+}
+
+func (f *fakeTaskSource) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
+	return f.dueTasks, f.dueErr
 }
 
 type fakeDecisionSource struct {
@@ -148,19 +156,26 @@ func TestAggregate_SortedDescending(t *testing.T) {
 	}
 }
 
-// TestAggregate_AllKinds verifies all 9 event kinds appear when all sources return data.
+// TestAggregate_AllKinds verifies all 10 event kinds appear when all sources return data.
 func TestAggregate_AllKinds(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	from := now.Add(-30 * 24 * time.Hour)
-	to := now
+	to := now.Add(30 * 24 * time.Hour)
 	mid := now.Add(-15 * 24 * time.Hour)
+	future := now.Add(2 * 24 * time.Hour)
 
 	handoffID := uuid.New()
 	taskID := uuid.New()
+	dueTaskID := uuid.New()
 	agg := &timeline.Aggregator{
-		Tasks: &fakeTaskSource{tasks: []db.Task{
-			{ID: taskID, Title: "task", CreatedAt: ts(mid), Status: "completed", UpdatedAt: ts(mid)},
-		}},
+		Tasks: &fakeTaskSource{
+			tasks: []db.Task{
+				{ID: taskID, Title: "task", CreatedAt: ts(mid), Status: "completed", UpdatedAt: ts(mid)},
+			},
+			dueTasks: []db.Task{
+				{ID: dueTaskID, Title: "due task", Status: "pending", DueDate: ts(future)},
+			},
+		},
 		Decisions: &fakeDecisionSource{decisions: []db.Decision{
 			{ID: uuid.New(), Title: "decision", CreatedAt: ts(mid)},
 		}},
@@ -186,10 +201,10 @@ func TestAggregate_AllKinds(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// task_created, task_completed, decision, activity, knowledge, concept,
-	// review_submitted, handoff_created, handoff_resolved = 9 events
-	if len(events) != 9 {
-		t.Errorf("want 9 events, got %d", len(events))
+	// task_created, task_completed, task_due, decision, activity, knowledge,
+	// concept, review_submitted, handoff_created, handoff_resolved = 10 events
+	if len(events) != 10 {
+		t.Errorf("want 10 events, got %d", len(events))
 		for i, e := range events {
 			t.Logf("  events[%d]: kind=%s title=%s", i, e.Kind, e.Title)
 		}
@@ -200,9 +215,10 @@ func TestAggregate_AllKinds(t *testing.T) {
 		kindSet[e.Kind] = true
 	}
 	expectedKinds := []timeline.Kind{
-		timeline.KindTaskCreated, timeline.KindTaskCompleted, timeline.KindDecision,
-		timeline.KindActivity, timeline.KindKnowledge, timeline.KindConcept,
-		timeline.KindReviewSubmitted, timeline.KindHandoffCreated, timeline.KindHandoffResolved,
+		timeline.KindTaskCreated, timeline.KindTaskCompleted, timeline.KindTaskDue,
+		timeline.KindDecision, timeline.KindActivity, timeline.KindKnowledge,
+		timeline.KindConcept, timeline.KindReviewSubmitted,
+		timeline.KindHandoffCreated, timeline.KindHandoffResolved,
 	}
 	for _, k := range expectedKinds {
 		if !kindSet[k] {
@@ -296,5 +312,183 @@ func TestAggregate_ToExclusive(t *testing.T) {
 	}
 	if events[0].Title != "exactly at to" {
 		t.Errorf("want 'exactly at to', got %q", events[0].Title)
+	}
+}
+
+// TestAggregate_TaskDueEmittedForFutureScheduledTasks verifies that pending /
+// in_progress tasks whose due_date is inside [from, to] surface as task_due
+// events. This is the calendar planning view: "what's scheduled for tomorrow".
+func TestAggregate_TaskDueEmittedForFutureScheduledTasks(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	from := now
+	to := now.Add(7 * 24 * time.Hour)
+	tomorrow := now.Add(24 * time.Hour)
+	nextWeek := now.Add(6 * 24 * time.Hour)
+
+	dueIDA := uuid.New()
+	dueIDB := uuid.New()
+	agg := &timeline.Aggregator{
+		Tasks: &fakeTaskSource{
+			dueTasks: []db.Task{
+				{ID: dueIDA, Title: "review backend security rules", Status: "pending", DueDate: ts(tomorrow)},
+				{ID: dueIDB, Title: "ship calendar planning view", Status: "in_progress", DueDate: ts(nextWeek)},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("want 2 task_due events, got %d", len(events))
+	}
+	for _, e := range events {
+		if e.Kind != timeline.KindTaskDue {
+			t.Errorf("event %s: want kind=task_due, got %q", e.RefID, e.Kind)
+		}
+	}
+	// Sorted DESC by occurred_at — nextWeek precedes tomorrow.
+	if events[0].RefID != dueIDB.String() {
+		t.Errorf("events[0]: want %s (nextWeek first DESC), got %s", dueIDB, events[0].RefID)
+	}
+	if events[1].RefID != dueIDA.String() {
+		t.Errorf("events[1]: want %s (tomorrow second), got %s", dueIDA, events[1].RefID)
+	}
+}
+
+// TestAggregate_TaskDueRespectsDateRangeFilter verifies tasks whose due_date
+// falls outside [from, to] are NOT emitted, even when present in dueTasks
+// (the source returned them by mistake / over-fetch). This belts-and-braces
+// guards against backends that don't precisely filter by date.
+func TestAggregate_TaskDueRespectsDateRangeFilter(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	from := now
+	to := now.Add(7 * 24 * time.Hour)
+
+	insideID := uuid.New()
+	beforeID := uuid.New()
+	afterID := uuid.New()
+
+	agg := &timeline.Aggregator{
+		Tasks: &fakeTaskSource{
+			dueTasks: []db.Task{
+				{ID: insideID, Title: "inside", Status: "pending", DueDate: ts(now.Add(2 * 24 * time.Hour))},
+				{ID: beforeID, Title: "before from", Status: "pending", DueDate: ts(now.Add(-24 * time.Hour))},
+				{ID: afterID, Title: "after to", Status: "pending", DueDate: ts(now.Add(10 * 24 * time.Hour))},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event (only inside range), got %d", len(events))
+	}
+	if events[0].RefID != insideID.String() {
+		t.Errorf("want %s, got %s", insideID, events[0].RefID)
+	}
+	if events[0].Kind != timeline.KindTaskDue {
+		t.Errorf("want kind=task_due, got %q", events[0].Kind)
+	}
+}
+
+// TestAggregate_TaskDueSkipsInvalidDueDate verifies tasks whose DueDate is
+// pgtype-invalid (NULL in DB) are silently skipped — defensive behaviour
+// because the store query already filters NULL but a stale slice could
+// theoretically include one.
+func TestAggregate_TaskDueSkipsInvalidDueDate(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	from := now
+	to := now.Add(7 * 24 * time.Hour)
+
+	agg := &timeline.Aggregator{
+		Tasks: &fakeTaskSource{
+			dueTasks: []db.Task{
+				{ID: uuid.New(), Title: "invalid due", Status: "pending", DueDate: pgtype.Timestamptz{}},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("want 0 events (invalid due date skipped), got %d: %+v", len(events), events)
+	}
+}
+
+// TestAggregate_TaskDueErrorReturnedButPriorEventsRetained verifies that when
+// TasksByDueDateRange fails, the historical (task_created / task_completed)
+// events already collected are still returned so the calendar isn't blank.
+func TestAggregate_TaskDueErrorReturnedButPriorEventsRetained(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-7 * 24 * time.Hour)
+	to := now.Add(7 * 24 * time.Hour)
+	created := now.Add(-2 * 24 * time.Hour)
+
+	taskID := uuid.New()
+	sentinel := &testError{"due-date query failed"}
+	agg := &timeline.Aggregator{
+		Tasks: &fakeTaskSource{
+			tasks: []db.Task{
+				{ID: taskID, Title: "historical", Status: "pending", CreatedAt: ts(created)},
+			},
+			dueErr: sentinel,
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err == nil {
+		t.Fatal("want error from dueErr propagation, got nil")
+	}
+	// Historical event must still be returned even though the planning
+	// query failed — calendar UX > strict atomic semantics here.
+	if len(events) != 1 {
+		t.Fatalf("want 1 event (historical), got %d", len(events))
+	}
+	if events[0].Kind != timeline.KindTaskCreated || events[0].RefID != taskID.String() {
+		t.Errorf("unexpected event: %+v", events[0])
+	}
+}
+
+// TestAggregate_TaskDueAndCreatedCoexistForSameTask verifies a task may
+// produce BOTH a task_created event (historical) AND a task_due event
+// (planning) when its due_date is in the future inside the range.
+func TestAggregate_TaskDueAndCreatedCoexistForSameTask(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-7 * 24 * time.Hour)
+	to := now.Add(14 * 24 * time.Hour)
+	createdAt := now.Add(-2 * 24 * time.Hour)
+	dueAt := now.Add(5 * 24 * time.Hour)
+
+	taskID := uuid.New()
+	agg := &timeline.Aggregator{
+		Tasks: &fakeTaskSource{
+			tasks: []db.Task{
+				{ID: taskID, Title: "dual", Status: "pending", CreatedAt: ts(createdAt), DueDate: ts(dueAt)},
+			},
+			dueTasks: []db.Task{
+				{ID: taskID, Title: "dual", Status: "pending", CreatedAt: ts(createdAt), DueDate: ts(dueAt)},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("want 2 events (created + due), got %d: %+v", len(events), events)
+	}
+	kinds := map[timeline.Kind]bool{events[0].Kind: true, events[1].Kind: true}
+	if !kinds[timeline.KindTaskCreated] {
+		t.Error("missing task_created event for dual-purpose task")
+	}
+	if !kinds[timeline.KindTaskDue] {
+		t.Error("missing task_due event for dual-purpose task")
 	}
 }
