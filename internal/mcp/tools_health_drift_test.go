@@ -368,6 +368,30 @@ func TestKeywordExistsOnDisk_PathTraversal(t *testing.T) {
 	}
 }
 
+// TestKeywordExistsOnDisk_MigrationSymlinkEscape covers the migration-number
+// branch's CWE-59 mitigation: a migrations/ directory replaced by a symlink
+// to an outside dir whose contents match the glob must NOT count as an
+// in-boundary hit.
+func TestKeywordExistsOnDisk_MigrationSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a matching SQL file inside the OUTSIDE dir.
+	outsideSQL := filepath.Join(outside, "000999_evil.up.sql")
+	if err := os.WriteFile(outsideSQL, []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile outside: %v", err)
+	}
+	// Symlink root/migrations → outside so glob succeeds but EvalSymlinks
+	// resolves the match outside boundary.
+	if err := os.Symlink(outside, filepath.Join(root, "migrations")); err != nil {
+		t.Fatalf("Symlink migrations: %v", err)
+	}
+
+	if got := keywordExistsOnDisk("000999", root); got != false {
+		t.Errorf("keywordExistsOnDisk(\"000999\", root) with migrations symlink = %v, want false", got)
+	}
+}
+
 // ---- detectCompletionDrift: cap, in_progress, title sanitisation ----
 
 func TestDetectCompletionDrift_InProgressIncluded(t *testing.T) {
