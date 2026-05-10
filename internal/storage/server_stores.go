@@ -15,6 +15,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
@@ -63,6 +64,7 @@ type ServerStores interface {
 	Playbook() playbook.StoreIface
 	Procedural() procedural.StoreIface
 	Atom() atom.StoreIface
+	Discipline() discipline.Store
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil
 	// when operating in legacy single-workspace mode. Used by MCP tools that
