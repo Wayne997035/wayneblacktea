@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -50,7 +52,42 @@ type healthSnapshot struct {
 	RecentCalls      []watchdog.ToolCall `json:"recent_calls"`
 	ForgottenSignals []string            `json:"forgotten_signals,omitempty"`
 	CompletionDrift  []DriftCandidate    `json:"completion_drift_candidates,omitempty"`
+	Discipline       disciplineHealth    `json:"discipline,omitempty"`
 }
+
+// disciplineHealth is the per-snapshot discipline drift summary surfaced by
+// system_health. DriftCount24h is the number of mutating MCP tool calls in
+// the last 24 hours that did NOT have a log_decision / confirm_plan in the
+// same session within the preceding driftWindow (15 minutes).
+type disciplineHealth struct {
+	DriftCount24h int                `json:"drift_count_24h"`
+	RecentDrifts  []disciplineSample `json:"recent_drifts,omitempty"`
+}
+
+// disciplineSample is one drift record (the mutating call that lacked a
+// preceding decision). Capped at maxDisciplineSamples per snapshot.
+type disciplineSample struct {
+	ToolName   string    `json:"tool_name"`
+	ObservedAt time.Time `json:"observed_at"`
+	RepoName   string    `json:"repo_name,omitempty"`
+}
+
+const (
+	// driftWindow is how far back from a mutating call we look for a
+	// log_decision / confirm_plan event in the same session. Anything
+	// outside this window means the mutating call was NOT preceded by an
+	// explicit decision and therefore counts as drift.
+	driftWindow = 15 * time.Minute
+	// disciplineLookback is the time horizon for "drift in the last 24h"
+	// — the headline number on the system_health output.
+	disciplineLookback = 24 * time.Hour
+	// maxDisciplineSamples caps how many drift samples we surface per
+	// snapshot. Bounded so the JSON response stays small.
+	maxDisciplineSamples = 5
+	// disciplineFetchLimit caps the rows we pull from the store for the
+	// 24h window. Far above expected real-world volume but still bounded.
+	disciplineFetchLimit = 500
+)
 
 // DriftCandidate is a pending task whose description references artifacts that
 // already exist in the codebase — a signal that complete_task may have been missed.
@@ -122,6 +159,8 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 		snap.CompletionDrift = detectCompletionDrift(tasks, repoRoot)
 	}
 
+	snap.Discipline = s.collectDisciplineHealth(ctx)
+
 	signals := detectForgottenSignals(snap, s.watchdog)
 	if len(snap.CompletionDrift) > 0 {
 		signals = append(signals, fmt.Sprintf(
@@ -129,9 +168,154 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 			len(snap.CompletionDrift),
 		))
 	}
+	if snap.Discipline.DriftCount24h > 0 {
+		signals = append(signals, fmt.Sprintf(
+			"%d mutating MCP calls in last 24h with no preceding log_decision — likely undocumented changes.",
+			snap.Discipline.DriftCount24h,
+		))
+	}
 	snap.ForgottenSignals = signals
 
 	return jsonText(snap)
+}
+
+// collectDisciplineHealth queries the discipline store for mutating calls in
+// the last 24 hours and computes drift = mutating calls without a
+// log_decision / confirm_plan in the same session within driftWindow before
+// the mutating call.
+//
+// Decision (chosen here, documented for reviewer): when several mutating
+// calls happen back-to-back AFTER a single log_decision, only the calls
+// outside the 15-minute window are drift. The window is sliding per call,
+// not "one decision authorises one mutation". This matches how a human
+// would judge "did Claude document the change?" — a fresh decision
+// continues to cover follow-up mutations for the next 15 min.
+//
+// Errors are logged and swallowed — a missing/broken discipline store must
+// not break system_health (matches the disciplineMiddleware policy).
+func (s *Server) collectDisciplineHealth(ctx context.Context) disciplineHealth {
+	if s.discipline == nil {
+		return disciplineHealth{}
+	}
+
+	now := time.Now().UTC()
+	since := now.Add(-disciplineLookback)
+
+	mutatingEvents, err := s.discipline.RecentMutating(ctx, since, disciplineFetchLimit)
+	if err != nil {
+		slog.Warn("collectDisciplineHealth: RecentMutating failed", "error", err)
+		return disciplineHealth{}
+	}
+	if len(mutatingEvents) == 0 {
+		return disciplineHealth{}
+	}
+
+	// Cache decision timestamps per session so we don't re-query for each
+	// mutating event in the same session. The cache scope is one
+	// system_health call.
+	decisionCache := make(map[string][]time.Time)
+	getDecisions := func(sessionID string) []time.Time {
+		if ts, ok := decisionCache[sessionID]; ok {
+			return ts
+		}
+		// Look back driftWindow further than the 24h horizon so a decision
+		// just before `since` can still cover an early mutation in the
+		// window.
+		ts, qErr := s.discipline.RecentDecisionTimes(ctx, sessionID, since.Add(-driftWindow))
+		if qErr != nil {
+			slog.Warn("collectDisciplineHealth: RecentDecisionTimes failed",
+				"session_id", sessionID,
+				"error", qErr,
+			)
+			ts = nil
+		}
+		decisionCache[sessionID] = ts
+		return ts
+	}
+
+	health := disciplineHealth{}
+	for _, ev := range mutatingEvents {
+		decisions := getDecisions(ev.SessionID)
+		if hasDecisionInWindow(ev.ObservedAt, decisions) {
+			continue
+		}
+		health.DriftCount24h++
+		if len(health.RecentDrifts) < maxDisciplineSamples {
+			health.RecentDrifts = append(health.RecentDrifts, disciplineSample{
+				ToolName:   ev.ToolName,
+				ObservedAt: ev.ObservedAt,
+				RepoName:   ev.RepoName,
+			})
+		}
+	}
+	return health
+}
+
+// hasDecisionInWindow returns true when at least one decision timestamp falls
+// inside [observedAt - driftWindow, observedAt]. decisionTimes is expected
+// in any order (we walk the slice).
+func hasDecisionInWindow(observedAt time.Time, decisionTimes []time.Time) bool {
+	if len(decisionTimes) == 0 {
+		return false
+	}
+	lower := observedAt.Add(-driftWindow)
+	for _, t := range decisionTimes {
+		// Ignore decisions logged AFTER the mutating call — they can't be
+		// "preceding". Tie at observedAt is treated as preceding (the
+		// timestamps came from the same DB clock; both nearly-coincident
+		// rows count as the user logging a decision in the same call).
+		if (t.Equal(observedAt) || t.Before(observedAt)) && !t.Before(lower) {
+			return true
+		}
+	}
+	return false
+}
+
+// EvaluateDisciplineDrift is a test-friendly accessor that exposes the
+// drift-counting logic without spinning up a full Server. Production code
+// goes through collectDisciplineHealth above; tests use this to validate
+// the rule (window, ordering, decision-hit) against a stub store.
+func EvaluateDisciplineDrift(
+	ctx context.Context,
+	store discipline.Store,
+	now time.Time,
+) disciplineHealth {
+	if store == nil {
+		return disciplineHealth{}
+	}
+	since := now.Add(-disciplineLookback)
+	mutatingEvents, err := store.RecentMutating(ctx, since, disciplineFetchLimit)
+	if err != nil || len(mutatingEvents) == 0 {
+		return disciplineHealth{}
+	}
+	decisionCache := make(map[string][]time.Time)
+	getDecisions := func(sessionID string) []time.Time {
+		if ts, ok := decisionCache[sessionID]; ok {
+			return ts
+		}
+		ts, qErr := store.RecentDecisionTimes(ctx, sessionID, since.Add(-driftWindow))
+		if qErr != nil {
+			ts = nil
+		}
+		decisionCache[sessionID] = ts
+		return ts
+	}
+	health := disciplineHealth{}
+	for _, ev := range mutatingEvents {
+		decisions := getDecisions(ev.SessionID)
+		if hasDecisionInWindow(ev.ObservedAt, decisions) {
+			continue
+		}
+		health.DriftCount24h++
+		if len(health.RecentDrifts) < maxDisciplineSamples {
+			health.RecentDrifts = append(health.RecentDrifts, disciplineSample{
+				ToolName:   ev.ToolName,
+				ObservedAt: ev.ObservedAt,
+				RepoName:   ev.RepoName,
+			})
+		}
+	}
+	return health
 }
 
 // detectForgottenSignals applies a few cheap heuristics to point out

@@ -185,6 +185,19 @@ tasks:
         psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM guard_bypasses WHERE expires_at IS NOT NULL AND expires_at < NOW() - INTERVAL '30 days';"
     dir: ..
 
+  discipline-prune:
+    desc: "Prune discipline_events older than 30 days (run via cron)"
+    dotenv: ['../.env.local']
+    preconditions:
+      - sh: test -n "{{.DATABASE_URL}}"
+        msg: "DATABASE_URL is not set — add it to .env or export it"
+    cmds:
+      # 30-day TTL on observability tables (backend-security-design.md §1.3).
+      # Postgres-only: SQLite is dev-local single-tenant, no growth concern.
+      - |
+        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM discipline_events WHERE observed_at < NOW() - INTERVAL '30 days';"
+    dir: ..
+
   migrate-down:
     desc: "Roll back last DB migration (requires .env.local with DATABASE_URL)"
     dotenv: ['../.env.local']

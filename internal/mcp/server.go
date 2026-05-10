@@ -2,11 +2,15 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
@@ -79,6 +83,18 @@ type Server struct {
 	snapshotStore snapshot.StoreIface
 	snapshotGen   snapshot.GeneratorIface
 
+	// discipline records every MCP tool call into discipline_events for the
+	// system_health drift-detection signal. Always non-nil under both
+	// backends — wired in at New() time.
+	discipline discipline.Store
+
+	// sessionID is the per-process identifier written into every
+	// discipline_events row. We have no real "MCP session" abstraction so we
+	// derive it from PID + start time; this is sufficient for the 15-minute
+	// drift window and survives a restart cleanly (the new ID won't conflate
+	// with the old session's mutating calls).
+	sessionID string
+
 	// workspaceID is populated from WORKSPACE_ID env at New time for use by
 	// tools that need to scope snapshot writes without a pgxpool reference.
 	workspaceID *uuid.UUID
@@ -115,8 +131,18 @@ func New(stores storage.ServerStores) (*Server, error) {
 		sqliteLearning: stores.SqliteLearning(),
 		notion:         notion.NewClient(),
 		watchdog:       watchdog.New(200),
+		discipline:     stores.Discipline(),
+		sessionID:      newSessionID(),
 		workspaceID:    wsID,
 	}, nil
+}
+
+// newSessionID returns a per-process identifier used as session_id when
+// recording discipline_events. Since the MCP server has no real session
+// concept yet, we derive it from PID + start time (millis). Format keeps it
+// shorter than a UUID and human-readable in logs.
+func newSessionID() string {
+	return fmt.Sprintf("mcp-%d-%d", os.Getpid(), time.Now().UnixMilli())
 }
 
 // WithSnapshot wires a snapshot store and generator into the server so that
@@ -228,6 +254,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 		server.WithInstructions(mcpInstructions),
 		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 		server.WithToolHandlerMiddleware(s.autoLogMiddleware()),
+		server.WithToolHandlerMiddleware(s.disciplineMiddleware()),
 	)
 	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)
