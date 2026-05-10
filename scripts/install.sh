@@ -10,13 +10,15 @@
 # server. To use the wizard, save the script first then run it directly.
 #
 # Environment overrides:
-#   WBT_VERSION         Pin to a specific release (default: latest)
-#   WBT_PREFIX          Install prefix (default: $HOME/.local)
-#   WBT_CONFIG          Config dir (default: $HOME/.config/wayneblacktea)
-#   WBT_NO_MCP          If set to "1", skip `claude mcp add` registration
-#   WBT_NO_PROMPT       If set to "1", force non-interactive (placeholders, empty API_KEY)
-#   WBT_STRICT_VERIFY   If set to "1", abort when cosign is unavailable
-#                       (default: warn-and-proceed with sha256-only)
+#   WBT_VERSION              Pin to a specific release (default: latest)
+#   WBT_PREFIX               Install prefix (default: $HOME/.local)
+#   WBT_CONFIG               Config dir (default: $HOME/.config/wayneblacktea)
+#   WBT_NO_MCP               If set to "1", skip `claude mcp add` registration
+#   WBT_NO_PROMPT            If set to "1", force non-interactive (placeholders, empty API_KEY)
+#   WBT_INSECURE_SKIP_VERIFY If set to "1", skip cosign verification (NOT RECOMMENDED).
+#                            Default behaviour is fail-closed: cosign + sig + cert MUST
+#                            all be present and the signature MUST verify, otherwise
+#                            installation aborts. (PR #85 R3 / S-N1)
 #
 # Exit codes:
 #   0  success
@@ -32,7 +34,9 @@ GITHUB_DL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download"
 
 # cosign keyless verification — sigstore certificate identity / OIDC issuer
 # pinned to wayneblacktea repo + GitHub Actions OIDC issuer used by goreleaser.
-COSIGN_CERT_IDENTITY_REGEX='https://github.com/Wayne997035/wayneblacktea/.*'
+# Anchored regex (^...$) to prevent prefix/suffix injection attacks; restricts
+# to the release.yml workflow on a semver tag. (PR #85 R3 / S-N2)
+COSIGN_CERT_IDENTITY_REGEX='^https://github\.com/Wayne997035/wayneblacktea/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
 PREFIX="${WBT_PREFIX:-${HOME}/.local}"
@@ -83,49 +87,64 @@ sha256_check() {
 }
 
 # verify_cosign verifies checksums.txt authenticity using cosign keyless mode
-# against the signature published by goreleaser. When cosign is unavailable
-# we either abort (WBT_STRICT_VERIFY=1) or warn loudly and continue with
-# SHA256-only protection.
+# against the signature published by goreleaser.
+#
+# DEFAULT: fail-closed. If cosign is missing OR the signature/cert artefacts
+# are missing OR verification fails, the installer aborts. This prevents an
+# attacker who can MITM (or 404-spoof) the .sig/.pem from forcing a
+# warn-and-proceed code path.
+#
+# Escape hatch (NOT RECOMMENDED): set WBT_INSECURE_SKIP_VERIFY=1 to skip the
+# entire signature step. (PR #85 R3 / S-N1)
 verify_cosign() {
-  local checksums_path="$1" sig_path="$2" cert_path="${3:-}"
+  local checksums_path="$1" sig_path="$2" cert_path="$3"
+
+  if [ "${WBT_INSECURE_SKIP_VERIFY:-0}" = "1" ]; then
+    log_warn "WBT_INSECURE_SKIP_VERIFY=1 — skipping cosign verification (NOT RECOMMENDED for production installs)"
+    return 0
+  fi
+
   if ! command -v cosign >/dev/null 2>&1; then
-    if [ "${WBT_STRICT_VERIFY:-0}" = "1" ]; then
-      die "cosign not installed and WBT_STRICT_VERIFY=1 — abort (install: https://docs.sigstore.dev/cosign/installation/)"
-    fi
-    log_warn "cosign not installed; checksum integrity verified but authenticity NOT verified"
-    log_warn "set WBT_STRICT_VERIFY=1 to require cosign verification (recommended)"
-    return 0
+    die "cosign not installed — install cosign or set WBT_INSECURE_SKIP_VERIFY=1 to bypass (not recommended). https://docs.sigstore.dev/system_config/installation/"
   fi
+
   if [ ! -s "${sig_path}" ]; then
-    log_warn "signature file ${sig_path} missing or empty — skipping cosign verification"
-    if [ "${WBT_STRICT_VERIFY:-0}" = "1" ]; then
-      die "WBT_STRICT_VERIFY=1 but signature artifact unavailable"
-    fi
-    return 0
+    die "signature file ${sig_path} missing/empty — refusing to install. Set WBT_INSECURE_SKIP_VERIFY=1 to bypass (NOT RECOMMENDED)."
   fi
+
+  if [ ! -s "${cert_path}" ]; then
+    die "certificate file ${cert_path} missing/empty — refusing to install. Set WBT_INSECURE_SKIP_VERIFY=1 to bypass (NOT RECOMMENDED)."
+  fi
+
   log_info "verifying checksums.txt signature with cosign"
-  local cert_args=()
-  if [ -n "${cert_path}" ] && [ -s "${cert_path}" ]; then
-    cert_args=(--certificate "${cert_path}")
-  fi
   if ! cosign verify-blob \
       --certificate-identity-regexp "${COSIGN_CERT_IDENTITY_REGEX}" \
       --certificate-oidc-issuer "${COSIGN_OIDC_ISSUER}" \
+      --certificate "${cert_path}" \
       --signature "${sig_path}" \
-      "${cert_args[@]}" \
       "${checksums_path}" >/dev/null 2>&1; then
-    log_error "cosign verify-blob failed — refusing to install unsigned/altered checksums"
-    exit 2
+    die "cosign verification failed"
   fi
   log_info "cosign signature OK"
 }
 
 # verify_archive_safe rejects tar archives containing absolute paths, parent
-# traversal segments (`..`), or `~`-prefixed entries. Defends against zip-slip
-# (CVE-2018-1002150 family).
+# traversal segments (`..`), `~`-prefixed entries, AND symlink/hardlink
+# entries. Defends against zip-slip (CVE-2018-1002150 family) plus the
+# symlink-attack variant where an entry name like `wbt -> /etc/passwd` slips
+# past a name-only filter. (PR #85 R3 — reviewer minor)
+#
+# `tar -tzvf` long listing has the file mode in column 1; `l` = symlink,
+# `h` = hardlink. `awk '{print $NF}'` extracts the path field (last column).
 verify_archive_safe() {
   local archive="$1"
-  if tar -tzf "${archive}" 2>/dev/null | grep -qE '(^/|(^|/)\.\.($|/)|^~)'; then
+  local listing
+  listing="$(tar -tzvf "${archive}" 2>/dev/null)" || die "cannot read archive ${archive}"
+  if printf '%s\n' "${listing}" | grep -qE '^[lh]'; then
+    log_error "archive ${archive} contains symlink/hardlink entries — refusing to extract"
+    exit 2
+  fi
+  if printf '%s\n' "${listing}" | awk '{print $NF}' | grep -qE '(^/|(^|/)\.\.($|/)|^~)'; then
     log_error "archive ${archive} contains unsafe paths (absolute / .. / ~) — refusing to extract"
     exit 2
   fi
@@ -153,20 +172,26 @@ detect_platform() {
 }
 
 # --- fetch latest version tag (or use pinned WBT_VERSION) ---
+# Validates the resolved version against a strict semver pattern before any
+# URL interpolation so a hostile WBT_VERSION value cannot inject path or
+# query-string components into the GitHub release URL.
+# (PR #85 R3 / S-N3)
 fetch_version() {
-  if [ -n "${WBT_VERSION:-}" ]; then
-    printf '%s' "${WBT_VERSION#v}"
-    return
+  local version="${WBT_VERSION:-}"
+  if [ -z "${version}" ]; then
+    version="$(curl -fsSL --retry 3 --retry-delay 2 "${GITHUB_API}" \
+      | grep -E '^\s*"tag_name"\s*:' \
+      | head -n1 \
+      | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/')"
+    if [ -z "${version}" ]; then
+      die "failed to resolve latest release tag from ${GITHUB_API}"
+    fi
   fi
-  local tag
-  tag="$(curl -fsSL --retry 3 --retry-delay 2 "${GITHUB_API}" \
-    | grep -E '^\s*"tag_name"\s*:' \
-    | head -n1 \
-    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/')"
-  if [ -z "${tag}" ]; then
-    die "failed to resolve latest release tag from ${GITHUB_API}"
+  version="${version#v}"
+  if ! printf '%s' "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+    die "invalid version format: ${version} (expected MAJOR.MINOR.PATCH[-prerelease])"
   fi
-  printf '%s' "${tag}"
+  printf '%s' "${version}"
 }
 
 # --- download + verify a single archive ---

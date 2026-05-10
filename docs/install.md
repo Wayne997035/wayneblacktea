@@ -27,9 +27,9 @@ What it does:
 1. Detects OS (`linux` or `macos`) and arch (`x86_64` or `arm64`)
 2. Resolves the latest release tag from the GitHub API (or uses `WBT_VERSION` if set)
 3. Downloads `wayneblacktea-mcp_<ver>_<os>_<arch>.tar.gz` and `wayneblacktea-cli_<ver>_<os>_<arch>.tar.gz` plus `checksums.txt` and `checksums.txt.sig` / `.pem`
-4. Verifies the cosign keyless signature on `checksums.txt` (when `cosign` is on `PATH`); set `WBT_STRICT_VERIFY=1` to require cosign and abort otherwise
+4. **Verifies the cosign keyless signature on `checksums.txt` (fail-closed by default).** Cosign + `.sig` + `.pem` MUST all be present and the signature MUST verify; otherwise installation aborts. To bypass (NOT RECOMMENDED), set `WBT_INSECURE_SKIP_VERIFY=1`.
 5. Verifies SHA256 of every archive against `checksums.txt`
-6. Inspects each archive for unsafe paths (absolute, `..` segments, `~`-prefixed) before extraction (zip-slip defence)
+6. Inspects each archive for unsafe paths (absolute, `..` segments, `~`-prefixed) AND rejects symlink/hardlink entries before extraction (zip-slip + symlink-attack defence)
 7. Extracts `wayneblacktea-mcp`, `wbt`, `wbt-context`, `wbt-hook`, `wbt-guard`, `wbt-doctor` to `~/.local/bin` (mode 0755)
 8. Prompts (silent input for `API_KEY`) for `DATABASE_URL` (optional — blank means SQLite local file), `API_KEY` (required), and `WORKSPACE_ID` (optional), and writes them to `~/.config/wayneblacktea/.env` (mode 0600)
 9. Runs `claude mcp add wayneblacktea -- ~/.local/bin/wayneblacktea-mcp` if the `claude` CLI is installed; otherwise prints the command to run later
@@ -38,18 +38,18 @@ Environment overrides:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `WBT_VERSION` | latest | Pin a specific release (e.g. `1.2.3`) |
+| `WBT_VERSION` | latest | Pin a specific release (e.g. `1.2.3`); validated against `MAJOR.MINOR.PATCH[-prerelease]` before URL interpolation |
 | `WBT_PREFIX` | `~/.local` | Install prefix; binaries land in `$WBT_PREFIX/bin` |
 | `WBT_CONFIG` | `~/.config/wayneblacktea` | Config directory |
 | `WBT_NO_MCP` | `0` | Set to `1` to skip `claude mcp add` |
 | `WBT_NO_PROMPT` | `0` | Set to `1` to skip the interactive wizard (writes empty `API_KEY` you must edit before starting the server) |
-| `WBT_STRICT_VERIFY` | `0` | Set to `1` to fail-closed if `cosign` is not installed (recommended for unattended installs) |
+| `WBT_INSECURE_SKIP_VERIFY` | `0` | **Fail-closed cosign verification is the default.** Set to `1` ONLY if you cannot install cosign (e.g. air-gapped env). NOT RECOMMENDED for production. Replaces the old `WBT_STRICT_VERIFY` opt-in (semantic flip). |
 
 Hardening notes:
 
 - Script is `set -euo pipefail`, validates every download against the published `checksums.txt` (SHA256), and refuses to overwrite a newer existing `wbt` (compare via `wbt version`, second whitespace token).
-- `cosign verify-blob` runs against `checksums.txt.sig` before checksums are parsed, pinning identity to `https://github.com/Wayne997035/wayneblacktea/.*` and OIDC issuer `https://token.actions.githubusercontent.com` (goreleaser-keyless).
-- Tar archives are scanned for absolute paths, `..` segments, and `~`-prefixed entries before extraction (`tar -tzf | grep -E ...`); extraction uses `--no-same-owner --no-same-permissions`.
+- `cosign verify-blob` runs against `checksums.txt.sig` before checksums are parsed, pinning identity to the **anchored** regex `^https://github\.com/Wayne997035/wayneblacktea/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and OIDC issuer `https://token.actions.githubusercontent.com` (goreleaser-keyless). Cosign + `.sig` + `.pem` are mandatory; an attacker who strips or 404-spoofs them aborts the install.
+- Tar archives are scanned for absolute paths, `..` segments, `~`-prefixed entries, **and symlink / hardlink entries** (`tar -tzvf` long-listing mode column = `l` / `h`) before extraction; extraction uses `--no-same-owner --no-same-permissions`.
 - API key is read with `read -rs` (silent input) so the secret is not echoed on screen.
 - Uses `mktemp -d` for staging and traps `EXIT INT TERM` for cleanup.
 - Warns when `~/.local/bin` is not on your PATH and prints the exact line to add to `~/.zshrc` / `~/.bashrc` / fish config.
@@ -65,7 +65,7 @@ What it does:
 1. Detects arch via `[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture` (`X64` -> `x86_64`, `Arm64` -> `arm64`)
 2. Resolves the latest release tag via `Invoke-RestMethod`
 3. Downloads `wayneblacktea-mcp_<ver>_windows_<arch>.zip` and `wayneblacktea-cli_<ver>_windows_<arch>.zip` plus `checksums.txt` and `checksums.txt.sig` / `.pem`
-4. Verifies the cosign keyless signature on `checksums.txt` (when `cosign` is on `PATH`); set `$env:WBT_STRICT_VERIFY = '1'` to require cosign and abort otherwise
+4. **Verifies the cosign keyless signature on `checksums.txt` (fail-closed by default).** Cosign + `.sig` + `.pem` MUST all be present and the signature MUST verify; otherwise installation aborts. To bypass (NOT RECOMMENDED), set `$env:WBT_INSECURE_SKIP_VERIFY = '1'`.
 5. Verifies SHA256 with `Get-FileHash` before extraction
 6. Inspects each ZIP entry via `[System.IO.Compression.ZipFile]::OpenRead` and rejects unsafe paths (absolute, `..` segments, drive letters, leading backslash, `~`-prefixed) before `Expand-Archive`
 7. Extracts six binaries (`wayneblacktea-mcp.exe`, `wbt.exe`, `wbt-context.exe`, `wbt-hook.exe`, `wbt-guard.exe`, `wbt-doctor.exe`) to `%LOCALAPPDATA%\wayneblacktea\bin` and prepends that directory to the user `PATH` (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`)
@@ -75,17 +75,17 @@ What it does:
 Environment overrides (set before piping to `iex`):
 
 ```powershell
-$env:WBT_VERSION       = '1.2.3'  # pin a release
-$env:WBT_NO_MCP        = '1'      # skip claude registration
-$env:WBT_NO_PROMPT     = '1'      # skip wizard, write empty API_KEY
-$env:WBT_STRICT_VERIFY = '1'      # require cosign verification
+$env:WBT_VERSION              = '1.2.3'  # pin a release (validated against semver before URL use)
+$env:WBT_NO_MCP               = '1'      # skip claude registration
+$env:WBT_NO_PROMPT            = '1'      # skip wizard, write empty API_KEY
+$env:WBT_INSECURE_SKIP_VERIFY = '1'      # bypass cosign (NOT RECOMMENDED — default is fail-closed)
 ```
 
 Hardening notes:
 
 - `$ErrorActionPreference = 'Stop'` and `Set-StrictMode -Version Latest` enforce hard-fail behavior.
 - TLS 1.2 is forced on Windows PowerShell 5.x for compatibility with GitHub.
-- `cosign verify-blob` runs against `checksums.txt.sig` before checksums are parsed (skipped with a warning when cosign is not installed; `$env:WBT_STRICT_VERIFY = '1'` makes this fail-closed).
+- `cosign verify-blob` runs against `checksums.txt.sig` **fail-closed by default** — missing cosign / missing `.sig` / missing `.pem` / verification failure all abort the install. `$env:WBT_INSECURE_SKIP_VERIFY = '1'` is the only escape hatch and is not recommended. Identity regex is anchored (`^...$`) to the release.yml workflow on a semver tag.
 - ZIP entries are validated against a path-traversal regex via `System.IO.Compression.ZipFile` before `Expand-Archive`; mismatched archive aborts with exit 2.
 - API key input uses `Read-Host -AsSecureString`; the value is decrypted in-memory only long enough to write the file, then the local variable is cleared.
 - The `.env` file ACL is reset (inheritance disabled, only current user keeps `FullControl`).

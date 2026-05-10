@@ -20,10 +20,13 @@
 
 .NOTES
     Environment overrides (set before piping to iex):
-        $env:WBT_VERSION       Pin a specific release (e.g. '1.2.3')
-        $env:WBT_NO_MCP        '1' = skip `claude mcp add`
-        $env:WBT_NO_PROMPT     '1' = skip wizard, write empty placeholders
-        $env:WBT_STRICT_VERIFY '1' = abort when cosign unavailable
+        $env:WBT_VERSION              Pin a specific release (e.g. '1.2.3')
+        $env:WBT_NO_MCP               '1' = skip `claude mcp add`
+        $env:WBT_NO_PROMPT            '1' = skip wizard, write empty placeholders
+        $env:WBT_INSECURE_SKIP_VERIFY '1' = skip cosign verification (NOT RECOMMENDED).
+                                      Default behaviour is fail-closed: cosign + sig + cert
+                                      MUST all be present and the signature MUST verify,
+                                      otherwise installation aborts. (PR #85 R3 / S-N1)
 
     Exit codes:
         0  success
@@ -33,10 +36,10 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version       = $env:WBT_VERSION,
-    [switch]$NoMcp         = ($env:WBT_NO_MCP -eq '1'),
-    [switch]$NoPrompt      = ($env:WBT_NO_PROMPT -eq '1'),
-    [switch]$StrictVerify  = ($env:WBT_STRICT_VERIFY -eq '1')
+    [string]$Version           = $env:WBT_VERSION,
+    [switch]$NoMcp             = ($env:WBT_NO_MCP -eq '1'),
+    [switch]$NoPrompt          = ($env:WBT_NO_PROMPT -eq '1'),
+    [switch]$InsecureSkipVerify = ($env:WBT_INSECURE_SKIP_VERIFY -eq '1')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,8 +58,10 @@ $RepoName  = 'wayneblacktea'
 $GitHubApi = "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
 $GitHubDl  = "https://github.com/$RepoOwner/$RepoName/releases/download"
 
-# cosign keyless verification — sigstore certificate identity / OIDC issuer
-$CosignCertIdentityRegex = 'https://github.com/Wayne997035/wayneblacktea/.*'
+# cosign keyless verification — sigstore certificate identity / OIDC issuer.
+# Anchored regex (^...$) to prevent prefix/suffix injection attacks; restricts
+# to the release.yml workflow on a semver tag. (PR #85 R3 / S-N2)
+$CosignCertIdentityRegex = '^https://github\.com/Wayne997035/wayneblacktea/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 $CosignOidcIssuer        = 'https://token.actions.githubusercontent.com'
 
 $InstallDir = Join-Path $env:LOCALAPPDATA 'wayneblacktea\bin'
@@ -88,18 +93,31 @@ function Get-Architecture {
 }
 
 function Get-LatestVersion {
-    if ($Version) { return $Version.TrimStart('v') }
-    Write-Info "fetching latest release tag from GitHub"
-    try {
-        $headers = @{ 'User-Agent' = 'wayneblacktea-installer' }
-        $resp = Invoke-RestMethod -Uri $GitHubApi -Headers $headers -UseBasicParsing
-    } catch {
-        Stop-WithError "failed to query GitHub releases API: $($_.Exception.Message)" 2
+    # Resolves and STRICTLY validates the version string against semver before
+    # any URL interpolation, so a hostile $env:WBT_VERSION cannot inject path or
+    # query-string components into the GitHub release URL.
+    # (PR #85 R3 / S-N3)
+    $resolved = $null
+    if ($Version) {
+        $resolved = $Version
+    } else {
+        Write-Info "fetching latest release tag from GitHub"
+        try {
+            $headers = @{ 'User-Agent' = 'wayneblacktea-installer' }
+            $resp = Invoke-RestMethod -Uri $GitHubApi -Headers $headers -UseBasicParsing
+        } catch {
+            Stop-WithError "failed to query GitHub releases API: $($_.Exception.Message)" 2
+        }
+        if (-not $resp.tag_name) {
+            Stop-WithError "GitHub releases response missing tag_name" 2
+        }
+        $resolved = $resp.tag_name
     }
-    if (-not $resp.tag_name) {
-        Stop-WithError "GitHub releases response missing tag_name" 2
+    $resolved = $resolved.TrimStart('v')
+    if ($resolved -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$') {
+        Stop-WithError "invalid version format: $resolved (expected MAJOR.MINOR.PATCH[-prerelease])" 1
     }
-    return ($resp.tag_name.TrimStart('v'))
+    return $resolved
 }
 
 function Get-ChecksumMap {
@@ -144,45 +162,47 @@ function Invoke-VerifiedDownload {
     Test-FileSha256 -Path $OutFile -Expected $ChecksumMap[$name]
 }
 
-# Invoke-CosignVerify verifies checksums.txt authenticity using cosign keyless
-# mode. When cosign is unavailable: abort if -StrictVerify, otherwise warn and
-# continue. (Round 2 / S-M2)
+# Invoke-CosignVerify verifies checksums.txt authenticity using cosign keyless mode.
+#
+# DEFAULT: fail-closed. If cosign is missing OR the signature/cert artefacts
+# are missing OR verification fails, the installer aborts. This prevents an
+# attacker who can MITM (or 404-spoof) the .sig/.pem from forcing a
+# warn-and-proceed code path.
+#
+# Escape hatch (NOT RECOMMENDED): set $env:WBT_INSECURE_SKIP_VERIFY=1 to skip
+# the entire signature step. (PR #85 R3 / S-N1)
 function Invoke-CosignVerify {
     param(
         [string]$ChecksumsPath,
         [string]$SignaturePath,
         [string]$CertificatePath
     )
+    if ($InsecureSkipVerify) {
+        Write-Warn2 "WBT_INSECURE_SKIP_VERIFY=1 — skipping cosign verification (NOT RECOMMENDED for production installs)"
+        return
+    }
     $cosign = Get-Command cosign -ErrorAction SilentlyContinue
     if ($null -eq $cosign) {
-        if ($StrictVerify) {
-            Stop-WithError "cosign not installed and WBT_STRICT_VERIFY=1 — abort (install: https://docs.sigstore.dev/cosign/installation/)" 2
-        }
-        Write-Warn2 "cosign not installed; checksum integrity verified but authenticity NOT verified"
-        Write-Warn2 "set `$env:WBT_STRICT_VERIFY=1 to require cosign verification (recommended)"
-        return
+        Stop-WithError "cosign not installed — install cosign or set `$env:WBT_INSECURE_SKIP_VERIFY=1 to bypass (not recommended). https://docs.sigstore.dev/system_config/installation/" 2
     }
     if (-not (Test-Path $SignaturePath) -or ((Get-Item $SignaturePath).Length -eq 0)) {
-        if ($StrictVerify) {
-            Stop-WithError "WBT_STRICT_VERIFY=1 but signature artifact unavailable" 2
-        }
-        Write-Warn2 "signature file missing or empty — skipping cosign verification"
-        return
+        Stop-WithError "signature file $SignaturePath missing/empty — refusing to install. Set `$env:WBT_INSECURE_SKIP_VERIFY=1 to bypass (NOT RECOMMENDED)." 2
+    }
+    if (-not (Test-Path $CertificatePath) -or ((Get-Item $CertificatePath).Length -eq 0)) {
+        Stop-WithError "certificate file $CertificatePath missing/empty — refusing to install. Set `$env:WBT_INSECURE_SKIP_VERIFY=1 to bypass (NOT RECOMMENDED)." 2
     }
     Write-Info "verifying checksums.txt signature with cosign"
-    $args = @(
+    $cosignArgs = @(
         'verify-blob',
         '--certificate-identity-regexp', $CosignCertIdentityRegex,
         '--certificate-oidc-issuer',     $CosignOidcIssuer,
-        '--signature',                   $SignaturePath
+        '--certificate',                 $CertificatePath,
+        '--signature',                   $SignaturePath,
+        $ChecksumsPath
     )
-    if ((Test-Path $CertificatePath) -and ((Get-Item $CertificatePath).Length -gt 0)) {
-        $args += @('--certificate', $CertificatePath)
-    }
-    $args += $ChecksumsPath
-    & cosign @args 2>$null | Out-Null
+    & cosign @cosignArgs 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Stop-WithError "cosign verify-blob failed — refusing to install unsigned/altered checksums" 2
+        Stop-WithError "cosign verification failed" 2
     }
     Write-Info "cosign signature OK"
 }
