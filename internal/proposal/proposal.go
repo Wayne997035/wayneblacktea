@@ -18,6 +18,13 @@ const (
 	TypeConcept   Type = "concept"
 	TypeKnowledge Type = "knowledge"
 	TypePlaybook  Type = "playbook"
+	// TypeDecision is created by the auto-decision-proposer middleware
+	// (internal/mcp/middleware_decision_proposer.go) when a mutating MCP
+	// tool fires without a recent log_decision/confirm_plan in the same
+	// session. Payload shape: {title, decision, rationale, alternatives,
+	// session_id, trigger_tool}. confirm_proposal materialises an accepted
+	// row into the `decisions` table.
+	TypeDecision Type = "decision"
 )
 
 // Status is the lifecycle of a proposal record.

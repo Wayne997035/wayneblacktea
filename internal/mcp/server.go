@@ -98,6 +98,11 @@ type Server struct {
 	// workspaceID is populated from WORKSPACE_ID env at New time for use by
 	// tools that need to scope snapshot writes without a pgxpool reference.
 	workspaceID *uuid.UUID
+
+	// drafter is the LLM-backed decision proposer used by the
+	// decisionProposerMiddleware. nil = middleware is a no-op (no LLM
+	// configured or operator opted out via WBT_DISABLE_AUTO_DECISIONS).
+	drafter *ai.DecisionDrafter
 }
 
 // New creates a Server backed by the given pre-built ServerStores bundle.
@@ -165,6 +170,15 @@ func (s *Server) workspaceUUID() *uuid.UUID {
 // auto-classification (e.g. when CLAUDE_API_KEY is not set).
 func (s *Server) WithClassifier(clf *ai.ActivityClassifier) *Server {
 	s.classifier = clf
+	return s
+}
+
+// WithDecisionDrafter wires the LLM-backed decision drafter used by the
+// decisionProposerMiddleware. nil drafter (or a drafter with a nil chain)
+// disables the proposer — the middleware itself remains registered but
+// returns early without calling the LLM.
+func (s *Server) WithDecisionDrafter(d *ai.DecisionDrafter) *Server {
+	s.drafter = d
 	return s
 }
 
@@ -255,6 +269,11 @@ func (s *Server) MCPServer() *server.MCPServer {
 		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 		server.WithToolHandlerMiddleware(s.autoLogMiddleware()),
 		server.WithToolHandlerMiddleware(s.disciplineMiddleware()),
+		// Auto-decision proposer: default ON, opt-out via
+		// WBT_DISABLE_AUTO_DECISIONS=1. Drafts a pending_proposals row
+		// after every mutating tool when no log_decision/confirm_plan
+		// happened in the last 15 min. See middleware_decision_proposer.go.
+		server.WithToolHandlerMiddleware(s.decisionProposerMiddleware()),
 	)
 	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)

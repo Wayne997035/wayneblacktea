@@ -64,6 +64,10 @@ func (m *mockGTDStore) ProjectByName(_ context.Context, _ string) (*db.Project, 
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) ProjectsByRepoName(_ context.Context, _ string) ([]db.Project, error) {
+	return nil, nil
+}
+
 func (m *mockGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParams) (*db.Project, error) {
 	return nil, errMockNotImpl
 }
