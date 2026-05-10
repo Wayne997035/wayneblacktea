@@ -98,7 +98,39 @@
     "from": "From",
     "to": "To",
     "dateFrom": "Date from",
-    "dateTo": "Date to"
+    "dateTo": "Date to",
+    "newDecision": "New Decision",
+    "modal": {
+      "titleCreate": "Log Decision",
+      "titleLabel": "Title",
+      "titlePlaceholder": "What was decided in one line?",
+      "contextLabel": "Context",
+      "contextPlaceholder": "What prompted this decision?",
+      "decisionLabel": "Decision",
+      "decisionPlaceholder": "What did we decide?",
+      "rationaleLabel": "Rationale",
+      "rationalePlaceholder": "Why this and not the alternatives?",
+      "alternativesLabel": "Alternatives",
+      "alternativesPlaceholder": "Other options considered",
+      "repoLabel": "Repo",
+      "repoPlaceholder": "free-text repo name",
+      "projectLabel": "Project",
+      "projectPlaceholderNone": "—",
+      "submit": "Log decision",
+      "createdToast": "Decision logged",
+      "errors": {
+        "titleRequired": "Title is required",
+        "titleTooLong": "Title must be 200 characters or fewer",
+        "contextRequired": "Context is required",
+        "contextTooLong": "Context must be 4000 characters or fewer",
+        "decisionRequired": "Decision is required",
+        "decisionTooLong": "Decision must be 4000 characters or fewer",
+        "rationaleRequired": "Rationale is required",
+        "rationaleTooLong": "Rationale must be 4000 characters or fewer",
+        "alternativesTooLong": "Alternatives must be 4000 characters or fewer",
+        "repoTooLong": "Repo name must be 80 characters or fewer"
+      }
+    }
   },
   "common": {
     "loading": "Loading...",
@@ -107,7 +139,66 @@
     "save": "Save",
     "cancel": "Cancel",
     "add": "Add",
-    "retry": "Retry"
+    "retry": "Retry",
+    "submitting": "Saving…",
+    "charCount": "{{count}} / {{max}}",
+    "errors": {
+      "saveFailed": "Could not save. Try again.",
+      "invalidInput": "Some fields are invalid.",
+      "rateLimited": "Too many requests. Try again in a moment.",
+      "unsavedChanges": "Discard your changes?"
+    }
+  },
+  "goals": {
+    "modal": {
+      "titleCreate": "Add Goal",
+      "titleLabel": "Title",
+      "titlePlaceholder": "Goal title…",
+      "areaLabel": "Area",
+      "areaPlaceholder": "e.g. Career, Health…",
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "What does achieving this goal look like?",
+      "targetDateLabel": "Target date",
+      "submitCreate": "Add goal",
+      "createdToast": "Goal created",
+      "errors": {
+        "titleRequired": "Title is required",
+        "titleTooLong": "Title must be 200 characters or fewer",
+        "areaTooLong": "Area must be 80 characters or fewer",
+        "descriptionTooLong": "Description must be 2000 characters or fewer",
+        "dateInvalid": "Invalid date"
+      }
+    }
+  },
+  "projects": {
+    "modal": {
+      "titleCreate": "Add Project",
+      "titleLabel": "Title",
+      "titlePlaceholder": "Project title…",
+      "nameLabel": "Repo / slug name",
+      "namePlaceholder": "kebab-case identifier…",
+      "nameHint": "Lowercase letters, digits, and hyphens",
+      "nameSuggestion": "Suggested: {{slug}}",
+      "areaLabel": "Area",
+      "areaPlaceholder": "e.g. Engineering, Product…",
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "What is this project about?",
+      "goalLabel": "Linked goal",
+      "goalPlaceholderNone": "—",
+      "priorityLabel": "Priority",
+      "submitCreate": "Add project",
+      "createdToast": "Project created",
+      "errors": {
+        "titleRequired": "Title is required",
+        "titleTooLong": "Title must be 200 characters or fewer",
+        "nameRequired": "Slug is required",
+        "nameSlugInvalid": "Use lowercase letters, digits, and single hyphens only",
+        "nameTooLong": "Slug must be 64 characters or fewer",
+        "nameExists": "A project with this slug already exists",
+        "areaTooLong": "Area must be 80 characters or fewer",
+        "descriptionTooLong": "Description must be 2000 characters or fewer"
+      }
+    }
   },
   "error": {
     "loadFailed": "Failed to load",
