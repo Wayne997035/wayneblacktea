@@ -46,3 +46,19 @@ UPDATE concepts
 SET status = sqlc.arg('status'), updated_at = NOW()
 WHERE id = sqlc.arg('id')
 RETURNING *;
+
+-- name: ListConcepts :many
+SELECT * FROM concepts
+WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit_n');
+
+-- name: ReviewedSince :many
+SELECT rs.id, c.title, rs.due_date
+FROM review_schedule rs
+JOIN concepts c ON c.id = rs.concept_id
+WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR rs.workspace_id = sqlc.narg('workspace_id'))
+  AND rs.last_review_at >= sqlc.arg('since')
+  AND rs.last_review_at IS NOT NULL
+ORDER BY rs.last_review_at DESC
+LIMIT sqlc.arg('limit_n');

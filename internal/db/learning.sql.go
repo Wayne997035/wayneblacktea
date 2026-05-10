@@ -112,6 +112,52 @@ func (q *Queries) GetConceptByID(ctx context.Context, arg GetConceptByIDParams) 
 	return i, err
 }
 
+const listConcepts = `-- name: ListConcepts :many
+SELECT id, title, content, tags, created_at, updated_at, workspace_id, status, importance, recall_count, last_recalled_at, base_lambda, archived_at FROM concepts
+WHERE ($1::uuid IS NULL OR workspace_id = $1)
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+type ListConceptsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
+}
+
+func (q *Queries) ListConcepts(ctx context.Context, arg ListConceptsParams) ([]Concept, error) {
+	rows, err := q.db.Query(ctx, listConcepts, arg.WorkspaceID, arg.LimitN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Concept
+	for rows.Next() {
+		var i Concept
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Content,
+			&i.Tags,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.WorkspaceID,
+			&i.Status,
+			&i.Importance,
+			&i.RecallCount,
+			&i.LastRecalledAt,
+			&i.BaseLambda,
+			&i.ArchivedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConceptsForAIReview = `-- name: ListConceptsForAIReview :many
 SELECT c.id, c.title, c.content, rs.review_count, rs.stability
 FROM concepts c
@@ -216,6 +262,49 @@ func (q *Queries) ListDueReviews(ctx context.Context, arg ListDueReviewsParams) 
 			&i.DueDate,
 			&i.ReviewCount,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reviewedSince = `-- name: ReviewedSince :many
+SELECT rs.id, c.title, rs.due_date
+FROM review_schedule rs
+JOIN concepts c ON c.id = rs.concept_id
+WHERE ($1::uuid IS NULL OR rs.workspace_id = $1)
+  AND rs.last_review_at >= $2
+  AND rs.last_review_at IS NOT NULL
+ORDER BY rs.last_review_at DESC
+LIMIT $3
+`
+
+type ReviewedSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	LimitN      int32              `json:"limit_n"`
+}
+
+type ReviewedSinceRow struct {
+	ID      uuid.UUID          `json:"id"`
+	Title   string             `json:"title"`
+	DueDate pgtype.Timestamptz `json:"due_date"`
+}
+
+func (q *Queries) ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error) {
+	rows, err := q.db.Query(ctx, reviewedSince, arg.WorkspaceID, arg.Since, arg.LimitN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ReviewedSinceRow
+	for rows.Next() {
+		var i ReviewedSinceRow
+		if err := rows.Scan(&i.ID, &i.Title, &i.DueDate); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -324,6 +324,46 @@ func (s *Store) LearningStats(ctx context.Context) (*LearningStatsResult, error)
 	return &result, nil
 }
 
+// ListConcepts returns up to limit concepts ordered by created_at DESC,
+// scoped to the configured workspace.
+func (s *Store) ListConcepts(ctx context.Context, limit int) ([]db.Concept, error) {
+	rows, err := s.q.ListConcepts(ctx, db.ListConceptsParams{
+		WorkspaceID: s.workspaceID,
+		LimitN:      int32(limit), //nolint:gosec // limit is bounded by caller (10000 max)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing concepts: %w", err)
+	}
+	out := make([]db.Concept, 0, len(rows))
+	out = append(out, rows...)
+	return out, nil
+}
+
+// ReviewedSince returns DueReview entries whose last_review_at >= since,
+// scoped to the configured workspace. Used by the timeline aggregator.
+func (s *Store) ReviewedSince(ctx context.Context, since time.Time, limit int) ([]DueReview, error) {
+	rows, err := s.q.ReviewedSince(ctx, db.ReviewedSinceParams{
+		WorkspaceID: s.workspaceID,
+		Since:       pgtype.Timestamptz{Time: since, Valid: true},
+		LimitN:      int32(limit), //nolint:gosec // limit is bounded by caller (10000 max)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reviewed since %s: %w", since, err)
+	}
+	out := make([]DueReview, 0, len(rows))
+	for _, r := range rows {
+		dr := DueReview{
+			ScheduleID: r.ID,
+			Title:      r.Title,
+		}
+		if r.DueDate.Valid {
+			dr.DueDate = r.DueDate.Time
+		}
+		out = append(out, dr)
+	}
+	return out, nil
+}
+
 // SoftPruneDecayed implements decay.PrunerStore for the concepts table.
 // It sets archived_at=NOW() on concepts that are:
 //   - not already archived (archived_at IS NULL)

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -10,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/timeline"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
@@ -126,6 +128,12 @@ type visionStore interface {
 	Add(ctx context.Context, p vision.AddVisionParams) (*vision.VisionItem, error)
 	List(ctx context.Context, filter vision.ListVisionFilter) ([]vision.VisionItemSummary, error)
 	Update(ctx context.Context, id uuid.UUID, p vision.UpdateVisionParams) (*vision.VisionItem, error)
+}
+
+// timelineAggregator is the narrow interface TimelineHandler needs.
+// *timeline.Aggregator satisfies this interface.
+type timelineAggregator interface {
+	Aggregate(ctx context.Context, from, to time.Time) ([]timeline.Event, error)
 }
 
 // errResp returns a standard error response body.

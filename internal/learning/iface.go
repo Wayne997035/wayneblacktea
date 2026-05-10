@@ -62,6 +62,12 @@ type StoreIface interface {
 	ReviewHistory(ctx context.Context) ([]ConceptHistoryRow, error)
 	// LearningStats returns aggregate stats across all concepts and reviews.
 	LearningStats(ctx context.Context) (*LearningStatsResult, error)
+	// ListConcepts returns up to limit concepts ordered by created_at DESC,
+	// scoped to the configured workspace.
+	ListConcepts(ctx context.Context, limit int) ([]db.Concept, error)
+	// ReviewedSince returns review_schedule rows where last_review_at >= since,
+	// scoped to the configured workspace. Used by the timeline aggregator.
+	ReviewedSince(ctx context.Context, since time.Time, limit int) ([]DueReview, error)
 }
 
 var _ StoreIface = (*Store)(nil)

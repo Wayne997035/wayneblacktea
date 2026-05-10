@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/google/uuid"
@@ -28,6 +29,9 @@ type StoreIface interface {
 	// SearchByCosine returns the top-limit handoffs most similar to queryEmbedding.
 	// SECURITY: scoped to workspace_id.
 	SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.SessionHandoff, error)
+	// HandoffsSince returns handoffs created or resolved on or after since,
+	// scoped to the configured workspace. Used by the timeline aggregator.
+	HandoffsSince(ctx context.Context, since time.Time, limit int) ([]db.SessionHandoff, error)
 }
 
 var _ StoreIface = (*Store)(nil)

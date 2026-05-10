@@ -37,12 +37,14 @@ type Querier interface {
 	GetProjectByName(ctx context.Context, arg GetProjectByNameParams) (Project, error)
 	GetRepoByName(ctx context.Context, arg GetRepoByNameParams) (Repo, error)
 	GetTasksByProject(ctx context.Context, arg GetTasksByProjectParams) ([]Task, error)
+	HandoffsSince(ctx context.Context, arg HandoffsSinceParams) ([]SessionHandoff, error)
 	ListActiveGoals(ctx context.Context, workspaceID pgtype.UUID) ([]Goal, error)
 	// All queries take workspace_id as the named nullable arg @workspace_id.
 	// NULL → no filter (legacy mode); UUID → strict per-workspace scope.
 	ListActiveProjects(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error)
 	ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) ([]Repo, error)
 	ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error)
+	ListConcepts(ctx context.Context, arg ListConceptsParams) ([]Concept, error)
 	ListConceptsForAIReview(ctx context.Context, arg ListConceptsForAIReviewParams) ([]ListConceptsForAIReviewRow, error)
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
@@ -51,6 +53,7 @@ type Querier interface {
 	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
 	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
 	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
+	ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error)
 	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
 	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
 	UpdateKnowledgeEmbedding(ctx context.Context, arg UpdateKnowledgeEmbeddingParams) error

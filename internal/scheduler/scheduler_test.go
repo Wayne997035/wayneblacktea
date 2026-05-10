@@ -64,6 +64,14 @@ func (s *stubLearningStore) LearningStats(_ context.Context) (*learning.Learning
 	return &learning.LearningStatsResult{}, nil
 }
 
+func (s *stubLearningStore) ListConcepts(_ context.Context, _ int) ([]db.Concept, error) {
+	return nil, nil
+}
+
+func (s *stubLearningStore) ReviewedSince(_ context.Context, _ time.Time, _ int) ([]learning.DueReview, error) {
+	return nil, nil
+}
+
 // --- ai.ConceptReviewerIface stub ---
 
 type stubReviewer struct {
