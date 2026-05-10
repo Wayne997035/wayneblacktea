@@ -83,6 +83,15 @@ Run once when enabling workspace scoping on an existing database with NULL `work
 
 Affected tables (11): `goals`, `projects`, `tasks`, `activity_log`, `repos`, `decisions`, `session_handoffs`, `knowledge_items`, `concepts`, `review_schedule`, `pending_proposals`.
 
+> **Note on legacy 000011 backfill** — the original `migrations/000011_backfill_workspace_id.up.sql`
+> used psql metacommands (`\set`) that golang-migrate cannot parse. It has been
+> moved out of the embedded `migrations/` tree to
+> `scripts/manual/000011_backfill_workspace_id.psql` so fresh-DB spinup no
+> longer fails. A no-op marker (`migrations/000036_legacy_011_marker.up.sql`)
+> keeps the historical schema_migrations row consistent. The canonical SOP
+> below uses 000015 (no metacommands, plain SQL) and is the recommended path
+> for any new install.
+
 ### Step 1 — generate a personal UUID
 
 ```bash

@@ -1,0 +1,14 @@
+-- Marker migration: 000011_backfill_workspace_id was originally a psql script
+-- (\set + variable substitution) that golang-migrate cannot parse. Fresh-DB
+-- spinup, DR replay, and any operator running `task migrate-up` would either
+-- fail outright or silently no-op against the broken file.
+--
+-- Resolution: the original up.sql / down.sql have been moved out of the
+-- embedded migrations/ tree to scripts/manual/000011_backfill_workspace_id.psql
+-- where it is run manually with explicit psql variable binding. See
+-- docs/runbook.md "Initial backfill" for the procedure.
+--
+-- This file exists only so the historical schema_migrations row 000011 stays
+-- consistent on databases that already applied the original (or skipped it
+-- via the test-suite skipMigrations map). It MUST remain a no-op forever.
+SELECT 1;
