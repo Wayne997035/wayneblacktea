@@ -289,7 +289,18 @@ func migrationGlobExists(kw, boundary string) bool {
 	if err != nil {
 		return false
 	}
-	return len(matches) > 0
+	// Defence in depth: a user-planted migrations/ symlink to outside dir
+	// would otherwise let glob results escape boundary (CWE-59 carry-over).
+	for _, m := range matches {
+		resolved, err := filepath.EvalSymlinks(m)
+		if err != nil {
+			continue
+		}
+		if resolved == boundary || strings.HasPrefix(resolved, boundary+sep) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxDriftCandidates caps the number of drift candidates returned per
