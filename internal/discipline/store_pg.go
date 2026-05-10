@@ -68,6 +68,13 @@ const eventSelectCols = `id, session_id, repo_name, tool_name, is_mutating, obse
 
 // RecentMutating returns mutating events from the workspace observed at or
 // after `since`, newest first, capped at limit.
+//
+// Scoping: when the store has a workspaceID set, only rows with that exact
+// workspace_id are returned. When the store has no workspaceID (legacy /
+// SQLite single-tenant mode), only rows whose workspace_id IS NULL are
+// returned. The two are disjoint — there is no fallback that lets an
+// unscoped store see scoped rows or vice-versa, so cross-workspace
+// observability data cannot leak across stores.
 func (s *PgStore) RecentMutating(ctx context.Context, since time.Time, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = 100
@@ -75,7 +82,7 @@ func (s *PgStore) RecentMutating(ctx context.Context, since time.Time, limit int
 	const q = `SELECT ` + eventSelectCols + ` FROM discipline_events
 		WHERE is_mutating = TRUE
 		  AND observed_at >= $1
-		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		  AND (workspace_id = $2 OR ($2::uuid IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
 		LIMIT $3`
 	rows, err := s.pool.Query(ctx, q, since, s.workspaceID, limit)
@@ -102,12 +109,16 @@ func (s *PgStore) RecentMutating(ctx context.Context, since time.Time, limit int
 // confirm_plan events in the given session at or after `since`, newest first.
 // We cap the row count at 200 to bound worst-case load even if a single
 // session has thousands of decisions.
+//
+// Scoping mirrors RecentMutating: scoped store sees only its own
+// workspace_id; unscoped store sees only NULL workspace_id rows. The two
+// are disjoint to prevent cross-workspace leak.
 func (s *PgStore) RecentDecisionTimes(ctx context.Context, sessionID string, since time.Time) ([]time.Time, error) {
 	const q = `SELECT observed_at FROM discipline_events
 		WHERE session_id = $1
 		  AND tool_name IN ('log_decision', 'confirm_plan')
 		  AND observed_at >= $2
-		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		  AND (workspace_id = $3 OR ($3::uuid IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
 		LIMIT 200`
 	rows, err := s.pool.Query(ctx, q, sessionID, since, s.workspaceID)

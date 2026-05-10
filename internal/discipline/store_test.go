@@ -251,4 +251,147 @@ func TestPgStore_WorkspaceScoping(t *testing.T) {
 	}
 }
 
+// TestPgStore_StrictWorkspaceScoping verifies the disjoint scoping
+// introduced in PR #87 R2 (M2): a scoped store sees only its own
+// workspace_id rows and an unscoped store sees only NULL workspace_id rows.
+// Prevents legacy NULL-workspace data or other-workspace data leaking into
+// a workspace-scoped read in PG mode (where DATABASE_URL + missing
+// WORKSPACE_ID would otherwise be a cross-tenant leak).
+func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	ctx := context.Background()
+
+	storeA := discipline.NewPgStore(pool, &wsA)
+	storeB := discipline.NewPgStore(pool, &wsB)
+	storeUnscoped := discipline.NewPgStore(pool, nil)
+
+	// Seed three rows: A, B, NULL.
+	if err := storeA.Insert(ctx, discipline.InsertParams{
+		SessionID:  "ws-scope-A",
+		ToolName:   "add_task",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	if err := storeB.Insert(ctx, discipline.InsertParams{
+		SessionID:  "ws-scope-B",
+		ToolName:   "complete_task",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+	if err := storeUnscoped.Insert(ctx, discipline.InsertParams{
+		SessionID:  "ws-scope-NULL",
+		ToolName:   "log_decision",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert NULL: %v", err)
+	}
+
+	t.Run("scoped store reads only its own workspace", func(t *testing.T) {
+		got, err := storeA.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
+		if err != nil {
+			t.Fatalf("storeA RecentMutating: %v", err)
+		}
+		// Filter to the rows we just seeded (the test PG pool may have
+		// other rows from earlier subtests in the same package run).
+		var sessions []string
+		for _, ev := range got {
+			sessions = append(sessions, ev.SessionID)
+		}
+		if !containsExactly(sessions, "ws-scope-A") {
+			t.Errorf("storeA: expected only ws-scope-A in seeded set, got %+v", sessions)
+		}
+	})
+
+	t.Run("scoped store does NOT see legacy NULL workspace rows", func(t *testing.T) {
+		got, err := storeA.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
+		if err != nil {
+			t.Fatalf("storeA RecentMutating: %v", err)
+		}
+		for _, ev := range got {
+			if ev.SessionID == "ws-scope-NULL" {
+				t.Errorf("storeA leaked NULL row: %+v", ev)
+			}
+			if ev.SessionID == "ws-scope-B" {
+				t.Errorf("storeA leaked B row: %+v", ev)
+			}
+		}
+	})
+
+	t.Run("unscoped store sees only NULL workspace rows", func(t *testing.T) {
+		got, err := storeUnscoped.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
+		if err != nil {
+			t.Fatalf("unscoped RecentMutating: %v", err)
+		}
+		for _, ev := range got {
+			if ev.SessionID == "ws-scope-A" || ev.SessionID == "ws-scope-B" {
+				t.Errorf("unscoped store leaked scoped row: %+v", ev)
+			}
+		}
+		// And the NULL row IS visible.
+		if !containsSession(got, "ws-scope-NULL") {
+			t.Errorf("unscoped store missing NULL row; got %d events", len(got))
+		}
+	})
+
+	t.Run("RecentDecisionTimes also enforces strict scoping", func(t *testing.T) {
+		// Seed log_decision with the same session in both A and B; A's
+		// scoped read should see only one timestamp, not both.
+		if err := storeA.Insert(ctx, discipline.InsertParams{
+			SessionID:  "shared-decisions",
+			ToolName:   "log_decision",
+			IsMutating: true,
+		}); err != nil {
+			t.Fatalf("insert decision A: %v", err)
+		}
+		if err := storeB.Insert(ctx, discipline.InsertParams{
+			SessionID:  "shared-decisions",
+			ToolName:   "confirm_plan",
+			IsMutating: true,
+		}); err != nil {
+			t.Fatalf("insert decision B: %v", err)
+		}
+
+		got, err := storeA.RecentDecisionTimes(ctx, "shared-decisions", time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatalf("RecentDecisionTimes: %v", err)
+		}
+		if len(got) != 1 {
+			t.Errorf("RecentDecisionTimes: want 1 (workspace A only), got %d", len(got))
+		}
+	})
+}
+
+// containsExactly returns true if the only sessions present in the slice
+// (intersected with the seeded set) is the expected one. Tolerant of
+// pollution from other test rows in the shared PG pool.
+func containsExactly(got []string, want string) bool {
+	seeded := map[string]bool{
+		"ws-scope-A": true, "ws-scope-B": true, "ws-scope-NULL": true,
+	}
+	hits := 0
+	for _, s := range got {
+		if !seeded[s] {
+			continue
+		}
+		if s != want {
+			return false
+		}
+		hits++
+	}
+	return hits == 1
+}
+
+func containsSession(got []discipline.Event, want string) bool {
+	for _, ev := range got {
+		if ev.SessionID == want {
+			return true
+		}
+	}
+	return false
+}
+
 func ptrUUID(id uuid.UUID) *uuid.UUID { return &id }

@@ -14,7 +14,16 @@ import (
 // Used by every test in this file so each test gets a fresh schema.
 func openDisciplineDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	return openDisciplineDBWS(t, "")
+}
+
+// openDisciplineDBWS opens an in-memory SQLite DB scoped to the given
+// workspace string. Empty string = unscoped (legacy single-tenant) mode.
+// Used to verify strict workspace scoping in RecentMutating /
+// RecentDecisionTimes.
+func openDisciplineDBWS(t *testing.T, workspaceID string) *wbtsqlite.DB {
+	t.Helper()
+	db, err := wbtsqlite.Open(context.Background(), ":memory:", workspaceID)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -28,11 +37,13 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 	linkedID := uuid.New()
 
 	tests := []struct {
-		name   string
-		params discipline.InsertParams
+		name        string
+		dbWorkspace string // workspace scope of the DB (matches InsertParams' workspace when set)
+		params      discipline.InsertParams
 	}{
 		{
-			name: "happy path mutating event with all fields",
+			name:        "happy path mutating event with all fields",
+			dbWorkspace: wsID.String(),
 			params: discipline.InsertParams{
 				SessionID:        "mcp-1234-5678",
 				RepoName:         "wayneblacktea",
@@ -62,7 +73,7 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openDisciplineDB(t)
+			db := openDisciplineDBWS(t, tc.dbWorkspace)
 			store := wbtsqlite.NewDisciplineStore(db)
 
 			if err := store.Insert(ctx, tc.params); err != nil {
@@ -199,4 +210,175 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 			t.Errorf("expected 0 decisions past future cutoff, got %d", len(got))
 		}
 	})
+}
+
+// Strict-workspace-scoping suite (PR #87 R2 / M2): split into 4 top-level
+// tests rather than a single t.Run-heavy func to keep gocyclo happy and
+// give a clearer failure mode per scenario.
+
+// TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace:
+// scoped store sees only its own workspace_id rows and never the other
+// workspace's, even when both rows are written through the same store.
+func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *testing.T) {
+	ctx := context.Background()
+	wsA := uuid.New()
+	wsB := uuid.New()
+
+	db := openDisciplineDBWS(t, wsA.String())
+	store := wbtsqlite.NewDisciplineStore(db)
+
+	// Row in workspace A (via store scope fall-through).
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:  "sA",
+		ToolName:   "add_task",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	// Row in workspace B (explicit override on a store scoped to A).
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:   "sB",
+		ToolName:    "complete_task",
+		IsMutating:  true,
+		WorkspaceID: &wsB,
+	}); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+
+	got, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
+	if err != nil {
+		t.Fatalf("RecentMutating: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("scoped read: want 1 event, got %d (%+v)", len(got), got)
+	}
+	if got[0].SessionID != "sA" {
+		t.Errorf("scoped read leaked from B: %s", got[0].SessionID)
+	}
+}
+
+// TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL: scoped
+// store does NOT see legacy NULL-workspace rows, preventing pre-migration
+// data from leaking into a multi-tenant scoped read.
+func TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL(t *testing.T) {
+	ctx := context.Background()
+	wsA := uuid.New()
+
+	db := openDisciplineDBWS(t, wsA.String())
+	store := wbtsqlite.NewDisciplineStore(db)
+
+	// Workspace-A row.
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:  "sA",
+		ToolName:   "add_task",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	// Legacy NULL-workspace row. The store's workspace scope is on the
+	// DB, so to write a NULL row we go through the raw conn.
+	const insertNullSQL = `INSERT INTO discipline_events
+		(session_id, repo_name, tool_name, is_mutating, observed_at, workspace_id)
+		VALUES (?, NULL, ?, 1, ?, NULL)`
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	if err := db.ExecContext(ctx, insertNullSQL, "sNULL", "log_decision", now); err != nil {
+		t.Fatalf("insert NULL row: %v", err)
+	}
+
+	got, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
+	if err != nil {
+		t.Fatalf("RecentMutating: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("scoped read: want 1 event (only A), got %d (%+v)", len(got), got)
+	}
+	if got[0].SessionID != "sA" {
+		t.Errorf("scoped read leaked NULL row: %s", got[0].SessionID)
+	}
+}
+
+// TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL: an
+// unscoped store sees only NULL-workspace rows, never scoped rows. Mirror
+// of the scoped test, ensuring the partition is symmetric.
+func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) {
+	ctx := context.Background()
+	wsA := uuid.New()
+	wsB := uuid.New()
+
+	db := openDisciplineDBWS(t, "") // unscoped
+	store := wbtsqlite.NewDisciplineStore(db)
+
+	// Three rows: A, B, NULL.
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:   "sA",
+		ToolName:    "add_task",
+		IsMutating:  true,
+		WorkspaceID: &wsA,
+	}); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:   "sB",
+		ToolName:    "complete_task",
+		IsMutating:  true,
+		WorkspaceID: &wsB,
+	}); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:  "sNULL",
+		ToolName:   "log_decision",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert NULL: %v", err)
+	}
+
+	got, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
+	if err != nil {
+		t.Fatalf("RecentMutating: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("unscoped read: want 1 (NULL only), got %d (%+v)", len(got), got)
+	}
+	if got[0].SessionID != "sNULL" {
+		t.Errorf("unscoped read leaked scoped row: %s", got[0].SessionID)
+	}
+}
+
+// TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes: the
+// decision-times read path applies the same partition rule.
+func TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes(t *testing.T) {
+	ctx := context.Background()
+	wsA := uuid.New()
+	wsB := uuid.New()
+
+	db := openDisciplineDBWS(t, wsA.String())
+	store := wbtsqlite.NewDisciplineStore(db)
+
+	// log_decision in workspace A (via scope) and confirm_plan in B
+	// (override) share session_id "shared". Scoped read must see ONLY
+	// the A timestamp.
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:  "shared",
+		ToolName:   "log_decision",
+		IsMutating: true,
+	}); err != nil {
+		t.Fatalf("insert A decision: %v", err)
+	}
+	if err := store.Insert(ctx, discipline.InsertParams{
+		SessionID:   "shared",
+		ToolName:    "confirm_plan",
+		IsMutating:  true,
+		WorkspaceID: &wsB,
+	}); err != nil {
+		t.Fatalf("insert B decision: %v", err)
+	}
+
+	got, err := store.RecentDecisionTimes(ctx, "shared", time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentDecisionTimes: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("RecentDecisionTimes: want 1 (workspace A only), got %d", len(got))
+	}
 }

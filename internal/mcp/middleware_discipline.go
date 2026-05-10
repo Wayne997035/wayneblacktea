@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -16,6 +18,42 @@ import (
 // to the caller before the goroutine even starts, so this only bounds
 // resource use, not user-facing latency.
 const disciplineRecordTimeout = 10 * time.Second
+
+// Audit-text caps for fields persisted into discipline_events. These bound
+// LLM-influenced strings (tool name + repo_name argument) before the row hits
+// the DB. See backend-security-design.md §5.4 (control-char strip + length
+// cap) and CWE-117 (log/audit injection).
+const (
+	maxToolNameRunes = 128
+	maxRepoNameRunes = 256
+)
+
+// sanitizeAuditText strips ASCII control bytes (< 0x20 except \t) and caps
+// the result at maxRunes runes. Any value with multi-byte runes counts by
+// rune (so a 256-rune cap is at most ~1 KB on UTF-8). Empty input returns
+// empty output. Matches backend-security-design.md §5.4.
+//
+// Notes:
+//   - \x1b (ANSI ESC) is < 0x20 and therefore stripped, so terminal escape
+//     sequences are removed in addition to \r / \n / \x00.
+//   - \t is preserved deliberately — repo paths and tool args occasionally
+//     legitimately contain tabs; they don't break log/CLI display.
+func sanitizeAuditText(s string, maxRunes int) string {
+	if s == "" {
+		return ""
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
+	if utf8.RuneCountInString(cleaned) > maxRunes {
+		runes := []rune(cleaned)
+		cleaned = string(runes[:maxRunes])
+	}
+	return cleaned
+}
 
 // disciplineMiddleware wraps every tool handler and, after a successful tool
 // dispatch, records a discipline_events row. The write happens in a
@@ -39,15 +77,22 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 				return res, err
 			}
 
-			tool := req.Params.Name
+			// LLM-supplied tool name + repo_name arg flow into the DB
+			// audit row; sanitise both BEFORE persist (see CWE-117 +
+			// backend-security-design.md §5.4). The original `tool` value
+			// (still available via req.Params.Name) drives behaviour like
+			// IsMutating; the sanitised `toolName` is what we persist.
+			rawTool := req.Params.Name
 			args := req.GetArguments()
-			repoName := stringArg(args, "repo_name")
+
+			toolName := sanitizeAuditText(rawTool, maxToolNameRunes)
+			repoName := sanitizeAuditText(stringArg(args, "repo_name"), maxRepoNameRunes)
 
 			params := discipline.InsertParams{
 				SessionID:   s.sessionID,
 				RepoName:    repoName,
-				ToolName:    tool,
-				IsMutating:  discipline.IsMutating(tool),
+				ToolName:    toolName,
+				IsMutating:  discipline.IsMutating(rawTool),
 				WorkspaceID: s.workspaceID,
 			}
 
@@ -59,7 +104,7 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 				defer func() {
 					if r := recover(); r != nil {
 						slog.Warn("disciplineMiddleware: panic in background goroutine",
-							"tool", tool,
+							"tool", toolName,
 							"panic", fmt.Sprintf("%v", r),
 						)
 					}
@@ -68,7 +113,7 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 				defer cancel()
 				if insertErr := s.discipline.Insert(bgCtx, params); insertErr != nil {
 					slog.Warn("disciplineMiddleware: failed to record event",
-						"tool", tool,
+						"tool", toolName,
 						"session_id", s.sessionID,
 						"is_mutating", params.IsMutating,
 						"error", insertErr,

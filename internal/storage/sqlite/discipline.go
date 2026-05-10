@@ -69,6 +69,12 @@ const disciplineSelectCols = `id, session_id, repo_name, tool_name, is_mutating,
 
 // RecentMutating returns mutating events from the configured workspace
 // observed at or after `since`, newest first, capped at limit.
+//
+// Scoping: when the DB has a workspaceID set, only rows with that exact
+// workspace_id are returned. When the DB has no workspaceID (legacy
+// single-tenant mode), only rows whose workspace_id IS NULL are returned.
+// The two are disjoint — there is no fallback that lets an unscoped store
+// see scoped rows or vice-versa. Mirrors PgStore.RecentMutating.
 func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, limit int) ([]discipline.Event, error) {
 	if limit <= 0 {
 		limit = 100
@@ -76,7 +82,7 @@ func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, l
 	const q = `SELECT ` + disciplineSelectCols + ` FROM discipline_events
 		WHERE is_mutating = 1
 		  AND observed_at >= ?1
-		  AND (?2 IS NULL OR workspace_id = ?2)
+		  AND (workspace_id = ?2 OR (?2 IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
 		LIMIT ?3`
 
@@ -103,12 +109,15 @@ func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, l
 
 // RecentDecisionTimes returns observed_at timestamps of log_decision /
 // confirm_plan events for the given session at or after `since`, newest first.
+//
+// Scoping mirrors RecentMutating: scoped DB sees only its own workspace_id;
+// unscoped DB sees only NULL workspace_id rows. The two are disjoint.
 func (s *DisciplineStore) RecentDecisionTimes(ctx context.Context, sessionID string, since time.Time) ([]time.Time, error) {
 	const q = `SELECT observed_at FROM discipline_events
 		WHERE session_id = ?1
 		  AND tool_name IN ('log_decision', 'confirm_plan')
 		  AND observed_at >= ?2
-		  AND (?3 IS NULL OR workspace_id = ?3)
+		  AND (workspace_id = ?3 OR (?3 IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
 		LIMIT 200`
 
