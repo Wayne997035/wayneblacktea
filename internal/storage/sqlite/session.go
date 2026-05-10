@@ -221,6 +221,35 @@ func (s *SessionStore) SearchByCosine(ctx context.Context, queryEmbedding []floa
 	return result, nil
 }
 
+// HandoffsByRepo returns recent handoffs whose repo_name matches repoName,
+// scoped to the configured workspace, newest first. SQLite parity with
+// session.Store.HandoffsByRepo.
+func (s *SessionStore) HandoffsByRepo(ctx context.Context, repoName string, limit int) ([]db.SessionHandoff, error) {
+	const q = `SELECT ` + sessionHandoffsSelectCols + ` FROM session_handoffs
+		WHERE repo_name = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC, rowid DESC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, repoName, s.db.workspaceArg(), limit)
+	if err != nil {
+		return nil, errWrap("HandoffsByRepo", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []db.SessionHandoff
+	for rows.Next() {
+		h, err := scanSessionHandoff(rows.Scan)
+		if err != nil {
+			return nil, errWrap("HandoffsByRepo scan", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("HandoffsByRepo iter", err)
+	}
+	return out, nil
+}
+
 // HandoffsSince returns handoffs created or resolved on or after since,
 // scoped to the configured workspace. Used by the timeline aggregator.
 func (s *SessionStore) HandoffsSince(ctx context.Context, since time.Time, limit int) ([]db.SessionHandoff, error) {

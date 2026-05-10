@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { GitBranch, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import type { Repo } from '../../types/api'
 
 interface RepoCardProps {
@@ -28,6 +29,7 @@ function LanguageBadge({ language }: { language: string | null | undefined }) {
 
 export function RepoCard({ repo }: RepoCardProps) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const [isOpen, setIsOpen] = useState(false)
   const issuesRef = useRef<HTMLUListElement>(null)
   const issues = repo.known_issues ?? []
@@ -35,9 +37,34 @@ export function RepoCard({ repo }: RepoCardProps) {
 
   const issuesId = `issues-${repo.id}`
 
+  const goToDetail = () => {
+    navigate(`/workspace/repos/${repo.id}`)
+  }
+
+  // The card is keyboard-activatable: Enter / Space triggers navigation.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      goToDetail()
+    }
+  }
+
+  // Click handler must ignore clicks bubbled up from the issues toggle so
+  // expanding known issues does not unexpectedly navigate away.
+  const handleCardClick = (e: React.MouseEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement
+    if (target.closest('[data-no-card-nav]')) return
+    goToDetail()
+  }
+
   return (
     <article
-      className="rounded-lg p-4 transition-colors"
+      role="link"
+      tabIndex={0}
+      aria-label={`Open repo ${repo.name}`}
+      onClick={handleCardClick}
+      onKeyDown={handleKeyDown}
+      className="rounded-lg p-4 transition-colors cursor-pointer focus:outline-none focus:ring-2"
       style={{
         background: 'var(--color-bg-card)',
         border: '1px solid var(--color-border)',
@@ -81,10 +108,13 @@ export function RepoCard({ repo }: RepoCardProps) {
       )}
 
       {hasIssues && (
-        <>
+        <div data-no-card-nav>
           <button
             type="button"
-            onClick={() => setIsOpen((v) => !v)}
+            onClick={(e) => {
+              e.stopPropagation()
+              setIsOpen((v) => !v)
+            }}
             aria-expanded={isOpen}
             aria-controls={issuesId}
             className="flex items-center gap-1 text-caption transition-colors"
@@ -116,7 +146,7 @@ export function RepoCard({ repo }: RepoCardProps) {
               </li>
             ))}
           </ul>
-        </>
+        </div>
       )}
     </article>
   )

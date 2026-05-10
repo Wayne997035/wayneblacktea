@@ -150,3 +150,47 @@ func TestWorkspaceStore_ContextCanceled(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestWorkspaceStore_RepoByID(t *testing.T) {
+	s := openWorkspaceStore(t, ":memory:", "")
+	ctx := context.Background()
+
+	created, err := s.UpsertRepo(ctx, workspace.UpsertRepoParams{
+		Name: "by-id", Language: "go", Description: "lookup by id",
+	})
+	if err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	t.Run("found", func(t *testing.T) {
+		got, err := s.RepoByID(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("RepoByID: %v", err)
+		}
+		if got.ID != created.ID || got.Name != "by-id" {
+			t.Errorf("unexpected repo: %+v", got)
+		}
+	})
+
+	t.Run("not found returns ErrNotFound", func(t *testing.T) {
+		_, err := s.RepoByID(ctx, uuid.New())
+		if !errors.Is(err, workspace.ErrNotFound) {
+			t.Errorf("expected workspace.ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("workspace isolation", func(t *testing.T) {
+		// repo A created in default workspace; storeB scoped to wsB cannot see it.
+		wsB := uuid.New().String()
+		dsn := "file:repo-byid-" + uuid.New().String() + "?mode=memory&cache=shared"
+		storeA := openWorkspaceStore(t, dsn, uuid.New().String())
+		storeB := openWorkspaceStore(t, dsn, wsB)
+		repoA, err := storeA.UpsertRepo(ctx, workspace.UpsertRepoParams{Name: "iso-a"})
+		if err != nil {
+			t.Fatalf("UpsertRepo: %v", err)
+		}
+		if _, err := storeB.RepoByID(ctx, repoA.ID); !errors.Is(err, workspace.ErrNotFound) {
+			t.Errorf("expected ErrNotFound across workspaces, got %v", err)
+		}
+	})
+}

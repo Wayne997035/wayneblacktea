@@ -85,7 +85,29 @@
     "syncRepos": "Refresh",
     "noRepos": "No repositories",
     "issues": "{{count}} issues",
-    "knownIssues": "Known Issues"
+    "knownIssues": "Known Issues",
+    "repoDetail": {
+      "back": "Back to workspace",
+      "branch": "Branch",
+      "lastActivity": "Last activity",
+      "nextStep": "Next planned step",
+      "completed": "COMPLETED",
+      "completedCount": "{{count}} done",
+      "noCompleted": "No completed work yet",
+      "pending": "PENDING",
+      "pendingCount": "{{count}} open",
+      "noPending": "Nothing pending",
+      "decisions": "RECENT DECISIONS",
+      "noDecisions": "No decisions logged",
+      "activity": "RECENT ACTIVITY (14 days)",
+      "noActivity": "No activity in the last 14 days",
+      "handoffs": "RECENT HANDOFFS",
+      "noHandoffs": "No handoffs yet",
+      "openHandoff": "open",
+      "resolvedHandoff": "resolved",
+      "monthSection": "{{month}}",
+      "rationaleLabel": "Rationale"
+    }
   },
   "decisions": {
     "title": "Decisions",

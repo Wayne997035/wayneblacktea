@@ -228,6 +228,40 @@ func (s *Store) HandoffsSince(ctx context.Context, since time.Time, limit int) (
 	return out, nil
 }
 
+// HandoffsByRepo returns recent handoffs whose repo_name matches repoName,
+// scoped to the configured workspace, newest first. Used by the workspace
+// repo overview to surface recent context for a single repo. Hand-written
+// query so the sqlc surface stays untouched.
+func (s *Store) HandoffsByRepo(ctx context.Context, repoName string, limit int) ([]db.SessionHandoff, error) {
+	const q = `SELECT id, project_id, repo_name, intent, context_summary,
+		resolved_at, created_at, workspace_id
+		FROM session_handoffs
+		WHERE repo_name = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, repoName, s.workspaceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing handoffs for repo %q: %w", repoName, err)
+	}
+	defer rows.Close()
+	out := make([]db.SessionHandoff, 0, limit)
+	for rows.Next() {
+		var h db.SessionHandoff
+		if err := rows.Scan(
+			&h.ID, &h.ProjectID, &h.RepoName, &h.Intent, &h.ContextSummary,
+			&h.ResolvedAt, &h.CreatedAt, &h.WorkspaceID,
+		); err != nil {
+			return nil, fmt.Errorf("scanning handoff: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating handoffs: %w", err)
+	}
+	return out, nil
+}
+
 // Resolve marks a handoff as resolved so it will not appear in future queries.
 func (s *Store) Resolve(ctx context.Context, id uuid.UUID) error {
 	n, err := s.q.ResolveHandoff(ctx, db.ResolveHandoffParams{

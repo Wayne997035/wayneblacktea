@@ -702,6 +702,74 @@ func (s *GTDStore) TopPendingTask(ctx context.Context) (*db.Task, error) {
 	return &t, nil
 }
 
+// RecentCompletedTasks returns recently-completed tasks for a project,
+// scoped to the configured workspace, ordered by updated_at DESC. SQLite
+// parity with gtd.Store.RecentCompletedTasks.
+func (s *GTDStore) RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error) {
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE status = 'completed'
+		  AND project_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY updated_at DESC, id DESC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, projectID.String(), s.db.workspaceArg(), limit)
+	if err != nil {
+		return nil, errWrap("RecentCompletedTasks", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, errWrap("RecentCompletedTasks scan", err)
+		}
+		out = append(out, t)
+	}
+	return out, errWrap("RecentCompletedTasks iter", rows.Err())
+}
+
+// RecentActivityByProject returns activity_log rows for a project since the
+// given timestamp, scoped to the configured workspace, newest first. SQLite
+// parity with gtd.Store.RecentActivityByProject.
+func (s *GTDStore) RecentActivityByProject(
+	ctx context.Context, projectID uuid.UUID, since time.Time, maxRows int32,
+) ([]db.ActivityLog, error) {
+	const q = `SELECT id, workspace_id, actor, project_id, action, notes, created_at
+		FROM activity_log
+		WHERE project_id = ?1
+		  AND created_at >= ?2
+		  AND (?3 IS NULL OR workspace_id = ?3)
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?4`
+	sinceStr := since.UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.conn.QueryContext(ctx, q, projectID.String(), sinceStr, s.db.workspaceArg(), maxRows)
+	if err != nil {
+		return nil, errWrap("RecentActivityByProject", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.ActivityLog
+	for rows.Next() {
+		var (
+			a                      db.ActivityLog
+			idStr                  string
+			workspaceNS, projectNS sql.NullString
+			notesNS, createdNS     sql.NullString
+		)
+		if err := rows.Scan(&idStr, &workspaceNS, &a.Actor, &projectNS, &a.Action, &notesNS, &createdNS); err != nil {
+			return nil, errWrap("RecentActivityByProject scan", err)
+		}
+		if id, err := uuid.Parse(idStr); err == nil {
+			a.ID = id
+		}
+		a.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+		a.ProjectID = pgtypeUUID(nsString(projectNS))
+		a.Notes = pgtypeText(notesNS.String, notesNS.Valid)
+		a.CreatedAt = parseTimestamptz(createdNS)
+		out = append(out, a)
+	}
+	return out, errWrap("RecentActivityByProject iter", rows.Err())
+}
+
 // WeeklyProgress returns completed-this-week and total-active counts.
 func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	// SQLite has no date_trunc; compute Monday 00:00 UTC of this week in Go.

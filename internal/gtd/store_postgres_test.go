@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	migrationfs "github.com/Wayne997035/wayneblacktea/migrations"
@@ -13,6 +14,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
+
+// timeAgoHours returns now - h hours; negative h returns a future time.
+// Used by integration tests to build since-window arguments.
+func timeAgoHours(h float64) time.Time {
+	return time.Now().Add(-time.Duration(h * float64(time.Hour)))
+}
 
 // skipMigrations are .up.sql files that MUST NOT be applied by the test
 // runner. They contain psql metacommands (`\set`) that pgx (and golang-migrate
@@ -555,5 +562,115 @@ func TestStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty slice, got %+v", got)
+	}
+}
+
+// TestStore_RecentCompletedTasks_PG verifies recently-completed task ordering
+// + workspace scoping on the actual Postgres backend (testcontainers, no mock).
+// Per backend-security-design.md §6.5, dual-backend stores require BOTH the
+// SQLite test (in storage/sqlite/gtd_test.go) AND this PG testcontainers test.
+func TestStore_RecentCompletedTasks_PG(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "rct-pg", Title: "RCT PG", Area: "engineering"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	t1, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "t1", ProjectID: &proj.ID, Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask t1: %v", err)
+	}
+	t2, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "t2", ProjectID: &proj.ID, Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask t2: %v", err)
+	}
+	if _, err := store.CompleteTask(ctx, t1.ID, nil); err != nil {
+		t.Fatalf("CompleteTask t1: %v", err)
+	}
+	if _, err := store.CompleteTask(ctx, t2.ID, nil); err != nil {
+		t.Fatalf("CompleteTask t2: %v", err)
+	}
+
+	got, err := store.RecentCompletedTasks(ctx, proj.ID, 50)
+	if err != nil {
+		t.Fatalf("RecentCompletedTasks: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 completed tasks, got %d", len(got))
+	}
+
+	// Cross-workspace caller must see zero rows.
+	otherWS := uuid.New()
+	otherStore := newPgGTDStore(pool, &otherWS)
+	otherGot, err := otherStore.RecentCompletedTasks(ctx, proj.ID, 50)
+	if err != nil {
+		t.Fatalf("RecentCompletedTasks (other workspace): %v", err)
+	}
+	if len(otherGot) != 0 {
+		t.Errorf("expected 0 tasks for other workspace, got %d", len(otherGot))
+	}
+
+	// Limit caps result.
+	limited, err := store.RecentCompletedTasks(ctx, proj.ID, 1)
+	if err != nil {
+		t.Fatalf("RecentCompletedTasks limit=1: %v", err)
+	}
+	if len(limited) != 1 {
+		t.Errorf("expected 1 task with limit=1, got %d", len(limited))
+	}
+}
+
+// TestStore_RecentActivityByProject_PG verifies project + since-window
+// filtering and workspace scoping on Postgres.
+func TestStore_RecentActivityByProject_PG(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "rabp-pg", Title: "RABP PG", Area: "engineering"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	if err := store.LogActivity(ctx, "tester", "log_decision", &proj.ID, "first"); err != nil {
+		t.Fatalf("LogActivity 1: %v", err)
+	}
+	if err := store.LogActivity(ctx, "tester", "complete_task", &proj.ID, "second"); err != nil {
+		t.Fatalf("LogActivity 2: %v", err)
+	}
+
+	since := timeAgoHours(1)
+	got, err := store.RecentActivityByProject(ctx, proj.ID, since, 50)
+	if err != nil {
+		t.Fatalf("RecentActivityByProject: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 activity rows, got %d", len(got))
+	}
+
+	// Future since → 0 rows.
+	future := timeAgoHours(-1)
+	gotFuture, err := store.RecentActivityByProject(ctx, proj.ID, future, 50)
+	if err != nil {
+		t.Fatalf("RecentActivityByProject future: %v", err)
+	}
+	if len(gotFuture) != 0 {
+		t.Errorf("expected 0 rows for future since, got %d", len(gotFuture))
+	}
+
+	// Cross-workspace caller must see zero rows.
+	otherWS := uuid.New()
+	otherStore := newPgGTDStore(pool, &otherWS)
+	otherGot, err := otherStore.RecentActivityByProject(ctx, proj.ID, since, 50)
+	if err != nil {
+		t.Fatalf("RecentActivityByProject other workspace: %v", err)
+	}
+	if len(otherGot) != 0 {
+		t.Errorf("expected 0 rows for other workspace, got %d", len(otherGot))
 	}
 }
