@@ -441,3 +441,119 @@ func TestStore_TopPendingTask(t *testing.T) {
 		}
 	})
 }
+
+// TestStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted exercises
+// the new all-statuses query against real Postgres so the SQL parses, the
+// COALESCE ordering is honoured by the Postgres planner, and the default
+// Tasks path stays active-only. Counterpart to the SQLite test — required by
+// backend-security-design.md §6.5 (dual-backend integration parity).
+func TestStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	project, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "demo-pg", Title: "Demo PG", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	open, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "still open", Priority: 3, ProjectID: &project.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask open: %v", err)
+	}
+	done, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "shipped", Priority: 3, ProjectID: &project.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask done: %v", err)
+	}
+	if _, err := store.CompleteTask(ctx, done.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	all, err := store.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks, got %d (%+v)", len(all), all)
+	}
+	statuses := map[string]bool{}
+	for _, tk := range all {
+		statuses[tk.Status] = true
+	}
+	if !statuses["pending"] || !statuses["completed"] {
+		t.Errorf("expected both pending and completed in result, got %+v", statuses)
+	}
+
+	// Default Tasks(...) MUST still be active-only — same regression guard as
+	// the SQLite test, but pinned for the Postgres planner / driver path.
+	active, err := store.Tasks(ctx, &project.ID)
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != open.ID {
+		t.Errorf("Tasks default path leaked completed rows: %+v", active)
+	}
+}
+
+// TestStore_TasksByProjectAllStatuses_WorkspaceMismatch confirms strict
+// per-workspace scope on Postgres: a request from workspace B for workspace
+// A's project_id MUST return 0 rows.
+func TestStore_TasksByProjectAllStatuses_WorkspaceMismatch(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+	ctx := context.Background()
+
+	project, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "ws-a-proj", Title: "WS A", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "in scope", Priority: 3, ProjectID: &project.ID,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	got, err := storeB.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses (ws B): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 tasks for cross-workspace read, got %d", len(got))
+	}
+}
+
+// TestStore_TasksByProjectAllStatuses_EmptyProject pins the empty-result path
+// on Postgres: a project with no tasks returns an empty slice (not an error).
+func TestStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	project, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "empty-pg", Title: "Empty PG", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	got, err := store.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %+v", got)
+	}
+}

@@ -107,7 +107,7 @@ var allowedProposalStatuses = map[string]bool{
 	"pending":  true,
 	"accepted": true,
 	"rejected": true,
-	"all":      true,
+	statusAll:  true,
 }
 
 // allowedProposalTypes is the validated set of values for the ?type= query param.
@@ -144,7 +144,7 @@ func (h *ProposalHandler) ListProposals(c echo.Context) error {
 
 	out := make([]pendingProposalResponse, 0, len(rows))
 	for _, p := range rows {
-		if status == "all" || p.Status == status {
+		if status == statusAll || p.Status == status {
 			out = append(out, toResponse(p))
 		}
 	}

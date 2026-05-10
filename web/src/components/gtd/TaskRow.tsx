@@ -14,6 +14,13 @@ interface TaskRowProps {
   expanded: boolean
   onToggle: () => void
   onComplete?: (id: string) => void
+  /**
+   * Optional footer rendered inside the same `<li>` as the task body.
+   * Used by the project-detail "completed" section to surface the completion
+   * timestamp without wrapping the row in an extra element (which would
+   * produce invalid `<li>`-inside-`<li>` markup).
+   */
+  footer?: React.ReactNode
 }
 
 function formatDueDate(dateStr: string): string {
@@ -106,7 +113,7 @@ function RecentDecisions({ projectId, isExpanded }: RecentDecisionsProps) {
   )
 }
 
-export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskRowProps) {
+export function TaskRow({ task, project, expanded, onToggle, onComplete, footer }: TaskRowProps) {
   const { t } = useTranslation()
   const isCompleted = task.status === 'completed'
   const panelId = `task-detail-${task.id}`
@@ -263,6 +270,11 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete }: TaskR
           )}
         </section>
       )}
+
+      {/* Optional caller-supplied footer (e.g. completion timestamp on the
+          project-detail page). Rendered inside the same `<li>` so the parent
+          `<ul>` keeps semantically valid markup. */}
+      {footer}
     </li>
   )
 }

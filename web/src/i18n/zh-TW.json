@@ -74,6 +74,9 @@
     "tasksSection": "任務",
     "openCount": "{{count}} 筆未完成",
     "noTasks": "尚無任務",
+    "completedSection": "已完成",
+    "completedCount": "{{count}} 筆",
+    "completedAt": "完成於 {{date}}",
     "decisionsSection": "決策",
     "noDecisions": "尚無決策紀錄"
   },

@@ -28,6 +28,9 @@ type fakeGTDStore struct {
 	goals              []db.Goal
 	projects           []db.Project
 	tasks              []db.Task
+	allStatusTasks     []db.Task
+	allStatusCalls     int
+	tasksCalls         int
 	createdGoal        *db.Goal
 	createdProj        *db.Project
 	createdTask        *db.Task
@@ -69,7 +72,13 @@ func (f *fakeGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParam
 }
 
 func (f *fakeGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
+	f.tasksCalls++
 	return f.tasks, f.err
+}
+
+func (f *fakeGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
+	f.allStatusCalls++
+	return f.allStatusTasks, f.err
 }
 
 func (f *fakeGTDStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
@@ -465,6 +474,100 @@ func TestGTDHandler_UpdateProjectStatus(t *testing.T) {
 			rec := performRequest(e, http.MethodPatch, "/api/projects/"+tc.paramID+"/status", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestGTDHandler_ListProjectTasks verifies the ?status=all opt-in routes to
+// TasksByProjectAllStatuses (so completed rows show up on the project-detail
+// page) while every other input — including unset, empty, and unknown values
+// — preserves the active-only default that GTD list pages depend on.
+func TestGTDHandler_ListProjectTasks(t *testing.T) {
+	projID := uuid.New()
+	pendingTask := db.Task{ID: uuid.New(), Title: "open thing", Status: "pending"}
+	completedTask := db.Task{ID: uuid.New(), Title: "shipped thing", Status: "completed"}
+
+	cases := []struct {
+		name             string
+		paramID          string
+		query            string
+		store            *fakeGTDStore
+		wantCode         int
+		wantAllCalls     int
+		wantActiveCalls  int
+		wantBodyContains string // optional substring assertion against rec.Body
+	}{
+		{
+			name:            "no status param → active-only path (existing contract)",
+			paramID:         projID.String(),
+			query:           "",
+			store:           &fakeGTDStore{tasks: []db.Task{pendingTask}, allStatusTasks: []db.Task{pendingTask, completedTask}},
+			wantCode:        http.StatusOK,
+			wantActiveCalls: 1,
+			// Completed task MUST NOT leak into the default response even though
+			// the all-status fixture includes it — guards against accidental routing.
+			wantBodyContains: "open thing",
+		},
+		{
+			name:             "status=all → all-status path returns completed rows",
+			paramID:          projID.String(),
+			query:            "?status=all",
+			store:            &fakeGTDStore{tasks: []db.Task{pendingTask}, allStatusTasks: []db.Task{pendingTask, completedTask}},
+			wantCode:         http.StatusOK,
+			wantAllCalls:     1,
+			wantBodyContains: "shipped thing",
+		},
+		{
+			name:            "status=active → unknown value routes to default (active-only)",
+			paramID:         projID.String(),
+			query:           "?status=active",
+			store:           &fakeGTDStore{tasks: []db.Task{pendingTask}, allStatusTasks: []db.Task{pendingTask, completedTask}},
+			wantCode:        http.StatusOK,
+			wantActiveCalls: 1,
+		},
+		{
+			name:     "invalid project UUID → 400 before either store call",
+			paramID:  "not-a-uuid",
+			query:    "?status=all",
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:            "store error on default path → 500",
+			paramID:         projID.String(),
+			query:           "",
+			store:           &fakeGTDStore{err: errors.New("db down")},
+			wantCode:        http.StatusInternalServerError,
+			wantActiveCalls: 1,
+		},
+		{
+			name:         "store error on all-status path → 500",
+			paramID:      projID.String(),
+			query:        "?status=all",
+			store:        &fakeGTDStore{err: errors.New("db down")},
+			wantCode:     http.StatusInternalServerError,
+			wantAllCalls: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.GET("/api/projects/:id/tasks", h.ListProjectTasks)
+			rec := performRequest(e, http.MethodGet, "/api/projects/"+tc.paramID+"/tasks"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.store.allStatusCalls != tc.wantAllCalls {
+				t.Errorf("TasksByProjectAllStatuses calls: got %d, want %d", tc.store.allStatusCalls, tc.wantAllCalls)
+			}
+			if tc.store.tasksCalls != tc.wantActiveCalls {
+				t.Errorf("Tasks calls: got %d, want %d", tc.store.tasksCalls, tc.wantActiveCalls)
+			}
+			if tc.wantBodyContains != "" && !strings.Contains(rec.Body.String(), tc.wantBodyContains) {
+				t.Errorf("body missing %q: %s", tc.wantBodyContains, rec.Body.String())
 			}
 		})
 	}

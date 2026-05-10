@@ -490,6 +490,58 @@ func (q *Queries) ListActiveProjects(ctx context.Context, workspaceID pgtype.UUI
 	return items, nil
 }
 
+const listProjectTasksAllStatuses = `-- name: ListProjectTasksAllStatuses :many
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context FROM tasks
+WHERE project_id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+ORDER BY COALESCE(updated_at, created_at) DESC
+`
+
+type ListProjectTasksAllStatusesParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to
+// render both the "open" and the "completed/cancelled" sections; the default
+// GetTasksByProject query stays active-only so existing GTD list pages don't
+// regress. Ordering: newest activity first via COALESCE(updated_at, created_at)
+// DESC so completed rows surface in roughly the order they were finished.
+func (q *Queries) ListProjectTasksAllStatuses(ctx context.Context, arg ListProjectTasksAllStatusesParams) ([]Task, error) {
+	rows, err := q.db.Query(ctx, listProjectTasksAllStatuses, arg.ProjectID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Title,
+			&i.Description,
+			&i.Status,
+			&i.Priority,
+			&i.Assignee,
+			&i.DueDate,
+			&i.Artifact,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.Context,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateProjectStatus = `-- name: UpdateProjectStatus :one
 UPDATE projects SET status = $1, updated_at = NOW()
 WHERE id = $2

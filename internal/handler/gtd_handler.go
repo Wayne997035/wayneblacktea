@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -157,15 +158,36 @@ func (h *GTDHandler) UpdateProjectStatus(c echo.Context) error {
 }
 
 // ListProjectTasks returns tasks for a specific project.
+//
+// Query params:
+//
+//   - status=all → return every task regardless of status, ordered by
+//     COALESCE(updated_at, created_at) DESC. Used by the project-detail UI to
+//     render the "completed" section.
+//   - any other value (or unset) → default behaviour: only pending /
+//     in_progress tasks. Preserves the prior contract so existing GTD list
+//     pages do not regress.
+//
+// Unknown status values are treated as the default rather than 400 so future
+// clients passing experimental filters degrade gracefully; the only opt-in
+// is the explicit `all` token.
 func (h *GTDHandler) ListProjectTasks(c echo.Context) error {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid project id"))
 	}
 
-	tasks, err := h.store.Tasks(c.Request().Context(), &id)
-	if err != nil {
-		c.Logger().Errorf("ListProjectTasks: %v", err)
+	var (
+		tasks    []db.Task
+		queryErr error
+	)
+	if c.QueryParam("status") == statusAll {
+		tasks, queryErr = h.store.TasksByProjectAllStatuses(c.Request().Context(), id)
+	} else {
+		tasks, queryErr = h.store.Tasks(c.Request().Context(), &id)
+	}
+	if queryErr != nil {
+		c.Logger().Errorf("ListProjectTasks: %v", queryErr)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, tasks)

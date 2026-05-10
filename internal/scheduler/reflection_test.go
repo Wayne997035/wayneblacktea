@@ -45,6 +45,10 @@ func (s *stubGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParam
 	return nil, nil
 }
 func (s *stubGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) { return nil, nil }
+func (s *stubGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
 	return nil, nil
 }

@@ -74,6 +74,9 @@
     "tasksSection": "TASKS",
     "openCount": "{{count}} open",
     "noTasks": "No tasks yet",
+    "completedSection": "COMPLETED",
+    "completedCount": "{{count}} done",
+    "completedAt": "Completed {{date}}",
     "decisionsSection": "DECISIONS",
     "noDecisions": "No decisions recorded"
   },
