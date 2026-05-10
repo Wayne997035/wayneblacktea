@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { kindColor, kindLabel, ALL_KINDS } from './eventStyles'
+import { kindColor, kindLabelKey, ALL_KINDS } from './eventStyles'
 import type { TimelineKind } from '../../types/api'
 
 describe('kindColor', () => {
@@ -51,15 +51,15 @@ describe('kindColor', () => {
   })
 })
 
-describe('kindLabel', () => {
-  it('returns a non-empty label for every known kind', () => {
+describe('kindLabelKey', () => {
+  it('returns the calendar.kinds.* i18n key for every known kind', () => {
     for (const k of ALL_KINDS) {
-      expect(kindLabel(k).length).toBeGreaterThan(0)
+      expect(kindLabelKey(k)).toBe(`calendar.kinds.${k}`)
     }
   })
 
-  it('returns the raw kind string for unknown kinds', () => {
-    expect(kindLabel('mystery' as unknown as TimelineKind)).toBe('mystery')
+  it('returns the raw kind string for unknown kinds (so t() leaves it untranslated)', () => {
+    expect(kindLabelKey('mystery' as unknown as TimelineKind)).toBe('mystery')
   })
 })
 

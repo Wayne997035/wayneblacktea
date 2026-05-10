@@ -1,5 +1,6 @@
+import { useTranslation } from 'react-i18next'
 import type { TimelineKind } from '../../types/api'
-import { ALL_KINDS, kindColor, kindLabel } from './eventStyles'
+import { ALL_KINDS, kindColor, kindLabelKey } from './eventStyles'
 
 export type CalendarView = 'month' | 'week'
 
@@ -32,6 +33,7 @@ export function CalendarControls({
   onViewChange,
   onToggleKind,
 }: CalendarControlsProps) {
+  const { t } = useTranslation()
   return (
     <div
       className="sticky top-0 z-10 flex flex-wrap items-center gap-3 px-4 py-3 mb-4"
@@ -43,8 +45,7 @@ export function CalendarControls({
       {/* Date picker */}
       <label className="flex items-center gap-2">
         <span className="text-label" style={{ color: 'var(--color-text-muted)' }}>
-          {/* TODO: i18n */}
-          Date
+          {t('calendar.controls.date')}
         </span>
         <input
           type="date"
@@ -82,8 +83,7 @@ export function CalendarControls({
                 borderLeftWidth: v === 'week' ? 0 : 1,
               }}
             >
-              {/* TODO: i18n */}
-              {v === 'month' ? 'Month' : 'Week'}
+              {v === 'month' ? t('calendar.controls.viewMonth') : t('calendar.controls.viewWeek')}
             </button>
           )
         })}
@@ -94,6 +94,7 @@ export function CalendarControls({
         {ALL_KINDS.map((k) => {
           const checked = kindFilter.has(k)
           const c = kindColor(k)
+          const label = t(kindLabelKey(k))
           return (
             <label
               key={k}
@@ -105,11 +106,11 @@ export function CalendarControls({
                 checked={checked}
                 onChange={() => onToggleKind(k)}
                 className="accent-current"
-                aria-label={`Toggle ${kindLabel(k)}`}
+                aria-label={`Toggle ${label}`}
               />
               <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} aria-hidden="true" />
               <span style={{ color: checked ? 'var(--color-text-primary)' : 'var(--color-text-muted)' }}>
-                {kindLabel(k)}
+                {label}
               </span>
             </label>
           )

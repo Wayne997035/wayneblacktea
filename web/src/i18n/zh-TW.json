@@ -222,6 +222,32 @@
     "conceptDaysLearning": "學習 {{days}} 天",
     "noItems": "尚無學習紀錄"
   },
+  "calendar": {
+    "controls": {
+      "date": "日期",
+      "viewMonth": "月",
+      "viewWeek": "週"
+    },
+    "errors": {
+      "loadFailed": "載入時間軸失敗"
+    },
+    "empty": {
+      "noEvents": "沒有事件",
+      "noEventsOnDay": "這天沒有事件"
+    },
+    "eventCount_other": "{{count}} 個事件",
+    "kinds": {
+      "task_created": "任務建立",
+      "task_completed": "任務完成",
+      "decision": "決策",
+      "activity": "活動",
+      "knowledge": "知識",
+      "concept": "概念",
+      "review_submitted": "回顧",
+      "handoff_created": "交接建立",
+      "handoff_resolved": "交接完成"
+    }
+  },
   "proposals": {
     "allCaughtUp": "無待處理提案",
     "tabs": {

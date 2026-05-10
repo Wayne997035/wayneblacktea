@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { X } from 'lucide-react'
 import type { TimelineEvent, TimelineKind } from '../../types/api'
-import { ALL_KINDS, kindColor, kindLabel } from './eventStyles'
+import { ALL_KINDS, kindColor, kindLabelKey } from './eventStyles'
+import { isSameDay } from './dateUtils'
 
 interface DayDrawerProps {
   /** When non-null, the drawer is open for this day. */
@@ -29,20 +31,14 @@ function fmtFullDate(d: Date): string {
   })
 }
 
-function isSameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  )
-}
-
 /**
  * DayDrawer slides in from the right and lists events grouped by kind.
  * Closes on backdrop click, ESC, or the close button. Keeps focus
- * trapped inside the drawer while open.
+ * trapped inside the drawer while open and restores focus to the
+ * triggering element on close (WCAG 2.4.3 Focus Order).
  */
 export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) {
+  const { t } = useTranslation()
   const open = day !== null
   const closeBtnRef = useRef<HTMLButtonElement>(null)
   const drawerRef = useRef<HTMLDivElement>(null)
@@ -60,10 +56,13 @@ export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) 
     return () => document.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
-  // Move focus into drawer on open.
+  // Move focus into drawer on open; restore focus to the trigger on close.
   useEffect(() => {
-    if (open) {
-      closeBtnRef.current?.focus()
+    if (!open) return
+    const triggerElement = document.activeElement as HTMLElement | null
+    closeBtnRef.current?.focus()
+    return () => {
+      triggerElement?.focus?.()
     }
   }, [open])
 
@@ -153,8 +152,7 @@ export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) 
                   {fmtFullDate(day)}
                 </h2>
                 <p className="text-caption" style={{ color: 'var(--color-text-muted)' }}>
-                  {/* TODO: i18n */}
-                  {dayEvents.length} event{dayEvents.length === 1 ? '' : 's'}
+                  {t('calendar.eventCount', { count: dayEvents.length })}
                 </p>
               </div>
               <button
@@ -171,8 +169,7 @@ export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) 
             <div className="p-4 flex flex-col gap-4">
               {dayEvents.length === 0 && (
                 <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>
-                  {/* TODO: i18n */}
-                  No events on this day
+                  {t('calendar.empty.noEventsOnDay')}
                 </p>
               )}
               {ALL_KINDS.map((kind) => {
@@ -186,7 +183,7 @@ export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) 
                       style={{ color: 'var(--color-text-muted)' }}
                     >
                       <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} aria-hidden="true" />
-                      {kindLabel(kind)} ({list.length})
+                      {t(kindLabelKey(kind))} ({list.length})
                     </h3>
                     <ul className="flex flex-col gap-1">
                       {list.map((ev) => (

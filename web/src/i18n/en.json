@@ -222,6 +222,33 @@
     "conceptDaysLearning": "Learning {{days}} days",
     "noItems": "No learning history yet"
   },
+  "calendar": {
+    "controls": {
+      "date": "Date",
+      "viewMonth": "Month",
+      "viewWeek": "Week"
+    },
+    "errors": {
+      "loadFailed": "Failed to load timeline"
+    },
+    "empty": {
+      "noEvents": "No events",
+      "noEventsOnDay": "No events on this day"
+    },
+    "eventCount_one": "{{count}} event",
+    "eventCount_other": "{{count}} events",
+    "kinds": {
+      "task_created": "Task created",
+      "task_completed": "Task completed",
+      "decision": "Decision",
+      "activity": "Activity",
+      "knowledge": "Knowledge",
+      "concept": "Concept",
+      "review_submitted": "Review",
+      "handoff_created": "Handoff created",
+      "handoff_resolved": "Handoff resolved"
+    }
+  },
   "proposals": {
     "allCaughtUp": "All caught up",
     "tabs": {

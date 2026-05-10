@@ -63,12 +63,14 @@ describe('MonthGrid', () => {
   })
 
   it('renders one dot per distinct kind on a day', () => {
+    // Use mid-day UTC (T12:00:00Z) so the date stays stable across local
+    // timezones (CI may be UTC, JST, CST, etc).
     const events: TimelineEvent[] = [
-      evt('task_created',    '2025-05-15T09:00:00Z'),
-      evt('task_completed',  '2025-05-15T10:00:00Z'),
-      evt('decision',        '2025-05-15T11:00:00Z'),
+      evt('task_created',    '2025-05-15T12:00:00Z'),
+      evt('task_completed',  '2025-05-15T12:30:00Z'),
+      evt('decision',        '2025-05-15T13:00:00Z'),
       // Duplicate kind on same day → should NOT add another dot
-      evt('decision',        '2025-05-15T12:00:00Z'),
+      evt('decision',        '2025-05-15T13:30:00Z'),
     ]
     const { container } = render(
       <MonthGrid
@@ -87,13 +89,14 @@ describe('MonthGrid', () => {
   })
 
   it('shows +N overflow when more than 4 kinds on a day', () => {
+    // All timestamps are T12:00:00Z (mid-day UTC) for timezone stability.
     const events: TimelineEvent[] = [
       evt('task_created',     '2025-05-15T12:00:00Z'),
-      evt('task_completed',   '2025-05-15T02:00:00Z'),
-      evt('decision',         '2025-05-15T03:00:00Z'),
-      evt('knowledge',        '2025-05-15T04:00:00Z'),
-      evt('review_submitted', '2025-05-15T05:00:00Z'),
-      evt('handoff_created',  '2025-05-15T06:00:00Z'),
+      evt('task_completed',   '2025-05-15T12:10:00Z'),
+      evt('decision',         '2025-05-15T12:20:00Z'),
+      evt('knowledge',        '2025-05-15T12:30:00Z'),
+      evt('review_submitted', '2025-05-15T12:40:00Z'),
+      evt('handoff_created',  '2025-05-15T12:50:00Z'),
     ]
     const { container } = render(
       <MonthGrid
@@ -109,8 +112,8 @@ describe('MonthGrid', () => {
 
   it('respects kindFilter — filtered kinds are not rendered as dots', () => {
     const events: TimelineEvent[] = [
-      evt('task_created', '2025-05-15T09:00:00Z'),
-      evt('decision',     '2025-05-15T10:00:00Z'),
+      evt('task_created', '2025-05-15T12:00:00Z'),
+      evt('decision',     '2025-05-15T12:30:00Z'),
     ]
     const filter = new Set<TimelineKind>(['decision'])
     const { container } = render(
