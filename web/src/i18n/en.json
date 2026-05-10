@@ -6,7 +6,8 @@
     "decisions": "Decisions",
     "knowledge": "Knowledge",
     "reviews": "Reviews",
-    "learningHistory": "Learning History"
+    "learningHistory": "Learning History",
+    "calendar": "Calendar"
   },
   "dashboard": {
     "greeting": {
