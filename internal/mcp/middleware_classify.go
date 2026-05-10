@@ -180,7 +180,7 @@ func (s *Server) autoCaptureMCPTask(ctx context.Context, title, toolName string)
 		return fmt.Errorf("auto-capture mcp task: list tasks: %w", err)
 	}
 	for _, t := range tasks {
-		if (t.Status == "pending" || t.Status == "in_progress") && strings.EqualFold(t.Title, title) {
+		if (t.Status == taskStatusPending || t.Status == taskStatusInProgress) && strings.EqualFold(t.Title, title) {
 			return nil
 		}
 	}
