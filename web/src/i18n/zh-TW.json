@@ -98,7 +98,39 @@
     "from": "從",
     "to": "至",
     "dateFrom": "起始日期",
-    "dateTo": "結束日期"
+    "dateTo": "結束日期",
+    "newDecision": "新增決策",
+    "modal": {
+      "titleCreate": "新增決策",
+      "titleLabel": "標題",
+      "titlePlaceholder": "用一句話描述這個決策？",
+      "contextLabel": "背景",
+      "contextPlaceholder": "什麼促成了這個決策？",
+      "decisionLabel": "決策",
+      "decisionPlaceholder": "我們決定了什麼？",
+      "rationaleLabel": "理由",
+      "rationalePlaceholder": "為何選這個而非其他方案？",
+      "alternativesLabel": "替代方案",
+      "alternativesPlaceholder": "其他考慮過的方案",
+      "repoLabel": "Repo",
+      "repoPlaceholder": "Repo 名稱（自由文字）",
+      "projectLabel": "專案",
+      "projectPlaceholderNone": "—",
+      "submit": "記錄決策",
+      "createdToast": "決策已記錄",
+      "errors": {
+        "titleRequired": "標題為必填",
+        "titleTooLong": "標題不可超過 200 個字元",
+        "contextRequired": "背景為必填",
+        "contextTooLong": "背景不可超過 4000 個字元",
+        "decisionRequired": "決策為必填",
+        "decisionTooLong": "決策不可超過 4000 個字元",
+        "rationaleRequired": "理由為必填",
+        "rationaleTooLong": "理由不可超過 4000 個字元",
+        "alternativesTooLong": "替代方案不可超過 4000 個字元",
+        "repoTooLong": "Repo 名稱不可超過 80 個字元"
+      }
+    }
   },
   "common": {
     "loading": "載入中...",
@@ -107,7 +139,66 @@
     "save": "儲存",
     "cancel": "取消",
     "add": "新增",
-    "retry": "重試"
+    "retry": "重試",
+    "submitting": "儲存中…",
+    "charCount": "{{count}} / {{max}}",
+    "errors": {
+      "saveFailed": "儲存失敗，請重試。",
+      "invalidInput": "部分欄位有誤。",
+      "rateLimited": "請求過於頻繁，請稍後再試。",
+      "unsavedChanges": "確定要捨棄修改？"
+    }
+  },
+  "goals": {
+    "modal": {
+      "titleCreate": "新增目標",
+      "titleLabel": "標題",
+      "titlePlaceholder": "目標標題…",
+      "areaLabel": "領域",
+      "areaPlaceholder": "例如：職涯、健康…",
+      "descriptionLabel": "描述",
+      "descriptionPlaceholder": "達成這個目標看起來會是什麼樣？",
+      "targetDateLabel": "目標日期",
+      "submitCreate": "新增目標",
+      "createdToast": "目標已建立",
+      "errors": {
+        "titleRequired": "標題為必填",
+        "titleTooLong": "標題不可超過 200 個字元",
+        "areaTooLong": "領域不可超過 80 個字元",
+        "descriptionTooLong": "描述不可超過 2000 個字元",
+        "dateInvalid": "無效的日期"
+      }
+    }
+  },
+  "projects": {
+    "modal": {
+      "titleCreate": "新增專案",
+      "titleLabel": "標題",
+      "titlePlaceholder": "專案標題…",
+      "nameLabel": "Slug 識別碼",
+      "namePlaceholder": "kebab-case 識別碼…",
+      "nameHint": "小寫字母、數字、連字號",
+      "nameSuggestion": "建議：{{slug}}",
+      "areaLabel": "領域",
+      "areaPlaceholder": "例如：工程、產品…",
+      "descriptionLabel": "描述",
+      "descriptionPlaceholder": "這個專案是關於什麼？",
+      "goalLabel": "關聯目標",
+      "goalPlaceholderNone": "—",
+      "priorityLabel": "優先級",
+      "submitCreate": "新增專案",
+      "createdToast": "專案已建立",
+      "errors": {
+        "titleRequired": "標題為必填",
+        "titleTooLong": "標題不可超過 200 個字元",
+        "nameRequired": "Slug 為必填",
+        "nameSlugInvalid": "請使用小寫字母、數字、單一連字號",
+        "nameTooLong": "Slug 不可超過 64 個字元",
+        "nameExists": "已有同名 Slug 的專案",
+        "areaTooLong": "領域不可超過 80 個字元",
+        "descriptionTooLong": "描述不可超過 2000 個字元"
+      }
+    }
   },
   "error": {
     "loadFailed": "載入失敗",

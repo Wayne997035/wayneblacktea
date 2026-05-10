@@ -1,10 +1,11 @@
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 import { useDecisions } from '../hooks/useDecisions'
 import { useProjects } from '../hooks/useProjects'
 import { useRepos } from '../hooks/useRepos'
 import { DecisionTimeline } from '../components/decisions/DecisionTimeline'
+import { DecisionCreateModal } from '../components/decisions/DecisionCreateModal'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
@@ -29,6 +30,7 @@ export function DecisionsPage() {
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState<string>(threeMonthsAgo())
   const [dateTo, setDateTo] = useState<string>(today())
+  const [modalOpen, setModalOpen] = useState(false)
 
   const filtered = useMemo(() => {
     const from = dateFrom ? new Date(dateFrom).getTime() : -Infinity
@@ -53,9 +55,25 @@ export function DecisionsPage() {
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto">
-      <h1 className="text-page-title mb-4" style={{ color: 'var(--color-text-primary)' }}>
-        {t('decisions.title')}
-      </h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-page-title" style={{ color: 'var(--color-text-primary)' }}>
+          {t('decisions.title')}
+        </h1>
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-md text-body-sm transition-colors"
+          style={{
+            background: 'var(--color-accent-blue)',
+            color: 'var(--color-bg-base)',
+            border: 'none',
+            cursor: 'pointer',
+          }}
+        >
+          <Plus size={14} aria-hidden="true" />
+          {t('decisions.newDecision')}
+        </button>
+      </div>
 
       {/* Filter row */}
       <div className="flex flex-wrap items-center gap-3 mb-6">
@@ -173,6 +191,13 @@ export function DecisionsPage() {
         <EmptyState messageKey="decisions.noDecisions" />
       ) : (
         <DecisionTimeline decisions={filtered} />
+      )}
+
+      {modalOpen && (
+        <DecisionCreateModal
+          projects={projects ?? []}
+          onClose={() => setModalOpen(false)}
+        />
       )}
     </div>
   )

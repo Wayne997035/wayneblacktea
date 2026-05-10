@@ -18,3 +18,32 @@ if (!i18next.isInitialized) {
     interpolation: { escapeValue: false },
   })
 }
+
+// jsdom 29 still ships without HTMLDialogElement.showModal/close — polyfill the
+// minimum the modal tests need: open/close state and dispatching a `close` event.
+//
+// We deliberately do NOT auto-focus an [autofocus] element here (React's
+// autoFocus prop already handles that during commit), and we do NOT restore
+// focus to a captured trigger — each modal manages WCAG 2.4.3 focus return
+// via its own ref so the behaviour works identically in jsdom and real browsers.
+//
+// This polyfill lives behind the standard prototype guard so it is a no-op on
+// future jsdom versions that ship the native API.
+const proto = HTMLDialogElement.prototype as unknown as {
+  showModal?: (this: HTMLDialogElement) => void
+  close?: (this: HTMLDialogElement, returnValue?: string) => void
+}
+
+if (typeof proto.showModal !== 'function') {
+  proto.showModal = function showModal(this: HTMLDialogElement) {
+    this.setAttribute('open', '')
+  }
+}
+
+if (typeof proto.close !== 'function') {
+  proto.close = function close(this: HTMLDialogElement) {
+    if (!this.hasAttribute('open')) return
+    this.removeAttribute('open')
+    this.dispatchEvent(new Event('close'))
+  }
+}
