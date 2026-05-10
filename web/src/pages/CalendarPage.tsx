@@ -4,6 +4,7 @@ import { useTimeline } from '../hooks/useTimeline'
 import { CalendarControls, type CalendarView } from '../components/calendar/CalendarControls'
 import { MonthGrid } from '../components/calendar/MonthGrid'
 import { WeekList } from '../components/calendar/WeekList'
+import { YearHeatmap } from '../components/calendar/YearHeatmap'
 import { DayDrawer } from '../components/calendar/DayDrawer'
 import { ALL_KINDS } from '../components/calendar/eventStyles'
 import { buildMonthMatrix, mondayOf } from '../components/calendar/dateUtils'
@@ -12,8 +13,8 @@ import type { TimelineKind } from '../types/api'
 
 /**
  * CalendarPage renders the maintainer's personal OS activity over time.
- * Two layouts (month grid / week list) share the same `useTimeline`
- * fetch, kind filter, and day drawer.
+ * Three layouts (month grid / week list / year heatmap) share the same
+ * `useTimeline` fetch, kind filter, and day drawer.
  */
 export function CalendarPage() {
   const { t } = useTranslation()
@@ -30,6 +31,12 @@ export function CalendarPage() {
       const last = matrix[matrix.length - 1][6]
       const start = new Date(first.getFullYear(), first.getMonth(), first.getDate(), 0, 0, 0)
       const end = new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59)
+      return [start, end]
+    }
+    if (view === 'year') {
+      const year = selectedDate.getFullYear()
+      const start = new Date(year, 0, 1, 0, 0, 0)
+      const end = new Date(year, 11, 31, 23, 59, 59)
       return [start, end]
     }
     // week view
@@ -87,6 +94,15 @@ export function CalendarPage() {
             events={events}
             kindFilter={kindFilter}
             onDayClick={(d) => setDrawerDate(d)}
+          />
+        ) : view === 'year' ? (
+          <YearHeatmap
+            year={selectedDate.getFullYear()}
+            events={events}
+            onMonthJump={(m) => {
+              setView('month')
+              setSelectedDate(m)
+            }}
           />
         ) : (
           <WeekList

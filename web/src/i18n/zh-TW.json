@@ -226,7 +226,8 @@
     "controls": {
       "date": "日期",
       "viewMonth": "月",
-      "viewWeek": "週"
+      "viewWeek": "週",
+      "viewYear": "年"
     },
     "errors": {
       "loadFailed": "載入時間軸失敗"
@@ -234,6 +235,9 @@
     "empty": {
       "noEvents": "沒有事件",
       "noEventsOnDay": "這天沒有事件"
+    },
+    "heatmap": {
+      "gridLabel": "{{year}} 年活動熱圖"
     },
     "eventCount_other": "{{count}} 個事件",
     "kinds": {

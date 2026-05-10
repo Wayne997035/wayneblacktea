@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next'
 import type { TimelineKind } from '../../types/api'
 import { ALL_KINDS, kindColor, kindLabelKey } from './eventStyles'
 
-export type CalendarView = 'month' | 'week'
+export type CalendarView = 'month' | 'week' | 'year'
 
 interface CalendarControlsProps {
   selectedDate: Date
@@ -67,8 +67,14 @@ export function CalendarControls({
 
       {/* View toggle */}
       <div role="group" aria-label="View toggle" className="flex rounded overflow-hidden">
-        {(['month', 'week'] as CalendarView[]).map((v) => {
+        {(['month', 'week', 'year'] as CalendarView[]).map((v, idx) => {
           const active = v === view
+          const labelKey =
+            v === 'month'
+              ? 'calendar.controls.viewMonth'
+              : v === 'week'
+                ? 'calendar.controls.viewWeek'
+                : 'calendar.controls.viewYear'
           return (
             <button
               key={v}
@@ -80,10 +86,10 @@ export function CalendarControls({
                 background: active ? 'var(--color-accent-blue)' : 'var(--color-bg-input)',
                 color: active ? 'var(--color-bg-base)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border)',
-                borderLeftWidth: v === 'week' ? 0 : 1,
+                borderLeftWidth: idx === 0 ? 1 : 0,
               }}
             >
-              {v === 'month' ? t('calendar.controls.viewMonth') : t('calendar.controls.viewWeek')}
+              {t(labelKey)}
             </button>
           )
         })}

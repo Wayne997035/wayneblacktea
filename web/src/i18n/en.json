@@ -226,7 +226,8 @@
     "controls": {
       "date": "Date",
       "viewMonth": "Month",
-      "viewWeek": "Week"
+      "viewWeek": "Week",
+      "viewYear": "Year"
     },
     "errors": {
       "loadFailed": "Failed to load timeline"
@@ -234,6 +235,9 @@
     "empty": {
       "noEvents": "No events",
       "noEventsOnDay": "No events on this day"
+    },
+    "heatmap": {
+      "gridLabel": "{{year}} activity heatmap"
     },
     "eventCount_one": "{{count}} event",
     "eventCount_other": "{{count}} events",
