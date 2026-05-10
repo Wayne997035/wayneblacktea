@@ -3,8 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -34,6 +41,15 @@ type healthSnapshot struct {
 	ToolCallSummary  map[string]int      `json:"tool_call_counts"`
 	RecentCalls      []watchdog.ToolCall `json:"recent_calls"`
 	ForgottenSignals []string            `json:"forgotten_signals,omitempty"`
+	CompletionDrift  []DriftCandidate    `json:"completion_drift_candidates,omitempty"`
+}
+
+// DriftCandidate is a pending task whose description references artifacts that
+// already exist in the codebase — a signal that complete_task may have been missed.
+type DriftCandidate struct {
+	TaskID   string   `json:"task_id"`
+	Title    string   `json:"title"`
+	Evidence []string `json:"evidence"` // file paths / migration numbers found on disk
 }
 
 type taskHealth struct {
@@ -61,6 +77,8 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 		stuckHours = 4
 	}
 
+	repoRoot, _ := findRepoRoot() // ignore error; drift check is advisory
+
 	snap := healthSnapshot{
 		GeneratedAt:     time.Now().UTC(),
 		ToolCallSummary: s.watchdog.CountByTool(),
@@ -68,8 +86,9 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 	}
 	snap.Workspace = workspaceIDString(s.gtd.WorkspaceID())
 
-	tasks, err := s.gtd.Tasks(ctx, nil)
-	if err == nil {
+	var tasks []db.Task
+	if fetched, err := s.gtd.Tasks(ctx, nil); err == nil {
+		tasks = fetched
 		stuckCutoff := time.Now().Add(-time.Duration(stuckHours) * time.Hour)
 		for _, t := range tasks {
 			if t.Status != "in_progress" {
@@ -91,7 +110,18 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 		snap.DueReviews.Due = n
 	}
 
-	snap.ForgottenSignals = detectForgottenSignals(snap, s.watchdog)
+	if tasks != nil {
+		snap.CompletionDrift = detectCompletionDrift(tasks, repoRoot)
+	}
+
+	signals := detectForgottenSignals(snap, s.watchdog)
+	if len(snap.CompletionDrift) > 0 {
+		signals = append(signals, fmt.Sprintf(
+			"%d pending task(s) reference files that exist in the repo — check if complete_task was missed.",
+			len(snap.CompletionDrift),
+		))
+	}
+	snap.ForgottenSignals = signals
 
 	return jsonText(snap)
 }
@@ -144,4 +174,112 @@ func workspaceIDString(ws pgtype.UUID) string {
 		hex.EncodeToString(b[6:8]) + "-" +
 		hex.EncodeToString(b[8:10]) + "-" +
 		hex.EncodeToString(b[10:16])
+}
+
+var (
+	reFilePath        = regexp.MustCompile(`(?:internal|cmd|web|migrations|sql|scripts|build)/[^\s"']+`)
+	reMigrationNumber = regexp.MustCompile(`\b[0-9]{6}\b`)
+)
+
+// extractKeywords pulls two classes of keyword from desc:
+//   - file paths starting with a known top-level directory segment
+//   - 6-digit migration numbers (e.g. 000025)
+//
+// Returns de-duplicated results, capped at 20 to bound per-task disk cost.
+func extractKeywords(desc string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+
+	add := func(kw string) {
+		if _, ok := seen[kw]; ok {
+			return
+		}
+		seen[kw] = struct{}{}
+		out = append(out, kw)
+	}
+
+	for _, m := range reFilePath.FindAllString(desc, -1) {
+		add(m)
+	}
+	for _, m := range reMigrationNumber.FindAllString(desc, -1) {
+		add(m)
+	}
+
+	if len(out) > 20 {
+		out = out[:20]
+	}
+	return out
+}
+
+// keywordExistsOnDisk returns true when the keyword corresponds to an artifact
+// on disk beneath repoRoot.
+//
+//   - File paths: stat(repoRoot/kw)
+//   - 6-digit migration numbers: glob migrations/<kw>*.sql
+func keywordExistsOnDisk(kw, repoRoot string) bool {
+	if strings.Contains(kw, "/") {
+		// treat as a relative file path
+		_, err := os.Stat(filepath.Join(repoRoot, kw))
+		return err == nil
+	}
+	// treat as a bare migration number
+	matches, err := filepath.Glob(filepath.Join(repoRoot, "migrations", kw+"*.sql"))
+	if err != nil {
+		return false
+	}
+	return len(matches) > 0
+}
+
+// detectCompletionDrift scans pending tasks for descriptions that reference
+// artifacts already present in repoRoot, surfacing them as advisory drift
+// candidates. Returns nil when repoRoot is empty.
+func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
+	if repoRoot == "" {
+		return nil
+	}
+
+	var candidates []DriftCandidate
+	for _, t := range tasks {
+		if t.Status != "pending" {
+			continue
+		}
+		if !t.Description.Valid || t.Description.String == "" {
+			continue
+		}
+		keywords := extractKeywords(t.Description.String)
+		var evidence []string
+		for _, kw := range keywords {
+			if keywordExistsOnDisk(kw, repoRoot) {
+				evidence = append(evidence, kw)
+			}
+		}
+		if len(evidence) > 0 {
+			candidates = append(candidates, DriftCandidate{
+				TaskID:   t.ID.String(),
+				Title:    t.Title,
+				Evidence: evidence,
+			})
+		}
+	}
+	return candidates
+}
+
+// findRepoRoot returns the git repository root by walking up from cwd.
+// Returns "" when no .git directory is found within 6 levels.
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getwd: %w", err)
+	}
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", errors.New("no git repo found")
 }
