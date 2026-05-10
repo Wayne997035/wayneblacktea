@@ -145,6 +145,22 @@ func (s *Store) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, err
 	return rows, nil
 }
 
+// TasksByProjectAllStatuses returns every task belonging to projectID
+// regardless of status, ordered by COALESCE(updated_at, created_at) DESC.
+// The active-only Tasks(...) is the right call for GTD list pages; this
+// variant exists so the project-detail UI can render a "completed" section
+// without resurrecting completed rows in the global pending lists.
+func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error) {
+	rows, err := s.q.ListProjectTasksAllStatuses(ctx, db.ListProjectTasksAllStatusesParams{
+		ProjectID:   toUUID(&projectID),
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing all-status tasks for project %s: %w", projectID, err)
+	}
+	return rows, nil
+}
+
 // CreateTask inserts a new task.
 func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error) {
 	priority := p.Priority

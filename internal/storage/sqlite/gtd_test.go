@@ -587,3 +587,112 @@ func TestGTDStore_TopPendingTask(t *testing.T) {
 		}
 	})
 }
+
+// TestGTDStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted pins down
+// the new SQLite all-statuses query: completed rows show up, default Tasks
+// stays active-only.
+func TestGTDStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	project, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "demo", Title: "Demo", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	open, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "still open", Priority: 3, ProjectID: &project.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask open: %v", err)
+	}
+	done, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "shipped", Priority: 3, ProjectID: &project.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask done: %v", err)
+	}
+	if _, err := s.CompleteTask(ctx, done.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	all, err := s.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks, got %d (%+v)", len(all), all)
+	}
+	statuses := map[string]bool{}
+	for _, tk := range all {
+		statuses[tk.Status] = true
+	}
+	if !statuses["pending"] || !statuses["completed"] {
+		t.Errorf("expected both pending and completed in result, got %+v", statuses)
+	}
+
+	// Default Tasks(...) MUST still be active-only (regression guard).
+	active, err := s.Tasks(ctx, &project.ID)
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != open.ID {
+		t.Errorf("Tasks default path leaked completed rows: %+v", active)
+	}
+}
+
+// TestGTDStore_TasksByProjectAllStatuses_WorkspaceMismatch confirms strict
+// per-workspace scope: a request from workspace B for workspace A's
+// project_id MUST return 0 rows.
+func TestGTDStore_TasksByProjectAllStatuses_WorkspaceMismatch(t *testing.T) {
+	owner := openMem(t, "11111111-1111-4111-8111-111111111111")
+	other := openMem(t, "22222222-2222-4222-8222-222222222222")
+	ctx := context.Background()
+
+	project, err := owner.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "owner-proj", Title: "Owner", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject (owner): %v", err)
+	}
+	if _, err := owner.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "in scope", Priority: 3, ProjectID: &project.ID,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Other workspace asks for the same project_id — strict per-workspace
+	// scope MUST drop these rows even though project_id matches; the SQLite
+	// instance is also a different DB so this pins the cross-DB safety too.
+	got, err := other.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses (other workspace): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 tasks in unrelated workspace, got %d", len(got))
+	}
+}
+
+// TestGTDStore_TasksByProjectAllStatuses_EmptyProject pins the empty-result
+// path: a project with no tasks returns an empty slice (not nil error).
+func TestGTDStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	project, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "empty-proj", Title: "Empty", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	got, err := s.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %+v", got)
+	}
+}

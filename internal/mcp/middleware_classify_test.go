@@ -77,6 +77,17 @@ func (m *mockClassifyGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task
 	return out, nil
 }
 
+// TasksByProjectAllStatuses returns the same fixture as Tasks for the classify
+// middleware tests — these tests don't exercise the all-statuses code path,
+// the method exists only to satisfy gtd.StoreIface.
+func (m *mockClassifyGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]db.Task, len(m.activeTasks))
+	copy(out, m.activeTasks)
+	return out, nil
+}
+
 func (m *mockClassifyGTDStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

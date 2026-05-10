@@ -352,6 +352,31 @@ func (s *GTDStore) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, 
 	return out, errWrap("Tasks iter", rows.Err())
 }
 
+// TasksByProjectAllStatuses returns every task in the project regardless of
+// status, ordered by COALESCE(updated_at, created_at) DESC. Mirrors the
+// Postgres-side gtd.Store.TasksByProjectAllStatuses; both back the
+// `?status=all` variant of the project-detail tasks endpoint.
+func (s *GTDStore) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error) {
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE project_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY COALESCE(updated_at, created_at) DESC`
+	rows, err := s.db.conn.QueryContext(ctx, q, projectID.String(), s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("TasksByProjectAllStatuses", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, errWrap("TasksByProjectAllStatuses scan", err)
+		}
+		out = append(out, t)
+	}
+	return out, errWrap("TasksByProjectAllStatuses iter", rows.Err())
+}
+
 // CreateTask inserts a new task with all Phase A/B fields supported.
 func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
 	id := uuid.New()

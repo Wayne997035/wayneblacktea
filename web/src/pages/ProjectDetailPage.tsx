@@ -11,6 +11,17 @@ import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { TaskRow } from '../components/gtd/TaskRow'
 import { DecisionTimeline } from '../components/decisions/DecisionTimeline'
 
+// formatCompletedAt renders an ISO timestamp as a short locale-aware
+// date string (e.g. "May 7"). Falls back to the raw input on parse failure
+// rather than throwing — defensive against backend payloads that drop
+// `updated_at` for any reason.
+function formatCompletedAt(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export function ProjectDetailPage() {
   const { id = '' } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -18,7 +29,10 @@ export function ProjectDetailPage() {
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
 
   const projectQuery = useProject(id)
-  const tasksQuery = useTasksByProject(id)
+  // The project-detail page renders BOTH an "open" and a "completed" section,
+  // so it MUST request all statuses. The default (`'active'`) stays in place
+  // for GTD list pages — only this page opts in.
+  const tasksQuery = useTasksByProject(id, 'all')
   const decisionsQuery = useDecisions(id)
   const completeTask = useCompleteTask(id)
 
@@ -120,32 +134,74 @@ export function ProjectDetailPage() {
               ) : tasks.length === 0 ? (
                 <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>{t('project.noTasks')}</p>
               ) : (
-                <ul
-                  aria-label="Project tasks"
-                  className="rounded-lg overflow-hidden"
-                  style={{ border: '1px solid var(--color-border)' }}
-                >
-                  {pendingTasks.map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      project={project}
-                      expanded={expandedTaskId === task.id}
-                      onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
-                      onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
-                    />
-                  ))}
-                  {doneTasks.map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      project={project}
-                      expanded={expandedTaskId === task.id}
-                      onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
-                      onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
-                    />
-                  ))}
-                </ul>
+                <>
+                  {pendingTasks.length > 0 && (
+                    <ul
+                      aria-label="Project open tasks"
+                      className="rounded-lg overflow-hidden"
+                      style={{ border: '1px solid var(--color-border)' }}
+                    >
+                      {pendingTasks.map((task) => (
+                        <TaskRow
+                          key={task.id}
+                          task={task}
+                          project={project}
+                          expanded={expandedTaskId === task.id}
+                          onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+                          onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
+                        />
+                      ))}
+                    </ul>
+                  )}
+
+                  {doneTasks.length > 0 && (
+                    <>
+                      <div
+                        className="text-label mt-6 mb-3"
+                        style={{ color: 'var(--color-text-muted)' }}
+                      >
+                        {t('project.completedSection')}
+                        <span
+                          className="ml-2 text-caption px-1.5 rounded-full font-mono"
+                          style={{ background: 'var(--color-bg-hover)', color: 'var(--color-text-muted)' }}
+                        >
+                          {t('project.completedCount', { count: doneTasks.length })}
+                        </span>
+                      </div>
+                      <ul
+                        aria-label="Project completed tasks"
+                        className="rounded-lg overflow-hidden"
+                        style={{ border: '1px solid var(--color-border)' }}
+                      >
+                        {doneTasks.map((task) => (
+                          <TaskRow
+                            key={task.id}
+                            task={task}
+                            project={project}
+                            expanded={expandedTaskId === task.id}
+                            onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+                            onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
+                            // Completion timestamp comes from updated_at — the
+                            // schema sets updated_at = NOW() inside CompleteTask
+                            // (sql/queries/gtd.sql); tasks has no completed_at
+                            // column. data-completed-at exposes the raw RFC3339
+                            // value for tests and a11y tooling.
+                            footer={
+                              <div
+                                data-testid="completed-at"
+                                data-completed-at={task.updated_at}
+                                className="text-caption px-4 pb-2"
+                                style={{ color: 'var(--color-text-muted)' }}
+                              >
+                                {t('project.completedAt', { date: formatCompletedAt(task.updated_at) })}
+                              </div>
+                            }
+                          />
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </>
               )}
             </section>
 

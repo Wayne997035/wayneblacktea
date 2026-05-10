@@ -23,6 +23,12 @@ type StoreIface interface {
 	ProjectByName(ctx context.Context, name string) (*db.Project, error)
 	CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	// TasksByProjectAllStatuses returns ALL tasks for the project regardless
+	// of status (pending / in_progress / completed / cancelled), ordered by
+	// COALESCE(updated_at, created_at) DESC. Used by the project-detail UI
+	// to render the "completed" section alongside open tasks. The active-only
+	// Tasks variant remains the default for GTD list pages.
+	TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error)
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error

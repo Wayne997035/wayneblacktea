@@ -48,6 +48,17 @@ WHERE project_id = sqlc.arg('project_id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 ORDER BY priority ASC, created_at ASC;
 
+-- name: ListProjectTasksAllStatuses :many
+-- All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to
+-- render both the "open" and the "completed/cancelled" sections; the default
+-- GetTasksByProject query stays active-only so existing GTD list pages don't
+-- regress. Ordering: newest activity first via COALESCE(updated_at, created_at)
+-- DESC so completed rows surface in roughly the order they were finished.
+SELECT * FROM tasks
+WHERE project_id = sqlc.arg('project_id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+ORDER BY COALESCE(updated_at, created_at) DESC;
+
 -- name: GetAllPendingTasks :many
 SELECT * FROM tasks
 WHERE status IN ('pending', 'in_progress')

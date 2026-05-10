@@ -72,6 +72,10 @@ func (m *mockGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error)
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
 	return nil, errMockNotImpl
 }

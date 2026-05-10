@@ -2,10 +2,25 @@ import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/rea
 import { apiFetch } from '../lib/api'
 import type { Task, CreateTaskRequest, Project } from '../types/api'
 
-export function useTasksByProject(projectId: string) {
+/**
+ * Filter passed to the project-tasks endpoint.
+ *
+ * - `'active'` (default): backend returns only `pending` / `in_progress`.
+ *   This is the historical contract used by GTD list pages — keep it as the
+ *   default so existing callers don't regress.
+ * - `'all'`: backend returns every status (including `completed` /
+ *   `cancelled`), ordered by `COALESCE(updated_at, created_at) DESC`. Used
+ *   by the project-detail page so the "completed" section actually has rows.
+ */
+export type TaskStatusFilter = 'active' | 'all'
+
+export function useTasksByProject(projectId: string, statusFilter: TaskStatusFilter = 'active') {
+  const suffix = statusFilter === 'all' ? '?status=all' : ''
   return useQuery<Task[]>({
-    queryKey: ['projects', projectId, 'tasks'],
-    queryFn: () => apiFetch<Task[]>(`/api/projects/${projectId}/tasks`),
+    // Filter is part of the cache key so 'all' and 'active' don't share state
+    // (otherwise toggling between them would surface stale rows).
+    queryKey: ['projects', projectId, 'tasks', statusFilter],
+    queryFn: () => apiFetch<Task[]>(`/api/projects/${projectId}/tasks${suffix}`),
     enabled: Boolean(projectId),
   })
 }

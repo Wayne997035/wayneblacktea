@@ -30,6 +30,10 @@ type gtdStore interface {
 	CreateGoal(ctx context.Context, p gtd.CreateGoalParams) (*db.Goal, error)
 	CreateProject(ctx context.Context, p gtd.CreateProjectParams) (*db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	// TasksByProjectAllStatuses backs the `?status=all` variant of
+	// GET /api/projects/:id/tasks (used by the project-detail UI to render
+	// the "completed" section). Default behaviour stays active-only.
+	TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error)
 	CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gtd.TaskStatus) (*db.Task, error)
@@ -140,3 +144,9 @@ type timelineAggregator interface {
 func errResp(msg string) map[string]string {
 	return map[string]string{"error": msg}
 }
+
+// statusAll is the canonical query-param value that opts into "no status
+// filter". Used by both ListProposals (?status=all) and ListProjectTasks
+// (?status=all); kept as a single constant so the wire contract stays
+// consistent across endpoints.
+const statusAll = "all"

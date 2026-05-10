@@ -51,6 +51,12 @@ type Querier interface {
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
 	ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([]KnowledgeItem, error)
 	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
+	// All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to
+	// render both the "open" and the "completed/cancelled" sections; the default
+	// GetTasksByProject query stays active-only so existing GTD list pages don't
+	// regress. Ordering: newest activity first via COALESCE(updated_at, created_at)
+	// DESC so completed rows surface in roughly the order they were finished.
+	ListProjectTasksAllStatuses(ctx context.Context, arg ListProjectTasksAllStatusesParams) ([]Task, error)
 	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
 	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
 	ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error)
