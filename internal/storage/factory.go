@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,6 +167,14 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
+	}
+	if wsID == nil {
+		// Postgres mode without WORKSPACE_ID writes NULL workspace_id, which
+		// production read paths (filtered by workspace_id) skip. Surface this
+		// loudly so a missing env doesn't silently desync local writes from
+		// production reads — see incident 2026-05-09 (117 rows backfilled).
+		slog.Warn("postgres mode active but WORKSPACE_ID env unset — writes will be invisible to workspace-scoped reads",
+			"fix", "set WORKSPACE_ID in .env.local or runtime env")
 	}
 	embedClient := search.NewEmbeddingClientFromEnv()
 	return &postgresServerStores{
