@@ -19,6 +19,11 @@ const (
 	proposalBodyLimit = 32 * 1024 // 32 KB — enough for 100 UUIDs and action
 	actionAccept      = "accept"
 	actionReject      = "reject"
+	// errInternalGeneric is the per-row error text returned to batch callers
+	// when a downstream materialise/resolve fails for reasons we don't want
+	// to leak (server-side panic, store init not wired, etc). The detail is
+	// already in c.Logger().Errorf — the API surface stays opaque.
+	errInternalGeneric = "internal error"
 )
 
 // proposalListStore covers the operations needed to list and resolve proposals.
@@ -409,60 +414,112 @@ type batchConfirmResponse struct {
 	Results []batchConfirmResultEntry `json:"results"`
 }
 
-// proposalConceptMeta bundles pre-fetched concept payload for batch accept.
-type proposalConceptMeta struct {
-	isConcept bool
-	cp        conceptCandidatePayload
+// proposalBatchMeta bundles pre-fetched payload + per-row decode error for
+// batch accept. The `payloadErr` field captures decode failures so the resolve
+// loop can return a 400-equivalent per-row entry instead of silently dropping
+// the proposal (the round-2 reviewer flagged that silent skip on malformed
+// decision payloads was the same data-loss class as missing decisions row).
+type proposalBatchMeta struct {
+	isConcept  bool
+	cp         conceptCandidatePayload
+	isDecision bool
+	dp         decision.LogParams
+	// payloadErr is the human-readable decode failure message; empty = ok.
+	// When non-empty the resolve loop reports it as a per-row error and skips
+	// the resolve entirely (same semantics as the singular handler returning
+	// 400 on a bad payload).
+	payloadErr string
 }
 
-// batchConceptMeta pre-fetches concept payloads for the given IDs.
-// Missing or malformed proposals are silently skipped — the resolve loop surfaces them.
-func (h *ProposalHandler) batchConceptMeta(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]proposalConceptMeta {
-	meta := make(map[uuid.UUID]proposalConceptMeta, len(ids))
+// batchProposalMeta pre-fetches payloads (concept + decision) for the given IDs.
+// Missing proposals are silently skipped — the resolve loop surfaces them via
+// ErrNotFound. Malformed payloads are recorded so the resolve loop can short-
+// circuit with a per-row error before flipping the status.
+func (h *ProposalHandler) batchProposalMeta(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]proposalBatchMeta {
+	meta := make(map[uuid.UUID]proposalBatchMeta, len(ids))
 	for _, id := range ids {
 		prop, err := h.proposal.Get(ctx, id)
 		if err != nil || prop == nil {
 			continue
 		}
-		if proposal.Type(prop.Type) != proposal.TypeConcept {
-			meta[id] = proposalConceptMeta{}
-			continue
+		switch proposal.Type(prop.Type) {
+		case proposal.TypeConcept:
+			cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
+			if errMsg != "" {
+				meta[id] = proposalBatchMeta{isConcept: true, payloadErr: errMsg}
+				continue
+			}
+			meta[id] = proposalBatchMeta{isConcept: true, cp: cp}
+		case proposal.TypeDecision:
+			dp, errMsg := decodeProposalDecisionPayload(prop.Payload)
+			if errMsg != "" {
+				meta[id] = proposalBatchMeta{isDecision: true, payloadErr: errMsg}
+				continue
+			}
+			meta[id] = proposalBatchMeta{isDecision: true, dp: dp}
+		default:
+			meta[id] = proposalBatchMeta{}
 		}
-		cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
-		if errMsg != "" {
-			continue
-		}
-		meta[id] = proposalConceptMeta{isConcept: true, cp: cp}
 	}
 	return meta
 }
 
-// batchResolveOne resolves a single proposal and materialises a concept if applicable.
-// Concept materialisation failures are non-fatal.
+// batchResolveOne resolves a single proposal and materialises the appropriate
+// entity (concept or decision). Concept materialisation failures are non-fatal
+// (preserves prior behaviour). Decision materialisation runs BEFORE the
+// resolve flip — same orphan-decision-over-phantom-accepted trade-off as the
+// singular acceptDecision path: a Resolve race may leave an orphan decisions
+// row, which is preferable to marking the proposal accepted with no decision
+// row to back it.
 func (h *ProposalHandler) batchResolveOne(
 	c echo.Context,
 	ctx context.Context,
 	id uuid.UUID,
 	status proposal.Status,
-	meta map[uuid.UUID]proposalConceptMeta,
+	meta map[uuid.UUID]proposalBatchMeta,
 ) batchConfirmResultEntry {
 	entry := batchConfirmResultEntry{ID: id.String()}
+
+	m, hasMeta := meta[id]
+
+	// On accept of a TypeDecision row: materialise FIRST so a Resolve failure
+	// does not leave an "accepted" proposal with no decision row.
+	if status == proposal.StatusAccepted && hasMeta && m.isDecision {
+		if m.payloadErr != "" {
+			// Mirror singular handler: malformed payload → per-row 400, no resolve.
+			entry.Error = m.payloadErr
+			return entry
+		}
+		if h.decision == nil {
+			c.Logger().Errorf("ConfirmBatch accept decision %s: decision store not wired", id)
+			entry.Error = errInternalGeneric
+			return entry
+		}
+		if _, derr := h.decision.Log(ctx, m.dp); derr != nil {
+			c.Logger().Errorf("ConfirmBatch materialise decision %s: %v", id, derr)
+			entry.Error = errInternalGeneric
+			return entry
+		}
+	}
+
 	if _, err := h.proposal.Resolve(ctx, id, status); err != nil {
 		if errors.Is(err, proposal.ErrNotFound) {
 			entry.Skipped = true
 			entry.Error = "not found or already resolved"
 		} else {
 			c.Logger().Errorf("ConfirmBatch resolve %s: %v", id, err)
-			entry.Error = "internal error"
+			entry.Error = errInternalGeneric
 		}
 		return entry
 	}
 	entry.OK = true
-	if status == proposal.StatusAccepted {
-		if m, ok := meta[id]; ok && m.isConcept {
-			if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
-				c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
-			}
+	if status == proposal.StatusAccepted && hasMeta && m.isConcept {
+		// Malformed concept payload was already recorded; we still resolved
+		// (preserves prior behaviour where concept failures are non-fatal).
+		if m.payloadErr != "" {
+			c.Logger().Warnf("ConfirmBatch concept %s: payload decode failed: %s", id, m.payloadErr)
+		} else if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
+			c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
 		}
 	}
 	return entry
@@ -505,9 +562,9 @@ func (h *ProposalHandler) ConfirmBatch(c echo.Context) error {
 		status = proposal.StatusAccepted
 	}
 
-	var meta map[uuid.UUID]proposalConceptMeta
+	var meta map[uuid.UUID]proposalBatchMeta
 	if req.Action == actionAccept {
-		meta = h.batchConceptMeta(ctx, ids)
+		meta = h.batchProposalMeta(ctx, ids)
 	}
 
 	results := make([]batchConfirmResultEntry, 0, len(ids))

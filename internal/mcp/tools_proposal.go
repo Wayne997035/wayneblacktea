@@ -223,16 +223,68 @@ func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolReq
 		ids = append(ids, id)
 	}
 
-	status := proposal.StatusRejected
 	if action == actionAccept {
-		status = proposal.StatusAccepted
+		// Accept path MUST go through acceptProposal so TypeDecision rows are
+		// materialised into the decisions table (same data-loss class as C-1
+		// from round-1: BatchConfirm flips status='accepted' but never inserts
+		// the decisions row). Per-id dispatch preserves uniform behaviour
+		// with the singular handleConfirmProposal flow at the cost of one tx
+		// per id instead of one tx per batch — acceptable for personal-OS
+		// scale (max 100 ids).
+		return s.batchAccept(ctx, ids)
 	}
 
-	result, err := s.proposal.BatchConfirm(ctx, ids, status)
+	// Reject path stays on BatchConfirm — no materialiser to run.
+	result, err := s.proposal.BatchConfirm(ctx, ids, proposal.StatusRejected)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("batch confirm: %v", err)), nil
 	}
 	return jsonText(result)
+}
+
+// batchAccept runs acceptProposal once per id and aggregates the per-id
+// outcomes into a BatchConfirmResult shape. Errors from individual ids are
+// captured in the result entry (not fatal to the batch); only a result-level
+// failure (e.g. JSON encoding the summary) propagates as a tool error.
+func (s *Server) batchAccept(ctx context.Context, ids []uuid.UUID) (*mcp.CallToolResult, error) {
+	results := make([]proposal.BatchItemResult, 0, len(ids))
+	accepted, failed := 0, 0
+	for _, id := range ids {
+		res, err := s.acceptProposal(ctx, id)
+		if err != nil {
+			results = append(results, proposal.BatchItemResult{ID: id.String(), OK: false, ErrMsg: err.Error()})
+			failed++
+			continue
+		}
+		if res.IsError {
+			results = append(results, proposal.BatchItemResult{
+				ID:     id.String(),
+				OK:     false,
+				ErrMsg: resultErrorText(res),
+			})
+			failed++
+			continue
+		}
+		results = append(results, proposal.BatchItemResult{ID: id.String(), OK: true})
+		accepted++
+	}
+	return jsonText(proposal.BatchConfirmResult{
+		Results:  results,
+		Accepted: accepted,
+		Failed:   failed,
+	})
+}
+
+// resultErrorText extracts the first text content from an error CallToolResult
+// for inclusion in a batch-aggregate error message. Empty if the result has no
+// text content (defensive — acceptProposal always includes a message).
+func resultErrorText(r *mcp.CallToolResult) string {
+	for _, c := range r.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			return tc.Text
+		}
+	}
+	return "unknown error"
 }
 
 // confirmResult is what confirm_proposal returns when an entity is materialized.

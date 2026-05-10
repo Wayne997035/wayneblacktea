@@ -897,3 +897,103 @@ func TestStore_ProjectsByRepoName_WorkspaceMismatch_PG(t *testing.T) {
 		t.Errorf("workspace B leaked workspace A projects: %+v", gotB)
 	}
 }
+
+// readRepoName fetches projects.repo_name for id; t.Fatal on query error.
+// Returns nil pointer when the column is NULL.
+func readRepoName(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, label string) *string {
+	t.Helper()
+	var repoName *string
+	if err := pool.QueryRow(ctx,
+		`SELECT repo_name FROM projects WHERE id = $1`, id,
+	).Scan(&repoName); err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	return repoName
+}
+
+// execMigrationFile reads name from the embedded migrations FS and runs it
+// against pool. Wraps both the read and the exec in t.Fatal for brevity.
+func execMigrationFile(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string) {
+	t.Helper()
+	body, err := migrationfs.FS.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if _, err := pool.Exec(ctx, string(body)); err != nil {
+		t.Fatalf("apply %s: %v", name, err)
+	}
+}
+
+// TestMigration000039_BackfillProjectsRepoName_PG verifies migration 000039
+// (backfill projects.repo_name = 'wayneblacktea' WHERE name = 'wbt-core-mvp')
+// behaves as the production single-tenant deploy needs:
+//
+//   - happy path: a wbt-core-mvp project gets repo_name='wayneblacktea' bound
+//     after re-running the migration, even though the migration was already
+//     applied against an empty table during openTestPgPool's full-stack apply
+//   - idempotency: re-running it a second time leaves the value unchanged
+//     (UPDATE ... = same value is a safe no-op)
+//   - scoping: other projects (different name) are untouched and remain NULL,
+//     so the workspace_overview_handler.go fallback to ProjectByName still
+//     applies for non-wbt-core-mvp projects
+//
+// applyAllUpMigrations has already executed 000039 against the freshly-built
+// container before this test starts, so we re-execute the same .up.sql body
+// via raw pool.Exec to assert the behaviour against seeded data. This is
+// safe because the migration is documented (and proven below) to be idempotent.
+func TestMigration000039_BackfillProjectsRepoName_PG(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	// Seed the canonical project mirroring production's row plus one unrelated
+	// project to assert scoping (must remain NULL repo_name).
+	canonical, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "wbt-core-mvp", Title: "Wayneblacktea Core MVP", Priority: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject wbt-core-mvp: %v", err)
+	}
+	other, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "unrelated-project", Title: "Unrelated", Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject unrelated: %v", err)
+	}
+
+	// Pre-condition: both projects start with NULL repo_name. CreateProject
+	// does not set the column so this should always hold; if it doesn't, the
+	// test below is meaningless.
+	for _, id := range []uuid.UUID{canonical.ID, other.ID} {
+		if got := readRepoName(t, ctx, pool, id, "pre-check"); got != nil {
+			t.Fatalf("pre-check: project %s already has repo_name=%q, expected NULL", id, *got)
+		}
+	}
+
+	// Apply 000039 from the embedded FS verbatim so the test asserts on the
+	// real migration source, not a paraphrase. Then verify post-conditions.
+	execMigrationFile(t, ctx, pool, "000039_backfill_projects_repo_name.up.sql")
+
+	// Assertion 1: canonical project bound to 'wayneblacktea'.
+	if got := readRepoName(t, ctx, pool, canonical.ID, "post-check canonical"); got == nil || *got != "wayneblacktea" {
+		t.Errorf("canonical repo_name = %v, want \"wayneblacktea\"", got)
+	}
+
+	// Assertion 2: unrelated project untouched (still NULL).
+	if got := readRepoName(t, ctx, pool, other.ID, "post-check other"); got != nil {
+		t.Errorf("unrelated project repo_name = %q, want NULL", *got)
+	}
+
+	// Assertion 3: idempotency — second apply leaves the value unchanged.
+	execMigrationFile(t, ctx, pool, "000039_backfill_projects_repo_name.up.sql")
+	if got := readRepoName(t, ctx, pool, canonical.ID, "idempotency post-check"); got == nil || *got != "wayneblacktea" {
+		t.Errorf("after re-apply canonical repo_name = %v, want \"wayneblacktea\"", got)
+	}
+
+	// Assertion 4: down-migration restores NULL only for the bound row.
+	execMigrationFile(t, ctx, pool, "000039_backfill_projects_repo_name.down.sql")
+	if got := readRepoName(t, ctx, pool, canonical.ID, "post-down-check"); got != nil {
+		t.Errorf("after down migration canonical repo_name = %q, want NULL", *got)
+	}
+}
