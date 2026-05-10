@@ -41,10 +41,39 @@ type gtdStore interface {
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
 }
 
-// workspaceStore covers the subset of workspace.Store used by handlers.
+// workspaceStore covers the subset of workspace.Store used by the basic
+// workspace endpoints (list / upsert).
 type workspaceStore interface {
 	ActiveRepos(ctx context.Context) ([]db.Repo, error)
 	UpsertRepo(ctx context.Context, p workspace.UpsertRepoParams) (*db.Repo, error)
+}
+
+// repoOverviewWorkspaceStore covers the workspace.StoreIface methods needed
+// by GET /api/workspace/repos/:id/overview.
+type repoOverviewWorkspaceStore interface {
+	RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error)
+}
+
+// repoOverviewGTDStore covers the gtd.StoreIface methods needed by the
+// repo-overview endpoint: project-by-name lookup, pending+completed tasks,
+// and recent activity for the matched project.
+type repoOverviewGTDStore interface {
+	ProjectByName(ctx context.Context, name string) (*db.Project, error)
+	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error)
+	RecentActivityByProject(ctx context.Context, projectID uuid.UUID, since time.Time, maxRows int32) ([]db.ActivityLog, error)
+}
+
+// repoOverviewDecisionStore covers the decision.StoreIface methods needed by
+// the repo-overview endpoint.
+type repoOverviewDecisionStore interface {
+	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
+}
+
+// repoOverviewSessionStore covers the session.StoreIface methods needed by
+// the repo-overview endpoint.
+type repoOverviewSessionStore interface {
+	HandoffsByRepo(ctx context.Context, repoName string, limit int) ([]db.SessionHandoff, error)
 }
 
 // decisionStore covers the subset of decision.Store used by handlers.

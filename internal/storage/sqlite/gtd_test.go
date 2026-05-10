@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
@@ -695,4 +696,130 @@ func TestGTDStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("expected empty slice, got %+v", got)
 	}
+}
+
+func TestGTDStore_RecentCompletedTasks(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	proj, err := s.CreateProject(ctx, gtd.CreateProjectParams{Name: "rct", Title: "RCT", Area: "engineering"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	t.Run("returns only completed for the project, newest first", func(t *testing.T) {
+		// Create 3 tasks: complete two of them; leave one pending.
+		t1, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "first", ProjectID: &proj.ID, Priority: 3})
+		if err != nil {
+			t.Fatalf("CreateTask t1: %v", err)
+		}
+		t2, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "second", ProjectID: &proj.ID, Priority: 3})
+		if err != nil {
+			t.Fatalf("CreateTask t2: %v", err)
+		}
+		_, err = s.CreateTask(ctx, gtd.CreateTaskParams{Title: "still-pending", ProjectID: &proj.ID, Priority: 3})
+		if err != nil {
+			t.Fatalf("CreateTask t3: %v", err)
+		}
+		if _, err := s.CompleteTask(ctx, t1.ID, nil); err != nil {
+			t.Fatalf("CompleteTask t1: %v", err)
+		}
+		// Sleep to guarantee t2.updated_at > t1.updated_at at SQLite's
+		// millisecond timestamp resolution (otherwise the secondary id-based
+		// tiebreaker is non-deterministic for uuid v4).
+		time.Sleep(2 * time.Millisecond)
+		if _, err := s.CompleteTask(ctx, t2.ID, nil); err != nil {
+			t.Fatalf("CompleteTask t2: %v", err)
+		}
+
+		got, err := s.RecentCompletedTasks(ctx, proj.ID, 50)
+		if err != nil {
+			t.Fatalf("RecentCompletedTasks: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 completed tasks, got %d", len(got))
+		}
+		// Most recently completed (t2) should be first.
+		if got[0].ID != t2.ID {
+			t.Errorf("expected t2 first (newest), got %s (want %s)", got[0].ID, t2.ID)
+		}
+	})
+
+	t.Run("limit caps result", func(t *testing.T) {
+		got, err := s.RecentCompletedTasks(ctx, proj.ID, 1)
+		if err != nil {
+			t.Fatalf("RecentCompletedTasks: %v", err)
+		}
+		if len(got) != 1 {
+			t.Errorf("expected 1 task, got %d", len(got))
+		}
+	})
+
+	t.Run("unknown project → empty", func(t *testing.T) {
+		got, err := s.RecentCompletedTasks(ctx, uuid.New(), 50)
+		if err != nil {
+			t.Fatalf("RecentCompletedTasks: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 tasks for unknown project, got %d", len(got))
+		}
+	})
+}
+
+func TestGTDStore_RecentActivityByProject(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	proj, err := s.CreateProject(ctx, gtd.CreateProjectParams{Name: "rabp", Title: "RABP", Area: "engineering"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	t.Run("returns activities for the project newest first", func(t *testing.T) {
+		if err := s.LogActivity(ctx, "tester", "log_decision", &proj.ID, "first"); err != nil {
+			t.Fatalf("LogActivity 1: %v", err)
+		}
+		if err := s.LogActivity(ctx, "tester", "complete_task", &proj.ID, "second"); err != nil {
+			t.Fatalf("LogActivity 2: %v", err)
+		}
+
+		since := time.Now().Add(-1 * time.Hour)
+		got, err := s.RecentActivityByProject(ctx, proj.ID, since, 50)
+		if err != nil {
+			t.Fatalf("RecentActivityByProject: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 activity rows, got %d", len(got))
+		}
+	})
+
+	t.Run("since-window filter excludes older rows", func(t *testing.T) {
+		future := time.Now().Add(1 * time.Hour)
+		got, err := s.RecentActivityByProject(ctx, proj.ID, future, 50)
+		if err != nil {
+			t.Fatalf("RecentActivityByProject: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 rows for future since, got %d", len(got))
+		}
+	})
+
+	t.Run("activity for another project is not returned", func(t *testing.T) {
+		other, err := s.CreateProject(ctx, gtd.CreateProjectParams{Name: "rabp-other", Title: "Other", Area: "engineering"})
+		if err != nil {
+			t.Fatalf("CreateProject other: %v", err)
+		}
+		if err := s.LogActivity(ctx, "tester", "log_decision", &other.ID, "for other"); err != nil {
+			t.Fatalf("LogActivity for other: %v", err)
+		}
+		got, err := s.RecentActivityByProject(ctx, proj.ID, time.Now().Add(-1*time.Hour), 50)
+		if err != nil {
+			t.Fatalf("RecentActivityByProject: %v", err)
+		}
+		for _, a := range got {
+			if a.ProjectID.Valid && uuid.UUID(a.ProjectID.Bytes) == other.ID {
+				t.Errorf("activity for other project should not appear, got: %+v", a)
+			}
+		}
+	})
 }

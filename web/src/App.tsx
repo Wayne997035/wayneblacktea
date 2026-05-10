@@ -8,6 +8,7 @@ import { DecisionsPage } from './pages/DecisionsPage'
 import { KnowledgePage } from './pages/KnowledgePage'
 import { ReviewsPage } from './pages/ReviewsPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
+import { RepoDetailPage } from './pages/RepoDetailPage'
 import { LearningHistoryPage } from './pages/LearningHistoryPage'
 import { CalendarPage } from './pages/CalendarPage'
 import { LoginPage } from './pages/LoginPage'
@@ -23,6 +24,7 @@ const router = createBrowserRouter([
       { path: 'gtd', element: <GtdPage /> },
       { path: 'workspace', element: <WorkspacePage /> },
       { path: 'workspace/projects/:id', element: <ProjectDetailPage /> },
+      { path: 'workspace/repos/:id', element: <RepoDetailPage /> },
       { path: 'decisions', element: <DecisionsPage /> },
       { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'reviews', element: <ReviewsPage /> },

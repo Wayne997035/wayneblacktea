@@ -447,6 +447,74 @@ func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 	return &t, nil
 }
 
+// RecentCompletedTasks returns recently-completed tasks for a project,
+// scoped to the configured workspace, ordered by updated_at DESC. Hand-written
+// query (not sqlc) to avoid touching codegen for a single new read.
+func (s *Store) RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error) {
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		FROM tasks
+		WHERE status = 'completed'
+		  AND project_id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY updated_at DESC, id DESC
+		LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, projectID, s.workspaceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent completed tasks for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+	out := make([]db.Task, 0, limit)
+	for rows.Next() {
+		var t db.Task
+		if err := rows.Scan(
+			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		); err != nil {
+			return nil, fmt.Errorf("scanning recent completed task: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating recent completed tasks: %w", err)
+	}
+	return out, nil
+}
+
+// RecentActivityByProject returns activity_log rows for a project since the
+// given timestamp, scoped to the configured workspace, newest first. maxRows
+// caps the result set so a hot project can't blow out memory.
+func (s *Store) RecentActivityByProject(
+	ctx context.Context, projectID uuid.UUID, since time.Time, maxRows int32,
+) ([]db.ActivityLog, error) {
+	const q = `SELECT id, actor, project_id, action, notes, created_at, workspace_id
+		FROM activity_log
+		WHERE project_id = $1
+		  AND created_at >= $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4`
+	rows, err := s.dbtx.Query(ctx, q, projectID, since, s.workspaceID, maxRows)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent activity for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+	out := make([]db.ActivityLog, 0, maxRows)
+	for rows.Next() {
+		var a db.ActivityLog
+		if err := rows.Scan(
+			&a.ID, &a.Actor, &a.ProjectID, &a.Action, &a.Notes, &a.CreatedAt, &a.WorkspaceID,
+		); err != nil {
+			return nil, fmt.Errorf("scanning recent activity: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating recent activity: %w", err)
+	}
+	return out, nil
+}
+
 // WeeklyProgress returns completed task count this week and total active task count.
 func (s *Store) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	completed, err = s.q.CountCompletedTasksThisWeek(ctx, s.workspaceID)

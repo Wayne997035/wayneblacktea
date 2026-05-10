@@ -125,6 +125,23 @@ func (s *WorkspaceStore) RepoByName(ctx context.Context, name string) (*db.Repo,
 	return &r, nil
 }
 
+// RepoByID returns a single repo by primary key UUID, or workspace.ErrNotFound.
+// Workspace-scoped via the configured workspace_id (NULL → unscoped legacy mode).
+func (s *WorkspaceStore) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error) {
+	const q = `SELECT ` + reposSelectCols + ` FROM repos
+		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	r, err := scanRepo(s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg()).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, workspace.ErrNotFound
+	}
+	if err != nil {
+		return nil, errWrap("RepoByID", err)
+	}
+	return &r, nil
+}
+
 // UpsertRepo creates or updates a repo entry.
 func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoParams) (*db.Repo, error) {
 	id := uuid.New()

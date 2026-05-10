@@ -97,6 +97,7 @@ func run() error {
 	}
 	gtdH := handler.NewGTDHandler(stores.GTD())
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
+	wsOverviewH := handler.NewWorkspaceOverviewHandler(stores.Workspace(), stores.GTD(), stores.Decision(), stores.Session())
 	decH := handler.NewDecisionHandler(stores.Decision())
 	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClientFromEnv())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
@@ -217,6 +218,7 @@ func run() error {
 
 	api.GET("/workspace/repos", wsH.ListRepos)
 	api.POST("/workspace/repos", wsH.UpsertRepo)
+	api.GET("/workspace/repos/:id/overview", wsOverviewH.GetRepoOverview)
 
 	// handoffRL caps POST /session/handoff at 5 req/min — each request may
 	// spawn a Gemini embedding call; keep well below Gemini free-tier quota.

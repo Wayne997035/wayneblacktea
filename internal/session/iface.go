@@ -32,6 +32,10 @@ type StoreIface interface {
 	// HandoffsSince returns handoffs created or resolved on or after since,
 	// scoped to the configured workspace. Used by the timeline aggregator.
 	HandoffsSince(ctx context.Context, since time.Time, limit int) ([]db.SessionHandoff, error)
+	// HandoffsByRepo returns recent handoffs whose repo_name matches the given
+	// value, scoped to the configured workspace. Ordered by created_at DESC.
+	// Used by the workspace repo overview to surface recent context for a repo.
+	HandoffsByRepo(ctx context.Context, repoName string, limit int) ([]db.SessionHandoff, error)
 }
 
 var _ StoreIface = (*Store)(nil)

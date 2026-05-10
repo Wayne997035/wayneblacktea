@@ -85,7 +85,29 @@
     "syncRepos": "重新整理",
     "noRepos": "沒有儲存庫",
     "issues": "{{count}} 個問題",
-    "knownIssues": "已知問題"
+    "knownIssues": "已知問題",
+    "repoDetail": {
+      "back": "返回工作區",
+      "branch": "分支",
+      "lastActivity": "最近活動",
+      "nextStep": "下一步計畫",
+      "completed": "已完成",
+      "completedCount": "完成 {{count}} 項",
+      "noCompleted": "尚無已完成工作",
+      "pending": "待辦",
+      "pendingCount": "{{count}} 項未完成",
+      "noPending": "目前沒有待辦",
+      "decisions": "最近決策",
+      "noDecisions": "尚無決策紀錄",
+      "activity": "最近活動（14 天）",
+      "noActivity": "近 14 天內沒有活動",
+      "handoffs": "最近交接",
+      "noHandoffs": "目前沒有交接紀錄",
+      "openHandoff": "未完成",
+      "resolvedHandoff": "已完成",
+      "monthSection": "{{month}}",
+      "rationaleLabel": "理由"
+    }
   },
   "decisions": {
     "title": "決策紀錄",

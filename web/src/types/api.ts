@@ -265,3 +265,71 @@ export interface TimelineResponse {
   from: string
   to: string
 }
+
+// --- Repo Detail / Workspace Overview ---
+
+export interface RepoOverviewSummary {
+  id: string
+  name: string
+  description?: string
+  language?: string
+  status: string
+  current_branch?: string
+  next_planned_step?: string
+  last_activity?: string
+  path?: string
+  known_issues: string[]
+}
+
+export interface RepoOverviewCompletedTask {
+  id: string
+  title: string
+  completed_at?: string
+  project_id?: string
+  artifact?: string
+}
+
+export interface RepoOverviewPendingTask {
+  id: string
+  title: string
+  status: string
+  importance?: number
+  priority: number
+  due_date?: string
+  project_id?: string
+}
+
+export interface RepoOverviewDecision {
+  id: string
+  title: string
+  decision: string
+  rationale: string
+  created_at?: string
+}
+
+export interface RepoOverviewActivity {
+  id: string
+  action: string
+  notes?: string
+  created_at?: string
+  /** Mapped to a TimelineKind by the backend so the UI can colour-code via eventStyles.ts. */
+  kind: string
+}
+
+export interface RepoOverviewHandoff {
+  id: string
+  intent: string
+  /** "open" or "resolved". */
+  status: string
+  created_at?: string
+  resolved_at?: string
+}
+
+export interface RepoOverview {
+  repo: RepoOverviewSummary
+  completed_tasks: RepoOverviewCompletedTask[]
+  pending_tasks: RepoOverviewPendingTask[]
+  recent_decisions: RepoOverviewDecision[]
+  recent_activity: RepoOverviewActivity[]
+  recent_handoffs: RepoOverviewHandoff[]
+}

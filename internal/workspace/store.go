@@ -14,18 +14,19 @@ import (
 // Store handles all database operations for the Workspace bounded context.
 type Store struct {
 	q           *db.Queries
+	dbtx        db.DBTX // retained for hand-written queries outside of sqlc
 	workspaceID pgtype.UUID
 }
 
 // NewStore returns a Store backed by the given DBTX scoped to the optional
 // workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
-	return &Store{q: s.q.WithTx(tx), workspaceID: s.workspaceID}
+	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
 }
 
 func toText(v string) pgtype.Text {
@@ -61,6 +62,32 @@ func (s *Store) RepoByName(ctx context.Context, name string) (*db.Repo, error) {
 		return nil, fmt.Errorf("querying repo %q: %w", name, err)
 	}
 	return &row, nil
+}
+
+// RepoByID returns a single repo by primary key UUID, scoped to the configured
+// workspace. Returns ErrNotFound when no row matches. Hand-written query (not
+// sqlc) so the change is contained to the Go store layer.
+func (s *Store) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error) {
+	const q = `SELECT id, name, path, description, language, status,
+		current_branch, known_issues, next_planned_step, last_activity,
+		created_at, updated_at, workspace_id
+		FROM repos
+		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		LIMIT 1`
+	row := s.dbtx.QueryRow(ctx, q, id, s.workspaceID)
+	var r db.Repo
+	if err := row.Scan(
+		&r.ID, &r.Name, &r.Path, &r.Description, &r.Language, &r.Status,
+		&r.CurrentBranch, &r.KnownIssues, &r.NextPlannedStep, &r.LastActivity,
+		&r.CreatedAt, &r.UpdatedAt, &r.WorkspaceID,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("querying repo by id %s: %w", id, err)
+	}
+	return &r, nil
 }
 
 // UpsertRepo creates or updates a repo entry.

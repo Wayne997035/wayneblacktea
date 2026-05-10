@@ -494,3 +494,53 @@ func TestHandoff_CrossYearOrdering(t *testing.T) {
 		t.Errorf("unexpected intent: %q", latest.Intent)
 	}
 }
+
+func TestSessionStore_HandoffsByRepo(t *testing.T) {
+	s := openSessionStore(t, "")
+	ctx := context.Background()
+
+	// Two handoffs for the same repo, one for a different repo.
+	if _, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "first wbt", RepoName: "wayneblacktea"}); err != nil {
+		t.Fatalf("SetHandoff 1: %v", err)
+	}
+	if _, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "second wbt", RepoName: "wayneblacktea"}); err != nil {
+		t.Fatalf("SetHandoff 2: %v", err)
+	}
+	if _, err := s.SetHandoff(ctx, session.HandoffParams{Intent: "for chatbot-go", RepoName: "chatbot-go"}); err != nil {
+		t.Fatalf("SetHandoff 3: %v", err)
+	}
+
+	t.Run("returns only matching repo, newest first", func(t *testing.T) {
+		got, err := s.HandoffsByRepo(ctx, "wayneblacktea", 50)
+		if err != nil {
+			t.Fatalf("HandoffsByRepo: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 wayneblacktea handoffs, got %d", len(got))
+		}
+		// Newest first → "second wbt" before "first wbt".
+		if len(got) >= 1 && got[0].Intent != "second wbt" {
+			t.Errorf("expected newest first, got %q", got[0].Intent)
+		}
+	})
+
+	t.Run("limit caps result", func(t *testing.T) {
+		got, err := s.HandoffsByRepo(ctx, "wayneblacktea", 1)
+		if err != nil {
+			t.Fatalf("HandoffsByRepo: %v", err)
+		}
+		if len(got) != 1 {
+			t.Errorf("expected 1 handoff, got %d", len(got))
+		}
+	})
+
+	t.Run("non-matching repo → empty", func(t *testing.T) {
+		got, err := s.HandoffsByRepo(ctx, "no-such-repo", 50)
+		if err != nil {
+			t.Fatalf("HandoffsByRepo: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 handoffs for unknown repo, got %d", len(got))
+		}
+	})
+}

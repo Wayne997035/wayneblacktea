@@ -45,6 +45,14 @@ type StoreIface interface {
 	// TopPendingTask returns the single highest-priority pending task scoped to
 	// the configured workspace. Returns nil, nil when none exist.
 	TopPendingTask(ctx context.Context) (*db.Task, error)
+	// RecentCompletedTasks returns recently-completed tasks for a project,
+	// scoped to the configured workspace, ordered by updated_at DESC. Used by
+	// the workspace repo overview to show "what got done lately".
+	RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error)
+	// RecentActivityByProject returns activity_log rows for a project since
+	// the given timestamp, scoped to the configured workspace, newest first.
+	// maxRows caps the result set to bound memory.
+	RecentActivityByProject(ctx context.Context, projectID uuid.UUID, since time.Time, maxRows int32) ([]db.ActivityLog, error)
 	WorkspaceID() pgtype.UUID
 }
 
