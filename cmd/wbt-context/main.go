@@ -47,7 +47,20 @@ const (
 	contextWindowChars = 800
 )
 
+// Version metadata injected at link time via goreleaser ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
+	// Handle `version` BEFORE initHookSlog so a plain `wbt-context version`
+	// invocation does not create an empty 0600 log file as a side effect.
+	// Matches the wbt-guard / wbt-doctor pattern. (PR #85 R3 — reviewer minor)
+	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("%s %s (%s)\n", filepath.Base(os.Args[0]), version, commit)
+		return
+	}
 	initHookSlog("wbt-context")
 	if len(os.Args) < 2 || os.Args[1] != "session-start" {
 		fmt.Fprintf(os.Stderr, "usage: wbt-context session-start\n")
