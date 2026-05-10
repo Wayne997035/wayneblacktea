@@ -360,6 +360,7 @@
     "kinds": {
       "task_created": "Task created",
       "task_completed": "Task completed",
+      "task_due": "Scheduled",
       "decision": "Decision",
       "activity": "Activity",
       "knowledge": "Knowledge",
@@ -367,7 +368,11 @@
       "review_submitted": "Review",
       "handoff_created": "Handoff created",
       "handoff_resolved": "Handoff resolved"
-    }
+    },
+    "moreEvents_one": "+{{count}} more",
+    "moreEvents_other": "+{{count}} more",
+    "chipAriaLabel": "{{kind}}: {{title}}",
+    "moreButtonAriaLabel": "Show {{count}} more events on this day"
   },
   "proposals": {
     "allCaughtUp": "All caught up",

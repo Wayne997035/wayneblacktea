@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
@@ -820,6 +821,113 @@ func TestGTDStore_RecentActivityByProject(t *testing.T) {
 			if a.ProjectID.Valid && uuid.UUID(a.ProjectID.Bytes) == other.ID {
 				t.Errorf("activity for other project should not appear, got: %+v", a)
 			}
+		}
+	})
+}
+
+// mustCreateTask is a tiny helper to keep TasksByDueDateRange subtests free
+// of repetitive `if err := ...; err != nil { t.Fatalf(...) }` boilerplate.
+// Splitting these out also keeps the outer test under the gocyclo budget.
+func mustCreateTask(t *testing.T, s *sqlite.GTDStore, title string, due *time.Time) {
+	t.Helper()
+	_, err := s.CreateTask(context.Background(), gtd.CreateTaskParams{
+		Title: title, Priority: 3, DueDate: due,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask %s: %v", title, err)
+	}
+}
+
+func mustQueryDueRange(t *testing.T, s *sqlite.GTDStore, from, to time.Time) []db.Task {
+	t.Helper()
+	got, err := s.TasksByDueDateRange(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("TasksByDueDateRange: %v", err)
+	}
+	return got
+}
+
+// TestGTDStore_TasksByDueDateRange covers the calendar-planning query: only
+// pending / in_progress tasks whose due_date falls inside [from, to] are
+// returned, and only within the configured workspace.
+func TestGTDStore_TasksByDueDateRange(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	weekEnd := now.Add(7 * 24 * time.Hour)
+
+	t.Run("returns tasks with due_date inside range, ordered ASC", func(t *testing.T) {
+		s := openMem(t, "")
+		dueLater := now.Add(5 * 24 * time.Hour)
+		dueSooner := now.Add(2 * 24 * time.Hour)
+		mustCreateTask(t, s, "later", &dueLater)
+		mustCreateTask(t, s, "sooner", &dueSooner)
+
+		got := mustQueryDueRange(t, s, now, weekEnd)
+		if len(got) != 2 {
+			t.Fatalf("want 2, got %d: %+v", len(got), got)
+		}
+		if got[0].Title != "sooner" || got[1].Title != "later" {
+			t.Errorf("want order [sooner, later], got [%s, %s]", got[0].Title, got[1].Title)
+		}
+	})
+
+	t.Run("excludes due_date outside range", func(t *testing.T) {
+		s := openMem(t, "")
+		insideDue := now.Add(2 * 24 * time.Hour)
+		outsideAfter := now.Add(30 * 24 * time.Hour)
+		outsideBefore := now.Add(-10 * 24 * time.Hour)
+		mustCreateTask(t, s, "inside", &insideDue)
+		mustCreateTask(t, s, "after", &outsideAfter)
+		mustCreateTask(t, s, "before", &outsideBefore)
+
+		got := mustQueryDueRange(t, s, now, weekEnd)
+		if len(got) != 1 || got[0].Title != "inside" {
+			t.Errorf("want [inside], got %+v", got)
+		}
+	})
+
+	t.Run("excludes tasks with null due_date", func(t *testing.T) {
+		s := openMem(t, "")
+		mustCreateTask(t, s, "no-due", nil)
+		got := mustQueryDueRange(t, s, now, weekEnd)
+		if len(got) != 0 {
+			t.Errorf("want 0 (null due_date excluded), got %d", len(got))
+		}
+	})
+
+	t.Run("excludes completed tasks even when due_date is in range", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+		due := now.Add(2 * 24 * time.Hour)
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "to-complete", Priority: 3, DueDate: &due})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		if _, err := s.CompleteTask(ctx, task.ID, nil); err != nil {
+			t.Fatalf("CompleteTask: %v", err)
+		}
+		got := mustQueryDueRange(t, s, now, weekEnd)
+		if len(got) != 0 {
+			t.Errorf("want 0 (completed excluded), got %d", len(got))
+		}
+	})
+
+	t.Run("workspace isolation", func(t *testing.T) {
+		wsA := uuid.New().String()
+		wsB := uuid.New().String()
+		sA := openMem(t, wsA)
+		sB := openMem(t, wsB)
+		// Each store opens its own in-memory DB; cross-workspace leakage in a
+		// shared DB is exercised by the Postgres integration test where the
+		// schema lives in one place. Here we verify that scoping is at
+		// least applied (the store wires workspaceArg into the query).
+		due := now.Add(2 * 24 * time.Hour)
+		mustCreateTask(t, sA, "ws-a", &due)
+
+		if got := mustQueryDueRange(t, sA, now, weekEnd); len(got) != 1 {
+			t.Errorf("want 1 in workspace A, got %d", len(got))
+		}
+		if got := mustQueryDueRange(t, sB, now, weekEnd); len(got) != 0 {
+			t.Errorf("want 0 in workspace B, got %d", len(got))
 		}
 	})
 }

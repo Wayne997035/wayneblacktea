@@ -84,6 +84,10 @@ func (s *stubGTDStore) RecentActivityByProject(_ context.Context, _ uuid.UUID, _
 	return nil, nil
 }
 
+func (s *stubGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
+	return nil, nil
+}
+
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.
 type stubDecisionStore struct {
 	decisions []db.Decision

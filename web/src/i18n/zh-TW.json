@@ -359,6 +359,7 @@
     "kinds": {
       "task_created": "任務建立",
       "task_completed": "任務完成",
+      "task_due": "任務排程",
       "decision": "決策",
       "activity": "活動",
       "knowledge": "知識",
@@ -366,7 +367,10 @@
       "review_submitted": "回顧",
       "handoff_created": "交接建立",
       "handoff_resolved": "交接完成"
-    }
+    },
+    "moreEvents_other": "再 {{count}} 個",
+    "chipAriaLabel": "{{kind}}：{{title}}",
+    "moreButtonAriaLabel": "顯示這天剩下的 {{count}} 個事件"
   },
   "proposals": {
     "allCaughtUp": "無待處理提案",

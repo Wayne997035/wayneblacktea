@@ -241,6 +241,7 @@ export interface DashboardStats {
 export type TimelineKind =
   | 'task_created'
   | 'task_completed'
+  | 'task_due'
   | 'decision'
   | 'activity'
   | 'knowledge'
