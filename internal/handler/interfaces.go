@@ -55,10 +55,14 @@ type repoOverviewWorkspaceStore interface {
 }
 
 // repoOverviewGTDStore covers the gtd.StoreIface methods needed by the
-// repo-overview endpoint: project-by-name lookup, pending+completed tasks,
-// and recent activity for the matched project.
+// repo-overview endpoint: project lookup (legacy by-name + new
+// repo-name binding), pending+completed tasks, and recent activity.
 type repoOverviewGTDStore interface {
 	ProjectByName(ctx context.Context, name string) (*db.Project, error)
+	// ProjectsByRepoName returns every project bound to the given repo via the
+	// new projects.repo_name column (migration 000037). Empty slice = no
+	// project paired (not an error).
+	ProjectsByRepoName(ctx context.Context, repoName string) ([]db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
 	RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error)
 	RecentActivityByProject(ctx context.Context, projectID uuid.UUID, since time.Time, maxRows int32) ([]db.ActivityLog, error)

@@ -158,43 +158,59 @@ func (h *WorkspaceOverviewHandler) GetRepoOverview(c echo.Context) error {
 		RecentHandoffs:  []recentHandoffItem{},
 	}
 
-	// Best-effort project lookup — repo without a paired project is normal.
-	// errors.Is(gtd.ErrNotFound) → silently leave task/activity lists empty.
-	project, projErr := h.gtd.ProjectByName(ctx, repo.Name)
-	switch {
-	case projErr == nil:
-		// Pending (incl. in_progress) tasks for the project. Cap by callers
-		// who slice — Tasks() doesn't accept a limit, so we apply a Go-side
-		// cap (the personal-OS scale keeps this trivial).
+	// Look up paired projects in two phases:
+	//   1. NEW: projects.repo_name explicitly set (migration 000037).
+	//   2. FALLBACK: legacy convention `project.name == repo.name`.
+	// We aggregate task / activity lists across all matched projects so a repo
+	// hosting multiple projects (the common case once the column is populated)
+	// shows everything in one card. Each list is independently capped so a
+	// single hot project can't blow out the response budget.
+	projects, projErr := h.gtd.ProjectsByRepoName(ctx, repo.Name)
+	if projErr != nil {
+		c.Logger().Errorf("GetRepoOverview ProjectsByRepoName: %v", projErr)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if len(projects) == 0 {
+		// Fallback: legacy by-name lookup. Repo without a paired project is
+		// normal — silently leave lists empty when ErrNotFound surfaces.
+		legacy, legacyErr := h.gtd.ProjectByName(ctx, repo.Name)
+		switch {
+		case legacyErr == nil:
+			projects = []db.Project{*legacy}
+		case errors.Is(legacyErr, gtd.ErrNotFound):
+			// no project paired by either path — leave task/activity lists empty
+		default:
+			c.Logger().Errorf("GetRepoOverview ProjectByName fallback: %v", legacyErr)
+			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		}
+	}
+
+	since := time.Now().Add(-time.Duration(repoOverviewActivityWindowDays) * 24 * time.Hour)
+	for i := range projects {
+		project := &projects[i]
+		// Pending (incl. in_progress) tasks for the project. Tasks() doesn't
+		// accept a limit, so we apply a Go-side cap on the AGGREGATE (not
+		// per-project) to keep the response budget stable.
 		pending, terr := h.gtd.Tasks(ctx, &project.ID)
 		if terr != nil {
 			c.Logger().Errorf("GetRepoOverview Tasks: %v", terr)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 		}
-		if len(pending) > int(repoOverviewListLimit) {
-			pending = pending[:repoOverviewListLimit]
-		}
-		resp.PendingTasks = toPendingTaskItems(pending)
+		resp.PendingTasks = appendPendingCapped(resp.PendingTasks, pending, int(repoOverviewListLimit))
 
 		completed, cerr := h.gtd.RecentCompletedTasks(ctx, project.ID, repoOverviewListLimit)
 		if cerr != nil {
 			c.Logger().Errorf("GetRepoOverview RecentCompletedTasks: %v", cerr)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 		}
-		resp.CompletedTasks = toCompletedTaskItems(completed)
+		resp.CompletedTasks = appendCompletedCapped(resp.CompletedTasks, completed, int(repoOverviewListLimit))
 
-		since := time.Now().Add(-time.Duration(repoOverviewActivityWindowDays) * 24 * time.Hour)
 		activity, aerr := h.gtd.RecentActivityByProject(ctx, project.ID, since, repoOverviewListLimit)
 		if aerr != nil {
 			c.Logger().Errorf("GetRepoOverview RecentActivityByProject: %v", aerr)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 		}
-		resp.RecentActivity = toRecentActivityItems(activity)
-	case errors.Is(projErr, gtd.ErrNotFound):
-		// no project paired — leave task/activity lists empty
-	default:
-		c.Logger().Errorf("GetRepoOverview ProjectByName: %v", projErr)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		resp.RecentActivity = appendActivityCapped(resp.RecentActivity, activity, int(repoOverviewListLimit))
 	}
 
 	decisions, derr := h.decision.ByRepo(ctx, repo.Name, repoOverviewListLimit)
@@ -254,46 +270,6 @@ func toRepoSummary(repo *db.Repo) repoSummary {
 	return out
 }
 
-func toPendingTaskItems(tasks []db.Task) []pendingTaskItem {
-	out := make([]pendingTaskItem, 0, len(tasks))
-	for _, t := range tasks {
-		item := pendingTaskItem{
-			ID:       t.ID.String(),
-			Title:    t.Title,
-			Status:   t.Status,
-			Priority: t.Priority,
-			DueDate:  formatTS(t.DueDate),
-		}
-		if t.Importance.Valid {
-			item.Importance = t.Importance.Int16
-		}
-		if t.ProjectID.Valid {
-			item.ProjectID = uuid.UUID(t.ProjectID.Bytes).String()
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func toCompletedTaskItems(tasks []db.Task) []completedTaskItem {
-	out := make([]completedTaskItem, 0, len(tasks))
-	for _, t := range tasks {
-		item := completedTaskItem{
-			ID:          t.ID.String(),
-			Title:       t.Title,
-			CompletedAt: formatTS(t.UpdatedAt),
-		}
-		if t.ProjectID.Valid {
-			item.ProjectID = uuid.UUID(t.ProjectID.Bytes).String()
-		}
-		if t.Artifact.Valid {
-			item.Artifact = t.Artifact.String
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
 func toRecentDecisionItems(rows []db.Decision) []recentDecisionItem {
 	out := make([]recentDecisionItem, 0, len(rows))
 	for _, d := range rows {
@@ -304,23 +280,6 @@ func toRecentDecisionItems(rows []db.Decision) []recentDecisionItem {
 			Rationale: d.Rationale,
 			CreatedAt: formatTS(d.CreatedAt),
 		})
-	}
-	return out
-}
-
-func toRecentActivityItems(rows []db.ActivityLog) []recentActivityItem {
-	out := make([]recentActivityItem, 0, len(rows))
-	for _, a := range rows {
-		item := recentActivityItem{
-			ID:        a.ID.String(),
-			Action:    a.Action,
-			CreatedAt: formatTS(a.CreatedAt),
-			Kind:      classifyActivityKind(a.Action),
-		}
-		if a.Notes.Valid {
-			item.Notes = a.Notes.String
-		}
-		out = append(out, item)
 	}
 	return out
 }
@@ -341,6 +300,84 @@ func toRecentHandoffItems(rows []db.SessionHandoff) []recentHandoffItem {
 		})
 	}
 	return out
+}
+
+// appendPendingCapped converts the raw db.Task slice to pending DTOs and
+// appends them to acc, stopping once acc reaches max items. Used so the
+// per-repo aggregate across multiple paired projects respects a single hard
+// cap rather than a per-project one.
+func appendPendingCapped(acc []pendingTaskItem, tasks []db.Task, max int) []pendingTaskItem {
+	if len(acc) >= max {
+		return acc
+	}
+	for _, t := range tasks {
+		if len(acc) >= max {
+			break
+		}
+		item := pendingTaskItem{
+			ID:       t.ID.String(),
+			Title:    t.Title,
+			Status:   t.Status,
+			Priority: t.Priority,
+			DueDate:  formatTS(t.DueDate),
+		}
+		if t.Importance.Valid {
+			item.Importance = t.Importance.Int16
+		}
+		if t.ProjectID.Valid {
+			item.ProjectID = uuid.UUID(t.ProjectID.Bytes).String()
+		}
+		acc = append(acc, item)
+	}
+	return acc
+}
+
+// appendCompletedCapped is the completed-task analogue of appendPendingCapped.
+func appendCompletedCapped(acc []completedTaskItem, tasks []db.Task, max int) []completedTaskItem {
+	if len(acc) >= max {
+		return acc
+	}
+	for _, t := range tasks {
+		if len(acc) >= max {
+			break
+		}
+		item := completedTaskItem{
+			ID:          t.ID.String(),
+			Title:       t.Title,
+			CompletedAt: formatTS(t.UpdatedAt),
+		}
+		if t.ProjectID.Valid {
+			item.ProjectID = uuid.UUID(t.ProjectID.Bytes).String()
+		}
+		if t.Artifact.Valid {
+			item.Artifact = t.Artifact.String
+		}
+		acc = append(acc, item)
+	}
+	return acc
+}
+
+// appendActivityCapped is the activity-log analogue of appendPendingCapped.
+func appendActivityCapped(acc []recentActivityItem, rows []db.ActivityLog, max int) []recentActivityItem {
+	if len(acc) >= max {
+		return acc
+	}
+	for _, a := range rows {
+		if len(acc) >= max {
+			break
+		}
+		item := recentActivityItem{
+			ID:        a.ID.String(),
+			Action:    a.Action,
+			CreatedAt: formatTS(a.CreatedAt),
+			Kind:      classifyActivityKind(a.Action),
+		}
+		if a.Notes.Valid {
+			item.Notes = a.Notes.String
+		}
+		acc = append(acc, item)
+	}
+	return acc
 }
 
 // classifyActivityKind maps a raw activity_log.action string to a stable

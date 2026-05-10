@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS projects (
     status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','completed','archived','on_hold')),
     area         TEXT NOT NULL DEFAULT 'projects',
     priority     INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
+    repo_name    TEXT, -- optional repo binding for workspace overview drill-down (migration 000037 parity); referential integrity in code per red line #9
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS session_handoffs (
 CREATE INDEX IF NOT EXISTS idx_projects_status               ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_projects_priority             ON projects(priority);
 CREATE INDEX IF NOT EXISTS idx_projects_workspace_id         ON projects(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_projects_workspace_repo_name  ON projects(workspace_id, repo_name) WHERE repo_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id              ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status                  ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id            ON tasks(workspace_id) WHERE workspace_id IS NOT NULL;
