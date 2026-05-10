@@ -299,6 +299,12 @@ func TestKeywordExistsOnDisk_PathTraversal(t *testing.T) {
 	if err := os.WriteFile(realPath, []byte(""), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	// Symlink internal/escape → / so a kw of "internal/escape/etc/hosts" stays
+	// lexically inside root but resolves to /etc/hosts. EvalSymlinks must reject.
+	symlinkAt := filepath.Join(root, "internal", "escape")
+	if err := os.Symlink("/", symlinkAt); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -343,6 +349,11 @@ func TestKeywordExistsOnDisk_PathTraversal(t *testing.T) {
 		{
 			name: "valid migration glob with nonexistent number returns false",
 			kw:   "999999",
+			want: false,
+		},
+		{
+			name: "symlink escape rejected via EvalSymlinks (CWE-59)",
+			kw:   "internal/escape/etc/hosts",
 			want: false,
 		},
 	}

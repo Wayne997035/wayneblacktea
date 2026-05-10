@@ -226,6 +226,24 @@ func extractKeywords(desc string) []string {
 //   - File paths: stat(repoRoot/kw)
 //   - 6-digit migration numbers: glob migrations/<kw>*.sql
 func keywordExistsOnDisk(kw, repoRoot string) bool {
+	if !isSafeKeyword(kw) {
+		return false
+	}
+	boundary := filepath.Clean(repoRoot)
+	// Canonicalize boundary so the prefix check still works when the OS
+	// resolves the parent (e.g. macOS /var → /private/var).
+	if resolved, err := filepath.EvalSymlinks(boundary); err == nil {
+		boundary = resolved
+	}
+	if strings.Contains(kw, "/") {
+		return filePathExistsInBoundary(kw, boundary)
+	}
+	return migrationGlobExists(kw, boundary)
+}
+
+// isSafeKeyword rejects keywords containing ".." segments or ASCII control
+// bytes (incl. NUL / CR / LF) before they reach any filesystem call.
+func isSafeKeyword(kw string) bool {
 	if strings.Contains(kw, "..") {
 		return false
 	}
@@ -234,24 +252,35 @@ func keywordExistsOnDisk(kw, repoRoot string) bool {
 			return false
 		}
 	}
-	boundary := filepath.Clean(repoRoot)
+	return true
+}
+
+// filePathExistsInBoundary checks whether a slash-bearing keyword resolves to
+// an existing file inside boundary. Two-layer defence: lexical prefix check
+// after Join + EvalSymlinks-resolved prefix check (CWE-59 link following).
+func filePathExistsInBoundary(kw, boundary string) bool {
 	sep := string(filepath.Separator)
-
-	if strings.Contains(kw, "/") {
-		joined := filepath.Join(boundary, kw)
-		if joined != boundary && !strings.HasPrefix(joined, boundary+sep) {
-			return false
-		}
-		_, err := os.Stat(joined)
-		return err == nil
+	joined := filepath.Join(boundary, kw)
+	if joined != boundary && !strings.HasPrefix(joined, boundary+sep) {
+		return false
 	}
+	resolved, err := filepath.EvalSymlinks(joined)
+	if err != nil {
+		return false
+	}
+	return resolved == boundary || strings.HasPrefix(resolved, boundary+sep)
+}
 
-	// Migration number branch — defensive: must be all digits.
+// migrationGlobExists checks the digit-only kw against migrations/<kw>*.sql.
+// Defensive: rejects non-digit input even though the caller's regex already
+// constrains it.
+func migrationGlobExists(kw, boundary string) bool {
 	for _, ch := range kw {
 		if ch < '0' || ch > '9' {
 			return false
 		}
 	}
+	sep := string(filepath.Separator)
 	pattern := filepath.Join(boundary, "migrations", kw+"*.sql")
 	if !strings.HasPrefix(pattern, boundary+sep) {
 		return false
