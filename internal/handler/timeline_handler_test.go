@@ -145,6 +145,12 @@ func TestTimelineHandler_GetTimeline(t *testing.T) {
 			agg:      &fakeTimelineAggregator{events: []timeline.Event{}},
 			wantCode: http.StatusOK,
 		},
+		{
+			name:     "from after to (reversed range) → 400",
+			query:    "?from=2026-05-02T00:00:00Z&to=2026-05-01T00:00:00Z",
+			agg:      &fakeTimelineAggregator{},
+			wantCode: http.StatusBadRequest,
+		},
 	}
 
 	for _, tc := range cases {

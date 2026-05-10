@@ -64,6 +64,9 @@ func (h *TimelineHandler) GetTimeline(c echo.Context) error {
 		from = from.UTC()
 	}
 
+	if from.After(to) {
+		return c.JSON(http.StatusBadRequest, errResp("'from' must not be after 'to'"))
+	}
 	if to.Sub(from) > maxTimelineRangeDays*24*time.Hour {
 		return c.JSON(http.StatusBadRequest, errResp("date range must not exceed 366 days"))
 	}

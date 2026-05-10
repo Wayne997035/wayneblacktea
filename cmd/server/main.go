@@ -261,7 +261,8 @@ func run() error {
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
 
-	api.GET("/timeline", timelineH.GetTimeline)
+	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
+	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
