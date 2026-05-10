@@ -97,6 +97,48 @@ func (s *Store) ProjectByName(ctx context.Context, name string) (*db.Project, er
 	return &row, nil
 }
 
+// ProjectsByRepoName returns every project whose `repo_name` column matches
+// the given repo, scoped to the configured workspace. Empty result is not an
+// error — repos without paired projects are normal.
+//
+// Hand-rolled (not sqlc) so adding the new column doesn't require a sqlc
+// regen on every contributor's machine. Returns []db.Project (existing struct
+// fields only) so we don't have to bump db.Project schema either.
+//
+// Empty input → empty result fast-path (avoids a wildcard scan on the
+// composite index).
+func (s *Store) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.Project, error) {
+	if repoName == "" {
+		return nil, nil
+	}
+	const q = `SELECT id, goal_id, name, title, description, status, area, priority,
+		created_at, updated_at, workspace_id
+		FROM projects
+		WHERE repo_name = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY priority ASC, created_at ASC`
+	rows, err := s.dbtx.Query(ctx, q, repoName, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing projects for repo %q: %w", repoName, err)
+	}
+	defer rows.Close()
+	var out []db.Project
+	for rows.Next() {
+		var p db.Project
+		if err := rows.Scan(
+			&p.ID, &p.GoalID, &p.Name, &p.Title, &p.Description, &p.Status, &p.Area, &p.Priority,
+			&p.CreatedAt, &p.UpdatedAt, &p.WorkspaceID,
+		); err != nil {
+			return nil, fmt.Errorf("scanning project for repo %q: %w", repoName, err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating projects for repo %q: %w", repoName, err)
+	}
+	return out, nil
+}
+
 // CreateProject inserts a new project.
 func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error) {
 	area := p.Area

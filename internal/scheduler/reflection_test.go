@@ -41,6 +41,10 @@ func (s *stubGTDStore) ProjectByName(_ context.Context, _ string) (*db.Project, 
 	return nil, nil
 }
 
+func (s *stubGTDStore) ProjectsByRepoName(_ context.Context, _ string) ([]db.Project, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParams) (*db.Project, error) {
 	return nil, nil
 }

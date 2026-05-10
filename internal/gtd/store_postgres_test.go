@@ -790,3 +790,210 @@ func TestStore_TasksByDueDateRange(t *testing.T) {
 		}
 	})
 }
+
+// TestStore_ProjectsByRepoName_PG pins the new repo↔project lookup against
+// real Postgres (testcontainers). Required by backend-security-design §6.5:
+// any new dialect-specific store query MUST have a PG testcontainers test
+// in addition to the handler-level fake-store test in
+// workspace_overview_handler_test.go. Sprint #92 (PR #92) added this query
+// without a PG test; this case closes the gap.
+func TestStore_ProjectsByRepoName_PG(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	// Empty input → nil fast-path (early-return guard).
+	got, err := store.ProjectsByRepoName(ctx, "")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName empty: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for empty repo name, got %+v", got)
+	}
+
+	// Two projects bound to the same repo, distinct priorities. repo_name
+	// is set via raw UPDATE because CreateProjectParams does not yet
+	// expose the field — matches migration 000037 comment ("populated by
+	// hand-rolled UPDATE post-migration").
+	p1, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "alpha", Title: "Alpha", Priority: 2,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject p1: %v", err)
+	}
+	p2, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "beta", Title: "Beta", Priority: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject p2: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE projects SET repo_name = $1 WHERE id IN ($2, $3)`,
+		"wayneblacktea", p1.ID, p2.ID,
+	); err != nil {
+		t.Fatalf("UPDATE repo_name: %v", err)
+	}
+
+	got, err = store.ProjectsByRepoName(ctx, "wayneblacktea")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName matched: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 projects, got %d (%+v)", len(got), got)
+	}
+	// ORDER BY priority ASC — beta (1) before alpha (2).
+	if got[0].ID != p2.ID || got[1].ID != p1.ID {
+		t.Errorf("ordering wrong: got [%s, %s], want [%s, %s]",
+			got[0].ID, got[1].ID, p2.ID, p1.ID)
+	}
+
+	// Unmatched repo → empty slice, no error.
+	got, err = store.ProjectsByRepoName(ctx, "no-such-repo")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName unmatched: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 for unmatched repo, got %d", len(got))
+	}
+}
+
+// TestStore_ProjectsByRepoName_WorkspaceMismatch_PG confirms the disjoint
+// `($2::uuid IS NULL OR workspace_id = $2)` clause enforces strict
+// per-workspace scoping on Postgres: workspace B asking for a repo bound
+// to workspace A's project MUST receive 0 rows. Mirrors the
+// TasksByProjectAllStatuses_WorkspaceMismatch pattern.
+func TestStore_ProjectsByRepoName_WorkspaceMismatch_PG(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+	ctx := context.Background()
+
+	pA, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "ws-a-proj", Title: "WS A",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject pA: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE projects SET repo_name = $1 WHERE id = $2`,
+		"shared-repo", pA.ID,
+	); err != nil {
+		t.Fatalf("UPDATE repo_name: %v", err)
+	}
+
+	gotA, err := storeA.ProjectsByRepoName(ctx, "shared-repo")
+	if err != nil || len(gotA) != 1 {
+		t.Fatalf("storeA ProjectsByRepoName: got %d projects, err %v", len(gotA), err)
+	}
+
+	gotB, err := storeB.ProjectsByRepoName(ctx, "shared-repo")
+	if err != nil {
+		t.Fatalf("storeB ProjectsByRepoName: %v", err)
+	}
+	if len(gotB) != 0 {
+		t.Errorf("workspace B leaked workspace A projects: %+v", gotB)
+	}
+}
+
+// readRepoName fetches projects.repo_name for id; t.Fatal on query error.
+// Returns nil pointer when the column is NULL.
+func readRepoName(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, label string) *string {
+	t.Helper()
+	var repoName *string
+	if err := pool.QueryRow(ctx,
+		`SELECT repo_name FROM projects WHERE id = $1`, id,
+	).Scan(&repoName); err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	return repoName
+}
+
+// execMigrationFile reads name from the embedded migrations FS and runs it
+// against pool. Wraps both the read and the exec in t.Fatal for brevity.
+func execMigrationFile(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string) {
+	t.Helper()
+	body, err := migrationfs.FS.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if _, err := pool.Exec(ctx, string(body)); err != nil {
+		t.Fatalf("apply %s: %v", name, err)
+	}
+}
+
+// TestMigration000039_BackfillProjectsRepoName_PG verifies migration 000039
+// (backfill projects.repo_name = 'wayneblacktea' WHERE name = 'wbt-core-mvp')
+// behaves as the production single-tenant deploy needs:
+//
+//   - happy path: a wbt-core-mvp project gets repo_name='wayneblacktea' bound
+//     after re-running the migration, even though the migration was already
+//     applied against an empty table during openTestPgPool's full-stack apply
+//   - idempotency: re-running it a second time leaves the value unchanged
+//     (UPDATE ... = same value is a safe no-op)
+//   - scoping: other projects (different name) are untouched and remain NULL,
+//     so the workspace_overview_handler.go fallback to ProjectByName still
+//     applies for non-wbt-core-mvp projects
+//
+// applyAllUpMigrations has already executed 000039 against the freshly-built
+// container before this test starts, so we re-execute the same .up.sql body
+// via raw pool.Exec to assert the behaviour against seeded data. This is
+// safe because the migration is documented (and proven below) to be idempotent.
+func TestMigration000039_BackfillProjectsRepoName_PG(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	// Seed the canonical project mirroring production's row plus one unrelated
+	// project to assert scoping (must remain NULL repo_name).
+	canonical, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "wbt-core-mvp", Title: "Wayneblacktea Core MVP", Priority: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject wbt-core-mvp: %v", err)
+	}
+	other, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "unrelated-project", Title: "Unrelated", Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject unrelated: %v", err)
+	}
+
+	// Pre-condition: both projects start with NULL repo_name. CreateProject
+	// does not set the column so this should always hold; if it doesn't, the
+	// test below is meaningless.
+	for _, id := range []uuid.UUID{canonical.ID, other.ID} {
+		if got := readRepoName(t, ctx, pool, id, "pre-check"); got != nil {
+			t.Fatalf("pre-check: project %s already has repo_name=%q, expected NULL", id, *got)
+		}
+	}
+
+	// Apply 000039 from the embedded FS verbatim so the test asserts on the
+	// real migration source, not a paraphrase. Then verify post-conditions.
+	execMigrationFile(t, ctx, pool, "000039_backfill_projects_repo_name.up.sql")
+
+	// Assertion 1: canonical project bound to 'wayneblacktea'.
+	if got := readRepoName(t, ctx, pool, canonical.ID, "post-check canonical"); got == nil || *got != "wayneblacktea" {
+		t.Errorf("canonical repo_name = %v, want \"wayneblacktea\"", got)
+	}
+
+	// Assertion 2: unrelated project untouched (still NULL).
+	if got := readRepoName(t, ctx, pool, other.ID, "post-check other"); got != nil {
+		t.Errorf("unrelated project repo_name = %q, want NULL", *got)
+	}
+
+	// Assertion 3: idempotency — second apply leaves the value unchanged.
+	execMigrationFile(t, ctx, pool, "000039_backfill_projects_repo_name.up.sql")
+	if got := readRepoName(t, ctx, pool, canonical.ID, "idempotency post-check"); got == nil || *got != "wayneblacktea" {
+		t.Errorf("after re-apply canonical repo_name = %v, want \"wayneblacktea\"", got)
+	}
+
+	// Assertion 4: down-migration restores NULL only for the bound row.
+	execMigrationFile(t, ctx, pool, "000039_backfill_projects_repo_name.down.sql")
+	if got := readRepoName(t, ctx, pool, canonical.ID, "post-down-check"); got != nil {
+		t.Errorf("after down migration canonical repo_name = %q, want NULL", *got)
+	}
+}

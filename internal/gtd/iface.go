@@ -21,6 +21,11 @@ type StoreIface interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error)
 	ProjectByName(ctx context.Context, name string) (*db.Project, error)
+	// ProjectsByRepoName returns every project whose `repo_name` column matches
+	// the given repo, scoped to the configured workspace. Empty input or no
+	// matches → empty slice (not an error). Used by the workspace overview
+	// drill-down so a repo can list multiple paired projects.
+	ProjectsByRepoName(ctx context.Context, repoName string) ([]db.Project, error)
 	CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
 	// TasksByProjectAllStatuses returns ALL tasks for the project regardless

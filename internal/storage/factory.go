@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,12 +170,17 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
 	}
 	if wsID == nil {
-		// Postgres mode without WORKSPACE_ID writes NULL workspace_id, which
-		// production read paths (filtered by workspace_id) skip. Surface this
-		// loudly so a missing env doesn't silently desync local writes from
-		// production reads — see incident 2026-05-09 (117 rows backfilled).
-		slog.Warn("postgres mode active but WORKSPACE_ID env unset — writes will be invisible to workspace-scoped reads",
-			"fix", "set WORKSPACE_ID in .env.local or runtime env")
+		// Fail-closed: in Postgres mode an unset WORKSPACE_ID writes NULL
+		// workspace_id, which would silently desync from workspace-scoped reads
+		// once M3 strict scoping lands (see backend-security-design.md §1 +
+		// incident 2026-05-09 / 117 rows backfilled). Refuse to start so the
+		// operator either sets the env explicitly or migrates to SQLite.
+		pool.Close()
+		return nil, fmt.Errorf(
+			"WORKSPACE_ID env is required in postgres mode " +
+				"(set WORKSPACE_ID in .env.local or runtime env; " +
+				"to opt out of workspace scoping use STORAGE_BACKEND=sqlite)",
+		)
 	}
 	embedClient := search.NewEmbeddingClientFromEnv()
 	return &postgresServerStores{
@@ -226,9 +230,11 @@ func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { retur
 func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
 func (p *postgresServerStores) PgProposal() *proposal.Store              { return p.proposal }
 func (p *postgresServerStores) PgLearning() *learning.Store              { return p.learning }
+func (p *postgresServerStores) PgDecision() *decision.Store              { return p.decision }
 func (p *postgresServerStores) SqliteGTD() *wbtsqlite.GTDStore           { return nil }
 func (p *postgresServerStores) SqliteProposal() *wbtsqlite.ProposalStore { return nil }
 func (p *postgresServerStores) SqliteLearning() *wbtsqlite.LearningStore { return nil }
+func (p *postgresServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return nil }
 
 // buildPgxPool centralises the pgxpool config we use across cmd/server and
 // cmd/mcp so the TLS / pgvector wiring lives in one place.
@@ -349,6 +355,8 @@ func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return 
 func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }
 func (s *sqliteServerStores) PgProposal() *proposal.Store              { return nil }
 func (s *sqliteServerStores) PgLearning() *learning.Store              { return nil }
+func (s *sqliteServerStores) PgDecision() *decision.Store              { return nil }
 func (s *sqliteServerStores) SqliteGTD() *wbtsqlite.GTDStore           { return s.gtd }
 func (s *sqliteServerStores) SqliteProposal() *wbtsqlite.ProposalStore { return s.proposal }
 func (s *sqliteServerStores) SqliteLearning() *wbtsqlite.LearningStore { return s.learning }
+func (s *sqliteServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return s.decision }

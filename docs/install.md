@@ -44,6 +44,7 @@ Environment overrides:
 | `WBT_NO_MCP` | `0` | Set to `1` to skip `claude mcp add` |
 | `WBT_NO_PROMPT` | `0` | Set to `1` to skip the interactive wizard (writes empty `API_KEY` you must edit before starting the server) |
 | `WBT_INSECURE_SKIP_VERIFY` | `0` | **Fail-closed cosign verification is the default.** Set to `1` ONLY if you cannot install cosign (e.g. air-gapped env). NOT RECOMMENDED for production. Replaces the old `WBT_STRICT_VERIFY` opt-in (semantic flip). |
+| `WBT_DISABLE_AUTO_DECISIONS` | `0` (enabled) | Auto-decision proposer drafts a `pending_proposals` row (type=decision) after every mutating MCP tool when no `log_decision`/`confirm_plan` happened in the last 15 min. Default is **ON** because wayneblacktea's purpose is to auto-track decisions; spam is mitigated by the proposal-queue confirmation step. Set to `1` to opt out (e.g. tight LLM budget). |
 
 Hardening notes:
 

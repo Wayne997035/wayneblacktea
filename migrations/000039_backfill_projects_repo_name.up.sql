@@ -1,0 +1,14 @@
+-- Backfill: bind the canonical wbt-core-mvp project to the wayneblacktea
+-- repo so workspace overview drill-down delivers visible tasks/activity
+-- post-deploy. Single-tenant safe — only one project named wbt-core-mvp
+-- exists in production.
+--
+-- Idempotent: re-running the migration is a no-op (NULL→value first time,
+-- value→same value subsequent times). Other projects (none today) remain
+-- NULL repo_name and will gracefully fall through to the legacy ProjectByName
+-- lookup in workspace_overview_handler.go.
+--
+-- For other repos (chatbot-go, neomart-api, etc.), the deeper fix lives in
+-- task c595d2f1-0fb7-4207-8358-e5466f09e730 (Tasks need repo_name binding) —
+-- this migration only addresses the wayneblacktea repo card.
+UPDATE projects SET repo_name = 'wayneblacktea' WHERE name = 'wbt-core-mvp';

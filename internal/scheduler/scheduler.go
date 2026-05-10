@@ -18,6 +18,43 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/go-co-op/gocron/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// disciplinePruneTimeout caps the daily discipline_events DELETE. The query
+// is index-supported (idx_discipline_events_observed_at) and finishes well
+// under 5 s on personal-OS scale; the 60 s ceiling leaves room for a
+// momentarily slow Aiven Postgres without wedging the scheduler goroutine.
+const disciplinePruneTimeout = 60 * time.Second
+
+// disciplinePruneAge is the retention window enforced by the daily prune job.
+// 30 days mirrors `task discipline-prune` (build/Taskfile.yml) and
+// guard_events; codified by backend-security-design.md §1.3 as the mandatory
+// TTL for observability tables.
+const disciplinePruneAge = "30 days"
+
+// pendingProposalsPruneTimeout caps the daily pending_proposals DELETE. The
+// query touches resolved_at + created_at (both indexed) and finishes well
+// under a second on personal-OS scale; 60 s leaves room for a momentarily
+// slow Aiven Postgres without wedging the scheduler goroutine.
+const pendingProposalsPruneTimeout = 60 * time.Second
+
+// pendingProposalsResolvedRetention / pendingProposalsPendingDecisionRetention
+// document the per-status TTL on pending_proposals (backend-security-design.md
+// §1.3 — observability tables MUST have a working retention policy in the
+// same PR that introduces them).
+//
+//   - 90 days for resolved (accepted / rejected) rows: the user has already
+//     acted on them; we keep ~1 quarter for retrospective audit + then drop.
+//   - 180 days for pending rows of type='decision': the auto-decision
+//     proposer is opt-out enabled by default and can fill the queue; old
+//     pending decisions are usually obsolete (the user moved on without
+//     accepting). Other pending types (goal, project, concept, …) still
+//     require manual review and are NOT touched by the cleanup so we don't
+//     silently drop a user's intent.
+const (
+	pendingProposalsResolvedRetention        = "90 days"
+	pendingProposalsPendingDecisionRetention = "180 days"
 )
 
 // dailyBriefingTimeout caps each Notion morning briefing run. The aggregate
@@ -47,6 +84,11 @@ type Scheduler struct {
 	statusDeps     *statusSnapshotDeps
 	pruner         *decay.Pruner
 	playbookDeps   *playbookDeps
+	// disciplinePool is the pgxpool used by the daily discipline_events
+	// prune job. nil when running under SQLite (or when no pool is wired
+	// in by the caller) — the prune job is skipped in that case because
+	// SQLite is dev-local single-tenant and has no growth concern.
+	disciplinePool *pgxpool.Pool
 }
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
@@ -141,6 +183,7 @@ func New(
 	workspaceID *uuid.UUID,
 	pruner *decay.Pruner,
 	pbStore playbook.StoreIface,
+	disciplinePool *pgxpool.Pool,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -169,6 +212,7 @@ func New(
 		statusDeps:     sDeps,
 		pruner:         pruner,
 		playbookDeps:   pbDeps,
+		disciplinePool: disciplinePool,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -224,6 +268,45 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		slog.Info("scheduler: DailyDecayPrune scheduled at 23:00 Asia/Taipei")
 	} else {
 		slog.Info("scheduler: DailyDecayPrune skipped (pruner not configured)")
+	}
+
+	if sc.disciplinePool != nil {
+		_, err = s.NewJob(
+			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(23, 0, 0))),
+			gocron.NewTask(sc.runDailyDisciplinePrune),
+			gocron.WithName("daily-discipline-prune"),
+			// LimitModeReschedule: a stuck DELETE shouldn't pile up nightly
+			// triggers. Same singleton policy as decay-prune.
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering daily discipline prune job: %w", err)
+		}
+		slog.Info("scheduler: DailyDisciplinePrune scheduled at 23:00 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: DailyDisciplinePrune skipped (postgres pool not configured; SQLite has no growth concern)")
+	}
+
+	if sc.disciplinePool != nil {
+		// Offset from the 23:00 cluster (decay + discipline prune) so the
+		// pgxpool isn't slammed with three near-simultaneous DELETEs against
+		// large tables. 03:00 also avoids the 02:00 Sunday AI concept review
+		// and the 03:00 Sunday playbook promoter (those are weekly, not
+		// daily, so the calendar overlap is at most one day per week).
+		_, err = s.NewJob(
+			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 0, 0))),
+			gocron.NewTask(sc.runDailyPendingProposalsPrune),
+			gocron.WithName("daily-pending-proposals-prune"),
+			// LimitModeReschedule: a stuck DELETE shouldn't pile up nightly
+			// triggers. Same singleton policy as decay/discipline prune.
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering daily pending proposals prune job: %w", err)
+		}
+		slog.Info("scheduler: DailyPendingProposalsPrune scheduled at 03:00 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: DailyPendingProposalsPrune skipped (postgres pool not configured; SQLite has no growth concern)")
 	}
 
 	return nil
@@ -445,6 +528,81 @@ func (s *Scheduler) runDailyDecayPrune() {
 		return
 	}
 	s.pruner.Run()
+}
+
+// runDailyDisciplinePrune deletes discipline_events rows older than 30 days
+// (TTL codified by backend-security-design.md §1.3). Mirrors the existing
+// `task discipline-prune` Taskfile target so operators don't need to wire a
+// separate cron in production. Runs at 23:00 Asia/Taipei alongside the decay
+// prune. Errors are logged at warn level — the scheduler MUST keep running
+// other jobs regardless of a single DB hiccup.
+func (s *Scheduler) runDailyDisciplinePrune() {
+	if s.disciplinePool == nil {
+		return
+	}
+	// Independent timeout — MUST NOT inherit any request context (none
+	// available here anyway, but explicit is safer than relying on caller).
+	ctx, cancel := context.WithTimeout(context.Background(), disciplinePruneTimeout)
+	defer cancel()
+
+	// 30-day TTL. Parameter binding is unnecessary because the interval
+	// literal is a code constant, not user input.
+	const q = `DELETE FROM discipline_events WHERE observed_at < NOW() - INTERVAL '` + disciplinePruneAge + `'`
+	tag, err := s.disciplinePool.Exec(ctx, q)
+	if err != nil {
+		slog.Warn("daily discipline prune: DELETE failed", "err", err)
+		return
+	}
+	slog.Info("daily discipline prune: completed",
+		"rows_deleted", tag.RowsAffected(),
+		"retention", disciplinePruneAge,
+	)
+}
+
+// runDailyPendingProposalsPrune deletes stale pending_proposals rows.
+// Two retention policies, OR'd in a single DELETE so the pool sees one
+// statement per night:
+//
+//   - resolved (status IN ('accepted','rejected')) older than 90 days:
+//     user has acted on them; keep ~1 quarter for retrospective audit.
+//   - pending decision proposals (type='decision') older than 180 days:
+//     auto-decision proposer can fill the queue and stale ones are noise.
+//
+// Other pending types (goal/project/concept/…) are NOT touched — they
+// represent unresolved user intent and silent deletion would be hostile.
+//
+// Backend-security-design.md §1.3 mandates a working retention policy in the
+// same PR that introduces the auto-proposer (which can write unbounded
+// pending rows); this job is that policy. Runs at 03:00 Asia/Taipei,
+// offset from the 23:00 decay/discipline cluster to spread DB load.
+//
+// Errors are logged at warn level — the scheduler MUST keep running other
+// jobs regardless of a single DB hiccup.
+func (s *Scheduler) runDailyPendingProposalsPrune() {
+	if s.disciplinePool == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pendingProposalsPruneTimeout)
+	defer cancel()
+
+	// Both interval literals are code constants — parameter binding is
+	// unnecessary and would also confuse pg's planner about the predicate.
+	// The OR keeps it a single statement so we don't pay round-trip latency
+	// twice. resolved_at is NULL on still-pending rows, so the first arm
+	// can never match a pending row even if the WHERE were re-ordered.
+	const q = `DELETE FROM pending_proposals
+WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` + pendingProposalsResolvedRetention + `')
+   OR (status = 'pending' AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingDecisionRetention + `' AND type = 'decision')`
+	tag, err := s.disciplinePool.Exec(ctx, q)
+	if err != nil {
+		slog.Warn("daily pending_proposals prune: DELETE failed", "err", err)
+		return
+	}
+	slog.Info("daily pending_proposals prune: completed",
+		"rows_deleted", tag.RowsAffected(),
+		"resolved_retention", pendingProposalsResolvedRetention,
+		"pending_decision_retention", pendingProposalsPendingDecisionRetention,
+	)
 }
 
 // weeklyAIConceptReview fetches active concepts with sufficient review history,

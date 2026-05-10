@@ -218,6 +218,33 @@ func (s *GTDStore) ProjectByName(ctx context.Context, name string) (*db.Project,
 	return &p, nil
 }
 
+// ProjectsByRepoName returns every project whose `repo_name` column matches
+// the given repo, scoped to the configured workspace. Empty repoName → empty
+// slice (fast-path; avoids a wildcard scan). Empty result is not an error.
+func (s *GTDStore) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.Project, error) {
+	if repoName == "" {
+		return nil, nil
+	}
+	const q = `SELECT ` + projectsSelectCols + ` FROM projects
+		WHERE repo_name = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY priority ASC, created_at ASC`
+	rows, err := s.db.conn.QueryContext(ctx, q, repoName, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("ProjectsByRepoName", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.Project
+	for rows.Next() {
+		p, err := scanProject(rows.Scan)
+		if err != nil {
+			return nil, errWrap("ProjectsByRepoName scan", err)
+		}
+		out = append(out, p)
+	}
+	return out, errWrap("ProjectsByRepoName iter", rows.Err())
+}
+
 // CreateProject inserts a new project, generating a UUID and returning the row.
 func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams) (*db.Project, error) {
 	id := uuid.New()

@@ -32,6 +32,8 @@ func (f *fakeOverviewWorkspaceStore) RepoByID(_ context.Context, id uuid.UUID) (
 type fakeOverviewGTDStore struct {
 	project        *db.Project
 	projectErr     error
+	repoProjects   []db.Project // ProjectsByRepoName fixture
+	repoErr        error
 	pending        []db.Task
 	pendingErr     error
 	completed      []db.Task
@@ -39,12 +41,18 @@ type fakeOverviewGTDStore struct {
 	activity       []db.ActivityLog
 	activityErr    error
 	gotProjectName string
+	gotRepoName    string
 	gotSince       time.Time
 }
 
 func (f *fakeOverviewGTDStore) ProjectByName(_ context.Context, name string) (*db.Project, error) {
 	f.gotProjectName = name
 	return f.project, f.projectErr
+}
+
+func (f *fakeOverviewGTDStore) ProjectsByRepoName(_ context.Context, repoName string) ([]db.Project, error) {
+	f.gotRepoName = repoName
+	return f.repoProjects, f.repoErr
 }
 
 func (f *fakeOverviewGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
@@ -434,8 +442,13 @@ func assertCallsUseRepoName(t *testing.T, fakes overviewFakes, want string) {
 	if fakes.sess.gotRepoName != want {
 		t.Errorf("sess.gotRepoName = %q, want %s", fakes.sess.gotRepoName, want)
 	}
-	if fakes.gtd.gotProjectName != want {
-		t.Errorf("gtd.gotProjectName = %q, want %s", fakes.gtd.gotProjectName, want)
+	// Either path (ProjectsByRepoName-first or legacy ProjectByName fallback)
+	// MUST receive the repo name. Both fakes record the call separately;
+	// require at least one to have seen `want` so the test stays compatible
+	// with both wirings.
+	if fakes.gtd.gotRepoName != want && fakes.gtd.gotProjectName != want {
+		t.Errorf("gtd: neither ProjectsByRepoName nor ProjectByName received repo name %q (gotRepoName=%q, gotProjectName=%q)",
+			want, fakes.gtd.gotRepoName, fakes.gtd.gotProjectName)
 	}
 }
 
@@ -444,5 +457,96 @@ func assertActivityWindow(t *testing.T, since time.Time) {
 	windowAgo := time.Since(since)
 	if windowAgo < 13*24*time.Hour || windowAgo > 15*24*time.Hour {
 		t.Errorf("activity window = %v, want ~14 days", windowAgo)
+	}
+}
+
+// TestWorkspaceOverviewHandler_ProjectsByRepoName_TakesPrecedence verifies
+// that when ProjectsByRepoName returns ≥1 project, the handler uses those
+// (and skips the legacy ProjectByName fallback). This is the migration-037
+// path: a repo can host multiple projects bound via projects.repo_name.
+func TestWorkspaceOverviewHandler_ProjectsByRepoName_TakesPrecedence(t *testing.T) {
+	repoID := uuid.New()
+	projID := uuid.New()
+	ws := &fakeOverviewWorkspaceStore{repo: &db.Repo{ID: repoID, Name: testRepoName, Status: "active"}}
+	gtdStore := &fakeOverviewGTDStore{
+		// New path: one project bound via repo_name.
+		repoProjects: []db.Project{{ID: projID, Name: "wbt-core-mvp", Title: "Core MVP"}},
+		// Legacy fixtures should NOT be consulted because repoProjects is non-empty.
+		project:    nil,
+		projectErr: errors.New("legacy ProjectByName MUST NOT be called when ProjectsByRepoName matched"),
+		pending: []db.Task{{
+			ID: uuid.New(), Title: "Pending", Status: "pending", Priority: 2,
+		}},
+	}
+	dec := &fakeOverviewDecisionStore{}
+	sess := &fakeOverviewSessionStore{}
+
+	e := newEcho()
+	h := handler.NewWorkspaceOverviewHandler(ws, gtdStore, dec, sess)
+	e.GET("/api/workspace/repos/:id/overview", h.GetRepoOverview)
+	rec := performRequest(e, http.MethodGet, "/api/workspace/repos/"+repoID.String()+"/overview", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if gtdStore.gotRepoName != testRepoName {
+		t.Errorf("ProjectsByRepoName should have received %q, got %q", testRepoName, gtdStore.gotRepoName)
+	}
+	// Legacy ProjectByName MUST NOT have been called when repoProjects matched.
+	if gtdStore.gotProjectName != "" {
+		t.Errorf("legacy ProjectByName called even though repoProjects had a match (gotProjectName=%q)", gtdStore.gotProjectName)
+	}
+}
+
+// TestWorkspaceOverviewHandler_ProjectsByRepoName_FallsBackToLegacy verifies
+// that when ProjectsByRepoName returns empty (no rows have repo_name set
+// yet), the handler falls back to legacy ProjectByName. This preserves
+// backward compatibility for repos created before migration 000037 ran.
+func TestWorkspaceOverviewHandler_ProjectsByRepoName_FallsBackToLegacy(t *testing.T) {
+	repoID := uuid.New()
+	projID := uuid.New()
+	ws := &fakeOverviewWorkspaceStore{repo: &db.Repo{ID: repoID, Name: testRepoName, Status: "active"}}
+	gtdStore := &fakeOverviewGTDStore{
+		repoProjects: nil, // new path returns nothing → fallback engages
+		project:      &db.Project{ID: projID, Name: testRepoName, Title: "Legacy"},
+	}
+	dec := &fakeOverviewDecisionStore{}
+	sess := &fakeOverviewSessionStore{}
+
+	e := newEcho()
+	h := handler.NewWorkspaceOverviewHandler(ws, gtdStore, dec, sess)
+	e.GET("/api/workspace/repos/:id/overview", h.GetRepoOverview)
+	rec := performRequest(e, http.MethodGet, "/api/workspace/repos/"+repoID.String()+"/overview", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if gtdStore.gotRepoName != testRepoName {
+		t.Errorf("ProjectsByRepoName not called with %q (got %q)", testRepoName, gtdStore.gotRepoName)
+	}
+	if gtdStore.gotProjectName != testRepoName {
+		t.Errorf("legacy fallback ProjectByName not called with %q (got %q)", testRepoName, gtdStore.gotProjectName)
+	}
+}
+
+// TestWorkspaceOverviewHandler_ProjectsByRepoName_StoreError_500 verifies the
+// handler bubbles a non-empty ProjectsByRepoName error as 500 (matching the
+// legacy ProjectByName non-NotFound contract).
+func TestWorkspaceOverviewHandler_ProjectsByRepoName_StoreError_500(t *testing.T) {
+	repoID := uuid.New()
+	ws := &fakeOverviewWorkspaceStore{repo: &db.Repo{ID: repoID, Name: testRepoName, Status: "active"}}
+	gtdStore := &fakeOverviewGTDStore{
+		repoErr: errors.New("db down"),
+	}
+	dec := &fakeOverviewDecisionStore{}
+	sess := &fakeOverviewSessionStore{}
+
+	e := newEcho()
+	h := handler.NewWorkspaceOverviewHandler(ws, gtdStore, dec, sess)
+	e.GET("/api/workspace/repos/:id/overview", h.GetRepoOverview)
+	rec := performRequest(e, http.MethodGet, "/api/workspace/repos/"+repoID.String()+"/overview", "")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("got status %d, want 500 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
