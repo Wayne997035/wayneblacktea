@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -209,6 +210,22 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 		result = append(result, h)
 	}
 	return result, nil
+}
+
+// HandoffsSince returns handoffs created or resolved on or after since,
+// scoped to the configured workspace. Used by the timeline aggregator.
+func (s *Store) HandoffsSince(ctx context.Context, since time.Time, limit int) ([]db.SessionHandoff, error) {
+	rows, err := s.q.HandoffsSince(ctx, db.HandoffsSinceParams{
+		WorkspaceID: s.workspaceID,
+		Since:       pgtype.Timestamptz{Time: since, Valid: true},
+		LimitN:      int32(limit), //nolint:gosec // limit is bounded by caller (10000 max)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("handoffs since %s: %w", since, err)
+	}
+	out := make([]db.SessionHandoff, 0, len(rows))
+	out = append(out, rows...)
+	return out, nil
 }
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.

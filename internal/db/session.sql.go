@@ -72,6 +72,49 @@ func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pg
 	return i, err
 }
 
+const handoffsSince = `-- name: HandoffsSince :many
+SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id FROM session_handoffs
+WHERE ($1::uuid IS NULL OR workspace_id = $1)
+  AND (created_at >= $2 OR (resolved_at IS NOT NULL AND resolved_at >= $2))
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type HandoffsSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	LimitN      int32              `json:"limit_n"`
+}
+
+func (q *Queries) HandoffsSince(ctx context.Context, arg HandoffsSinceParams) ([]SessionHandoff, error) {
+	rows, err := q.db.Query(ctx, handoffsSince, arg.WorkspaceID, arg.Since, arg.LimitN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SessionHandoff
+	for rows.Next() {
+		var i SessionHandoff
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RepoName,
+			&i.Intent,
+			&i.ContextSummary,
+			&i.ResolvedAt,
+			&i.CreatedAt,
+			&i.WorkspaceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resolveHandoff = `-- name: ResolveHandoff :execrows
 UPDATE session_handoffs SET resolved_at = NOW()
 WHERE id = $1

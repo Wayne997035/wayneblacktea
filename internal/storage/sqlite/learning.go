@@ -398,6 +398,72 @@ func (s *LearningStore) LearningStats(ctx context.Context) (*learning.LearningSt
 	return &result, nil
 }
 
+// ListConcepts returns up to limit concepts ordered by created_at DESC,
+// scoped to the configured workspace.
+func (s *LearningStore) ListConcepts(ctx context.Context, limit int) ([]db.Concept, error) {
+	const q = `SELECT ` + conceptsSelectCols + ` FROM concepts
+		WHERE (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY created_at DESC
+		LIMIT ?2`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), limit)
+	if err != nil {
+		return nil, errWrap("ListConcepts", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []db.Concept
+	for rows.Next() {
+		c, err := scanConcept(rows.Scan)
+		if err != nil {
+			return nil, errWrap("ListConcepts scan", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("ListConcepts iter", err)
+	}
+	return out, nil
+}
+
+// ReviewedSince returns DueReview entries whose last_review_at >= since,
+// scoped to the configured workspace.
+func (s *LearningStore) ReviewedSince(ctx context.Context, since time.Time, limit int) ([]learning.DueReview, error) {
+	sinceStr := since.UTC().Format(sqliteMillisLayout)
+	const q = `SELECT rs.id, c.title, rs.due_date
+		FROM review_schedule rs
+		JOIN concepts c ON c.id = rs.concept_id
+		WHERE (?1 IS NULL OR rs.workspace_id = ?1)
+		  AND rs.last_review_at >= ?2
+		  AND rs.last_review_at IS NOT NULL
+		ORDER BY rs.last_review_at DESC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), sinceStr, limit)
+	if err != nil {
+		return nil, errWrap("ReviewedSince", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []learning.DueReview
+	for rows.Next() {
+		var (
+			r         learning.DueReview
+			idStr     string
+			dueDateNS sql.NullString
+		)
+		if err := rows.Scan(&idStr, &r.Title, &dueDateNS); err != nil {
+			return nil, errWrap("ReviewedSince scan", err)
+		}
+		if id, err := uuid.Parse(idStr); err == nil {
+			r.ScheduleID = id
+		}
+		if ts := parseTimestamptz(dueDateNS); ts.Valid {
+			r.DueDate = ts.Time
+		}
+		out = append(out, r)
+	}
+	return out, errWrap("ReviewedSince iter", rows.Err())
+}
+
 func (s *LearningStore) conceptByID(ctx context.Context, id uuid.UUID) (*db.Concept, error) {
 	const q = `SELECT ` + conceptsSelectCols + ` FROM concepts
 		WHERE id = ?1

@@ -35,6 +35,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	"github.com/Wayne997035/wayneblacktea/internal/timeline"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
@@ -109,6 +110,16 @@ func run() error {
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
+	timelineAgg := &timeline.Aggregator{
+		Tasks:     stores.GTD(),
+		Decisions: stores.Decision(),
+		Activity:  stores.GTD(),
+		Knowledge: stores.Knowledge(),
+		Concepts:  stores.Learning(),
+		Reviews:   stores.Learning(),
+		Handoffs:  stores.Session(),
+	}
+	timelineH := handler.NewTimelineHandler(timelineAgg)
 	// LLM provider chain (Phase 1-4 of docs/openrouter-fallback.md):
 	// classifier + concept reviewer go through the provider abstraction so
 	// they pick up OpenRouter / Groq fallback automatically. Reflector and
@@ -249,6 +260,9 @@ func run() error {
 	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress, dashboardRL)
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
+
+	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
+	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
 	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)

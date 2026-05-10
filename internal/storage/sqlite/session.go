@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"time"
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -218,6 +219,35 @@ func (s *SessionStore) SearchByCosine(ctx context.Context, queryEmbedding []floa
 		result = append(result, c.h)
 	}
 	return result, nil
+}
+
+// HandoffsSince returns handoffs created or resolved on or after since,
+// scoped to the configured workspace. Used by the timeline aggregator.
+func (s *SessionStore) HandoffsSince(ctx context.Context, since time.Time, limit int) ([]db.SessionHandoff, error) {
+	sinceStr := since.UTC().Format(sqliteMillisLayout)
+	const q = `SELECT ` + sessionHandoffsSelectCols + ` FROM session_handoffs
+		WHERE (?1 IS NULL OR workspace_id = ?1)
+		  AND (created_at >= ?2 OR (resolved_at IS NOT NULL AND resolved_at >= ?2))
+		ORDER BY created_at DESC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), sinceStr, limit)
+	if err != nil {
+		return nil, errWrap("HandoffsSince", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []db.SessionHandoff
+	for rows.Next() {
+		h, err := scanSessionHandoff(rows.Scan)
+		if err != nil {
+			return nil, errWrap("HandoffsSince scan", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("HandoffsSince iter", err)
+	}
+	return out, nil
 }
 
 func (s *SessionStore) handoffByID(ctx context.Context, id uuid.UUID) (*db.SessionHandoff, error) {
