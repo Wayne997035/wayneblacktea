@@ -148,17 +148,6 @@ func TestDetectCompletionDrift(t *testing.T) {
 		}
 	})
 
-	t.Run("in_progress task is ignored even if file exists", func(t *testing.T) {
-		root := setupRepo(t, "internal/handler/timeline_handler.go")
-		tasks := []db.Task{
-			makeTask("in_progress", "Work in progress", "Implement internal/handler/timeline_handler.go"),
-		}
-		got := detectCompletionDrift(tasks, root)
-		if len(got) != 0 {
-			t.Errorf("expected 0 candidates for in_progress task, got %d", len(got))
-		}
-	})
-
 	t.Run("pending task with no matching file on disk is not returned", func(t *testing.T) {
 		root := t.TempDir() // empty — no files
 		tasks := []db.Task{
@@ -227,4 +216,293 @@ func TestDetectCompletionDrift(t *testing.T) {
 			t.Errorf("wrong candidate returned: %q", got[0].Title)
 		}
 	})
+}
+
+func TestDetectCompletionDrift_StatusFiltering(t *testing.T) {
+	makeTaskWithDesc := func(status, title, desc string) db.Task {
+		return db.Task{
+			ID:     uuid.New(),
+			Title:  title,
+			Status: status,
+			Description: pgtype.Text{
+				String: desc,
+				Valid:  desc != "",
+			},
+		}
+	}
+
+	root := t.TempDir()
+	full := filepath.Join(root, "internal", "handler", "timeline_handler.go")
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		status string
+		want   int
+	}{
+		{
+			name:   "pending status included",
+			status: "pending",
+			want:   1,
+		},
+		{
+			name:   "in_progress status included",
+			status: "in_progress",
+			want:   1,
+		},
+		{
+			name:   "blocked status ignored",
+			status: "blocked",
+			want:   0,
+		},
+		{
+			name:   "done status ignored",
+			status: "done",
+			want:   0,
+		},
+		{
+			name:   "cancelled status ignored",
+			status: "cancelled",
+			want:   0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks := []db.Task{
+				makeTaskWithDesc(tc.status, "Some task", "see internal/handler/timeline_handler.go"),
+			}
+			got := detectCompletionDrift(tasks, root)
+			if len(got) != tc.want {
+				t.Errorf("status %q: got %d candidates, want %d", tc.status, len(got), tc.want)
+			}
+		})
+	}
+}
+
+// ---- keywordExistsOnDisk: adversarial inputs ----
+
+func TestKeywordExistsOnDisk_PathTraversal(t *testing.T) {
+	root := t.TempDir()
+
+	// Sanity: create a real nested file inside repoRoot that the positive
+	// case can resolve.
+	realPath := filepath.Join(root, "internal", "handler", "timeline_handler.go")
+	if err := os.MkdirAll(filepath.Dir(realPath), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(realPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		kw   string
+		want bool
+	}{
+		{
+			name: "dotdot escape rejected",
+			kw:   "internal/../../../etc/passwd",
+			want: false,
+		},
+		{
+			name: "embedded dotdot rejected even when join would still be inside",
+			kw:   "internal/handler/../../etc/hosts",
+			want: false,
+		},
+		{
+			name: "null byte rejected",
+			kw:   "internal/foo\x00.go",
+			want: false,
+		},
+		{
+			name: "newline rejected",
+			kw:   "internal/foo\nbar",
+			want: false,
+		},
+		{
+			name: "carriage return rejected",
+			kw:   "internal/foo\rbar",
+			want: false,
+		},
+		{
+			name: "valid existing path returns true",
+			kw:   "internal/handler/timeline_handler.go",
+			want: true,
+		},
+		{
+			name: "non-numeric bare keyword (no slash) rejected",
+			kw:   "passwd",
+			want: false,
+		},
+		{
+			name: "valid migration glob with nonexistent number returns false",
+			kw:   "999999",
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := keywordExistsOnDisk(tc.kw, root)
+			if got != tc.want {
+				t.Errorf("keywordExistsOnDisk(%q) = %v, want %v", tc.kw, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---- detectCompletionDrift: cap, in_progress, title sanitisation ----
+
+func TestDetectCompletionDrift_InProgressIncluded(t *testing.T) {
+	root := t.TempDir()
+	full := filepath.Join(root, "internal", "handler", "wip.go")
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tasks := []db.Task{
+		{
+			ID:     uuid.New(),
+			Title:  "WIP handler",
+			Status: "in_progress",
+			Description: pgtype.Text{
+				String: "Implement internal/handler/wip.go for new endpoint",
+				Valid:  true,
+			},
+		},
+	}
+
+	got := detectCompletionDrift(tasks, root)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate for in_progress task, got %d", len(got))
+	}
+	if got[0].Title != "WIP handler" {
+		t.Errorf("title = %q, want %q", got[0].Title, "WIP handler")
+	}
+}
+
+func TestDetectCompletionDrift_CapAt50(t *testing.T) {
+	root := t.TempDir()
+
+	// Create 100 distinct files and 100 pending tasks each referencing one.
+	const total = 100
+	tasks := make([]db.Task, 0, total)
+	for i := 0; i < total; i++ {
+		rel := filepath.Join("internal", "pkg", "f"+itoa(i)+".go")
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(full, []byte(""), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		tasks = append(tasks, db.Task{
+			ID:     uuid.New(),
+			Title:  "task " + itoa(i),
+			Status: "pending",
+			Description: pgtype.Text{
+				String: "see " + rel,
+				Valid:  true,
+			},
+		})
+	}
+
+	got := detectCompletionDrift(tasks, root)
+	if len(got) > maxDriftCandidates {
+		t.Fatalf("expected at most %d candidates, got %d", maxDriftCandidates, len(got))
+	}
+	if len(got) != maxDriftCandidates {
+		t.Errorf("expected exactly %d candidates (cap hit), got %d", maxDriftCandidates, len(got))
+	}
+}
+
+func TestDetectCompletionDrift_TitleSanitization(t *testing.T) {
+	root := t.TempDir()
+	full := filepath.Join(root, "internal", "handler", "evil.go")
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tasks := []db.Task{
+		{
+			ID:     uuid.New(),
+			Title:  "\x1b[31mEvil\x1b[0m\tkeep-tab\nDROP",
+			Status: "pending",
+			Description: pgtype.Text{
+				String: "Touches internal/handler/evil.go",
+				Valid:  true,
+			},
+		},
+	}
+
+	got := detectCompletionDrift(tasks, root)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+
+	for _, r := range got[0].Title {
+		if r < 0x20 && r != '\t' {
+			t.Errorf("sanitised title still contains control rune %q (full title: %q)", r, got[0].Title)
+		}
+	}
+
+	// Tab is explicitly preserved.
+	if !containsRune(got[0].Title, '\t') {
+		t.Errorf("tab should be preserved, got %q", got[0].Title)
+	}
+
+	// ESC byte must be removed.
+	if containsRune(got[0].Title, 0x1b) {
+		t.Errorf("ESC byte should be stripped, got %q", got[0].Title)
+	}
+
+	// Newline must be removed.
+	if containsRune(got[0].Title, '\n') {
+		t.Errorf("newline should be stripped, got %q", got[0].Title)
+	}
+}
+
+// itoa is a tiny base-10 conversion helper to avoid pulling in strconv just
+// for test scaffolding (keeps the test file's import block tight).
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+func containsRune(s string, target rune) bool {
+	for _, r := range s {
+		if r == target {
+			return true
+		}
+	}
+	return false
 }

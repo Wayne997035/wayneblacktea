@@ -18,6 +18,14 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// taskStatusPending and taskStatusInProgress are the literal status string
+// values used by `db.Task.Status`. Hoisted to package-level constants so the
+// same literal isn't repeated across multiple files (goconst).
+const (
+	taskStatusPending    = "pending"
+	taskStatusInProgress = "in_progress"
+)
+
 func (s *Server) registerHealthTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("system_health",
 		mcp.WithDescription(
@@ -91,7 +99,7 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 		tasks = fetched
 		stuckCutoff := time.Now().Add(-time.Duration(stuckHours) * time.Hour)
 		for _, t := range tasks {
-			if t.Status != "in_progress" {
+			if t.Status != taskStatusInProgress {
 				continue
 			}
 			snap.Tasks.InProgress++
@@ -212,27 +220,61 @@ func extractKeywords(desc string) []string {
 }
 
 // keywordExistsOnDisk returns true when the keyword corresponds to an artifact
-// on disk beneath repoRoot.
+// on disk beneath repoRoot. Adversarial-input safe: rejects ".." segments,
+// ASCII control bytes (incl. NUL / CR / LF), and any join that escapes repoRoot.
 //
 //   - File paths: stat(repoRoot/kw)
 //   - 6-digit migration numbers: glob migrations/<kw>*.sql
 func keywordExistsOnDisk(kw, repoRoot string) bool {
+	if strings.Contains(kw, "..") {
+		return false
+	}
+	for _, ch := range kw {
+		if ch < 0x20 {
+			return false
+		}
+	}
+	boundary := filepath.Clean(repoRoot)
+	sep := string(filepath.Separator)
+
 	if strings.Contains(kw, "/") {
-		// treat as a relative file path
-		_, err := os.Stat(filepath.Join(repoRoot, kw))
+		joined := filepath.Join(boundary, kw)
+		if joined != boundary && !strings.HasPrefix(joined, boundary+sep) {
+			return false
+		}
+		_, err := os.Stat(joined)
 		return err == nil
 	}
-	// treat as a bare migration number
-	matches, err := filepath.Glob(filepath.Join(repoRoot, "migrations", kw+"*.sql"))
+
+	// Migration number branch — defensive: must be all digits.
+	for _, ch := range kw {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	pattern := filepath.Join(boundary, "migrations", kw+"*.sql")
+	if !strings.HasPrefix(pattern, boundary+sep) {
+		return false
+	}
+	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return false
 	}
 	return len(matches) > 0
 }
 
-// detectCompletionDrift scans pending tasks for descriptions that reference
-// artifacts already present in repoRoot, surfacing them as advisory drift
-// candidates. Returns nil when repoRoot is empty.
+// maxDriftCandidates caps the number of drift candidates returned per
+// invocation, bounding worst-case stat/glob load when many pending tasks
+// happen to reference on-disk artifacts.
+const maxDriftCandidates = 50
+
+// detectCompletionDrift scans pending / in-progress tasks for descriptions
+// that reference artifacts already present in repoRoot, surfacing them as
+// advisory drift candidates. Returns nil when repoRoot is empty.
+//
+// Both `pending` and `in_progress` are inspected: an in_progress task whose
+// referenced artifacts already exist on disk is itself a missed
+// complete_task signal.
 func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 	if repoRoot == "" {
 		return nil
@@ -240,7 +282,10 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 
 	var candidates []DriftCandidate
 	for _, t := range tasks {
-		if t.Status != "pending" {
+		if len(candidates) >= maxDriftCandidates {
+			break
+		}
+		if t.Status != taskStatusPending && t.Status != taskStatusInProgress {
 			continue
 		}
 		if !t.Description.Valid || t.Description.String == "" {
@@ -254,9 +299,17 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 			}
 		}
 		if len(evidence) > 0 {
+			// Strip ASCII control characters from the title before surfacing
+			// it (per backend-security-design.md §5.4). Tabs are preserved.
+			title := strings.Map(func(r rune) rune {
+				if r < 0x20 && r != '\t' {
+					return -1
+				}
+				return r
+			}, t.Title)
 			candidates = append(candidates, DriftCandidate{
 				TaskID:   t.ID.String(),
-				Title:    t.Title,
+				Title:    title,
 				Evidence: evidence,
 			})
 		}
