@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useTimeline } from '../hooks/useTimeline'
 import { CalendarControls, type CalendarView } from '../components/calendar/CalendarControls'
 import { MonthGrid } from '../components/calendar/MonthGrid'
@@ -15,6 +16,7 @@ import type { TimelineKind } from '../types/api'
  * fetch, kind filter, and day drawer.
  */
 export function CalendarPage() {
+  const { t } = useTranslation()
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date())
   const [view, setView] = useState<CalendarView>('month')
   const [kindFilter, setKindFilter] = useState<Set<TimelineKind>>(() => new Set(ALL_KINDS))
@@ -73,8 +75,7 @@ export function CalendarPage() {
               color: 'var(--color-error)',
             }}
           >
-            {/* TODO: i18n */}
-            Failed to load timeline
+            {t('calendar.errors.loadFailed')}
           </div>
         )}
 

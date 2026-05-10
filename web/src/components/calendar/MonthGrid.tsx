@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { TimelineEvent, TimelineKind } from '../../types/api'
-import { kindColor, kindLabel } from './eventStyles'
+import { kindColor, kindLabelKey } from './eventStyles'
 import { buildMonthMatrix, dateKey, isSameDay } from './dateUtils'
 
 interface MonthGridProps {
@@ -18,9 +19,16 @@ interface MonthGridProps {
  * month are dimmed; today gets a ring border.
  */
 export function MonthGrid({ anchor, events, kindFilter, onDayClick }: MonthGridProps) {
+  const { t, i18n } = useTranslation()
   const matrix = useMemo(() => buildMonthMatrix(anchor), [anchor])
   const today = new Date()
   const currentMonth = anchor.getMonth()
+
+  // Locale-aware full-date formatter for cell aria-labels.
+  const fullDateFmt = useMemo(
+    () => new Intl.DateTimeFormat(i18n.language, { dateStyle: 'full' }),
+    [i18n.language],
+  )
 
   // Group events by day → set of unique kinds
   const dayKinds = useMemo(() => {
@@ -41,12 +49,12 @@ export function MonthGrid({ anchor, events, kindFilter, onDayClick }: MonthGridP
 
   // Locale-aware short weekday headers, Mon-Sun.
   const weekdays = useMemo(() => {
-    const fmt = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
+    const fmt = new Intl.DateTimeFormat(i18n.language, { weekday: 'short' })
     // 2024-01-01 is a Monday, anchor weekday formatting on it.
     return Array.from({ length: 7 }, (_, i) =>
       fmt.format(new Date(2024, 0, 1 + i)),
     )
-  }, [])
+  }, [i18n.language])
 
   return (
     <div className="w-full" role="grid" aria-label="Month grid">
@@ -87,7 +95,7 @@ export function MonthGrid({ anchor, events, kindFilter, onDayClick }: MonthGridP
                 outline: isToday ? '2px solid var(--color-accent-blue)' : 'none',
                 outlineOffset: '-2px',
               }}
-              aria-label={day.toDateString()}
+              aria-label={fullDateFmt.format(day)}
               data-testid="calendar-day-cell"
               data-day={dateKey(day)}
             >
@@ -97,7 +105,7 @@ export function MonthGrid({ anchor, events, kindFilter, onDayClick }: MonthGridP
                   {visible.map((k) => (
                     <span
                       key={k}
-                      title={kindLabel(k)}
+                      title={t(kindLabelKey(k))}
                       className={`inline-block w-2 h-2 rounded-full ${kindColor(k).dot}`}
                     />
                   ))}

@@ -36,11 +36,12 @@ describe('DayDrawer', () => {
   })
 
   it('groups events by kind and shows count per kind', () => {
+    // Mid-day UTC timestamps for timezone-stable date bucketing.
     const events: TimelineEvent[] = [
-      evt('task_created', '2025-05-15T08:00:00Z', 'Task A'),
-      evt('task_created', '2025-05-15T10:00:00Z', 'Task B'),
-      evt('decision',     '2025-05-15T11:00:00Z', 'Decision A'),
-      evt('decision',     '2025-05-14T11:00:00Z', 'Other day'),
+      evt('task_created', '2025-05-15T12:00:00Z', 'Task A'),
+      evt('task_created', '2025-05-15T12:30:00Z', 'Task B'),
+      evt('decision',     '2025-05-15T13:00:00Z', 'Decision A'),
+      evt('decision',     '2025-05-14T12:00:00Z', 'Other day'),
     ]
     render(
       <DayDrawer
@@ -96,10 +97,40 @@ describe('DayDrawer', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it('returns focus to the triggering element when closed (WCAG 2.4.3)', () => {
+    // Render a sibling trigger button + the closed drawer, focus the trigger,
+    // then open and close the drawer. Focus MUST land back on the trigger.
+    function Harness({ day }: { day: Date | null }) {
+      return (
+        <>
+          <button type="button" data-testid="trigger">
+            Open
+          </button>
+          <DayDrawer day={day} events={[]} kindFilter={allFilter} onClose={() => {}} />
+        </>
+      )
+    }
+
+    const { rerender } = render(<Harness day={null} />)
+    const trigger = screen.getByTestId('trigger') as HTMLButtonElement
+    trigger.focus()
+    expect(document.activeElement).toBe(trigger)
+
+    // Open: focus should move into the drawer (close button).
+    rerender(<Harness day={new Date(2025, 4, 15)} />)
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Close day details' }),
+    )
+
+    // Close: focus should return to the original trigger.
+    rerender(<Harness day={null} />)
+    expect(document.activeElement).toBe(trigger)
+  })
+
   it('respects kindFilter when listing events for the day', () => {
     const events: TimelineEvent[] = [
-      evt('task_created', '2025-05-15T08:00:00Z', 'Hidden'),
-      evt('decision',     '2025-05-15T09:00:00Z', 'Visible'),
+      evt('task_created', '2025-05-15T12:00:00Z', 'Hidden'),
+      evt('decision',     '2025-05-15T12:30:00Z', 'Visible'),
     ]
     const filter = new Set<TimelineKind>(['decision'])
     render(

@@ -85,8 +85,8 @@ describe('WeekList', () => {
 
   it('hides events whose kind is filtered out', () => {
     const events: TimelineEvent[] = [
-      evt('task_created', '2025-05-15T08:00:00Z', 'Hidden'),
-      evt('decision',     '2025-05-15T09:00:00Z', 'Visible'),
+      evt('task_created', '2025-05-15T12:00:00Z', 'Hidden'),
+      evt('decision',     '2025-05-15T12:30:00Z', 'Visible'),
     ]
     const filter = new Set<TimelineKind>(['decision'])
     render(
@@ -104,7 +104,7 @@ describe('WeekList', () => {
   it('invokes onEventClick when an event row is clicked', () => {
     const onEventClick = vi.fn()
     const events: TimelineEvent[] = [
-      evt('decision', '2025-05-15T09:00:00Z', 'Click target'),
+      evt('decision', '2025-05-15T12:00:00Z', 'Click target'),
     ]
     render(
       <WeekList

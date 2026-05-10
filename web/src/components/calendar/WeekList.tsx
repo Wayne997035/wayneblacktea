@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { TimelineEvent, TimelineKind } from '../../types/api'
-import { kindColor, kindLabel } from './eventStyles'
+import { kindColor, kindLabelKey } from './eventStyles'
 import { mondayOf, dateKey } from './dateUtils'
 
 interface WeekListProps {
@@ -26,6 +27,7 @@ function fmtDate(d: Date): string {
  * title. Empty days still get a header so the user can see the gap.
  */
 export function WeekList({ anchor, events, kindFilter, onEventClick }: WeekListProps) {
+  const { t } = useTranslation()
   const monday = useMemo(() => mondayOf(anchor), [anchor])
 
   const days = useMemo(() => {
@@ -77,8 +79,7 @@ export function WeekList({ anchor, events, kindFilter, onEventClick }: WeekListP
             </header>
             {dayEvents.length === 0 ? (
               <p className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>
-                {/* TODO: i18n */}
-                No events
+                {t('calendar.empty.noEvents')}
               </p>
             ) : (
               <ul className="flex flex-col gap-1">
@@ -90,7 +91,7 @@ export function WeekList({ anchor, events, kindFilter, onEventClick }: WeekListP
                         type="button"
                         onClick={() => onEventClick(day, ev)}
                         className="w-full flex items-center gap-2 px-2 py-1 rounded text-left hover:bg-[var(--color-bg-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]"
-                        aria-label={`${kindLabel(ev.kind)} ${fmtTime(ev.occurred_at)} ${ev.title}`}
+                        aria-label={`${t(kindLabelKey(ev.kind))} ${fmtTime(ev.occurred_at)} ${ev.title}`}
                       >
                         <span className="text-caption tabular-nums w-[68px] shrink-0" style={{ color: 'var(--color-text-muted)' }}>
                           {fmtTime(ev.occurred_at)}

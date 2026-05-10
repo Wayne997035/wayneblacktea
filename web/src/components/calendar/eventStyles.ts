@@ -27,21 +27,33 @@ export function kindColor(kind: TimelineKind | string): { dot: string; text: str
   return KIND_STYLES[kind as TimelineKind] ?? FALLBACK
 }
 
-// TODO: i18n — currently hard-coded English labels until i18n entries land.
-const KIND_LABELS: Record<TimelineKind, string> = {
-  task_created:     'Task created',
-  task_completed:   'Task completed',
-  decision:         'Decision',
-  activity:         'Activity',
-  knowledge:        'Knowledge',
-  concept:          'Concept',
-  review_submitted: 'Review',
-  handoff_created:  'Handoff opened',
-  handoff_resolved: 'Handoff resolved',
+/**
+ * KIND_LABEL_KEYS maps each timeline kind to its i18n key under the
+ * `calendar.kinds.*` namespace. Use `kindLabelKey()` from non-React
+ * modules and let React callers translate via `t(kindLabelKey(kind))`.
+ * Unknown kinds fall back to the raw kind string so the UI never
+ * displays an empty label.
+ */
+const KIND_LABEL_KEYS: Record<TimelineKind, string> = {
+  task_created:     'calendar.kinds.task_created',
+  task_completed:   'calendar.kinds.task_completed',
+  decision:         'calendar.kinds.decision',
+  activity:         'calendar.kinds.activity',
+  knowledge:        'calendar.kinds.knowledge',
+  concept:          'calendar.kinds.concept',
+  review_submitted: 'calendar.kinds.review_submitted',
+  handoff_created:  'calendar.kinds.handoff_created',
+  handoff_resolved: 'calendar.kinds.handoff_resolved',
 }
 
-export function kindLabel(kind: TimelineKind | string): string {
-  return KIND_LABELS[kind as TimelineKind] ?? String(kind)
+/**
+ * kindLabelKey returns the i18n translation key for a timeline kind.
+ * Callers in React land should pass the result through `t()` to render.
+ * Unknown kinds return the raw kind string (which `t()` will then
+ * leave untranslated, matching the previous fallback behaviour).
+ */
+export function kindLabelKey(kind: TimelineKind | string): string {
+  return KIND_LABEL_KEYS[kind as TimelineKind] ?? String(kind)
 }
 
 export const ALL_KINDS: TimelineKind[] = [
