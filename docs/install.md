@@ -1,9 +1,104 @@
 # Installation guide
 
-This document covers all three installation modes and security notes.
+This document covers all installation modes and security notes.
 For the self-hosting reference (migrations, workspace scoping, Railway deployment) see [`installation.md`](./installation.md).
 
-## Prerequisites
+## Mode 0: One-line install (pre-built binaries)
+
+Best for: trying wayneblacktea without cloning the repo or installing Go/Node toolchains. Pulls the latest GitHub release of `wbt`, `wbt-context`, `wbt-hook`, and `wayneblacktea-mcp` for your platform.
+
+### macOS / Linux / WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh | bash
+```
+
+What it does:
+
+1. Detects OS (`linux` or `macos`) and arch (`x86_64` or `arm64`)
+2. Resolves the latest release tag from the GitHub API (or uses `WBT_VERSION` if set)
+3. Downloads `wayneblacktea-mcp_<ver>_<os>_<arch>.tar.gz` and `wayneblacktea-cli_<ver>_<os>_<arch>.tar.gz` plus `checksums.txt`
+4. Verifies SHA256 of every archive against `checksums.txt`
+5. Extracts `wayneblacktea-mcp`, `wbt`, `wbt-context`, `wbt-hook` to `~/.local/bin` (mode 0755)
+6. Prompts for `DATABASE_URL` (optional — blank means SQLite local file) and `API_KEY` (required) and writes them to `~/.config/wayneblacktea/.env` (mode 0600)
+7. Runs `claude mcp add wayneblacktea -- ~/.local/bin/wayneblacktea-mcp` if the `claude` CLI is installed; otherwise prints the command to run later
+
+Environment overrides:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WBT_VERSION` | latest | Pin a specific release (e.g. `1.2.3`) |
+| `WBT_PREFIX` | `~/.local` | Install prefix; binaries land in `$WBT_PREFIX/bin` |
+| `WBT_CONFIG` | `~/.config/wayneblacktea` | Config directory |
+| `WBT_NO_MCP` | `0` | Set to `1` to skip `claude mcp add` |
+| `WBT_NO_PROMPT` | `0` | Set to `1` to skip the interactive wizard (writes placeholder `API_KEY` you must edit) |
+
+Hardening notes:
+
+- Script is `set -euo pipefail`, validates every download against the published `checksums.txt` (SHA256), and refuses to overwrite a newer existing `wbt` (compare via `wbt --version`).
+- Uses `mktemp -d` for staging and traps `EXIT INT TERM` for cleanup.
+- Warns when `~/.local/bin` is not on your PATH and prints the exact line to add to `~/.zshrc` / `~/.bashrc` / fish config.
+
+### Windows (PowerShell 5.1+ or pwsh 7+)
+
+```powershell
+irm https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.ps1 | iex
+```
+
+What it does:
+
+1. Detects arch via `[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture` (`X64` -> `x86_64`, `Arm64` -> `arm64`)
+2. Resolves the latest release tag via `Invoke-RestMethod`
+3. Downloads `wayneblacktea-mcp_<ver>_windows_<arch>.zip` and `wayneblacktea-cli_<ver>_windows_<arch>.zip` plus `checksums.txt`
+4. Verifies SHA256 with `Get-FileHash` before extraction
+5. Extracts to `%LOCALAPPDATA%\wayneblacktea\bin` and prepends that directory to the user `PATH` (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`)
+6. Prompts for `DATABASE_URL` and `API_KEY` and writes `%LOCALAPPDATA%\wayneblacktea\config\.env` with a current-user-only NTFS ACL (inheritance disabled)
+7. Runs `claude mcp add wayneblacktea -- "<install dir>\wayneblacktea-mcp.exe"` if the `claude` CLI is installed
+
+Environment overrides (set before piping to `iex`):
+
+```powershell
+$env:WBT_VERSION   = '1.2.3'  # pin a release
+$env:WBT_NO_MCP    = '1'      # skip claude registration
+$env:WBT_NO_PROMPT = '1'      # skip wizard, write placeholders
+```
+
+Hardening notes:
+
+- `$ErrorActionPreference = 'Stop'` and `Set-StrictMode -Version Latest` enforce hard-fail behavior.
+- TLS 1.2 is forced on Windows PowerShell 5.x for compatibility with GitHub.
+- Hash verification runs **before** `Expand-Archive`; mismatched archive aborts with exit 2.
+- The `.env` file ACL is reset (inheritance disabled, only current user keeps `FullControl`).
+
+### Verifying the install
+
+```bash
+wbt --version
+wbt --help
+ls -la ~/.config/wayneblacktea/.env  # macOS/Linux: should be -rw------- (0600)
+```
+
+```powershell
+wbt --version
+Get-Acl "$env:LOCALAPPDATA\wayneblacktea\config\.env" | Format-List
+```
+
+### Uninstall
+
+```bash
+rm ~/.local/bin/{wayneblacktea-mcp,wbt,wbt-context,wbt-hook}
+rm -rf ~/.config/wayneblacktea   # only if you want to remove config too
+claude mcp remove wayneblacktea  # if it was registered
+```
+
+```powershell
+Remove-Item "$env:LOCALAPPDATA\wayneblacktea" -Recurse
+claude mcp remove wayneblacktea
+```
+
+## Prerequisites (Modes 1-3, source builds)
+
+Mode 0 (one-line install) requires no prerequisites — pre-built binaries are downloaded directly. The table below applies only to building from source.
 
 | Tool | Minimum version | Notes |
 |------|----------------|-------|
