@@ -235,3 +235,33 @@ export interface DashboardStats {
   decision_count: number
   pending_proposals: number
 }
+
+// --- Timeline (Calendar) ---
+
+export type TimelineKind =
+  | 'task_created'
+  | 'task_completed'
+  | 'decision'
+  | 'activity'
+  | 'knowledge'
+  | 'concept'
+  | 'review_submitted'
+  | 'handoff_created'
+  | 'handoff_resolved'
+
+export interface TimelineEvent {
+  kind: TimelineKind
+  /** RFC3339 UTC timestamp. */
+  occurred_at: string
+  ref_id: string
+  title: string
+  repo_name?: string
+  project_id?: string
+}
+
+export interface TimelineResponse {
+  events: TimelineEvent[]
+  /** RFC3339 timestamp echoed by the backend. */
+  from: string
+  to: string
+}

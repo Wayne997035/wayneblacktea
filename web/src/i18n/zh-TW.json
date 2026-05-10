@@ -6,7 +6,8 @@
     "decisions": "決策紀錄",
     "knowledge": "知識庫",
     "reviews": "學習回顧",
-    "learningHistory": "學習歷史"
+    "learningHistory": "學習歷史",
+    "calendar": "行事曆"
   },
   "dashboard": {
     "greeting": {

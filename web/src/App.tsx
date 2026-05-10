@@ -9,6 +9,7 @@ import { KnowledgePage } from './pages/KnowledgePage'
 import { ReviewsPage } from './pages/ReviewsPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
 import { LearningHistoryPage } from './pages/LearningHistoryPage'
+import { CalendarPage } from './pages/CalendarPage'
 import { LoginPage } from './pages/LoginPage'
 import { useAuthStore } from './stores/authStore'
 import { apiFetch } from './lib/api'
@@ -26,6 +27,7 @@ const router = createBrowserRouter([
       { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'reviews', element: <ReviewsPage /> },
       { path: 'learning/history', element: <LearningHistoryPage /> },
+      { path: 'calendar', element: <CalendarPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

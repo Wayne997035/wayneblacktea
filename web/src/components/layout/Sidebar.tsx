@@ -1,4 +1,4 @@
-import { LayoutDashboard, ListTodo, FolderGit2, BookMarked, Library, GraduationCap, History } from 'lucide-react'
+import { LayoutDashboard, ListTodo, FolderGit2, BookMarked, Library, GraduationCap, History, Calendar } from 'lucide-react'
 import { NavItem } from './NavItem'
 
 interface SidebarProps {
@@ -14,6 +14,7 @@ const navItems = [
   { icon: Library,         labelKey: 'nav.knowledge',        to: '/knowledge',        phase: 1 as const },
   { icon: GraduationCap,   labelKey: 'nav.reviews',          to: '/reviews',          phase: 1 as const },
   { icon: History,         labelKey: 'nav.learningHistory',  to: '/learning/history', phase: 1 as const },
+  { icon: Calendar,        labelKey: 'nav.calendar',         to: '/calendar',         phase: 1 as const },
 ]
 
 export function Sidebar({ collapsed = false, onNavigate }: SidebarProps) {
