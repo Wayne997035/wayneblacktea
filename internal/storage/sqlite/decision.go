@@ -72,6 +72,26 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 	return s.decisionByID(ctx, id)
 }
 
+// LogTx is the transactional counterpart of Log. It inserts the decision row
+// inside the supplied *sql.Tx so the caller (confirm_proposal accept path for
+// type='decision') can atomically commit the materialised decision and the
+// proposal-resolve in a single transaction. Returns the freshly-generated ID
+// on success — callers that want the full row can SELECT it after Commit.
+func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogParams) (uuid.UUID, error) {
+	id := uuid.New()
+	const q = `INSERT INTO decisions
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+	_, err := tx.ExecContext(ctx, q,
+		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
+		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
+		nullStringIfEmpty(p.Alternatives), sqliteNowMillis())
+	if err != nil {
+		return uuid.UUID{}, errWrap("LogDecisionTx", err)
+	}
+	return id, nil
+}
+
 // ByRepo returns the most recent decisions for a given repo name.
 func (s *DecisionStore) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error) {
 	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions

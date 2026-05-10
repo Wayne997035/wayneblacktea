@@ -66,6 +66,7 @@ type Server struct {
 	pgGTD      *gtd.Store
 	pgProposal *proposal.Store
 	pgLearning *learning.Store
+	pgDecision *decision.Store
 
 	// sqlite* are concrete SQLite-backed Stores (or nil under Postgres) used
 	// by acceptProposalSQLite to run the materialise + resolve sequence inside
@@ -73,6 +74,7 @@ type Server struct {
 	sqliteGTD      *wbtsqlite.GTDStore
 	sqliteProposal *wbtsqlite.ProposalStore
 	sqliteLearning *wbtsqlite.LearningStore
+	sqliteDecision *wbtsqlite.DecisionStore
 
 	notion     *notion.Client
 	watchdog   *watchdog.Watchdog
@@ -131,9 +133,11 @@ func New(stores storage.ServerStores) (*Server, error) {
 		pgGTD:          stores.PgGTD(),
 		pgProposal:     stores.PgProposal(),
 		pgLearning:     stores.PgLearning(),
+		pgDecision:     stores.PgDecision(),
 		sqliteGTD:      stores.SqliteGTD(),
 		sqliteProposal: stores.SqliteProposal(),
 		sqliteLearning: stores.SqliteLearning(),
+		sqliteDecision: stores.SqliteDecision(),
 		notion:         notion.NewClient(),
 		watchdog:       watchdog.New(200),
 		discipline:     stores.Discipline(),

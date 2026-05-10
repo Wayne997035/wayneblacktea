@@ -278,9 +278,15 @@ func TestDecisionProposer_EnabledByDefault(t *testing.T) {
 }
 
 func TestDecisionProposer_OptOutValueMatrix(t *testing.T) {
+	// M-3 fix: opt-OUT is now strict — only the explicit truthy set
+	// {1,true,yes,on} (case-insensitive) disables the proposer. Empty value
+	// and any unrecognised string leave it enabled. This eliminates the
+	// surprising "any non-falsy value disables" behaviour that previously
+	// turned the feature off for unrelated env values like "auto" or
+	// "default".
 	cases := []struct {
 		val  string
-		want bool // true = still enabled (value treated as falsy)
+		want bool // true = enabled
 	}{
 		{"", true},
 		{"0", true},
@@ -288,10 +294,16 @@ func TestDecisionProposer_OptOutValueMatrix(t *testing.T) {
 		{"FALSE", true},
 		{"no", true},
 		{"off", true},
+		{"random", true}, // unknown non-empty = enabled (strict opt-out)
+		{"auto", true},
+		{"default", true},
 		{"1", false},
 		{"true", false},
+		{"TRUE", false},
 		{"yes", false},
-		{"random", false}, // unknown non-empty = disable (fail-safe to off)
+		{"YES", false},
+		{"on", false},
+		{"ON", false},
 	}
 	for _, tc := range cases {
 		t.Run("val="+tc.val, func(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -33,8 +34,14 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// Auto-classify significant tools regardless of whether they
 			// produce an activity log entry. maybeClassifyToolCall guards
 			// with its own significantTools check, so this is always safe.
-			argSummary := truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes)
-			resultSummary := extractResultText(res, mcpResultSummaryMaxRunes)
+			//
+			// SECURITY: scrub credential patterns BEFORE handing the strings
+			// to maybeClassifyToolCall — the classifier ships them to an
+			// upstream LLM provider (LLM02 prompt-data leakage). Redaction is
+			// regex-based defence-in-depth; primary mitigation is structured
+			// payload design upstream of this middleware.
+			argSummary := redact.ForLLM(truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes))
+			resultSummary := redact.ForLLM(extractResultText(res, mcpResultSummaryMaxRunes))
 			s.maybeClassifyToolCall(tool, argSummary, resultSummary)
 
 			action, notes, ok := autoLogEntry(tool, args)

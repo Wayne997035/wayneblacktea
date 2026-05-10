@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS review_schedule (
 CREATE TABLE IF NOT EXISTS pending_proposals (
     id            TEXT PRIMARY KEY,
     workspace_id  TEXT,
-    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept','knowledge','playbook')),
+    type          TEXT NOT NULL CHECK (type IN ('goal','project','task','concept','knowledge','playbook','decision')),
     payload       TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
     proposed_by   TEXT,

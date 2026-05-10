@@ -40,6 +40,17 @@ const (
 	defaultDrafterModel = "claude-haiku-4-5"
 	drafterTimeout      = 15 * time.Second
 	drafterMaxTokens    = 384
+
+	// drafterMaxTitleRunes / drafterMaxDecisionRunes / drafterMaxRationaleRunes
+	// match the system-prompt instruction so the model has one canonical
+	// limit. Code-side enforcement is the real gate — the model can ignore
+	// the prompt under prompt injection, the code cannot.
+	drafterMaxTitleRunes       = 80
+	drafterMaxDecisionRunes    = 200
+	drafterMaxRationaleRunes   = 400
+	drafterMaxAlternatives     = 3
+	drafterControlCharBoundary = 0x20 // anything < 0x20 except '\t' is rejected
+	drafterAllowedControlChar  = '\t'
 )
 
 // drafterSystemPrompt instructs the model to draft a decision record from a
@@ -128,5 +139,69 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 		)
 		return &DecisionDraft{}, nil
 	}
+	if rejected, reason := enforceDraftCaps(&draft); rejected {
+		slog.Warn("decision drafter: draft rejected by code-side caps",
+			"reason", reason,
+		)
+		return &DecisionDraft{}, nil
+	}
 	return &draft, nil
+}
+
+// enforceDraftCaps validates and minimally normalises a draft against the
+// length / control-char / alternatives caps. Returns (rejected=true, reason)
+// when the draft fails a hard cap (the middleware drops the proposal); the
+// alternatives slice is silently truncated to drafterMaxAlternatives because
+// truncation is harmless.
+//
+// All string fields are run through stripDraftControlChars so a model that
+// emits stray ANSI escapes or NUL bytes can't poison the audit log.
+func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string) {
+	d.Title = stripDraftControlChars(d.Title)
+	d.Decision = stripDraftControlChars(d.Decision)
+	d.Rationale = stripDraftControlChars(d.Rationale)
+	for i := range d.Alternatives {
+		d.Alternatives[i] = stripDraftControlChars(d.Alternatives[i])
+	}
+
+	if n := len([]rune(d.Title)); n > drafterMaxTitleRunes {
+		return true, fmt.Sprintf("title %d runes exceeds cap %d", n, drafterMaxTitleRunes)
+	}
+	if n := len([]rune(d.Decision)); n > drafterMaxDecisionRunes {
+		return true, fmt.Sprintf("decision %d runes exceeds cap %d", n, drafterMaxDecisionRunes)
+	}
+	if n := len([]rune(d.Rationale)); n > drafterMaxRationaleRunes {
+		return true, fmt.Sprintf("rationale %d runes exceeds cap %d", n, drafterMaxRationaleRunes)
+	}
+	if len(d.Alternatives) > drafterMaxAlternatives {
+		d.Alternatives = d.Alternatives[:drafterMaxAlternatives]
+	}
+	return false, ""
+}
+
+// stripDraftControlChars removes ASCII control chars (< 0x20) from s except
+// '\t', per backend-security-design.md §5.4 audit-text sanitisation. Caller-
+// provided strings (LLM output here) MUST go through this before persist.
+func stripDraftControlChars(s string) string {
+	if s == "" {
+		return s
+	}
+	hasControl := false
+	for _, r := range s {
+		if r < drafterControlCharBoundary && r != drafterAllowedControlChar {
+			hasControl = true
+			break
+		}
+	}
+	if !hasControl {
+		return s
+	}
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r < drafterControlCharBoundary && r != drafterAllowedControlChar {
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }

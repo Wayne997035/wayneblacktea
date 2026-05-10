@@ -128,6 +128,142 @@ func TestDecisionDrafter_PromptWrapsUntrustedInput(t *testing.T) {
 	}
 }
 
+// repeatRune builds a string of n copies of r, used for over-cap test inputs.
+func repeatRune(r rune, n int) string {
+	out := make([]rune, n)
+	for i := range out {
+		out[i] = r
+	}
+	return string(out)
+}
+
+// TestDecisionDrafter_CapEnforcement_TitleOverLimit verifies a draft whose
+// title exceeds drafterMaxTitleRunes is rejected (returned as empty draft so
+// the middleware drops it). Code-side enforcement is the real gate; the
+// system prompt instruction is advisory.
+func TestDecisionDrafter_CapEnforcement_TitleOverLimit(t *testing.T) {
+	overLimit := repeatRune('A', drafterMaxTitleRunes+1)
+	out := `{"title":"` + overLimit + `","decision":"d","rationale":"r"}`
+	stub := &stubJSONClient{out: out}
+	d := NewDecisionDrafter(stub)
+	got, err := d.Draft(context.Background(), DecisionDraftInput{TriggerTool: "add_task"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if got.Title != "" {
+		t.Errorf("expected empty title (rejected), got %q", got.Title)
+	}
+}
+
+// TestDecisionDrafter_CapEnforcement_DecisionOverLimit verifies the decision
+// length cap is enforced.
+func TestDecisionDrafter_CapEnforcement_DecisionOverLimit(t *testing.T) {
+	overLimit := repeatRune('B', drafterMaxDecisionRunes+1)
+	out := `{"title":"x","decision":"` + overLimit + `","rationale":"r"}`
+	stub := &stubJSONClient{out: out}
+	d := NewDecisionDrafter(stub)
+	got, err := d.Draft(context.Background(), DecisionDraftInput{TriggerTool: "add_task"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if got.Title != "" || got.Decision != "" {
+		t.Errorf("expected empty draft (rejected), got %+v", got)
+	}
+}
+
+// TestDecisionDrafter_CapEnforcement_RationaleOverLimit verifies the
+// rationale cap is enforced.
+func TestDecisionDrafter_CapEnforcement_RationaleOverLimit(t *testing.T) {
+	overLimit := repeatRune('C', drafterMaxRationaleRunes+1)
+	out := `{"title":"x","decision":"d","rationale":"` + overLimit + `"}`
+	stub := &stubJSONClient{out: out}
+	d := NewDecisionDrafter(stub)
+	got, err := d.Draft(context.Background(), DecisionDraftInput{TriggerTool: "add_task"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if got.Title != "" {
+		t.Errorf("expected empty draft (rejected), got %+v", got)
+	}
+}
+
+// TestDecisionDrafter_CapEnforcement_AlternativesTruncated verifies that
+// alternatives over the cap are truncated (not rejected — truncation is
+// harmless, throws away the trailing entries).
+func TestDecisionDrafter_CapEnforcement_AlternativesTruncated(t *testing.T) {
+	out := `{"title":"x","decision":"d","rationale":"r","alternatives":["a","b","c","d","e"]}`
+	stub := &stubJSONClient{out: out}
+	d := NewDecisionDrafter(stub)
+	got, err := d.Draft(context.Background(), DecisionDraftInput{TriggerTool: "add_task"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if len(got.Alternatives) != drafterMaxAlternatives {
+		t.Errorf("alternatives len = %d, want %d", len(got.Alternatives), drafterMaxAlternatives)
+	}
+	if got.Title != "x" {
+		t.Errorf("expected title preserved, got %q", got.Title)
+	}
+}
+
+// TestDecisionDrafter_CapEnforcement_StripsControlChars verifies that ASCII
+// control characters (< 0x20) are stripped from string fields, except '\t'
+// which is kept (audit-log readability).
+func TestDecisionDrafter_CapEnforcement_StripsControlChars(t *testing.T) {
+	payload := map[string]any{
+		"title":     "clean\x00title", // NUL embedded
+		"decision":  "with\x1bansi",   // ESC embedded
+		"rationale": "line	withtab",  // tab + CR
+	}
+	raw, mErr := json.Marshal(payload)
+	if mErr != nil {
+		t.Fatalf("marshal payload: %v", mErr)
+	}
+	out := string(raw)
+	stub := &stubJSONClient{out: out}
+	d := NewDecisionDrafter(stub)
+	got, err := d.Draft(context.Background(), DecisionDraftInput{TriggerTool: "add_task"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if strings.ContainsRune(got.Title, '\x00') {
+		t.Errorf("title still contains NUL byte: %q", got.Title)
+	}
+	if strings.ContainsRune(got.Decision, '\x1b') {
+		t.Errorf("decision still contains ANSI escape: %q", got.Decision)
+	}
+	// '\t' MUST be kept; '\r' MUST be stripped.
+	if !strings.ContainsRune(got.Rationale, '\t') {
+		t.Errorf("rationale should keep tab: %q", got.Rationale)
+	}
+	if strings.ContainsRune(got.Rationale, '\r') {
+		t.Errorf("rationale still contains carriage return: %q", got.Rationale)
+	}
+}
+
+// TestDecisionDrafter_CapEnforcement_BoundaryAtLimit verifies a draft whose
+// fields are EXACTLY at the cap is accepted (not off-by-one rejected).
+func TestDecisionDrafter_CapEnforcement_BoundaryAtLimit(t *testing.T) {
+	out := `{"title":"` + repeatRune('A', drafterMaxTitleRunes) + `",` +
+		`"decision":"` + repeatRune('B', drafterMaxDecisionRunes) + `",` +
+		`"rationale":"` + repeatRune('C', drafterMaxRationaleRunes) + `"}`
+	stub := &stubJSONClient{out: out}
+	d := NewDecisionDrafter(stub)
+	got, err := d.Draft(context.Background(), DecisionDraftInput{TriggerTool: "add_task"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if len([]rune(got.Title)) != drafterMaxTitleRunes {
+		t.Errorf("title runes = %d, want %d", len([]rune(got.Title)), drafterMaxTitleRunes)
+	}
+	if len([]rune(got.Decision)) != drafterMaxDecisionRunes {
+		t.Errorf("decision runes = %d, want %d", len([]rune(got.Decision)), drafterMaxDecisionRunes)
+	}
+	if len([]rune(got.Rationale)) != drafterMaxRationaleRunes {
+		t.Errorf("rationale runes = %d, want %d", len([]rune(got.Rationale)), drafterMaxRationaleRunes)
+	}
+}
+
 // TestDecisionDrafter_DraftRoundtripsAlternatives ensures the alternatives
 // JSON array is preserved into the typed struct (downstream materialiser
 // will need it to populate the decisions table).

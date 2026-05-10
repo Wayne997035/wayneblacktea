@@ -230,9 +230,11 @@ func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { retur
 func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
 func (p *postgresServerStores) PgProposal() *proposal.Store              { return p.proposal }
 func (p *postgresServerStores) PgLearning() *learning.Store              { return p.learning }
+func (p *postgresServerStores) PgDecision() *decision.Store              { return p.decision }
 func (p *postgresServerStores) SqliteGTD() *wbtsqlite.GTDStore           { return nil }
 func (p *postgresServerStores) SqliteProposal() *wbtsqlite.ProposalStore { return nil }
 func (p *postgresServerStores) SqliteLearning() *wbtsqlite.LearningStore { return nil }
+func (p *postgresServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return nil }
 
 // buildPgxPool centralises the pgxpool config we use across cmd/server and
 // cmd/mcp so the TLS / pgvector wiring lives in one place.
@@ -353,6 +355,8 @@ func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return 
 func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }
 func (s *sqliteServerStores) PgProposal() *proposal.Store              { return nil }
 func (s *sqliteServerStores) PgLearning() *learning.Store              { return nil }
+func (s *sqliteServerStores) PgDecision() *decision.Store              { return nil }
 func (s *sqliteServerStores) SqliteGTD() *wbtsqlite.GTDStore           { return s.gtd }
 func (s *sqliteServerStores) SqliteProposal() *wbtsqlite.ProposalStore { return s.proposal }
 func (s *sqliteServerStores) SqliteLearning() *wbtsqlite.LearningStore { return s.learning }
+func (s *sqliteServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return s.decision }

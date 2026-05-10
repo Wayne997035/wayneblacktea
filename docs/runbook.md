@@ -306,3 +306,45 @@ go build -o "$(go env GOPATH)/bin/wayneblacktea-server" ./cmd/server
 ### Migrations: schema_migrations table vs idempotent up scripts
 
 golang-migrate records applied migrations in `schema_migrations`. Re-running an already-applied up script directly with `psql -f` is safe (uses `IF NOT EXISTS` / `IF EXISTS`), but golang-migrate's `migrate up` will skip already-recorded versions. Use `migrate version` to check current version.
+
+---
+
+## 9. Observability TTL retention policies
+
+Backed by `backend-security-design.md §1.3` — every observability table MUST
+have a working retention policy in code, not just in design docs. The wayneblacktea
+server runs the cleanup automatically via the embedded scheduler when a
+Postgres pool is wired in; SQLite installs are dev-local single-tenant and do
+not need TTL. For operators who want to force a cleanup on demand (e.g. before
+a snapshot dump), a Taskfile target wraps each policy.
+
+### `discipline_events` — 30-day TTL
+
+Records every MCP tool invocation for drift-detection. Daily prune at 23:00
+Asia/Taipei via the scheduler.
+
+```bash
+# Force on-demand prune (alternative to scheduler trigger):
+cd build && task discipline-prune
+```
+
+### `pending_proposals` — 90 / 180-day dual TTL
+
+The auto-decision-proposer middleware can fill the queue with up to one row
+per mutating tool call. Two retention rules, both enforced by a single nightly
+DELETE at 03:00 Asia/Taipei (offset from the 23:00 cluster to spread DB load):
+
+| Status                      | Retention | Rationale                                                    |
+|-----------------------------|-----------|--------------------------------------------------------------|
+| `accepted` / `rejected`     | 90 days   | User has acted; keep ~1 quarter for audit, then drop         |
+| `pending` & `type=decision` | 180 days  | Auto-proposer noise — stale pending decisions are obsolete   |
+| `pending` & other types     | NEVER     | Goal/project/concept etc. = unresolved user intent; keep all |
+
+```bash
+# Force on-demand prune (alternative to scheduler trigger):
+cd build && task pending-proposals-prune
+```
+
+The `WBT_DISABLE_AUTO_DECISIONS` env var (truthy values: `1`/`true`/`yes`/`on`)
+disables the proposer if it produces too much queue noise; the prune still
+runs and cleans up pre-existing rows.

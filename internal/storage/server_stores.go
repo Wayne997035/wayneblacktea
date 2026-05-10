@@ -76,19 +76,22 @@ type ServerStores interface {
 	// paths that legitimately need a pgx-typed transaction.
 	PgxPool() *pgxpool.Pool
 
-	// PgGTD / PgProposal / PgLearning return concrete *Store handles only
-	// when the bundle is Postgres-backed (so callers can WithTx(tx) on a
-	// pgx.Tx). They return nil on the SQLite bundle. See the type doc for
-	// the future migration path.
+	// PgGTD / PgProposal / PgLearning / PgDecision return concrete *Store
+	// handles only when the bundle is Postgres-backed (so callers can
+	// WithTx(tx) on a pgx.Tx). They return nil on the SQLite bundle. See
+	// the type doc for the future migration path.
 	PgGTD() *gtd.Store
 	PgProposal() *proposal.Store
 	PgLearning() *learning.Store
+	PgDecision() *decision.Store
 
-	// SqliteGTD / SqliteProposal / SqliteLearning return concrete *Store
-	// handles only when the bundle is SQLite-backed, so callers can use the
-	// *Tx transactional helpers for atomic cross-store writes (e.g. the
-	// confirm_proposal accept path). They return nil on the Postgres bundle.
+	// SqliteGTD / SqliteProposal / SqliteLearning / SqliteDecision return
+	// concrete *Store handles only when the bundle is SQLite-backed, so
+	// callers can use the *Tx transactional helpers for atomic cross-store
+	// writes (e.g. the confirm_proposal accept path for type='decision').
+	// They return nil on the Postgres bundle.
 	SqliteGTD() *wbtsqlite.GTDStore
 	SqliteProposal() *wbtsqlite.ProposalStore
 	SqliteLearning() *wbtsqlite.LearningStore
+	SqliteDecision() *wbtsqlite.DecisionStore
 }

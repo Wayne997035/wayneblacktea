@@ -381,3 +381,39 @@ func TestRegisterDailyDisciplinePrune_NilPool_JobNotRegistered(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// runDailyPendingProposalsPrune tests
+// ---------------------------------------------------------------------------
+
+// TestRunDailyPendingProposalsPrune_NilPool_NoPanic verifies the runner short-
+// circuits cleanly when no Postgres pool is wired in (SQLite mode), without
+// touching the DB or panicking. Mirrors the discipline-prune nil-pool guard
+// (backend-security-design.md §1.3 — TTL is Postgres-only because SQLite is
+// dev-local single-tenant).
+func TestRunDailyPendingProposalsPrune_NilPool_NoPanic(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	// Pool is nil → must short-circuit without panicking.
+	sc.runDailyPendingProposalsPrune()
+}
+
+// TestRegisterDailyPendingProposalsPrune_NilPool_JobNotRegistered verifies
+// that when no Postgres pool is provided the daily-pending-proposals-prune
+// job is NOT registered with gocron — same skip semantics as the discipline /
+// decay prune jobs.
+func TestRegisterDailyPendingProposalsPrune_NilPool_JobNotRegistered(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	for _, j := range sc.s.Jobs() {
+		if j.Name() == "daily-pending-proposals-prune" {
+			t.Errorf("daily-pending-proposals-prune was registered with nil pool; expected skip")
+		}
+	}
+}

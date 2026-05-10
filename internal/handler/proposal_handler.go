@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -34,16 +35,36 @@ type proposalConceptStore interface {
 	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
 }
 
+// proposalDecisionStore covers the decision operation needed when accepting
+// a TypeDecision proposal. The handler depends on the iface (not the
+// concrete *Store) so tests can inject a fake without booting a DB.
+type proposalDecisionStore interface {
+	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
+}
+
 // ProposalHandler exposes GET /api/proposals/pending and
 // POST /api/proposals/:id/confirm.
 type ProposalHandler struct {
 	proposal proposalListStore
 	learning proposalConceptStore
+	// decision is optional; nil disables decision-proposal materialisation
+	// (handler returns 500 on accept of a TypeDecision row). For full
+	// behaviour wire NewProposalHandlerWithDecision.
+	decision proposalDecisionStore
 }
 
-// NewProposalHandler creates a ProposalHandler.
+// NewProposalHandler creates a ProposalHandler. Decision-proposal accept will
+// fail with 500 unless WithDecision is also used (see
+// NewProposalHandlerWithDecision).
 func NewProposalHandler(p proposalListStore, l proposalConceptStore) *ProposalHandler {
 	return &ProposalHandler{proposal: p, learning: l}
+}
+
+// WithDecision wires the decision store used by the TypeDecision accept path.
+// Returns the handler for chaining. nil decision = decision-accept disabled.
+func (h *ProposalHandler) WithDecision(d proposalDecisionStore) *ProposalHandler {
+	h.decision = d
+	return h
 }
 
 // pendingProposalResponse is the JSON shape returned to the frontend.
@@ -112,10 +133,11 @@ var allowedProposalStatuses = map[string]bool{
 
 // allowedProposalTypes is the validated set of values for the ?type= query param.
 var allowedProposalTypes = map[string]bool{
-	"concept": true,
-	"goal":    true,
-	"project": true,
-	"task":    true,
+	"concept":  true,
+	"goal":     true,
+	"project":  true,
+	"task":     true,
+	"decision": true,
 }
 
 // ListProposals handles GET /api/proposals?status=pending|accepted|rejected|all.
@@ -133,7 +155,7 @@ func (h *ProposalHandler) ListProposals(c echo.Context) error {
 	if proposalType == "" {
 		proposalType = "concept"
 	} else if !allowedProposalTypes[proposalType] {
-		return c.JSON(http.StatusBadRequest, errResp("type must be concept, goal, project, or task"))
+		return c.JSON(http.StatusBadRequest, errResp("type must be concept, goal, project, task, or decision"))
 	}
 
 	rows, err := h.proposal.ListAll(c.Request().Context(), proposalType, 200)
@@ -158,6 +180,7 @@ type confirmRequest struct {
 type confirmResponse struct {
 	Proposal pendingProposalResponse `json:"proposal"`
 	Concept  *db.Concept             `json:"concept,omitempty"`
+	Decision *db.Decision            `json:"decision,omitempty"`
 }
 
 // ConfirmProposal handles POST /api/proposals/:id/confirm.
@@ -200,6 +223,14 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 // Get → status guard → Resolve (atomic, WHERE status='pending') → CreateConcept.
 // Concurrent accepts on the same proposal see a 409 from Resolve before any
 // concept is materialised.
+//
+// TypeDecision diverges from the concept ordering: it materialises the
+// decisions row BEFORE Resolve so that a Resolve failure (e.g. concurrent
+// accept) leaves no half-state where the proposal is accepted but the
+// decision was never written. The materialise-then-resolve order can leave
+// an orphan decisions row when two concurrent accepts race; the orphan is
+// preferable to a missing one because list_decisions will surface it for
+// the user to delete manually rather than silently losing the record.
 func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id uuid.UUID) error {
 	prop, err := h.proposal.Get(ctx, id)
 	if errors.Is(err, proposal.ErrNotFound) {
@@ -213,14 +244,34 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
 	}
 
-	var cp conceptCandidatePayload
-	isConcept := proposal.Type(prop.Type) == proposal.TypeConcept
-	if isConcept {
-		var errMsg string
-		cp, errMsg = decodeConceptCandidatePayload(prop.Payload)
-		if errMsg != "" {
-			return c.JSON(http.StatusBadRequest, errResp(errMsg))
+	switch proposal.Type(prop.Type) {
+	case proposal.TypeDecision:
+		return h.acceptDecision(c, ctx, id, prop)
+	case proposal.TypeConcept:
+		return h.acceptConcept(c, ctx, id, prop)
+	default:
+		// Other types (goal/project/task/playbook/knowledge) are accepted in
+		// the MCP path or are not yet wired through HTTP. Resolve only —
+		// preserves prior behaviour for non-concept/non-decision rows.
+		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
+		if errors.Is(err, proposal.ErrNotFound) {
+			return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
 		}
+		if err != nil {
+			c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
+			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		}
+		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
+	}
+}
+
+// acceptConcept preserves the original concept-accept ordering (Resolve
+// first, materialise after) so concurrent accepts cannot create duplicate
+// concepts. Extracted from handleAccept to keep gocyclo low.
+func (h *ProposalHandler) acceptConcept(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
+	cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
+	if errMsg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(errMsg))
 	}
 
 	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
@@ -232,15 +283,74 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
-	var concept *db.Concept
-	if isConcept {
-		concept, err = h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
-		if err != nil {
-			c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-		}
+	concept, err := h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Concept: concept})
+}
+
+// acceptDecision materialises the decision row BEFORE marking the proposal
+// accepted. This avoids the accept-then-fail-materialise race the round-2
+// reviewer flagged: if Resolve succeeded and Log later failed, the proposal
+// would be marked accepted with no decision row to back it. Materialise-first
+// can leave an orphan on Resolve race (rare); orphan > missing.
+func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
+	if h.decision == nil {
+		c.Logger().Errorf("ConfirmProposal accept %s: decision store not wired", id)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	dp, errMsg := decodeProposalDecisionPayload(prop.Payload)
+	if errMsg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(errMsg))
+	}
+
+	logged, err := h.decision.Log(ctx, dp)
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal materialise decision %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
+	if errors.Is(err, proposal.ErrNotFound) {
+		// The decision row was already inserted; surface a 409 so the caller
+		// knows the original proposal was already resolved. The orphan row
+		// remains in `decisions` for the user to clean up via list_decisions.
+		c.Logger().Warnf("ConfirmProposal accept %s: proposal resolved between materialise and resolve (orphan decision %s)", id, logged.ID)
+		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
+	}
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Decision: logged})
+}
+
+// decodeProposalDecisionPayload decodes a TypeDecision pending_proposals
+// payload (proposal.DecisionProposerPayload JSON shape) into a
+// decision.LogParams ready for store.Log.
+func decodeProposalDecisionPayload(payload []byte) (decision.LogParams, string) {
+	var p proposal.DecisionProposerPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return decision.LogParams{}, "decision proposal payload is malformed"
+	}
+	if p.Title == "" {
+		return decision.LogParams{}, "decision proposal payload missing title"
+	}
+	rationale := p.Rationale
+	if len(p.Alternatives) > 0 {
+		rationale += "\n\nAlternatives considered:"
+		for _, a := range p.Alternatives {
+			rationale += "\n- " + a
+		}
+	}
+	return decision.LogParams{
+		Title:     p.Title,
+		Context:   fmt.Sprintf("auto-proposed by trigger_tool=%s session=%s", p.TriggerTool, p.SessionID),
+		Decision:  p.Decision,
+		Rationale: rationale,
+	}, ""
 }
 
 // conceptCandidatePayload mirrors the shape stored by AutoProposeConceptFromKnowledge.

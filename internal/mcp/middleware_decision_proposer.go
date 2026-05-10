@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -33,23 +35,89 @@ const decisionProposerTimeout = 30 * time.Second
 // to auto-track decisions; spam is mitigated by routing through the
 // pending_proposals queue (user confirms each one).
 //
-// Set WBT_DISABLE_AUTO_DECISIONS=1 (or "true") to disable. Useful if the
-// LLM budget is tight or proposals are noisy for a particular workflow.
+// Set WBT_DISABLE_AUTO_DECISIONS=1 (or "true"/"yes"/"on") to disable.
+// Useful if the LLM budget is tight or proposals are noisy for a particular
+// workflow.
 const disableAutoDecisionsEnvVar = "WBT_DISABLE_AUTO_DECISIONS"
 
+// mcpDecisionProposerSem caps concurrent decision-proposer goroutines. Distinct
+// from mcpClassifySem so the two background paths share no budget — a runaway
+// classifier shouldn't starve the proposer or vice versa.
+var mcpDecisionProposerSem = make(chan struct{}, 20)
+
+// mcpDecisionProposerMaxPerWindow caps Haiku draft calls per rolling window
+// to defend against API budget drain from a looping agent or prompt-injected
+// client (LLM04 model-DoS mitigation). Mirrors the classifier budget but is
+// kept separate so the two paths fail independently.
+const (
+	mcpDecisionProposerMaxPerWindow = 60
+	mcpDecisionProposerWindow       = time.Minute
+)
+
+// mcpDecisionProposerBudget is a simple token-bucket rate limiter that
+// refills the full quota at the start of each window. Concurrency-safe.
+var mcpDecisionProposerBudget = struct {
+	mu      sync.Mutex
+	tokens  int
+	resetAt time.Time
+}{tokens: mcpDecisionProposerMaxPerWindow}
+
+// tryAcquireDecisionProposerToken returns true when budget remains in the
+// current window; refills the bucket on rollover. Concurrency-safe.
+func tryAcquireDecisionProposerToken(now time.Time) bool {
+	mcpDecisionProposerBudget.mu.Lock()
+	defer mcpDecisionProposerBudget.mu.Unlock()
+	if now.After(mcpDecisionProposerBudget.resetAt) {
+		mcpDecisionProposerBudget.tokens = mcpDecisionProposerMaxPerWindow
+		mcpDecisionProposerBudget.resetAt = now.Add(mcpDecisionProposerWindow)
+	}
+	if mcpDecisionProposerBudget.tokens <= 0 {
+		return false
+	}
+	mcpDecisionProposerBudget.tokens--
+	return true
+}
+
 // decisionProposerEnabled returns true unless the operator has explicitly
-// opted out via WBT_DISABLE_AUTO_DECISIONS=1. Any non-empty value other
-// than "0"/"false"/"no" disables.
+// opted out via WBT_DISABLE_AUTO_DECISIONS set to a TRUTHY value. Default is
+// ENABLED — empty string + any unrecognised value leave the proposer ON.
+//
+// Disabling values (case-insensitive): "1", "true", "yes", "on".
+//
+// History: an earlier inverted-default version disabled the proposer for any
+// non-empty value not in {0,false,no,off}. That made unrelated env values
+// like "auto" or "default" silently turn the feature off, which surprised
+// operators. Current semantics are explicit opt-OUT only.
 func decisionProposerEnabled() bool {
 	raw := strings.TrimSpace(os.Getenv(disableAutoDecisionsEnvVar))
 	if raw == "" {
 		return true
 	}
 	switch strings.ToLower(raw) {
-	case "0", "false", "no", "off":
-		return true
+	case "1", "true", "yes", "on":
+		return false
 	}
-	return false
+	return true
+}
+
+// logDecisionProposerStartupOnce is the sync.Once that gates the one-time
+// startup log line announcing whether the proposer is enabled or disabled.
+// We log on FIRST middleware invocation rather than at New() time because the
+// middleware-construction site has no logger context.
+var logDecisionProposerStartupOnce sync.Once
+
+// logDecisionProposerStartup emits one slog.Info line documenting the
+// observed env value + the resulting enabled state. Useful for operators
+// debugging "is the auto-decision feature on right now?" without a code
+// reference. Idempotent across the process lifetime.
+func logDecisionProposerStartup() {
+	logDecisionProposerStartupOnce.Do(func() {
+		raw := strings.TrimSpace(os.Getenv(disableAutoDecisionsEnvVar))
+		slog.Info("decisionProposer: startup state observed",
+			"enabled", decisionProposerEnabled(),
+			disableAutoDecisionsEnvVar, raw,
+		)
+	})
 }
 
 // shouldRunDecisionProposer returns true when the middleware MUST proceed
@@ -74,17 +142,12 @@ func (s *Server) shouldRunDecisionProposer(res *mcpmsg.CallToolResult, err error
 	return s.discipline != nil && s.proposal != nil && s.drafter != nil
 }
 
-// decisionProposerPayload is the JSON shape persisted into pending_proposals
-// (type='decision'). confirm_proposal materialises this into the decisions
-// table when the user accepts.
-type decisionProposerPayload struct {
-	Title        string   `json:"title"`
-	Decision     string   `json:"decision"`
-	Rationale    string   `json:"rationale"`
-	Alternatives []string `json:"alternatives,omitempty"`
-	SessionID    string   `json:"session_id"`
-	TriggerTool  string   `json:"trigger_tool"`
-}
+// decisionProposerPayload is a package-local alias for the shared payload
+// shape. The canonical type lives in internal/proposal/payload.go so the
+// confirm_proposal materialise switch can decode it without a circular
+// import (mcp -> proposal is allowed; proposal -> mcp would not be). The
+// alias is kept so existing callers don't need to learn the new path.
+type decisionProposerPayload = proposal.DecisionProposerPayload
 
 // runDecisionProposer is the background-goroutine body extracted from
 // decisionProposerMiddleware. It runs under context.Background() with a
@@ -178,23 +241,49 @@ func (s *Server) runDecisionProposer(tool, argSummary, resultSummary, sessionID 
 func (s *Server) decisionProposerMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+			logDecisionProposerStartup()
 			res, err := next(ctx, req)
 			tool := req.Params.Name
 			if !s.shouldRunDecisionProposer(res, err, tool) {
 				return res, err
 			}
 
+			// Rate-limit BEFORE the concurrency semaphore. Defends against
+			// API budget drain from a looping agent (LLM04). Silent on the
+			// response path; debug-level log so noisy callers leave a trail
+			// but operators don't see warnings for ordinary throttling.
+			if !tryAcquireDecisionProposerToken(time.Now()) {
+				slog.Debug("decisionProposerMiddleware: rate limit reached, skipping",
+					"tool", tool)
+				return res, err
+			}
+
 			// Snapshot tool args + result here on the request goroutine
-			// before the request context can be cancelled. Pass copies into
-			// the background goroutine so we don't race the request lifetime.
+			// before the request context can be cancelled. Apply the redact
+			// pass HERE (sync) so credential strings never reach the
+			// background goroutine even if it races the LLM provider.
 			args := req.GetArguments()
-			argSummary := truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes)
-			resultSummary := extractResultText(res, mcpResultSummaryMaxRunes)
+			argSummary := redact.ForLLM(truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes))
+			resultSummary := redact.ForLLM(extractResultText(res, mcpResultSummaryMaxRunes))
 			sessionID := s.sessionID
 			workspaceID := s.workspaceID
 
-			//nolint:gosec // G118: intentional — goroutine MUST outlive request ctx so the proposal survives ctx cancellation
-			go s.runDecisionProposer(tool, argSummary, resultSummary, sessionID, workspaceID)
+			// Acquire a goroutine slot. Drop the proposal silently if all
+			// slots are in flight — better than unbounded growth. The
+			// goroutine MUST outlive the request ctx so the proposal
+			// survives request-context cancellation; runDecisionProposer
+			// builds its own context.Background-rooted ctx with a
+			// dedicated timeout (see decisionProposerTimeout).
+			select {
+			case mcpDecisionProposerSem <- struct{}{}:
+				go func() {
+					defer func() { <-mcpDecisionProposerSem }()
+					s.runDecisionProposer(tool, argSummary, resultSummary, sessionID, workspaceID)
+				}()
+			default:
+				slog.Debug("decisionProposerMiddleware: goroutine cap reached, skipping",
+					"tool", tool)
+			}
 
 			return res, err
 		}

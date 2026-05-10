@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -401,6 +402,16 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 	return jsonText(confirmResult{Proposal: resolved, Created: created})
 }
 
+// proposalWorkspaceID safely unpacks the optional workspace UUID from a
+// pending_proposals row.
+func proposalWorkspaceID(prop *db.PendingProposal) *uuid.UUID {
+	if !prop.WorkspaceID.Valid {
+		return nil
+	}
+	id := uuid.UUID(prop.WorkspaceID.Bytes)
+	return &id
+}
+
 // materializeFromPayloadSQLiteTx creates the concrete entity for a proposal
 // inside the provided *sql.Tx, using the Tx-aware store methods. Returns the
 // created entity (or nil for types with no materialisation) plus an error
@@ -408,6 +419,8 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 // caller can atomically commit entity + proposal-resolve in one transaction.
 func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
+	case proposal.TypeDecision:
+		return s.materializeDecisionSQLite(ctx, tx, prop)
 	case proposal.TypeGoal:
 		gp, errMsg := decodeGoalParams(prop.Payload)
 		if errMsg != "" {
@@ -441,12 +454,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
 	case proposal.TypePlaybook:
-		wsID := (*uuid.UUID)(nil)
-		if prop.WorkspaceID.Valid {
-			id := uuid.UUID(prop.WorkspaceID.Bytes)
-			wsID = &id
-		}
-		cp, errMsg := decodePlaybookPayload(prop.Payload, wsID)
+		cp, errMsg := decodePlaybookPayload(prop.Payload, proposalWorkspaceID(prop))
 		if errMsg != "" {
 			return nil, errMsg
 		}
@@ -460,11 +468,31 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 	}
 }
 
+// materializeDecisionSQLite is the per-type SQLite-Tx materialiser for
+// TypeDecision. Extracted from the switch to keep gocyclo low; the decision
+// path is the only one that requires the dedicated *DecisionStore handle.
+func (s *Server) materializeDecisionSQLite(ctx context.Context, tx *sql.Tx, prop *db.PendingProposal) (any, string) {
+	dp, errMsg := decodeDecisionParams(prop.Payload)
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	if s.sqliteDecision == nil {
+		return nil, "decision proposal materialisation requires SQLite decision store"
+	}
+	decisionID, err := s.sqliteDecision.LogTx(ctx, tx, dp)
+	if err != nil {
+		return nil, fmt.Sprintf("creating decision: %v", err)
+	}
+	return map[string]string{"id": decisionID.String(), "title": dp.Title}, ""
+}
+
 // materializeFromPayloadPg decodes the proposal's payload and creates the
 // concrete entity inside the given pgx transaction. Returns the created
 // entity or an error message string (empty = success). Postgres-only.
 func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
+	case proposal.TypeDecision:
+		return s.materializeDecisionPg(ctx, tx, prop)
 	case proposal.TypeGoal:
 		gp, errMsg := decodeGoalParams(prop.Payload)
 		if errMsg != "" {
@@ -498,12 +526,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
 	case proposal.TypePlaybook:
-		wsID := (*uuid.UUID)(nil)
-		if prop.WorkspaceID.Valid {
-			id := uuid.UUID(prop.WorkspaceID.Bytes)
-			wsID = &id
-		}
-		cp, errMsg := decodePlaybookPayload(prop.Payload, wsID)
+		cp, errMsg := decodePlaybookPayload(prop.Payload, proposalWorkspaceID(prop))
 		if errMsg != "" {
 			return nil, errMsg
 		}
@@ -517,11 +540,30 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 	}
 }
 
+// materializeDecisionPg is the per-type Postgres-Tx materialiser for
+// TypeDecision. Extracted from the switch to keep gocyclo low.
+func (s *Server) materializeDecisionPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
+	dp, errMsg := decodeDecisionParams(prop.Payload)
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	if s.pgDecision == nil {
+		return nil, "decision proposal materialisation requires PG decision store"
+	}
+	dec, err := s.pgDecision.WithTx(tx).Log(ctx, dp)
+	if err != nil {
+		return nil, fmt.Sprintf("creating decision: %v", err)
+	}
+	return dec, ""
+}
+
 // materializeFromPayloadIface is the SQLite-backed counterpart that calls
 // through the backend-agnostic StoreIface methods. No tx — see
 // acceptProposalSequential doc for the ordering / failure tradeoff.
 func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
+	case proposal.TypeDecision:
+		return s.materializeDecisionIface(ctx, prop)
 	case proposal.TypeGoal:
 		gp, errMsg := decodeGoalParams(prop.Payload)
 		if errMsg != "" {
@@ -555,12 +597,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
 	case proposal.TypePlaybook:
-		wsID := (*uuid.UUID)(nil)
-		if prop.WorkspaceID.Valid {
-			id := uuid.UUID(prop.WorkspaceID.Bytes)
-			wsID = &id
-		}
-		cp, errMsg := decodePlaybookPayload(prop.Payload, wsID)
+		cp, errMsg := decodePlaybookPayload(prop.Payload, proposalWorkspaceID(prop))
 		if errMsg != "" {
 			return nil, errMsg
 		}
@@ -572,6 +609,56 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
+}
+
+// materializeDecisionIface is the per-type backend-agnostic materialiser for
+// TypeDecision. Extracted from the switch to keep gocyclo low.
+func (s *Server) materializeDecisionIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
+	dp, errMsg := decodeDecisionParams(prop.Payload)
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	if s.decision == nil {
+		return nil, "decision proposal materialisation requires decision store"
+	}
+	dec, err := s.decision.Log(ctx, dp)
+	if err != nil {
+		return nil, fmt.Sprintf("creating decision: %v", err)
+	}
+	return dec, ""
+}
+
+// decisionMaterialiseLogParams converts the proposer payload (from
+// internal/proposal/payload.go) into the decision.LogParams shape used by all
+// three backends. Any payload-level validation (length caps, control-char
+// strip) is the drafter's job — by the time the proposal is on the queue
+// the user has reviewed it. Empty title still produces an error so the
+// proposal stays pending instead of materialising garbage.
+func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
+	var p proposal.DecisionProposerPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return decision.LogParams{}, fmt.Sprintf("decoding decision payload: %v", err)
+	}
+	if p.Title == "" {
+		return decision.LogParams{}, "decision payload missing title"
+	}
+	rationale := p.Rationale
+	if len(p.Alternatives) > 0 {
+		// Stash alternatives at the tail of rationale — the decisions table
+		// has a free-form alternatives column but the model often produces
+		// short-list strings; concatenating is lossless and keeps the
+		// existing list_decisions UI unchanged.
+		rationale += "\n\nAlternatives considered:"
+		for _, a := range p.Alternatives {
+			rationale += "\n- " + a
+		}
+	}
+	return decision.LogParams{
+		Title:     p.Title,
+		Context:   fmt.Sprintf("auto-proposed by trigger_tool=%s session=%s", p.TriggerTool, p.SessionID),
+		Decision:  p.Decision,
+		Rationale: rationale,
+	}, ""
 }
 
 // decodeGoalParams centralises the goal-payload JSON decode + RFC3339 parse
