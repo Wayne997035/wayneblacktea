@@ -61,7 +61,11 @@ var orderedPatterns = []pattern{
 	// (private_key, client_secret, webhook_secret, signing_key), DB password
 	// (db_pass). Each new word MUST be lowercase here; (?i) makes the
 	// match case-insensitive.
-	{regexp.MustCompile(`(?i)(password|passwd|pwd|api[_-]?key|secret|token|auth_token|access_token|refresh_token|private_key|client_secret|webhook_secret|signing_key|db_pass)\s*[=:]\s*['"]?[^\[\s'"]+`), "[REDACTED:kv-secret]"},
+	{regexp.MustCompile(`(?i)(` +
+		`password|passwd|pwd|api[_-]?key|secret|token|` +
+		`auth_token|access_token|refresh_token|` +
+		`private_key|client_secret|webhook_secret|signing_key|db_pass` +
+		`)\s*[=:]\s*['"]?[^\[\s'"]+`), "[REDACTED:kv-secret]"},
 }
 
 // ForLLM scrubs known credential patterns from s, replacing each match with a

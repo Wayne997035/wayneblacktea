@@ -20,13 +20,13 @@ import (
 
 // Bot listens for commands and bridges Discord → wayneblacktea REST API.
 type Bot struct {
-	session       *discordgo.Session
-	analyzer      *Analyzer
-	apiURL        string
-	apiKey        string
-	guildID       string // if set, slash commands are registered guild-scoped (instant); otherwise global (~1h)
-	httpClient    *http.Client
-	allowedUsers  map[string]struct{} // user-ID allowlist; fail-closed when bot token is set
+	session      *discordgo.Session
+	analyzer     *Analyzer
+	apiURL       string
+	apiKey       string
+	guildID      string // if set, slash commands are registered guild-scoped (instant); otherwise global (~1h)
+	httpClient   *http.Client
+	allowedUsers map[string]struct{} // user-ID allowlist; fail-closed when bot token is set
 }
 
 // ParseAllowedUserIDs splits a comma-separated list of Discord user IDs into a

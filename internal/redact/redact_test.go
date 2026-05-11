@@ -117,8 +117,11 @@ func TestForLLM_TableDriven(t *testing.T) {
 		{
 			// Header segment must be 23+ chars total (eyJ + 20). HS256 headers
 			// with typ/alg/kid claims comfortably exceed this threshold.
-			name:       "JWT three-segment token",
-			input:      "Authorization: " + "ey" + "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			name: "JWT three-segment token",
+			input: "Authorization: ey" +
+				"JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+				"eyJzdWIiOiIxMjM0NTY3ODkwIn0." +
+				"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
 			wantLabel:  "[REDACTED:jwt]",
 			leakNeedle: "SflKxwRJSMeKKF2QT4",
 		},
