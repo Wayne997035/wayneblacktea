@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -184,6 +185,15 @@ func (s *Server) runDecisionProposer(tool, argSummary, resultSummary, sessionID 
 		ResultSummary: resultSummary,
 	})
 	if draftErr != nil {
+		// Prompt-injection markers in the draft are a distinct security
+		// signal — log at Warn with a stable key so the operator can
+		// audit how often the model is being asked to echo injection
+		// payloads. The Create is unconditionally skipped.
+		if errors.Is(draftErr, ai.ErrInjectionDetected) {
+			slog.Warn("decisionProposerMiddleware: dropping injection-tainted draft",
+				"tool", tool, "session", sessionID)
+			return
+		}
 		slog.Warn("decisionProposerMiddleware: drafter failed",
 			"err", draftErr, "tool", tool)
 		return
@@ -262,8 +272,14 @@ func (s *Server) decisionProposerMiddleware() server.ToolHandlerMiddleware {
 			// before the request context can be cancelled. Apply the redact
 			// pass HERE (sync) so credential strings never reach the
 			// background goroutine even if it races the LLM provider.
+			//
+			// Use json.Marshal (deterministic key ordering for map[string]any)
+			// instead of fmt.Sprintf("%v", args) — %v on a map produces
+			// non-deterministic key order, which makes the resulting prompt
+			// (and any test fixtures) flaky. Truncate AFTER marshal so the
+			// rune cap applies to the canonical JSON form.
 			args := req.GetArguments()
-			argSummary := redact.ForLLM(truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes))
+			argSummary := redact.ForLLM(truncateRunes(marshalArgsDeterministic(args), mcpArgSummaryMaxRunes))
 			resultSummary := redact.ForLLM(extractResultText(res, mcpResultSummaryMaxRunes))
 			sessionID := s.sessionID
 			workspaceID := s.workspaceID
@@ -288,4 +304,28 @@ func (s *Server) decisionProposerMiddleware() server.ToolHandlerMiddleware {
 			return res, err
 		}
 	}
+}
+
+// marshalArgsDeterministic serialises an MCP tool argument map for inclusion
+// in the auto-log / auto-decision LLM prompt.
+//
+// Why not fmt.Sprintf("%v", args)? Go's default map printing is in
+// non-deterministic key order, which makes test fixtures flaky and the
+// downstream LLM prompt non-reproducible across calls with identical inputs.
+// encoding/json sorts map[string]any keys, so the output is stable and the
+// prompt is cache-key-stable for any future memoisation.
+//
+// On marshal failure (which should be impossible for the structured args we
+// see from mcp-go, but is possible if a caller passes a non-marshalable type
+// like a channel or func) we fall back to the legacy Sprintf path so we
+// always produce SOMETHING for the auto-decision pipeline.
+func marshalArgsDeterministic(args map[string]any) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Sprintf("%v", args)
+	}
+	return string(b)
 }

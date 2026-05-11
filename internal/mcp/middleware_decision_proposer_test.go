@@ -362,3 +362,64 @@ var (
 	_ discipline.Store    = (*stubProposerDisciplineStore)(nil)
 	_ proposal.StoreIface = (*stubProposalStore)(nil)
 )
+
+// TestMarshalArgsDeterministic_StableKeyOrder verifies that the helper
+// returns the SAME JSON string for the SAME map across many invocations.
+// fmt.Sprintf("%v", args) on a Go map returns keys in randomised order; the
+// deterministic helper sorts keys via encoding/json so any downstream prompt
+// or test snapshot is reproducible.
+func TestMarshalArgsDeterministic_StableKeyOrder(t *testing.T) {
+	args := map[string]any{
+		"zulu":  "z",
+		"alpha": 1,
+		"mike":  true,
+		"echo":  []string{"e1", "e2"},
+		"delta": map[string]any{"nested": "value"},
+	}
+	first := marshalArgsDeterministic(args)
+	for i := 0; i < 50; i++ {
+		got := marshalArgsDeterministic(args)
+		if got != first {
+			t.Fatalf("non-deterministic output across calls:\n  first: %s\n  got %d: %s", first, i, got)
+		}
+	}
+	// Sanity: keys should be sorted alphabetically (json.Marshal default for
+	// map[string]any). Verify alpha comes before zulu.
+	if first == "" {
+		t.Fatal("empty result")
+	}
+	alphaIdx := indexOf(first, `"alpha"`)
+	zuluIdx := indexOf(first, `"zulu"`)
+	if alphaIdx < 0 || zuluIdx < 0 || alphaIdx >= zuluIdx {
+		t.Errorf("keys not in sorted order: %s", first)
+	}
+}
+
+// TestMarshalArgsDeterministic_EmptyAndError verifies the edge cases:
+// empty map returns "{}" and unmarshalable input falls back to %v form.
+func TestMarshalArgsDeterministic_EmptyAndError(t *testing.T) {
+	if got := marshalArgsDeterministic(map[string]any{}); got != "{}" {
+		t.Errorf("empty map: got %q, want {}", got)
+	}
+	if got := marshalArgsDeterministic(nil); got != "{}" {
+		t.Errorf("nil map: got %q, want {}", got)
+	}
+	// chan can't be marshaled — verifies the fallback returns SOMETHING
+	// non-empty rather than panicking.
+	bad := map[string]any{"ch": make(chan int)}
+	if got := marshalArgsDeterministic(bad); got == "" {
+		t.Errorf("unmarshalable input: empty result, expected fallback string")
+	}
+}
+
+// indexOf is a tiny strings.Index alias used to keep the test readable
+// without importing strings just for one call (the package already has many
+// helpers; keeping it local avoids a single import).
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
