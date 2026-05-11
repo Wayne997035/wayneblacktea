@@ -95,7 +95,7 @@ func run() error {
 		}
 	}
 
-	bot, err := discordbot.New(botToken, apiURL, apiKey, guildID, llmChain)
+	bot, err := discordbot.New(botToken, apiURL, apiKey, guildID, os.Getenv("DISCORD_ALLOWED_USER_IDS"), llmChain)
 	if err != nil {
 		return fmt.Errorf("create bot: %w", err)
 	}

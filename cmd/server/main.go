@@ -400,6 +400,7 @@ func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) 
 		"http://localhost:"+port,
 		apiKey,
 		os.Getenv("DISCORD_GUILD_ID"),
+		os.Getenv("DISCORD_ALLOWED_USER_IDS"),
 		llmClient,
 	)
 	if err != nil {
