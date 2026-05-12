@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,13 +96,30 @@ func (s *stubProposalStore) snapshotCreated() []proposal.CreateParams {
 
 // stubDrafterClient drives the LLM chain inside DecisionDrafter.
 type stubDrafterClient struct {
-	out string
-	err error
+	mu       sync.Mutex
+	out      string
+	err      error
+	panicNow bool
+	requests []llm.JSONRequest
 }
 
 func (s *stubDrafterClient) Name() string { return "stub" }
-func (s *stubDrafterClient) CompleteJSON(_ context.Context, _ llm.JSONRequest) (string, error) {
+func (s *stubDrafterClient) CompleteJSON(_ context.Context, req llm.JSONRequest) (string, error) {
+	if s.panicNow {
+		panic("drafter panic")
+	}
+	s.mu.Lock()
+	s.requests = append(s.requests, req)
+	s.mu.Unlock()
 	return s.out, s.err
+}
+
+func (s *stubDrafterClient) snapshotRequests() []llm.JSONRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]llm.JSONRequest, len(s.requests))
+	copy(out, s.requests)
+	return out
 }
 
 // newProposerServer builds a minimal *Server pointed at the supplied stubs.
@@ -119,6 +137,10 @@ func newProposerServer(disc *stubProposerDisciplineStore, prop *stubProposalStor
 // 1 s for the background goroutine to complete (polled via the stub).
 // Returns the captured proposal Creates.
 func fireProposer(t *testing.T, srv *Server, tool string) []proposal.CreateParams {
+	return fireProposerWithArgs(t, srv, tool, map[string]any{"title": "Ship feature"})
+}
+
+func fireProposerWithArgs(t *testing.T, srv *Server, tool string, args map[string]any) []proposal.CreateParams {
 	t.Helper()
 	mw := srv.decisionProposerMiddleware()
 	handler := mw(func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
@@ -129,7 +151,7 @@ func fireProposer(t *testing.T, srv *Server, tool string) []proposal.CreateParam
 	})
 	req := mcpmsg.CallToolRequest{}
 	req.Params.Name = tool
-	req.Params.Arguments = map[string]any{"title": "Ship feature"}
+	req.Params.Arguments = args
 
 	if _, err := handler(context.Background(), req); err != nil {
 		t.Fatalf("middleware handler: %v", err)
@@ -145,6 +167,20 @@ func fireProposer(t *testing.T, srv *Server, tool string) []proposal.CreateParam
 		time.Sleep(10 * time.Millisecond)
 	}
 	return prop.snapshotCreated()
+}
+
+func resetDecisionProposerBudgetForTest(t *testing.T, now time.Time) {
+	t.Helper()
+	mcpDecisionProposerBudget.mu.Lock()
+	mcpDecisionProposerBudget.tokens = mcpDecisionProposerMaxPerWindow
+	mcpDecisionProposerBudget.resetAt = now.Add(mcpDecisionProposerWindow)
+	mcpDecisionProposerBudget.mu.Unlock()
+	t.Cleanup(func() {
+		mcpDecisionProposerBudget.mu.Lock()
+		mcpDecisionProposerBudget.tokens = mcpDecisionProposerMaxPerWindow
+		mcpDecisionProposerBudget.resetAt = time.Time{}
+		mcpDecisionProposerBudget.mu.Unlock()
+	})
 }
 
 func TestDecisionProposer_HappyPath_InsertsProposal(t *testing.T) {
@@ -354,6 +390,133 @@ func TestDecisionProposer_ToolErrorResult_NoInsert(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if got := prop.snapshotCreated(); len(got) != 0 {
 		t.Errorf("expected 0 proposals on tool-error result, got %d", len(got))
+	}
+}
+
+func TestDecisionProposer_RateLimitDropsExcess(t *testing.T) {
+	resetDecisionProposerBudgetForTest(t, time.Now())
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
+		out: `{"title":"rate limited","decision":"d","rationale":"r"}`,
+	})
+	srv := newProposerServer(disc, prop, drafter)
+
+	for i := 0; i < mcpDecisionProposerMaxPerWindow+10; i++ {
+		_ = fireProposer(t, srv, testTool)
+		wantSoFar := i + 1
+		if wantSoFar > mcpDecisionProposerMaxPerWindow {
+			wantSoFar = mcpDecisionProposerMaxPerWindow
+		}
+		waitForCreatedCount(t, prop, wantSoFar)
+	}
+	got := prop.snapshotCreated()
+	if len(got) > mcpDecisionProposerMaxPerWindow {
+		t.Fatalf("created %d proposals, want <= %d", len(got), mcpDecisionProposerMaxPerWindow)
+	}
+	if len(got) != mcpDecisionProposerMaxPerWindow {
+		t.Fatalf("created %d proposals, want %d before drops", len(got), mcpDecisionProposerMaxPerWindow)
+	}
+}
+
+func waitForCreatedCount(t *testing.T, prop *stubProposalStore, want int) {
+	t.Helper()
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := len(prop.snapshotCreated()); got >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("created %d proposals, want at least %d", len(prop.snapshotCreated()), want)
+}
+
+func TestDecisionProposer_RateLimitWindowRollover(t *testing.T) {
+	now := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	resetDecisionProposerBudgetForTest(t, now)
+	for i := 0; i < mcpDecisionProposerMaxPerWindow; i++ {
+		if !tryAcquireDecisionProposerToken(now) {
+			t.Fatalf("token %d rejected before quota exhausted", i)
+		}
+	}
+	if tryAcquireDecisionProposerToken(now) {
+		t.Fatal("token accepted after quota exhausted")
+	}
+	if !tryAcquireDecisionProposerToken(now.Add(mcpDecisionProposerWindow + time.Nanosecond)) {
+		t.Fatal("token rejected after window rollover")
+	}
+}
+
+func TestDecisionProposer_SemaphoreFullDropsSilently(t *testing.T) {
+	for i := 0; i < cap(mcpDecisionProposerSem); i++ {
+		mcpDecisionProposerSem <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(mcpDecisionProposerSem); i++ {
+			<-mcpDecisionProposerSem
+		}
+	})
+
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	drafter := ai.NewDecisionDrafter(&stubDrafterClient{out: `{"title":"x"}`})
+	srv := newProposerServer(disc, prop, drafter)
+	got := fireProposer(t, srv, testTool)
+	if len(got) != 0 {
+		t.Fatalf("created %d proposals while semaphore was full, want 0", len(got))
+	}
+}
+
+func TestDecisionProposer_DrafterPanicRecoveredViaSlogWarn(t *testing.T) {
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	drafter := ai.NewDecisionDrafter(&stubDrafterClient{panicNow: true})
+	srv := newProposerServer(disc, prop, drafter)
+
+	got := fireProposer(t, srv, testTool)
+	if len(got) != 0 {
+		t.Fatalf("created %d proposals after drafter panic, want 0", len(got))
+	}
+}
+
+func TestDecisionProposer_RedactsCredentialsBeforeLLM(t *testing.T) {
+	client := &stubDrafterClient{out: `{"title":"redacted","decision":"d","rationale":"r"}`}
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	srv := newProposerServer(disc, prop, ai.NewDecisionDrafter(client))
+
+	got := fireProposerWithArgs(t, srv, testTool, map[string]any{
+		"api_key": "sk_live_test123",
+		"title":   "Ship feature",
+	})
+	if len(got) != 1 {
+		t.Fatalf("created %d proposals, want 1", len(got))
+	}
+	requests := client.snapshotRequests()
+	if len(requests) != 1 {
+		t.Fatalf("captured %d LLM requests, want 1", len(requests))
+	}
+	if strings.Contains(requests[0].User, "sk_live_test123") {
+		t.Fatalf("LLM prompt leaked credential: %s", requests[0].User)
+	}
+	if !strings.Contains(requests[0].User, "[REDACTED:stripe-key]") {
+		t.Fatalf("LLM prompt missing redaction marker: %s", requests[0].User)
+	}
+}
+
+func TestDecisionProposer_AdversarialToolInputNoCrash(t *testing.T) {
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
+		out: `{"title":"adversarial","decision":"d","rationale":"r"}`,
+	})
+	srv := newProposerServer(disc, prop, drafter)
+
+	got := fireProposerWithArgs(t, srv, testTool, map[string]any{
+		"title": strings.Repeat("攻", 1024*1024),
+	})
+	if len(got) != 1 {
+		t.Fatalf("created %d proposals, want 1", len(got))
 	}
 }
 

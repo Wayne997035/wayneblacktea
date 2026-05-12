@@ -23,10 +23,13 @@ const autoHandoffPrefix = "Auto-handoff:"
 const autologBodyLimit = 64 * 1024 // 64 KB
 
 const (
-	maxActorLen  = 200
-	maxActionLen = 200
-	maxNotesLen  = 2000
-	maxTaskTitle = 500
+	maxActorLen                 = 200
+	maxActionLen                = 200
+	maxNotesLen                 = 2000
+	maxTaskTitle                = 500
+	maxAutoHandoffMessageBytes  = 8 * 1024
+	untrustedTranscriptBeginFmt = "[BEGIN UNTRUSTED message %d]\n"
+	untrustedTranscriptEnd      = "\n[END UNTRUSTED]"
 )
 
 // classifySem caps concurrent classifier goroutines to prevent goroutine accumulation
@@ -171,6 +174,9 @@ func (h *AutologHandler) AutoHandoff(c echo.Context) error {
 	if len(req.Transcript) > maxTranscriptMessages {
 		req.Transcript = req.Transcript[len(req.Transcript)-maxTranscriptMessages:]
 	}
+	if err := prepareAutoHandoffTranscript(req.Transcript); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp(err.Error()))
+	}
 
 	mechanicalIntent, err := h.buildMechanicalIntent(ctx)
 	if err != nil {
@@ -199,6 +205,22 @@ func (h *AutologHandler) AutoHandoff(c echo.Context) error {
 		"status":     "ok",
 		"handoff_id": handoff.ID.String(),
 	})
+}
+
+func prepareAutoHandoffTranscript(transcript []ai.Message) error {
+	for i := range transcript {
+		msg := &transcript[i]
+		switch msg.Role {
+		case "user", "assistant":
+		default:
+			return fmt.Errorf("invalid transcript role")
+		}
+		if len([]byte(msg.Content)) > maxAutoHandoffMessageBytes {
+			return fmt.Errorf("transcript message too large")
+		}
+		msg.Content = fmt.Sprintf(untrustedTranscriptBeginFmt, i+1) + msg.Content + untrustedTranscriptEnd
+	}
+	return nil
 }
 
 // buildMechanicalIntent collects in-progress tasks and recent decisions, then

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 const (
@@ -41,11 +43,14 @@ func NewClient() *Client {
 	if token == "" {
 		return nil
 	}
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = 15 * time.Second
+
 	return &Client{
 		token:   token,
 		dbID:    os.Getenv("NOTION_DATABASE_ID"),
 		baseURL: notionAPIBase,
-		http:    &http.Client{Timeout: 15 * time.Second},
+		http:    safeClient,
 	}
 }
 

@@ -403,12 +403,14 @@ func workspaceFromEnv() *uuid.UUID {
 }
 
 func dsnFromFallback() string {
-	candidates := []string{
-		"/Users/waynechen/_project/wayneblacktea/.env.local",
-		"/Users/waynechen/_project/wayneblacktea/.env",
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
 	}
+	candidates := fallbackEnvCandidates(home)
 	for _, p := range candidates {
-		b, err := os.ReadFile(p) //nolint:gosec // candidates is a hard-coded allowlist, not user input
+		warnIfInsecureEnvFile(p)
+		b, err := os.ReadFile(p) //nolint:gosec // G304: p is built from os.UserHomeDir plus fixed .wayneblacktea filenames
 		if err != nil {
 			continue
 		}
@@ -421,4 +423,22 @@ func dsnFromFallback() string {
 	}
 	_ = errors.New("no fallback DSN")
 	return ""
+}
+
+func fallbackEnvCandidates(home string) []string {
+	configDir := filepath.Join(home, ".wayneblacktea")
+	return []string{
+		filepath.Join(configDir, ".env.local"),
+		filepath.Join(configDir, ".env"),
+	}
+}
+
+func warnIfInsecureEnvFile(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		slog.Warn("env fallback file is group/world readable; chmod 600 is recommended", "path", path)
+	}
 }

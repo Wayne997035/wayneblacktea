@@ -9,7 +9,6 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
-	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
@@ -32,6 +31,11 @@ const disciplinePruneTimeout = 60 * time.Second
 // guard_events; codified by backend-security-design.md §1.3 as the mandatory
 // TTL for observability tables.
 const disciplinePruneAge = "30 days"
+
+const (
+	guardPruneTimeout = 60 * time.Second
+	guardPruneAge     = "30 days"
+)
 
 // pendingProposalsPruneTimeout caps the daily pending_proposals DELETE. The
 // query touches resolved_at + created_at (both indexed) and finishes well
@@ -75,7 +79,7 @@ const aiReviewMinReviewCount = 5
 type Scheduler struct {
 	s              gocron.Scheduler
 	learning       learning.StoreIface
-	discord        *discord.Client
+	discord        DiscordSender
 	notion         *notion.Client
 	briefingStores notion.BriefingStores
 	reviewer       ai.ConceptReviewerIface
@@ -89,6 +93,11 @@ type Scheduler struct {
 	// in by the caller) — the prune job is skipped in that case because
 	// SQLite is dev-local single-tenant and has no growth concern.
 	disciplinePool *pgxpool.Pool
+}
+
+// DiscordSender is the small Discord webhook surface used by scheduled jobs.
+type DiscordSender interface {
+	Send(ctx context.Context, message string) error
 }
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
@@ -170,7 +179,7 @@ func buildSchedulerDeps(
 // nil) the Sunday playbook promoter job is skipped.
 func New(
 	ls learning.StoreIface,
-	dc *discord.Client,
+	dc DiscordSender,
 	notionClient *notion.Client,
 	briefingStores notion.BriefingStores,
 	reviewer ai.ConceptReviewerIface,
@@ -285,6 +294,21 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		slog.Info("scheduler: DailyDisciplinePrune scheduled at 23:00 Asia/Taipei")
 	} else {
 		slog.Info("scheduler: DailyDisciplinePrune skipped (postgres pool not configured; SQLite has no growth concern)")
+	}
+
+	if sc.disciplinePool != nil {
+		_, err = s.NewJob(
+			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(23, 30, 0))),
+			gocron.NewTask(sc.runDailyGuardPrune),
+			gocron.WithName("daily-guard-prune"),
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return fmt.Errorf("registering daily guard prune job: %w", err)
+		}
+		slog.Info("scheduler: DailyGuardPrune scheduled at 23:30 Asia/Taipei")
+	} else {
+		slog.Info("scheduler: DailyGuardPrune skipped (postgres pool not configured; SQLite has no growth concern)")
 	}
 
 	if sc.disciplinePool != nil {
@@ -556,6 +580,27 @@ func (s *Scheduler) runDailyDisciplinePrune() {
 	slog.Info("daily discipline prune: completed",
 		"rows_deleted", tag.RowsAffected(),
 		"retention", disciplinePruneAge,
+	)
+}
+
+func (s *Scheduler) runDailyGuardPrune() {
+	if s.disciplinePool == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), guardPruneTimeout)
+	defer cancel()
+
+	const q = `
+DELETE FROM guard_events WHERE created_at < NOW() - INTERVAL '` + guardPruneAge + `';
+DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAge + `';`
+	tag, err := s.disciplinePool.Exec(ctx, q)
+	if err != nil {
+		slog.Warn("daily guard prune: DELETE failed", "err", err)
+		return
+	}
+	slog.Info("daily guard prune: completed",
+		"rows_deleted", tag.RowsAffected(),
+		"retention", guardPruneAge,
 	)
 }
 

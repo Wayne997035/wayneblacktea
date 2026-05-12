@@ -99,11 +99,9 @@ var redactRules = []redactRule{
 	// always start with ({"alg":...} → eyJ...).
 	{regexp.MustCompile(`Bearer ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), "[REDACTED:jwt-bearer]"},
 
-	// Postgres / MongoDB / MySQL DSNs — preserve scheme + host, redact
+	// DSNs — preserve scheme + host, redact
 	// user:pass. The "host" segment ends at the first "/" or whitespace.
-	{regexp.MustCompile(`postgres(ql)?://[^:\s]+:[^@\s]+@([^/\s]+)`), "postgres://[REDACTED]:[REDACTED]@$2"},
-	{regexp.MustCompile(`mongodb(\+srv)?://[^:\s]+:[^@\s]+@([^/\s]+)`), "mongodb://[REDACTED]:[REDACTED]@$2"},
-	{regexp.MustCompile(`mysql://[^:\s]+:[^@\s]+@([^/\s]+)`), "mysql://[REDACTED]:[REDACTED]@$1"},
+	{regexp.MustCompile(`([a-z][a-z0-9+\-.]*)://[^:\s]+:[^@\s]+@([^/\s]+)`), "$1://[REDACTED]:[REDACTED]@$2"},
 
 	// AWS access key ID.
 	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "[REDACTED:aws-access-key]"},

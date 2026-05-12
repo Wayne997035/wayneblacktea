@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -104,5 +106,59 @@ func TestResolveAllowedOrigins(t *testing.T) {
 				t.Errorf("resolveAllowedOrigins(%q) = %q, want %q", tc.port, got, tc.wantResult)
 			}
 		})
+	}
+}
+
+func TestValidateAPIKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiKey  string
+		wantErr bool
+	}{
+		{name: "missing", apiKey: "", wantErr: true},
+		{name: "too short", apiKey: "short", wantErr: true},
+		{name: "minimum length", apiKey: "12345678901234567890123456789012", wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAPIKey(tc.apiKey)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateAPIKey() err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestResolveIPExtractor_DefaultIgnoresSpoofedXFF(t *testing.T) {
+	extractor, err := resolveIPExtractor("")
+	if err != nil {
+		t.Fatalf("resolveIPExtractor: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+
+	if got := extractor(req); got != "198.51.100.10" {
+		t.Fatalf("extracted IP = %q, want socket peer", got)
+	}
+}
+
+func TestResolveIPExtractor_TrustedProxyCIDRUsesXFF(t *testing.T) {
+	extractor, err := resolveIPExtractor("198.51.100.0/24")
+	if err != nil {
+		t.Fatalf("resolveIPExtractor: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99, 198.51.100.10")
+
+	if got := extractor(req); got != "203.0.113.99" {
+		t.Fatalf("extracted IP = %q, want XFF client", got)
+	}
+}
+
+func TestResolveIPExtractor_InvalidCIDR(t *testing.T) {
+	if _, err := resolveIPExtractor("not-a-cidr"); err == nil {
+		t.Fatal("resolveIPExtractor() err = nil, want error")
 	}
 }

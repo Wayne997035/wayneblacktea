@@ -15,6 +15,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
@@ -126,13 +127,19 @@ func New(botToken, apiURL, apiKey, guildID, allowedUserIDs string, llmClient llm
 		apiURL:       strings.TrimRight(apiURL, "/"),
 		apiKey:       apiKey,
 		guildID:      guildID,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient:   newBotHTTPClient(),
 		allowedUsers: allow,
 	}
 	s.AddHandler(b.onMessage)
 	s.AddHandler(b.onInteraction)
 	s.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentMessageContent
 	return b, nil
+}
+
+func newBotHTTPClient() *http.Client {
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = 30 * time.Second
+	return safeClient
 }
 
 // Start opens the WebSocket connection and registers slash commands.

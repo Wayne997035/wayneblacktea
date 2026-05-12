@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 // Client sends messages to a Discord webhook.
@@ -24,9 +26,12 @@ func NewClient() *Client {
 	if url == "" {
 		return nil
 	}
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = 10 * time.Second
+
 	return &Client{
 		webhookURL: url,
-		http:       &http.Client{Timeout: 10 * time.Second},
+		http:       safeClient,
 	}
 }
 

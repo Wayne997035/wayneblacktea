@@ -69,7 +69,7 @@ func TestRedactString(t *testing.T) {
 		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
 			name:       "mongodb dsn srv",
 			input:      "uri=mongodb+srv://admin:topsecret@cluster.mongodb.net/db",
-			wantSubstr: "mongodb://[REDACTED]:[REDACTED]@cluster.mongodb.net",
+			wantSubstr: "mongodb+srv://[REDACTED]:[REDACTED]@cluster.mongodb.net",
 			secret:     "admin:topsecret",
 		},
 		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
@@ -77,6 +77,36 @@ func TestRedactString(t *testing.T) {
 			input:      "url=mysql://root:rootpw@127.0.0.1:3306/app",
 			wantSubstr: "mysql://[REDACTED]:[REDACTED]@127.0.0.1:3306/app",
 			secret:     "root:rootpw",
+		},
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
+			name:       "redis dsn",
+			input:      "REDIS_URL=redis://cacheuser:cachepass@redis.example.com:6379/0",
+			wantSubstr: "redis://[REDACTED]:[REDACTED]@redis.example.com:6379/0",
+			secret:     "cacheuser:cachepass",
+		},
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
+			name:       "amqp dsn",
+			input:      "AMQP_URL=amqp://mq_user:mq_pass@mq.example.com/vhost",
+			wantSubstr: "amqp://[REDACTED]:[REDACTED]@mq.example.com",
+			secret:     "mq_user:mq_pass",
+		},
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
+			name:       "kafka dsn",
+			input:      "KAFKA_URL=kafka://kafka_user:kafka_pass@broker.example.com/topic",
+			wantSubstr: "kafka://[REDACTED]:[REDACTED]@broker.example.com",
+			secret:     "kafka_user:kafka_pass",
+		},
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
+			name:       "clickhouse dsn",
+			input:      "CLICKHOUSE_URL=clickhouse://ch_user:ch_pass@clickhouse.example.com:9440/db",
+			wantSubstr: "clickhouse://[REDACTED]:[REDACTED]@clickhouse.example.com:9440/db",
+			secret:     "ch_user:ch_pass",
+		},
+		{ //nolint:gosec // G101: synthetic DSN in test fixture; test asserts redaction
+			name:       "sqlserver dsn",
+			input:      "SQLSERVER_URL=sqlserver://sa:sql_pass@sql.example.com:1433/db",
+			wantSubstr: "sqlserver://[REDACTED]:[REDACTED]@sql.example.com:1433/db",
+			secret:     "sa:sql_pass",
 		},
 		{
 			name: "aws access key",

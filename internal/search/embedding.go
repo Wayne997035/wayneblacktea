@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 const geminiEmbedURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
@@ -69,9 +71,12 @@ type EmbeddingClient struct {
 
 // NewEmbeddingClient returns an EmbeddingClient configured from GEMINI_API_KEY env var.
 func NewEmbeddingClient() *EmbeddingClient {
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = 30 * time.Second
+
 	return &EmbeddingClient{
 		apiKey: os.Getenv("GEMINI_API_KEY"),
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: safeClient,
 	}
 }
 
@@ -132,16 +137,16 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 		return nil, fmt.Errorf("marshaling embed request: %w", err)
 	}
 
-	apiURL := geminiEmbedURL + "?key=" + c.apiKey
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, geminiEmbedURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("creating embed request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", c.apiKey)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("calling gemini embed API: %w", sanitizeURLError(err))
+		return nil, fmt.Errorf("calling gemini embed API: %w", err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -167,13 +172,14 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 	return result.Embedding.Values, nil
 }
 
-// sanitizeURLError redacts API key query parameters from URL-embedded error messages.
+// sanitizeURLError redacts query-string API keys from URL-embedded error messages.
 // Go's net/http *url.Error includes the full request URL on network failures.
+// Gemini no longer sends keys in the URL; OpenAI-compatible embedding endpoints
+// may still be operator-configured with sensitive query parameters.
 func sanitizeURLError(err error) error {
 	if err == nil {
 		return nil
 	}
-	// Replace key=<value> with key=REDACTED in any URL string within the error.
 	sanitized := regexp.MustCompile(`key=[^&\s"]+`).ReplaceAllString(err.Error(), "key=REDACTED")
 	if sanitized == err.Error() {
 		return err

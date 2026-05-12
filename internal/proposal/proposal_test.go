@@ -42,7 +42,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 
 func TestProposal_CreateGetResolve(t *testing.T) {
 	pool := setupPool(t)
-	store := proposal.NewStore(pool)
+	store := proposal.NewStore(pool, nil)
 	ctx := context.Background()
 
 	payload, err := json.Marshal(map[string]any{
@@ -102,7 +102,7 @@ func TestProposal_CreateGetResolve(t *testing.T) {
 }
 
 func TestProposal_Get_NotFound(t *testing.T) {
-	store := proposal.NewStore(setupPool(t))
+	store := proposal.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	_, err := store.Get(ctx, uuid.UUID{})
@@ -112,7 +112,7 @@ func TestProposal_Get_NotFound(t *testing.T) {
 }
 
 func TestProposal_Resolve_InvalidStatus(t *testing.T) {
-	store := proposal.NewStore(setupPool(t))
+	store := proposal.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	// Status must be accepted/rejected; pending is not a resolution.
@@ -124,7 +124,7 @@ func TestProposal_Resolve_InvalidStatus(t *testing.T) {
 
 func TestProposal_ListPending(t *testing.T) {
 	pool := setupPool(t)
-	store := proposal.NewStore(pool)
+	store := proposal.NewStore(pool, nil)
 	ctx := context.Background()
 
 	payload, _ := json.Marshal(map[string]string{"title": "list-test"})

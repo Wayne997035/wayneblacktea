@@ -39,7 +39,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 }
 
 func TestListActiveProjects(t *testing.T) {
-	store := gtd.NewStore(setupPool(t))
+	store := gtd.NewStore(setupPool(t), nil)
 
 	projects, err := store.ListActiveProjects(context.Background())
 	if err != nil {
@@ -50,7 +50,7 @@ func TestListActiveProjects(t *testing.T) {
 
 func TestCreateAndCompleteTask(t *testing.T) {
 	pool := setupPool(t)
-	store := gtd.NewStore(pool)
+	store := gtd.NewStore(pool, nil)
 	ctx := context.Background()
 
 	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
@@ -99,7 +99,7 @@ func TestCreateAndCompleteTask(t *testing.T) {
 
 func TestCreateTask_NoProject(t *testing.T) {
 	pool := setupPool(t)
-	store := gtd.NewStore(pool)
+	store := gtd.NewStore(pool, nil)
 	ctx := context.Background()
 
 	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
@@ -122,7 +122,7 @@ func TestCreateTask_NoProject(t *testing.T) {
 }
 
 func TestCompleteTask_NotFound(t *testing.T) {
-	store := gtd.NewStore(setupPool(t))
+	store := gtd.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	// All-zero UUID does not exist in the DB; CompleteTask must return ErrNotFound.
@@ -135,7 +135,7 @@ func TestCompleteTask_NotFound(t *testing.T) {
 
 func TestTasks_ByProject(t *testing.T) {
 	pool := setupPool(t)
-	store := gtd.NewStore(pool)
+	store := gtd.NewStore(pool, nil)
 	ctx := context.Background()
 
 	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
@@ -173,7 +173,7 @@ func TestTasks_ByProject(t *testing.T) {
 }
 
 func TestWeeklyProgress(t *testing.T) {
-	store := gtd.NewStore(setupPool(t))
+	store := gtd.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	completed, total, err := store.WeeklyProgress(ctx)
@@ -186,7 +186,7 @@ func TestWeeklyProgress(t *testing.T) {
 }
 
 func TestLogActivity(t *testing.T) {
-	store := gtd.NewStore(setupPool(t))
+	store := gtd.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	err := store.LogActivity(ctx, "test-actor", "test-action", nil, "integration test note")
@@ -197,7 +197,7 @@ func TestLogActivity(t *testing.T) {
 
 func TestCreateTask_WithImportanceContext(t *testing.T) {
 	pool := setupPool(t)
-	store := gtd.NewStore(pool)
+	store := gtd.NewStore(pool, nil)
 	ctx := context.Background()
 
 	importance := int16(1)
@@ -229,7 +229,7 @@ func TestCreateTask_WithImportanceContext(t *testing.T) {
 
 func TestCreateTask_BackwardCompat_NoImportance(t *testing.T) {
 	pool := setupPool(t)
-	store := gtd.NewStore(pool)
+	store := gtd.NewStore(pool, nil)
 	ctx := context.Background()
 
 	// Caller from Phase A or earlier that does not pass importance/context must

@@ -14,6 +14,20 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WBT_URL="${WBT_API_URL:-https://wayneblacktea-production.up.railway.app}"
 FALLBACK_LOG="$PROJECT_ROOT/.cache/wbt-pending-decisions.jsonl"
 
+warn_if_insecure_env_file() {
+    local path="$1"
+    [[ -f "$path" ]] || return 0
+
+    local mode
+    mode=$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null || true)
+    [[ -z "$mode" ]] && return 0
+
+    local last_two="${mode: -2}"
+    if (( 10#$last_two != 0 )); then
+        printf 'WARNING: %s is group/world readable; chmod 600 is recommended\n' "$path" >&2
+    fi
+}
+
 # Wrap everything so any unexpected failure is silenced.
 main() {
     # --- Read hook payload ---
@@ -52,10 +66,12 @@ except Exception:
     # --- Load API_KEY: parse only API_KEY= lines, never source (avoids arbitrary code exec) ---
     local _key
     if [[ -z "${API_KEY:-}" && -f "$PROJECT_ROOT/.env.local" ]]; then
+        warn_if_insecure_env_file "$PROJECT_ROOT/.env.local"
         _key=$(grep -m1 '^API_KEY=' "$PROJECT_ROOT/.env.local" 2>/dev/null | cut -d= -f2-)
         [[ -n "$_key" ]] && API_KEY="$_key"
     fi
     if [[ -z "${API_KEY:-}" && -f "$PROJECT_ROOT/.env" ]]; then
+        warn_if_insecure_env_file "$PROJECT_ROOT/.env"
         _key=$(grep -m1 '^API_KEY=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2-)
         [[ -n "$_key" ]] && API_KEY="$_key"
     fi
