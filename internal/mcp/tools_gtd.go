@@ -12,6 +12,11 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// maxPendingDeletions caps the number of valid (non-expired) delete tokens
+// held simultaneously. This prevents a loop caller from growing the sync.Map
+// without bound if tokens are issued faster than they expire.
+const maxPendingDeletions = 256
+
 func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("list_projects",
 		mcp.WithDescription("Returns all active projects."),
@@ -401,6 +406,22 @@ func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) 
 
 	if !confirm {
 		// Step 1 — issue token, do NOT delete.
+
+		// Prune expired tokens and cap concurrent pending deletions.
+		var count int
+		s.deleteTokens.Range(func(k, v any) bool {
+			rec := v.(deletionToken)
+			if s.now().After(rec.expiresAt) {
+				s.deleteTokens.Delete(k)
+			} else {
+				count++
+			}
+			return true
+		})
+		if count >= maxPendingDeletions {
+			return mcp.NewToolResultError("too many pending deletions in flight; retry later"), nil
+		}
+
 		token := uuid.NewString()
 		expires := s.now().Add(deleteTokenTTL)
 		s.deleteTokens.Store(id.String(), deletionToken{token: token, expiresAt: expires})

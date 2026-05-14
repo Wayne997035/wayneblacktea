@@ -254,3 +254,80 @@ func TestDeleteTask_MissingTaskID(t *testing.T) {
 		t.Fatalf("missing task_id must error, got: %s", resultText(r))
 	}
 }
+
+// TestDeleteTask_TokenMapBounded verifies that when maxPendingDeletions valid
+// tokens are already stored, a further step-1 call is rejected with the
+// "too many pending deletions" error rather than growing the map without bound.
+func TestDeleteTask_TokenMapBounded(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	// Freeze time so all tokens we insert stay valid (non-expired) throughout.
+	base := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
+	s.nowFn = func() time.Time { return base }
+
+	// Prime the map with maxPendingDeletions valid entries using distinct
+	// synthetic task-id keys so we don't need real DB rows (the sync.Map key
+	// is just a string; no DB lookup is done at step-1 time).
+	for i := 0; i < maxPendingDeletions; i++ {
+		key := uuid.NewString()
+		s.deleteTokens.Store(key, deletionToken{
+			token:     uuid.NewString(),
+			expiresAt: base.Add(deleteTokenTTL),
+		})
+	}
+
+	// 257th request — step 1 for a real task (task must exist for the UUID
+	// parse to succeed, but that's all step-1 checks).
+	id := seedTask(t, s)
+	r := callDeleteTask(t, s, map[string]any{"task_id": id.String()})
+	if !r.IsError {
+		t.Fatalf("expected cap error, got success: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "too many pending deletions") {
+		t.Errorf("expected 'too many pending deletions', got: %s", resultText(r))
+	}
+}
+
+// TestDeleteTask_PruneExpiredOnWrite verifies that expired tokens are removed
+// from the map during a step-1 call so that the map does not grow indefinitely
+// through accumulated dead entries.
+func TestDeleteTask_PruneExpiredOnWrite(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	// Start at a base time and issue 256 step-1 tokens via the real handler so
+	// they are stored at baseTime + TTL expiry.
+	base := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
+	current := base
+	s.nowFn = func() time.Time { return current }
+
+	// Seed 256 entries with distinct synthetic keys directly (faster than 256
+	// DB round-trips and the handler's prune logic is the unit under test, not
+	// the DB).
+	for i := 0; i < 256; i++ {
+		key := uuid.NewString()
+		s.deleteTokens.Store(key, deletionToken{
+			token:     uuid.NewString(),
+			expiresAt: base.Add(deleteTokenTTL),
+		})
+	}
+
+	// Advance clock past the TTL — all 256 entries are now expired.
+	current = base.Add(deleteTokenTTL + 5*time.Second)
+
+	// Issue one step-1 call. The prune loop should delete all 256 expired
+	// entries before storing the new one, leaving exactly 1 entry.
+	id := seedTask(t, s)
+	r := callDeleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r.IsError {
+		t.Fatalf("step-1 after prune must succeed, got: %s", resultText(r))
+	}
+
+	var remaining int
+	s.deleteTokens.Range(func(_, _ any) bool {
+		remaining++
+		return true
+	})
+	if remaining != 1 {
+		t.Errorf("after prune expected 1 entry in deleteTokens, got %d", remaining)
+	}
+}
