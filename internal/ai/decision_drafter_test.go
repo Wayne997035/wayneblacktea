@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -377,5 +378,37 @@ func TestEnforceDraftCaps_ReturnsInjectionError(t *testing.T) {
 	}
 	if reason == "" {
 		t.Error("expected non-empty reason")
+	}
+}
+
+// TestDraft_RejectsInjectionEvasion verifies that each evasion payload in
+// testdata/injection-bypasses.txt is caught by the injection guard after
+// stripDraftControlChars has cleaned Unicode Cf chars (ZWSP, RTL marks, etc.)
+// and the expanded draftInjectionPattern covers lexicon variants and long-
+// distance payloads. Tests the full enforceDraftCaps pipeline.
+func TestDraft_RejectsInjectionEvasion(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/injection-bypasses.txt")
+	if err != nil {
+		t.Fatalf("read testdata/injection-bypasses.txt: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(fixture)), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name := line
+		if len(name) > 40 {
+			name = name[:40]
+		}
+		t.Run(name, func(t *testing.T) {
+			// Use enforceDraftCaps so we exercise stripDraftControlChars (Cf
+			// removal) + injection scan in one call — this is the real code path.
+			d := &DecisionDraft{Title: line}
+			rejected, _, capErr := enforceDraftCaps(d)
+			if !rejected || !errors.Is(capErr, ErrInjectionDetected) {
+				t.Errorf("expected injection detected for payload %q, got rejected=%v err=%v", line, rejected, capErr)
+			}
+		})
 	}
 }

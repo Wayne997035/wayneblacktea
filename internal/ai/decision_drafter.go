@@ -8,6 +8,10 @@ import (
 	"log/slog"
 	"regexp"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
 
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
@@ -25,9 +29,20 @@ var ErrInjectionDetected = errors.New("draft contains prompt-injection markers")
 // bounded inside a reasonable distance between the trigger verb and the
 // target noun.
 //
-// Pattern is intentionally case-insensitive and covers the common variants:
-// ignore/disregard/override + instruction|prompt|system|previous|prior.
-var draftInjectionPattern = regexp.MustCompile(`(?i)(ignore|disregard|override).{0,40}?(instruction|prompt|system|previous|prior)`)
+// Pattern is intentionally case-insensitive and covers a broad set of
+// trigger verbs (ignore/disregard/override/forget/skip/bypass/abandon/discard)
+// paired with target nouns (instruction/prompt/system/previous/prior/rules/
+// guidelines/policy/guardrails/context/directive). Distance raised to 200
+// to catch payloads that pad whitespace between verb and noun.
+//
+// NOTE: regex is defence-in-depth only. The actual safety boundary is
+// human-confirm at /api/proposals/:id/confirm — base64/encoding evasion
+// is out of scope for regex.
+var draftInjectionPattern = regexp.MustCompile(
+	`(?i)(ignore|disregard|override|forget|skip|bypass|abandon|discard)` +
+		`\W.{0,200}?(instruction|prompt|system|previous|prior|` +
+		`rules?|guidelines?|policy|guardrails?|context|directive)`,
+)
 
 // DecisionDraft is the structured proposal payload the auto-decision
 // proposer middleware writes into pending_proposals (type='decision').
@@ -238,29 +253,25 @@ func firstInjectionField(d *DecisionDraft) string {
 	return ""
 }
 
-// stripDraftControlChars removes ASCII control chars (< 0x20) from s except
-// '\t', per backend-security-design.md §5.4 audit-text sanitisation. Caller-
-// provided strings (LLM output here) MUST go through this before persist.
+// stripDraftControlChars removes ASCII control chars (< 0x20, except '\t')
+// AND Unicode Format category (Cf) chars from s, per backend-security-design.md
+// §5.4 audit-text sanitisation. Cf chars include invisible formatting codepoints
+// used for injection evasion: ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D, BOM U+FEFF,
+// word-joiners, RTL/LTR marks (U+200E/U+200F), etc. Stripping these before the
+// injection regex prevents "ig​nore" style bypass attempts.
+//
+// Caller-provided strings (LLM output here) MUST go through this before persist.
 func stripDraftControlChars(s string) string {
 	if s == "" {
 		return s
 	}
-	hasControl := false
-	for _, r := range s {
-		if r < drafterControlCharBoundary && r != drafterAllowedControlChar {
-			hasControl = true
-			break
-		}
-	}
-	if !hasControl {
-		return s
-	}
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r < drafterControlCharBoundary && r != drafterAllowedControlChar {
-			continue
-		}
-		out = append(out, r)
-	}
-	return string(out)
+	// Strip Unicode Cf category AND ASCII control chars (< 0x20) except '\t'.
+	t := transform.Chain(
+		runes.Remove(runes.In(unicode.Cf)),
+		runes.Remove(runes.Predicate(func(r rune) bool {
+			return r < drafterControlCharBoundary && r != drafterAllowedControlChar
+		})),
+	)
+	result, _, _ := transform.String(t, s)
+	return result
 }
