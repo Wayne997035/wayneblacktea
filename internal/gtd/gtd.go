@@ -17,6 +17,24 @@ const (
 	ProjectStatusOnHold    ProjectStatus = "on_hold"
 )
 
+// IsValid reports whether the status is a known GoalStatus value.
+func (s GoalStatus) IsValid() bool {
+	switch s {
+	case GoalStatusActive, GoalStatusCompleted, GoalStatusArchived:
+		return true
+	}
+	return false
+}
+
+// IsValid reports whether the status is a known ProjectStatus value.
+func (s ProjectStatus) IsValid() bool {
+	switch s {
+	case ProjectStatusActive, ProjectStatusCompleted, ProjectStatusArchived, ProjectStatusOnHold:
+		return true
+	}
+	return false
+}
+
 // TaskStatus represents the lifecycle of a task.
 type TaskStatus string
 

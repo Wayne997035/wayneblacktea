@@ -296,6 +296,9 @@ func (h *GTDHandler) UpdateGoal(c echo.Context) error {
 	if status == "" {
 		status = gtd.GoalStatusActive
 	}
+	if !status.IsValid() {
+		return c.JSON(http.StatusBadRequest, errResp("invalid status value"))
+	}
 
 	goal, err := h.store.UpdateGoal(c.Request().Context(), id, gtd.UpdateGoalParams{
 		Title:       strings.TrimSpace(req.Title),
@@ -341,6 +344,12 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	status := gtd.ProjectStatus(req.Status)
 	if status == "" {
 		status = gtd.ProjectStatusActive
+	}
+	if !status.IsValid() {
+		return c.JSON(http.StatusBadRequest, errResp("invalid status value"))
+	}
+	if req.Priority != 0 && (req.Priority < 1 || req.Priority > 5) {
+		return c.JSON(http.StatusBadRequest, errResp("priority must be between 1 and 5"))
 	}
 
 	project, err := h.store.UpdateProject(c.Request().Context(), id, gtd.UpdateProjectParams{

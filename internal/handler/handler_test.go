@@ -548,6 +548,13 @@ func TestGTDHandler_UpdateGoal(t *testing.T) {
 			wantCode: http.StatusNotFound,
 		},
 		{
+			name:     "invalid status → 400",
+			paramID:  id.String(),
+			body:     `{"title":"T","status":"bogus"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
 			name:     "store error → 500",
 			paramID:  id.String(),
 			body:     `{"title":"Title"}`,
@@ -621,6 +628,20 @@ func TestGTDHandler_UpdateProject(t *testing.T) {
 			body:     `{"title":"Title"}`,
 			store:    &fakeGTDStore{err: gtd.ErrNotFound},
 			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "invalid status → 400",
+			paramID:  id.String(),
+			body:     `{"title":"T","status":"garbage"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "invalid priority → 400",
+			paramID:  id.String(),
+			body:     `{"title":"T","priority":10}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
 		},
 		{
 			name:     "store error → 500",
