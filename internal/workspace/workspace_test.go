@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -39,7 +40,8 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 
 func TestUpsertAndGetRepo(t *testing.T) {
 	pool := setupPool(t)
-	store := workspace.NewStore(pool, nil)
+	wsID := uuid.New()
+	store := workspace.NewStore(pool, &wsID)
 	ctx := context.Background()
 
 	repo, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
@@ -77,7 +79,8 @@ func TestRepoByName_NotFound(t *testing.T) {
 
 func TestUpsertRepo_UpdateExisting(t *testing.T) {
 	pool := setupPool(t)
-	store := workspace.NewStore(pool, nil)
+	wsID := uuid.New()
+	store := workspace.NewStore(pool, &wsID)
 	ctx := context.Background()
 
 	name := "test-upsert-update-" + t.Name()
