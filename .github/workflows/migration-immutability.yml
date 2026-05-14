@@ -1,0 +1,49 @@
+name: Migration Immutability
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'migrations/**/*.sql'
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: forbid editing existing migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch --no-tags origin master
+
+      - name: Check migration immutability
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-status origin/master...HEAD -- 'migrations/**/*.sql' || true)"
+          if [ -z "$changed" ]; then
+            exit 0
+          fi
+
+          echo "$changed"
+          bad=0
+          printf '%s\n' "$changed" > /tmp/migration-changes.txt
+          while IFS=$'\t' read -r status path _; do
+            [ -z "${status:-}" ] && continue
+            case "$status" in
+              A*) ;;
+              *)
+                echo "ERROR: existing migration changed or deleted: $status $path"
+                bad=1
+                ;;
+            esac
+          done < /tmp/migration-changes.txt
+
+          if [ "$bad" -ne 0 ]; then
+            echo "Existing migrations are immutable. Add a new migration instead."
+            exit 1
+          fi

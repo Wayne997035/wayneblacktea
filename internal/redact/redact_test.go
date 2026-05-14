@@ -108,6 +108,71 @@ func TestForLLM_TableDriven(t *testing.T) {
 			wantLabel:  "[REDACTED:kv-secret]",
 			leakNeedle: "zzzz9999fake",
 		},
+		{
+			name:       "google / gemini API key",
+			input:      "GEMINI_API_KEY=" + "AI" + "zaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			wantLabel:  "[REDACTED:google-api-key]",
+			leakNeedle: "zaSyAaaa",
+		},
+		{
+			// Header segment must be 23+ chars total (eyJ + 20). HS256 headers
+			// with typ/alg/kid claims comfortably exceed this threshold.
+			name: "JWT three-segment token",
+			input: "Authorization: ey" +
+				"JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+				"eyJzdWIiOiIxMjM0NTY3ODkwIn0." +
+				"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			wantLabel:  "[REDACTED:jwt]",
+			leakNeedle: "SflKxwRJSMeKKF2QT4",
+		},
+		{
+			name:       "notion integration secret",
+			input:      "NOTION_TOKEN=" + "secret_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			wantLabel:  "[REDACTED:notion-secret]",
+			leakNeedle: "aaaaaaaaaaaa",
+		},
+		{
+			name:       "discord bot token",
+			input:      "DISCORD_BOT_TOKEN=" + "MT" + "kxOTk5OTk5OTk5OTk5.FAKEFAKEFAKE.AAAAAAAAAAAAAAA",
+			wantLabel:  "[REDACTED:discord-token]",
+			leakNeedle: "FAKEFAKEFAKE",
+		},
+		{
+			name:       "kv passwd (short form)",
+			input:      "pa" + "sswd=anotherFakeValue",
+			wantLabel:  "[REDACTED:kv-secret]",
+			leakNeedle: "anotherFakeValue",
+		},
+		{
+			name:       "kv refresh_token",
+			input:      "refresh_" + "token=refreshFakeValue",
+			wantLabel:  "[REDACTED:kv-secret]",
+			leakNeedle: "refreshFakeValue",
+		},
+		{
+			name:       "kv private_key",
+			input:      "private_" + "key=PrivKeyFakeContents",
+			wantLabel:  "[REDACTED:kv-secret]",
+			leakNeedle: "PrivKeyFakeContents",
+		},
+		{
+			name:       "kv client_secret",
+			input:      "client_" + "secret=clientSecretFake",
+			wantLabel:  "[REDACTED:kv-secret]",
+			leakNeedle: "clientSecretFake",
+		},
+		{
+			name:       "kv signing_key",
+			input:      "signing_" + "key=signingKeyFake",
+			wantLabel:  "[REDACTED:kv-secret]",
+			leakNeedle: "signingKeyFake",
+		},
+		{
+			name:       "kv db_pass",
+			input:      "db_" + "pass=dbPassFakeValue",
+			wantLabel:  "[REDACTED:kv-secret]",
+			leakNeedle: "dbPassFakeValue",
+		},
 	}
 
 	for _, tc := range cases {
@@ -176,6 +241,10 @@ func TestForLLM_FixtureFile(t *testing.T) {
 		"__XOXP__", "xoxp-",
 		"__AKIA__", "AKIA",
 		"__SK_OPENAI__", "sk-",
+		"__AIZA__", "AI"+"za",
+		"__JWT__", "ey"+"J",
+		"__NOTION__", "secret_",
+		"__DISCORD__", "MT",
 	)
 
 	scanner := bufio.NewScanner(f)

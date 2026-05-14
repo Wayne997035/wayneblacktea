@@ -6,9 +6,42 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
 
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
+)
+
+// ErrInjectionDetected is returned by enforceDraftCaps (and surfaced by
+// Draft) when a model-emitted draft field looks like a prompt-injection
+// payload (e.g. "ignore previous instructions"). The middleware MUST log
+// and skip the Create on this error — the draft is not safe to persist.
+var ErrInjectionDetected = errors.New("draft contains prompt-injection markers")
+
+// draftInjectionPattern flags the most common prompt-injection vocabulary.
+// Conservative on purpose: the model is supposed to refuse to echo this
+// material per drafterSystemPrompt; if it leaks through anyway we reject the
+// whole draft rather than persist it. Non-greedy `.*?` keeps the match
+// bounded inside a reasonable distance between the trigger verb and the
+// target noun.
+//
+// Pattern is intentionally case-insensitive and covers a broad set of
+// trigger verbs (ignore/disregard/override/forget/skip/bypass/abandon/discard)
+// paired with target nouns (instruction/prompt/system/previous/prior/rules/
+// guidelines/policy/guardrails/context/directive). Distance raised to 200
+// to catch payloads that pad whitespace between verb and noun.
+//
+// NOTE: regex is defence-in-depth only. The actual safety boundary is
+// human-confirm at /api/proposals/:id/confirm — base64/encoding evasion
+// is out of scope for regex.
+var draftInjectionPattern = regexp.MustCompile(
+	`(?i)(ignore|disregard|override|forget|skip|bypass|abandon|discard)` +
+		`\W.{0,200}?(instruction|prompt|system|previous|prior|` +
+		`rules?|guidelines?|policy|guardrails?|context|directive)`,
 )
 
 // DecisionDraft is the structured proposal payload the auto-decision
@@ -139,7 +172,16 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 		)
 		return &DecisionDraft{}, nil
 	}
-	if rejected, reason := enforceDraftCaps(&draft); rejected {
+	if rejected, reason, capErr := enforceDraftCaps(&draft); rejected {
+		// Injection detection is a SECURITY signal — surface it as an error
+		// so the middleware can record a discrete warning. Other cap rejects
+		// (over-long title, etc.) are recoverable: log + drop silently.
+		if errors.Is(capErr, ErrInjectionDetected) {
+			slog.Warn("decision drafter: prompt-injection markers in draft",
+				"reason", reason,
+			)
+			return nil, capErr
+		}
 		slog.Warn("decision drafter: draft rejected by code-side caps",
 			"reason", reason,
 		)
@@ -149,14 +191,19 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 }
 
 // enforceDraftCaps validates and minimally normalises a draft against the
-// length / control-char / alternatives caps. Returns (rejected=true, reason)
-// when the draft fails a hard cap (the middleware drops the proposal); the
-// alternatives slice is silently truncated to drafterMaxAlternatives because
-// truncation is harmless.
+// length / control-char / alternatives caps AND scans each string field for
+// prompt-injection markers. Returns (rejected, reason, err):
+//   - rejected=true with err=ErrInjectionDetected → security drop (caller
+//     MUST surface this; Draft propagates the error)
+//   - rejected=true with err=nil                  → ordinary cap drop
+//   - rejected=false                              → draft passes; the
+//     alternatives slice may have been silently truncated to
+//     drafterMaxAlternatives (truncation is harmless)
 //
-// All string fields are run through stripDraftControlChars so a model that
-// emits stray ANSI escapes or NUL bytes can't poison the audit log.
-func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string) {
+// All string fields are run through stripDraftControlChars BEFORE the
+// injection scan so a model that smuggles control chars between letters
+// (e.g. "ig\x00nore previous instructions") can't bypass the regex.
+func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string, err error) {
 	d.Title = stripDraftControlChars(d.Title)
 	d.Decision = stripDraftControlChars(d.Decision)
 	d.Rationale = stripDraftControlChars(d.Rationale)
@@ -164,44 +211,67 @@ func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string) {
 		d.Alternatives[i] = stripDraftControlChars(d.Alternatives[i])
 	}
 
+	// Prompt-injection scan AFTER control-char stripping. Check every
+	// model-emitted field — a malicious upstream could plant the trigger
+	// in alternatives if we only scanned the headline fields.
+	if field := firstInjectionField(d); field != "" {
+		return true, fmt.Sprintf("prompt-injection markers in %s field", field), ErrInjectionDetected
+	}
+
 	if n := len([]rune(d.Title)); n > drafterMaxTitleRunes {
-		return true, fmt.Sprintf("title %d runes exceeds cap %d", n, drafterMaxTitleRunes)
+		return true, fmt.Sprintf("title %d runes exceeds cap %d", n, drafterMaxTitleRunes), nil
 	}
 	if n := len([]rune(d.Decision)); n > drafterMaxDecisionRunes {
-		return true, fmt.Sprintf("decision %d runes exceeds cap %d", n, drafterMaxDecisionRunes)
+		return true, fmt.Sprintf("decision %d runes exceeds cap %d", n, drafterMaxDecisionRunes), nil
 	}
 	if n := len([]rune(d.Rationale)); n > drafterMaxRationaleRunes {
-		return true, fmt.Sprintf("rationale %d runes exceeds cap %d", n, drafterMaxRationaleRunes)
+		return true, fmt.Sprintf("rationale %d runes exceeds cap %d", n, drafterMaxRationaleRunes), nil
 	}
 	if len(d.Alternatives) > drafterMaxAlternatives {
 		d.Alternatives = d.Alternatives[:drafterMaxAlternatives]
 	}
-	return false, ""
+	return false, "", nil
 }
 
-// stripDraftControlChars removes ASCII control chars (< 0x20) from s except
-// '\t', per backend-security-design.md §5.4 audit-text sanitisation. Caller-
-// provided strings (LLM output here) MUST go through this before persist.
+// firstInjectionField returns the name of the first draft field whose value
+// matches the prompt-injection regex. Empty return = no match.
+func firstInjectionField(d *DecisionDraft) string {
+	if draftInjectionPattern.MatchString(d.Title) {
+		return "title"
+	}
+	if draftInjectionPattern.MatchString(d.Decision) {
+		return "decision"
+	}
+	if draftInjectionPattern.MatchString(d.Rationale) {
+		return "rationale"
+	}
+	for _, alt := range d.Alternatives {
+		if draftInjectionPattern.MatchString(alt) {
+			return "alternatives"
+		}
+	}
+	return ""
+}
+
+// stripDraftControlChars removes ASCII control chars (< 0x20, except '\t')
+// AND Unicode Format category (Cf) chars from s, per backend-security-design.md
+// §5.4 audit-text sanitisation. Cf chars include invisible formatting codepoints
+// used for injection evasion: ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D, BOM U+FEFF,
+// word-joiners, RTL/LTR marks (U+200E/U+200F), etc. Stripping these before the
+// injection regex prevents "ig​nore" style bypass attempts.
+//
+// Caller-provided strings (LLM output here) MUST go through this before persist.
 func stripDraftControlChars(s string) string {
 	if s == "" {
 		return s
 	}
-	hasControl := false
-	for _, r := range s {
-		if r < drafterControlCharBoundary && r != drafterAllowedControlChar {
-			hasControl = true
-			break
-		}
-	}
-	if !hasControl {
-		return s
-	}
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r < drafterControlCharBoundary && r != drafterAllowedControlChar {
-			continue
-		}
-		out = append(out, r)
-	}
-	return string(out)
+	// Strip Unicode Cf category AND ASCII control chars (< 0x20) except '\t'.
+	t := transform.Chain(
+		runes.Remove(runes.In(unicode.Cf)),
+		runes.Remove(runes.Predicate(func(r rune) bool {
+			return r < drafterControlCharBoundary && r != drafterAllowedControlChar
+		})),
+	)
+	result, _, _ := transform.String(t, s)
+	return result
 }

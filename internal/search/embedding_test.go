@@ -69,7 +69,13 @@ func TestEmbeddingClient_NoAPIKey(t *testing.T) {
 
 func TestEmbeddingClient_Success(t *testing.T) {
 	wantVec := []float32{0.1, 0.2, 0.3}
-	c := newTestEmbedClient(func(_ *http.Request) (*http.Response, error) {
+	c := newTestEmbedClient(func(req *http.Request) (*http.Response, error) {
+		if req.URL.RawQuery != "" {
+			t.Errorf("Gemini embedding request URL query = %q, want empty", req.URL.RawQuery)
+		}
+		if got := req.Header.Get("x-goog-api-key"); got != "test-api-key" {
+			t.Errorf("x-goog-api-key = %q, want test-api-key", got)
+		}
 		body, err := json.Marshal(map[string]any{
 			"embedding": map[string]any{
 				"values": wantVec,

@@ -2,16 +2,12 @@ package scheduler
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/google/uuid"
 )
@@ -245,32 +241,27 @@ func (e *storeError) Error() string { return e.msg }
 // sendDailyReviewReminder tests
 // ---------------------------------------------------------------------------
 
-// newTestDiscordClient builds a *discord.Client pointed at the given httptest
-// server URL by temporarily setting DISCORD_WEBHOOK_URL in the environment.
-// The t.Setenv call restores the original value when the test ends.
-func newTestDiscordClient(t *testing.T, url string) *discord.Client {
-	t.Helper()
-	t.Setenv("DISCORD_WEBHOOK_URL", url)
-	c := discord.NewClient()
-	if c == nil {
-		t.Fatal("discord.NewClient returned nil with DISCORD_WEBHOOK_URL set")
+type stubDiscordSender struct {
+	called   bool
+	message  string
+	sendErr  error
+	onSendFn func()
+}
+
+func (s *stubDiscordSender) Send(_ context.Context, message string) error {
+	s.called = true
+	s.message = message
+	if s.onSendFn != nil {
+		s.onSendFn()
 	}
-	return c
+	return s.sendErr
 }
 
 // TestSendDailyReviewReminder_SendsCorrectCount verifies that the reminder
 // message includes the number returned by CountDueReviews.
 func TestSendDailyReviewReminder_SendsCorrectCount(t *testing.T) {
-	var receivedBody string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(io.LimitReader(r.Body, 1024))
-		receivedBody = string(b)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
 	store := &stubLearningStore{dueCount: 7}
-	dc := newTestDiscordClient(t, srv.URL)
+	dc := &stubDiscordSender{}
 
 	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
@@ -279,8 +270,8 @@ func TestSendDailyReviewReminder_SendsCorrectCount(t *testing.T) {
 
 	sc.sendDailyReviewReminder()
 
-	if !strings.Contains(receivedBody, "7") {
-		t.Errorf("reminder message should contain due count 7, body: %q", receivedBody)
+	if !strings.Contains(dc.message, "7") {
+		t.Errorf("reminder message should contain due count 7, message: %q", dc.message)
 	}
 }
 
@@ -299,15 +290,8 @@ func TestSendDailyReviewReminder_NilDiscord(t *testing.T) {
 // TestSendDailyReviewReminder_CountError verifies that a CountDueReviews failure
 // is handled gracefully — no Discord call is made and the function does not panic.
 func TestSendDailyReviewReminder_CountError(t *testing.T) {
-	discordCalled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		discordCalled = true
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
 	store := &stubLearningStore{dueCountErr: errStoreFailure}
-	dc := newTestDiscordClient(t, srv.URL)
+	dc := &stubDiscordSender{}
 
 	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
@@ -316,7 +300,7 @@ func TestSendDailyReviewReminder_CountError(t *testing.T) {
 
 	sc.sendDailyReviewReminder() // must not panic
 
-	if discordCalled {
+	if dc.called {
 		t.Error("discord should NOT be called when CountDueReviews returns an error")
 	}
 }
@@ -324,15 +308,8 @@ func TestSendDailyReviewReminder_CountError(t *testing.T) {
 // TestSendDailyReviewReminder_ZeroDue verifies that when there are zero due
 // reviews the message is still sent (informational ping, not just when non-zero).
 func TestSendDailyReviewReminder_ZeroDue(t *testing.T) {
-	discordCalled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		discordCalled = true
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
 	store := &stubLearningStore{dueCount: 0}
-	dc := newTestDiscordClient(t, srv.URL)
+	dc := &stubDiscordSender{}
 
 	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
@@ -341,7 +318,7 @@ func TestSendDailyReviewReminder_ZeroDue(t *testing.T) {
 
 	sc.sendDailyReviewReminder()
 
-	if !discordCalled {
+	if !dc.called {
 		t.Error("discord should be called even when due count is 0")
 	}
 }

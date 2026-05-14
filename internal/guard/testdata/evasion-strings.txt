@@ -80,3 +80,12 @@ echo poison > /etc/cron.d/x  # tier=T5
 echo poison >> /etc/sudoers  # tier=T5
 echo poison >>/etc/hosts  # tier=T5
 ls > /etc/motd  # tier=T5
+
+# --- 9. Bare < / > redirection (token-level head looks T0) ---
+# These hide the actual destructive primitive — reading sensitive files or
+# writing to user-controlled targets — behind a head command (cat, grep, etc.)
+# that the per-command table would classify as T0 by itself.
+cat < ~/.ssh/id_rsa  # tier=T4
+cat</etc/passwd  # tier=T4
+grep x < file  # tier=T4
+sh -c 'cat < /etc/passwd'  # tier=T6

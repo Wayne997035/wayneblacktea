@@ -31,10 +31,6 @@ func toUUID(id *uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
 func jsonArray(ss []string) string {
 	if len(ss) == 0 {
 		return "[]"
@@ -129,7 +125,7 @@ func (s *Store) Add(ctx context.Context, p AddParams) (*ProceduralMemory, error)
 	rows, err := s.pool.Query(ctx, q,
 		id,
 		s.workspaceID,
-		toText(p.RepoName),
+		p.RepoName,
 		toUUID(p.ProjectID),
 		p.Title,
 		p.WhenToUse,

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 const (
@@ -71,11 +73,14 @@ func NewOpenRouterClient(cfg OpenRouterConfig) (*OpenRouterClient, error) {
 	if cfg.Model == "" && len(cfg.Models) == 0 {
 		return nil, errors.New("openrouter: OPENROUTER_MODEL or OPENROUTER_MODELS must be set")
 	}
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = openRouterTimeout
+
 	return &OpenRouterClient{
 		apiKey:   cfg.APIKey,
 		model:    cfg.Model,
 		models:   cfg.Models,
-		http:     &http.Client{Timeout: openRouterTimeout},
+		http:     safeClient,
 		endpoint: openRouterEndpoint,
 	}, nil
 }
@@ -85,6 +90,7 @@ func NewOpenRouterClient(cfg OpenRouterConfig) (*OpenRouterClient, error) {
 func (c *OpenRouterClient) setEndpoint(u string) {
 	if u != "" {
 		c.endpoint = u
+		c.http = &http.Client{Timeout: openRouterTimeout}
 	}
 }
 

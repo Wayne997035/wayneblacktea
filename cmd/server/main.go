@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -65,8 +66,8 @@ func run() error {
 	}
 	log.Printf("storage backend: %s", backend)
 	apiKey := os.Getenv("API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("API_KEY not set")
+	if err := validateAPIKey(apiKey); err != nil {
+		return err
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -152,11 +153,11 @@ func run() error {
 
 	e := echo.New()
 	e.HideBanner = true
-	// Use X-Real-IP (set by Railway's edge proxy to the actual client IP).
-	// XFF is not used because clients can prepend arbitrary values to the
-	// X-Forwarded-For chain, allowing them to spoof the "leftmost" hop and
-	// bypass per-IP rate limiters. X-Real-IP is proxy-controlled only.
-	e.IPExtractor = echo.ExtractIPFromRealIPHeader()
+	ipExtractor, err := resolveIPExtractor(os.Getenv("TRUSTED_PROXY_CIDR"))
+	if err != nil {
+		return err
+	}
+	e.IPExtractor = ipExtractor
 	e.Use(echolog.RequestLoggerWithConfig(echolog.RequestLoggerConfig{
 		LogMethod: true, LogURI: true, LogStatus: true,
 		LogLatency: true, LogHost: true, LogError: true,
@@ -198,27 +199,28 @@ func run() error {
 	e.POST("/api/session", authSessH.IssueSession, sessionRL)
 
 	api := e.Group("/api", apimw.APIKeyMiddleware(apiKey))
+	mutationRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
 
 	api.GET("/context/today", ctxH.GetTodayContext)
 
 	api.GET("/goals", gtdH.ListGoals)
-	api.POST("/goals", gtdH.CreateGoal)
+	api.POST("/goals", gtdH.CreateGoal, mutationRL)
 
 	api.GET("/projects", gtdH.ListProjects)
-	api.POST("/projects", gtdH.CreateProject)
+	api.POST("/projects", gtdH.CreateProject, mutationRL)
 	api.GET("/projects/:id", gtdH.GetProject)
-	api.PATCH("/projects/:id/status", gtdH.UpdateProjectStatus)
+	api.PATCH("/projects/:id/status", gtdH.UpdateProjectStatus, mutationRL)
 	api.GET("/projects/:id/tasks", gtdH.ListProjectTasks)
 
-	api.POST("/tasks", gtdH.CreateTask)
-	api.PATCH("/tasks/:id/status", gtdH.UpdateTaskStatus)
-	api.PATCH("/tasks/:id/complete", gtdH.CompleteTask)
+	api.POST("/tasks", gtdH.CreateTask, mutationRL)
+	api.PATCH("/tasks/:id/status", gtdH.UpdateTaskStatus, mutationRL)
+	api.PATCH("/tasks/:id/complete", gtdH.CompleteTask, mutationRL)
 
 	api.GET("/decisions", decH.ListDecisions)
-	api.POST("/decisions", decH.LogDecision)
+	api.POST("/decisions", decH.LogDecision, mutationRL)
 
 	api.GET("/workspace/repos", wsH.ListRepos)
-	api.POST("/workspace/repos", wsH.UpsertRepo)
+	api.POST("/workspace/repos", wsH.UpsertRepo, mutationRL)
 	api.GET("/workspace/repos/:id/overview", wsOverviewH.GetRepoOverview)
 
 	// handoffRL caps POST /session/handoff at 5 req/min — each request may
@@ -231,8 +233,8 @@ func run() error {
 	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
 
 	api.GET("/vision", visionH.ListVision)
-	api.POST("/vision", visionH.AddVision)
-	api.PATCH("/vision/:id", visionH.UpdateVision)
+	api.POST("/vision", visionH.AddVision, mutationRL)
+	api.PATCH("/vision/:id", visionH.UpdateVision, mutationRL)
 
 	// /knowledge/search has a side-effect (bumps recall_count + last_recalled_at
 	// on every hit) so a high-rate caller can permanently subvert the Ebbinghaus
@@ -268,10 +270,10 @@ func run() error {
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
 
 	api.GET("/learning/reviews", learningH.GetDueReviews)
-	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview)
-	api.POST("/learning/concepts", learningH.CreateConcept)
+	api.POST("/learning/reviews/:id/submit", learningH.SubmitReview, mutationRL)
+	api.POST("/learning/concepts", learningH.CreateConcept, mutationRL)
 	api.GET("/learning/suggestions", learningH.GetSuggestions)
-	api.POST("/learning/from-knowledge", learningH.CreateConceptFromKnowledge)
+	api.POST("/learning/from-knowledge", learningH.CreateConceptFromKnowledge, mutationRL)
 	// UX-6: learning history and stats.
 	api.GET("/learning/history", learningH.GetHistory)
 	api.GET("/learning/stats", learningH.GetStats)
@@ -345,6 +347,43 @@ func run() error {
 	return nil
 }
 
+func validateAPIKey(apiKey string) error {
+	if apiKey == "" {
+		return fmt.Errorf("API_KEY not set")
+	}
+	if len(apiKey) < 32 {
+		return fmt.Errorf("API_KEY must be at least 32 characters")
+	}
+	return nil
+}
+
+func resolveIPExtractor(rawTrustedCIDRs string) (echo.IPExtractor, error) {
+	rawTrustedCIDRs = strings.TrimSpace(rawTrustedCIDRs)
+	if rawTrustedCIDRs == "" {
+		return echo.ExtractIPDirect(), nil
+	}
+
+	parts := strings.FieldsFunc(rawTrustedCIDRs, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	options := make([]echo.TrustOption, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDR invalid CIDR %q: %w", part, err)
+		}
+		options = append(options, echo.TrustIPRange(ipNet))
+	}
+	if len(options) == 0 {
+		return echo.ExtractIPDirect(), nil
+	}
+	return echo.ExtractIPFromXFFHeader(options...), nil
+}
+
 // resolveAllowedOrigins determines the CORS allowed origins at startup.
 //
 // Rules:
@@ -400,6 +439,7 @@ func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) 
 		"http://localhost:"+port,
 		apiKey,
 		os.Getenv("DISCORD_GUILD_ID"),
+		os.Getenv("DISCORD_ALLOWED_USER_IDS"),
 		llmClient,
 	)
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+const maxKnowledgeListLimit = 200
+
 func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("add_knowledge",
 		mcp.WithDescription(
@@ -186,6 +188,10 @@ func (s *Server) handleListKnowledge(ctx context.Context, req mcp.CallToolReques
 	limit := int(numberArg(args, "limit"))
 	if limit <= 0 {
 		limit = 20
+	}
+	if limit > maxKnowledgeListLimit {
+		slog.Warn("list_knowledge limit clamped", "requested", limit, "max", maxKnowledgeListLimit)
+		limit = maxKnowledgeListLimit
 	}
 	offset := int(numberArg(args, "offset"))
 	if offset < 0 {

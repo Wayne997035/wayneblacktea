@@ -105,12 +105,10 @@ func initHookSlog(name string) {
 
 func run() error {
 	// Step 1: Read at most 300 bytes from stdin (claude-mem #1220 safety).
-	raw := make([]byte, maxStdinBytes)
-	n, err := io.ReadFull(os.Stdin, raw)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, maxStdinBytes))
+	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
-	raw = raw[:n]
 
 	// Step 2: Parse the truncated JSON. If the payload is >300 bytes the JSON
 	// will be incomplete; we accept best-effort parsing (tool_name may be present

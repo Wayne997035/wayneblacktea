@@ -438,6 +438,92 @@ func TestHandleReview_ParsesFieldsCorrectly(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ParseAllowedUserIDs + isAuthorised + New fail-closed
+// ---------------------------------------------------------------------------
+
+func TestParseAllowedUserIDs(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"single", "123", []string{"123"}},
+		{"comma list", "111,222,333", []string{"111", "222", "333"}},
+		{"trims whitespace", " 111 , 222 , 333 ", []string{"111", "222", "333"}},
+		{"drops empty entries", "111,,222,  ,333", []string{"111", "222", "333"}},
+		{"only commas", ",,,,", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseAllowedUserIDs(tc.raw)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (got=%v)", len(got), len(tc.want), got)
+			}
+			for _, want := range tc.want {
+				if _, ok := got[want]; !ok {
+					t.Errorf("missing %q in %v", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestIsAuthorised_failClosedOnEmptyAllowlist(t *testing.T) {
+	b := &Bot{allowedUsers: ParseAllowedUserIDs("")}
+	if b.isAuthorised("anything") {
+		t.Error("empty allowlist must reject everyone")
+	}
+	if b.isAuthorised("") {
+		t.Error("empty allowlist must reject empty user")
+	}
+}
+
+func TestIsAuthorised_acceptsListedDeniesOthers(t *testing.T) {
+	b := &Bot{allowedUsers: ParseAllowedUserIDs("alice,bob")}
+	if !b.isAuthorised("alice") {
+		t.Error("alice should be allowed")
+	}
+	if !b.isAuthorised("bob") {
+		t.Error("bob should be allowed")
+	}
+	if b.isAuthorised("eve") {
+		t.Error("eve should be rejected")
+	}
+	if b.isAuthorised("") {
+		t.Error("empty user id should be rejected")
+	}
+}
+
+func TestNew_failsWhenTokenSetButAllowlistEmpty(t *testing.T) {
+	// Use a syntactically valid (but invalid for auth) bot token format so
+	// discordgo.New itself doesn't reject it before our allowlist check runs.
+	_, err := New("Mzk1.NotARealToken.AAAAAAAAAA", "http://example.test", "key", "", "", nil)
+	if err == nil {
+		t.Fatal("New must reject empty allowlist when token is set")
+	}
+	if !strings.Contains(err.Error(), "DISCORD_ALLOWED_USER_IDS") {
+		t.Errorf("error should mention allowlist env var, got: %v", err)
+	}
+}
+
+func TestNew_emptyTokenAndEmptyAllowlistIsAllowed(t *testing.T) {
+	// Bot can be constructed with both empty — useful for tests / memory-only
+	// scenarios where the caller will never call Start.
+	b, err := New("", "http://example.test", "key", "", "", nil)
+	if err != nil {
+		t.Fatalf("New(empty token, empty allowlist) should not error: %v", err)
+	}
+	if b == nil {
+		t.Fatal("bot is nil")
+	}
+	// Even so, isAuthorised must remain fail-closed.
+	if b.isAuthorised("anyone") {
+		t.Error("bot constructed with empty allowlist must still reject all users")
+	}
+}
+
 // splitReviewRaw replicates the parsing logic from Bot.handleReview so tests
 // can exercise runReview directly without a discordgo.Session.
 func splitReviewRaw(raw string) [3]string {

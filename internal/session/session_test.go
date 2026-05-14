@@ -40,7 +40,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 
 func TestSetAndGetHandoff(t *testing.T) {
 	pool := setupPool(t)
-	store := session.NewStore(pool)
+	store := session.NewStore(pool, nil)
 	ctx := context.Background()
 
 	h, err := store.SetHandoff(ctx, session.HandoffParams{
@@ -69,7 +69,7 @@ func TestSetAndGetHandoff(t *testing.T) {
 
 func TestResolveHandoff(t *testing.T) {
 	pool := setupPool(t)
-	store := session.NewStore(pool)
+	store := session.NewStore(pool, nil)
 	ctx := context.Background()
 
 	h, err := store.SetHandoff(ctx, session.HandoffParams{
@@ -101,7 +101,7 @@ func TestResolveHandoff(t *testing.T) {
 
 func TestLatestHandoff_NotFound(t *testing.T) {
 	pool := setupPool(t)
-	store := session.NewStore(pool)
+	store := session.NewStore(pool, nil)
 	ctx := context.Background()
 
 	// First, resolve all existing handoffs so the table is effectively empty of unresolved ones.

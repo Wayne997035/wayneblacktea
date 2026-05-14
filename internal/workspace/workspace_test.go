@@ -39,7 +39,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 
 func TestUpsertAndGetRepo(t *testing.T) {
 	pool := setupPool(t)
-	store := workspace.NewStore(pool)
+	store := workspace.NewStore(pool, nil)
 	ctx := context.Background()
 
 	repo, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
@@ -66,7 +66,7 @@ func TestUpsertAndGetRepo(t *testing.T) {
 }
 
 func TestRepoByName_NotFound(t *testing.T) {
-	store := workspace.NewStore(setupPool(t))
+	store := workspace.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	_, err := store.RepoByName(ctx, "nonexistent-repo-xyz")
@@ -77,7 +77,7 @@ func TestRepoByName_NotFound(t *testing.T) {
 
 func TestUpsertRepo_UpdateExisting(t *testing.T) {
 	pool := setupPool(t)
-	store := workspace.NewStore(pool)
+	store := workspace.NewStore(pool, nil)
 	ctx := context.Background()
 
 	name := "test-upsert-update-" + t.Name()
@@ -114,7 +114,7 @@ func TestUpsertRepo_UpdateExisting(t *testing.T) {
 }
 
 func TestActiveRepos(t *testing.T) {
-	store := workspace.NewStore(setupPool(t))
+	store := workspace.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	repos, err := store.ActiveRepos(ctx)

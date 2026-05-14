@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
 
 const (
@@ -51,10 +53,13 @@ func NewGroqClient(cfg GroqConfig) (*GroqClient, error) {
 	if model == "" {
 		model = defaultGroqModel
 	}
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = groqTimeout
+
 	return &GroqClient{
 		apiKey:   cfg.APIKey,
 		model:    model,
-		http:     &http.Client{Timeout: groqTimeout},
+		http:     safeClient,
 		endpoint: groqEndpoint,
 	}, nil
 }
@@ -63,6 +68,7 @@ func NewGroqClient(cfg GroqConfig) (*GroqClient, error) {
 func (c *GroqClient) setEndpoint(u string) {
 	if u != "" {
 		c.endpoint = u
+		c.http = &http.Client{Timeout: groqTimeout}
 	}
 }
 

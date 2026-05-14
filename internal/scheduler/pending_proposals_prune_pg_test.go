@@ -175,3 +175,75 @@ func TestScheduler_PendingProposalsPrune_EmptyTableNoPanic(t *testing.T) {
 	// Must not panic on zero-row delete.
 	sc.runDailyPendingProposalsPrune()
 }
+
+func TestScheduler_DailyGuardPrune_DeletesExpiredRows(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	ctx := context.Background()
+	old := time.Now().UTC().AddDate(0, 0, -45)
+	recent := time.Now().UTC().AddDate(0, 0, -5)
+
+	oldEventID := uuid.New()
+	recentEventID := uuid.New()
+	oldBypassID := uuid.New()
+	recentBypassID := uuid.New()
+
+	seedGuardEvent := func(id uuid.UUID, createdAt time.Time) {
+		t.Helper()
+		_, err := pool.Exec(ctx, `INSERT INTO guard_events
+			(id, session_id, cwd, repo_name, tool_name, tool_input, risk_tier, risk_reason, would_deny, matcher, created_at)
+			VALUES ($1, 's', '/repo', 'repo', 'Bash', '{}', 1, 'test', false, 'test', $2)`,
+			id, createdAt)
+		if err != nil {
+			t.Fatalf("seed guard_event %s: %v", id, err)
+		}
+	}
+	seedBypass := func(id uuid.UUID, createdAt time.Time) {
+		t.Helper()
+		_, err := pool.Exec(ctx, `INSERT INTO guard_bypasses
+			(id, created_at, scope, target, reason, created_by)
+			VALUES ($1, $2, 'repo', 'repo', 'test', 'test')`,
+			id, createdAt)
+		if err != nil {
+			t.Fatalf("seed guard_bypass %s: %v", id, err)
+		}
+	}
+
+	seedGuardEvent(oldEventID, old)
+	seedGuardEvent(recentEventID, recent)
+	seedBypass(oldBypassID, old)
+	seedBypass(recentBypassID, recent)
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyGuardPrune()
+
+	assertGuardEventsCount := func(id uuid.UUID, want int) {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM guard_events WHERE id = $1", id).Scan(&count); err != nil {
+			t.Fatalf("count guard_events %s: %v", id, err)
+		}
+		if count != want {
+			t.Fatalf("guard_events id %s count = %d, want %d", id, count, want)
+		}
+	}
+	assertGuardBypassesCount := func(id uuid.UUID, want int) {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM guard_bypasses WHERE id = $1", id).Scan(&count); err != nil {
+			t.Fatalf("count guard_bypasses %s: %v", id, err)
+		}
+		if count != want {
+			t.Fatalf("guard_bypasses id %s count = %d, want %d", id, count, want)
+		}
+	}
+	assertGuardEventsCount(oldEventID, 0)
+	assertGuardEventsCount(recentEventID, 1)
+	assertGuardBypassesCount(oldBypassID, 0)
+	assertGuardBypassesCount(recentBypassID, 1)
+}
+
+func TestScheduler_DailyGuardPrune_EmptyTableNoPanic(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyGuardPrune()
+}

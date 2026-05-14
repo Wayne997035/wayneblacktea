@@ -15,17 +15,42 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
 // Bot listens for commands and bridges Discord → wayneblacktea REST API.
 type Bot struct {
-	session    *discordgo.Session
-	analyzer   *Analyzer
-	apiURL     string
-	apiKey     string
-	guildID    string // if set, slash commands are registered guild-scoped (instant); otherwise global (~1h)
-	httpClient *http.Client
+	session      *discordgo.Session
+	analyzer     *Analyzer
+	apiURL       string
+	apiKey       string
+	guildID      string // if set, slash commands are registered guild-scoped (instant); otherwise global (~1h)
+	httpClient   *http.Client
+	allowedUsers map[string]struct{} // user-ID allowlist; fail-closed when bot token is set
+}
+
+// ParseAllowedUserIDs splits a comma-separated list of Discord user IDs into a
+// lookup set. Whitespace around each entry is trimmed; empty entries are
+// dropped. Returns an empty (non-nil) map when input is blank.
+func ParseAllowedUserIDs(raw string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out[trimmed] = struct{}{}
+		}
+	}
+	return out
+}
+
+// isAuthorised returns true when userID is in the allowlist. Fail-closed: an
+// empty allowlist denies everyone.
+func (b *Bot) isAuthorised(userID string) bool {
+	if len(b.allowedUsers) == 0 {
+		return false
+	}
+	_, ok := b.allowedUsers[userID]
+	return ok
 }
 
 var slashCommands = []*discordgo.ApplicationCommand{
@@ -81,23 +106,40 @@ var slashCommands = []*discordgo.ApplicationCommand{
 // guildID: if non-empty, slash commands are registered guild-scoped (visible
 // instantly); if empty, they are registered globally (up to 1 hour to
 // propagate).
-func New(botToken, apiURL, apiKey, guildID string, llmClient llm.JSONClient) (*Bot, error) {
+//
+// allowedUserIDs is a comma-separated list of Discord user IDs that may invoke
+// the bot. When botToken is non-empty but the allowlist is empty, New returns
+// an error — this prevents accidentally exposing the bot to every Discord user
+// who shares a guild. The allowlist is the canonical authz boundary; all other
+// guards (rate limits, content filters) are defence-in-depth.
+func New(botToken, apiURL, apiKey, guildID, allowedUserIDs string, llmClient llm.JSONClient) (*Bot, error) {
+	allow := ParseAllowedUserIDs(allowedUserIDs)
+	if botToken != "" && len(allow) == 0 {
+		return nil, fmt.Errorf("discord bot misconfigured: DISCORD_BOT_TOKEN set but DISCORD_ALLOWED_USER_IDS empty (fail-closed)")
+	}
 	s, err := discordgo.New("Bot " + botToken)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 	b := &Bot{
-		session:    s,
-		analyzer:   NewAnalyzer(llmClient),
-		apiURL:     strings.TrimRight(apiURL, "/"),
-		apiKey:     apiKey,
-		guildID:    guildID,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		session:      s,
+		analyzer:     NewAnalyzer(llmClient),
+		apiURL:       strings.TrimRight(apiURL, "/"),
+		apiKey:       apiKey,
+		guildID:      guildID,
+		httpClient:   newBotHTTPClient(),
+		allowedUsers: allow,
 	}
 	s.AddHandler(b.onMessage)
 	s.AddHandler(b.onInteraction)
 	s.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentMessageContent
 	return b, nil
+}
+
+func newBotHTTPClient() *http.Client {
+	safeClient := httpguard.NewSafeHTTPClient()
+	safeClient.Timeout = 30 * time.Second
+	return safeClient
 }
 
 // Start opens the WebSocket connection and registers slash commands.
@@ -125,6 +167,23 @@ func (b *Bot) Stop() {
 
 func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+	// Authz gate: only allowlisted Discord user IDs may invoke commands.
+	// i.User is set for DM interactions; i.Member.User is set inside a guild.
+	userID := ""
+	switch {
+	case i.User != nil:
+		userID = i.User.ID
+	case i.Member != nil && i.Member.User != nil:
+		userID = i.Member.User.ID
+	}
+	if !b.isAuthorised(userID) {
+		slog.Warn("discord bot: rejected unauthorized interaction", "user_id", userID)
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{Content: "Unauthorized."},
+		})
 		return
 	}
 	// Acknowledge immediately so Discord doesn't time out
@@ -163,6 +222,10 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 
 func (b *Bot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == s.State.User.ID {
+		return
+	}
+	// Authz gate: silently drop messages from non-allowlisted users.
+	if !b.isAuthorised(m.Author.ID) {
 		return
 	}
 

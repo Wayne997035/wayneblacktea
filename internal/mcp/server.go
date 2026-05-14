@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
@@ -105,7 +106,30 @@ type Server struct {
 	// decisionProposerMiddleware. nil = middleware is a no-op (no LLM
 	// configured or operator opted out via WBT_DISABLE_AUTO_DECISIONS).
 	drafter *ai.DecisionDrafter
+
+	// deleteTokens holds one-time confirmation tokens issued by the first
+	// invocation of delete_task. Keys are uuid.UUID strings; values are
+	// deletionToken records. Entries are pruned lazily on read; ungated
+	// tokens expire after the TTL even if no second call arrives.
+	deleteTokens sync.Map
+
+	// nowFn is overridable in tests so deletion-token expiry can be tested
+	// deterministically without time.Sleep. Defaults to time.Now.
+	nowFn func() time.Time
 }
+
+// deletionToken records a pending delete_task confirmation. The token is
+// generated server-side and returned to the caller in the first response;
+// the caller MUST echo it back on the second call along with confirm=true.
+type deletionToken struct {
+	token     string
+	expiresAt time.Time
+}
+
+// deleteTokenTTL is the window during which an issued deletion token remains
+// valid. 60 seconds is enough for an LLM to inspect the response and call
+// back, short enough that a leaked token isn't useful long.
+const deleteTokenTTL = 60 * time.Second
 
 // New creates a Server backed by the given pre-built ServerStores bundle.
 // The bundle is responsible for the workspace-id scoping and the underlying
@@ -143,7 +167,16 @@ func New(stores storage.ServerStores) (*Server, error) {
 		discipline:     stores.Discipline(),
 		sessionID:      newSessionID(),
 		workspaceID:    wsID,
+		nowFn:          time.Now,
 	}, nil
+}
+
+// now returns the current time using the server's nowFn (overridable in tests).
+func (s *Server) now() time.Time {
+	if s.nowFn == nil {
+		return time.Now()
+	}
+	return s.nowFn()
 }
 
 // newSessionID returns a per-process identifier used as session_id when
@@ -310,6 +343,13 @@ func stringArg(args map[string]any, key string) string {
 func numberArg(args map[string]any, key string) int32 {
 	v, _ := args[key].(float64)
 	return int32(v)
+}
+
+// boolArg extracts a boolean argument from MCP tool arguments. Missing or
+// non-bool keys return false (so callers can rely on the default-deny default).
+func boolArg(args map[string]any, key string) bool {
+	v, _ := args[key].(bool)
+	return v
 }
 
 // floatArg extracts a float64 argument from MCP tool arguments.

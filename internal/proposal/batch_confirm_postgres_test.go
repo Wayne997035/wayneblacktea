@@ -93,10 +93,17 @@ func applyBatchUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	}
 }
 
-// TestBatchConfirm_PG_AllAccepted verifies that when all IDs are valid and
-// pending the Postgres transaction commits and all entries are accepted.
-func TestBatchConfirm_PG_AllAccepted(t *testing.T) {
+func TestBatchConfirm_PG(t *testing.T) {
 	pool := openBatchTestPgPool(t)
+	t.Run("all accepted", func(t *testing.T) { testBatchConfirmPGAllAccepted(t, pool) })
+	t.Run("single not found rolls back all", func(t *testing.T) { testBatchConfirmPGRollback(t, pool) })
+	t.Run("cross workspace blocked", func(t *testing.T) { testBatchConfirmPGCrossWorkspace(t, pool) })
+	t.Run("invalid status", func(t *testing.T) { testBatchConfirmPGInvalidStatus(t, pool) })
+	t.Run("already resolved", func(t *testing.T) { testBatchConfirmPGAlreadyResolved(t, pool) })
+}
+
+func testBatchConfirmPGAllAccepted(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
 	store := proposal.NewStore(pool, nil)
 	ctx := context.Background()
 
@@ -129,7 +136,6 @@ func TestBatchConfirm_PG_AllAccepted(t *testing.T) {
 		}
 	}
 
-	// none remain pending
 	pending, err := store.ListPending(ctx)
 	if err != nil {
 		t.Fatalf("ListPending: %v", err)
@@ -143,11 +149,8 @@ func TestBatchConfirm_PG_AllAccepted(t *testing.T) {
 	}
 }
 
-// TestBatchConfirm_PG_SingleNotFoundRollsBackAll verifies that when one ID is
-// not found the Postgres transaction rolls back and ALL entries are reported
-// as failed (full-rollback atomic guarantee).
-func TestBatchConfirm_PG_SingleNotFoundRollsBackAll(t *testing.T) {
-	pool := openBatchTestPgPool(t)
+func testBatchConfirmPGRollback(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
 	store := proposal.NewStore(pool, nil)
 	ctx := context.Background()
 
@@ -162,19 +165,14 @@ func TestBatchConfirm_PG_SingleNotFoundRollsBackAll(t *testing.T) {
 		_, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", good.ID)
 	})
 
-	missingID := uuid.New()
-	ids := []uuid.UUID{good.ID, missingID}
-
-	result, err := store.BatchConfirm(ctx, ids, proposal.StatusRejected)
+	result, err := store.BatchConfirm(ctx, []uuid.UUID{good.ID, uuid.New()}, proposal.StatusRejected)
 	if err != nil {
 		t.Fatalf("BatchConfirm returned unexpected error: %v", err)
 	}
-	// all 2 IDs should be failed because the transaction was rolled back
 	if result.Failed != 2 || result.Accepted != 0 {
 		t.Errorf("expected 2 failed 0 accepted (rollback), got %+v", result)
 	}
 
-	// good proposal must still be pending (rolled back)
 	got, err := store.Get(ctx, good.ID)
 	if err != nil {
 		t.Fatalf("Get after rollback: %v", err)
@@ -184,10 +182,8 @@ func TestBatchConfirm_PG_SingleNotFoundRollsBackAll(t *testing.T) {
 	}
 }
 
-// TestBatchConfirm_PG_CrossWorkspaceBlocked verifies that workspace B cannot
-// resolve a proposal that belongs to workspace A.
-func TestBatchConfirm_PG_CrossWorkspaceBlocked(t *testing.T) {
-	pool := openBatchTestPgPool(t)
+func testBatchConfirmPGCrossWorkspace(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
 	ctx := context.Background()
 
 	wsA := uuid.New()
@@ -215,7 +211,6 @@ func TestBatchConfirm_PG_CrossWorkspaceBlocked(t *testing.T) {
 		t.Errorf("workspace B should not resolve workspace A proposal; got accepted=%d failed=%d", result.Accepted, result.Failed)
 	}
 
-	// proposal must still be pending in workspace A
 	got, err := storeA.Get(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("Get from workspace A after cross-workspace attempt: %v", err)
@@ -225,23 +220,17 @@ func TestBatchConfirm_PG_CrossWorkspaceBlocked(t *testing.T) {
 	}
 }
 
-// TestBatchConfirm_PG_InvalidStatus verifies that a non-accept/reject status
-// returns an error before any DB operation.
-func TestBatchConfirm_PG_InvalidStatus(t *testing.T) {
-	pool := openBatchTestPgPool(t)
+func testBatchConfirmPGInvalidStatus(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
 	store := proposal.NewStore(pool, nil)
-	ctx := context.Background()
-
-	_, err := store.BatchConfirm(ctx, []uuid.UUID{uuid.New()}, proposal.StatusPending)
+	_, err := store.BatchConfirm(context.Background(), []uuid.UUID{uuid.New()}, proposal.StatusPending)
 	if err == nil {
 		t.Fatal("expected error for invalid status, got nil")
 	}
 }
 
-// TestBatchConfirm_PG_AlreadyResolved verifies that attempting to batch-confirm
-// an already-resolved proposal rolls back the whole transaction (Postgres).
-func TestBatchConfirm_PG_AlreadyResolved(t *testing.T) {
-	pool := openBatchTestPgPool(t)
+func testBatchConfirmPGAlreadyResolved(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
 	store := proposal.NewStore(pool, nil)
 	ctx := context.Background()
 
@@ -256,12 +245,10 @@ func TestBatchConfirm_PG_AlreadyResolved(t *testing.T) {
 		_, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", p.ID)
 	})
 
-	// resolve manually first
 	if _, err := store.Resolve(ctx, p.ID, proposal.StatusAccepted); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	// batch confirm again — should fail
 	result, err := store.BatchConfirm(ctx, []uuid.UUID{p.ID}, proposal.StatusAccepted)
 	if err != nil {
 		t.Fatalf("BatchConfirm returned unexpected error: %v", err)

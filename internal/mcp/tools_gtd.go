@@ -12,6 +12,11 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// maxPendingDeletions caps the number of valid (non-expired) delete tokens
+// held simultaneously. This prevents a loop caller from growing the sync.Map
+// without bound if tokens are issued faster than they expire.
+const maxPendingDeletions = 256
+
 func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("list_projects",
 		mcp.WithDescription("Returns all active projects."),
@@ -92,8 +97,15 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	), s.handleLogActivity)
 
 	ms.AddTool(mcp.NewTool("delete_task",
-		mcp.WithDescription("Permanently deletes a task."),
+		mcp.WithDescription(
+			"Permanently deletes a task. TWO-STEP: first call with only task_id "+
+				"returns {deletion_token, expires_at}; second call MUST include "+
+				"confirm=true and deletion_token to perform the delete. Tokens "+
+				"expire after 60s.",
+		),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
+		mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
 	), s.handleDeleteTask)
 }
 
@@ -364,6 +376,20 @@ func (s *Server) handleLogActivity(ctx context.Context, req mcp.CallToolRequest)
 	return mcp.NewToolResultText("activity logged"), nil
 }
 
+// handleDeleteTask implements a 2-step confirmation flow.
+//
+// First call (confirm absent / false): issue a one-time deletion_token tied
+// to task_id, store it in-memory with a 60s TTL, and return
+// {deletion_token, expires_at} to the caller. The task is NOT deleted.
+//
+// Second call (confirm=true + matching deletion_token): verify the token
+// matches the stored value AND has not expired, then call store.DeleteTask.
+// The token is consumed (single-use) regardless of success.
+//
+// Rationale: prevent accidental deletion from a hallucinated tool call. An
+// LLM that emits delete_task once gets a token-only response back; deleting
+// requires a second deliberate call. The token must come from us so a malicious
+// upstream client can't synthesize one without first making a "read" call.
 func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	raw := stringArg(args, "task_id")
@@ -373,6 +399,61 @@ func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) 
 	id, err := uuid.Parse(raw)
 	if err != nil {
 		return mcp.NewToolResultError("invalid task_id UUID"), nil
+	}
+
+	confirm := boolArg(args, "confirm")
+	suppliedToken := stringArg(args, "deletion_token")
+
+	if !confirm {
+		// Step 1 — issue token, do NOT delete.
+
+		// Prune expired tokens and cap concurrent pending deletions.
+		var count int
+		s.deleteTokens.Range(func(k, v any) bool {
+			rec := v.(deletionToken)
+			if s.now().After(rec.expiresAt) {
+				s.deleteTokens.Delete(k)
+			} else {
+				count++
+			}
+			return true
+		})
+		if count >= maxPendingDeletions {
+			return mcp.NewToolResultError("too many pending deletions in flight; retry later"), nil
+		}
+
+		token := uuid.NewString()
+		expires := s.now().Add(deleteTokenTTL)
+		s.deleteTokens.Store(id.String(), deletionToken{token: token, expiresAt: expires})
+		return jsonText(map[string]any{
+			"status":         "confirmation_required",
+			"task_id":        id.String(),
+			"deletion_token": token,
+			"expires_at":     expires.UTC().Format(time.RFC3339),
+			"message":        "Call delete_task again with confirm=true and the deletion_token to delete this task. Token expires in 60s.",
+		})
+	}
+
+	// Step 2 — confirm=true. Token must be present, match, and not expired.
+	if suppliedToken == "" {
+		return mcp.NewToolResultError("deletion_token is required when confirm=true"), nil
+	}
+	stored, ok := s.deleteTokens.LoadAndDelete(id.String())
+	if !ok {
+		return mcp.NewToolResultError("no pending deletion for this task_id; call without confirm first to obtain a token"), nil
+	}
+	rec, ok := stored.(deletionToken)
+	if !ok {
+		return mcp.NewToolResultError("internal: deletion token state corrupted"), nil
+	}
+	if s.now().After(rec.expiresAt) {
+		return mcp.NewToolResultError("deletion_token expired; call without confirm to obtain a new token"), nil
+	}
+	// Constant-time string compare on equal-length inputs would be ideal, but
+	// these tokens are generated server-side UUIDs and never exposed to
+	// untrusted parties in the comparison window — plain equality is fine.
+	if suppliedToken != rec.token {
+		return mcp.NewToolResultError("deletion_token mismatch"), nil
 	}
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {

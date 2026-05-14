@@ -50,12 +50,25 @@ func ClassifyBash(command string) (RiskTier, string) {
 		return T7, "empty command"
 	}
 
-	// Split on pipeline/chain operators so each simple command is classified
-	// independently and the max tier is returned.
-	segments := splitPipeline(command)
 	maxTier := T0
 	maxReason := reasonReadOnly
 
+	// Bare-redirection scan over the ORIGINAL command. splitPipeline treats
+	// bare '<' / '>' as segment separators, so the segments themselves
+	// won't preserve the redirection marker for detectShellSpecial to see.
+	// A `cat < /etc/passwd` or `echo x > /tmp/y` MUST be classified above
+	// T0 — the redirection target is the actual risk regardless of what
+	// the head command does.
+	if tier, reason, ok := detectBareRedirection(command); ok {
+		if tier > maxTier {
+			maxTier = tier
+			maxReason = reason
+		}
+	}
+
+	// Split on pipeline/chain operators so each simple command is classified
+	// independently and the max tier is returned.
+	segments := splitPipeline(command)
 	for _, seg := range segments {
 		seg = strings.TrimSpace(seg)
 		if seg == "" {
@@ -68,6 +81,47 @@ func ClassifyBash(command string) (RiskTier, string) {
 		}
 	}
 	return maxTier, maxReason
+}
+
+// detectBareRedirection reports whether the unsplit command contains a bare
+// '<' input redirection outside quotes (i.e. NOT '<<', '<<<', '<(' — those
+// are caught by detectShellSpecial on individual segments). A bare '<' is
+// classified at T4: shell-level input routing changes the effective behaviour
+// of the head command in ways the token-level classifier cannot infer (a
+// "read-only" head like `cat` becomes an exfiltration primitive when the
+// target is `~/.ssh/id_rsa`).
+//
+// We deliberately do NOT flag bare '>' here. The pre-existing
+// detectShellSpecial / detectAbsRedirectAt code already escalates writes to
+// absolute paths to T5; '> local.txt' is normal build output and keeping it
+// at T0 avoids drowning real signals in noise.
+func detectBareRedirection(cmd string) (RiskTier, string, bool) {
+	st := splitState{}
+	runes := []rune(cmd)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if st.toggleQuote(r) {
+			continue
+		}
+		if st.inQuotes() {
+			continue
+		}
+		if r != '<' {
+			continue
+		}
+		// Skip composite forms — '<<', '<<<', '<(' are not bare redirection.
+		if i+1 < len(runes) {
+			next := runes[i+1]
+			if next == '<' || next == '(' {
+				continue
+			}
+		}
+		if i > 0 && runes[i-1] == '<' {
+			continue
+		}
+		return T4, "shell-special: bare < input redirection", true
+	}
+	return 0, "", false
 }
 
 // splitPipeline splits a shell command string on &&, ||, ;, and | operators.
@@ -136,6 +190,12 @@ func (s *splitState) inQuotes() bool { return s.inSingle || s.inDouble }
 //   - "&"  (single) — backgrounding separator: "ls & rm -rf /tmp" backgrounds
 //     ls and runs rm immediately. Single & is only an operator when NOT part
 //     of "&&" (handled above).
+//   - "<" (single, bare) — input redirection: "cat < /etc/passwd" contains a
+//     redirection target that token-level classification of "cat" would treat
+//     as T0. Splitting on bare input redirection lets the per-segment classifier
+//     still see the target while detectBareRedirection flags the original
+//     command. Composite forms "<<", "<<<", and "<(...)" are recognised earlier
+//     by detectShellSpecial and MUST NOT be split here.
 func operatorWidth(runes []rune, i int) int {
 	r := runes[i]
 	if i+1 < len(runes) {
@@ -156,7 +216,37 @@ func operatorWidth(runes []rune, i int) int {
 	if r == '&' {
 		return 1
 	}
+	// Bare '<' — input redirection. Splitting on it lets the per-segment
+	// classifier see the redirection target as a standalone "segment" (which
+	// will fall to T7 unknown for typical paths), AND detectBareRedirection
+	// in ClassifyBash flags the original cmd at T4 regardless of segments.
+	// Composite forms ('<<', '<<<', '<(') are NOT separators (they're
+	// metacharacters classified by detectShellSpecial on the segment).
+	//
+	// Bare '>' is NOT split here because the existing detectShellSpecial /
+	// detectAbsRedirectAt path already covers the high-value case
+	// (redirect to absolute path = T5) and we deliberately keep
+	// '> local.txt' at T0 — writing to a relative file is normal build
+	// output and over-flagging it would mask real signals. Information
+	// disclosure via 'cat < secret' is the case the bare-redir split
+	// was added for.
+	if r == '<' {
+		if isCompositeInputRedirect(runes, i) {
+			return 0
+		}
+		return 1
+	}
 	return 0
+}
+
+func isCompositeInputRedirect(runes []rune, i int) bool {
+	if i+1 < len(runes) {
+		next := runes[i+1]
+		if next == '<' || next == '(' {
+			return true
+		}
+	}
+	return i > 0 && runes[i-1] == '<'
 }
 
 // classifySimple classifies a single simple command (no pipeline operators).

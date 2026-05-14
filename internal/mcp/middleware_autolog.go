@@ -40,7 +40,7 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// upstream LLM provider (LLM02 prompt-data leakage). Redaction is
 			// regex-based defence-in-depth; primary mitigation is structured
 			// payload design upstream of this middleware.
-			argSummary := redact.ForLLM(truncateRunes(fmt.Sprintf("%v", args), mcpArgSummaryMaxRunes))
+			argSummary := redact.ForLLM(truncateRunes(marshalArgsDeterministic(args), mcpArgSummaryMaxRunes))
 			resultSummary := redact.ForLLM(extractResultText(res, mcpResultSummaryMaxRunes))
 			s.maybeClassifyToolCall(tool, argSummary, resultSummary)
 

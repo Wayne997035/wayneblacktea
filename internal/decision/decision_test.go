@@ -39,7 +39,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 
 func TestLogAndListDecision(t *testing.T) {
 	pool := setupPool(t)
-	store := decision.NewStore(pool)
+	store := decision.NewStore(pool, nil)
 	ctx := context.Background()
 
 	d, err := store.Log(ctx, decision.LogParams{
@@ -70,7 +70,7 @@ func TestLogAndListDecision(t *testing.T) {
 
 func TestLog_EmptyTitle(t *testing.T) {
 	pool := setupPool(t)
-	store := decision.NewStore(pool)
+	store := decision.NewStore(pool, nil)
 	ctx := context.Background()
 
 	// Empty title is a required field (NOT NULL in schema); expect a DB error.
@@ -97,7 +97,7 @@ func TestLog_EmptyTitle(t *testing.T) {
 }
 
 func TestByRepo_Empty(t *testing.T) {
-	store := decision.NewStore(setupPool(t))
+	store := decision.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
 	// Repo name that has no decisions — should return empty slice without error.

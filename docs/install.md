@@ -215,8 +215,6 @@ Postgres-mode required variables:
 | `API_KEY` | (generate: `openssl rand -hex 32`) | Bearer token for all `/api/*` routes |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS origins for the dashboard |
 
-Set `POSTGRES_INSECURE_TLS=true` when using managed Postgres providers that use a custom CA not in the system trust store (Railway, Aiven).
-
 ## Mode 3: Docker
 
 Best for: reproducible builds, self-hosting on a VPS or Railway.
@@ -258,7 +256,6 @@ docker run \
   -e API_KEY=your-api-key \
   -e DATABASE_URL=postgres://USER:PASS@HOST:PORT/DB?sslmode=require \
   -e ALLOWED_ORIGINS=https://your-domain.example \
-  -e POSTGRES_INSECURE_TLS=true \
   wayneblacktea
 ```
 
@@ -291,7 +288,7 @@ After loading, ask Claude Code to call `get_today_context` to verify the connect
 - **`CLAUDE_API_KEY` and other API keys** must be set as environment variables in production. Never hardcode them.
 - **`API_KEY`** gates every `/api/*` route. Use a random string of at least 32 characters (`openssl rand -hex 32`).
 - **`ALLOWED_ORIGINS`** must be explicit origins, not `*`. Wildcard will panic at startup.
-- **`PGSSLROOTCERT`** -- if your Postgres CA is not in the system trust store and you cannot use `POSTGRES_INSECURE_TLS`, point this variable at your CA certificate file.
+- **`PGSSLROOTCERT`** -- if your Postgres CA is not in the system trust store, point this variable at your CA certificate file.
 - **`VITE_API_KEY`** is baked into the frontend bundle at build time. It matches `API_KEY` -- regenerate both together if compromised.
 
 See [`docs/ci-secrets.md`](./ci-secrets.md) for CI/CD secret management.

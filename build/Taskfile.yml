@@ -20,6 +20,7 @@ tasks:
       - task: vuln
       - task: lint
       - task: test
+      - task: test-integration
       - task: build-mcp
       - task: build-server
       - task: build-doctor
@@ -156,8 +157,9 @@ tasks:
   test-integration:
     desc: "Run integration tests (requires Docker for testcontainers)"
     cmds:
-      # No -short flag: runs all tests including testcontainers-based integration tests.
-      - go test -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      # Build tag + no -short: runs testcontainers-based integration tests.
+      # -p 1 avoids concurrent Ryuk/container startup races across packages.
+      - go test -tags integration -race -p 1 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:

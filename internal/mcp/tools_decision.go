@@ -3,12 +3,15 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+const maxListDecisionsLimit = 100
 
 func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("log_decision",
@@ -79,6 +82,10 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 	limit := numberArg(args, "limit")
 	if limit <= 0 {
 		limit = 20
+	}
+	if limit > maxListDecisionsLimit {
+		slog.Warn("list_decisions limit clamped", "requested", limit, "max", maxListDecisionsLimit)
+		limit = maxListDecisionsLimit
 	}
 
 	if raw := stringArg(args, "project_id"); raw != "" {
