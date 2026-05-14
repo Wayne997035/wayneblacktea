@@ -205,10 +205,12 @@ func run() error {
 
 	api.GET("/goals", gtdH.ListGoals)
 	api.POST("/goals", gtdH.CreateGoal, mutationRL)
+	api.PATCH("/goals/:id", gtdH.UpdateGoal, mutationRL)
 
 	api.GET("/projects", gtdH.ListProjects)
 	api.POST("/projects", gtdH.CreateProject, mutationRL)
 	api.GET("/projects/:id", gtdH.GetProject)
+	api.PATCH("/projects/:id", gtdH.UpdateProject, mutationRL)
 	api.PATCH("/projects/:id/status", gtdH.UpdateProjectStatus, mutationRL)
 	api.GET("/projects/:id/tasks", gtdH.ListProjectTasks)
 

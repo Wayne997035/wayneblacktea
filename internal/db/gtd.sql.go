@@ -542,6 +542,107 @@ func (q *Queries) ListProjectTasksAllStatuses(ctx context.Context, arg ListProje
 	return items, nil
 }
 
+const updateGoal = `-- name: UpdateGoal :one
+UPDATE goals
+SET title       = $1,
+    description = $2,
+    area        = $3,
+    status      = $4,
+    due_date    = $5,
+    updated_at  = NOW()
+WHERE id = $6
+  AND ($7::uuid IS NULL OR workspace_id = $7)
+RETURNING id, title, description, status, area, due_date, created_at, updated_at, workspace_id
+`
+
+type UpdateGoalParams struct {
+	Title       string             `json:"title"`
+	Description pgtype.Text        `json:"description"`
+	Area        pgtype.Text        `json:"area"`
+	Status      string             `json:"status"`
+	DueDate     pgtype.Timestamptz `json:"due_date"`
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+}
+
+func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error) {
+	row := q.db.QueryRow(ctx, updateGoal,
+		arg.Title,
+		arg.Description,
+		arg.Area,
+		arg.Status,
+		arg.DueDate,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Goal
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Area,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+	)
+	return i, err
+}
+
+const updateProject = `-- name: UpdateProject :one
+UPDATE projects
+SET title       = $1,
+    description = $2,
+    area        = $3,
+    priority    = $4,
+    status      = $5,
+    goal_id     = $6,
+    updated_at  = NOW()
+WHERE id = $7
+  AND ($8::uuid IS NULL OR workspace_id = $8)
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
+`
+
+type UpdateProjectParams struct {
+	Title       string      `json:"title"`
+	Description pgtype.Text `json:"description"`
+	Area        string      `json:"area"`
+	Priority    int32       `json:"priority"`
+	Status      string      `json:"status"`
+	GoalID      pgtype.UUID `json:"goal_id"`
+	ID          uuid.UUID   `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
+	row := q.db.QueryRow(ctx, updateProject,
+		arg.Title,
+		arg.Description,
+		arg.Area,
+		arg.Priority,
+		arg.Status,
+		arg.GoalID,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.Name,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Area,
+		&i.Priority,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+	)
+	return i, err
+}
+
 const updateProjectStatus = `-- name: UpdateProjectStatus :one
 UPDATE projects SET status = $1, updated_at = NOW()
 WHERE id = $2

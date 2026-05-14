@@ -348,6 +348,55 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 	return &row, nil
 }
 
+// UpdateGoal performs a full update of a goal by ID, replacing all mutable fields.
+func (s *Store) UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams) (*db.Goal, error) {
+	row, err := s.q.UpdateGoal(ctx, db.UpdateGoalParams{
+		ID:          id,
+		Title:       p.Title,
+		Description: toText(p.Description),
+		Area:        toText(p.Area),
+		Status:      string(p.Status),
+		DueDate:     toTimestamptz(p.DueDate),
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("updating goal %s: %w", id, err)
+	}
+	return &row, nil
+}
+
+// UpdateProject performs a full update of a project by ID, replacing all mutable fields.
+func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error) {
+	area := p.Area
+	if area == "" {
+		area = "projects"
+	}
+	priority := p.Priority
+	if priority == 0 {
+		priority = 3
+	}
+	row, err := s.q.UpdateProject(ctx, db.UpdateProjectParams{
+		ID:          id,
+		Title:       p.Title,
+		Description: toText(p.Description),
+		Area:        area,
+		Priority:    priority,
+		Status:      string(p.Status),
+		GoalID:      toUUID(p.GoalID),
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("updating project %s: %w", id, err)
+	}
+	return &row, nil
+}
+
 // UpdateProjectStatus sets the status of a project by ID.
 func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error) {
 	row, err := s.q.UpdateProjectStatus(ctx, db.UpdateProjectStatusParams{

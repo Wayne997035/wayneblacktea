@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -257,6 +258,116 @@ func (h *GTDHandler) UpdateTaskStatus(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, task)
+}
+
+type updateGoalRequest struct {
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Area        string  `json:"area"`
+	Status      string  `json:"status"`
+	DueDate     *string `json:"due_date"`
+}
+
+// UpdateGoal handles PATCH /api/goals/:id — full update of a goal's mutable fields.
+func (h *GTDHandler) UpdateGoal(c echo.Context) error {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid goal id"))
+	}
+
+	var req updateGoalRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		return c.JSON(http.StatusBadRequest, errResp("title is required"))
+	}
+
+	var dueDate *time.Time
+	if req.DueDate != nil {
+		t, parseErr := time.Parse(time.RFC3339, *req.DueDate)
+		if parseErr != nil {
+			return c.JSON(http.StatusBadRequest, errResp("due_date must be RFC3339"))
+		}
+		dueDate = &t
+	}
+
+	status := gtd.GoalStatus(req.Status)
+	if status == "" {
+		status = gtd.GoalStatusActive
+	}
+	if !status.IsValid() {
+		return c.JSON(http.StatusBadRequest, errResp("invalid status value"))
+	}
+
+	goal, err := h.store.UpdateGoal(c.Request().Context(), id, gtd.UpdateGoalParams{
+		Title:       strings.TrimSpace(req.Title),
+		Description: req.Description,
+		Area:        req.Area,
+		Status:      status,
+		DueDate:     dueDate,
+	})
+	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("goal not found"))
+		}
+		c.Logger().Errorf("UpdateGoal: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, goal)
+}
+
+type updateProjectRequest struct {
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Area        string     `json:"area"`
+	Priority    int32      `json:"priority"`
+	Status      string     `json:"status"`
+	GoalID      *uuid.UUID `json:"goal_id"`
+}
+
+// UpdateProject handles PATCH /api/projects/:id — full update of a project's mutable fields.
+func (h *GTDHandler) UpdateProject(c echo.Context) error {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid project id"))
+	}
+
+	var req updateProjectRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		return c.JSON(http.StatusBadRequest, errResp("title is required"))
+	}
+
+	status := gtd.ProjectStatus(req.Status)
+	if status == "" {
+		status = gtd.ProjectStatusActive
+	}
+	if !status.IsValid() {
+		return c.JSON(http.StatusBadRequest, errResp("invalid status value"))
+	}
+	if req.Priority != 0 && (req.Priority < 1 || req.Priority > 5) {
+		return c.JSON(http.StatusBadRequest, errResp("priority must be between 1 and 5"))
+	}
+
+	project, err := h.store.UpdateProject(c.Request().Context(), id, gtd.UpdateProjectParams{
+		Title:       strings.TrimSpace(req.Title),
+		Description: req.Description,
+		Area:        req.Area,
+		Priority:    req.Priority,
+		Status:      status,
+		GoalID:      req.GoalID,
+	})
+	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("project not found"))
+		}
+		c.Logger().Errorf("UpdateProject: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, project)
 }
 
 type completeTaskRequest struct {

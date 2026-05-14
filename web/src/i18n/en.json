@@ -177,15 +177,19 @@
   "goals": {
     "modal": {
       "titleCreate": "Add Goal",
+      "titleEdit": "Edit Goal",
       "titleLabel": "Title",
       "titlePlaceholder": "Goal title…",
       "areaLabel": "Area",
       "areaPlaceholder": "e.g. Career, Health…",
+      "statusLabel": "Status",
       "descriptionLabel": "Description",
       "descriptionPlaceholder": "What does achieving this goal look like?",
       "targetDateLabel": "Target date",
       "submitCreate": "Add goal",
+      "submitEdit": "Save changes",
       "createdToast": "Goal created",
+      "updatedToast": "Goal updated",
       "errors": {
         "titleRequired": "Title is required",
         "titleTooLong": "Title must be 200 characters or fewer",
@@ -193,11 +197,17 @@
         "descriptionTooLong": "Description must be 2000 characters or fewer",
         "dateInvalid": "Invalid date"
       }
+    },
+    "status": {
+      "active": "Active",
+      "completed": "Completed",
+      "archived": "Archived"
     }
   },
   "projects": {
     "modal": {
       "titleCreate": "Add Project",
+      "titleEdit": "Edit Project",
       "titleLabel": "Title",
       "titlePlaceholder": "Project title…",
       "nameLabel": "Repo / slug name",
@@ -210,9 +220,12 @@
       "descriptionPlaceholder": "What is this project about?",
       "goalLabel": "Linked goal",
       "goalPlaceholderNone": "—",
+      "statusLabel": "Status",
       "priorityLabel": "Priority",
       "submitCreate": "Add project",
+      "submitEdit": "Save changes",
       "createdToast": "Project created",
+      "updatedToast": "Project updated",
       "errors": {
         "titleRequired": "Title is required",
         "titleTooLong": "Title must be 200 characters or fewer",

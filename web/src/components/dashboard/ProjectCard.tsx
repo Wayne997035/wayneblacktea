@@ -1,4 +1,4 @@
-import { GitBranch } from 'lucide-react'
+import { GitBranch, Pencil } from 'lucide-react'
 import { PriorityDot } from '../ui/PriorityDot'
 import { StatusBadge } from '../ui/StatusBadge'
 import type { Project } from '../../types/api'
@@ -10,6 +10,7 @@ interface ProjectCardProps {
   };
   variant?: 'compact' | 'expanded';
   onClick?: () => void;
+  onEdit?: (project: Project) => void;
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -23,7 +24,7 @@ function formatRelativeDate(dateStr: string): string {
   return date.toLocaleDateString()
 }
 
-export function ProjectCard({ project, variant = 'compact', onClick }: ProjectCardProps) {
+export function ProjectCard({ project, variant = 'compact', onClick, onEdit }: ProjectCardProps) {
   const isInteractive = Boolean(onClick)
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -69,7 +70,25 @@ export function ProjectCard({ project, variant = 'compact', onClick }: ProjectCa
             {project.title}
           </span>
         </div>
-        <StatusBadge status={project.status} size="sm" />
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <StatusBadge status={project.status} size="sm" />
+          {variant === 'expanded' && onEdit && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onEdit(project)
+              }}
+              aria-label="Edit project"
+              className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
+              style={{ color: 'var(--color-text-muted)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-bg-hover)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <Pencil size={14} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="text-caption mb-1" style={{ color: 'var(--color-text-muted)' }}>

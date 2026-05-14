@@ -825,6 +825,193 @@ func TestGTDStore_RecentActivityByProject(t *testing.T) {
 	})
 }
 
+// TestGTDStore_UpdateGoal verifies the SQLite UpdateGoal full-update path.
+func TestGTDStore_UpdateGoal(t *testing.T) {
+	t.Run("updates all mutable fields", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		g, err := s.CreateGoal(ctx, gtd.CreateGoalParams{Title: "original title", Area: "work"})
+		if err != nil {
+			t.Fatalf("CreateGoal: %v", err)
+		}
+
+		due := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		updated, err := s.UpdateGoal(ctx, g.ID, gtd.UpdateGoalParams{
+			Title:       "new title",
+			Description: "desc",
+			Area:        "personal",
+			Status:      gtd.GoalStatusCompleted,
+			DueDate:     &due,
+		})
+		if err != nil {
+			t.Fatalf("UpdateGoal: %v", err)
+		}
+		if updated.Title != "new title" {
+			t.Errorf("title: got %q, want %q", updated.Title, "new title")
+		}
+		if updated.Status != "completed" {
+			t.Errorf("status: got %q, want completed", updated.Status)
+		}
+		if !updated.Area.Valid || updated.Area.String != "personal" {
+			t.Errorf("area: got %+v, want personal", updated.Area)
+		}
+	})
+
+	t.Run("not found → ErrNotFound", func(t *testing.T) {
+		s := openMem(t, "")
+		_, err := s.UpdateGoal(context.Background(), uuid.New(), gtd.UpdateGoalParams{
+			Title:  "x",
+			Status: gtd.GoalStatusActive,
+		})
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("workspace isolation — cross-workspace update is a no-op", func(t *testing.T) {
+		tmp := t.TempDir() + "/goal-ws.db"
+		ctx := context.Background()
+		const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+		dbA, err := sqlite.Open(ctx, tmp, wsA)
+		if err != nil {
+			t.Fatalf("Open A: %v", err)
+		}
+		t.Cleanup(func() { _ = dbA.Close() })
+		storeA := sqlite.NewGTDStore(dbA)
+
+		g, err := storeA.CreateGoal(ctx, gtd.CreateGoalParams{Title: "ws-a goal"})
+		if err != nil {
+			t.Fatalf("CreateGoal: %v", err)
+		}
+
+		dbB, err := sqlite.Open(ctx, tmp, wsB)
+		if err != nil {
+			t.Fatalf("Open B: %v", err)
+		}
+		t.Cleanup(func() { _ = dbB.Close() })
+		storeB := sqlite.NewGTDStore(dbB)
+
+		_, err = storeB.UpdateGoal(ctx, g.ID, gtd.UpdateGoalParams{
+			Title:  "hijacked",
+			Status: gtd.GoalStatusArchived,
+		})
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("cross-workspace update must return ErrNotFound, got %v", err)
+		}
+	})
+}
+
+// TestGTDStore_UpdateProject verifies the SQLite UpdateProject full-update path.
+func TestGTDStore_UpdateProject(t *testing.T) {
+	t.Run("updates all mutable fields", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "orig", Title: "Original", Area: "engineering",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		updated, err := s.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:       "Updated Title",
+			Description: "new desc",
+			Area:        "operations",
+			Priority:    2,
+			Status:      gtd.ProjectStatusOnHold,
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		if updated.Title != "Updated Title" {
+			t.Errorf("title: got %q, want %q", updated.Title, "Updated Title")
+		}
+		if updated.Status != "on_hold" {
+			t.Errorf("status: got %q, want on_hold", updated.Status)
+		}
+		if updated.Priority != 2 {
+			t.Errorf("priority: got %d, want 2", updated.Priority)
+		}
+		if updated.Area != "operations" {
+			t.Errorf("area: got %q, want operations", updated.Area)
+		}
+	})
+
+	t.Run("defaults area to 'projects' when empty", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "def-area", Title: "Def", Area: "engineering",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		updated, err := s.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:  "T",
+			Status: gtd.ProjectStatusActive,
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		if updated.Area != "projects" {
+			t.Errorf("area default: got %q, want projects", updated.Area)
+		}
+	})
+
+	t.Run("not found → ErrNotFound", func(t *testing.T) {
+		s := openMem(t, "")
+		_, err := s.UpdateProject(context.Background(), uuid.New(), gtd.UpdateProjectParams{
+			Title:  "x",
+			Status: gtd.ProjectStatusActive,
+		})
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("workspace isolation — cross-workspace update is a no-op", func(t *testing.T) {
+		tmp := t.TempDir() + "/proj-ws.db"
+		ctx := context.Background()
+		const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+		dbA, err := sqlite.Open(ctx, tmp, wsA)
+		if err != nil {
+			t.Fatalf("Open A: %v", err)
+		}
+		t.Cleanup(func() { _ = dbA.Close() })
+		storeA := sqlite.NewGTDStore(dbA)
+
+		p, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "ws-a-proj", Title: "WS-A", Area: "engineering",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		dbB, err := sqlite.Open(ctx, tmp, wsB)
+		if err != nil {
+			t.Fatalf("Open B: %v", err)
+		}
+		t.Cleanup(func() { _ = dbB.Close() })
+		storeB := sqlite.NewGTDStore(dbB)
+
+		_, err = storeB.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:  "hijacked",
+			Status: gtd.ProjectStatusCompleted,
+		})
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("cross-workspace update must return ErrNotFound, got %v", err)
+		}
+	})
+}
+
 // mustCreateTask is a tiny helper to keep TasksByDueDateRange subtests free
 // of repetitive `if err := ...; err != nil { t.Fatalf(...) }` boilerplate.
 // Splitting these out also keeps the outer test under the gocyclo budget.

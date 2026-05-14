@@ -148,6 +148,14 @@ func (m *mockClassifyGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUI
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGoalParams) (*db.Goal, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error {
 	return errMockNotImpl
 }

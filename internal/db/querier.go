@@ -62,7 +62,9 @@ type Querier interface {
 	ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error)
 	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
 	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
+	UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error)
 	UpdateKnowledgeEmbedding(ctx context.Context, arg UpdateKnowledgeEmbeddingParams) error
+	UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error)
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)
 	UpdateReviewSchedule(ctx context.Context, arg UpdateReviewScheduleParams) (ReviewSchedule, error)
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)

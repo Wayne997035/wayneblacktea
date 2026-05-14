@@ -104,6 +104,14 @@ func (m *mockGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGoalParams) (*db.Goal, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return errMockNotImpl }
 
 func (m *mockGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {

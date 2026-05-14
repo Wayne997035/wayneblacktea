@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useProject } from '../hooks/useProjects'
+import { useGoals } from '../hooks/useGoals'
 import { useTasksByProject, useCompleteTask } from '../hooks/useTasks'
 import { useDecisions } from '../hooks/useDecisions'
 import { PriorityDot } from '../components/ui/PriorityDot'
@@ -10,6 +11,7 @@ import { StatusBadge } from '../components/ui/StatusBadge'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { TaskRow } from '../components/gtd/TaskRow'
 import { DecisionTimeline } from '../components/decisions/DecisionTimeline'
+import { ProjectModal } from '../components/projects/ProjectModal'
 
 // formatCompletedAt renders an ISO timestamp as a short locale-aware
 // date string (e.g. "May 7"). Falls back to the raw input on parse failure
@@ -27,8 +29,10 @@ export function ProjectDetailPage() {
   const navigate = useNavigate()
   const { t } = useTranslation()
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+  const [editModalOpen, setEditModalOpen] = useState(false)
 
   const projectQuery = useProject(id)
+  const goalsQuery = useGoals()
   // The project-detail page renders BOTH an "open" and a "completed" section,
   // so it MUST request all statuses. The default (`'active'`) stays in place
   // for GTD list pages — only this page opts in.
@@ -39,6 +43,7 @@ export function ProjectDetailPage() {
   const project = projectQuery.data
   const tasks = tasksQuery.data ?? []
   const decisions = decisionsQuery.data ?? []
+  const goals = goalsQuery.data ?? []
 
   const pendingTasks = tasks.filter((t) => t.status !== 'completed')
   const doneTasks = tasks.filter((t) => t.status === 'completed')
@@ -98,6 +103,17 @@ export function ProjectDetailPage() {
                 {project.title}
               </h1>
               <StatusBadge status={project.status} size="md" />
+              <button
+                type="button"
+                onClick={() => setEditModalOpen(true)}
+                aria-label="Edit project"
+                className="flex items-center justify-center w-8 h-8 rounded-md transition-colors flex-shrink-0"
+                style={{ color: 'var(--color-text-muted)', background: 'transparent', border: '1px solid var(--color-border)', cursor: 'pointer' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-bg-hover)' }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+              >
+                <Pencil size={14} aria-hidden="true" />
+              </button>
             </div>
             <div className="text-body-sm mb-1" style={{ color: 'var(--color-text-muted)' }}>
               {project.area}
@@ -222,6 +238,14 @@ export function ProjectDetailPage() {
             </section>
           </div>
         </>
+      )}
+
+      {editModalOpen && project && (
+        <ProjectModal
+          entity={project}
+          goals={goals}
+          onClose={() => setEditModalOpen(false)}
+        />
       )}
     </div>
   )

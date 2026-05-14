@@ -1,9 +1,11 @@
+import { Pencil } from 'lucide-react'
 import type { Goal } from '../../types/api'
 
 interface GoalCardProps {
   goal: Goal;
   completedTasks: number;
   totalTasks: number;
+  onEdit?: (goal: Goal) => void;
 }
 
 function getDaysLeft(dueDateStr: string): { label: string; color: string } {
@@ -21,7 +23,7 @@ function getDaysLeft(dueDateStr: string): { label: string; color: string } {
   return { label: `${diffDays}d left`, color: 'var(--color-text-muted)' }
 }
 
-export function GoalCard({ goal, completedTasks, totalTasks }: GoalCardProps) {
+export function GoalCard({ goal, completedTasks, totalTasks, onEdit }: GoalCardProps) {
   const pct = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0
   const daysLeft = goal.due_date ? getDaysLeft(goal.due_date) : null
 
@@ -33,14 +35,31 @@ export function GoalCard({ goal, completedTasks, totalTasks }: GoalCardProps) {
         border: '1px solid var(--color-border)',
       }}
     >
-      {goal.area && (
-        <div className="text-label mb-1" style={{ color: 'var(--color-text-muted)' }}>
-          {goal.area}
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <div className="min-w-0 flex-1">
+          {goal.area && (
+            <div className="text-label mb-1" style={{ color: 'var(--color-text-muted)' }}>
+              {goal.area}
+            </div>
+          )}
+          <h3 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
+            {goal.title}
+          </h3>
         </div>
-      )}
-      <h3 className="text-card-title mb-1" style={{ color: 'var(--color-text-primary)' }}>
-        {goal.title}
-      </h3>
+        {onEdit && (
+          <button
+            type="button"
+            onClick={() => onEdit(goal)}
+            aria-label="Edit goal"
+            className="flex items-center justify-center w-7 h-7 rounded-md flex-shrink-0 transition-colors"
+            style={{ color: 'var(--color-text-muted)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-bg-hover)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+          >
+            <Pencil size={14} aria-hidden="true" />
+          </button>
+        )}
+      </div>
       {goal.description && (
         <p
           className="text-body-sm mb-3"

@@ -177,15 +177,19 @@
   "goals": {
     "modal": {
       "titleCreate": "新增目標",
+      "titleEdit": "編輯目標",
       "titleLabel": "標題",
       "titlePlaceholder": "目標標題…",
       "areaLabel": "領域",
       "areaPlaceholder": "例如：職涯、健康…",
+      "statusLabel": "狀態",
       "descriptionLabel": "描述",
       "descriptionPlaceholder": "達成這個目標看起來會是什麼樣？",
       "targetDateLabel": "目標日期",
       "submitCreate": "新增目標",
+      "submitEdit": "儲存變更",
       "createdToast": "目標已建立",
+      "updatedToast": "目標已更新",
       "errors": {
         "titleRequired": "標題為必填",
         "titleTooLong": "標題不可超過 200 個字元",
@@ -193,11 +197,17 @@
         "descriptionTooLong": "描述不可超過 2000 個字元",
         "dateInvalid": "無效的日期"
       }
+    },
+    "status": {
+      "active": "進行中",
+      "completed": "已完成",
+      "archived": "封存"
     }
   },
   "projects": {
     "modal": {
       "titleCreate": "新增專案",
+      "titleEdit": "編輯專案",
       "titleLabel": "標題",
       "titlePlaceholder": "專案標題…",
       "nameLabel": "Slug 識別碼",
@@ -210,9 +220,12 @@
       "descriptionPlaceholder": "這個專案是關於什麼？",
       "goalLabel": "關聯目標",
       "goalPlaceholderNone": "—",
+      "statusLabel": "狀態",
       "priorityLabel": "優先級",
       "submitCreate": "新增專案",
+      "submitEdit": "儲存變更",
       "createdToast": "專案已建立",
+      "updatedToast": "專案已更新",
       "errors": {
         "titleRequired": "標題為必填",
         "titleTooLong": "標題不可超過 200 個字元",
