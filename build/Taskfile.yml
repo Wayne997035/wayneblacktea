@@ -16,6 +16,7 @@ tasks:
   check:
     desc: "Full quality gate — run before any commit"
     cmds:
+      - task: mod-tidy
       - task: frontend-check
       - task: vuln
       - task: lint
@@ -29,6 +30,13 @@ tasks:
       - task: build-wbt-hook
       - task: build-wbt-guard
     silent: false
+
+  mod-tidy:
+    desc: "Verify go.mod and go.sum are tidy (matches CI check)"
+    cmds:
+      - go mod tidy
+      - git diff --exit-code go.mod go.sum
+    dir: ..
 
   vuln:
     desc: "Run govulncheck to detect known vulnerabilities (informational, does not block check)"
