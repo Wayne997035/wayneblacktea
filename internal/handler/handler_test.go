@@ -37,6 +37,7 @@ type fakeGTDStore struct {
 	capturedTaskParams *gtd.CreateTaskParams
 	updatedTask        *db.Task
 	updatedProj        *db.Project
+	updatedGoal        *db.Goal
 	completed          *db.Task
 	completed_         int64
 	total_             int64
@@ -95,6 +96,14 @@ func (f *fakeGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.Ta
 }
 
 func (f *fakeGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd.ProjectStatus) (*db.Project, error) {
+	return f.updatedProj, f.err
+}
+
+func (f *fakeGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGoalParams) (*db.Goal, error) {
+	return f.updatedGoal, f.err
+}
+
+func (f *fakeGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
 	return f.updatedProj, f.err
 }
 
@@ -472,6 +481,162 @@ func TestGTDHandler_UpdateProjectStatus(t *testing.T) {
 			h := handler.NewGTDHandler(tc.store)
 			e.PATCH("/api/projects/:id/status", h.UpdateProjectStatus)
 			rec := performRequest(e, http.MethodPatch, "/api/projects/"+tc.paramID+"/status", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestGTDHandler_UpdateGoal(t *testing.T) {
+	id := uuid.New()
+	updated := &db.Goal{ID: id, Title: "New Title", Status: "active"}
+	cases := []struct {
+		name     string
+		paramID  string
+		body     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "success — full update",
+			paramID:  id.String(),
+			body:     `{"title":"New Title","status":"active"}`,
+			store:    &fakeGTDStore{updatedGoal: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "with due_date → 200",
+			paramID:  id.String(),
+			body:     `{"title":"Goal With Due","due_date":"2027-01-01T00:00:00Z"}`,
+			store:    &fakeGTDStore{updatedGoal: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "invalid UUID → 400",
+			paramID:  "not-a-uuid",
+			body:     `{"title":"Title"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "empty title → 400",
+			paramID:  id.String(),
+			body:     `{"title":"  "}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "missing title → 400",
+			paramID:  id.String(),
+			body:     `{"area":"work"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "invalid due_date format → 400",
+			paramID:  id.String(),
+			body:     `{"title":"T","due_date":"not-a-date"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "not found → 404",
+			paramID:  id.String(),
+			body:     `{"title":"Title"}`,
+			store:    &fakeGTDStore{err: gtd.ErrNotFound},
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "store error → 500",
+			paramID:  id.String(),
+			body:     `{"title":"Title"}`,
+			store:    &fakeGTDStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.PATCH("/api/goals/:id", h.UpdateGoal)
+			rec := performRequest(e, http.MethodPatch, "/api/goals/"+tc.paramID, tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestGTDHandler_UpdateProject(t *testing.T) {
+	id := uuid.New()
+	goalID := uuid.New()
+	updated := &db.Project{ID: id, Title: "New Title", Status: "active"}
+	cases := []struct {
+		name     string
+		paramID  string
+		body     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "success — full update",
+			paramID:  id.String(),
+			body:     `{"title":"New Title","status":"active","priority":2}`,
+			store:    &fakeGTDStore{updatedProj: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "with goal_id → 200",
+			paramID:  id.String(),
+			body:     `{"title":"T","goal_id":"` + goalID.String() + `"}`,
+			store:    &fakeGTDStore{updatedProj: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "invalid UUID → 400",
+			paramID:  "not-a-uuid",
+			body:     `{"title":"Title"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "empty title → 400",
+			paramID:  id.String(),
+			body:     `{"title":""}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "missing title → 400",
+			paramID:  id.String(),
+			body:     `{"area":"work"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "not found → 404",
+			paramID:  id.String(),
+			body:     `{"title":"Title"}`,
+			store:    &fakeGTDStore{err: gtd.ErrNotFound},
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "store error → 500",
+			paramID:  id.String(),
+			body:     `{"title":"Title"}`,
+			store:    &fakeGTDStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.PATCH("/api/projects/:id", h.UpdateProject)
+			rec := performRequest(e, http.MethodPatch, "/api/projects/"+tc.paramID, tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

@@ -72,3 +72,22 @@ type CreateTaskParams struct {
 	Importance  *int16     // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
 	Context     string     // empty → NULL; free-form discussion background
 }
+
+// UpdateGoalParams holds parameters for a full update of a goal.
+type UpdateGoalParams struct {
+	Title       string
+	Description string // empty → NULL
+	Area        string // empty → NULL
+	Status      GoalStatus
+	DueDate     *time.Time // nil → NULL
+}
+
+// UpdateProjectParams holds parameters for a full update of a project.
+type UpdateProjectParams struct {
+	Title       string
+	Description string // empty → NULL
+	Area        string // defaults to "projects" if empty
+	Priority    int32  // defaults to 3 if zero
+	Status      ProjectStatus
+	GoalID      *uuid.UUID // nil → NULL
+}

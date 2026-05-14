@@ -106,3 +106,28 @@ WHERE status IN ('pending', 'in_progress')
 DELETE FROM tasks
 WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
+
+-- name: UpdateGoal :one
+UPDATE goals
+SET title       = sqlc.arg('title'),
+    description = sqlc.arg('description'),
+    area        = sqlc.arg('area'),
+    status      = sqlc.arg('status'),
+    due_date    = sqlc.arg('due_date'),
+    updated_at  = NOW()
+WHERE id = sqlc.arg('id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+RETURNING *;
+
+-- name: UpdateProject :one
+UPDATE projects
+SET title       = sqlc.arg('title'),
+    description = sqlc.arg('description'),
+    area        = sqlc.arg('area'),
+    priority    = sqlc.arg('priority'),
+    status      = sqlc.arg('status'),
+    goal_id     = sqlc.arg('goal_id'),
+    updated_at  = NOW()
+WHERE id = sqlc.arg('id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+RETURNING *;

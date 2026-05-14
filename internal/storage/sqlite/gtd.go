@@ -12,6 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// defaultProjectArea is the fallback area applied when an empty area is
+// provided to CreateProject, CreateProjectTx, or UpdateProject.
+const defaultProjectArea = "projects"
+
 // GTDStore is the SQLite-backed implementation of gtd.StoreIface.
 type GTDStore struct {
 	db *DB
@@ -250,7 +254,7 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 	id := uuid.New()
 	area := p.Area
 	if area == "" {
-		area = "projects"
+		area = defaultProjectArea
 	}
 	priority := p.Priority
 	if priority == 0 {
@@ -302,7 +306,7 @@ func (s *GTDStore) CreateProjectTx(ctx context.Context, tx *sql.Tx, p gtd.Create
 	id := uuid.New()
 	area := p.Area
 	if area == "" {
-		area = "projects"
+		area = defaultProjectArea
 	}
 	priority := p.Priority
 	if priority == 0 {
@@ -627,6 +631,73 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 		return nil, gtd.ErrNotFound
 	}
 	return s.taskByID(ctx, id)
+}
+
+// UpdateGoal performs a full update of a goal by ID, replacing all mutable fields.
+func (s *GTDStore) UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoalParams) (*db.Goal, error) {
+	var dueVal any
+	if p.DueDate != nil {
+		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
+	}
+	const q = `UPDATE goals
+		SET title = ?2, description = ?3, area = ?4, status = ?5, due_date = ?6, updated_at = ?7
+		WHERE id = ?1
+		  AND (?8 IS NULL OR workspace_id = ?8)`
+	now := nowRFC3339()
+	res, err := s.db.conn.ExecContext(ctx, q,
+		id.String(),
+		p.Title,
+		nullStringIfEmpty(p.Description),
+		nullStringIfEmpty(p.Area),
+		string(p.Status),
+		dueVal,
+		now,
+		s.db.workspaceArg(),
+	)
+	if err != nil {
+		return nil, errWrap("UpdateGoal", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return nil, gtd.ErrNotFound
+	}
+	return s.goalByID(ctx, id)
+}
+
+// UpdateProject performs a full update of a project by ID, replacing all mutable fields.
+func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.UpdateProjectParams) (*db.Project, error) {
+	area := p.Area
+	if area == "" {
+		area = defaultProjectArea
+	}
+	priority := p.Priority
+	if priority == 0 {
+		priority = 3
+	}
+	const q = `UPDATE projects
+		SET title = ?2, description = ?3, area = ?4, priority = ?5, status = ?6, goal_id = ?7, updated_at = ?8
+		WHERE id = ?1
+		  AND (?9 IS NULL OR workspace_id = ?9)`
+	now := nowRFC3339()
+	res, err := s.db.conn.ExecContext(ctx, q,
+		id.String(),
+		p.Title,
+		nullStringIfEmpty(p.Description),
+		area,
+		priority,
+		string(p.Status),
+		nullStringFromUUID(p.GoalID),
+		now,
+		s.db.workspaceArg(),
+	)
+	if err != nil {
+		return nil, errWrap("UpdateProject", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return nil, gtd.ErrNotFound
+	}
+	return s.projectByID(ctx, id)
 }
 
 // UpdateProjectStatus sets the status of a project.

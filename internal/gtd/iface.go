@@ -51,6 +51,10 @@ type StoreIface interface {
 	CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error)
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error)
+	// UpdateGoal performs a full update of a goal, replacing all mutable fields.
+	UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams) (*db.Goal, error)
+	// UpdateProject performs a full update of a project, replacing all mutable fields.
+	UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error)
 	DeleteTask(ctx context.Context, id uuid.UUID) error
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
 	// TopPendingTask returns the single highest-priority pending task scoped to
