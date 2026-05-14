@@ -7,6 +7,7 @@ import type { Project, ProjectStatus } from '../../types/api'
 
 interface ProjectListProps {
   projects: Project[];
+  onEdit?: (project: Project) => void;
 }
 
 type TabFilter = 'all' | ProjectStatus
@@ -18,7 +19,7 @@ const tabs: { key: TabFilter; labelKey: string }[] = [
   { key: 'completed', labelKey: 'gtd.tabs.completed' },
 ]
 
-export function ProjectList({ projects }: ProjectListProps) {
+export function ProjectList({ projects, onEdit }: ProjectListProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TabFilter>('all')
@@ -59,6 +60,7 @@ export function ProjectList({ projects }: ProjectListProps) {
               project={project}
               variant="expanded"
               onClick={() => navigate(`/workspace/projects/${project.id}`)}
+              onEdit={onEdit}
             />
           ))}
         </div>

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
-import type { Goal } from '../types/api'
+import type { Goal, GoalStatus } from '../types/api'
 
 export function useGoals() {
   return useQuery<Goal[]>({
@@ -23,6 +23,29 @@ export function useCreateGoal() {
       apiFetch<Goal>('/api/goals', {
         method: 'POST',
         body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['goals'] })
+      void queryClient.invalidateQueries({ queryKey: ['context', 'today'] })
+    },
+  })
+}
+
+export interface UpdateGoalRequest {
+  title?: string;
+  area?: string | null;
+  description?: string | null;
+  status?: GoalStatus;
+  due_date?: string | null;
+}
+
+export function useUpdateGoal() {
+  const queryClient = useQueryClient()
+  return useMutation<Goal, Error, { id: string } & UpdateGoalRequest>({
+    mutationFn: ({ id, ...body }) =>
+      apiFetch<Goal>(`/api/goals/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['goals'] })

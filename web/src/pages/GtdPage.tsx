@@ -8,15 +8,20 @@ import { ProjectList } from '../components/gtd/ProjectList'
 import { TaskList } from '../components/gtd/TaskList'
 import { QuickAddModal } from '../components/gtd/QuickAddModal'
 import { GoalCreateModal } from '../components/goals/GoalCreateModal'
+import { GoalModal } from '../components/goals/GoalModal'
 import { ProjectCreateModal } from '../components/projects/ProjectCreateModal'
+import { ProjectModal } from '../components/projects/ProjectModal'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
+import type { Goal, Project } from '../types/api'
 
-type ModalType = 'task' | 'goal' | 'project' | null
+type ModalType = 'task' | 'goal' | 'project' | 'editGoal' | 'editProject' | null
 
 export function GtdPage() {
   const { t } = useTranslation()
   const [activeModal, setActiveModal] = useState<ModalType>(null)
+  const [editGoal, setEditGoal] = useState<Goal | null>(null)
+  const [editProject, setEditProject] = useState<Project | null>(null)
   const [fabOpen, setFabOpen] = useState(false)
   const goalsQuery = useGoals()
   const projectsQuery = useProjects()
@@ -27,6 +32,12 @@ export function GtdPage() {
   const openModal = (type: ModalType) => {
     setFabOpen(false)
     setActiveModal(type)
+  }
+
+  function handleModalClose() {
+    setActiveModal(null)
+    setEditGoal(null)
+    setEditProject(null)
   }
 
   return (
@@ -58,6 +69,7 @@ export function GtdPage() {
                 goal={goal}
                 completedTasks={0}
                 totalTasks={0}
+                onEdit={(g) => { setEditGoal(g); setActiveModal('editGoal') }}
               />
             ))}
           </div>
@@ -76,7 +88,10 @@ export function GtdPage() {
             ))}
           </div>
         ) : (
-          <ProjectList projects={projects} />
+          <ProjectList
+            projects={projects}
+            onEdit={(p) => { setEditProject(p); setActiveModal('editProject') }}
+          />
         )}
       </section>
 
@@ -184,6 +199,12 @@ export function GtdPage() {
           goals={goals}
           onClose={() => setActiveModal(null)}
         />
+      )}
+      {activeModal === 'editGoal' && editGoal && (
+        <GoalModal entity={editGoal} onClose={handleModalClose} />
+      )}
+      {activeModal === 'editProject' && editProject && (
+        <ProjectModal entity={editProject} goals={goals} onClose={handleModalClose} />
       )}
     </div>
   )
