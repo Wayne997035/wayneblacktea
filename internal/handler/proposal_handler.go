@@ -291,27 +291,28 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 	}
 }
 
-// acceptConcept preserves the original concept-accept ordering (Resolve
-// first, materialise after) so concurrent accepts cannot create duplicate
-// concepts. Extracted from handleAccept to keep gocyclo low.
+// acceptConcept materialises the concept row BEFORE marking the proposal
+// accepted (matching acceptDecision). If Resolve fails after materialise (e.g.
+// concurrent accept), an orphaned concept row is left behind; orphan > missing.
 func (h *ProposalHandler) acceptConcept(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
 	cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
 	if errMsg != "" {
 		return c.JSON(http.StatusBadRequest, errResp(errMsg))
 	}
 
+	concept, err := h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
 	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
 	if errors.Is(err, proposal.ErrNotFound) {
+		c.Logger().Warnf("ConfirmProposal accept %s: resolved concurrently (orphan concept %s)", id, concept.ID)
 		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
 	}
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-	}
-
-	concept, err := h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Concept: concept})
@@ -353,29 +354,18 @@ func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Decision: logged})
 }
 
-// acceptKnowledge materialises a knowledge_items row from a TypeKnowledge
-// proposal. Ordering follows acceptConcept (Resolve first, AddItem after) so
-// concurrent accepts cannot create duplicate knowledge items. If AddItem fails
-// the proposal is already resolved — the error is logged at warn level but the
-// accept is still considered successful (non-fatal, matching acceptConcept contract).
+// acceptKnowledge materialises a knowledge_items row BEFORE marking the
+// proposal accepted (matching acceptDecision). If Resolve fails (concurrent
+// accept), an orphaned knowledge_items row is left; orphan > missing.
 func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
 	kp, errMsg := decodeKnowledgeCandidatePayload(prop.Payload)
 	if errMsg != "" {
 		return c.JSON(http.StatusBadRequest, errResp(errMsg))
 	}
 
-	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
-	if errors.Is(err, proposal.ErrNotFound) {
-		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
-	}
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-	}
-
 	if h.knowledge == nil {
-		c.Logger().Warnf("ConfirmProposal knowledge %s: knowledge store not wired, skipping materialisation", id)
-		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
+		c.Logger().Errorf("ConfirmProposal knowledge %s: knowledge store not wired", id)
+		return c.JSON(http.StatusInternalServerError, errResp("knowledge store not configured"))
 	}
 
 	source := ""
@@ -390,8 +380,18 @@ func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, i
 		Source:  source,
 	})
 	if err != nil {
-		c.Logger().Warnf("ConfirmProposal materialise knowledge %s: %v", id, err)
-		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
+		c.Logger().Errorf("ConfirmProposal materialise knowledge %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
+	if errors.Is(err, proposal.ErrNotFound) {
+		c.Logger().Warnf("ConfirmProposal accept %s: resolved concurrently (orphan knowledge_item %s)", id, item.ID)
+		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
+	}
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), KnowledgeItem: item})
 }
