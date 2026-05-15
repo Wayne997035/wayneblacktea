@@ -139,7 +139,7 @@ func atomizeAndPersist(
 		})
 		if err != nil {
 			slog.Warn("atomize: persist atom failed", "err", err)
-			return
+			continue
 		}
 		atomIDs = append(atomIDs, a.ID)
 	}
@@ -182,6 +182,12 @@ func persistLinks(ctx context.Context, store atom.StoreIface, atomIDs []uuid.UUI
 	}
 }
 
+// LaunchAtomize is the exported form of launchAtomize, used to inject background
+// atomization into HTTP handler paths that share the same MCP server's AI chain.
+func (s *Server) LaunchAtomize(parentTable string, parentID uuid.UUID, text string) {
+	s.launchAtomize(parentTable, parentID, text)
+}
+
 // launchAtomize spawns atomizeAndPersist in a background goroutine with its own
 // independent timeout so the MCP request is never blocked. A 5-slot semaphore
 // (atomizeSem) caps concurrent Haiku API calls to prevent budget exhaustion on
@@ -191,6 +197,11 @@ func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text stri
 		return
 	}
 	go func(pid uuid.UUID, t string) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("launchAtomize: recovered panic", "parent_id", pid, "panic", r)
+			}
+		}()
 		select {
 		case s.atomizeSem <- struct{}{}:
 			defer func() { <-s.atomizeSem }()

@@ -248,6 +248,64 @@ func TestKnowledgeHandler_AddKnowledge(t *testing.T) {
 	}
 }
 
+// TestKnowledgeHandler_AddKnowledge_Atomizer verifies that WithAtomizer injects
+// background atomization into the HTTP path, matching MCP behaviour.
+func TestKnowledgeHandler_AddKnowledge_Atomizer(t *testing.T) {
+	item := &db.KnowledgeItem{ID: uuid.New(), Type: "til", Title: "Test item", Content: "some content"}
+
+	t.Run("atomize called on success", func(t *testing.T) {
+		var called bool
+		var calledTable string
+		var calledID uuid.UUID
+		atomizeFn := func(table string, id uuid.UUID, _ string) {
+			called = true
+			calledTable = table
+			calledID = id
+		}
+		e := echo.New()
+		h := handler.NewKnowledgeHandler(&fakeKnowledgeStore{item: item}, nil).WithAtomizer(atomizeFn)
+		e.POST("/api/knowledge", h.AddKnowledge)
+		rec := performRequest(e, http.MethodPost, "/api/knowledge", `{"type":"til","title":"Test item","content":"some content"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !called {
+			t.Fatal("atomize fn was not called")
+		}
+		if calledTable != "knowledge_items" {
+			t.Errorf("table = %q, want knowledge_items", calledTable)
+		}
+		if calledID != item.ID {
+			t.Errorf("id = %v, want %v", calledID, item.ID)
+		}
+	})
+
+	t.Run("atomize not called on store error", func(t *testing.T) {
+		var called bool
+		e := echo.New()
+		h := handler.NewKnowledgeHandler(&fakeKnowledgeStore{err: errors.New("db fail")}, nil).
+			WithAtomizer(func(string, uuid.UUID, string) { called = true })
+		e.POST("/api/knowledge", h.AddKnowledge)
+		rec := performRequest(e, http.MethodPost, "/api/knowledge", `{"type":"til","title":"Test item"}`)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("want 500, got %d", rec.Code)
+		}
+		if called {
+			t.Fatal("atomize fn must not be called when store fails")
+		}
+	})
+
+	t.Run("nil atomizer is safe", func(t *testing.T) {
+		e := echo.New()
+		h := handler.NewKnowledgeHandler(&fakeKnowledgeStore{item: item}, nil)
+		e.POST("/api/knowledge", h.AddKnowledge)
+		rec := performRequest(e, http.MethodPost, "/api/knowledge", `{"type":"til","title":"Test item"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 // ---- SearchKnowledge tests ----
 
 func TestKnowledgeHandler_SearchKnowledge(t *testing.T) {
