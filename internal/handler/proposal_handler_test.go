@@ -223,14 +223,14 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 			wantConceptCreated: 0,
 		},
 		{
-			name:               "concept creation failure → batch result still ok (non-fatal)",
+			name:               "concept creation failure → batch entry error, proposal not resolved (materialise-first)",
 			body:               `{"ids":["` + concept1ID.String() + `"],"action":"accept"}`,
 			store:              newFakeProposalStore(concept1),
 			learning:           &fakeProposalLearningStore{err: errors.New("concept store down")},
 			wantCode:           http.StatusOK,
 			wantResultCount:    1,
-			wantOKCount:        1, // proposal resolved OK
-			wantConceptCreated: 1, // attempted (even if failed)
+			wantOKCount:        0, // materialise failed → Resolve NOT called
+			wantConceptCreated: 1, // attempted before Resolve
 		},
 		{
 			name:     "invalid action → 400",
@@ -377,6 +377,48 @@ func TestProposalHandler_ConfirmProposal_Accept(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst verifies that
+// materialisation happens BEFORE Resolve so a materialise failure cannot leave
+// the proposal accepted with no backing entity.
+func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
+	conceptProp := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    string(proposal.TypeConcept),
+		Status:  string(proposal.StatusPending),
+		Payload: []byte(`{"title":"Test","content":"Body","tags":[]}`),
+	}
+
+	t.Run("concept: materialise fails → 500, Resolve NOT called", func(t *testing.T) {
+		store := newFakeProposalStore(conceptProp)
+		learn := &fakeProposalLearningStore{err: errors.New("db down")}
+		e := newEcho()
+		h := handler.NewProposalHandler(store, learn)
+		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
+		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("want 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if len(store.resolved) != 0 {
+			t.Errorf("Resolve must not be called when materialise fails; got %v", store.resolved)
+		}
+	})
+
+	t.Run("concept: materialise succeeds → proposal resolved", func(t *testing.T) {
+		store := newFakeProposalStore(conceptProp)
+		learn := &fakeProposalLearningStore{concept: &db.Concept{ID: uuid.New(), Title: "Test"}}
+		e := newEcho()
+		h := handler.NewProposalHandler(store, learn)
+		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
+		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
+		if rec.Code != http.StatusOK {
+			t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if len(store.resolved) != 1 {
+			t.Errorf("Resolve must be called exactly once; got %v", store.resolved)
+		}
+	})
 }
 
 // ---- ListProposals tests (UX-5: status filter) ----

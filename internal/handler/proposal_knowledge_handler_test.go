@@ -65,20 +65,20 @@ func TestProposalHandler_ConfirmProposal_AcceptKnowledge(t *testing.T) {
 			wantItemCreated: 1,
 		},
 		{
-			name:            "accept knowledge, store not wired → 200 but no knowledge_item field",
+			name:            "accept knowledge, store not wired → 500",
 			proposal:        makeKnowledgeProposal(id, "Ebbinghaus forgetting curve", "Memory decays without review."),
 			knowledgeStore:  nil,
-			wantCode:        http.StatusOK,
+			wantCode:        http.StatusInternalServerError,
 			wantItemInResp:  false,
 			wantItemCreated: 0,
 		},
 		{
-			name:            "accept knowledge, AddItem fails → 200 (non-fatal)",
+			name:            "accept knowledge, AddItem fails → 500 (materialise-before-resolve: proposal stays pending)",
 			proposal:        makeKnowledgeProposal(id, "Ebbinghaus forgetting curve", "Memory decays without review."),
 			knowledgeStore:  &fakeKnowledgeStoreForProposal{err: errors.New("knowledge store error")},
-			wantCode:        http.StatusOK,
+			wantCode:        http.StatusInternalServerError,
 			wantItemInResp:  false,
-			wantItemCreated: 1, // attempted
+			wantItemCreated: 1, // attempted but failed
 		},
 		{
 			name: "malformed knowledge payload → 400",
@@ -277,13 +277,13 @@ func TestProposalHandler_ConfirmBatch_AcceptKnowledge(t *testing.T) {
 			wantKnowledgeAdded: 0,
 		},
 		{
-			name:               "knowledge store not wired → resolve still OK",
+			name:               "knowledge store not wired → entry error, proposal not resolved",
 			body:               `{"ids":["` + knowledgeID.String() + `"],"action":"accept"}`,
 			store:              newFakeProposalStore(knowledge1),
 			knowledge:          nil,
 			learning:           &fakeProposalLearningStore{},
 			wantCode:           http.StatusOK,
-			wantOKCount:        1,
+			wantOKCount:        0,
 			wantKnowledgeAdded: 0,
 		},
 	}
