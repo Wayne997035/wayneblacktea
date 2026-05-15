@@ -373,9 +373,14 @@ func TestDashboardHandler_GetWeeklyProgress(t *testing.T) {
 // ---- D5: GetPendingKnowledgeProposals ----
 
 func TestDashboardHandler_GetPendingKnowledgeProposals(t *testing.T) {
-	proposals := []db.PendingProposal{
+	knowledgeOnly := []db.PendingProposal{
+		{ID: uuid.New(), Type: "knowledge", Status: "pending"},
+		{ID: uuid.New(), Type: "knowledge", Status: "pending", CreatedAt: pgtype.Timestamptz{Valid: false}},
+	}
+	mixed := []db.PendingProposal{
+		{ID: uuid.New(), Type: "knowledge", Status: "pending"},
 		{ID: uuid.New(), Type: "concept", Status: "pending"},
-		{ID: uuid.New(), Type: "concept", Status: "pending", CreatedAt: pgtype.Timestamptz{Valid: false}},
+		{ID: uuid.New(), Type: "goal", Status: "pending"},
 	}
 	cases := []struct {
 		name      string
@@ -384,8 +389,8 @@ func TestDashboardHandler_GetPendingKnowledgeProposals(t *testing.T) {
 		checkBody func(t *testing.T, body []byte)
 	}{
 		{
-			name:      "happy path",
-			propStore: &fakeDashboardProposalStore{list: proposals},
+			name:      "happy path — knowledge only returned",
+			propStore: &fakeDashboardProposalStore{list: knowledgeOnly},
 			wantCode:  http.StatusOK,
 			checkBody: func(t *testing.T, body []byte) {
 				t.Helper()
@@ -394,7 +399,7 @@ func TestDashboardHandler_GetPendingKnowledgeProposals(t *testing.T) {
 					t.Fatalf("invalid JSON: %v", err)
 				}
 				if len(out) != 2 {
-					t.Errorf("expected 2 proposals, got %d", len(out))
+					t.Errorf("expected 2 knowledge proposals, got %d", len(out))
 				}
 				for _, item := range out {
 					for _, key := range []string{"id", "type", "status"} {
@@ -402,6 +407,25 @@ func TestDashboardHandler_GetPendingKnowledgeProposals(t *testing.T) {
 							t.Errorf("missing key %q in item", key)
 						}
 					}
+				}
+			},
+		},
+		{
+			name:      "mixed types — only knowledge proposals returned",
+			propStore: &fakeDashboardProposalStore{list: mixed},
+			wantCode:  http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var out []map[string]json.RawMessage
+				if err := json.Unmarshal(body, &out); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				if len(out) != 1 {
+					t.Errorf("expected 1 knowledge proposal (filtered), got %d", len(out))
+				}
+				var rawType string
+				if err := json.Unmarshal(out[0]["type"], &rawType); err != nil || rawType != "knowledge" {
+					t.Errorf("expected type=knowledge, got %q", rawType)
 				}
 			},
 		},
