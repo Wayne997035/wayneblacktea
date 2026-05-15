@@ -471,6 +471,13 @@ func TestGTDHandler_UpdateProjectStatus(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
+			name:     "invalid status → 400",
+			paramID:  id.String(),
+			body:     `{"status":"garbage"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
 			name:     "not found → 404",
 			paramID:  id.String(),
 			body:     `{"status":"completed"}`,
