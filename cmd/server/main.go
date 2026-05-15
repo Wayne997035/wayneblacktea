@@ -304,6 +304,7 @@ func run() error {
 		mcpServer.WithDecisionDrafter(ai.NewDecisionDrafter(llmChain))
 	}
 	mcpServer.WithSnapshot(snapStore, snapGen)
+	knowledgeH.WithAtomizer(mcpServer.LaunchAtomize)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
 	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
 

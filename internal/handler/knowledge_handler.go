@@ -13,14 +13,22 @@ import (
 
 // KnowledgeHandler handles all Knowledge-domain endpoints.
 type KnowledgeHandler struct {
-	store    knowledgeStore
-	proposal proposalStore // optional; nil disables auto-propose-concept
+	store     knowledgeStore
+	proposal  proposalStore                   // optional; nil disables auto-propose-concept
+	atomizeFn func(string, uuid.UUID, string) // optional; nil skips background atomization
 }
 
 // NewKnowledgeHandler creates a KnowledgeHandler. proposal may be nil to opt
 // out of the auto-propose-concept-card behaviour (mainly for tests).
 func NewKnowledgeHandler(s knowledgeStore, p proposalStore) *KnowledgeHandler {
 	return &KnowledgeHandler{store: s, proposal: p}
+}
+
+// WithAtomizer injects a background atomization function so HTTP-added knowledge
+// enters the same digestion pipeline as MCP-added knowledge.
+func (h *KnowledgeHandler) WithAtomizer(fn func(string, uuid.UUID, string)) *KnowledgeHandler {
+	h.atomizeFn = fn
+	return h
 }
 
 // ListKnowledge returns knowledge items with optional pagination.
@@ -118,6 +126,10 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 		}
 		c.Logger().Errorf("AddKnowledge: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	if h.atomizeFn != nil {
+		h.atomizeFn("knowledge_items", item.ID, item.Content)
 	}
 
 	// Best-effort auto-propose: failure here must not roll back the freshly

@@ -182,6 +182,12 @@ func persistLinks(ctx context.Context, store atom.StoreIface, atomIDs []uuid.UUI
 	}
 }
 
+// LaunchAtomize is the exported form of launchAtomize, used to inject background
+// atomization into HTTP handler paths that share the same MCP server's AI chain.
+func (s *Server) LaunchAtomize(parentTable string, parentID uuid.UUID, text string) {
+	s.launchAtomize(parentTable, parentID, text)
+}
+
 // launchAtomize spawns atomizeAndPersist in a background goroutine with its own
 // independent timeout so the MCP request is never blocked. A 5-slot semaphore
 // (atomizeSem) caps concurrent Haiku API calls to prevent budget exhaustion on
