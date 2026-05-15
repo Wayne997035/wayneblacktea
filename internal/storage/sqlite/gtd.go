@@ -418,6 +418,36 @@ func (s *GTDStore) TasksForTimeline(ctx context.Context, from, to time.Time) ([]
 	return s.scanTaskRows(rows, "TasksForTimeline")
 }
 
+// UpcomingTasks returns pending/in_progress tasks relevant to the upcoming
+// window rooted at refDate. The window includes:
+//   - tasks with a due_date <= windowEnd (refDate + days, end-of-day UTC)
+//   - tasks with importance=1 and no due_date (unscheduled_important bucket)
+//
+// SQLite stores timestamps as RFC3339 TEXT; lexicographic comparison works
+// because CreateTask enforces .UTC().Format(time.RFC3339Nano) on due_date.
+func (s *GTDStore) UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error) {
+	windowEnd := refDate.UTC().AddDate(0, 0, days).Truncate(24 * time.Hour).Add(24*time.Hour - time.Nanosecond)
+	windowEndStr := windowEnd.UTC().Format(time.RFC3339Nano)
+	fetchLimit := limit * 2
+	if fetchLimit < limit {
+		fetchLimit = limit
+	}
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE status IN ('pending','in_progress')
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		  AND (
+		      (due_date IS NOT NULL AND due_date <= ?2)
+		      OR (due_date IS NULL AND importance = 1)
+		  )
+		ORDER BY due_date ASC NULLS LAST, priority ASC, created_at ASC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), windowEndStr, fetchLimit)
+	if err != nil {
+		return nil, errWrap("UpcomingTasks", err)
+	}
+	return s.scanTaskRows(rows, "UpcomingTasks")
+}
+
 // Tasks returns pending/in-progress tasks, optionally filtered by projectID.
 func (s *GTDStore) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error) {
 	var (
@@ -509,8 +539,8 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 }
 
 func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
-	const q = `SELECT ` + tasksSelectCols + ` FROM tasks WHERE id = ?1 LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id.String())
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg())
 	t, err := scanTask(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, gtd.ErrNotFound
@@ -660,6 +690,104 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 	res, err := s.db.conn.ExecContext(ctx, q, id.String(), string(status), now, s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("UpdateTaskStatus", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return nil, gtd.ErrNotFound
+	}
+	return s.taskByID(ctx, id)
+}
+
+// mergedTaskFields holds the resolved column values for an UpdateTask write,
+// computed by mergeTaskFields from the existing row and the patch params.
+type mergedTaskFields struct {
+	title      string
+	desc       any
+	priority   int32
+	importance any
+	assignee   any
+	dueDate    any
+	taskCtx    any
+	status     string
+}
+
+// mergeTaskFields merges non-nil patch params over the existing task row values,
+// producing a complete set of column values ready for an UPDATE statement.
+func mergeTaskFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFields {
+	m := mergedTaskFields{
+		title:    existing.Title,
+		priority: existing.Priority,
+		status:   existing.Status,
+	}
+	if p.Title != nil {
+		m.title = *p.Title
+	}
+	if p.Priority != nil {
+		m.priority = *p.Priority
+	}
+	if p.Status != nil {
+		m.status = *p.Status
+	}
+
+	if p.Description != nil {
+		m.desc = nullStringIfEmpty(*p.Description)
+	} else if existing.Description.Valid {
+		m.desc = existing.Description.String
+	}
+	if p.Importance != nil {
+		m.importance = int(*p.Importance)
+	} else if existing.Importance.Valid {
+		m.importance = int(existing.Importance.Int16)
+	}
+	if p.Assignee != nil {
+		m.assignee = nullStringIfEmpty(*p.Assignee)
+	} else if existing.Assignee.Valid {
+		m.assignee = existing.Assignee.String
+	}
+	if p.DueDate != nil {
+		m.dueDate = p.DueDate.UTC().Format(time.RFC3339Nano)
+	} else if existing.DueDate.Valid {
+		m.dueDate = existing.DueDate.Time.UTC().Format(time.RFC3339Nano)
+	}
+	if p.Context != nil {
+		m.taskCtx = nullStringIfEmpty(*p.Context)
+	} else if existing.Context.Valid {
+		m.taskCtx = existing.Context.String
+	}
+	return m
+}
+
+// UpdateTask performs a partial update of a task by ID. nil fields in p are
+// preserved from the existing row (no null-clear support). Pre-reads the existing
+// task to fill nil params, then executes a single UPDATE.
+// Returns ErrNotFound when no row matching id exists in the configured workspace.
+func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTaskParams) (*db.Task, error) {
+	existing, err := s.taskByID(ctx, id)
+	if err != nil {
+		return nil, err // ErrNotFound propagated as-is
+	}
+
+	m := mergeTaskFields(existing, p)
+
+	const q = `UPDATE tasks
+		SET title       = ?2,
+		    description = ?3,
+		    priority    = ?4,
+		    importance  = ?5,
+		    assignee    = ?6,
+		    due_date    = ?7,
+		    context     = ?8,
+		    status      = ?9,
+		    updated_at  = ?10
+		WHERE id = ?1
+		  AND (?11 IS NULL OR workspace_id = ?11)`
+	now := nowRFC3339()
+	res, err := s.db.conn.ExecContext(ctx, q,
+		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status,
+		now, s.db.workspaceArg(),
+	)
+	if err != nil {
+		return nil, errWrap("UpdateTask", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {

@@ -109,3 +109,17 @@ type UpdateProjectParams struct {
 	Status      ProjectStatus
 	GoalID      *uuid.UUID // nil → NULL
 }
+
+// UpdateTaskParams holds parameters for a partial update of a task.
+// nil pointer = "don't change this field" (no null-clear support).
+// All-nil = invalid; callers must set at least one field.
+type UpdateTaskParams struct {
+	Title       *string
+	Description *string
+	Priority    *int32
+	Importance  *int16
+	Assignee    *string
+	DueDate     *time.Time
+	Context     *string
+	Status      *string
+}

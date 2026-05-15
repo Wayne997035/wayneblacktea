@@ -216,6 +216,7 @@ func run() error {
 	api.GET("/projects/:id/tasks", gtdH.ListProjectTasks)
 
 	api.POST("/tasks", gtdH.CreateTask, mutationRL)
+	api.PATCH("/tasks/:id", gtdH.UpdateTask, mutationRL)
 	api.PATCH("/tasks/:id/status", gtdH.UpdateTaskStatus, mutationRL)
 	api.PATCH("/tasks/:id/complete", gtdH.CompleteTask, mutationRL)
 
@@ -268,6 +269,7 @@ func run() error {
 	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress, dashboardRL)
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
+	api.GET("/dashboard/upcoming-tasks", dashH.GetUpcomingTasks, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)

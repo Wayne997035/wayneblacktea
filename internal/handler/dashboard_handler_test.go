@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
@@ -22,12 +23,14 @@ const jsonNull = "null"
 
 // fakeDashboardGTDStore satisfies dashboardGTDStore (unexported; tested via exported handler).
 type fakeDashboardGTDStore struct {
-	projects   []db.Project
-	completed  int64
-	total      int64
-	topTask    *db.Task
-	topTaskErr error
-	err        error
+	projects        []db.Project
+	completed       int64
+	total           int64
+	topTask         *db.Task
+	topTaskErr      error
+	upcomingTasks   []db.Task
+	upcomingTaskErr error
+	err             error
 }
 
 func (f *fakeDashboardGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
@@ -40,6 +43,10 @@ func (f *fakeDashboardGTDStore) ListActiveProjects(_ context.Context) ([]db.Proj
 
 func (f *fakeDashboardGTDStore) TopPendingTask(_ context.Context) (*db.Task, error) {
 	return f.topTask, f.topTaskErr
+}
+
+func (f *fakeDashboardGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
+	return f.upcomingTasks, f.upcomingTaskErr
 }
 
 // fakeDashboardDecisionStore satisfies dashboardDecisionStore.
@@ -531,6 +538,164 @@ func TestDashboardHandler_GetNextTask(t *testing.T) {
 			h := handler.NewDashboardHandler(tc.gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
 			e.GET("/api/dashboard/next-task", h.GetNextTask)
 			rec := performRequest(e, http.MethodGet, "/api/dashboard/next-task", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.checkBody != nil && rec.Code == http.StatusOK {
+				tc.checkBody(t, rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// ---- D7: GetUpcomingTasks ----
+
+func TestDashboardHandler_GetUpcomingTasks(t *testing.T) {
+	now := time.Now()
+	todayDue := pgtype.Timestamptz{Time: now, Valid: true}
+	tomorrowDue := pgtype.Timestamptz{Time: now.AddDate(0, 0, 1), Valid: true}
+	dayAfterDue := pgtype.Timestamptz{Time: now.AddDate(0, 0, 2), Valid: true}
+	upcomingDue := pgtype.Timestamptz{Time: now.AddDate(0, 0, 5), Valid: true}
+	highImp := int16(1)
+
+	allFiveTasks := []db.Task{
+		{ID: uuid.New(), Title: "today-task", Status: "pending", Priority: 1, DueDate: todayDue},
+		{ID: uuid.New(), Title: "tomorrow-task", Status: "pending", Priority: 2, DueDate: tomorrowDue},
+		{ID: uuid.New(), Title: "dayafter-task", Status: "pending", Priority: 2, DueDate: dayAfterDue},
+		{ID: uuid.New(), Title: "upcoming-task", Status: "pending", Priority: 3, DueDate: upcomingDue},
+		{
+			ID:         uuid.New(),
+			Title:      "unscheduled-important-task",
+			Status:     "in_progress",
+			Priority:   1,
+			Importance: pgtype.Int2{Int16: highImp, Valid: true},
+		},
+	}
+
+	cases := []struct {
+		name      string
+		query     string
+		gtdStore  *fakeDashboardGTDStore
+		wantCode  int
+		checkBody func(t *testing.T, body []byte)
+	}{
+		{
+			name:     "happy path — default params, groups present",
+			query:    "",
+			gtdStore: &fakeDashboardGTDStore{upcomingTasks: allFiveTasks},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp map[string]json.RawMessage
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				if _, ok := resp["groups"]; !ok {
+					t.Error("missing key \"groups\" in response")
+				}
+				var groups map[string]json.RawMessage
+				if err := json.Unmarshal(resp["groups"], &groups); err != nil {
+					t.Fatalf("groups is not a JSON object: %v", err)
+				}
+				for _, key := range []string{"today", "tomorrow", "day_after", "upcoming", "unscheduled_important"} {
+					if _, ok := groups[key]; !ok {
+						t.Errorf("missing bucket %q in groups", key)
+					}
+				}
+			},
+		},
+		{
+			name:     "empty store — all buckets present but empty",
+			query:    "",
+			gtdStore: &fakeDashboardGTDStore{upcomingTasks: []db.Task{}},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp struct {
+					Groups struct {
+						Today                []json.RawMessage `json:"today"`
+						Tomorrow             []json.RawMessage `json:"tomorrow"`
+						DayAfter             []json.RawMessage `json:"day_after"`
+						Upcoming             []json.RawMessage `json:"upcoming"`
+						UnscheduledImportant []json.RawMessage `json:"unscheduled_important"`
+					} `json:"groups"`
+				}
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				// All buckets must be empty arrays (not null).
+				for _, bucket := range [][]json.RawMessage{
+					resp.Groups.Today, resp.Groups.Tomorrow, resp.Groups.DayAfter,
+					resp.Groups.Upcoming, resp.Groups.UnscheduledImportant,
+				} {
+					if bucket == nil {
+						t.Error("expected empty array bucket, got nil (null)")
+					}
+				}
+			},
+		},
+		{
+			name:     "days=0 → 400 Bad Request",
+			query:    "?days=0",
+			gtdStore: &fakeDashboardGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "days=-1 → 400 Bad Request",
+			query:    "?days=-1",
+			gtdStore: &fakeDashboardGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "days=abc → 400 Bad Request",
+			query:    "?days=abc",
+			gtdStore: &fakeDashboardGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "limit=0 → 400 Bad Request",
+			query:    "?limit=0",
+			gtdStore: &fakeDashboardGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "tz=Invalid/Zone → 400 Bad Request",
+			query:    "?tz=Invalid%2FZone",
+			gtdStore: &fakeDashboardGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "tz=Asia/Taipei → 200",
+			query:    "?tz=Asia%2FTaipei",
+			gtdStore: &fakeDashboardGTDStore{upcomingTasks: allFiveTasks},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "store error → 500",
+			query:    "",
+			gtdStore: &fakeDashboardGTDStore{upcomingTaskErr: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:     "days=14 (max) accepted",
+			query:    "?days=14",
+			gtdStore: &fakeDashboardGTDStore{upcomingTasks: []db.Task{}},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "limit=50 (max) accepted",
+			query:    "?limit=50",
+			gtdStore: &fakeDashboardGTDStore{upcomingTasks: []db.Task{}},
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(tc.gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+			e.GET("/api/dashboard/upcoming-tasks", h.GetUpcomingTasks)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/upcoming-tasks"+tc.query, "")
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

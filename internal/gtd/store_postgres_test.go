@@ -1131,6 +1131,143 @@ func TestStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
 	assertNotContainsTask(t, got, task.ID, "AC4 (old pending should be excluded)")
 }
 
+// assertPgTaskAllFields checks every mutable column of a PG-backed task in one
+// place, keeping callers below the cyclomatic complexity threshold.
+func assertPgTaskAllFields(t *testing.T, updated *db.Task,
+	wantTitle, wantDesc string, wantPrio int32, wantImp int16,
+	wantAssignee string, wantDue time.Time, wantCtx, wantStatus string,
+) {
+	t.Helper()
+	if updated.Title != wantTitle {
+		t.Errorf("title: got %q, want %q", updated.Title, wantTitle)
+	}
+	if !updated.Description.Valid || updated.Description.String != wantDesc {
+		t.Errorf("description: got %+v", updated.Description)
+	}
+	if updated.Priority != wantPrio {
+		t.Errorf("priority: got %d, want %d", updated.Priority, wantPrio)
+	}
+	if !updated.Importance.Valid || updated.Importance.Int16 != wantImp {
+		t.Errorf("importance: got %+v", updated.Importance)
+	}
+	if !updated.Assignee.Valid || updated.Assignee.String != wantAssignee {
+		t.Errorf("assignee: got %+v", updated.Assignee)
+	}
+	if !updated.DueDate.Valid || !updated.DueDate.Time.Equal(wantDue) {
+		t.Errorf("due_date: got %+v, want %v", updated.DueDate, wantDue)
+	}
+	if !updated.Context.Valid || updated.Context.String != wantCtx {
+		t.Errorf("context: got %+v", updated.Context)
+	}
+	if updated.Status != wantStatus {
+		t.Errorf("status: got %q, want %q", updated.Status, wantStatus)
+	}
+}
+
+// TestGTDStore_UpdateTask_PG_PartialPatch verifies that unspecified fields are preserved
+// when only one field is patched.
+func TestGTDStore_UpdateTask_PG_PartialPatch(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "original title", Priority: 2, Description: "original desc",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	newDesc := "updated description"
+	updated, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Description: &newDesc})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if updated.Title != "original title" {
+		t.Errorf("title should be preserved: got %q", updated.Title)
+	}
+	if !updated.Description.Valid || updated.Description.String != newDesc {
+		t.Errorf("description should be updated: got %+v", updated.Description)
+	}
+	if updated.Priority != 2 {
+		t.Errorf("priority should be preserved: got %d", updated.Priority)
+	}
+}
+
+// TestGTDStore_UpdateTask_PG_AllFields verifies all mutable fields are written
+// correctly in a single UpdateTask call. Required by backend-security-design.md §6.5.
+func TestGTDStore_UpdateTask_PG_AllFields(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "old title", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	newTitle := "new title"
+	newDesc := "new desc"
+	newPrio := int32(1)
+	newImp := int16(2)
+	newAssignee := "wayne"
+	due := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	newCtx := "discussion context"
+	newStatus := string(gtd.TaskStatusInProgress)
+
+	updated, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{
+		Title: &newTitle, Description: &newDesc, Priority: &newPrio, Importance: &newImp,
+		Assignee: &newAssignee, DueDate: &due, Context: &newCtx, Status: &newStatus,
+	})
+	if err != nil {
+		t.Fatalf("UpdateTask all fields: %v", err)
+	}
+	assertPgTaskAllFields(t, updated, newTitle, newDesc, newPrio, newImp, newAssignee, due, newCtx, newStatus)
+}
+
+// TestGTDStore_UpdateTask_PG_CreatedAtImmutable verifies that created_at is not
+// modified by UpdateTask.
+func TestGTDStore_UpdateTask_PG_CreatedAtImmutable(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "immutable-created-at", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	originalCreatedAt := task.CreatedAt
+
+	newTitle := "changed title"
+	updated, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Title: &newTitle})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if !updated.CreatedAt.Valid {
+		t.Fatal("updated.CreatedAt not valid")
+	}
+	if !updated.CreatedAt.Time.Equal(originalCreatedAt.Time) {
+		t.Errorf("created_at changed: got %v, want %v", updated.CreatedAt.Time, originalCreatedAt.Time)
+	}
+}
+
+// TestGTDStore_UpdateTask_PG_NotFound verifies ErrNotFound is returned for unknown IDs.
+func TestGTDStore_UpdateTask_PG_NotFound(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	newTitle := "should not matter"
+	_, err := store.UpdateTask(ctx, uuid.New(), gtd.UpdateTaskParams{Title: &newTitle})
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 // TestStore_TasksForTimeline_WorkspaceIsolation verifies workspace B cannot
 // see workspace A's rows.
 func TestStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {
@@ -1158,5 +1295,189 @@ func TestStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {
 	}
 	if len(gotB) != 0 {
 		t.Errorf("want 0 rows in workspace B, got %d", len(gotB))
+	}
+}
+
+// pgUpcomingCreateTask is a test helper used by TestGTDStore_UpcomingTasks_* functions.
+func pgUpcomingCreateTask(
+	t *testing.T, ctx context.Context, store *gtd.Store,
+	title string, due *time.Time, importance *int16, status gtd.TaskStatus,
+) *db.Task {
+	t.Helper()
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:      title,
+		Priority:   2,
+		DueDate:    due,
+		Importance: importance,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask(%q): %v", title, err)
+	}
+	if status != "" && status != gtd.TaskStatusPending {
+		task, err = store.UpdateTaskStatus(ctx, task.ID, status)
+		if err != nil {
+			t.Fatalf("UpdateTaskStatus(%q → %s): %v", title, status, err)
+		}
+	}
+	return task
+}
+
+// TestGTDStore_UpcomingTasks_WithinWindow verifies that pending tasks inside
+// the window and importance=1 unscheduled tasks are returned, while
+// beyond-window, low-importance unscheduled, and completed tasks are excluded.
+func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	imp1 := int16(1)
+	imp2 := int16(2)
+	todayDue := now.Add(time.Hour)
+	futureDue := now.AddDate(0, 0, 5)
+	beyondDue := now.AddDate(0, 0, 30)
+
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+
+	pgUpcomingCreateTask(t, ctx, storeA, "today-task", &todayDue, nil, "")
+	pgUpcomingCreateTask(t, ctx, storeA, "future-task", &futureDue, nil, "")
+	pgUpcomingCreateTask(t, ctx, storeA, "beyond-window-task", &beyondDue, nil, "")                 // >7d → excluded
+	pgUpcomingCreateTask(t, ctx, storeA, "unscheduled-imp1", nil, &imp1, "")                        // importance=1 → included
+	pgUpcomingCreateTask(t, ctx, storeA, "unscheduled-imp2", nil, &imp2, "")                        // importance=2 → excluded
+	pgUpcomingCreateTask(t, ctx, storeA, "completed-task", &todayDue, nil, gtd.TaskStatusCompleted) // excluded
+	pgUpcomingCreateTask(t, ctx, storeB, "ws-b-task", &todayDue, nil, "")                           // other workspace → excluded
+
+	tasks, err := storeA.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+
+	titleSet := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		titleSet[tk.Title] = true
+	}
+	for _, want := range []string{"today-task", "future-task", "unscheduled-imp1"} {
+		if !titleSet[want] {
+			t.Errorf("missing expected task %q; got titles: %v", want, titleSet)
+		}
+	}
+	for _, notWant := range []string{"beyond-window-task", "unscheduled-imp2", "completed-task", "ws-b-task"} {
+		if titleSet[notWant] {
+			t.Errorf("unexpected task %q in results", notWant)
+		}
+	}
+}
+
+// TestGTDStore_UpcomingTasks_WorkspaceScoping verifies that each store
+// only sees tasks belonging to its own workspace.
+func TestGTDStore_UpcomingTasks_WorkspaceScoping(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	todayDue := now.Add(time.Hour)
+
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+
+	pgUpcomingCreateTask(t, ctx, storeA, "ws-a-task", &todayDue, nil, "")
+	pgUpcomingCreateTask(t, ctx, storeB, "ws-b-task", &todayDue, nil, "")
+
+	tasksB, err := storeB.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks (B): %v", err)
+	}
+	if len(tasksB) != 1 || tasksB[0].Title != "ws-b-task" {
+		titles := make([]string, len(tasksB))
+		for i, tk := range tasksB {
+			titles[i] = tk.Title
+		}
+		t.Errorf("want [ws-b-task], got %v", titles)
+	}
+}
+
+// TestGTDStore_UpcomingTasks_EmptyWorkspace verifies that a fresh workspace
+// with no tasks returns an empty slice (not nil or error).
+func TestGTDStore_UpcomingTasks_EmptyWorkspace(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wsEmpty := uuid.New()
+	storeEmpty := newPgGTDStore(pool, &wsEmpty)
+
+	tasks, err := storeEmpty.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks (empty): %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks in empty workspace, got %d", len(tasks))
+	}
+}
+
+// TestGTDStore_UpcomingTasks_PastDue verifies that a past-due task is included
+// in the result set and placed into the "today" bucket by GroupUpcomingTasks.
+func TestGTDStore_UpcomingTasks_PastDue(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wsPast := uuid.New()
+	storePast := newPgGTDStore(pool, &wsPast)
+	pastDue := now.AddDate(0, 0, -3)
+	pgUpcomingCreateTask(t, ctx, storePast, "past-due-task", &pastDue, nil, "")
+
+	tasks, err := storePast.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks (past): %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Title != "past-due-task" {
+		t.Errorf("expected past-due-task in results, got %v", tasks)
+	}
+	// Verify grouping places it in today bucket.
+	groups := gtd.GroupUpcomingTasks(tasks, now, time.UTC, 7, 50)
+	if len(groups.Today) != 1 {
+		t.Errorf("expected past-due task in today bucket, got today=%d", len(groups.Today))
+	}
+}
+
+// TestGTDStore_UpcomingTasks_InProgressIncluded verifies that in_progress tasks
+// with a due date within the window are included in results alongside pending ones.
+// Completed and cancelled tasks must remain excluded.
+func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ws := uuid.New()
+	store := newPgGTDStore(pool, &ws)
+	dueSoon := now.Add(2 * 24 * time.Hour)
+
+	pgUpcomingCreateTask(t, ctx, store, "pending-task", &dueSoon, nil, "")
+	pgUpcomingCreateTask(t, ctx, store, "in-progress-task", &dueSoon, nil, gtd.TaskStatusInProgress)
+	pgUpcomingCreateTask(t, ctx, store, "completed-task", &dueSoon, nil, gtd.TaskStatusCompleted)
+	pgUpcomingCreateTask(t, ctx, store, "cancelled-task", &dueSoon, nil, gtd.TaskStatusCancelled)
+
+	tasks, err := store.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+
+	titleSet := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		titleSet[tk.Title] = true
+	}
+	for _, want := range []string{"pending-task", "in-progress-task"} {
+		if !titleSet[want] {
+			t.Errorf("expected %q in upcoming results; got %v", want, titleSet)
+		}
+	}
+	for _, notWant := range []string{"completed-task", "cancelled-task"} {
+		if titleSet[notWant] {
+			t.Errorf("unexpected %q in upcoming results", notWant)
+		}
 	}
 }

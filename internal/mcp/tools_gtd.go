@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -72,9 +73,19 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	), s.handleCreateGoal)
 
 	ms.AddTool(mcp.NewTool("update_task",
-		mcp.WithDescription("Updates the status of a task."),
+		mcp.WithDescription("Updates one or more mutable fields of a task. All params except task_id are optional. "+
+			"Use complete_task to mark a task completed."),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
-		mcp.WithString("status", mcp.Description("New status: pending, in_progress, or cancelled"), mcp.Required()),
+		mcp.WithString("status",
+			mcp.Description("New status: pending, in_progress, or cancelled"),
+			mcp.Enum("pending", "in_progress", "cancelled")),
+		mcp.WithString("title", mcp.Description("Updated task title"), mcp.MaxLength(2000)),
+		mcp.WithString("description", mcp.Description("Updated task details"), mcp.MaxLength(10000)),
+		mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
+		mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low)")),
+		mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(200)),
+		mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
+		mcp.WithString("context", mcp.Description("Free-form discussion background"), mcp.MaxLength(10000)),
 	), s.handleUpdateTask)
 
 	ms.AddTool(mcp.NewTool("update_project_status",
@@ -95,6 +106,15 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 		mcp.WithString("notes", mcp.Description("Additional notes")),
 	), s.handleLogActivity)
+
+	ms.AddTool(mcp.NewTool("get_upcoming_work",
+		mcp.WithDescription(
+			"Returns pending/in-progress tasks grouped into today, tomorrow, day_after, "+
+				"upcoming, and unscheduled_important buckets. Use to plan the next work "+
+				"session or surface high-importance tasks that have no due date.",
+		),
+		mcp.WithNumber("days", mcp.Description("How many days ahead to include (1-14, default 7)")),
+	), s.handleGetUpcomingWork)
 
 	ms.AddTool(mcp.NewTool("delete_task",
 		mcp.WithDescription(
@@ -263,6 +283,61 @@ func (s *Server) handleCreateGoal(ctx context.Context, req mcp.CallToolRequest) 
 	return jsonText(goal)
 }
 
+// parseUpdateTaskArgs extracts and validates optional fields from MCP args into
+// UpdateTaskParams. Returns (params, errMsg) — errMsg is non-empty on validation failure.
+func parseUpdateTaskArgs(args map[string]any) (gtd.UpdateTaskParams, string) {
+	p := gtd.UpdateTaskParams{}
+
+	if rawStatus := stringArg(args, "status"); rawStatus != "" {
+		status := gtd.TaskStatus(rawStatus)
+		switch status {
+		case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
+		default:
+			return p, "status must be one of: pending, in_progress, cancelled"
+		}
+		s := string(status)
+		p.Status = &s
+	}
+
+	if title := stringArg(args, "title"); title != "" {
+		p.Title = &title
+	}
+	if desc := stringArg(args, "description"); desc != "" {
+		p.Description = &desc
+	}
+
+	if raw := numberArg(args, "priority"); raw > 0 {
+		if raw > 5 {
+			return p, "priority must be between 1 and 5"
+		}
+		v := int32(raw)
+		p.Priority = &v
+	}
+	if raw := numberArg(args, "importance"); raw > 0 {
+		if raw > 3 {
+			return p, "importance must be 1, 2, or 3"
+		}
+		v := int16(raw)
+		p.Importance = &v
+	}
+
+	if assignee := stringArg(args, "assignee"); assignee != "" {
+		p.Assignee = &assignee
+	}
+	if rawDue := stringArg(args, "due_date"); rawDue != "" {
+		t, parseErr := time.Parse(time.RFC3339, rawDue)
+		if parseErr != nil {
+			return p, "invalid due_date: must be RFC3339 (e.g. 2026-12-31T00:00:00Z)"
+		}
+		p.DueDate = &t
+	}
+	if taskCtx := stringArg(args, "context"); taskCtx != "" {
+		p.Context = &taskCtx
+	}
+
+	return p, ""
+}
+
 func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawID := stringArg(args, "task_id")
@@ -273,18 +348,20 @@ func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return mcp.NewToolResultError("invalid task_id UUID"), nil
 	}
-	rawStatus := stringArg(args, "status")
-	if rawStatus == "" {
-		return mcp.NewToolResultError("status is required"), nil
-	}
-	status := gtd.TaskStatus(rawStatus)
-	switch status {
-	case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
-	default:
-		return mcp.NewToolResultError("status must be one of: pending, in_progress, cancelled"), nil
+
+	p, errMsg := parseUpdateTaskArgs(args)
+	if errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
 	}
 
-	task, err := s.gtd.UpdateTaskStatus(ctx, id, status)
+	// At least one field must be provided.
+	if p.Status == nil && p.Title == nil && p.Description == nil &&
+		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
+		p.DueDate == nil && p.Context == nil {
+		return mcp.NewToolResultError("at least one field is required"), nil
+	}
+
+	task, err := s.gtd.UpdateTask(ctx, id, p)
 	if errors.Is(err, gtd.ErrNotFound) {
 		return mcp.NewToolResultError("task not found"), nil
 	}
@@ -460,4 +537,57 @@ func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError(fmt.Sprintf("deleting task: %v", err)), nil
 	}
 	return mcp.NewToolResultText("task deleted"), nil
+}
+
+func (s *Server) handleGetUpcomingWork(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	days := int(numberArg(args, "days"))
+	if days <= 0 {
+		days = 7
+	}
+	if days > 14 {
+		days = 14
+	}
+
+	const limit = 50 // fetch max so caller sees the full picture
+	now := time.Now()
+	tasks, err := s.gtd.UpcomingTasks(ctx, now, days, limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading upcoming tasks: %v", err)), nil
+	}
+
+	groups := gtd.GroupUpcomingTasks(tasks, now, time.UTC, days, limit)
+
+	header := fmt.Sprintf("Upcoming tasks (next %d days)\n\n", days)
+	body := renderUpcomingBuckets(groups)
+	if body == "" {
+		body = "No upcoming tasks found."
+	}
+	return mcp.NewToolResultText(header + body), nil
+}
+
+// renderUpcomingBuckets formats the 5 task buckets as plain text for MCP responses.
+func renderUpcomingBuckets(groups gtd.UpcomingGroups) string {
+	appendBucket := func(sb []byte, label string, bucket []db.Task) []byte {
+		if len(bucket) == 0 {
+			return sb
+		}
+		sb = append(sb, "### "+label+"\n"...)
+		for _, t := range bucket {
+			due := ""
+			if t.DueDate.Valid {
+				due = " [due: " + t.DueDate.Time.UTC().Format("2006-01-02") + "]"
+			}
+			sb = append(sb, fmt.Sprintf("- [%s] %s%s\n", t.Status, t.Title, due)...)
+		}
+		return append(sb, '\n')
+	}
+	var sb []byte
+	sb = appendBucket(sb, "Today (including past-due)", groups.Today)
+	sb = appendBucket(sb, "Tomorrow", groups.Tomorrow)
+	sb = appendBucket(sb, "Day after tomorrow", groups.DayAfter)
+	sb = appendBucket(sb, "Upcoming", groups.Upcoming)
+	sb = appendBucket(sb, "High-importance (no due date)", groups.UnscheduledImportant)
+	return string(sb)
 }

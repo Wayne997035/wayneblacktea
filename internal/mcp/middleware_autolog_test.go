@@ -144,6 +144,14 @@ func (m *mockGTDStore) RecentActivityByProject(_ context.Context, _ uuid.UUID, _
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 // successHandler returns a fixed success result — simulates a tool that completed OK.
 func successHandler(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 	return mcpmsg.NewToolResultText("ok"), nil

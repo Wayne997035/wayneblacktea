@@ -370,6 +370,104 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	return c.JSON(http.StatusOK, project)
 }
 
+type updateTaskRequest struct {
+	Title       *string    `json:"title"`
+	Description *string    `json:"description"`
+	Priority    *int32     `json:"priority"`
+	Importance  *int16     `json:"importance"`
+	Assignee    *string    `json:"assignee"`
+	DueDate     *time.Time `json:"due_date"`
+	Context     *string    `json:"context"`
+	Status      *string    `json:"status"`
+}
+
+// updateTaskRequestIsEmpty returns true when all patch fields are nil (nothing to update).
+func updateTaskRequestIsEmpty(req *updateTaskRequest) bool {
+	return req.Title == nil && req.Description == nil && req.Priority == nil &&
+		req.Importance == nil && req.Assignee == nil && req.DueDate == nil &&
+		req.Context == nil && req.Status == nil
+}
+
+// validateUpdateTaskFields validates individual field values in the request,
+// assuming the at-least-one-field check has already passed.
+func validateUpdateTaskFields(req *updateTaskRequest) string {
+	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
+		return "title must not be empty"
+	}
+	if req.Priority != nil && (*req.Priority < 1 || *req.Priority > 5) {
+		return "priority must be between 1 and 5"
+	}
+	if req.Importance != nil && (*req.Importance < 1 || *req.Importance > 3) {
+		return "importance must be between 1 and 3"
+	}
+	if req.Status != nil {
+		switch gtd.TaskStatus(*req.Status) {
+		case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
+			// valid
+		default:
+			return "status must be one of: pending, in_progress, cancelled"
+		}
+	}
+	return ""
+}
+
+// validateUpdateTaskRequest validates the update request and returns a user-facing
+// error message, or "" if valid.
+func validateUpdateTaskRequest(req *updateTaskRequest) string {
+	if updateTaskRequestIsEmpty(req) {
+		return "at least one field is required"
+	}
+	return validateUpdateTaskFields(req)
+}
+
+// updateTaskParamsFromRequest converts a validated updateTaskRequest to gtd.UpdateTaskParams,
+// normalizing fields such as trimming title whitespace.
+func updateTaskParamsFromRequest(req *updateTaskRequest) gtd.UpdateTaskParams {
+	var title *string
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		title = &trimmed
+	}
+	return gtd.UpdateTaskParams{
+		Title:       title,
+		Description: req.Description,
+		Priority:    req.Priority,
+		Importance:  req.Importance,
+		Assignee:    req.Assignee,
+		DueDate:     req.DueDate,
+		Context:     req.Context,
+		Status:      req.Status,
+	}
+}
+
+// UpdateTask handles PATCH /api/tasks/:id — partial update of a task's mutable fields.
+// At least one field must be provided. status="completed" is rejected (use CompleteTask).
+func (h *GTDHandler) UpdateTask(c echo.Context) error {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid task id"))
+	}
+
+	var req updateTaskRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+
+	if msg := validateUpdateTaskRequest(&req); msg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(msg))
+	}
+
+	task, err := h.store.UpdateTask(c.Request().Context(), id, updateTaskParamsFromRequest(&req))
+	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("task not found"))
+		}
+		c.Logger().Errorf("UpdateTask: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, task)
+}
+
 type completeTaskRequest struct {
 	Artifact *string `json:"artifact"`
 }
