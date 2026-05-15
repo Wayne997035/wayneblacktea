@@ -539,8 +539,8 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 }
 
 func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
-	const q = `SELECT ` + tasksSelectCols + ` FROM tasks WHERE id = ?1 LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id.String())
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg())
 	t, err := scanTask(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, gtd.ErrNotFound

@@ -109,6 +109,10 @@ func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bo
 		artifact := stringArg(args, "artifact")
 		return "task:completed", truncate(fmt.Sprintf("task_id=%s artifact=%s", taskID, artifact)), true
 
+	case "update_task":
+		taskID := stringArg(args, "task_id")
+		return "task:updated", truncate(fmt.Sprintf("task_id=%s", taskID)), true
+
 	case "add_task":
 		return "task:added", truncate(stringArg(args, "title")), true
 

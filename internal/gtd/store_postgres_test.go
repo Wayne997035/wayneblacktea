@@ -1443,3 +1443,41 @@ func TestGTDStore_UpcomingTasks_PastDue(t *testing.T) {
 		t.Errorf("expected past-due task in today bucket, got today=%d", len(groups.Today))
 	}
 }
+
+// TestGTDStore_UpcomingTasks_InProgressIncluded verifies that in_progress tasks
+// with a due date within the window are included in results alongside pending ones.
+// Completed and cancelled tasks must remain excluded.
+func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ws := uuid.New()
+	store := newPgGTDStore(pool, &ws)
+	dueSoon := now.Add(2 * 24 * time.Hour)
+
+	pgUpcomingCreateTask(t, ctx, store, "pending-task", &dueSoon, nil, "")
+	pgUpcomingCreateTask(t, ctx, store, "in-progress-task", &dueSoon, nil, gtd.TaskStatusInProgress)
+	pgUpcomingCreateTask(t, ctx, store, "completed-task", &dueSoon, nil, gtd.TaskStatusCompleted)
+	pgUpcomingCreateTask(t, ctx, store, "cancelled-task", &dueSoon, nil, gtd.TaskStatusCancelled)
+
+	tasks, err := store.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+
+	titleSet := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		titleSet[tk.Title] = true
+	}
+	for _, want := range []string{"pending-task", "in-progress-task"} {
+		if !titleSet[want] {
+			t.Errorf("expected %q in upcoming results; got %v", want, titleSet)
+		}
+	}
+	for _, notWant := range []string{"completed-task", "cancelled-task"} {
+		if titleSet[notWant] {
+			t.Errorf("unexpected %q in upcoming results", notWant)
+		}
+	}
+}

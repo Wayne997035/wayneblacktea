@@ -400,8 +400,13 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 	if req.Importance != nil && (*req.Importance < 1 || *req.Importance > 3) {
 		return "importance must be between 1 and 3"
 	}
-	if req.Status != nil && gtd.TaskStatus(*req.Status) == gtd.TaskStatusCompleted {
-		return "use complete_task to mark a task completed"
+	if req.Status != nil {
+		switch gtd.TaskStatus(*req.Status) {
+		case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
+			// valid
+		default:
+			return "status must be one of: pending, in_progress, cancelled"
+		}
 	}
 	return ""
 }

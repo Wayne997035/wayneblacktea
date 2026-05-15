@@ -76,14 +76,16 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithDescription("Updates one or more mutable fields of a task. All params except task_id are optional. "+
 			"Use complete_task to mark a task completed."),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
-		mcp.WithString("status", mcp.Description("New status: pending, in_progress, or cancelled")),
-		mcp.WithString("title", mcp.Description("Updated task title")),
-		mcp.WithString("description", mcp.Description("Updated task details")),
+		mcp.WithString("status",
+			mcp.Description("New status: pending, in_progress, or cancelled"),
+			mcp.Enum("pending", "in_progress", "cancelled")),
+		mcp.WithString("title", mcp.Description("Updated task title"), mcp.MaxLength(2000)),
+		mcp.WithString("description", mcp.Description("Updated task details"), mcp.MaxLength(10000)),
 		mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
 		mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low)")),
-		mcp.WithString("assignee", mcp.Description("Who owns this task")),
+		mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(200)),
 		mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
-		mcp.WithString("context", mcp.Description("Free-form discussion background")),
+		mcp.WithString("context", mcp.Description("Free-form discussion background"), mcp.MaxLength(10000)),
 	), s.handleUpdateTask)
 
 	ms.AddTool(mcp.NewTool("update_project_status",

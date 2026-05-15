@@ -329,6 +329,9 @@ func (h *DashboardHandler) GetUpcomingTasks(c echo.Context) error {
 
 	tz := time.UTC
 	if tzName := c.QueryParam("tz"); tzName != "" {
+		if len(tzName) > 64 {
+			return c.JSON(http.StatusBadRequest, errResp("invalid tz: timezone name too long"))
+		}
 		loc, err := time.LoadLocation(tzName)
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, errResp("invalid tz: must be a valid IANA timezone name"))
