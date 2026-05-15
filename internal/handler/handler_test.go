@@ -95,6 +95,10 @@ func (f *fakeGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.Ta
 	return f.updatedTask, f.err
 }
 
+func (f *fakeGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
+	return f.updatedTask, f.err
+}
+
 func (f *fakeGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd.ProjectStatus) (*db.Project, error) {
 	return f.updatedProj, f.err
 }
@@ -805,6 +809,106 @@ func TestGTDHandler_CompleteTask(t *testing.T) {
 			h := handler.NewGTDHandler(tc.store)
 			e.PATCH("/api/tasks/:id/complete", h.CompleteTask)
 			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+tc.paramID+"/complete", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestGTDHandler_UpdateTask exercises the PATCH /api/tasks/:id handler,
+// covering: partial patch success, validation rejections (empty title,
+// out-of-range priority/importance, status=completed), all-nil rejection,
+// backward-compat status-only, and not-found.
+func TestGTDHandler_UpdateTask(t *testing.T) {
+	id := uuid.New()
+	updated := &db.Task{ID: id, Title: "new title", Status: "in_progress"}
+
+	cases := []struct {
+		name     string
+		paramID  string
+		body     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "partial patch — description only",
+			paramID:  id.String(),
+			body:     `{"description":"new desc"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "backward compat — status only",
+			paramID:  id.String(),
+			body:     `{"status":"in_progress"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "all-nil body → 400 at least one field required",
+			paramID:  id.String(),
+			body:     `{}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "empty title → 400",
+			paramID:  id.String(),
+			body:     `{"title":"   "}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "priority out of range → 400",
+			paramID:  id.String(),
+			body:     `{"priority":6}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "importance out of range → 400",
+			paramID:  id.String(),
+			body:     `{"importance":4}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "status=completed → 400 (use complete_task)",
+			paramID:  id.String(),
+			body:     `{"status":"completed"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "invalid UUID → 400",
+			paramID:  "not-a-uuid",
+			body:     `{"description":"x"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "task not found → 404",
+			paramID:  id.String(),
+			body:     `{"description":"x"}`,
+			store:    &fakeGTDStore{err: gtd.ErrNotFound},
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "store error → 500",
+			paramID:  id.String(),
+			body:     `{"description":"x"}`,
+			store:    &fakeGTDStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.PATCH("/api/tasks/:id", h.UpdateTask)
+			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+tc.paramID, tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
