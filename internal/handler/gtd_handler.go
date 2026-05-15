@@ -144,6 +144,9 @@ func (h *GTDHandler) UpdateProjectStatus(c echo.Context) error {
 	if req.Status == "" {
 		return c.JSON(http.StatusBadRequest, errResp("status is required"))
 	}
+	if !gtd.ProjectStatus(req.Status).IsValid() {
+		return c.JSON(http.StatusBadRequest, errResp("status must be one of: active, completed, archived, on_hold"))
+	}
 
 	project, err := h.store.UpdateProjectStatus(c.Request().Context(), id, gtd.ProjectStatus(req.Status))
 	if err != nil {
