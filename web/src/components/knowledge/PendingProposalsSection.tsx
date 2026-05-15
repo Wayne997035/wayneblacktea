@@ -24,12 +24,13 @@ interface OptimisticResolution {
 
 // ----- helpers -----
 
-const TYPE_ORDER: ProposalType[] = ['goal', 'project', 'task', 'concept']
+const TYPE_ORDER: ProposalType[] = ['goal', 'project', 'task', 'concept', 'knowledge']
 const TYPE_LABELS: Record<ProposalType, string> = {
   goal: 'Goals',
   project: 'Projects',
   task: 'Tasks',
   concept: 'Concepts',
+  knowledge: 'Knowledge',
 }
 
 const VALID_STATUSES = ['pending', 'accepted', 'rejected', 'all'] as const
@@ -41,7 +42,7 @@ function isValidStatus(s: string | null): s is TabStatus {
 
 function groupByType(proposals: PendingProposal[]): Record<ProposalType, PendingProposal[]> {
   const result: Record<ProposalType, PendingProposal[]> = {
-    goal: [], project: [], task: [], concept: [],
+    goal: [], project: [], task: [], concept: [], knowledge: [],
   }
   for (const p of proposals) {
     if (p.type in result) {
@@ -79,6 +80,7 @@ export function PendingProposalsSection() {
     project: { collapsed: false },
     task: { collapsed: false },
     concept: { collapsed: false },
+    knowledge: { collapsed: false },
   })
 
   // Single-item pending state
@@ -178,7 +180,8 @@ export function PendingProposalsSection() {
     setSelectedIds((prev) => {
       const next = new Set(prev)
       for (const p of proposals) {
-        if (!p.payload.source_item_id && !optimisticResolutions.has(p.id)) next.add(p.id)
+        const sourceItemId = p.type === 'concept' ? p.payload.source_item_id : undefined
+        if (!sourceItemId && !optimisticResolutions.has(p.id)) next.add(p.id)
       }
       return next
     })
@@ -300,8 +303,11 @@ export function PendingProposalsSection() {
   }
 
   // --- Source summary counts ---
-  const articleCount = proposals.filter((p) => p.payload.source_item_type === 'article').length
-  const agentCount = proposals.filter((p) => !p.payload.source_item_id).length
+  const articleCount = proposals.filter((p) => p.type === 'concept' && p.payload.source_item_type === 'article').length
+  const agentCount = proposals.filter((p) => {
+    if (p.type === 'concept') return !p.payload.source_item_id
+    return true
+  }).length
 
   const countLabel = isLoading
     ? '…'

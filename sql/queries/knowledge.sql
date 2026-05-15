@@ -7,10 +7,14 @@ RETURNING *;
 UPDATE knowledge_items SET embedding = $2 WHERE id = $1;
 
 -- name: SearchKnowledgeFTS :many
-SELECT *, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', sqlc.arg('query'))) AS rank
-FROM knowledge_items
-WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', sqlc.arg('query'))
-  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+-- Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
+-- alias (rank) in the same query level — wrapping materialises it first.
+SELECT * FROM (
+    SELECT *, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', sqlc.arg('query'))) AS rank
+    FROM knowledge_items
+    WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', sqlc.arg('query'))
+      AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+) sub
 ORDER BY rank DESC
 LIMIT sqlc.arg('limit_n');
 

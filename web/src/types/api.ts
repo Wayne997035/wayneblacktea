@@ -177,10 +177,18 @@ export interface SearchResponse {
   results: SearchResult[];
 }
 
-export type ProposalType = 'goal' | 'project' | 'task' | 'concept'
+export type ProposalType = 'goal' | 'project' | 'task' | 'concept' | 'knowledge'
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected'
 
 export interface ConceptCandidatePayload {
+  title: string
+  content: string
+  tags?: string[]
+  source_item_id?: string
+  source_item_type?: string
+}
+
+export interface KnowledgePayload {
   title: string
   content: string
   tags?: string[]
@@ -192,7 +200,7 @@ export interface PendingProposal {
   id: string
   type: ProposalType
   status: ProposalStatus
-  payload: ConceptCandidatePayload
+  payload: ConceptCandidatePayload | KnowledgePayload
   proposed_by: string | null
   created_at: string
   resolved_at: string | null

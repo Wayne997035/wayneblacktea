@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -47,6 +48,12 @@ type proposalDecisionStore interface {
 	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
 }
 
+// proposalKnowledgeStore covers the knowledge operation needed when accepting
+// a TypeKnowledge proposal.
+type proposalKnowledgeStore interface {
+	AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error)
+}
+
 // ProposalHandler exposes GET /api/proposals/pending and
 // POST /api/proposals/:id/confirm.
 type ProposalHandler struct {
@@ -56,6 +63,9 @@ type ProposalHandler struct {
 	// (handler returns 500 on accept of a TypeDecision row). For full
 	// behaviour wire NewProposalHandlerWithDecision.
 	decision proposalDecisionStore
+	// knowledge is optional; nil disables knowledge-proposal materialisation.
+	// Wire via WithKnowledge.
+	knowledge proposalKnowledgeStore
 }
 
 // NewProposalHandler creates a ProposalHandler. Decision-proposal accept will
@@ -69,6 +79,13 @@ func NewProposalHandler(p proposalListStore, l proposalConceptStore) *ProposalHa
 // Returns the handler for chaining. nil decision = decision-accept disabled.
 func (h *ProposalHandler) WithDecision(d proposalDecisionStore) *ProposalHandler {
 	h.decision = d
+	return h
+}
+
+// WithKnowledge wires the knowledge store used by the TypeKnowledge accept path.
+// Returns the handler for chaining. nil knowledge = knowledge-accept disabled.
+func (h *ProposalHandler) WithKnowledge(k proposalKnowledgeStore) *ProposalHandler {
+	h.knowledge = k
 	return h
 }
 
@@ -138,11 +155,12 @@ var allowedProposalStatuses = map[string]bool{
 
 // allowedProposalTypes is the validated set of values for the ?type= query param.
 var allowedProposalTypes = map[string]bool{
-	"concept":  true,
-	"goal":     true,
-	"project":  true,
-	"task":     true,
-	"decision": true,
+	"concept":   true,
+	"goal":      true,
+	"project":   true,
+	"task":      true,
+	"decision":  true,
+	"knowledge": true,
 }
 
 // ListProposals handles GET /api/proposals?status=pending|accepted|rejected|all.
@@ -160,7 +178,7 @@ func (h *ProposalHandler) ListProposals(c echo.Context) error {
 	if proposalType == "" {
 		proposalType = "concept"
 	} else if !allowedProposalTypes[proposalType] {
-		return c.JSON(http.StatusBadRequest, errResp("type must be concept, goal, project, task, or decision"))
+		return c.JSON(http.StatusBadRequest, errResp("type must be concept, goal, project, task, decision, or knowledge"))
 	}
 
 	rows, err := h.proposal.ListAll(c.Request().Context(), proposalType, 200)
@@ -183,9 +201,10 @@ type confirmRequest struct {
 }
 
 type confirmResponse struct {
-	Proposal pendingProposalResponse `json:"proposal"`
-	Concept  *db.Concept             `json:"concept,omitempty"`
-	Decision *db.Decision            `json:"decision,omitempty"`
+	Proposal      pendingProposalResponse `json:"proposal"`
+	Concept       *db.Concept             `json:"concept,omitempty"`
+	Decision      *db.Decision            `json:"decision,omitempty"`
+	KnowledgeItem *db.KnowledgeItem       `json:"knowledge_item,omitempty"`
 }
 
 // ConfirmProposal handles POST /api/proposals/:id/confirm.
@@ -254,10 +273,12 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 		return h.acceptDecision(c, ctx, id, prop)
 	case proposal.TypeConcept:
 		return h.acceptConcept(c, ctx, id, prop)
+	case proposal.TypeKnowledge:
+		return h.acceptKnowledge(c, ctx, id, prop)
 	default:
-		// Other types (goal/project/task/playbook/knowledge) are accepted in
-		// the MCP path or are not yet wired through HTTP. Resolve only —
-		// preserves prior behaviour for non-concept/non-decision rows.
+		// Other types (goal/project/task/playbook) are accepted in the MCP
+		// path or are not yet wired through HTTP. Resolve only — preserves
+		// prior behaviour for non-materialised rows.
 		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
 		if errors.Is(err, proposal.ErrNotFound) {
 			return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
@@ -332,6 +353,49 @@ func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Decision: logged})
 }
 
+// acceptKnowledge materialises a knowledge_items row from a TypeKnowledge
+// proposal. Ordering follows acceptConcept (Resolve first, AddItem after) so
+// concurrent accepts cannot create duplicate knowledge items. If AddItem fails
+// the proposal is already resolved — the error is logged at warn level but the
+// accept is still considered successful (non-fatal, matching acceptConcept contract).
+func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
+	kp, errMsg := decodeKnowledgeCandidatePayload(prop.Payload)
+	if errMsg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(errMsg))
+	}
+
+	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
+	if errors.Is(err, proposal.ErrNotFound) {
+		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
+	}
+	if err != nil {
+		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	if h.knowledge == nil {
+		c.Logger().Warnf("ConfirmProposal knowledge %s: knowledge store not wired, skipping materialisation", id)
+		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
+	}
+
+	source := ""
+	if prop.ProposedBy.Valid {
+		source = prop.ProposedBy.String
+	}
+	item, err := h.knowledge.AddItem(ctx, knowledge.AddItemParams{
+		Type:    "til",
+		Title:   kp.Title,
+		Content: kp.Content,
+		Tags:    kp.Tags,
+		Source:  source,
+	})
+	if err != nil {
+		c.Logger().Warnf("ConfirmProposal materialise knowledge %s: %v", id, err)
+		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
+	}
+	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), KnowledgeItem: item})
+}
+
 // decodeProposalDecisionPayload decodes a TypeDecision pending_proposals
 // payload (proposal.DecisionProposerPayload JSON shape) into a
 // decision.LogParams ready for store.Log.
@@ -390,6 +454,35 @@ func decodeConceptCandidatePayload(payload []byte) (conceptCandidatePayload, str
 	return p, ""
 }
 
+// knowledgeCandidatePayload mirrors proposal.KnowledgePayload for the handler
+// layer to avoid importing the proposal package shape directly (the handler
+// already imports proposal for proposal.Type constants).
+type knowledgeCandidatePayload struct {
+	Title   string   `json:"title"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
+func decodeKnowledgeCandidatePayload(payload []byte) (knowledgeCandidatePayload, string) {
+	var kp knowledgeCandidatePayload
+	if err := json.Unmarshal(payload, &kp); err != nil {
+		return knowledgeCandidatePayload{}, "knowledge proposal payload is malformed"
+	}
+	if kp.Title == "" {
+		return knowledgeCandidatePayload{}, "knowledge proposal payload missing title"
+	}
+	if len(kp.Title) > maxConceptTitleBytes {
+		return knowledgeCandidatePayload{}, "knowledge title exceeds 512 characters"
+	}
+	if len(kp.Content) > maxConceptContentBytes {
+		return knowledgeCandidatePayload{}, "knowledge content exceeds 64 KB"
+	}
+	if len(kp.Tags) > maxConceptTags {
+		return knowledgeCandidatePayload{}, "too many tags (max 50)"
+	}
+	return kp, ""
+}
+
 const (
 	maxBatchConfirmIDs = 100
 	minBatchConfirmIDs = 1
@@ -420,10 +513,12 @@ type batchConfirmResponse struct {
 // the proposal (the round-2 reviewer flagged that silent skip on malformed
 // decision payloads was the same data-loss class as missing decisions row).
 type proposalBatchMeta struct {
-	isConcept  bool
-	cp         conceptCandidatePayload
-	isDecision bool
-	dp         decision.LogParams
+	isConcept   bool
+	cp          conceptCandidatePayload
+	isDecision  bool
+	dp          decision.LogParams
+	isKnowledge bool
+	kp          knowledgeCandidatePayload
 	// payloadErr is the human-readable decode failure message; empty = ok.
 	// When non-empty the resolve loop reports it as a per-row error and skips
 	// the resolve entirely (same semantics as the singular handler returning
@@ -457,6 +552,13 @@ func (h *ProposalHandler) batchProposalMeta(ctx context.Context, ids []uuid.UUID
 				continue
 			}
 			meta[id] = proposalBatchMeta{isDecision: true, dp: dp}
+		case proposal.TypeKnowledge:
+			kp, errMsg := decodeKnowledgeCandidatePayload(prop.Payload)
+			if errMsg != "" {
+				meta[id] = proposalBatchMeta{isKnowledge: true, payloadErr: errMsg}
+				continue
+			}
+			meta[id] = proposalBatchMeta{isKnowledge: true, kp: kp}
 		default:
 			meta[id] = proposalBatchMeta{}
 		}
@@ -471,6 +573,8 @@ func (h *ProposalHandler) batchProposalMeta(ctx context.Context, ids []uuid.UUID
 // singular acceptDecision path: a Resolve race may leave an orphan decisions
 // row, which is preferable to marking the proposal accepted with no decision
 // row to back it.
+//
+//nolint:gocyclo // per-type materialisation branches are inherently complex; each branch calls extracted helpers
 func (h *ProposalHandler) batchResolveOne(
 	c echo.Context,
 	ctx context.Context,
@@ -520,6 +624,21 @@ func (h *ProposalHandler) batchResolveOne(
 			c.Logger().Warnf("ConfirmBatch concept %s: payload decode failed: %s", id, m.payloadErr)
 		} else if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
 			c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
+		}
+	}
+	if status == proposal.StatusAccepted && hasMeta && m.isKnowledge {
+		// Knowledge materialisation is non-fatal — proposal is already resolved.
+		if m.payloadErr != "" {
+			c.Logger().Warnf("ConfirmBatch knowledge %s: payload decode failed: %s", id, m.payloadErr)
+		} else if h.knowledge == nil {
+			c.Logger().Warnf("ConfirmBatch knowledge %s: knowledge store not wired, skipping materialisation", id)
+		} else if _, kerr := h.knowledge.AddItem(ctx, knowledge.AddItemParams{
+			Type:    "til",
+			Title:   m.kp.Title,
+			Content: m.kp.Content,
+			Tags:    m.kp.Tags,
+		}); kerr != nil {
+			c.Logger().Errorf("ConfirmBatch materialise knowledge %s: %v", id, kerr)
 		}
 	}
 	return entry

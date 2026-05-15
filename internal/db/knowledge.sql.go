@@ -167,10 +167,12 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 }
 
 const searchKnowledgeFTS = `-- name: SearchKnowledgeFTS :many
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
-FROM knowledge_items
-WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
-  AND ($2::uuid IS NULL OR workspace_id = $2)
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, rank FROM (
+    SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
+    FROM knowledge_items
+    WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+      AND ($2::uuid IS NULL OR workspace_id = $2)
+) sub
 ORDER BY rank DESC
 LIMIT $3
 `
@@ -205,6 +207,8 @@ type SearchKnowledgeFTSRow struct {
 	Rank           float32            `json:"rank"`
 }
 
+// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
+// alias (rank) in the same query level — wrapping materialises it first.
 func (q *Queries) SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error) {
 	rows, err := q.db.Query(ctx, searchKnowledgeFTS, arg.Query, arg.WorkspaceID, arg.LimitN)
 	if err != nil {
