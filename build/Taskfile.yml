@@ -14,7 +14,7 @@ tasks:
       - task: check
 
   check:
-    desc: "Full quality gate — run before any commit"
+    desc: "Full quality gate (Go + frontend + integration) — use before merge when frontend files changed"
     cmds:
       - task: mod-tidy
       - task: frontend-check
@@ -22,14 +22,29 @@ tasks:
       - task: lint
       - task: test
       - task: test-integration
-      - task: build-mcp
-      - task: build-server
-      - task: build-doctor
-      - task: build-wbt
-      - task: build-wbt-context
-      - task: build-wbt-hook
-      - task: build-wbt-guard
+      - task: build-all
     silent: false
+
+  check-go:
+    desc: "Go-only quality gate — skip frontend build and integration tests (use for Go-only PRs)"
+    cmds:
+      - task: mod-tidy
+      - task: vuln
+      - task: lint
+      - task: test
+      - task: build-all
+    silent: false
+
+  build-all:
+    desc: "Build all binaries in parallel"
+    deps:
+      - build-mcp
+      - build-server
+      - build-doctor
+      - build-wbt
+      - build-wbt-context
+      - build-wbt-hook
+      - build-wbt-guard
 
   mod-tidy:
     desc: "Verify go.mod and go.sum are tidy (matches CI check)"
@@ -45,7 +60,17 @@ tasks:
     dir: ..
 
   frontend-check:
-    desc: "Frontend quality gate — lint, build, test, and copy dist for Go embed"
+    desc: "Frontend quality gate — lint, build, test, and copy dist for Go embed (skipped when sources unchanged)"
+    sources:
+      - src/**
+      - public/**
+      - index.html
+      - package*.json
+      - vite.config.*
+      - tsconfig.*
+      - eslint.config.*
+    generates:
+      - ../cmd/server/web/dist/**
     cmds:
       - npm ci --ignore-scripts
       - npm run lint
