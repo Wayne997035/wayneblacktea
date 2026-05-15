@@ -997,3 +997,166 @@ func TestMigration000039_BackfillProjectsRepoName_PG(t *testing.T) {
 		t.Errorf("after down migration canonical repo_name = %q, want NULL", *got)
 	}
 }
+
+// assertContainsTask asserts that taskID appears in got; used by
+// TestStore_TasksForTimeline subtests to keep each case under the gocyclo limit.
+func assertContainsTask(t *testing.T, got []db.Task, taskID uuid.UUID, label string) {
+	t.Helper()
+	for _, tk := range got {
+		if tk.ID == taskID {
+			return
+		}
+	}
+	t.Errorf("%s: task %s not found among %d rows", label, taskID, len(got))
+}
+
+// assertNotContainsTask asserts that taskID does NOT appear in got.
+func assertNotContainsTask(t *testing.T, got []db.Task, taskID uuid.UUID, label string) {
+	t.Helper()
+	for _, tk := range got {
+		if tk.ID == taskID {
+			t.Errorf("%s: task %s should be excluded but was found", label, taskID)
+			return
+		}
+	}
+}
+
+// pgTimelineRange is a shared May 2026 date range used by all
+// TestStore_TasksForTimeline* subtests.
+var pgTimelineRange = [2]time.Time{
+	time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC),
+}
+
+// april2026 is a back-date outside the May range used by AC §2 and §4.
+var april2026 = time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+// TestStore_TasksForTimeline_AC1_CreatedAndCompletedInRange verifies acceptance
+// criterion §1: task created AND completed inside [from,to] → row returned
+// (aggregator emits task_created + task_completed from it).
+func TestStore_TasksForTimeline_AC1_CreatedAndCompletedInRange(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+	may1, may31 := pgTimelineRange[0], pgTimelineRange[1]
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-ac1", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.CompleteTask(ctx, task.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	got, err := store.TasksForTimeline(ctx, may1, may31)
+	if err != nil {
+		t.Fatalf("TasksForTimeline: %v", err)
+	}
+	assertContainsTask(t, got, task.ID, "AC1")
+}
+
+// TestStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside verifies acceptance
+// criterion §2: task created before [from], completed inside [from,to] → row
+// returned via the updated_at branch.
+func TestStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+	may1, may31 := pgTimelineRange[0], pgTimelineRange[1]
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-ac2", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE tasks SET created_at = $1 WHERE id = $2`, april2026, task.ID,
+	); err != nil {
+		t.Fatalf("back-date created_at: %v", err)
+	}
+	if _, err := store.CompleteTask(ctx, task.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	got, err := store.TasksForTimeline(ctx, may1, may31)
+	if err != nil {
+		t.Fatalf("TasksForTimeline: %v", err)
+	}
+	assertContainsTask(t, got, task.ID, "AC2 (completed inside range via updated_at)")
+}
+
+// TestStore_TasksForTimeline_AC3_PendingCreatedInside verifies acceptance
+// criterion §3: pending task created inside [from,to] → row returned.
+func TestStore_TasksForTimeline_AC3_PendingCreatedInside(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+	may1, may31 := pgTimelineRange[0], pgTimelineRange[1]
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-ac3-pending", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := store.TasksForTimeline(ctx, may1, may31)
+	if err != nil {
+		t.Fatalf("TasksForTimeline: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != task.ID {
+		t.Errorf("want 1 pending task %s, got %d rows: %+v", task.ID, len(got), got)
+	}
+}
+
+// TestStore_TasksForTimeline_AC4_PendingCreatedBeforeRange verifies acceptance
+// criterion §4: pending task created before [from] → excluded.
+func TestStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+	may1, may31 := pgTimelineRange[0], pgTimelineRange[1]
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-ac4-old-pending", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE tasks SET created_at = $1, updated_at = $1 WHERE id = $2`, april2026, task.ID,
+	); err != nil {
+		t.Fatalf("back-date: %v", err)
+	}
+	got, err := store.TasksForTimeline(ctx, may1, may31)
+	if err != nil {
+		t.Fatalf("TasksForTimeline: %v", err)
+	}
+	assertNotContainsTask(t, got, task.ID, "AC4 (old pending should be excluded)")
+}
+
+// TestStore_TasksForTimeline_WorkspaceIsolation verifies workspace B cannot
+// see workspace A's rows.
+func TestStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	sA := newPgGTDStore(pool, &wsA)
+	sB := newPgGTDStore(pool, &wsB)
+	ctx := context.Background()
+	may1, may31 := pgTimelineRange[0], pgTimelineRange[1]
+
+	if _, err := sA.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-ws-isolation", Priority: 3}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	gotA, err := sA.TasksForTimeline(ctx, may1, may31)
+	if err != nil {
+		t.Fatalf("TasksForTimeline (A): %v", err)
+	}
+	if len(gotA) != 1 {
+		t.Errorf("want 1 row in workspace A, got %d", len(gotA))
+	}
+	gotB, err := sB.TasksForTimeline(ctx, may1, may31)
+	if err != nil {
+		t.Fatalf("TasksForTimeline (B): %v", err)
+	}
+	if len(gotB) != 0 {
+		t.Errorf("want 0 rows in workspace B, got %d", len(gotB))
+	}
+}

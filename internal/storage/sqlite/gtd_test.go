@@ -1012,6 +1012,154 @@ func TestGTDStore_UpdateProject(t *testing.T) {
 	})
 }
 
+// mustQueryTimeline calls TasksForTimeline and fails the test on error.
+func mustQueryTimeline(t *testing.T, s *sqlite.GTDStore, from, to time.Time) []db.Task {
+	t.Helper()
+	got, err := s.TasksForTimeline(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("TasksForTimeline: %v", err)
+	}
+	return got
+}
+
+// sqliteTimelineRange is the May 2026 date range used by all
+// TestGTDStore_TasksForTimeline* subtests.
+var sqliteTimelineRange = [2]time.Time{
+	time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC),
+}
+
+// TestGTDStore_TasksForTimeline_AC1_CreatedAndCompletedInRange verifies
+// acceptance criterion §1: task created AND completed inside [from,to] →
+// row returned (aggregator emits task_created + task_completed from it).
+func TestGTDStore_TasksForTimeline_AC1_CreatedAndCompletedInRange(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "ac1", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := s.CompleteTask(ctx, task.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	got := mustQueryTimeline(t, s, may1, may31)
+	if len(got) != 1 || got[0].ID != task.ID {
+		t.Errorf("want 1 row (ac1), got %d: %+v", len(got), got)
+	}
+}
+
+// TestGTDStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside verifies
+// acceptance criterion §2: task created before [from], completed inside
+// [from,to] → row returned via the updated_at branch.
+func TestGTDStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside(t *testing.T) {
+	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	s := sqlite.NewGTDStore(d)
+	ctx := context.Background()
+	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "ac2", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := d.ExecContext(ctx,
+		`UPDATE tasks SET created_at = ?1 WHERE id = ?2`,
+		"2026-04-01T00:00:00Z", task.ID.String(),
+	); err != nil {
+		t.Fatalf("back-date created_at: %v", err)
+	}
+	if _, err := s.CompleteTask(ctx, task.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	got := mustQueryTimeline(t, s, may1, may31)
+	if len(got) != 1 || got[0].ID != task.ID {
+		t.Errorf("want 1 row (ac2, via updated_at), got %d: %+v", len(got), got)
+	}
+}
+
+// TestGTDStore_TasksForTimeline_AC3_PendingCreatedInside verifies acceptance
+// criterion §3: pending task created inside [from,to] → row returned.
+func TestGTDStore_TasksForTimeline_AC3_PendingCreatedInside(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "ac3-pending", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got := mustQueryTimeline(t, s, may1, may31)
+	if len(got) != 1 || got[0].ID != task.ID {
+		t.Errorf("want 1 row (ac3-pending), got %d: %+v", len(got), got)
+	}
+	if got[0].Status != "pending" {
+		t.Errorf("expected pending status, got %q", got[0].Status)
+	}
+}
+
+// TestGTDStore_TasksForTimeline_AC4_PendingCreatedBeforeRange verifies
+// acceptance criterion §4: pending task created before [from] → excluded.
+func TestGTDStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
+	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	s := sqlite.NewGTDStore(d)
+	ctx := context.Background()
+	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "ac4-old", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := d.ExecContext(ctx,
+		`UPDATE tasks SET created_at = ?1, updated_at = ?1 WHERE id = ?2`,
+		"2026-04-01T00:00:00Z", task.ID.String(),
+	); err != nil {
+		t.Fatalf("back-date created_at: %v", err)
+	}
+	got := mustQueryTimeline(t, s, may1, may31)
+	if len(got) != 0 {
+		t.Errorf("want 0 rows (outside range), got %d: %+v", len(got), got)
+	}
+}
+
+// TestGTDStore_TasksForTimeline_WorkspaceIsolation verifies workspace scoping:
+// a scoped store must not return another workspace's rows.
+func TestGTDStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {
+	sA := openMem(t, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	sB := openMem(t, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+	ctx := context.Background()
+	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
+
+	if _, err := sA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a-task", Priority: 3}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if got := mustQueryTimeline(t, sA, may1, may31); len(got) != 1 {
+		t.Errorf("want 1 row in workspace A, got %d", len(got))
+	}
+	if got := mustQueryTimeline(t, sB, may1, may31); len(got) != 0 {
+		t.Errorf("want 0 rows in workspace B, got %d", len(got))
+	}
+}
+
+// TestGTDStore_TasksForTimeline_EmptyStore verifies that an empty store
+// returns no rows (no panic, no error).
+func TestGTDStore_TasksForTimeline_EmptyStore(t *testing.T) {
+	s := openMem(t, "")
+	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
+	got := mustQueryTimeline(t, s, may1, may31)
+	if len(got) != 0 {
+		t.Errorf("want 0 rows in empty store, got %d", len(got))
+	}
+}
+
 // mustCreateTask is a tiny helper to keep TasksByDueDateRange subtests free
 // of repetitive `if err := ...; err != nil { t.Fatalf(...) }` boilerplate.
 // Splitting these out also keeps the outer test under the gocyclo budget.

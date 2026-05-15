@@ -100,6 +100,10 @@ func (s *stubGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([
 	return nil, nil
 }
 
+func (s *stubGTDStore) TasksForTimeline(_ context.Context, _, _ time.Time) ([]db.Task, error) {
+	return nil, nil
+}
+
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.
 type stubDecisionStore struct {
 	decisions []db.Decision

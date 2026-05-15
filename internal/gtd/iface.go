@@ -40,6 +40,13 @@ type StoreIface interface {
 	// forward-looking "task_due" planning events. Results are ordered by
 	// due_date ASC, created_at ASC for stable pagination.
 	TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error)
+	// TasksForTimeline returns all tasks (any status) where created_at OR
+	// (status='completed' AND updated_at) falls inside [from, to] (inclusive).
+	// Used by the timeline aggregator to surface task_created and task_completed
+	// historical events from a date-range query instead of scanning every active
+	// task. Results are ordered by COALESCE(updated_at, created_at) DESC,
+	// capped at 10000 rows. Workspace scoping is applied by the implementation.
+	TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error)
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error

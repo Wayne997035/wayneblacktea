@@ -348,6 +348,23 @@ func (s *GTDStore) projectByID(ctx context.Context, id uuid.UUID) (*db.Project, 
 	return &p, nil
 }
 
+// scanTaskRows drains a *sql.Rows result (already opened) into a []db.Task
+// slice and closes the rows. The caller-supplied label is used in error
+// messages for traceability. Extracted to eliminate structural duplication
+// between the date-range query methods (dupl linter).
+func (s *GTDStore) scanTaskRows(rows *sql.Rows, label string) ([]db.Task, error) {
+	defer func() { _ = rows.Close() }()
+	var out []db.Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, errWrap(label+" scan", err)
+		}
+		out = append(out, t)
+	}
+	return out, errWrap(label+" iter", rows.Err())
+}
+
 // TasksByDueDateRange returns pending / in_progress tasks whose due_date
 // falls inside [from, to] (inclusive on both ends), scoped to the
 // configured workspace. The status filter intentionally excludes
@@ -371,16 +388,34 @@ func (s *GTDStore) TasksByDueDateRange(ctx context.Context, from, to time.Time) 
 	if err != nil {
 		return nil, errWrap("TasksByDueDateRange", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []db.Task
-	for rows.Next() {
-		t, err := scanTask(rows.Scan)
-		if err != nil {
-			return nil, errWrap("TasksByDueDateRange scan", err)
-		}
-		out = append(out, t)
+	return s.scanTaskRows(rows, "TasksByDueDateRange")
+}
+
+// TasksForTimeline returns all tasks (any status) where created_at OR
+// (status='completed' AND updated_at) falls inside [from, to] (inclusive),
+// scoped to the configured workspace. Mirrors the Postgres-side
+// gtd.Store.TasksForTimeline; both back the timeline aggregator's
+// historical task_created / task_completed event query.
+//
+// SQLite stores timestamps as RFC3339 TEXT, so range filters rely on
+// lexicographic comparison — RFC3339 sorts identically to chronologic order
+// at the same UTC offset, which CreateTask enforces (.UTC().Format(...)).
+func (s *GTDStore) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error) {
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE (
+		    (created_at >= ?1 AND created_at <= ?2)
+		    OR (status = 'completed' AND updated_at >= ?1 AND updated_at <= ?2)
+		)
+		AND (?3 IS NULL OR workspace_id = ?3)
+		ORDER BY COALESCE(updated_at, created_at) DESC
+		LIMIT 10000`
+	fromStr := from.UTC().Format(time.RFC3339Nano)
+	toStr := to.UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.conn.QueryContext(ctx, q, fromStr, toStr, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("TasksForTimeline", err)
 	}
-	return out, errWrap("TasksByDueDateRange iter", rows.Err())
+	return s.scanTaskRows(rows, "TasksForTimeline")
 }
 
 // Tasks returns pending/in-progress tasks, optionally filtered by projectID.
