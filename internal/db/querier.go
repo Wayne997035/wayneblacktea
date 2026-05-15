@@ -60,6 +60,8 @@ type Querier interface {
 	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
 	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
 	ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error)
+	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
+	// alias (rank) in the same query level — wrapping materialises it first.
 	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
 	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
 	UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error)

@@ -41,12 +41,16 @@ type Event struct {
 }
 
 // TaskSource returns tasks optionally filtered by project, plus tasks
-// scheduled (due_date) inside an arbitrary range. The first method powers
-// historical task_created / task_completed events; the second powers
+// scheduled (due_date) inside an arbitrary range. TasksForTimeline powers
+// historical task_created / task_completed events; TasksByDueDateRange powers
 // forward-looking task_due "planning" events used by the calendar to show
 // what is scheduled for tomorrow / next week.
 type TaskSource interface {
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	// TasksForTimeline returns all tasks (any status) whose created_at OR
+	// (status='completed' AND updated_at) falls in [from, to] (inclusive).
+	// Workspace scoping is applied by the implementation.
+	TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error)
 	// TasksByDueDateRange returns tasks whose status is pending or
 	// in_progress AND whose due_date falls in [from, to] (inclusive on both
 	// ends). Workspace scoping is applied by the implementation.
@@ -133,7 +137,7 @@ func (a *Aggregator) collectTasks(ctx context.Context, from, to time.Time) ([]Ev
 	if a.Tasks == nil {
 		return nil, nil
 	}
-	tasks, err := a.Tasks.Tasks(ctx, nil)
+	tasks, err := a.Tasks.TasksForTimeline(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("timeline tasks: %w", err)
 	}

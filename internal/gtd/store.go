@@ -243,6 +243,47 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 	return out, nil
 }
 
+// TasksForTimeline returns all tasks (any status) where created_at OR
+// (status='completed' AND updated_at) falls inside [from, to] (inclusive),
+// scoped to the configured workspace. Used by the timeline aggregator to
+// build historical task_created / task_completed events without scanning
+// every active task in the workspace.
+//
+// Hand-rolled query (not sqlc) to keep the timeline feature self-contained
+// without churning the queries.sql codegen surface.
+func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error) {
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		FROM tasks
+		WHERE (
+		    (created_at >= $1 AND created_at <= $2)
+		    OR (status = 'completed' AND updated_at >= $1 AND updated_at <= $2)
+		)
+		AND ($3::uuid IS NULL OR workspace_id = $3)
+		ORDER BY COALESCE(updated_at, created_at) DESC
+		LIMIT 10000`
+	rows, err := s.dbtx.Query(ctx, q, from, to, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tasks for timeline [%s, %s]: %w", from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+	}
+	defer rows.Close()
+	var out []db.Task
+	for rows.Next() {
+		var t db.Task
+		if err := rows.Scan(
+			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		); err != nil {
+			return nil, fmt.Errorf("scanning task for timeline: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating tasks for timeline: %w", err)
+	}
+	return out, nil
+}
+
 // CreateTask inserts a new task.
 func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error) {
 	priority := p.Priority

@@ -19,3 +19,14 @@ type DecisionProposerPayload struct {
 	SessionID    string   `json:"session_id"`
 	TriggerTool  string   `json:"trigger_tool"`
 }
+
+// KnowledgePayload is the JSONB shape stored in pending_proposals.payload
+// when type='knowledge'. Written by the reflection cron job
+// (internal/scheduler/reflection.go) and read by the confirm_proposal
+// materialiser. Centralised here so scheduler and materialiser share the same
+// wire format without a cross-package import.
+type KnowledgePayload struct {
+	Title   string   `json:"title"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags,omitempty"`
+}

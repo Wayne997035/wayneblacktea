@@ -23,6 +23,8 @@ function getChipStyle(type: ProposalType): ChipStyle {
       return { color: 'var(--color-accent-purple)', bg: '#1a0a35' }
     case 'task':
       return { color: 'var(--color-warning)', bg: '#2e1f00' }
+    case 'knowledge':
+      return { color: 'var(--color-accent-teal, #0d9488)', bg: '#0a2e2e' }
   }
 }
 

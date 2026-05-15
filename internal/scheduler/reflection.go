@@ -155,19 +155,11 @@ func buildReflectionSummary(activities []db.ActivityLog, decisions []db.Decision
 	return sb.String()
 }
 
-// KnowledgePayload is the on-disk JSON shape stored in pending_proposals.payload
-// when type='knowledge'. Mirrors ai.KnowledgeProposal but is defined here so
-// the proposal package has no dependency on the ai package.
-type KnowledgePayload struct {
-	Title   string   `json:"title"`
-	Content string   `json:"content"`
-	Tags    []string `json:"tags,omitempty"`
-}
-
 // marshalKnowledgePayload encodes a KnowledgeProposal into the JSONB payload
-// expected by the pending_proposals table.
+// expected by the pending_proposals table. Uses proposal.KnowledgePayload as
+// the canonical wire format (internal/proposal/payload.go).
 func marshalKnowledgePayload(kp ai.KnowledgeProposal) ([]byte, error) {
-	p := KnowledgePayload{
+	p := proposal.KnowledgePayload{
 		Title:   kp.Title,
 		Content: kp.Content,
 		Tags:    kp.Tags,

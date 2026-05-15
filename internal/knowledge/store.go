@@ -269,20 +269,24 @@ func (s *Store) findSimilarAtLevel(ctx context.Context, vec []float32, level int
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
 	// strength formula inline: importance * exp(-base_lambda*(1-importance*0.8)*age_days) * (1+recall_count*0.2)
 	// ts_rank is the similarity signal for FTS. Combined: ORDER BY strength * ts_rank DESC.
-	const ftsQ = `SELECT ` + selectCols + `,
-		GREATEST(0.0, LEAST(1.0,
-			importance
-			* EXP(-base_lambda * (1.0 - importance * 0.8)
-				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
-			* (1.0 + recall_count * 0.2)
-		)) AS strength,
-		ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS sim
+	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
+	// aliases (strength, sim) in the same query level — wrapping materialises them first.
+	const ftsQ = `SELECT ` + selectCols + `, strength, sim FROM (
+		SELECT ` + selectCols + `,
+			GREATEST(0.0, LEAST(1.0,
+				importance
+				* EXP(-base_lambda * (1.0 - importance * 0.8)
+					* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+				* (1.0 + recall_count * 0.2)
+			)) AS strength,
+			ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS sim
 		FROM knowledge_items
 		WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
 		  AND archived_at IS NULL
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
-		ORDER BY strength * sim DESC
-		LIMIT $2`
+	) sub
+	ORDER BY strength * sim DESC
+	LIMIT $2`
 
 	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec // G115: caller guarantees positive int32
 	if err != nil {
@@ -336,22 +340,26 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 // parent_id IS NULL) for a coarse-grained overview search. Used by the
 // search_knowledge MCP tool when mode="coarse".
 func (s *Store) SearchCoarse(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	const ftsQ = `SELECT ` + selectCols + `,
-		GREATEST(0.0, LEAST(1.0,
-			importance
-			* EXP(-base_lambda * (1.0 - importance * 0.8)
-				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
-			* (1.0 + recall_count * 0.2)
-		)) AS strength,
-		ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS sim
+	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
+	// aliases (strength, sim) in the same query level — wrapping materialises them first.
+	const ftsQ = `SELECT ` + selectCols + `, strength, sim FROM (
+		SELECT ` + selectCols + `,
+			GREATEST(0.0, LEAST(1.0,
+				importance
+				* EXP(-base_lambda * (1.0 - importance * 0.8)
+					* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+				* (1.0 + recall_count * 0.2)
+			)) AS strength,
+			ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS sim
 		FROM knowledge_items
 		WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
 		  AND archived_at IS NULL
 		  AND parent_id IS NULL
 		  AND COALESCE(heading_level, 0) = 0
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
-		ORDER BY strength * sim DESC
-		LIMIT $2`
+	) sub
+	ORDER BY strength * sim DESC
+	LIMIT $2`
 
 	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec // G115: caller guarantees positive int32
 	if err != nil {
@@ -380,20 +388,24 @@ func (s *Store) SearchCoarse(ctx context.Context, query string, limit int) ([]db
 func (s *Store) vectorSearch(ctx context.Context, vec []float32, limit int) ([]db.KnowledgeItem, error) {
 	v := pgvector.NewVector(vec)
 	// cosine similarity = 1 - distance; strength multiplied for combined ranking.
-	const q = `SELECT ` + selectCols + `,
-		GREATEST(0.0, LEAST(1.0,
-			importance
-			* EXP(-base_lambda * (1.0 - importance * 0.8)
-				* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
-			* (1.0 + recall_count * 0.2)
-		)) AS strength,
-		(1.0 - (embedding <=> $1::vector)) AS sim
+	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
+	// aliases (strength, sim) in the same query level — wrapping materialises them first.
+	const q = `SELECT ` + selectCols + `, strength, sim FROM (
+		SELECT ` + selectCols + `,
+			GREATEST(0.0, LEAST(1.0,
+				importance
+				* EXP(-base_lambda * (1.0 - importance * 0.8)
+					* EXTRACT(EPOCH FROM (NOW() - COALESCE(last_recalled_at, created_at))) / 86400.0)
+				* (1.0 + recall_count * 0.2)
+			)) AS strength,
+			(1.0 - (embedding <=> $1::vector)) AS sim
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
 		  AND archived_at IS NULL
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
-		ORDER BY strength * (1.0 - (embedding <=> $1::vector)) DESC
-		LIMIT $2`
+	) sub
+	ORDER BY strength * sim DESC
+	LIMIT $2`
 
 	rows, err := s.pool.Query(ctx, q, v, limit, s.workspaceID)
 	if err != nil {

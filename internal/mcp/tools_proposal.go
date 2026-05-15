@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
@@ -445,6 +447,20 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		return mcp.NewToolResultError(fmt.Sprintf("committing transaction: %v", err)), nil
 	}
 
+	// Post-commit: for TypeKnowledge the tx path only validated the payload
+	// and flipped the proposal status. The actual AddItem write must happen
+	// here — outside the tx — because knowledge.Store has no WithTx variant
+	// and SQLite is single-writer (calling AddItem inside the tx would deadlock).
+	if proposal.Type(prop.Type) == proposal.TypeKnowledge && created == nil {
+		postCreated, errMsg := s.materializeKnowledgeIface(ctx, prop)
+		if errMsg == "" {
+			created = postCreated
+		} else {
+			slog.Warn("acceptProposalSQLite: knowledge post-commit materialise failed",
+				"proposal_id", id, "err", errMsg)
+		}
+	}
+
 	// Fetch the resolved proposal for the response (committed tx is closed).
 	resolved, err := s.proposal.Get(ctx, id)
 	if err != nil {
@@ -469,6 +485,8 @@ func proposalWorkspaceID(prop *db.PendingProposal) *uuid.UUID {
 // created entity (or nil for types with no materialisation) plus an error
 // message string (empty = success). All writes go through the open tx so the
 // caller can atomically commit entity + proposal-resolve in one transaction.
+//
+//nolint:gocyclo // each case dispatches to an extracted sub-function; switch over proposal.Type is inherently branchy
 func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeDecision:
@@ -503,6 +521,17 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 			return nil, fmt.Sprintf("creating concept: %v", err)
 		}
 		return map[string]string{"id": conceptID.String(), "title": cp.Title}, ""
+	case proposal.TypeKnowledge:
+		// Validate payload inside the tx so a bad payload aborts cleanly.
+		// Actual AddItem write happens after tx.Commit (post-commit path in
+		// acceptProposalSQLite) because knowledge.Store does not expose a
+		// tx-aware variant and SQLite is single-writer — calling AddItem with
+		// the same db.conn while a tx is open would deadlock. Per A3 the
+		// sequential fallback is acceptable at personal-OS scale.
+		if _, errMsg := decodeKnowledgePayload(prop.Payload); errMsg != "" {
+			return nil, errMsg
+		}
+		return nil, "" // signals tx can commit; post-commit path does AddItem
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
 	case proposal.TypePlaybook:
@@ -541,6 +570,8 @@ func (s *Server) materializeDecisionSQLite(ctx context.Context, tx *sql.Tx, prop
 // materializeFromPayloadPg decodes the proposal's payload and creates the
 // concrete entity inside the given pgx transaction. Returns the created
 // entity or an error message string (empty = success). Postgres-only.
+//
+//nolint:gocyclo // each case dispatches to an extracted sub-function; switch over proposal.Type is inherently branchy
 func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeDecision:
@@ -575,6 +606,8 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 			return nil, fmt.Sprintf("creating concept: %v", err)
 		}
 		return concept, ""
+	case proposal.TypeKnowledge:
+		return s.materializeKnowledgePg(ctx, prop)
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
 	case proposal.TypePlaybook:
@@ -612,6 +645,8 @@ func (s *Server) materializeDecisionPg(ctx context.Context, tx pgx.Tx, prop *db.
 // materializeFromPayloadIface is the SQLite-backed counterpart that calls
 // through the backend-agnostic StoreIface methods. No tx — see
 // acceptProposalSequential doc for the ordering / failure tradeoff.
+//
+//nolint:gocyclo // each case dispatches to an extracted sub-function; switch over proposal.Type is inherently branchy
 func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeDecision:
@@ -646,6 +681,8 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 			return nil, fmt.Sprintf("creating concept: %v", err)
 		}
 		return concept, ""
+	case proposal.TypeKnowledge:
+		return s.materializeKnowledgeIface(ctx, prop)
 	case proposal.TypeTask:
 		return nil, errTaskProposalNotMaterialized
 	case proposal.TypePlaybook:
@@ -678,6 +715,66 @@ func (s *Server) materializeDecisionIface(ctx context.Context, prop *db.PendingP
 		return nil, fmt.Sprintf("creating decision: %v", err)
 	}
 	return dec, ""
+}
+
+// materializeKnowledgePg creates a knowledge_items row inside the given pgx
+// transaction. Uses the backend-agnostic knowledge.StoreIface (not WithTx)
+// because knowledge.Store does not expose a tx-aware variant; per A3 the
+// sequential fallback is acceptable at personal-OS scale.
+func (s *Server) materializeKnowledgePg(ctx context.Context, prop *db.PendingProposal) (any, string) {
+	return s.materializeKnowledgeIface(ctx, prop)
+}
+
+// materializeKnowledgeIface decodes a TypeKnowledge proposal payload and
+// calls knowledge.StoreIface.AddItem. The item type is fixed to "til"
+// (TypeTIL) per Lead decision A1 — closest semantic match for reflection
+// distillations.
+func (s *Server) materializeKnowledgeIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
+	kp, errMsg := decodeKnowledgePayload(prop.Payload)
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	if s.knowledge == nil {
+		return nil, "knowledge proposal materialisation requires knowledge store"
+	}
+	item, err := s.knowledge.AddItem(ctx, knowledge.AddItemParams{
+		Type:    string(knowledge.TypeTIL),
+		Title:   kp.Title,
+		Content: kp.Content,
+		Tags:    kp.Tags,
+		Source:  prop.ProposedBy.String,
+	})
+	if err != nil {
+		return nil, fmt.Sprintf("creating knowledge item: %v", err)
+	}
+	return item, ""
+}
+
+// decodeKnowledgePayload decodes the JSON stored in pending_proposals.payload
+// for type='knowledge', applying the same length caps as concept payloads.
+func decodeKnowledgePayload(payload []byte) (proposal.KnowledgePayload, string) {
+	var kp proposal.KnowledgePayload
+	if err := json.Unmarshal(payload, &kp); err != nil {
+		return proposal.KnowledgePayload{}, fmt.Sprintf("decoding knowledge payload: %v", err)
+	}
+	if kp.Title == "" {
+		return proposal.KnowledgePayload{}, "knowledge payload missing title"
+	}
+	if len(kp.Title) > 512 {
+		return proposal.KnowledgePayload{}, "knowledge title exceeds 512 bytes"
+	}
+	if len(kp.Content) > 65536 {
+		return proposal.KnowledgePayload{}, "knowledge content exceeds 64 KB"
+	}
+	if len(kp.Tags) > 50 {
+		return proposal.KnowledgePayload{}, "too many tags (max 50)"
+	}
+	for _, tag := range kp.Tags {
+		if len(tag) > 100 {
+			return proposal.KnowledgePayload{}, "individual tag exceeds 100 bytes"
+		}
+	}
+	return kp, ""
 }
 
 // decisionMaterialiseLogParams converts the proposer payload (from
