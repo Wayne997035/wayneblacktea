@@ -26,7 +26,7 @@ tasks:
     silent: false
 
   check-go:
-    desc: "Go-only quality gate — skip frontend build and integration tests (use for Go-only PRs)"
+    desc: "Go-only quality gate — skip frontend build and integration tests. NOTE: if you touch internal/storage/, run 'task test-integration' separately."
     cmds:
       - task: mod-tidy
       - task: vuln
