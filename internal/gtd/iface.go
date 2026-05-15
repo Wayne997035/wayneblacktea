@@ -40,6 +40,11 @@ type StoreIface interface {
 	// forward-looking "task_due" planning events. Results are ordered by
 	// due_date ASC, created_at ASC for stable pagination.
 	TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error)
+	// UpcomingTasks returns pending/in_progress tasks relevant to the upcoming
+	// window rooted at refDate. days controls how far ahead to look; limit caps
+	// the pre-grouping row count. Tasks with importance=1 and no due_date are
+	// also included for the unscheduled_important bucket. Workspace scoped.
+	UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error)
 	// TasksForTimeline returns all tasks (any status) where created_at OR
 	// (status='completed' AND updated_at) falls inside [from, to] (inclusive).
 	// Used by the timeline aggregator to surface task_created and task_completed
@@ -57,6 +62,10 @@ type StoreIface interface {
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error)
+	// UpdateTask performs a partial update of a task, replacing only the fields
+	// that are non-nil in p. Nil fields are preserved from the existing row.
+	// Returns ErrNotFound when no row matching id exists in the configured workspace.
+	UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams) (*db.Task, error)
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error)
 	// UpdateGoal performs a full update of a goal, replacing all mutable fields.
 	UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams) (*db.Goal, error)

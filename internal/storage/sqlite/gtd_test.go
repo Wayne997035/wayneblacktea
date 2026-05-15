@@ -1266,3 +1266,285 @@ func TestGTDStore_TasksByDueDateRange(t *testing.T) {
 		}
 	})
 }
+
+// assertSQLiteTaskAllFields checks every mutable column of a SQLite-backed task in
+// one place, keeping callers below the cyclomatic complexity threshold.
+func assertSQLiteTaskAllFields(t *testing.T, updated *db.Task,
+	wantTitle, wantDesc string, wantPrio int32, wantImp int16,
+	wantAssignee string, wantDue time.Time, wantCtx, wantStatus string,
+) {
+	t.Helper()
+	if updated.Title != wantTitle {
+		t.Errorf("title: got %q, want %q", updated.Title, wantTitle)
+	}
+	if !updated.Description.Valid || updated.Description.String != wantDesc {
+		t.Errorf("description: got %+v", updated.Description)
+	}
+	if updated.Priority != wantPrio {
+		t.Errorf("priority: got %d, want %d", updated.Priority, wantPrio)
+	}
+	if !updated.Importance.Valid || updated.Importance.Int16 != wantImp {
+		t.Errorf("importance: got %+v", updated.Importance)
+	}
+	if !updated.Assignee.Valid || updated.Assignee.String != wantAssignee {
+		t.Errorf("assignee: got %+v", updated.Assignee)
+	}
+	if !updated.DueDate.Valid {
+		t.Error("due_date should be set")
+	} else if !updated.DueDate.Time.UTC().Truncate(time.Second).Equal(wantDue.UTC().Truncate(time.Second)) {
+		// RFC3339Nano round-trip: compare truncated to seconds.
+		t.Errorf("due_date: got %v, want %v",
+			updated.DueDate.Time.UTC().Truncate(time.Second), wantDue.UTC().Truncate(time.Second))
+	}
+	if !updated.Context.Valid || updated.Context.String != wantCtx {
+		t.Errorf("context: got %+v", updated.Context)
+	}
+	if updated.Status != wantStatus {
+		t.Errorf("status: got %q, want %q", updated.Status, wantStatus)
+	}
+}
+
+// TestGTDStore_UpdateTask_PartialPatch verifies that unspecified fields are preserved.
+func TestGTDStore_UpdateTask_PartialPatch(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "original title", Priority: 2, Description: "original desc",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	newDesc := "updated description"
+	updated, err := s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Description: &newDesc})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if updated.Title != "original title" {
+		t.Errorf("title should be preserved: got %q", updated.Title)
+	}
+	if !updated.Description.Valid || updated.Description.String != newDesc {
+		t.Errorf("description should be updated: got %+v", updated.Description)
+	}
+	if updated.Priority != 2 {
+		t.Errorf("priority should be preserved: got %d", updated.Priority)
+	}
+}
+
+// TestGTDStore_UpdateTask_AllFields verifies all mutable fields are written correctly.
+// Paired with TestGTDStore_UpdateTask_PG_AllFields per backend-security-design.md §6.5.
+func TestGTDStore_UpdateTask_AllFields(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "old title", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	newTitle := "new title"
+	newDesc := "new desc"
+	newPrio := int32(1)
+	newImp := int16(2)
+	newAssignee := "wayne"
+	due := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	newCtx := "discussion context"
+	newStatus := string(gtd.TaskStatusInProgress)
+
+	updated, err := s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{
+		Title: &newTitle, Description: &newDesc, Priority: &newPrio, Importance: &newImp,
+		Assignee: &newAssignee, DueDate: &due, Context: &newCtx, Status: &newStatus,
+	})
+	if err != nil {
+		t.Fatalf("UpdateTask all fields: %v", err)
+	}
+	assertSQLiteTaskAllFields(t, updated, newTitle, newDesc, newPrio, newImp, newAssignee, due, newCtx, newStatus)
+}
+
+// TestGTDStore_UpdateTask_CreatedAtImmutable verifies that created_at is not modified.
+func TestGTDStore_UpdateTask_CreatedAtImmutable(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "immutable-created-at", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	originalCreatedAt := task.CreatedAt
+
+	newTitle := "changed title"
+	updated, err := s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Title: &newTitle})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if !updated.CreatedAt.Valid {
+		t.Fatal("updated.CreatedAt not valid")
+	}
+	if !updated.CreatedAt.Time.Equal(originalCreatedAt.Time) {
+		t.Errorf("created_at changed: got %v, want %v", updated.CreatedAt.Time, originalCreatedAt.Time)
+	}
+}
+
+// TestGTDStore_UpdateTask_NotFound verifies ErrNotFound for unknown IDs.
+func TestGTDStore_UpdateTask_NotFound(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	newTitle := "should not matter"
+	_, err := s.UpdateTask(ctx, uuid.New(), gtd.UpdateTaskParams{Title: &newTitle})
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+// TestGTDStore_UpcomingTasks_WithinWindow verifies that pending tasks within
+// the window and importance=1 unscheduled tasks are returned, while
+// beyond-window, low-importance unscheduled, and completed tasks are excluded.
+func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	imp1 := int16(1)
+	imp2 := int16(2)
+	todayDue := now.Add(time.Hour)
+	futureDue := now.AddDate(0, 0, 5)
+	beyondDue := now.AddDate(0, 0, 30)
+
+	s := openMem(t, uuid.New().String())
+
+	createTask := func(title string, due *time.Time, imp *int16) *db.Task {
+		t.Helper()
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: title, Priority: 2, DueDate: due, Importance: imp})
+		if err != nil {
+			t.Fatalf("CreateTask(%q): %v", title, err)
+		}
+		return task
+	}
+
+	createTask("today-task", &todayDue, nil)
+	createTask("future-task", &futureDue, nil)
+	createTask("beyond-window-task", &beyondDue, nil) // >7d → excluded
+	createTask("unscheduled-imp1", nil, &imp1)        // importance=1, no due → included
+	createTask("unscheduled-imp2", nil, &imp2)        // importance=2, no due → excluded
+
+	completedTask := createTask("completed-task", &todayDue, nil)
+	_, err := s.CompleteTask(ctx, completedTask.ID, nil)
+	if err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	tasks, err := s.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+
+	titleSet := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		titleSet[tk.Title] = true
+	}
+	for _, want := range []string{"today-task", "future-task", "unscheduled-imp1"} {
+		if !titleSet[want] {
+			t.Errorf("missing expected task %q; got: %v", want, titleSet)
+		}
+	}
+	for _, notWant := range []string{"beyond-window-task", "unscheduled-imp2", "completed-task"} {
+		if titleSet[notWant] {
+			t.Errorf("unexpected task %q in results", notWant)
+		}
+	}
+}
+
+// TestGTDStore_UpcomingTasks_WorkspaceScoping verifies that SQLite in-memory
+// stores are fully isolated — each workspace sees only its own tasks.
+func TestGTDStore_UpcomingTasks_WorkspaceScoping(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	todayDue := now.Add(time.Hour)
+
+	sA := openMem(t, uuid.New().String())
+	sB := openMem(t, uuid.New().String())
+
+	_, err := sA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a-task", Priority: 2, DueDate: &todayDue})
+	if err != nil {
+		t.Fatalf("CreateTask A: %v", err)
+	}
+	_, err = sB.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-b-task", Priority: 2, DueDate: &todayDue})
+	if err != nil {
+		t.Fatalf("CreateTask B: %v", err)
+	}
+
+	// Each in-memory DB is isolated; sA cannot see sB's tasks.
+	tasksA, err := sA.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks A: %v", err)
+	}
+	if len(tasksA) != 1 || tasksA[0].Title != "ws-a-task" {
+		titles := make([]string, len(tasksA))
+		for i, tk := range tasksA {
+			titles[i] = tk.Title
+		}
+		t.Errorf("sA: expected [ws-a-task], got %v", titles)
+	}
+}
+
+// TestGTDStore_UpcomingTasks_EmptyWorkspace verifies that a fresh store
+// returns an empty slice (not nil or error).
+func TestGTDStore_UpcomingTasks_EmptyWorkspace(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s := openMem(t, uuid.New().String())
+
+	tasks, err := s.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks (empty): %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks, got %d", len(tasks))
+	}
+}
+
+// TestGTDStore_UpcomingTasks_PastDue verifies that a task whose due_date is
+// in the past is included in the result set (store does not filter past-due).
+func TestGTDStore_UpcomingTasks_PastDue(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s := openMem(t, uuid.New().String())
+
+	pastDue := now.AddDate(0, 0, -3)
+	_, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "past-due-task", Priority: 2, DueDate: &pastDue})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	tasks, err := s.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Title != "past-due-task" {
+		t.Errorf("expected past-due-task in results, got %v", tasks)
+	}
+}
+
+// TestGTDStore_UpcomingTasks_InProgressIncluded verifies that tasks with
+// status in_progress are included alongside pending tasks.
+func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	todayDue := now.Add(time.Hour)
+	s := openMem(t, uuid.New().String())
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "in-progress-task", Priority: 2, DueDate: &todayDue})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, err = s.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatusInProgress)
+	if err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	tasks, err := s.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("expected in_progress task in results, got %d", len(tasks))
+	}
+}

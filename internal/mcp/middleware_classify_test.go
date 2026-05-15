@@ -190,6 +190,14 @@ func (m *mockClassifyGTDStore) RecentActivityByProject(_ context.Context, _ uuid
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 // TestMaybeClassifyToolCall_NilClassifier verifies that a nil classifier results in no-op.
 func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
 	g := &mockClassifyGTDStore{}

@@ -284,6 +284,60 @@ func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.
 	return out, nil
 }
 
+// UpcomingTasks returns pending and in_progress tasks relevant to the upcoming
+// window anchored at refDate (in the given tz). The days parameter controls how
+// far ahead the "upcoming" bucket extends beyond today+2; limit caps the total
+// row count returned before Go-side grouping so callers can apply limit after
+// bucket assignment.
+//
+// The query fetches:
+//   - All pending/in_progress tasks with a due_date up to refDate+days (in UTC)
+//   - All pending/in_progress tasks with importance=1 and no due_date
+//     (for the unscheduled_important bucket)
+//
+// Hand-rolled (not sqlc) to keep this feature self-contained.
+func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error) {
+	// Extend the window to end of day on refDate + days in UTC.
+	windowEnd := refDate.UTC().AddDate(0, 0, days).Truncate(24 * time.Hour).Add(24*time.Hour - time.Nanosecond)
+	// We fetch a bit more than limit to allow Go-side grouping to fill all
+	// buckets; multiply by 2 as a practical over-fetch factor, floor at limit.
+	fetchLimit := limit * 2
+	if fetchLimit < limit {
+		fetchLimit = limit
+	}
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		FROM tasks
+		WHERE status IN ('pending','in_progress')
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (
+		      (due_date IS NOT NULL AND due_date <= $2)
+		      OR (due_date IS NULL AND importance = 1)
+		  )
+		ORDER BY due_date ASC NULLS LAST, priority ASC, created_at ASC
+		LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID, windowEnd, fetchLimit)
+	if err != nil {
+		return nil, fmt.Errorf("listing upcoming tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []db.Task
+	for rows.Next() {
+		var t db.Task
+		if err := rows.Scan(
+			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		); err != nil {
+			return nil, fmt.Errorf("scanning upcoming task: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating upcoming tasks: %w", err)
+	}
+	return out, nil
+}
+
 // CreateTask inserts a new task.
 func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error) {
 	priority := p.Priority
@@ -387,6 +441,148 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 		return nil, fmt.Errorf("updating task %s status: %w", id, err)
 	}
 	return &row, nil
+}
+
+// getTaskByID fetches a single task by ID, scoped to the configured workspace.
+// Returns ErrNotFound when no matching row exists. Hand-rolled query (not sqlc)
+// to avoid churning the codegen surface for a single read.
+func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		FROM tasks
+		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		LIMIT 1`
+	rows, err := s.dbtx.Query(ctx, q, id, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("querying task %s: %w", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterating task %s: %w", id, err)
+		}
+		return nil, ErrNotFound
+	}
+	var t db.Task
+	if err := rows.Scan(
+		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+	); err != nil {
+		return nil, fmt.Errorf("scanning task %s: %w", id, err)
+	}
+	return &t, nil
+}
+
+// coalesceString returns ptr if non-nil, otherwise fallback.
+func coalesceString(ptr *string, fallback string) string {
+	if ptr != nil {
+		return *ptr
+	}
+	return fallback
+}
+
+// coalesceInt32 returns ptr if non-nil, otherwise fallback.
+func coalesceInt32(ptr *int32, fallback int32) int32 {
+	if ptr != nil {
+		return *ptr
+	}
+	return fallback
+}
+
+// UpdateTask performs a partial update of a task by ID. nil fields in p are
+// preserved from the existing row (no null-clear support). Pre-reads the existing
+// task to fill nil params, then executes a single UPDATE RETURNING.
+// Returns ErrNotFound when no row matching id exists in the configured workspace.
+func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams) (*db.Task, error) {
+	existing, err := s.getTaskByID(ctx, id)
+	if err != nil {
+		return nil, err // ErrNotFound propagated as-is
+	}
+
+	// Merge: keep existing values for unspecified fields.
+	title := coalesceString(p.Title, existing.Title)
+
+	var description pgtype.Text
+	if p.Description != nil {
+		description = toText(*p.Description)
+	} else {
+		description = existing.Description
+	}
+
+	priority := coalesceInt32(p.Priority, existing.Priority)
+
+	var importance pgtype.Int2
+	if p.Importance != nil {
+		importance = pgtype.Int2{Int16: *p.Importance, Valid: true}
+	} else {
+		importance = existing.Importance
+	}
+
+	var assignee pgtype.Text
+	if p.Assignee != nil {
+		assignee = toText(*p.Assignee)
+	} else {
+		assignee = existing.Assignee
+	}
+
+	var dueDate pgtype.Timestamptz
+	if p.DueDate != nil {
+		dueDate = toTimestamptz(p.DueDate)
+	} else {
+		dueDate = existing.DueDate
+	}
+
+	var taskContext pgtype.Text
+	if p.Context != nil {
+		taskContext = toText(*p.Context)
+	} else {
+		taskContext = existing.Context
+	}
+
+	var status string
+	if p.Status != nil {
+		status = *p.Status
+	} else {
+		status = existing.Status
+	}
+
+	const q = `UPDATE tasks
+		SET title       = $1,
+		    description = $2,
+		    priority    = $3,
+		    importance  = $4,
+		    assignee    = $5,
+		    due_date    = $6,
+		    context     = $7,
+		    status      = $8,
+		    updated_at  = NOW()
+		WHERE id = $9
+		  AND ($10::uuid IS NULL OR workspace_id = $10)
+		RETURNING id, project_id, title, description, status, priority, assignee,
+		          due_date, artifact, created_at, updated_at, workspace_id, importance, context`
+	rows, err := s.dbtx.Query(ctx, q,
+		title, description, priority, importance, assignee, dueDate, taskContext, status,
+		id, s.workspaceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updating task %s: %w", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if rErr := rows.Err(); rErr != nil {
+			return nil, fmt.Errorf("iterating update result for task %s: %w", id, rErr)
+		}
+		return nil, ErrNotFound
+	}
+	var t db.Task
+	if err := rows.Scan(
+		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+	); err != nil {
+		return nil, fmt.Errorf("scanning updated task %s: %w", id, err)
+	}
+	return &t, nil
 }
 
 // UpdateGoal performs a full update of a goal by ID, replacing all mutable fields.

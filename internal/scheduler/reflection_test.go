@@ -104,6 +104,14 @@ func (s *stubGTDStore) TasksForTimeline(_ context.Context, _, _ time.Time) ([]db
 	return nil, nil
 }
 
+func (s *stubGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
+	return nil, nil
+}
+
+func (s *stubGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
+	return nil, nil
+}
+
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.
 type stubDecisionStore struct {
 	decisions []db.Decision
