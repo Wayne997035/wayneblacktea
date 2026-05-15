@@ -480,6 +480,11 @@ func decodeKnowledgeCandidatePayload(payload []byte) (knowledgeCandidatePayload,
 	if len(kp.Tags) > maxConceptTags {
 		return knowledgeCandidatePayload{}, "too many tags (max 50)"
 	}
+	for _, tag := range kp.Tags {
+		if len(tag) > 100 {
+			return knowledgeCandidatePayload{}, "individual tag exceeds 100 bytes"
+		}
+	}
 	return kp, ""
 }
 

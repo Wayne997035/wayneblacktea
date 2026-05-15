@@ -769,6 +769,11 @@ func decodeKnowledgePayload(payload []byte) (proposal.KnowledgePayload, string) 
 	if len(kp.Tags) > 50 {
 		return proposal.KnowledgePayload{}, "too many tags (max 50)"
 	}
+	for _, tag := range kp.Tags {
+		if len(tag) > 100 {
+			return proposal.KnowledgePayload{}, "individual tag exceeds 100 bytes"
+		}
+	}
 	return kp, ""
 }
 

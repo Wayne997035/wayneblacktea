@@ -103,7 +103,8 @@ func run() error {
 	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClientFromEnv())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
-		WithDecision(stores.Decision())
+		WithDecision(stores.Decision()).
+		WithKnowledge(stores.Knowledge())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(stores.Learning(),
 		handler.WithKnowledgeStore(stores.Knowledge()),
