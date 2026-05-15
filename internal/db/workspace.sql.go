@@ -88,7 +88,7 @@ func (q *Queries) ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) 
 const upsertRepo = `-- name: UpsertRepo :one
 INSERT INTO repos (name, path, description, language, current_branch, known_issues, next_planned_step, last_activity, workspace_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (name) DO UPDATE SET
+ON CONFLICT (workspace_id, name) DO UPDATE SET
     path = EXCLUDED.path,
     description = EXCLUDED.description,
     language = EXCLUDED.language,

@@ -91,7 +91,12 @@ func (s *Store) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error) {
 }
 
 // UpsertRepo creates or updates a repo entry.
+// workspaceID must be non-nil: after migration 000028 the unique constraint is
+// (workspace_id, name), so ON CONFLICT does not fire for NULL workspace_id.
 func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (*db.Repo, error) {
+	if !s.workspaceID.Valid {
+		return nil, fmt.Errorf("UpsertRepo requires a non-nil workspaceID after migration 000028")
+	}
 	row, err := s.q.UpsertRepo(ctx, db.UpsertRepoParams{
 		Name:            p.Name,
 		Path:            toText(p.Path),
