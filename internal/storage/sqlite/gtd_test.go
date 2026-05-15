@@ -1588,3 +1588,81 @@ func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
 		t.Errorf("expected in_progress task in results, got %d", len(tasks))
 	}
 }
+
+// TestGTDStore_UpdateTaskStatus_WorkspaceIsolation verifies that UpdateTaskStatus
+// returns ErrNotFound when the task belongs to a different workspace.
+func TestGTDStore_UpdateTaskStatus_WorkspaceIsolation(t *testing.T) {
+	tmp := t.TempDir() + "/iso_task_status.db"
+	ctx := context.Background()
+	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	if err != nil {
+		t.Fatalf("Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	storeA := sqlite.NewGTDStore(dbA)
+
+	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a task", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	storeB := sqlite.NewGTDStore(dbB)
+
+	_, err = storeB.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatusInProgress)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("cross-workspace UpdateTaskStatus must return ErrNotFound, got %v", err)
+	}
+
+	// Sanity: workspace A can still update its own task.
+	if _, err = storeA.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatusInProgress); err != nil {
+		t.Errorf("owner workspace UpdateTaskStatus must succeed, got %v", err)
+	}
+}
+
+// TestGTDStore_UpdateProjectStatus_WorkspaceIsolation verifies that UpdateProjectStatus
+// returns ErrNotFound when the project belongs to a different workspace.
+func TestGTDStore_UpdateProjectStatus_WorkspaceIsolation(t *testing.T) {
+	tmp := t.TempDir() + "/iso_proj_status.db"
+	ctx := context.Background()
+	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	if err != nil {
+		t.Fatalf("Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	storeA := sqlite.NewGTDStore(dbA)
+
+	proj, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "ws-a-proj", Title: "WS-A Project", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	storeB := sqlite.NewGTDStore(dbB)
+
+	_, err = storeB.UpdateProjectStatus(ctx, proj.ID, gtd.ProjectStatusActive)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("cross-workspace UpdateProjectStatus must return ErrNotFound, got %v", err)
+	}
+
+	// Sanity: workspace A can still update its own project.
+	if _, err = storeA.UpdateProjectStatus(ctx, proj.ID, gtd.ProjectStatusOnHold); err != nil {
+		t.Errorf("owner workspace UpdateProjectStatus must succeed, got %v", err)
+	}
+}
