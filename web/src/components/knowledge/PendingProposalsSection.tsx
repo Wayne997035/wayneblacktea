@@ -305,7 +305,7 @@ export function PendingProposalsSection() {
   // --- Source summary counts ---
   const articleCount = proposals.filter((p) => p.type === 'concept' && p.payload.source_item_type === 'article').length
   const agentCount = proposals.filter((p) => {
-    if (p.type === 'concept') return !p.payload.source_item_id
+    if (p.type === 'concept' || p.type === 'knowledge') return !p.payload.source_item_id
     return true
   }).length
 
