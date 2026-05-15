@@ -139,7 +139,7 @@ func atomizeAndPersist(
 		})
 		if err != nil {
 			slog.Warn("atomize: persist atom failed", "err", err)
-			return
+			continue
 		}
 		atomIDs = append(atomIDs, a.ID)
 	}
@@ -197,6 +197,11 @@ func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text stri
 		return
 	}
 	go func(pid uuid.UUID, t string) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("launchAtomize: recovered panic", "parent_id", pid, "panic", r)
+			}
+		}()
 		select {
 		case s.atomizeSem <- struct{}{}:
 			defer func() { <-s.atomizeSem }()
