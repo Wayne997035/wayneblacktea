@@ -277,13 +277,13 @@ func TestProposalHandler_ConfirmBatch_AcceptKnowledge(t *testing.T) {
 			wantKnowledgeAdded: 0,
 		},
 		{
-			name:               "knowledge store not wired → resolve still OK",
+			name:               "knowledge store not wired → entry error, proposal not resolved",
 			body:               `{"ids":["` + knowledgeID.String() + `"],"action":"accept"}`,
 			store:              newFakeProposalStore(knowledge1),
 			knowledge:          nil,
 			learning:           &fakeProposalLearningStore{},
 			wantCode:           http.StatusOK,
-			wantOKCount:        1,
+			wantOKCount:        0,
 			wantKnowledgeAdded: 0,
 		},
 	}

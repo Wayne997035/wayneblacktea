@@ -223,14 +223,14 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 			wantConceptCreated: 0,
 		},
 		{
-			name:               "concept creation failure → batch result still ok (non-fatal)",
+			name:               "concept creation failure → batch entry error, proposal not resolved (materialise-first)",
 			body:               `{"ids":["` + concept1ID.String() + `"],"action":"accept"}`,
 			store:              newFakeProposalStore(concept1),
 			learning:           &fakeProposalLearningStore{err: errors.New("concept store down")},
 			wantCode:           http.StatusOK,
 			wantResultCount:    1,
-			wantOKCount:        1, // proposal resolved OK
-			wantConceptCreated: 1, // attempted (even if failed)
+			wantOKCount:        0, // materialise failed → Resolve NOT called
+			wantConceptCreated: 1, // attempted before Resolve
 		},
 		{
 			name:     "invalid action → 400",

@@ -243,18 +243,12 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 	}
 }
 
-// handleAccept executes the accept flow with optimistic-lock ordering:
-// Get → status guard → Resolve (atomic, WHERE status='pending') → CreateConcept.
-// Concurrent accepts on the same proposal see a 409 from Resolve before any
-// concept is materialised.
-//
-// TypeDecision diverges from the concept ordering: it materialises the
-// decisions row BEFORE Resolve so that a Resolve failure (e.g. concurrent
-// accept) leaves no half-state where the proposal is accepted but the
-// decision was never written. The materialise-then-resolve order can leave
-// an orphan decisions row when two concurrent accepts race; the orphan is
-// preferable to a missing one because list_decisions will surface it for
-// the user to delete manually rather than silently losing the record.
+// handleAccept executes the accept flow: Get → status guard → materialise
+// (type-specific, before Resolve) → Resolve (atomic, WHERE status='pending').
+// All types materialise BEFORE Resolve so a Resolve failure never leaves an
+// "accepted" proposal with no backing row. Concurrent accepts can both
+// materialise a resource before either Resolve fires; the second Resolve
+// returns ErrNotFound → 409. Orphan resource > missing resource.
 func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id uuid.UUID) error {
 	prop, err := h.proposal.Get(ctx, id)
 	if errors.Is(err, proposal.ErrNotFound) {
@@ -365,12 +359,15 @@ func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, i
 
 	if h.knowledge == nil {
 		c.Logger().Errorf("ConfirmProposal knowledge %s: knowledge store not wired", id)
-		return c.JSON(http.StatusInternalServerError, errResp("knowledge store not configured"))
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
 	source := ""
 	if prop.ProposedBy.Valid {
 		source = prop.ProposedBy.String
+		if len(source) > 255 {
+			source = source[:255]
+		}
 	}
 	item, err := h.knowledge.AddItem(ctx, knowledge.AddItemParams{
 		Type:    "til",
@@ -572,12 +569,8 @@ func (h *ProposalHandler) batchProposalMeta(ctx context.Context, ids []uuid.UUID
 }
 
 // batchResolveOne resolves a single proposal and materialises the appropriate
-// entity (concept or decision). Concept materialisation failures are non-fatal
-// (preserves prior behaviour). Decision materialisation runs BEFORE the
-// resolve flip — same orphan-decision-over-phantom-accepted trade-off as the
-// singular acceptDecision path: a Resolve race may leave an orphan decisions
-// row, which is preferable to marking the proposal accepted with no decision
-// row to back it.
+// entity. Decision, concept, and knowledge all materialise BEFORE Resolve so
+// a Resolve failure never leaves an "accepted" proposal with no backing row.
 //
 //nolint:gocyclo // per-type materialisation branches are inherently complex; each branch calls extracted helpers
 func (h *ProposalHandler) batchResolveOne(
@@ -591,23 +584,61 @@ func (h *ProposalHandler) batchResolveOne(
 
 	m, hasMeta := meta[id]
 
-	// On accept of a TypeDecision row: materialise FIRST so a Resolve failure
-	// does not leave an "accepted" proposal with no decision row.
-	if status == proposal.StatusAccepted && hasMeta && m.isDecision {
-		if m.payloadErr != "" {
-			// Mirror singular handler: malformed payload → per-row 400, no resolve.
-			entry.Error = m.payloadErr
-			return entry
+	// All types materialise BEFORE Resolve: orphan resource on a concurrent
+	// accept is preferable to an "accepted" proposal with no backing row.
+	if status == proposal.StatusAccepted && hasMeta {
+		if m.isDecision {
+			if m.payloadErr != "" {
+				entry.Error = m.payloadErr
+				return entry
+			}
+			if h.decision == nil {
+				c.Logger().Errorf("ConfirmBatch accept decision %s: decision store not wired", id)
+				entry.Error = errInternalGeneric
+				return entry
+			}
+			if _, derr := h.decision.Log(ctx, m.dp); derr != nil {
+				c.Logger().Errorf("ConfirmBatch materialise decision %s: %v", id, derr)
+				entry.Error = errInternalGeneric
+				return entry
+			}
 		}
-		if h.decision == nil {
-			c.Logger().Errorf("ConfirmBatch accept decision %s: decision store not wired", id)
-			entry.Error = errInternalGeneric
-			return entry
+		if m.isConcept {
+			if m.payloadErr != "" {
+				entry.Error = m.payloadErr
+				return entry
+			}
+			if h.learning == nil {
+				c.Logger().Errorf("ConfirmBatch accept concept %s: learning store not wired", id)
+				entry.Error = errInternalGeneric
+				return entry
+			}
+			if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
+				c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
+				entry.Error = errInternalGeneric
+				return entry
+			}
 		}
-		if _, derr := h.decision.Log(ctx, m.dp); derr != nil {
-			c.Logger().Errorf("ConfirmBatch materialise decision %s: %v", id, derr)
-			entry.Error = errInternalGeneric
-			return entry
+		if m.isKnowledge {
+			if m.payloadErr != "" {
+				entry.Error = m.payloadErr
+				return entry
+			}
+			if h.knowledge == nil {
+				c.Logger().Errorf("ConfirmBatch accept knowledge %s: knowledge store not wired", id)
+				entry.Error = errInternalGeneric
+				return entry
+			}
+			if _, kerr := h.knowledge.AddItem(ctx, knowledge.AddItemParams{
+				Type:    "til",
+				Title:   m.kp.Title,
+				Content: m.kp.Content,
+				Tags:    m.kp.Tags,
+			}); kerr != nil {
+				c.Logger().Errorf("ConfirmBatch materialise knowledge %s: %v", id, kerr)
+				entry.Error = errInternalGeneric
+				return entry
+			}
 		}
 	}
 
@@ -622,30 +653,6 @@ func (h *ProposalHandler) batchResolveOne(
 		return entry
 	}
 	entry.OK = true
-	if status == proposal.StatusAccepted && hasMeta && m.isConcept {
-		// Malformed concept payload was already recorded; we still resolved
-		// (preserves prior behaviour where concept failures are non-fatal).
-		if m.payloadErr != "" {
-			c.Logger().Warnf("ConfirmBatch concept %s: payload decode failed: %s", id, m.payloadErr)
-		} else if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
-			c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
-		}
-	}
-	if status == proposal.StatusAccepted && hasMeta && m.isKnowledge {
-		// Knowledge materialisation is non-fatal — proposal is already resolved.
-		if m.payloadErr != "" {
-			c.Logger().Warnf("ConfirmBatch knowledge %s: payload decode failed: %s", id, m.payloadErr)
-		} else if h.knowledge == nil {
-			c.Logger().Warnf("ConfirmBatch knowledge %s: knowledge store not wired, skipping materialisation", id)
-		} else if _, kerr := h.knowledge.AddItem(ctx, knowledge.AddItemParams{
-			Type:    "til",
-			Title:   m.kp.Title,
-			Content: m.kp.Content,
-			Tags:    m.kp.Tags,
-		}); kerr != nil {
-			c.Logger().Errorf("ConfirmBatch materialise knowledge %s: %v", id, kerr)
-		}
-	}
 	return entry
 }
 
