@@ -668,8 +668,8 @@ func (s *GTDStore) CreateGoal(ctx context.Context, p gtd.CreateGoalParams) (*db.
 }
 
 func (s *GTDStore) goalByID(ctx context.Context, id uuid.UUID) (*db.Goal, error) {
-	const q = `SELECT ` + goalsSelectCols + ` FROM goals WHERE id = ?1 LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id.String())
+	const q = `SELECT ` + goalsSelectCols + ` FROM goals WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg())
 	g, err := scanGoal(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, gtd.ErrNotFound

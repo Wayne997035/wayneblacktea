@@ -816,6 +816,81 @@ func TestGTDHandler_CompleteTask(t *testing.T) {
 	}
 }
 
+// TestGTDHandler_UpdateTaskStatus exercises the PATCH /api/tasks/:id/status endpoint.
+func TestGTDHandler_UpdateTaskStatus(t *testing.T) {
+	id := uuid.New()
+	updated := &db.Task{ID: id, Status: "in_progress"}
+	cases := []struct {
+		name     string
+		paramID  string
+		body     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "sets in_progress",
+			paramID:  id.String(),
+			body:     `{"status":"in_progress"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "sets pending",
+			paramID:  id.String(),
+			body:     `{"status":"pending"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "status=completed → 400 (use CompleteTask)",
+			paramID:  id.String(),
+			body:     `{"status":"completed"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "arbitrary status → 400",
+			paramID:  id.String(),
+			body:     `{"status":"invalid_status"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "missing status → 400",
+			paramID:  id.String(),
+			body:     `{}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "invalid UUID → 400",
+			paramID:  "not-uuid",
+			body:     `{"status":"pending"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "not found → 404",
+			paramID:  id.String(),
+			body:     `{"status":"pending"}`,
+			store:    &fakeGTDStore{err: gtd.ErrNotFound},
+			wantCode: http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.PATCH("/api/tasks/:id/status", h.UpdateTaskStatus)
+			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+tc.paramID+"/status", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestGTDHandler_UpdateTask exercises the PATCH /api/tasks/:id handler,
 // covering: partial patch success, validation rejections (empty title,
 // out-of-range priority/importance, status=completed), all-nil rejection,

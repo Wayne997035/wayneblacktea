@@ -904,6 +904,46 @@ func TestGTDStore_UpdateGoal(t *testing.T) {
 	})
 }
 
+// TestGTDStore_GoalByID_WorkspaceIsolation verifies that goalByID (called by
+// CreateGoal and UpdateGoal) returns ErrNotFound when the goal belongs to a
+// different workspace. This mirrors the workspace filter added in PR #102 to
+// match the pattern already applied to taskByID, projectByID, etc.
+func TestGTDStore_GoalByID_WorkspaceIsolation(t *testing.T) {
+	tmp := t.TempDir() + "/iso.db"
+	ctx := context.Background()
+	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	if err != nil {
+		t.Fatalf("Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	storeA := sqlite.NewGTDStore(dbA)
+
+	// Create goal in workspace A.
+	g, err := storeA.CreateGoal(ctx, gtd.CreateGoalParams{Title: "ws-a only goal"})
+	if err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+
+	// Workspace B must not be able to update (and therefore read via goalByID) the goal.
+	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	storeB := sqlite.NewGTDStore(dbB)
+
+	_, err = storeB.UpdateGoal(ctx, g.ID, gtd.UpdateGoalParams{
+		Title:  "cross-workspace hijack attempt",
+		Status: gtd.GoalStatusArchived,
+	})
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("cross-workspace goalByID must return ErrNotFound, got %v", err)
+	}
+}
+
 // TestGTDStore_UpdateProject verifies the SQLite UpdateProject full-update path.
 func TestGTDStore_UpdateProject(t *testing.T) {
 	t.Run("updates all mutable fields", func(t *testing.T) {
