@@ -4,9 +4,12 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -15,6 +18,7 @@ type dashboardGTDStore interface {
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
 	TopPendingTask(ctx context.Context) (*db.Task, error)
+	UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error)
 }
 
 // dashboardDecisionStore covers the decision methods used by DashboardHandler.
@@ -257,4 +261,130 @@ func (h *DashboardHandler) GetNextTask(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, nextTaskResponse{Task: task})
+}
+
+const (
+	defaultUpcomingDays  = 7
+	maxUpcomingDays      = 14
+	minUpcomingDays      = 1
+	defaultUpcomingLimit = 10
+	maxUpcomingLimit     = 50
+)
+
+// upcomingTaskItem is the JSON shape for a single task in an upcoming-tasks group.
+type upcomingTaskItem struct {
+	ID         string  `json:"id"`
+	Title      string  `json:"title"`
+	Status     string  `json:"status"`
+	Priority   int32   `json:"priority"`
+	Importance *int16  `json:"importance,omitempty"`
+	DueDate    *string `json:"due_date,omitempty"`
+	ProjectID  *string `json:"project_id,omitempty"`
+}
+
+// upcomingTasksResponse is the JSON shape for GET /api/dashboard/upcoming-tasks.
+type upcomingTasksResponse struct {
+	Groups upcomingTaskGroups `json:"groups"`
+}
+
+// upcomingTaskGroups holds the five buckets returned by the upcoming-tasks endpoint.
+type upcomingTaskGroups struct {
+	Today                []upcomingTaskItem `json:"today"`
+	Tomorrow             []upcomingTaskItem `json:"tomorrow"`
+	DayAfter             []upcomingTaskItem `json:"day_after"`
+	Upcoming             []upcomingTaskItem `json:"upcoming"`
+	UnscheduledImportant []upcomingTaskItem `json:"unscheduled_important"`
+}
+
+// GetUpcomingTasks handles GET /api/dashboard/upcoming-tasks.
+//
+// Query params:
+//   - days:  1-14 (default 7) — how far ahead the "upcoming" window extends
+//   - limit: 1-50 (default 10) — total tasks across all groups
+//   - tz:    IANA timezone name (default "UTC") — used for day-boundary calculation
+func (h *DashboardHandler) GetUpcomingTasks(c echo.Context) error {
+	days := defaultUpcomingDays
+	if raw := c.QueryParam("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < minUpcomingDays {
+			return c.JSON(http.StatusBadRequest, errResp("days must be an integer >= 1"))
+		}
+		if n > maxUpcomingDays {
+			n = maxUpcomingDays
+		}
+		days = n
+	}
+
+	limit := defaultUpcomingLimit
+	if raw := c.QueryParam("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return c.JSON(http.StatusBadRequest, errResp("limit must be a positive integer"))
+		}
+		if n > maxUpcomingLimit {
+			n = maxUpcomingLimit
+		}
+		limit = n
+	}
+
+	tz := time.UTC
+	if tzName := c.QueryParam("tz"); tzName != "" {
+		loc, err := time.LoadLocation(tzName)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, errResp("invalid tz: must be a valid IANA timezone name"))
+		}
+		tz = loc
+	}
+
+	ctx := c.Request().Context()
+	now := time.Now().In(tz)
+
+	tasks, err := h.gtd.UpcomingTasks(ctx, now, days, limit)
+	if err != nil {
+		c.Logger().Errorf("GetUpcomingTasks: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	groups := gtd.GroupUpcomingTasks(tasks, now, tz, days, limit)
+
+	resp := upcomingTasksResponse{
+		Groups: upcomingTaskGroups{
+			Today:                toUpcomingItems(groups.Today),
+			Tomorrow:             toUpcomingItems(groups.Tomorrow),
+			DayAfter:             toUpcomingItems(groups.DayAfter),
+			Upcoming:             toUpcomingItems(groups.Upcoming),
+			UnscheduledImportant: toUpcomingItems(groups.UnscheduledImportant),
+		},
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// toUpcomingItems converts a slice of db.Task into API-friendly upcomingTaskItem values.
+func toUpcomingItems(tasks []db.Task) []upcomingTaskItem {
+	if len(tasks) == 0 {
+		return []upcomingTaskItem{}
+	}
+	out := make([]upcomingTaskItem, 0, len(tasks))
+	for _, t := range tasks {
+		item := upcomingTaskItem{
+			ID:       t.ID.String(),
+			Title:    t.Title,
+			Status:   t.Status,
+			Priority: t.Priority,
+		}
+		if t.Importance.Valid {
+			imp := t.Importance.Int16
+			item.Importance = &imp
+		}
+		if t.DueDate.Valid {
+			s := t.DueDate.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
+			item.DueDate = &s
+		}
+		if t.ProjectID.Valid {
+			s := uuid.UUID(t.ProjectID.Bytes).String()
+			item.ProjectID = &s
+		}
+		out = append(out, item)
+	}
+	return out
 }

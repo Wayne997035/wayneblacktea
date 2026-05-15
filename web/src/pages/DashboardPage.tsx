@@ -9,6 +9,7 @@ import { HandoffCard } from '../components/dashboard/HandoffCard'
 import { QuickStats } from '../components/dashboard/QuickStats'
 import { SystemHealth } from '../components/dashboard/SystemHealth'
 import { NextTaskCard } from '../components/dashboard/NextTaskCard'
+import { UpcomingTasksCard } from '../components/dashboard/UpcomingTasksCard'
 import { RecentDecisionsCard } from '../components/dashboard/RecentDecisionsCard'
 import { PendingProposalsCard } from '../components/dashboard/PendingProposalsCard'
 import { DueReviewsCard } from '../components/dashboard/DueReviewsCard'
@@ -108,6 +109,14 @@ export function DashboardPage() {
               {t('dashboard.sections.nextTask')}
             </div>
             <NextTaskCard onNavigate={(id) => { if (UUID_RE.test(id)) navigate(`/gtd?task_id=${id}`) }} />
+          </section>
+
+          {/* D1b: Upcoming Tasks */}
+          <section>
+            <div className="text-label mb-3" style={{ color: 'var(--color-text-muted)' }}>
+              {t('dashboard.sections.upcomingTasks', 'Upcoming Tasks')}
+            </div>
+            <UpcomingTasksCard />
           </section>
 
           {/* D2: Recent Decisions */}
