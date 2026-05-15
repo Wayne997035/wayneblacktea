@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/labstack/echo/v4"
 )
 
@@ -222,8 +223,11 @@ func (h *DashboardHandler) GetPendingKnowledgeProposals(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
-	out := make([]pendingKnowledgeProposalResponse, 0, len(pending))
+	out := make([]pendingKnowledgeProposalResponse, 0)
 	for _, p := range pending {
+		if p.Type != string(proposal.TypeKnowledge) {
+			continue
+		}
 		r := pendingKnowledgeProposalResponse{
 			ID:     p.ID.String(),
 			Type:   p.Type,
