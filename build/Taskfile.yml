@@ -35,6 +35,14 @@ tasks:
       - task: build-all
     silent: false
 
+  check-go-fast:
+    desc: "Fast Go gate for rapid iteration — lint + build only, no govulncheck, no -race tests. Use between check-go runs during active development."
+    cmds:
+      - task: mod-tidy
+      - task: lint
+      - task: build-all
+    silent: false
+
   build-all:
     desc: "Build all binaries in parallel"
     deps:
