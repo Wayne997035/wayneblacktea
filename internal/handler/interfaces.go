@@ -15,6 +15,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // proposalStore covers the subset of proposal.Store used by handlers.
@@ -42,6 +43,16 @@ type gtdStore interface {
 	UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoalParams) (*db.Goal, error)
 	UpdateProject(ctx context.Context, id uuid.UUID, p gtd.UpdateProjectParams) (*db.Project, error)
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
+	AddChecklistItem(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, item gtd.ChecklistItem) ([]gtd.ChecklistItem, error)
+	UpdateChecklistItem(
+		ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID,
+		itemID uuid.UUID, update gtd.UpdateChecklistItemParams,
+	) ([]gtd.ChecklistItem, error)
+	DeleteChecklistItem(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, itemID uuid.UUID) error
+	// WorkspaceID returns the workspace UUID scoped to this store. The handler
+	// passes it through to the checklist methods so they can enforce workspace
+	// isolation without relying on the request (IDOR protection).
+	WorkspaceID() pgtype.UUID
 }
 
 // workspaceStore covers the subset of workspace.Store used by the basic

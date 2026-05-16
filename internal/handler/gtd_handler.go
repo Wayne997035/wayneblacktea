@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -497,4 +500,171 @@ func (h *GTDHandler) CompleteTask(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, task)
+}
+
+// checklistBodyLimit is the maximum request body size for checklist endpoints (32 KB).
+const checklistBodyLimit = 32 * 1024
+
+// workspaceUUIDFromStore converts a store's pgtype.UUID into a plain uuid.UUID.
+// An invalid (zero) pgtype.UUID → zero uuid.UUID (unscoped mode).
+func workspaceUUIDFromStore(s gtdStore) uuid.UUID {
+	pg := s.WorkspaceID()
+	if !pg.Valid {
+		return uuid.UUID{}
+	}
+	return uuid.UUID(pg.Bytes)
+}
+
+type addChecklistItemRequest struct {
+	Title   string `json:"title"`
+	FileRef string `json:"file_ref"`
+	Notes   string `json:"notes"`
+}
+
+// AddChecklistItem handles POST /api/tasks/:id/checklist/items.
+// Body: {title (required), file_ref?, notes?}
+// Response 200: full updated []ChecklistItem.
+func (h *GTDHandler) AddChecklistItem(c echo.Context) error {
+	taskID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid task id"))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request().Body, checklistBodyLimit))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("failed to read request body"))
+	}
+
+	var req addChecklistItemRequest
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+
+	title := gtd.SanitiseChecklistText(req.Title)
+	if title == "" {
+		return c.JSON(http.StatusBadRequest, errResp("title is required"))
+	}
+	if len([]rune(title)) > gtd.ChecklistMaxTitle {
+		return c.JSON(http.StatusBadRequest, errResp("title exceeds 500 characters"))
+	}
+
+	fileRef := gtd.SanitiseChecklistText(req.FileRef)
+	notes := gtd.SanitiseChecklistText(req.Notes)
+	if len([]rune(fileRef)) > gtd.ChecklistMaxText {
+		return c.JSON(http.StatusBadRequest, errResp("file_ref exceeds 2000 characters"))
+	}
+	if len([]rune(notes)) > gtd.ChecklistMaxText {
+		return c.JSON(http.StatusBadRequest, errResp("notes exceeds 2000 characters"))
+	}
+
+	item := gtd.ChecklistItem{
+		ID:        uuid.New(),
+		Title:     title,
+		FileRef:   fileRef,
+		Notes:     notes,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	wsID := workspaceUUIDFromStore(h.store)
+	items, err := h.store.AddChecklistItem(c.Request().Context(), taskID, wsID, item)
+	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("task not found"))
+		}
+		c.Logger().Errorf("AddChecklistItem: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, items)
+}
+
+type updateChecklistItemRequest struct {
+	Done        *bool   `json:"done"`
+	Title       *string `json:"title"`
+	Notes       *string `json:"notes"`
+	EvidenceURL *string `json:"evidence_url"`
+}
+
+// UpdateChecklistItem handles PATCH /api/tasks/:id/checklist/items/:item_id.
+// Body: {done?, title?, notes?, evidence_url?}
+// Response 200: full updated []ChecklistItem.
+func (h *GTDHandler) UpdateChecklistItem(c echo.Context) error {
+	taskID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid task id"))
+	}
+	itemID, err := uuid.Parse(c.Param("item_id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid item_id"))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request().Body, checklistBodyLimit))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("failed to read request body"))
+	}
+
+	var req updateChecklistItemRequest
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+
+	// Validate and sanitise optional text fields.
+	update := gtd.UpdateChecklistItemParams{Done: req.Done}
+	if req.Title != nil {
+		t := gtd.SanitiseChecklistText(*req.Title)
+		if t == "" {
+			return c.JSON(http.StatusBadRequest, errResp("title must not be empty"))
+		}
+		if len([]rune(t)) > gtd.ChecklistMaxTitle {
+			return c.JSON(http.StatusBadRequest, errResp("title exceeds 500 characters"))
+		}
+		update.Title = &t
+	}
+	if req.Notes != nil {
+		n := gtd.SanitiseChecklistText(*req.Notes)
+		if len([]rune(n)) > gtd.ChecklistMaxText {
+			return c.JSON(http.StatusBadRequest, errResp("notes exceeds 2000 characters"))
+		}
+		update.Notes = &n
+	}
+	if req.EvidenceURL != nil {
+		eu := gtd.SanitiseChecklistText(*req.EvidenceURL)
+		if len([]rune(eu)) > gtd.ChecklistMaxText {
+			return c.JSON(http.StatusBadRequest, errResp("evidence_url exceeds 2000 characters"))
+		}
+		update.EvidenceURL = &eu
+	}
+
+	wsID := workspaceUUIDFromStore(h.store)
+	items, err := h.store.UpdateChecklistItem(c.Request().Context(), taskID, wsID, itemID, update)
+	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("task or item not found"))
+		}
+		c.Logger().Errorf("UpdateChecklistItem: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, items)
+}
+
+// DeleteChecklistItem handles DELETE /api/tasks/:id/checklist/items/:item_id.
+// Response 204: no content on success.
+func (h *GTDHandler) DeleteChecklistItem(c echo.Context) error {
+	taskID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid task id"))
+	}
+	itemID, err := uuid.Parse(c.Param("item_id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid item_id"))
+	}
+
+	wsID := workspaceUUIDFromStore(h.store)
+	if err := h.store.DeleteChecklistItem(c.Request().Context(), taskID, wsID, itemID); err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errResp("task or item not found"))
+		}
+		c.Logger().Errorf("DeleteChecklistItem: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.NoContent(http.StatusNoContent)
 }

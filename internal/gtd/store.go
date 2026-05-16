@@ -2,6 +2,7 @@ package gtd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,6 +12,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// jsonMarshal / jsonUnmarshal are thin aliases for encoding/json so that the
+// json package appears referenced from this file (avoiding blank-import hacks).
+var (
+	jsonMarshal   = json.Marshal
+	jsonUnmarshal = json.Unmarshal
 )
 
 // Store handles all database operations for the GTD bounded context.
@@ -140,6 +148,10 @@ func (s *Store) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.P
 }
 
 // CreateProject inserts a new project.
+//
+// Hand-rolled INSERT (instead of sqlc CreateProject) so that the repo_name
+// column added in migration 000037 is included without requiring a sqlc
+// regen on every contributor's machine.
 func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error) {
 	area := p.Area
 	if area == "" {
@@ -149,21 +161,35 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 	if priority == 0 {
 		priority = 3
 	}
-	row, err := s.q.CreateProject(ctx, db.CreateProjectParams{
-		GoalID:      toUUID(p.GoalID),
-		Name:        p.Name,
-		Title:       p.Title,
-		Description: toText(p.Description),
-		Area:        area,
-		Priority:    priority,
-		WorkspaceID: s.workspaceID,
-	})
+	const q = `INSERT INTO projects
+		(goal_id, name, title, description, status, area, priority, repo_name, workspace_id)
+		VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
+		RETURNING id, goal_id, name, title, description, status, area, priority,
+		          created_at, updated_at, workspace_id`
+	rows, err := s.dbtx.Query(ctx, q,
+		toUUID(p.GoalID), p.Name, p.Title, toText(p.Description),
+		area, priority, toText(p.RepoName), s.workspaceID,
+	)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, ErrConflict
 		}
 		return nil, fmt.Errorf("creating project %q: %w", p.Name, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if rErr := rows.Err(); rErr != nil {
+			return nil, fmt.Errorf("iterating create project %q: %w", p.Name, rErr)
+		}
+		return nil, fmt.Errorf("creating project %q: no row returned", p.Name)
+	}
+	var row db.Project
+	if err := rows.Scan(
+		&row.ID, &row.GoalID, &row.Name, &row.Title, &row.Description, &row.Status, &row.Area, &row.Priority,
+		&row.CreatedAt, &row.UpdatedAt, &row.WorkspaceID,
+	); err != nil {
+		return nil, fmt.Errorf("scanning created project %q: %w", p.Name, err)
 	}
 	return &row, nil
 }
@@ -606,6 +632,11 @@ func (s *Store) UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams
 }
 
 // UpdateProject performs a full update of a project by ID, replacing all mutable fields.
+//
+// Hand-rolled UPDATE (instead of sqlc UpdateProject) so that the repo_name
+// column added in migration 000037 is handled without requiring a sqlc regen.
+// RepoName semantics: nil → preserve existing DB value; non-nil → overwrite
+// (empty string clears to NULL).
 func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error) {
 	area := p.Area
 	if area == "" {
@@ -615,21 +646,66 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 	if priority == 0 {
 		priority = 3
 	}
-	row, err := s.q.UpdateProject(ctx, db.UpdateProjectParams{
-		ID:          id,
-		Title:       p.Title,
-		Description: toText(p.Description),
-		Area:        area,
-		Priority:    priority,
-		Status:      string(p.Status),
-		GoalID:      toUUID(p.GoalID),
-		WorkspaceID: s.workspaceID,
-	})
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	// Two query branches: include repo_name in the SET only when the caller
+	// explicitly provides it; otherwise omit it so the existing value is kept.
+	if p.RepoName != nil {
+		const q = `UPDATE projects
+			SET title       = $1,
+			    description = $2,
+			    area        = $3,
+			    priority    = $4,
+			    status      = $5,
+			    goal_id     = $6,
+			    repo_name   = $7,
+			    updated_at  = NOW()
+			WHERE id = $8
+			  AND ($9::uuid IS NULL OR workspace_id = $9)
+			RETURNING id, goal_id, name, title, description, status, area, priority,
+			          created_at, updated_at, workspace_id`
+		rows, err = s.dbtx.Query(ctx, q,
+			p.Title, toText(p.Description), area, priority, string(p.Status), toUUID(p.GoalID),
+			toText(*p.RepoName),
+			id, s.workspaceID,
+		)
+	} else {
+		const q = `UPDATE projects
+			SET title       = $1,
+			    description = $2,
+			    area        = $3,
+			    priority    = $4,
+			    status      = $5,
+			    goal_id     = $6,
+			    updated_at  = NOW()
+			WHERE id = $7
+			  AND ($8::uuid IS NULL OR workspace_id = $8)
+			RETURNING id, goal_id, name, title, description, status, area, priority,
+			          created_at, updated_at, workspace_id`
+		rows, err = s.dbtx.Query(ctx, q,
+			p.Title, toText(p.Description), area, priority, string(p.Status), toUUID(p.GoalID),
+			id, s.workspaceID,
+		)
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
 		return nil, fmt.Errorf("updating project %s: %w", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if rErr := rows.Err(); rErr != nil {
+			return nil, fmt.Errorf("iterating update result for project %s: %w", id, rErr)
+		}
+		return nil, ErrNotFound
+	}
+	var row db.Project
+	if err := rows.Scan(
+		&row.ID, &row.GoalID, &row.Name, &row.Title, &row.Description, &row.Status, &row.Area, &row.Priority,
+		&row.CreatedAt, &row.UpdatedAt, &row.WorkspaceID,
+	); err != nil {
+		return nil, fmt.Errorf("scanning updated project %s: %w", id, err)
 	}
 	return &row, nil
 }
@@ -894,4 +970,136 @@ func (s *Store) WeeklyProgress(ctx context.Context) (completed, total int64, err
 		return 0, 0, fmt.Errorf("counting active tasks: %w", err)
 	}
 	return completed, total, nil
+}
+
+// loadChecklist reads the checklist column for taskID scoped to workspaceID and
+// returns the parsed []ChecklistItem. Returns ErrNotFound when the task row does
+// not exist in the workspace.
+func (s *Store) loadChecklist(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID) ([]ChecklistItem, error) {
+	wsFilter := toUUID(&workspaceID)
+	const q = `SELECT checklist FROM tasks WHERE id = $1 AND ($2::uuid IS NULL OR workspace_id = $2) LIMIT 1`
+	rows, err := s.dbtx.Query(ctx, q, taskID, wsFilter)
+	if err != nil {
+		return nil, fmt.Errorf("loading checklist for task %s: %w", taskID, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if rErr := rows.Err(); rErr != nil {
+			return nil, fmt.Errorf("iterating checklist for task %s: %w", taskID, rErr)
+		}
+		return nil, ErrNotFound
+	}
+	var raw []byte
+	if err := rows.Scan(&raw); err != nil {
+		return nil, fmt.Errorf("scanning checklist for task %s: %w", taskID, err)
+	}
+	var items []ChecklistItem
+	if len(raw) > 0 {
+		if err := jsonUnmarshal(raw, &items); err != nil {
+			return nil, fmt.Errorf("parsing checklist for task %s: %w", taskID, err)
+		}
+	}
+	if items == nil {
+		items = []ChecklistItem{}
+	}
+	return items, nil
+}
+
+// saveChecklist writes the serialised checklist back to the task row.
+func (s *Store) saveChecklist(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, items []ChecklistItem) error {
+	wsFilter := toUUID(&workspaceID)
+	data, err := jsonMarshal(items)
+	if err != nil {
+		return fmt.Errorf("marshalling checklist for task %s: %w", taskID, err)
+	}
+	const q = `UPDATE tasks SET checklist = $1, updated_at = NOW() WHERE id = $2 AND ($3::uuid IS NULL OR workspace_id = $3)`
+	if _, err := s.dbtx.Exec(ctx, q, data, taskID, wsFilter); err != nil {
+		return fmt.Errorf("saving checklist for task %s: %w", taskID, err)
+	}
+	return nil
+}
+
+// AddChecklistItem appends a new ChecklistItem (with a server-generated ID) to
+// the task's checklist and returns the full updated slice.
+// Returns ErrNotFound when no task matches taskID + workspaceID.
+func (s *Store) AddChecklistItem(
+	ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, item ChecklistItem,
+) ([]ChecklistItem, error) {
+	items, err := s.loadChecklist(ctx, taskID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, item)
+	if err := s.saveChecklist(ctx, taskID, workspaceID, items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// UpdateChecklistItem applies a partial patch to the checklist item identified
+// by itemID inside the given task. Returns the full updated checklist.
+// Returns ErrNotFound when task or item is not found.
+func (s *Store) UpdateChecklistItem(
+	ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID,
+	itemID uuid.UUID, update UpdateChecklistItemParams,
+) ([]ChecklistItem, error) {
+	items, err := s.loadChecklist(ctx, taskID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	now := time.Now().UTC()
+	for i := range items {
+		if items[i].ID != itemID {
+			continue
+		}
+		found = true
+		if update.Title != nil {
+			items[i].Title = *update.Title
+		}
+		if update.Notes != nil {
+			items[i].Notes = *update.Notes
+		}
+		if update.EvidenceURL != nil {
+			items[i].EvidenceURL = *update.EvidenceURL
+		}
+		if update.Done != nil {
+			items[i].Done = *update.Done
+			if *update.Done && items[i].CompletedAt == nil {
+				items[i].CompletedAt = &now
+			} else if !*update.Done {
+				items[i].CompletedAt = nil
+			}
+		}
+		break
+	}
+	if !found {
+		return nil, ErrNotFound
+	}
+	if err := s.saveChecklist(ctx, taskID, workspaceID, items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// DeleteChecklistItem removes the item identified by itemID from the task's
+// checklist. Returns ErrNotFound when task or item is not found.
+func (s *Store) DeleteChecklistItem(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, itemID uuid.UUID) error {
+	items, err := s.loadChecklist(ctx, taskID, workspaceID)
+	if err != nil {
+		return err
+	}
+	next := items[:0]
+	found := false
+	for _, it := range items {
+		if it.ID == itemID {
+			found = true
+			continue
+		}
+		next = append(next, it)
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return s.saveChecklist(ctx, taskID, workspaceID, next)
 }

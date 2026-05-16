@@ -19,6 +19,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/labstack/echo/v4"
 )
 
@@ -113,6 +114,24 @@ func (f *fakeGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.Updat
 
 func (f *fakeGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
 	return f.completed_, f.total_, f.err
+}
+
+func (f *fakeGTDStore) WorkspaceID() pgtype.UUID {
+	return pgtype.UUID{}
+}
+
+func (f *fakeGTDStore) AddChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ gtd.ChecklistItem) ([]gtd.ChecklistItem, error) {
+	return nil, f.err
+}
+
+func (f *fakeGTDStore) UpdateChecklistItem(
+	_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID, _ gtd.UpdateChecklistItemParams,
+) ([]gtd.ChecklistItem, error) {
+	return nil, f.err
+}
+
+func (f *fakeGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID) error {
+	return f.err
 }
 
 type fakeSessionStore struct {

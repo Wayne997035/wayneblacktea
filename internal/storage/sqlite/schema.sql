@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     assignee     TEXT,
     due_date     TEXT,
     artifact     TEXT,
+    checklist    TEXT NOT NULL DEFAULT '[]', -- JSON array of ChecklistItem; parity with Postgres jsonb checklist column (migration 000043)
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

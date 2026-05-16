@@ -73,6 +73,20 @@ type StoreIface interface {
 	UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error)
 	DeleteTask(ctx context.Context, id uuid.UUID) error
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
+	// AddChecklistItem appends a new ChecklistItem to the task's checklist and
+	// returns the full updated slice. The item's ID is generated server-side.
+	// Returns ErrNotFound when no task matches taskID + workspaceID.
+	AddChecklistItem(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, item ChecklistItem) ([]ChecklistItem, error)
+	// UpdateChecklistItem applies a partial patch to the checklist item identified
+	// by itemID inside the given task. Returns the full updated checklist.
+	// Returns ErrNotFound when task or item is not found.
+	UpdateChecklistItem(
+		ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID,
+		itemID uuid.UUID, update UpdateChecklistItemParams,
+	) ([]ChecklistItem, error)
+	// DeleteChecklistItem removes the item identified by itemID from the task's
+	// checklist. Returns ErrNotFound when task or item is not found.
+	DeleteChecklistItem(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, itemID uuid.UUID) error
 	// TopPendingTask returns the single highest-priority pending task scoped to
 	// the configured workspace. Returns nil, nil when none exist.
 	TopPendingTask(ctx context.Context) (*db.Task, error)

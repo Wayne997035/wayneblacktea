@@ -192,9 +192,16 @@ func (s *Server) LaunchAtomize(parentTable string, parentID uuid.UUID, text stri
 // independent timeout so the MCP request is never blocked. A 5-slot semaphore
 // (atomizeSem) caps concurrent Haiku API calls to prevent budget exhaustion on
 // rapid add_* bursts. (security M4)
+//
+// s.atomizeFn is used instead of calling atomizeAndPersist directly so tests
+// can inject a fake without changing production behaviour.
 func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text string) {
 	if s.atomizer == nil || s.atom == nil {
 		return
+	}
+	fn := s.atomizeFn
+	if fn == nil {
+		fn = atomizeAndPersist
 	}
 	go func(pid uuid.UUID, t string) {
 		defer func() {
@@ -211,6 +218,6 @@ func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text stri
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		atomizeAndPersist(ctx, s.atomizer, s.atom, s.workspaceUUID(), parentTable, pid, t)
+		fn(ctx, s.atomizer, s.atom, s.workspaceUUID(), parentTable, pid, t)
 	}(parentID, text)
 }
