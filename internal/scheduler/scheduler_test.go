@@ -394,3 +394,65 @@ func TestRegisterDailyPendingProposalsPrune_NilPool_JobNotRegistered(t *testing.
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WithCandidatePruner / runDailyCandidatePrune tests
+// ---------------------------------------------------------------------------
+
+type stubCandidatePruner struct {
+	called bool
+	n      int64
+	err    error
+}
+
+func (s *stubCandidatePruner) PruneResolved(_ context.Context, _ time.Duration) (int64, error) {
+	s.called = true
+	return s.n, s.err
+}
+
+// TestRunDailyCandidatePrune_NilPruner_NoPanic verifies the runner short-
+// circuits cleanly when no candidatePruner is wired (WithCandidatePruner not
+// called), mirroring the nil-guard pattern used by runDailyDisciplinePrune.
+func TestRunDailyCandidatePrune_NilPruner_NoPanic(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	// candidatePruner is nil → must short-circuit without panicking.
+	sc.runDailyCandidatePrune()
+}
+
+// TestWithCandidatePruner_RegistersJob_And_Delegates verifies that
+// WithCandidatePruner registers the daily-candidate-prune gocron job and
+// that runDailyCandidatePrune delegates to the store's PruneResolved.
+func TestWithCandidatePruner_RegistersJob_And_Delegates(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	pruner := &stubCandidatePruner{n: 3}
+	if err := sc.WithCandidatePruner(pruner); err != nil {
+		t.Fatalf("WithCandidatePruner() error: %v", err)
+	}
+
+	// Job must be registered with gocron.
+	found := false
+	for _, j := range sc.s.Jobs() {
+		if j.Name() == "daily-candidate-prune" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("daily-candidate-prune job not found after WithCandidatePruner")
+	}
+
+	// Direct invocation must delegate to PruneResolved.
+	sc.runDailyCandidatePrune()
+	if !pruner.called {
+		t.Error("PruneResolved was not called by runDailyCandidatePrune")
+	}
+}

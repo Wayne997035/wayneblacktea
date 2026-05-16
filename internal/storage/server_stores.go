@@ -94,4 +94,10 @@ type ServerStores interface {
 	SqliteProposal() *wbtsqlite.ProposalStore
 	SqliteLearning() *wbtsqlite.LearningStore
 	SqliteDecision() *wbtsqlite.DecisionStore
+
+	// SqliteDB returns the underlying *wbtsqlite.DB when the bundle is
+	// SQLite-backed, or nil for the Postgres bundle. Used by domain stores
+	// (e.g. completioncandidate) that need sql.Rows-based list queries
+	// through the same connection pool as all other stores.
+	SqliteDB() *wbtsqlite.DB
 }

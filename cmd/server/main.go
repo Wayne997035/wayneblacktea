@@ -19,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -111,6 +112,10 @@ func run() error {
 		handler.WithDecisionStore(stores.Decision()),
 	)
 	dashH := handler.NewDashboardHandler(stores.GTD(), stores.Decision(), stores.Proposal())
+	if cs := buildCandidateStore(stores); cs != nil {
+		dashH.SetCandidateStore(cs)
+	}
+	dashH.SetHandoffStore(stores.Session())
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
@@ -270,6 +275,7 @@ func run() error {
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
 	api.GET("/dashboard/upcoming-tasks", dashH.GetUpcomingTasks, dashboardRL)
+	api.GET("/dashboard/automation-health", dashH.GetAutomationHealth, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
@@ -306,6 +312,9 @@ func run() error {
 		mcpServer.WithDecisionDrafter(ai.NewDecisionDrafter(llmChain))
 	}
 	mcpServer.WithSnapshot(snapStore, snapGen)
+	if cs := buildCandidateStore(stores); cs != nil {
+		mcpServer.WithCompletionCandidates(cs)
+	}
 	knowledgeH.WithAtomizer(mcpServer.LaunchAtomize)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
 	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
@@ -328,6 +337,11 @@ func run() error {
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
+	}
+	if cs := buildCandidateStore(stores); cs != nil {
+		if err := sched.WithCandidatePruner(cs); err != nil {
+			return fmt.Errorf("wiring candidate pruner: %w", err)
+		}
 	}
 	sched.Start()
 	defer sched.Stop()
@@ -537,6 +551,21 @@ func newBriefingStores(stores storage.ServerStores) notion.BriefingStores {
 		proposal: stores.Proposal(),
 		decision: stores.Decision(),
 	}
+}
+
+// buildCandidateStore returns a completion candidate store for the active backend,
+// or nil when the bundle exposes neither a SQLite DB nor a Postgres pool.
+// The store is cheap to construct (no extra connections opened) and is safe to
+// call multiple times — each call returns an independent value backed by the
+// same shared connection pool.
+func buildCandidateStore(stores storage.ServerStores) completioncandidate.Store {
+	if sqliteDB := stores.SqliteDB(); sqliteDB != nil {
+		return completioncandidate.NewSQLiteStore(sqliteDB.SqlConn(), sqliteDB.WorkspaceID())
+	}
+	if pool := stores.PgxPool(); pool != nil {
+		return completioncandidate.NewPgStore(pool, stores.WorkspaceID())
+	}
+	return nil
 }
 
 // buildPruner constructs a decay.Pruner for the given backend.

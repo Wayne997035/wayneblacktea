@@ -93,11 +93,20 @@ type Scheduler struct {
 	// in by the caller) — the prune job is skipped in that case because
 	// SQLite is dev-local single-tenant and has no growth concern.
 	disciplinePool *pgxpool.Pool
+	// candidatePruner deletes resolved completion_candidates older than 30d.
+	// Set via WithCandidatePruner after New(); nil skips the prune job.
+	candidatePruner candidateRetentionStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
 type DiscordSender interface {
 	Send(ctx context.Context, message string) error
+}
+
+// candidateRetentionStore is the narrow prune interface used by the daily
+// completion-candidate cleanup job. completioncandidate.Store satisfies it.
+type candidateRetentionStore interface {
+	PruneResolved(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
@@ -452,6 +461,41 @@ func (s *Scheduler) Stop() {
 	if err := s.s.Shutdown(); err != nil {
 		slog.Warn("scheduler shutdown error", "err", err)
 	}
+}
+
+// WithCandidatePruner wires a completion-candidate retention store and
+// registers the daily 23:00 prune job. Must be called before Start().
+func (sc *Scheduler) WithCandidatePruner(p candidateRetentionStore) error {
+	sc.candidatePruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(23, 0, 0))),
+		gocron.NewTask(sc.runDailyCandidatePrune),
+		gocron.WithName("daily-candidate-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily candidate prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyCandidatePrune scheduled at 23:00 Asia/Taipei")
+	return nil
+}
+
+// runDailyCandidatePrune deletes resolved completion_candidates older than
+// 30 days (TTL mandated by backend-security-design.md §1.3). Errors are
+// logged at warn level — the scheduler keeps running other jobs regardless.
+func (s *Scheduler) runDailyCandidatePrune() {
+	if s.candidatePruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	n, err := s.candidatePruner.PruneResolved(ctx, 30*24*time.Hour)
+	if err != nil {
+		slog.Warn("daily candidate prune: PruneResolved failed", "err", err)
+		return
+	}
+	slog.Info("daily candidate prune: completed", "rows_deleted", n)
 }
 
 func (s *Scheduler) sendDailyReviewReminder() {

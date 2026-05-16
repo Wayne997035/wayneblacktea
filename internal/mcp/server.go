@@ -107,6 +107,10 @@ type Server struct {
 	// configured or operator opted out via WBT_DISABLE_AUTO_DECISIONS).
 	drafter *ai.DecisionDrafter
 
+	// completionCandidates is the optional completion-candidate store used by
+	// dashboard automation MCP tools. nil = feature disabled.
+	completionCandidates completionCandidateStore
+
 	// deleteTokens holds one-time confirmation tokens issued by the first
 	// invocation of delete_task. Keys are uuid.UUID strings; values are
 	// deletionToken records. Entries are pruned lazily on read; ungated
@@ -216,6 +220,14 @@ func (s *Server) WithClassifier(clf *ai.ActivityClassifier) *Server {
 // returns early without calling the LLM.
 func (s *Server) WithDecisionDrafter(d *ai.DecisionDrafter) *Server {
 	s.drafter = d
+	return s
+}
+
+// WithCompletionCandidates wires the completion candidate store into the server so
+// that the detect_completion_candidates and reconcile_dashboard MCP tools are
+// available. Passing nil disables the feature (store not configured or operator opted out).
+func (s *Server) WithCompletionCandidates(store completionCandidateStore) *Server {
+	s.completionCandidates = store
 	return s
 }
 
@@ -330,6 +342,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerPlaybookTools(ms)
 	s.registerProceduralTools(ms)
 	s.registerAtomTools(ms)
+	s.registerDashboardTools(ms)
 	return ms
 }
 
