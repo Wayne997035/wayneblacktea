@@ -15,7 +15,6 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
@@ -137,9 +136,9 @@ func New(botToken, apiURL, apiKey, guildID, allowedUserIDs string, llmClient llm
 }
 
 func newBotHTTPClient() *http.Client {
-	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = 30 * time.Second
-	return safeClient
+	// Plain client for internal API calls to b.apiURL (operator-configured endpoint).
+	// External URL fetching for content analysis uses FetchURL() which has its own SafeHTTPClient.
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 // Start opens the WebSocket connection and registers slash commands.
