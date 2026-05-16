@@ -1,0 +1,5 @@
+DROP INDEX IF EXISTS idx_tasks_workspace_status_priority;
+DROP INDEX IF EXISTS idx_tasks_workspace_project_updated;
+DROP INDEX IF EXISTS idx_decisions_workspace_repo_created;
+DROP INDEX IF EXISTS idx_session_handoffs_workspace_repo_created;
+DROP INDEX IF EXISTS idx_activity_log_workspace_project_created;
