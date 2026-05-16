@@ -278,6 +278,7 @@ func run() error {
 	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
 	api.GET("/dashboard/upcoming-tasks", dashH.GetUpcomingTasks, dashboardRL)
+	api.GET("/dashboard/upcoming", dashH.GetUpcoming, dashboardRL)
 	api.GET("/dashboard/automation-health", dashH.GetAutomationHealth, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))

@@ -19,6 +19,10 @@ type dashboardGTDStore interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
 	TopPendingTask(ctx context.Context) (*db.Task, error)
 	UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error)
+	// TasksByDueDateRange returns pending/in_progress tasks whose due_date
+	// falls inside [from, to] inclusive, ordered by due_date ASC.
+	// Workspace isolation is enforced by the store implementation.
+	TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error)
 }
 
 // dashboardDecisionStore covers the decision methods used by DashboardHandler.
@@ -394,4 +398,22 @@ func toUpcomingItems(tasks []db.Task) []upcomingTaskItem {
 		out = append(out, item)
 	}
 	return out
+}
+
+// GetUpcoming handles GET /api/dashboard/upcoming.
+// It returns a flat JSON array of pending/in_progress tasks with due_date
+// in the next 7 days (server-side hardcoded window), ordered by due_date ASC.
+// Workspace isolation is enforced by the store — no workspace input from request.
+func (h *DashboardHandler) GetUpcoming(c echo.Context) error {
+	ctx := c.Request().Context()
+	now := time.Now().UTC()
+	tasks, err := h.gtd.TasksByDueDateRange(ctx, now, now.AddDate(0, 0, 7))
+	if err != nil {
+		c.Logger().Errorf("GetUpcoming: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	if tasks == nil {
+		tasks = []db.Task{}
+	}
+	return c.JSON(http.StatusOK, tasks)
 }
