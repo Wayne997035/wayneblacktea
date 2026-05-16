@@ -242,6 +242,33 @@ export interface DashboardStats {
   task_total: number
   decision_count: number
   pending_proposals: number
+  last_updated_at?: string
+}
+
+// --- Automation Feed ---
+
+export interface AutomationFeedItem {
+  id: string
+  action: string
+  kind: string
+  notes?: string
+  occurred_at: string
+}
+
+export interface AutomationFeedResponse {
+  feed: AutomationFeedItem[]
+  fetched_at: string
+}
+
+// --- Automation Health (extended) ---
+
+export interface AutomationHealth {
+  stale_in_progress: unknown[]
+  completion_candidates: unknown[]
+  pending_proposals_count: number
+  missing_handoff: boolean
+  last_reconciled_at?: string
+  stale_badge: boolean
 }
 
 // --- Timeline (Calendar) ---

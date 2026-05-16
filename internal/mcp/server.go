@@ -332,6 +332,10 @@ func (s *Server) MCPServer() *server.MCPServer {
 		// after every mutating tool when no log_decision/confirm_plan
 		// happened in the last 15 min. See middleware_decision_proposer.go.
 		server.WithToolHandlerMiddleware(s.decisionProposerMiddleware()),
+		// Declare resource and prompt capabilities (subscribe=false,
+		// listChanged=false — static read-only resources/prompts only).
+		server.WithResourceCapabilities(false, false),
+		server.WithPromptCapabilities(false),
 	)
 	s.registerOnboardingTools(ms)
 	s.registerContextTools(ms)
@@ -353,6 +357,8 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerAtomTools(ms)
 	s.registerDashboardTools(ms)
 	s.registerCloseoutTools(ms)
+	s.registerResources(ms)
+	s.registerPrompts(ms)
 	return ms
 }
 

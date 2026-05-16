@@ -13,6 +13,19 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// dashboardActivityStore is a narrow interface for activity_log methods used by
+// DashboardHandler. Kept separate from dashboardGTDStore and gtd.StoreIface to
+// avoid coupling unrelated functionality.
+type dashboardActivityStore interface {
+	LatestActivityAt(ctx context.Context) (*time.Time, error)
+	ListRecentAutomation(ctx context.Context, limit int32) ([]db.ActivityLog, error)
+	LatestActionAt(ctx context.Context, action string) (*time.Time, error)
+}
+
+// DashboardActivityStoreIface is the exported alias of dashboardActivityStore for
+// use by cmd/server/main.go when wiring the concrete store implementation.
+type DashboardActivityStoreIface = dashboardActivityStore
+
 // dashboardGTDStore covers the GTD methods used by DashboardHandler.
 type dashboardGTDStore interface {
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
@@ -44,6 +57,8 @@ type DashboardHandler struct {
 	candidate candidateStore
 	// handoff is optional; nil = missing-handoff check skipped.
 	handoff automationHandoffStore
+	// activity is optional; nil = last_updated_at / automation-feed skipped.
+	activity dashboardActivityStore
 }
 
 // NewDashboardHandler creates a DashboardHandler.
@@ -51,13 +66,19 @@ func NewDashboardHandler(g dashboardGTDStore, d dashboardDecisionStore, p dashbo
 	return &DashboardHandler{gtd: g, decision: d, proposal: p}
 }
 
+// SetActivityStore wires the activity store into the dashboard handler.
+func (h *DashboardHandler) SetActivityStore(s dashboardActivityStore) {
+	h.activity = s
+}
+
 // statsResponse is the JSON shape for GET /api/dashboard/stats.
 type statsResponse struct {
-	Period           string `json:"period"`
-	TaskCompleted    int64  `json:"task_completed"`
-	TaskTotal        int64  `json:"task_total"`
-	DecisionCount    int    `json:"decision_count"`
-	PendingProposals int    `json:"pending_proposals"`
+	Period           string  `json:"period"`
+	TaskCompleted    int64   `json:"task_completed"`
+	TaskTotal        int64   `json:"task_total"`
+	DecisionCount    int     `json:"decision_count"`
+	PendingProposals int     `json:"pending_proposals"`
+	LastUpdatedAt    *string `json:"last_updated_at,omitempty"`
 }
 
 // GetStats handles GET /api/dashboard/stats?period=7 (or period=30).
@@ -98,13 +119,26 @@ func (h *DashboardHandler) GetStats(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
-	return c.JSON(http.StatusOK, statsResponse{
+	resp := statsResponse{
 		Period:           period + "d",
 		TaskCompleted:    completed,
 		TaskTotal:        total,
 		DecisionCount:    len(decisions),
 		PendingProposals: len(pending),
-	})
+	}
+
+	// Populate last_updated_at when activity store is wired.
+	if h.activity != nil {
+		if latestAt, err := h.activity.LatestActivityAt(ctx); err != nil {
+			c.Logger().Warnf("GetStats LatestActivityAt: %v", err)
+			// Non-fatal: omit the field rather than failing the response.
+		} else if latestAt != nil {
+			s := latestAt.UTC().Format(time.RFC3339)
+			resp.LastUpdatedAt = &s
+		}
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 const (
@@ -416,4 +450,73 @@ func (h *DashboardHandler) GetUpcoming(c echo.Context) error {
 		tasks = []db.Task{}
 	}
 	return c.JSON(http.StatusOK, tasks)
+}
+
+const (
+	defaultFeedLimit = 20
+	minFeedLimit     = 1
+	maxFeedLimit     = 50
+)
+
+// automationFeedItem is a single entry in the automation feed response.
+type automationFeedItem struct {
+	ID         string  `json:"id"`
+	Action     string  `json:"action"`
+	Kind       string  `json:"kind"`
+	Notes      *string `json:"notes,omitempty"`
+	OccurredAt string  `json:"occurred_at"`
+}
+
+// automationFeedResponse is the JSON shape for GET /api/dashboard/automation-feed.
+type automationFeedResponse struct {
+	Feed      []automationFeedItem `json:"feed"`
+	FetchedAt string               `json:"fetched_at"`
+}
+
+// GetAutomationFeed handles GET /api/dashboard/automation-feed?limit=20.
+// limit must be 1-50 (default 20); values outside range → 400.
+// Returns recent MCP automation actions from activity_log, most-recent first.
+func (h *DashboardHandler) GetAutomationFeed(c echo.Context) error {
+	limit := defaultFeedLimit
+	if raw := c.QueryParam("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < minFeedLimit || n > maxFeedLimit {
+			return c.JSON(http.StatusBadRequest, errResp("limit must be an integer between 1 and 50"))
+		}
+		limit = n
+	}
+
+	if h.activity == nil {
+		return c.JSON(http.StatusOK, automationFeedResponse{
+			Feed:      []automationFeedItem{},
+			FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+
+	ctx := c.Request().Context()
+	rows, err := h.activity.ListRecentAutomation(ctx, int32(limit))
+	if err != nil {
+		c.Logger().Errorf("GetAutomationFeed ListRecentAutomation: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	feed := make([]automationFeedItem, 0, len(rows))
+	for _, r := range rows {
+		item := automationFeedItem{
+			ID:         r.ID.String(),
+			Action:     r.Action,
+			Kind:       classifyActivityKind(r.Action),
+			OccurredAt: r.CreatedAt.Time.UTC().Format(time.RFC3339),
+		}
+		if r.Notes.Valid && r.Notes.String != "" {
+			n := r.Notes.String
+			item.Notes = &n
+		}
+		feed = append(feed, item)
+	}
+
+	return c.JSON(http.StatusOK, automationFeedResponse{
+		Feed:      feed,
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+	})
 }

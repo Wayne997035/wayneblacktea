@@ -910,6 +910,103 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// LatestActivityAt returns the created_at of the most-recent activity_log row,
+// workspace-scoped, or nil if the table is empty.
+func (s *Store) LatestActivityAt(ctx context.Context) (*time.Time, error) {
+	const q = `SELECT created_at FROM activity_log
+		WHERE ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC LIMIT 1`
+	var ts pgtype.Timestamptz
+	err := s.dbtx.QueryRow(ctx, q, s.workspaceID).Scan(&ts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil //nolint:nilnil // sentinel: empty table is not an error; callers render null timestamp
+	}
+	if err != nil {
+		return nil, fmt.Errorf("LatestActivityAt: %w", err)
+	}
+	if !ts.Valid {
+		return nil, nil //nolint:nilnil // sentinel: NULL timestamp in DB is not an error
+	}
+	t := ts.Time.UTC()
+	return &t, nil
+}
+
+// automationActions is the set of action strings considered "automation"
+// for ListRecentAutomation. Filtering is done Go-side for SQLite compat.
+var automationActions = map[string]bool{
+	"task:begin":               true,
+	"task:completed":           true,
+	"task:updated":             true,
+	"task:added":               true,
+	"decision:logged":          true,
+	"plan:confirmed":           true,
+	"session:handoff":          true,
+	"worksession:started":      true,
+	"worksession:finished":     true,
+	"worksession:checkpointed": true,
+	"dashboard:reconciled":     true,
+}
+
+// ListRecentAutomation returns recent automation activity_log rows, filtered
+// Go-side by automationActions, workspace-scoped.
+// Query: WHERE workspace_id=? AND created_at >= NOW()-7d ORDER BY created_at DESC LIMIT 200,
+// then filter in Go, then slice to limit.
+func (s *Store) ListRecentAutomation(ctx context.Context, limit int32) ([]db.ActivityLog, error) {
+	since := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	const q = `SELECT id, actor, project_id, action, notes, created_at, workspace_id
+		FROM activity_log
+		WHERE created_at >= $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at DESC
+		LIMIT 200`
+	rows, err := s.dbtx.Query(ctx, q, since, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("ListRecentAutomation: %w", err)
+	}
+	defer rows.Close()
+	var out []db.ActivityLog
+	for rows.Next() {
+		var a db.ActivityLog
+		if err := rows.Scan(
+			&a.ID, &a.Actor, &a.ProjectID, &a.Action, &a.Notes, &a.CreatedAt, &a.WorkspaceID,
+		); err != nil {
+			return nil, fmt.Errorf("ListRecentAutomation scan: %w", err)
+		}
+		if automationActions[a.Action] {
+			out = append(out, a)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ListRecentAutomation iter: %w", err)
+	}
+	if len(out) > int(limit) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// LatestActionAt returns the created_at of the most-recent activity_log row
+// matching the given action, workspace-scoped, or nil if none found.
+func (s *Store) LatestActionAt(ctx context.Context, action string) (*time.Time, error) {
+	const q = `SELECT created_at FROM activity_log
+		WHERE action = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at DESC LIMIT 1`
+	var ts pgtype.Timestamptz
+	err := s.dbtx.QueryRow(ctx, q, action, s.workspaceID).Scan(&ts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil //nolint:nilnil // sentinel: no matching action row is not an error; callers render null timestamp
+	}
+	if err != nil {
+		return nil, fmt.Errorf("LatestActionAt: %w", err)
+	}
+	if !ts.Valid {
+		return nil, nil //nolint:nilnil // sentinel: NULL timestamp in DB is not an error
+	}
+	t := ts.Time.UTC()
+	return &t, nil
+}
+
 // ListActivityLogsSince returns activity_log rows created on or after since,
 // scoped to the configured workspace. Results are ordered created_at ASC.
 // maxRows caps the result set; callers should use a sensible bound (e.g. 500).

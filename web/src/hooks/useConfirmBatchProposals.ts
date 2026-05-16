@@ -21,6 +21,8 @@ export function useConfirmBatchProposals() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['proposals', 'pending'] })
       void qc.invalidateQueries({ queryKey: ['knowledge'] })
+      void qc.invalidateQueries({ queryKey: ['dashboard', 'stats'] })
+      void qc.invalidateQueries({ queryKey: ['dashboard', 'automation-feed'] })
     },
   })
 }

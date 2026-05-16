@@ -17,6 +17,28 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// fakeActivityStoreForAutomation satisfies dashboardActivityStore.
+type fakeActivityStoreForAutomation struct {
+	latestAt      *time.Time
+	latestAtErr   error
+	feedRows      []db.ActivityLog
+	feedErr       error
+	reconciledAt  *time.Time
+	reconciledErr error
+}
+
+func (f *fakeActivityStoreForAutomation) LatestActivityAt(_ context.Context) (*time.Time, error) {
+	return f.latestAt, f.latestAtErr
+}
+
+func (f *fakeActivityStoreForAutomation) ListRecentAutomation(_ context.Context, _ int32) ([]db.ActivityLog, error) {
+	return f.feedRows, f.feedErr
+}
+
+func (f *fakeActivityStoreForAutomation) LatestActionAt(_ context.Context, _ string) (*time.Time, error) {
+	return f.reconciledAt, f.reconciledErr
+}
+
 // --- fakes ---
 
 type fakeCandidateStore struct {
@@ -193,6 +215,81 @@ func TestGetAutomationHealth(t *testing.T) {
 			}
 			if body.MissingHandoff != tc.wantMissing {
 				t.Errorf("missing_handoff: got %v, want %v", body.MissingHandoff, tc.wantMissing)
+			}
+		})
+	}
+}
+
+// ---- GetAutomationHealth_StaleBadge ----
+
+func TestGetAutomationHealth_StaleBadge(t *testing.T) {
+	recentTime := time.Now().UTC().Add(-1 * time.Hour)
+	staleTime := time.Now().UTC().Add(-25 * time.Hour)
+
+	cases := []struct {
+		name             string
+		actStore         *fakeActivityStoreForAutomation
+		wantStaleBadge   bool
+		wantHasReconcile bool
+	}{
+		{
+			name:             "reconciled recently (<24h) — stale_badge false",
+			actStore:         &fakeActivityStoreForAutomation{reconciledAt: &recentTime},
+			wantStaleBadge:   false,
+			wantHasReconcile: true,
+		},
+		{
+			name:             "reconciled >24h ago — stale_badge true, last_reconciled_at set",
+			actStore:         &fakeActivityStoreForAutomation{reconciledAt: &staleTime},
+			wantStaleBadge:   true,
+			wantHasReconcile: true,
+		},
+		{
+			name:             "never reconciled — stale_badge true, last_reconciled_at absent",
+			actStore:         &fakeActivityStoreForAutomation{reconciledAt: nil},
+			wantStaleBadge:   true,
+			wantHasReconcile: false,
+		},
+		{
+			name:             "activity store error — stale_badge true (non-fatal)",
+			actStore:         &fakeActivityStoreForAutomation{reconciledErr: errors.New("db error")},
+			wantStaleBadge:   true,
+			wantHasReconcile: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := echo.New()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/dashboard/automation-health", nil)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+
+			h := handler.NewDashboardHandler(nil, nil, &fakeProposalStoreForAutomation{})
+			h.SetActivityStore(tc.actStore)
+
+			if err := h.GetAutomationHealth(c); err != nil {
+				t.Fatalf("GetAutomationHealth returned unexpected error: %v", err)
+			}
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status: got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+
+			var body struct {
+				StaleBadge       bool            `json:"stale_badge"`
+				LastReconciledAt json.RawMessage `json:"last_reconciled_at"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal body: %v\nbody: %s", err, rec.Body.String())
+			}
+			if body.StaleBadge != tc.wantStaleBadge {
+				t.Errorf("stale_badge: got %v, want %v", body.StaleBadge, tc.wantStaleBadge)
+			}
+			hasReconcile := len(body.LastReconciledAt) > 0 && string(body.LastReconciledAt) != "null"
+			if hasReconcile != tc.wantHasReconcile {
+				t.Errorf("last_reconciled_at present=%v, want present=%v (raw: %s)",
+					hasReconcile, tc.wantHasReconcile, body.LastReconciledAt)
 			}
 		})
 	}

@@ -49,6 +49,8 @@ export function useCompleteTask(projectId?: string) {
         void queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'tasks'] })
       }
       void queryClient.invalidateQueries({ queryKey: ['dashboard', 'upcoming'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'automation-feed'] })
     },
   })
 }
@@ -69,6 +71,8 @@ export function useCreateTask() {
       }
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard', 'upcoming'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'automation-feed'] })
     },
   })
 }
