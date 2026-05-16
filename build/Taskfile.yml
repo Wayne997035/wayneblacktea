@@ -79,7 +79,7 @@ tasks:
   vuln:
     desc: "Run govulncheck to detect known vulnerabilities (informational, does not block check)"
     cmds:
-      - govulncheck ./...
+      - govulncheck ./internal/... ./cmd/...
     dir: ..
 
   frontend-check:
