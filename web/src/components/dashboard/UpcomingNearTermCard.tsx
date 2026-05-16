@@ -8,7 +8,7 @@ import { useDashboardUpcoming, type UpcomingTask } from '../../hooks/useDashboar
 
 const MAX_TASKS = 5
 
-function formatDueDate(due: string): string {
+export function formatDueDate(due: string): string {
   const date = new Date(due)
   const now = new Date()
 
