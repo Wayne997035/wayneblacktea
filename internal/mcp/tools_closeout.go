@@ -131,8 +131,9 @@ func (s *Server) fillCloseoutCandidates(ctx context.Context, report *closeoutRep
 }
 
 // buildCloseoutActions assembles the next-actions list from a filled report.
+// Returns an empty non-nil slice so JSON encodes as [] not null.
 func buildCloseoutActions(report closeoutReport) []string {
-	var actions []string
+	actions := make([]string, 0)
 	if len(report.StuckTasks) > 0 {
 		titles := make([]string, 0, len(report.StuckTasks))
 		for _, st := range report.StuckTasks {
