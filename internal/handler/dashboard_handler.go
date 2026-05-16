@@ -36,6 +36,10 @@ type DashboardHandler struct {
 	gtd      dashboardGTDStore
 	decision dashboardDecisionStore
 	proposal dashboardProposalStore
+	// candidate is optional; nil = automation-health endpoint skips detection.
+	candidate candidateStore
+	// handoff is optional; nil = missing-handoff check skipped.
+	handoff automationHandoffStore
 }
 
 // NewDashboardHandler creates a DashboardHandler.

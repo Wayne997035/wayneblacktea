@@ -113,3 +113,19 @@ func (d *DB) ExecContext(ctx context.Context, query string, args ...any) error {
 func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return d.conn.QueryRowContext(ctx, query, args...)
 }
+
+// SqlConn returns the underlying *sql.DB. Callers should prefer the typed store
+// methods; this accessor exists for domain stores (like completioncandidate)
+// that need sql.Rows-based list queries not covered by ExecContext/QueryRowContext.
+// The *sql.DB is the same connection pool shared by all stores — no extra connections
+// are opened. SQLite max-conns is 1 (set in Open), so concurrent writers are
+// serialised automatically.
+func (d *DB) SqlConn() *sql.DB {
+	return d.conn
+}
+
+// WorkspaceID returns the configured workspace UUID string, or "" when operating
+// in legacy unscoped mode.
+func (d *DB) WorkspaceID() string {
+	return d.workspaceID
+}
