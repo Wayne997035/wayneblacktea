@@ -30,6 +30,8 @@ type fakeDashboardGTDStore struct {
 	topTaskErr      error
 	upcomingTasks   []db.Task
 	upcomingTaskErr error
+	dueDateTasks    []db.Task
+	dueDateTasksErr error
 	err             error
 }
 
@@ -47,6 +49,10 @@ func (f *fakeDashboardGTDStore) TopPendingTask(_ context.Context) (*db.Task, err
 
 func (f *fakeDashboardGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
 	return f.upcomingTasks, f.upcomingTaskErr
+}
+
+func (f *fakeDashboardGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
+	return f.dueDateTasks, f.dueDateTasksErr
 }
 
 // fakeDashboardDecisionStore satisfies dashboardDecisionStore.
@@ -696,6 +702,110 @@ func TestDashboardHandler_GetUpcomingTasks(t *testing.T) {
 			h := handler.NewDashboardHandler(tc.gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
 			e.GET("/api/dashboard/upcoming-tasks", h.GetUpcomingTasks)
 			rec := performRequest(e, http.MethodGet, "/api/dashboard/upcoming-tasks"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.checkBody != nil && rec.Code == http.StatusOK {
+				tc.checkBody(t, rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// ---- D8: GetUpcoming ----
+
+func TestDashboardHandler_GetUpcoming(t *testing.T) {
+	now := time.Now().UTC()
+	task1 := db.Task{
+		ID:       uuid.New(),
+		Title:    "task-due-tomorrow",
+		Status:   "pending",
+		Priority: 1,
+		DueDate:  pgtype.Timestamptz{Time: now.AddDate(0, 0, 1), Valid: true},
+	}
+	task2 := db.Task{
+		ID:       uuid.New(),
+		Title:    "task-due-in-5-days",
+		Status:   "in_progress",
+		Priority: 2,
+		DueDate:  pgtype.Timestamptz{Time: now.AddDate(0, 0, 5), Valid: true},
+	}
+
+	cases := []struct {
+		name      string
+		gtdStore  *fakeDashboardGTDStore
+		wantCode  int
+		checkBody func(t *testing.T, body []byte)
+	}{
+		{
+			name:     "happy path — tasks returned as flat JSON array",
+			gtdStore: &fakeDashboardGTDStore{dueDateTasks: []db.Task{task1, task2}},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var tasks []map[string]json.RawMessage
+				if err := json.Unmarshal(body, &tasks); err != nil {
+					t.Fatalf("expected JSON array, got invalid JSON: %v (body: %s)", err, body)
+				}
+				if len(tasks) != 2 {
+					t.Errorf("expected 2 tasks, got %d", len(tasks))
+				}
+				// Verify required fields are present on each task.
+				for i, task := range tasks {
+					for _, key := range []string{"id", "title", "status"} {
+						if _, ok := task[key]; !ok {
+							t.Errorf("task[%d]: missing field %q", i, key)
+						}
+					}
+				}
+			},
+		},
+		{
+			name:     "empty store — returns empty JSON array (not null)",
+			gtdStore: &fakeDashboardGTDStore{dueDateTasks: []db.Task{}},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var tasks []json.RawMessage
+				if err := json.Unmarshal(body, &tasks); err != nil {
+					t.Fatalf("expected JSON array, got invalid JSON: %v (body: %s)", err, body)
+				}
+				if tasks == nil {
+					t.Error("expected empty array, got null")
+				}
+				if len(tasks) != 0 {
+					t.Errorf("expected 0 tasks, got %d", len(tasks))
+				}
+			},
+		},
+		{
+			name:     "nil store result — returns empty JSON array (not null)",
+			gtdStore: &fakeDashboardGTDStore{dueDateTasks: nil},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var tasks []json.RawMessage
+				if err := json.Unmarshal(body, &tasks); err != nil {
+					t.Fatalf("expected JSON array, got invalid JSON: %v (body: %s)", err, body)
+				}
+				if tasks == nil {
+					t.Error("expected empty array, got null")
+				}
+			},
+		},
+		{
+			name:     "store error — returns 500",
+			gtdStore: &fakeDashboardGTDStore{dueDateTasksErr: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(tc.gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+			e.GET("/api/dashboard/upcoming", h.GetUpcoming)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/upcoming", "")
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

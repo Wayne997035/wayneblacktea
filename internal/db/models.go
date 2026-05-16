@@ -185,4 +185,6 @@ type Task struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	Importance  pgtype.Int2        `json:"importance"`
 	Context     pgtype.Text        `json:"context"`
+	Checklist   []byte             `json:"checklist"`
+	Kind        string             `json:"kind"`
 }

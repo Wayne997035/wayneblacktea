@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -41,7 +42,7 @@ var _ gtd.StoreIface = (*GTDStore)(nil)
 
 const tasksSelectCols = `id, workspace_id, project_id, title, description, status,
 	priority, importance, context, assignee, due_date, artifact,
-	created_at, updated_at`
+	created_at, updated_at, kind`
 
 // scanTask reads a row in tasksSelectCols order into db.Task, converting
 // SQLite TEXT columns to the pgtype values the Postgres stores already use.
@@ -53,11 +54,12 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		descNS, contextNS, assigneeNS, dueDateNS, artifactNS, createdNS, updNS sql.NullString
 		statusStr                                                              string
 		importanceNI                                                           sql.NullInt32
+		kindStr                                                                string
 	)
 
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &t.Title, &descNS, &statusStr,
 		&t.Priority, &importanceNI, &contextNS, &assigneeNS, &dueDateNS, &artifactNS,
-		&createdNS, &updNS)
+		&createdNS, &updNS, &kindStr)
 	if err != nil {
 		return db.Task{}, err
 	}
@@ -80,6 +82,10 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 	t.Artifact = pgtypeText(artifactNS.String, artifactNS.Valid)
 	t.CreatedAt = parseTimestamptz(createdNS)
 	t.UpdatedAt = parseTimestamptz(updNS)
+	if kindStr == "" {
+		kindStr = "general"
+	}
+	t.Kind = kindStr
 	return t, nil
 }
 
@@ -530,15 +536,19 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	if p.DueDate != nil {
 		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
 	}
+	kind := p.Kind
+	if kind == "" {
+		kind = "general"
+	}
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, priority,
-		 importance, context, assignee, due_date, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
+		 importance, context, assignee, due_date, kind, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)`
 	now := nowRFC3339()
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
-		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, now)
+		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, kind, now)
 	if err != nil {
 		return nil, errWrap("CreateTask", err)
 	}
@@ -702,6 +712,82 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 	if affected == 0 {
 		return nil, gtd.ErrNotFound
 	}
+	return s.taskByID(ctx, id)
+}
+
+// BeginTask atomically sets a task to in_progress and records a
+// work_session_started activity log entry.
+//
+// Idempotency: if the task is already in_progress, the task row is returned
+// as-is without writing a duplicate activity_log row.
+// Returns gtd.ErrNotFound when no task matches id inside the configured workspace.
+func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error) {
+	idStr := id.String()
+
+	// Idempotency: read current status before opening a transaction.
+	existing, err := s.taskByID(ctx, id)
+	if err != nil {
+		return nil, err // gtd.ErrNotFound already wrapped by taskByID
+	}
+	if existing.Status == "in_progress" {
+		return existing, nil
+	}
+
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, errWrap("BeginTask begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	now := nowRFC3339()
+	// UPDATE only when status != in_progress to guard against a TOCTOU race
+	// between the idempotency check above and the transaction write.
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks
+		    SET status = 'in_progress', updated_at = ?2
+		  WHERE id = ?1
+		    AND (?3 IS NULL OR workspace_id = ?3)
+		    AND status != 'in_progress'`,
+		idStr, now, s.db.workspaceArg(),
+	)
+	if err != nil {
+		return nil, errWrap("BeginTask update status", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Either task disappeared mid-tx or another goroutine raced us to
+		// in_progress. Re-read to distinguish: taskByID inside the tx would
+		// require passing tx, so use the idempotency path (already harmless).
+		_ = tx.Rollback()
+		committed = true
+		task, rerr := s.taskByID(ctx, id)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if task.Status == "in_progress" {
+			return task, nil // raced to in_progress — idempotent
+		}
+		return nil, gtd.ErrNotFound
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		 VALUES (?1, ?2, 'system', NULL, 'work_session_started', ?3)`,
+		uuid.New().String(), s.db.workspaceArg(), sanitize.Notes("task: "+existing.Title),
+	)
+	if err != nil {
+		return nil, errWrap("BeginTask log activity", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, errWrap("BeginTask commit", err)
+	}
+	committed = true
 	return s.taskByID(ctx, id)
 }
 

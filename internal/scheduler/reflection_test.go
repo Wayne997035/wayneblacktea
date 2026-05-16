@@ -126,6 +126,10 @@ func (s *stubGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uui
 	return nil
 }
 
+func (s *stubGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+	return nil, nil
+}
+
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.
 type stubDecisionStore struct {
 	decisions []db.Decision

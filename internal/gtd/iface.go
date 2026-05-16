@@ -54,6 +54,12 @@ type StoreIface interface {
 	TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error)
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
+	// BeginTask atomically sets task status to in_progress and records a
+	// work_session_started activity log entry. Returns ErrNotFound when no task
+	// matches id + workspaceID.
+	// Idempotent: if already in_progress, returns the task without error and
+	// without writing a duplicate activity_log entry.
+	BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error)
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error
 	// ListActivityLogsSince returns activity_log rows created on or after since,
 	// scoped to the configured workspace. Results are ordered by created_at ASC.

@@ -10,6 +10,7 @@ import { QuickStats } from '../components/dashboard/QuickStats'
 import { SystemHealth } from '../components/dashboard/SystemHealth'
 import { NextTaskCard } from '../components/dashboard/NextTaskCard'
 import { UpcomingTasksCard } from '../components/dashboard/UpcomingTasksCard'
+import { UpcomingNearTermCard } from '../components/dashboard/UpcomingNearTermCard'
 import { RecentDecisionsCard } from '../components/dashboard/RecentDecisionsCard'
 import { PendingProposalsCard } from '../components/dashboard/PendingProposalsCard'
 import { DueReviewsCard } from '../components/dashboard/DueReviewsCard'
@@ -117,6 +118,11 @@ export function DashboardPage() {
               {t('dashboard.sections.upcomingTasks', 'Upcoming Tasks')}
             </div>
             <UpcomingTasksCard />
+          </section>
+
+          {/* D1c: Near-Term Tasks (flat list, next 7 days) */}
+          <section>
+            <UpcomingNearTermCard />
           </section>
 
           {/* D2: Recent Decisions */}

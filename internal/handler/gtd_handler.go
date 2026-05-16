@@ -6,11 +6,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -205,6 +208,15 @@ type createTaskRequest struct {
 	Assignee    string     `json:"assignee"`
 	Priority    int32      `json:"priority"`
 	DueDate     *time.Time `json:"due_date"`
+	Kind        string     `json:"kind"`
+}
+
+// strictVaguenessEnabled returns true when WBT_STRICT_VAGUENESS=true in the
+// server environment. Env is read per-call so it can be toggled without a
+// restart in development; the overhead is negligible for a single getenv.
+// The value is NEVER sourced from request headers.
+func strictVaguenessEnabled() bool {
+	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
 }
 
 // CreateTask inserts a new task.
@@ -217,6 +229,25 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errResp("title is required"))
 	}
 
+	kind := req.Kind
+	if kind == "" {
+		kind = "general"
+	}
+	if !validator.IsValidKind(kind) {
+		return c.JSON(http.StatusBadRequest, errResp("kind must be one of: general, fix-pr, feature, refactor, research, chore"))
+	}
+
+	// Vagueness and kind-field checks — warn-by-default, strict on opt-in.
+	var allWarnings []string
+	allWarnings = append(allWarnings, validator.CheckVagueness("description", req.Description, kind)...)
+	allWarnings = append(allWarnings, validator.CheckKindFields(kind, req.Description)...)
+	if len(allWarnings) > 0 && strictVaguenessEnabled() {
+		return c.JSON(http.StatusBadRequest, map[string]any{
+			"error":    "vagueness check failed",
+			"warnings": allWarnings,
+		})
+	}
+
 	task, err := h.store.CreateTask(c.Request().Context(), gtd.CreateTaskParams{
 		Title:       req.Title,
 		ProjectID:   req.ProjectID,
@@ -224,10 +255,16 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 		Assignee:    req.Assignee,
 		Priority:    req.Priority,
 		DueDate:     req.DueDate,
+		Kind:        kind,
 	})
 	if err != nil {
 		c.Logger().Errorf("CreateTask: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	if len(allWarnings) > 0 {
+		warningsJSON, _ := json.Marshal(allWarnings)
+		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 	return c.JSON(http.StatusCreated, task)
 }
@@ -667,4 +704,49 @@ func (h *GTDHandler) DeleteChecklistItem(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// BeginTask handles POST /api/tasks/:id/begin.
+// It atomically marks the task in_progress and records a work_session_started
+// activity log entry. Idempotent: calling on an already in_progress task
+// returns the task without duplicate logging.
+func (h *GTDHandler) BeginTask(c echo.Context) error {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid task id")
+	}
+	wsID := workspaceUUIDFromStore(h.store)
+	task, err := h.store.BeginTask(c.Request().Context(), id, wsID)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return echo.NewHTTPError(http.StatusNotFound, "task not found")
+	}
+	if err != nil {
+		c.Logger().Errorf("BeginTask: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "internal server error")
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"task":                   task,
+		"branch_name_suggestion": taskTitleToBranchSlug(task.Title),
+		"work_session_id":        uuid.New().String(),
+	})
+}
+
+// branchSlugRe matches any character sequence that is not a lowercase letter or digit.
+var branchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// taskTitleToBranchSlug converts a task title into a git branch name slug of
+// the form "feature/<slug>" or "fix/<slug>" (the latter when the title starts
+// with "fix"). Slug characters are restricted to [a-z0-9-] and capped at 60
+// characters so the full branch name stays within Git's 255-byte ref limit.
+func taskTitleToBranchSlug(title string) string {
+	lower := strings.ToLower(title)
+	slug := branchSlugRe.ReplaceAllString(lower, "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 60 {
+		slug = strings.TrimRight(slug[:60], "-")
+	}
+	if strings.HasPrefix(lower, "fix") {
+		return "fix/" + slug
+	}
+	return "feature/" + slug
 }

@@ -214,6 +214,10 @@ func (m *mockClassifyGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUI
 	return errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 // TestMaybeClassifyToolCall_NilClassifier verifies that a nil classifier results in no-op.
 func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
 	g := &mockClassifyGTDStore{}

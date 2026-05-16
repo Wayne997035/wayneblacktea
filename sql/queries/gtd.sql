@@ -66,8 +66,8 @@ WHERE status IN ('pending', 'in_progress')
 ORDER BY priority ASC, created_at ASC;
 
 -- name: CreateTask :one
-INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, kind, workspace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: CompleteTask :one
@@ -92,6 +92,16 @@ WHERE status = 'completed'
 UPDATE tasks SET status = sqlc.arg('status'), updated_at = NOW()
 WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+RETURNING *;
+
+-- name: BeginTaskStatus :one
+-- Atomically sets status to in_progress only when the current status is not
+-- already in_progress, preventing duplicate activity_log rows on concurrent calls.
+-- Returns pgx.ErrNoRows when the task is already in_progress or not found.
+UPDATE tasks SET status = 'in_progress', updated_at = NOW()
+WHERE id = sqlc.arg('id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND status != 'in_progress'
 RETURNING *;
 
 -- name: CountTotalActiveTasks :one

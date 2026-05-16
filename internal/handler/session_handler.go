@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -66,6 +68,12 @@ func (h *SessionHandler) SetHandoff(c echo.Context) error {
 	}
 	if req.Intent == "" {
 		return c.JSON(http.StatusBadRequest, errResp("intent is required"))
+	}
+
+	// Vagueness check on intent field (warn-only; handoffs are not task descriptions).
+	if warnings := validator.CheckVagueness("intent", req.Intent, "general"); len(warnings) > 0 {
+		warningsJSON, _ := json.Marshal(warnings)
+		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 
 	handoff, err := h.store.SetHandoff(c.Request().Context(), session.HandoffParams{

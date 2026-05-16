@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -46,6 +47,16 @@ func (h *VisionHandler) AddVision(c echo.Context) error {
 	}
 	if req.WhyBlocked == "" {
 		return c.JSON(http.StatusBadRequest, errResp("why_blocked is required"))
+	}
+
+	// Vagueness check on title and why_blocked (warn-only; vision items are
+	// not subject to strict mode — they are intentionally forward-looking).
+	var allWarnings []string
+	allWarnings = append(allWarnings, validator.CheckVagueness("title", req.Title, "general")...)
+	allWarnings = append(allWarnings, validator.CheckVagueness("why_blocked", req.WhyBlocked, "general")...)
+	if len(allWarnings) > 0 {
+		warningsJSON, _ := json.Marshal(allWarnings)
+		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 
 	item, err := h.store.Add(c.Request().Context(), vision.AddVisionParams{

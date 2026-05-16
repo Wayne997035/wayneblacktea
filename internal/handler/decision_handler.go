@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -71,6 +73,12 @@ func (h *DecisionHandler) LogDecision(c echo.Context) error {
 	}
 	if req.Title == "" || req.Context == "" || req.Decision == "" || req.Rationale == "" {
 		return c.JSON(http.StatusBadRequest, errResp("title, context, decision and rationale are required"))
+	}
+
+	// Vagueness check on rationale (warn-only; decisions are not task descriptions).
+	if warnings := validator.CheckVagueness("rationale", req.Rationale, "general"); len(warnings) > 0 {
+		warningsJSON, _ := json.Marshal(warnings)
+		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 
 	d, err := h.store.Log(c.Request().Context(), decision.LogParams{
