@@ -358,7 +358,10 @@
       "date": "日期",
       "viewMonth": "月",
       "viewWeek": "週",
-      "viewYear": "年"
+      "viewYear": "年",
+      "repoFilter": "Repo",
+      "allRepos": "所有 Repo",
+      "clearFilter": "清除"
     },
     "errors": {
       "loadFailed": "載入時間軸失敗"

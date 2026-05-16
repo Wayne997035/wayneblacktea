@@ -358,7 +358,10 @@
       "date": "Date",
       "viewMonth": "Month",
       "viewWeek": "Week",
-      "viewYear": "Year"
+      "viewYear": "Year",
+      "repoFilter": "Repo",
+      "allRepos": "All repos",
+      "clearFilter": "Clear"
     },
     "errors": {
       "loadFailed": "Failed to load timeline"
