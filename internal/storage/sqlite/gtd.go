@@ -1195,7 +1195,7 @@ func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, 
 		weekday = 7 // treat Sunday as end of week, ISO style
 	}
 	monday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(-time.Duration(weekday-1) * 24 * time.Hour)
-	weekStart := monday.Format(time.RFC3339Nano)
+	weekStart := monday.Format("2006-01-02T15:04:05.000Z07:00")
 
 	const completedQ = `SELECT COUNT(*) FROM tasks
 		WHERE status = 'completed'

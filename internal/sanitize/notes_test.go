@@ -20,6 +20,9 @@ func TestNotes(t *testing.T) {
 		{name: "tab preserved", in: "task: foo\tbar", want: "task: foo\tbar"},
 		{name: "500 rune cap", in: "task: " + strings.Repeat("a", 600), want: "task: " + strings.Repeat("a", 494)},
 		{name: "empty string", in: "", want: ""},
+		{name: "CR only stripped", in: "foo\rbar", want: "foobar"},
+		{name: "DEL stripped", in: "foo\x7fbar", want: "foobar"},
+		{name: "unicode passthrough", in: "task: emoji \U0001F600", want: "task: emoji \U0001F600"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -28,5 +31,21 @@ func TestNotes(t *testing.T) {
 				t.Errorf("Notes(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNotes_Idempotent(t *testing.T) {
+	inputs := []string{
+		"foo\x00\x1b[2Jbar",
+		"hello\x1b[31m world",
+		"\r\ntest\x7f",
+		strings.Repeat("a", 600),
+	}
+	for _, in := range inputs {
+		once := sanitize.Notes(in)
+		twice := sanitize.Notes(once)
+		if once != twice {
+			t.Errorf("Notes not idempotent for %q: once=%q, twice=%q", in, once, twice)
+		}
 	}
 }
