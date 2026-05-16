@@ -70,8 +70,8 @@ func (h *PostToolUseHandler) PostToolUse(c echo.Context) error {
 	if req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("tool_name is required"))
 	}
-	if len(req.Notes) > maxNotesLen {
-		req.Notes = req.Notes[:maxNotesLen]
+	if runes := []rune(req.Notes); len(runes) > maxNotesLen {
+		req.Notes = string(runes[:maxNotesLen])
 	}
 
 	evt := postToolUseEvent(req)

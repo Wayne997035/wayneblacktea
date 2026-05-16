@@ -108,8 +108,8 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	if len(req.Action) > maxActionLen {
 		req.Action = req.Action[:maxActionLen]
 	}
-	if len(req.Notes) > maxNotesLen {
-		req.Notes = req.Notes[:maxNotesLen]
+	if runes := []rune(req.Notes); len(runes) > maxNotesLen {
+		req.Notes = string(runes[:maxNotesLen])
 	}
 	if req.Actor == "" || req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("actor and action are required"))
