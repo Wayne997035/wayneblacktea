@@ -13,6 +13,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -111,6 +112,8 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	if runes := []rune(req.Notes); len(runes) > maxNotesLen {
 		req.Notes = string(runes[:maxNotesLen])
 	}
+	req.Actor = sanitize.Notes(req.Actor)
+	req.Action = sanitize.Notes(req.Action)
 	if req.Actor == "" || req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("actor and action are required"))
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -115,7 +116,7 @@ func (s *Server) fillCloseoutHandoff(ctx context.Context, report *closeoutReport
 		return // ErrNotFound or real error: HandoffSet stays false (advisory).
 	}
 	report.HandoffSet = true
-	report.HandoffSummary = handoff.Intent
+	report.HandoffSummary = sanitize.Notes(handoff.Intent)
 }
 
 // fillCloseoutCandidates counts pending completion candidates into the report.
