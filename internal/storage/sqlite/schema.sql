@@ -479,3 +479,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_completion_candidates_task_reason
     ON completion_candidates(task_id, reason);
 CREATE INDEX IF NOT EXISTS idx_completion_candidates_workspace_id
     ON completion_candidates(workspace_id) WHERE workspace_id IS NOT NULL;
+
+-- Mirrored from migrations/sqlite/000045_composite_indexes.up.sql.
+-- Composite indexes for frequent multi-column query patterns.
+CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status_priority
+    ON tasks(workspace_id, status, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_workspace_project_updated
+    ON tasks(workspace_id, project_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_workspace_repo_created
+    ON decisions(workspace_id, repo_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_handoffs_workspace_repo_created
+    ON session_handoffs(workspace_id, repo_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_log_workspace_project_created
+    ON activity_log(workspace_id, project_id, created_at DESC);
