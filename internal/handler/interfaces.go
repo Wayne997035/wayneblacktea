@@ -37,6 +37,7 @@ type gtdStore interface {
 	TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error)
 	CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
+	BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gtd.TaskStatus) (*db.Task, error)
 	UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTaskParams) (*db.Task, error)
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status gtd.ProjectStatus) (*db.Project, error)

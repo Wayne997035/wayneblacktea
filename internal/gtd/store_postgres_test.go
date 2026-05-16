@@ -1481,3 +1481,122 @@ func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
 		}
 	}
 }
+
+// TestStore_BeginTask_HappyPath verifies the PG-side happy path:
+// pending → in_progress + activity_log row written.
+func TestStore_BeginTask_HappyPath(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg begin task test", Priority: 2})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	result, err := store.BeginTask(ctx, task.ID, wsID)
+	if err != nil {
+		t.Fatalf("BeginTask: %v", err)
+	}
+	if result.Status != "in_progress" {
+		t.Errorf("expected status in_progress, got %q", result.Status)
+	}
+
+	// Verify activity_log entry.
+	logs, err := store.ListActivityLogsSince(ctx, task.CreatedAt.Time, 10)
+	if err != nil {
+		t.Fatalf("ListActivityLogsSince: %v", err)
+	}
+	var found bool
+	for _, l := range logs {
+		if l.Action == "work_session_started" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected work_session_started activity_log entry")
+	}
+}
+
+// TestStore_BeginTask_Idempotent verifies that calling BeginTask on an already
+// in_progress task returns the task without error and without a duplicate
+// activity_log entry.
+func TestStore_BeginTask_Idempotent(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "idempotent pg task", Priority: 1})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := store.BeginTask(ctx, task.ID, wsID); err != nil {
+		t.Fatalf("BeginTask first: %v", err)
+	}
+	logsBefore, err := store.ListActivityLogsSince(ctx, task.CreatedAt.Time, 100)
+	if err != nil {
+		t.Fatalf("ListActivityLogsSince before: %v", err)
+	}
+	countBefore := countAction(logsBefore, "work_session_started")
+
+	if _, err := store.BeginTask(ctx, task.ID, wsID); err != nil {
+		t.Fatalf("BeginTask second (idempotent): %v", err)
+	}
+	logsAfter, err := store.ListActivityLogsSince(ctx, task.CreatedAt.Time, 100)
+	if err != nil {
+		t.Fatalf("ListActivityLogsSince after: %v", err)
+	}
+	countAfter := countAction(logsAfter, "work_session_started")
+
+	if countAfter != countBefore {
+		t.Errorf("expected no duplicate log entry: before=%d after=%d", countBefore, countAfter)
+	}
+}
+
+// TestStore_BeginTask_NotFound verifies ErrNotFound for a non-existent ID.
+func TestStore_BeginTask_NotFound(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	_, err := store.BeginTask(ctx, uuid.New(), wsID)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected gtd.ErrNotFound, got %v", err)
+	}
+}
+
+// TestStore_BeginTask_WorkspaceIsolation verifies that a task in workspace A
+// cannot be begun by a store scoped to workspace B.
+func TestStore_BeginTask_WorkspaceIsolation(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA, wsB := uuid.New(), uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+	ctx := context.Background()
+
+	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws isolation task", Priority: 1})
+	if err != nil {
+		t.Fatalf("CreateTask in wsA: %v", err)
+	}
+
+	_, err = storeB.BeginTask(ctx, task.ID, wsB)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for cross-workspace begin, got %v", err)
+	}
+}
+
+// countAction counts activity log entries with the given action string.
+func countAction(logs []db.ActivityLog, action string) int {
+	var n int
+	for _, l := range logs {
+		if l.Action == action {
+			n++
+		}
+	}
+	return n
+}

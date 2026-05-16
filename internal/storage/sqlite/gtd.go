@@ -714,6 +714,82 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 	return s.taskByID(ctx, id)
 }
 
+// BeginTask atomically sets a task to in_progress and records a
+// work_session_started activity log entry.
+//
+// Idempotency: if the task is already in_progress, the task row is returned
+// as-is without writing a duplicate activity_log row.
+// Returns gtd.ErrNotFound when no task matches id inside the configured workspace.
+func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error) {
+	idStr := id.String()
+
+	// Idempotency: read current status before opening a transaction.
+	existing, err := s.taskByID(ctx, id)
+	if err != nil {
+		return nil, err // gtd.ErrNotFound already wrapped by taskByID
+	}
+	if existing.Status == "in_progress" {
+		return existing, nil
+	}
+
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, errWrap("BeginTask begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	now := nowRFC3339()
+	// UPDATE only when status != in_progress to guard against a TOCTOU race
+	// between the idempotency check above and the transaction write.
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks
+		    SET status = 'in_progress', updated_at = ?2
+		  WHERE id = ?1
+		    AND (?3 IS NULL OR workspace_id = ?3)
+		    AND status != 'in_progress'`,
+		idStr, now, s.db.workspaceArg(),
+	)
+	if err != nil {
+		return nil, errWrap("BeginTask update status", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Either task disappeared mid-tx or another goroutine raced us to
+		// in_progress. Re-read to distinguish: taskByID inside the tx would
+		// require passing tx, so use the idempotency path (already harmless).
+		_ = tx.Rollback()
+		committed = true
+		task, rerr := s.taskByID(ctx, id)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if task.Status == "in_progress" {
+			return task, nil // raced to in_progress — idempotent
+		}
+		return nil, gtd.ErrNotFound
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		 VALUES (?1, ?2, 'system', NULL, 'work_session_started', ?3)`,
+		uuid.New().String(), s.db.workspaceArg(), "task: "+existing.Title,
+	)
+	if err != nil {
+		return nil, errWrap("BeginTask log activity", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, errWrap("BeginTask commit", err)
+	}
+	committed = true
+	return s.taskByID(ctx, id)
+}
+
 // mergedTaskFields holds the resolved column values for an UpdateTask write,
 // computed by mergeTaskFields from the existing row and the patch params.
 type mergedTaskFields struct {

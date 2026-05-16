@@ -134,6 +134,10 @@ func (f *fakeGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uui
 	return f.err
 }
 
+func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+	return f.updatedTask, f.err
+}
+
 type fakeSessionStore struct {
 	handoff   *db.SessionHandoff
 	setResult *db.SessionHandoff

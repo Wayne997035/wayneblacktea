@@ -104,6 +104,10 @@ const (
 // ("", "", false) for all other tools.
 func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bool) {
 	switch tool {
+	case "begin_task":
+		taskID := stringArg(args, "task_id")
+		return "task:begin", truncate(fmt.Sprintf("task_id=%s", taskID)), true
+
 	case "complete_task":
 		taskID := stringArg(args, "task_id")
 		artifact := stringArg(args, "artifact")

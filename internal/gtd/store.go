@@ -419,6 +419,67 @@ func (s *Store) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string
 	return &row, nil
 }
 
+// BeginTask atomically sets a task to in_progress and records a
+// work_session_started activity log entry.
+//
+// Idempotency: if the task is already in_progress, the task row is returned
+// as-is without writing a duplicate activity_log row.
+// Returns ErrNotFound when no task matches id inside the configured workspace.
+func (s *Store) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error) {
+	// Idempotency: read current status before opening a transaction.
+	existing, err := s.getTaskByID(ctx, id)
+	if err != nil {
+		return nil, err // ErrNotFound already wrapped
+	}
+	if existing.Status == "in_progress" {
+		return existing, nil
+	}
+
+	beginner, ok := s.dbtx.(txBeginner)
+	if !ok {
+		return nil, fmt.Errorf("begin task %s: dbtx does not support Begin", id)
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin task %s: begin tx: %w", id, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	qtx := s.q.WithTx(tx)
+	task, err := qtx.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+		ID:          id,
+		Status:      "in_progress",
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("begin task %s: update status: %w", id, err)
+	}
+
+	_, err = qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       "system",
+		Action:      "work_session_started",
+		Notes:       toText("task: " + task.Title),
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin task %s: log activity: %w", id, err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("begin task %s: commit: %w", id, err)
+	}
+	committed = true
+	return &task, nil
+}
+
 // LogActivity records an activity entry.
 func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
 	_, err := s.q.CreateActivityLog(ctx, db.CreateActivityLogParams{

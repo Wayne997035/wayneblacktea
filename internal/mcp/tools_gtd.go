@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -192,6 +193,15 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 		mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
 	), s.handleChecklistComplete)
+
+	ms.AddTool(mcp.NewTool("begin_task",
+		mcp.WithDescription(
+			"Atomically marks a task in_progress, logs a work_session_started activity, "+
+				"and returns the task with a branch_name_suggestion and work_session_id. "+
+				"Call this INSTEAD of update_task when starting work on a task.",
+		),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+	), s.handleBeginTask)
 }
 
 func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -879,6 +889,48 @@ func (s *Server) handleChecklistComplete(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("completing checklist item: %v", err)), nil
 	}
 	return jsonText(items)
+}
+
+func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	idStr := stringArg(args, "task_id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		return mcp.NewToolResultError("invalid task_id: " + err.Error()), nil
+	}
+	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
+	task, err := s.gtd.BeginTask(ctx, id, wsID)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task not found: " + idStr), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("beginning task: %v", err)), nil
+	}
+	return jsonText(map[string]any{
+		"task":                   task,
+		"branch_name_suggestion": mcpTaskTitleToBranchSlug(task.Title),
+		"work_session_id":        uuid.New().String(),
+	})
+}
+
+// mcpBranchSlugRe matches any character sequence that is not a lowercase letter or digit.
+var mcpBranchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// mcpTaskTitleToBranchSlug converts a task title into a git branch name slug of
+// the form "feature/<slug>" or "fix/<slug>" (the latter when the title starts
+// with "fix"). Slug characters are restricted to [a-z0-9-] and capped at 60
+// characters so the full branch name stays within Git's 255-byte ref limit.
+func mcpTaskTitleToBranchSlug(title string) string {
+	lower := strings.ToLower(title)
+	slug := mcpBranchSlugRe.ReplaceAllString(lower, "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 60 {
+		slug = strings.TrimRight(slug[:60], "-")
+	}
+	if strings.HasPrefix(lower, "fix") {
+		return "fix/" + slug
+	}
+	return "feature/" + slug
 }
 
 // parseChecklistIDs extracts and validates task_id and item_id from MCP args.
