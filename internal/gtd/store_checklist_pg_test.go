@@ -3,6 +3,7 @@ package gtd_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,10 +175,80 @@ func TestPGStore_Checklist_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post-delete AddChecklistItem: %v", err)
 	}
+	var found1, found2 bool
 	for _, it := range remaining {
 		if it.ID == item2.ID {
-			t.Errorf("item2 should have been deleted, still found: %+v", it)
+			found2 = true
 		}
+		if it.ID == item1.ID {
+			found1 = true
+		}
+	}
+	if found2 {
+		t.Errorf("item2 should have been deleted, still found in remaining list")
+	}
+	if !found1 {
+		t.Errorf("item1 ('keep me') should still be present after deleting item2")
+	}
+}
+
+// TestPGStore_Checklist_ConcurrentAdd verifies that two concurrent AddChecklistItem
+// calls for the same task both survive — no lost update due to the race condition
+// that existed before the FOR UPDATE transaction wrapper was added.
+func TestPGStore_Checklist_ConcurrentAdd(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "concurrent add task", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	itemA := gtd.ChecklistItem{ID: uuid.New(), Title: "concurrent A", CreatedAt: time.Now().UTC()}
+	itemB := gtd.ChecklistItem{ID: uuid.New(), Title: "concurrent B", CreatedAt: time.Now().UTC()}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, errs[0] = store.AddChecklistItem(ctx, task.ID, wsID, itemA)
+	}()
+	go func() {
+		defer wg.Done()
+		_, errs[1] = store.AddChecklistItem(ctx, task.ID, wsID, itemB)
+	}()
+	wg.Wait()
+
+	for i, e := range errs {
+		if e != nil {
+			t.Errorf("goroutine %d: AddChecklistItem error: %v", i, e)
+		}
+	}
+
+	// Both items must be present — a lost-update bug would leave only one.
+	dummy := gtd.ChecklistItem{ID: uuid.New(), Title: "read-sentinel", CreatedAt: time.Now().UTC()}
+	final, err := store.AddChecklistItem(ctx, task.ID, wsID, dummy)
+	if err != nil {
+		t.Fatalf("final AddChecklistItem: %v", err)
+	}
+	var foundA, foundB bool
+	for _, it := range final {
+		if it.ID == itemA.ID {
+			foundA = true
+		}
+		if it.ID == itemB.ID {
+			foundB = true
+		}
+	}
+	if !foundA {
+		t.Error("itemA was lost — concurrent write race not fixed")
+	}
+	if !foundB {
+		t.Error("itemB was lost — concurrent write race not fixed")
 	}
 }
 

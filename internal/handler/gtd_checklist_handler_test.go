@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -40,6 +41,12 @@ func (f *checklistTestStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID,
 	return f.err
 }
 
+// nullByteJSONBody is valid JSON whose title contains the JSON unicode escape
+// sequence   (backslash-u-0-0-0-0) which json.Decoder decodes to a null
+// byte in Go. SanitiseChecklistText then strips it, producing "helloworld".
+// The double-quoted Go string uses   to avoid any NUL byte in source.
+var nullByteJSONBody = "{\"title\":\"hello\\u0000world\"}"
+
 func TestGTDHandler_AddChecklistItem(t *testing.T) {
 	taskID := uuid.New()
 	itemID := uuid.New()
@@ -53,39 +60,60 @@ func TestGTDHandler_AddChecklistItem(t *testing.T) {
 		wantCode int
 	}{
 		{
-			name:     "happy path — item added",
+			name:     "happy path item added",
 			taskID:   taskID.String(),
 			body:     `{"title":"step 1","notes":"some note"}`,
 			store:    &checklistTestStore{addResult: sampleItems},
 			wantCode: http.StatusOK,
 		},
 		{
-			name:     "missing title → 400",
+			name:     "missing title returns 400",
 			taskID:   taskID.String(),
 			body:     `{"notes":"no title here"}`,
 			store:    &checklistTestStore{},
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "invalid task UUID → 400",
+			name:     "invalid task UUID returns 400",
 			taskID:   "not-a-uuid",
 			body:     `{"title":"step"}`,
 			store:    &checklistTestStore{},
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "task not found → 404",
+			name:     "task not found returns 404",
 			taskID:   taskID.String(),
 			body:     `{"title":"step"}`,
 			store:    &checklistTestStore{fakeGTDStore: fakeGTDStore{err: gtd.ErrNotFound}},
 			wantCode: http.StatusNotFound,
 		},
 		{
-			name:     "store error → 500",
+			name:     "store error returns 500",
 			taskID:   taskID.String(),
 			body:     `{"title":"step"}`,
 			store:    &checklistTestStore{fakeGTDStore: fakeGTDStore{err: errors.New("db down")}},
 			wantCode: http.StatusInternalServerError,
+		},
+		{
+			// Body exceeds the 32 KB limit: LimitReader truncates the JSON,
+			// making it unparseable so the handler returns 400.
+			name:     "body exceeds 32KB limit returns 400",
+			taskID:   taskID.String(),
+			body:     `{"title":"` + strings.Repeat("x", 33*1024) + `"}`,
+			store:    &checklistTestStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			// nullByteJSONBody has the JSON unicode escape  in the title.
+			// json.Decoder converts it to a null byte; SanitiseChecklistText
+			// strips it, producing "helloworld". The request succeeds with 200.
+			name:   "null byte in title is sanitised and returns 200",
+			taskID: taskID.String(),
+			body:   nullByteJSONBody,
+			store: &checklistTestStore{
+				addResult: []gtd.ChecklistItem{{ID: itemID, Title: "helloworld"}},
+			},
+			wantCode: http.StatusOK,
 		},
 	}
 
@@ -126,7 +154,7 @@ func TestGTDHandler_UpdateChecklistItem(t *testing.T) {
 		wantCode int
 	}{
 		{
-			name:     "happy path — done toggled",
+			name:     "happy path done toggled",
 			taskID:   taskID.String(),
 			itemID:   itemID.String(),
 			body:     `{"done":true}`,
@@ -142,7 +170,7 @@ func TestGTDHandler_UpdateChecklistItem(t *testing.T) {
 			wantCode: http.StatusOK,
 		},
 		{
-			name:     "invalid task UUID → 400",
+			name:     "invalid task UUID returns 400",
 			taskID:   "bad",
 			itemID:   itemID.String(),
 			body:     `{"done":true}`,
@@ -150,7 +178,7 @@ func TestGTDHandler_UpdateChecklistItem(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "invalid item UUID → 400",
+			name:     "invalid item UUID returns 400",
 			taskID:   taskID.String(),
 			itemID:   "bad",
 			body:     `{"done":true}`,
@@ -158,7 +186,7 @@ func TestGTDHandler_UpdateChecklistItem(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "item not found → 404",
+			name:     "item not found returns 404",
 			taskID:   taskID.String(),
 			itemID:   itemID.String(),
 			body:     `{"done":true}`,
@@ -166,7 +194,7 @@ func TestGTDHandler_UpdateChecklistItem(t *testing.T) {
 			wantCode: http.StatusNotFound,
 		},
 		{
-			name:     "store error → 500",
+			name:     "store error returns 500",
 			taskID:   taskID.String(),
 			itemID:   itemID.String(),
 			body:     `{"done":true}`,
@@ -186,6 +214,20 @@ func TestGTDHandler_UpdateChecklistItem(t *testing.T) {
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
+			// For the "happy path done toggled" case, decode the response and
+			// verify that items[0].Done is true.
+			if tc.wantCode == http.StatusOK && tc.name == "happy path done toggled" {
+				var items []gtd.ChecklistItem
+				if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if len(items) == 0 {
+					t.Fatal("expected at least 1 item in response")
+				}
+				if !items[0].Done {
+					t.Errorf("expected items[0].Done == true, got false")
+				}
+			}
 		})
 	}
 }
@@ -202,35 +244,35 @@ func TestGTDHandler_DeleteChecklistItem(t *testing.T) {
 		wantCode int
 	}{
 		{
-			name:     "happy path — item deleted",
+			name:     "happy path item deleted",
 			taskID:   taskID.String(),
 			itemID:   itemID.String(),
 			store:    &checklistTestStore{},
 			wantCode: http.StatusNoContent,
 		},
 		{
-			name:     "invalid task UUID → 400",
+			name:     "invalid task UUID returns 400",
 			taskID:   "bad",
 			itemID:   itemID.String(),
 			store:    &checklistTestStore{},
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "invalid item UUID → 400",
+			name:     "invalid item UUID returns 400",
 			taskID:   taskID.String(),
 			itemID:   "bad",
 			store:    &checklistTestStore{},
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "item not found → 404",
+			name:     "item not found returns 404",
 			taskID:   taskID.String(),
 			itemID:   itemID.String(),
 			store:    &checklistTestStore{deleteErr: gtd.ErrNotFound},
 			wantCode: http.StatusNotFound,
 		},
 		{
-			name:     "store error → 500",
+			name:     "store error returns 500",
 			taskID:   taskID.String(),
 			itemID:   itemID.String(),
 			store:    &checklistTestStore{deleteErr: errors.New("db down")},
