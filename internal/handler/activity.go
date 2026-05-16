@@ -23,7 +23,7 @@ func classifyActivityKind(action string) string {
 	case "task:begin":
 		return kindTaskCreated
 	case "task:updated":
-		return kindTaskCompleted
+		return kindActivity
 	case "log_decision", "decision", "decision:logged":
 		return kindDecision
 	case "set_session_handoff", "session:handoff":
