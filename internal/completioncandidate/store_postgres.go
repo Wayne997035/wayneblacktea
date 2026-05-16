@@ -92,7 +92,7 @@ func (s *PgStore) ListPendingCandidates(ctx context.Context, workspaceID *uuid.U
 	}
 	const q = `SELECT ` + pgSelectCols + ` FROM completion_candidates
 		WHERE status = 'pending'
-		  AND ($1 IS NULL OR workspace_id = $1)
+		  AND ($1::uuid IS NULL OR workspace_id = $1::uuid)
 		ORDER BY detected_at DESC`
 
 	rows, err := s.pool.Query(ctx, q, ws)
@@ -233,7 +233,7 @@ func (s *PgStore) DetectAndUpsert(ctx context.Context, p DetectParams) ([]Candid
 func (s *PgStore) pgDetectStaleInProgress(ctx context.Context, ws any, staleHours int) ([]Candidate, error) {
 	const q = `SELECT id, updated_at FROM tasks
 		WHERE status = 'in_progress'
-		  AND ($1 IS NULL OR workspace_id = $1)
+		  AND ($1::uuid IS NULL OR workspace_id = $1::uuid)
 		  AND updated_at < now() - ($2 * INTERVAL '1 hour')`
 
 	rows, err := s.pool.Query(ctx, q, ws, staleHours)
@@ -278,7 +278,7 @@ func (s *PgStore) pgDetectFinishWorkGap(ctx context.Context, ws any, lookbackDay
 		JOIN tasks t ON t.id = st.task_id
 		WHERE ws.status = 'completed'
 		  AND t.status IN ('pending','in_progress')
-		  AND ($1 IS NULL OR ws.workspace_id = $1)
+		  AND ($1::uuid IS NULL OR ws.workspace_id = $1::uuid)
 		  AND ws.completed_at > now() - ($2 * INTERVAL '1 day')`
 
 	rows, err := s.pool.Query(ctx, q, ws, lookbackDays)
@@ -327,7 +327,7 @@ func (s *PgStore) pgDetectArtifactEvidence(ctx context.Context, ws any, lookback
 		JOIN tasks t ON t.status IN ('pending','in_progress')
 		  AND al.notes LIKE '%' || t.id::text || '%'
 		WHERE al.action = 'worksession:finished'
-		  AND ($1 IS NULL OR al.workspace_id = $1)
+		  AND ($1::uuid IS NULL OR al.workspace_id = $1::uuid)
 		  AND al.created_at > now() - ($2 * INTERVAL '1 day')
 		LIMIT 50`
 
@@ -379,7 +379,7 @@ func (s *PgStore) pgDetectCompletionSignal(ctx context.Context, ws any, lookback
 		JOIN tasks t ON t.status IN ('pending','in_progress')
 		  AND al.notes LIKE '%' || t.id::text || '%'
 		WHERE al.action IN ('task:updated','plan:confirmed','complete_task')
-		  AND ($1 IS NULL OR al.workspace_id = $1)
+		  AND ($1::uuid IS NULL OR al.workspace_id = $1::uuid)
 		  AND al.created_at > now() - ($2 * INTERVAL '1 day')
 		LIMIT 50`
 

@@ -14,26 +14,49 @@ tasks:
       - task: check
 
   check:
-    desc: "Full quality gate (Go + frontend + integration) — use before merge when frontend files changed"
+    desc: "Full quality gate — all checks run in parallel after mod-tidy"
     cmds:
       - task: mod-tidy
-      - task: frontend-check
-      - task: vuln
-      - task: lint
-      - task: test
-      - task: test-integration
+      - task: _check-parallel
       - task: build-all
     silent: false
 
   check-go:
-    desc: "Go-only quality gate — skip frontend build and integration tests. NOTE: if you touch internal/storage/, run 'task test-integration' separately."
+    desc: "Go-only quality gate — lint + unit tests + vuln in parallel, no frontend/integration"
     cmds:
       - task: mod-tidy
-      - task: vuln
-      - task: lint
-      - task: test
+      - task: _check-go-parallel
       - task: build-all
     silent: false
+
+  check-go-fast:
+    desc: "Fast Go gate — lint + build in parallel, no tests"
+    cmds:
+      - task: mod-tidy
+      - task: _check-fast-parallel
+    silent: false
+
+  _check-parallel:
+    internal: true
+    deps:
+      - frontend-check
+      - vuln
+      - lint
+      - test
+      - test-integration
+
+  _check-go-parallel:
+    internal: true
+    deps:
+      - vuln
+      - lint
+      - test
+
+  _check-fast-parallel:
+    internal: true
+    deps:
+      - lint
+      - build-all
 
   build-all:
     desc: "Build all binaries in parallel"
@@ -192,7 +215,7 @@ tasks:
     cmds:
       # Build tag + no -short: runs testcontainers-based integration tests.
       # -p 1 avoids concurrent Ryuk/container startup races across packages.
-      - go test -tags integration -race -p 1 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -tags integration -p 3 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:
