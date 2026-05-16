@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -13,6 +14,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// repoNameRe enforces a safe slug format for project repo_name values passed
+// through MCP tools. Keeps the column semantically queryable and prevents
+// control characters or path-traversal sequences from entering the DB.
+var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,100}$`)
 
 // maxPendingDeletions caps the number of valid (non-expired) delete tokens
 // held simultaneously. This prevents a loop caller from growing the sync.Map
@@ -192,13 +198,17 @@ func (s *Server) handleCreateProject(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("name, title and area are required"), nil
 	}
 
+	repoName := stringArg(args, "repo_name")
+	if repoName != "" && !repoNameRe.MatchString(repoName) {
+		return mcp.NewToolResultError("repo_name must match [a-zA-Z0-9_.-]{1,100}"), nil
+	}
 	p := gtd.CreateProjectParams{
 		Name:        name,
 		Title:       title,
 		Area:        area,
 		Description: stringArg(args, "description"),
 		Priority:    numberArg(args, "priority"),
-		RepoName:    stringArg(args, "repo_name"),
+		RepoName:    repoName,
 	}
 	if raw := stringArg(args, "goal_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -302,6 +312,9 @@ func buildUpdateProjectParams(args map[string]any, existing *db.Project) (gtd.Up
 	// repo_name: explicitly passed → overwrite (nil pointer = preserve existing).
 	if _, ok := args["repo_name"]; ok {
 		rn := stringArg(args, "repo_name")
+		if rn != "" && !repoNameRe.MatchString(rn) {
+			return gtd.UpdateProjectParams{}, "repo_name must match [a-zA-Z0-9_.-]{1,100}"
+		}
 		p.RepoName = &rn
 	}
 
@@ -786,6 +799,9 @@ func (s *Server) handleChecklistToggle(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError(errMsg), nil
 	}
 
+	if _, ok := args["done"]; !ok {
+		return mcp.NewToolResultError("done is required"), nil
+	}
 	done := boolArg(args, "done")
 	evidenceURL := sanitiseMCPText(stringArg(args, "evidence_url"))
 	if len([]rune(evidenceURL)) > gtd.ChecklistMaxText {
