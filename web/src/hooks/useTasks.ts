@@ -48,6 +48,7 @@ export function useCompleteTask(projectId?: string) {
       if (projectId) {
         void queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'tasks'] })
       }
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'upcoming'] })
     },
   })
 }
@@ -67,6 +68,7 @@ export function useCreateTask() {
         })
       }
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'upcoming'] })
     },
   })
 }

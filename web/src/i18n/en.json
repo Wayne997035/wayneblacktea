@@ -27,11 +27,13 @@
     "noTasksThisWeek": "No tasks this week",
     "noHandoff": "No pending handoff",
     "noNextTask": "No pending tasks",
+    "noNearTermTasks": "No tasks due in the next 7 days",
     "tasksDone": "tasks done",
     "widgets": {
       "nextTask": "NEXT TASK",
       "dueDate": "Due: {{date}}",
       "recentDecisions": "RECENT DECISIONS",
+      "nearTermTasks": "DUE THIS WEEK",
       "seeAll": "See all",
       "pendingProposals": "PENDING PROPOSALS",
       "dueReviews": "DUE REVIEWS",
