@@ -502,7 +502,7 @@ func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID
 		Actor:       actor,
 		ProjectID:   toUUID(projectID),
 		Action:      action,
-		Notes:       toText(notes),
+		Notes:       toText(sanitize.Notes(notes)),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {

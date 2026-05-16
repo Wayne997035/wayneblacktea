@@ -599,7 +599,7 @@ func (s *GTDStore) ListActivityLogsSince(ctx context.Context, since time.Time, m
 		  AND (?2 IS NULL OR workspace_id = ?2)
 		ORDER BY created_at ASC
 		LIMIT ?3`
-	sinceStr := since.UTC().Format(time.RFC3339Nano)
+	sinceStr := since.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := s.db.conn.QueryContext(ctx, q, sinceStr, s.db.workspaceArg(), maxRows)
 	if err != nil {
 		return nil, errWrap("ListActivityLogsSince", err)
@@ -634,7 +634,7 @@ func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projec
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		uuid.New().String(), s.db.workspaceArg(), actor,
-		nullStringFromUUID(projectID), action, nullStringIfEmpty(notes))
+		nullStringFromUUID(projectID), action, nullStringIfEmpty(sanitize.Notes(notes)))
 	if err != nil {
 		return errWrap("LogActivity", err)
 	}
@@ -1157,7 +1157,7 @@ func (s *GTDStore) RecentActivityByProject(
 		  AND (?3 IS NULL OR workspace_id = ?3)
 		ORDER BY created_at DESC, id DESC
 		LIMIT ?4`
-	sinceStr := since.UTC().Format(time.RFC3339Nano)
+	sinceStr := since.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	rows, err := s.db.conn.QueryContext(ctx, q, projectID.String(), sinceStr, s.db.workspaceArg(), maxRows)
 	if err != nil {
 		return nil, errWrap("RecentActivityByProject", err)
