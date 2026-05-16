@@ -41,7 +41,7 @@ var _ gtd.StoreIface = (*GTDStore)(nil)
 
 const tasksSelectCols = `id, workspace_id, project_id, title, description, status,
 	priority, importance, context, assignee, due_date, artifact,
-	created_at, updated_at`
+	created_at, updated_at, kind`
 
 // scanTask reads a row in tasksSelectCols order into db.Task, converting
 // SQLite TEXT columns to the pgtype values the Postgres stores already use.
@@ -53,11 +53,12 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		descNS, contextNS, assigneeNS, dueDateNS, artifactNS, createdNS, updNS sql.NullString
 		statusStr                                                              string
 		importanceNI                                                           sql.NullInt32
+		kindStr                                                                string
 	)
 
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &t.Title, &descNS, &statusStr,
 		&t.Priority, &importanceNI, &contextNS, &assigneeNS, &dueDateNS, &artifactNS,
-		&createdNS, &updNS)
+		&createdNS, &updNS, &kindStr)
 	if err != nil {
 		return db.Task{}, err
 	}
@@ -80,6 +81,10 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 	t.Artifact = pgtypeText(artifactNS.String, artifactNS.Valid)
 	t.CreatedAt = parseTimestamptz(createdNS)
 	t.UpdatedAt = parseTimestamptz(updNS)
+	if kindStr == "" {
+		kindStr = "general"
+	}
+	t.Kind = kindStr
 	return t, nil
 }
 
@@ -530,15 +535,19 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	if p.DueDate != nil {
 		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
 	}
+	kind := p.Kind
+	if kind == "" {
+		kind = "general"
+	}
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, priority,
-		 importance, context, assignee, due_date, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
+		 importance, context, assignee, due_date, kind, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)`
 	now := nowRFC3339()
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
-		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, now)
+		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, kind, now)
 	if err != nil {
 		return nil, errWrap("CreateTask", err)
 	}

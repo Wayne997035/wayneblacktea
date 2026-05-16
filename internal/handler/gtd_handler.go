@@ -6,11 +6,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -205,6 +207,15 @@ type createTaskRequest struct {
 	Assignee    string     `json:"assignee"`
 	Priority    int32      `json:"priority"`
 	DueDate     *time.Time `json:"due_date"`
+	Kind        string     `json:"kind"`
+}
+
+// strictVaguenessEnabled returns true when WBT_STRICT_VAGUENESS=true in the
+// server environment. Env is read per-call so it can be toggled without a
+// restart in development; the overhead is negligible for a single getenv.
+// The value is NEVER sourced from request headers.
+func strictVaguenessEnabled() bool {
+	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
 }
 
 // CreateTask inserts a new task.
@@ -217,6 +228,25 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errResp("title is required"))
 	}
 
+	kind := req.Kind
+	if kind == "" {
+		kind = "general"
+	}
+	if !validator.IsValidKind(kind) {
+		return c.JSON(http.StatusBadRequest, errResp("kind must be one of: general, fix-pr, feature, refactor, research, chore"))
+	}
+
+	// Vagueness and kind-field checks — warn-by-default, strict on opt-in.
+	var allWarnings []string
+	allWarnings = append(allWarnings, validator.CheckVagueness("description", req.Description, kind)...)
+	allWarnings = append(allWarnings, validator.CheckKindFields(kind, req.Description)...)
+	if len(allWarnings) > 0 && strictVaguenessEnabled() {
+		return c.JSON(http.StatusBadRequest, map[string]any{
+			"error":    "vagueness check failed",
+			"warnings": allWarnings,
+		})
+	}
+
 	task, err := h.store.CreateTask(c.Request().Context(), gtd.CreateTaskParams{
 		Title:       req.Title,
 		ProjectID:   req.ProjectID,
@@ -224,10 +254,16 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 		Assignee:    req.Assignee,
 		Priority:    req.Priority,
 		DueDate:     req.DueDate,
+		Kind:        kind,
 	})
 	if err != nil {
 		c.Logger().Errorf("CreateTask: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	if len(allWarnings) > 0 {
+		warningsJSON, _ := json.Marshal(allWarnings)
+		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 	return c.JSON(http.StatusCreated, task)
 }

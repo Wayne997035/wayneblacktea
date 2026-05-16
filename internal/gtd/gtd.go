@@ -91,6 +91,7 @@ type CreateTaskParams struct {
 	DueDate     *time.Time // nil → NULL
 	Importance  *int16     // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
 	Context     string     // empty → NULL; free-form discussion background
+	Kind        string     // empty → defaults to "general"; one of general/fix-pr/feature/refactor/research/chore
 }
 
 // UpdateGoalParams holds parameters for a full update of a goal.

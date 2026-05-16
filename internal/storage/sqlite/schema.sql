@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     due_date     TEXT,
     artifact     TEXT,
     checklist    TEXT NOT NULL DEFAULT '[]', -- JSON array of ChecklistItem; parity with Postgres jsonb checklist column (migration 000043)
+    kind         TEXT NOT NULL DEFAULT 'general' CHECK (kind IN ('general','fix-pr','feature','refactor','research','chore')), -- task kind; parity with Postgres kind column (migration 000044)
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

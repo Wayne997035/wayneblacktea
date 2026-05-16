@@ -4,16 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// strictVagueness reports whether WBT_STRICT_VAGUENESS=true is set in the
+// server environment. Never sourced from tool arguments (user-controlled).
+func (s *Server) strictVagueness() bool {
+	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
+}
 
 // repoNameRe enforces a safe slug format for project repo_name values passed
 // through MCP tools. Keeps the column semantically queryable and prevents
@@ -73,6 +81,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
 		mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low) — distinct from priority")),
 		mcp.WithString("context", mcp.Description("Free-form discussion background — why this task came up")),
+		mcp.WithString("kind",
+			mcp.Description("Task kind: general, fix-pr, feature, refactor, research, or chore. Defaults to 'general'."),
+			mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
 	), s.handleAddTask)
 
 	ms.AddTool(mcp.NewTool("complete_task",
@@ -368,12 +379,32 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 		return mcp.NewToolResultError("title is required"), nil
 	}
 
+	kind := stringArg(args, "kind")
+	if kind == "" {
+		kind = "general"
+	}
+	if !validator.IsValidKind(kind) {
+		return mcp.NewToolResultError("kind must be one of: general, fix-pr, feature, refactor, research, chore"), nil
+	}
+
+	description := stringArg(args, "description")
+
+	// Vagueness and kind-field checks. For MCP, warnings are embedded in the
+	// result JSON body (no HTTP headers available). Strict mode → tool error.
+	var allWarnings []string
+	allWarnings = append(allWarnings, validator.CheckVagueness("description", description, kind)...)
+	allWarnings = append(allWarnings, validator.CheckKindFields(kind, description)...)
+	if len(allWarnings) > 0 && s.strictVagueness() {
+		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
+	}
+
 	p := gtd.CreateTaskParams{
 		Title:       title,
-		Description: stringArg(args, "description"),
+		Description: description,
 		Assignee:    stringArg(args, "assignee"),
 		Priority:    numberArg(args, "priority"),
 		Context:     stringArg(args, "context"),
+		Kind:        kind,
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -393,6 +424,11 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating task: %v", err)), nil
+	}
+
+	// Embed warnings in the result body when present.
+	if len(allWarnings) > 0 {
+		return jsonText(map[string]any{"task": task, "warnings": allWarnings})
 	}
 	return jsonText(task)
 }

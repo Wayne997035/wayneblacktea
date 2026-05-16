@@ -239,7 +239,7 @@ func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UU
 // feature self-contained without churning the queries.sql codegen surface.
 func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
-		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
 		FROM tasks
 		WHERE status IN ('pending','in_progress')
 		  AND due_date IS NOT NULL
@@ -257,7 +257,7 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 		var t db.Task
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 		); err != nil {
 			return nil, fmt.Errorf("scanning task by due date: %w", err)
 		}
@@ -279,7 +279,7 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 // without churning the queries.sql codegen surface.
 func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
-		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
 		FROM tasks
 		WHERE (
 		    (created_at >= $1 AND created_at <= $2)
@@ -298,7 +298,7 @@ func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.
 		var t db.Task
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 		); err != nil {
 			return nil, fmt.Errorf("scanning task for timeline: %w", err)
 		}
@@ -332,7 +332,7 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 		fetchLimit = limit
 	}
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
-		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
 		FROM tasks
 		WHERE status IN ('pending','in_progress')
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
@@ -352,7 +352,7 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 		var t db.Task
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 		); err != nil {
 			return nil, fmt.Errorf("scanning upcoming task: %w", err)
 		}
@@ -370,6 +370,10 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 	if priority == 0 {
 		priority = 3
 	}
+	kind := p.Kind
+	if kind == "" {
+		kind = "general"
+	}
 	row, err := s.q.CreateTask(ctx, db.CreateTaskParams{
 		ProjectID:   toUUID(p.ProjectID),
 		Title:       p.Title,
@@ -379,6 +383,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		DueDate:     toTimestamptz(p.DueDate),
 		Importance:  toInt2(p.Importance),
 		Context:     toText(p.Context),
+		Kind:        kind,
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
@@ -474,7 +479,7 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 // to avoid churning the codegen surface for a single read.
 func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
-		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
 		FROM tasks
 		WHERE id = $1
 		  AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -493,7 +498,7 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	var t db.Task
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 	); err != nil {
 		return nil, fmt.Errorf("scanning task %s: %w", id, err)
 	}
@@ -586,7 +591,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		WHERE id = $9
 		  AND ($10::uuid IS NULL OR workspace_id = $10)
 		RETURNING id, project_id, title, description, status, priority, assignee,
-		          due_date, artifact, created_at, updated_at, workspace_id, importance, context`
+		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind`
 	rows, err := s.dbtx.Query(ctx, q,
 		title, description, priority, importance, assignee, dueDate, taskContext, status,
 		id, s.workspaceID,
@@ -604,7 +609,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 	var t db.Task
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 	); err != nil {
 		return nil, fmt.Errorf("scanning updated task %s: %w", id, err)
 	}
@@ -864,7 +869,7 @@ func (s *Store) ListActivityLogsSince(ctx context.Context, since time.Time, maxR
 // NULLS LAST, created_at ASC. Returns nil, nil when no pending task exists.
 func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
-		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
 		FROM tasks
 		WHERE status = 'pending'
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
@@ -884,7 +889,7 @@ func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 	var t db.Task
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 	); err != nil {
 		return nil, fmt.Errorf("scanning top pending task: %w", err)
 	}
@@ -896,7 +901,7 @@ func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 // query (not sqlc) to avoid touching codegen for a single new read.
 func (s *Store) RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
-		due_date, artifact, created_at, updated_at, workspace_id, importance, context
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
 		FROM tasks
 		WHERE status = 'completed'
 		  AND project_id = $1
@@ -913,7 +918,7 @@ func (s *Store) RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, l
 		var t db.Task
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
-			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
 		); err != nil {
 			return nil, fmt.Errorf("scanning recent completed task: %w", err)
 		}
