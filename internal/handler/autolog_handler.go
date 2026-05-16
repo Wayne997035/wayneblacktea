@@ -102,11 +102,11 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
 	}
-	if len(req.Actor) > maxActorLen {
-		req.Actor = req.Actor[:maxActorLen]
+	if runes := []rune(req.Actor); len(runes) > maxActorLen {
+		req.Actor = string(runes[:maxActorLen])
 	}
-	if len(req.Action) > maxActionLen {
-		req.Action = req.Action[:maxActionLen]
+	if runes := []rune(req.Action); len(runes) > maxActionLen {
+		req.Action = string(runes[:maxActionLen])
 	}
 	if runes := []rune(req.Notes); len(runes) > maxNotesLen {
 		req.Notes = string(runes[:maxNotesLen])
