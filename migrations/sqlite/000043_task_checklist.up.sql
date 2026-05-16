@@ -1,0 +1,1 @@
+ALTER TABLE tasks ADD COLUMN checklist TEXT NOT NULL DEFAULT '[]';

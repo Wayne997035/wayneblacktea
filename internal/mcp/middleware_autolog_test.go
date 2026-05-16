@@ -152,6 +152,20 @@ func (m *mockGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTa
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) AddChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ gtd.ChecklistItem) ([]gtd.ChecklistItem, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockGTDStore) UpdateChecklistItem(
+	_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID, _ gtd.UpdateChecklistItemParams,
+) ([]gtd.ChecklistItem, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID) error {
+	return errMockNotImpl
+}
+
 // successHandler returns a fixed success result — simulates a tool that completed OK.
 func successHandler(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 	return mcpmsg.NewToolResultText("ok"), nil

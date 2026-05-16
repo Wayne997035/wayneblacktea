@@ -1666,3 +1666,126 @@ func TestGTDStore_UpdateProjectStatus_WorkspaceIsolation(t *testing.T) {
 		t.Errorf("owner workspace UpdateProjectStatus must succeed, got %v", err)
 	}
 }
+
+// TestGTDStore_ProjectsByRepoName_EmptyInput verifies the fast-path: empty
+// repoName returns nil immediately without a DB round-trip.
+func TestGTDStore_ProjectsByRepoName_EmptyInput(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	// Insert a project so we'd notice if the fast-path is broken.
+	if _, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "any", Title: "Any", Area: "engineering", RepoName: "some-repo",
+	}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	got, err := s.ProjectsByRepoName(ctx, "")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName (empty): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected nil/empty for empty repoName, got %d rows", len(got))
+	}
+}
+
+// TestGTDStore_ProjectsByRepoName_Match verifies that a project linked to the
+// queried repo slug is returned with correct fields, while projects linked to
+// other repos are excluded.
+func TestGTDStore_ProjectsByRepoName_Match(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	want, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "wbt", Title: "wayneblacktea", Area: "engineering", RepoName: "wayneblacktea",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject wbt: %v", err)
+	}
+	if _, err = s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "other", Title: "Other", Area: "engineering", RepoName: "other-repo",
+	}); err != nil {
+		t.Fatalf("CreateProject other: %v", err)
+	}
+
+	got, err := s.ProjectsByRepoName(ctx, "wayneblacktea")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(got))
+	}
+	if got[0].ID != want.ID {
+		t.Errorf("got project ID %s, want %s", got[0].ID, want.ID)
+	}
+	if got[0].Name != "wbt" {
+		t.Errorf("got project name %q, want wbt", got[0].Name)
+	}
+}
+
+// TestGTDStore_ProjectsByRepoName_NoMatch verifies that a non-matching repo
+// slug returns an empty slice (not an error).
+func TestGTDStore_ProjectsByRepoName_NoMatch(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	if _, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "p1", Title: "P1", Area: "engineering", RepoName: "my-repo",
+	}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	got, err := s.ProjectsByRepoName(ctx, "does-not-exist")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 projects for unmatched repo, got %d", len(got))
+	}
+}
+
+// TestGTDStore_ProjectsByRepoName_WorkspaceIsolation verifies that workspace B
+// cannot see workspace A's projects even when the repo_name matches.
+func TestGTDStore_ProjectsByRepoName_WorkspaceIsolation(t *testing.T) {
+	tmp := t.TempDir() + "/repo-name-ws.db"
+	ctx := context.Background()
+	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	if err != nil {
+		t.Fatalf("Open A: %v", err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	storeA := sqlite.NewGTDStore(dbA)
+
+	if _, err = storeA.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "ws-a-proj", Title: "WS-A Project", Area: "engineering", RepoName: "shared-repo",
+	}); err != nil {
+		t.Fatalf("CreateProject A: %v", err)
+	}
+
+	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	storeB := sqlite.NewGTDStore(dbB)
+
+	got, err := storeB.ProjectsByRepoName(ctx, "shared-repo")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName B: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("workspace B must not see workspace A's project, got %d rows", len(got))
+	}
+
+	// Sanity: workspace A can see its own project.
+	gotA, err := storeA.ProjectsByRepoName(ctx, "shared-repo")
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName A: %v", err)
+	}
+	if len(gotA) != 1 {
+		t.Errorf("workspace A should see 1 project, got %d", len(gotA))
+	}
+}

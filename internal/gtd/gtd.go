@@ -2,6 +2,7 @@ package gtd
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,6 +70,7 @@ type CreateProjectParams struct {
 	Description string // empty → NULL
 	Area        string // defaults to "projects"
 	Priority    int32  // defaults to 3
+	RepoName    string // empty → NULL; links project to a VCS repo slug
 }
 
 // CreateGoalParams holds parameters for creating a new goal.
@@ -108,6 +110,7 @@ type UpdateProjectParams struct {
 	Priority    int32  // defaults to 3 if zero
 	Status      ProjectStatus
 	GoalID      *uuid.UUID // nil → NULL
+	RepoName    *string    // nil → preserve existing; empty string → clear to NULL
 }
 
 // UpdateTaskParams holds parameters for a partial update of a task.
@@ -122,4 +125,46 @@ type UpdateTaskParams struct {
 	DueDate     *time.Time
 	Context     *string
 	Status      *string
+}
+
+// ChecklistItem represents a single item in a task's structured checklist.
+// Stored as a JSONB array in Postgres and a JSON TEXT array in SQLite.
+type ChecklistItem struct {
+	ID          uuid.UUID  `json:"id"`
+	Title       string     `json:"title"`
+	FileRef     string     `json:"file_ref,omitempty"`
+	Done        bool       `json:"done"`
+	EvidenceURL string     `json:"evidence_url,omitempty"`
+	Notes       string     `json:"notes,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+// UpdateChecklistItemParams holds the optional fields for patching a checklist item.
+// nil pointer = "don't change this field".
+type UpdateChecklistItemParams struct {
+	Done        *bool
+	Title       *string
+	Notes       *string
+	EvidenceURL *string
+}
+
+// ChecklistMaxTitle is the maximum length for a checklist item title in runes.
+const ChecklistMaxTitle = 500
+
+// ChecklistMaxText is the maximum length for notes/file_ref/evidence_url in runes.
+const ChecklistMaxText = 2000
+
+// SanitiseChecklistText strips null bytes and ASCII control characters (except tab)
+// from a string, and trims leading/trailing whitespace.
+func SanitiseChecklistText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\x00' || (r < 0x20 && r != '\t') {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }

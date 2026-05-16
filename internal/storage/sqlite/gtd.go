@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -250,6 +251,8 @@ func (s *GTDStore) ProjectsByRepoName(ctx context.Context, repoName string) ([]d
 }
 
 // CreateProject inserts a new project, generating a UUID and returning the row.
+// repo_name is persisted when non-empty; empty string stores NULL (parity with
+// migration 000037 which added the nullable TEXT column).
 func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams) (*db.Project, error) {
 	id := uuid.New()
 	area := p.Area
@@ -260,12 +263,14 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 	if priority == 0 {
 		priority = 3
 	}
-	const q = `INSERT INTO projects (id, workspace_id, goal_id, name, title, description, area, priority, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`
+	const q = `INSERT INTO projects
+		(id, workspace_id, goal_id, name, title, description, area, priority, repo_name, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`
 	now := nowRFC3339()
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.GoalID),
-		p.Name, p.Title, nullStringIfEmpty(p.Description), area, priority, now)
+		p.Name, p.Title, nullStringIfEmpty(p.Description), area, priority,
+		nullStringIfEmpty(p.RepoName), now)
 	if err != nil {
 		// SQLite UNIQUE failure surfaces as constraint code 2067 / SQLITE_CONSTRAINT_UNIQUE.
 		// Match by message rather than introducing a driver-specific dependency.
@@ -312,12 +317,14 @@ func (s *GTDStore) CreateProjectTx(ctx context.Context, tx *sql.Tx, p gtd.Create
 	if priority == 0 {
 		priority = 3
 	}
-	const q = `INSERT INTO projects (id, workspace_id, goal_id, name, title, description, area, priority, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`
+	const q = `INSERT INTO projects
+		(id, workspace_id, goal_id, name, title, description, area, priority, repo_name, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`
 	now := nowRFC3339()
 	_, err := tx.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.GoalID),
-		p.Name, p.Title, nullStringIfEmpty(p.Description), area, priority, now)
+		p.Name, p.Title, nullStringIfEmpty(p.Description), area, priority,
+		nullStringIfEmpty(p.RepoName), now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return uuid.UUID{}, gtd.ErrConflict
@@ -828,6 +835,9 @@ func (s *GTDStore) UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoa
 }
 
 // UpdateProject performs a full update of a project by ID, replacing all mutable fields.
+// RepoName semantics: nil → preserve existing DB value; non-nil → overwrite
+// (empty string clears to NULL). Two query branches avoid a gap in parameter
+// positions that would confuse SQLite's positional binding.
 func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.UpdateProjectParams) (*db.Project, error) {
 	area := p.Area
 	if area == "" {
@@ -837,22 +847,46 @@ func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.Update
 	if priority == 0 {
 		priority = 3
 	}
-	const q = `UPDATE projects
-		SET title = ?2, description = ?3, area = ?4, priority = ?5, status = ?6, goal_id = ?7, updated_at = ?8
-		WHERE id = ?1
-		  AND (?9 IS NULL OR workspace_id = ?9)`
 	now := nowRFC3339()
-	res, err := s.db.conn.ExecContext(ctx, q,
-		id.String(),
-		p.Title,
-		nullStringIfEmpty(p.Description),
-		area,
-		priority,
-		string(p.Status),
-		nullStringFromUUID(p.GoalID),
-		now,
-		s.db.workspaceArg(),
+	var (
+		res sql.Result
+		err error
 	)
+	if p.RepoName != nil {
+		const q = `UPDATE projects
+			SET title = ?2, description = ?3, area = ?4, priority = ?5, status = ?6,
+			    goal_id = ?7, repo_name = ?8, updated_at = ?9
+			WHERE id = ?1
+			  AND (?10 IS NULL OR workspace_id = ?10)`
+		res, err = s.db.conn.ExecContext(ctx, q,
+			id.String(),
+			p.Title,
+			nullStringIfEmpty(p.Description),
+			area,
+			priority,
+			string(p.Status),
+			nullStringFromUUID(p.GoalID),
+			nullStringIfEmpty(*p.RepoName),
+			now,
+			s.db.workspaceArg(),
+		)
+	} else {
+		const q = `UPDATE projects
+			SET title = ?2, description = ?3, area = ?4, priority = ?5, status = ?6, goal_id = ?7, updated_at = ?8
+			WHERE id = ?1
+			  AND (?9 IS NULL OR workspace_id = ?9)`
+		res, err = s.db.conn.ExecContext(ctx, q,
+			id.String(),
+			p.Title,
+			nullStringIfEmpty(p.Description),
+			area,
+			priority,
+			string(p.Status),
+			nullStringFromUUID(p.GoalID),
+			now,
+			s.db.workspaceArg(),
+		)
+	}
 	if err != nil {
 		return nil, errWrap("UpdateProject", err)
 	}
@@ -1112,4 +1146,172 @@ func containsCI(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// sqliteWorkspaceFilter converts a workspaceID to the value used in SQLite
+// queries: empty string → NULL (unscoped), otherwise the UUID string.
+func sqliteWorkspaceFilter(workspaceID uuid.UUID) any {
+	if workspaceID == (uuid.UUID{}) {
+		return nil
+	}
+	return workspaceID.String()
+}
+
+// sqliteLoadChecklistTx reads the checklist TEXT column for taskID inside an
+// existing *sql.Tx. Returns gtd.ErrNotFound when the row does not exist.
+func sqliteLoadChecklistTx(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, wsFilter any) ([]gtd.ChecklistItem, error) {
+	const q = `SELECT checklist FROM tasks WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
+	var raw sql.NullString
+	if err := tx.QueryRowContext(ctx, q, taskID.String(), wsFilter).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, gtd.ErrNotFound
+		}
+		return nil, errWrap("sqliteLoadChecklistTx", err)
+	}
+	var items []gtd.ChecklistItem
+	if raw.Valid && raw.String != "" && raw.String != "[]" {
+		if err := json.Unmarshal([]byte(raw.String), &items); err != nil {
+			return nil, errWrap("sqliteLoadChecklistTx unmarshal", err)
+		}
+	}
+	if items == nil {
+		items = []gtd.ChecklistItem{}
+	}
+	return items, nil
+}
+
+// sqliteSaveChecklistTx serialises items and writes them back to the checklist
+// column inside an existing *sql.Tx.
+func sqliteSaveChecklistTx(ctx context.Context, tx *sql.Tx, taskID uuid.UUID, wsFilter any, items []gtd.ChecklistItem) error {
+	data, err := json.Marshal(items)
+	if err != nil {
+		return errWrap("sqliteSaveChecklistTx marshal", err)
+	}
+	const q = `UPDATE tasks SET checklist = ?1, updated_at = ?2 WHERE id = ?3 AND (?4 IS NULL OR workspace_id = ?4)`
+	if _, err := tx.ExecContext(ctx, q, string(data), nowRFC3339(), taskID.String(), wsFilter); err != nil {
+		return errWrap("sqliteSaveChecklistTx", err)
+	}
+	return nil
+}
+
+// AddChecklistItem appends a new ChecklistItem (server-generated ID) to the
+// task's checklist and returns the full updated slice.
+// Returns gtd.ErrNotFound when no task matches taskID + workspaceID.
+//
+// The load+save pair runs inside a BEGIN IMMEDIATE transaction to prevent lost
+// updates when concurrent callers modify the same task's checklist.
+func (s *GTDStore) AddChecklistItem(
+	ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, item gtd.ChecklistItem,
+) ([]gtd.ChecklistItem, error) {
+	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, errWrap("AddChecklistItem begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	wsFilter := sqliteWorkspaceFilter(workspaceID)
+	items, err := sqliteLoadChecklistTx(ctx, tx, taskID, wsFilter)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, item)
+	if err := sqliteSaveChecklistTx(ctx, tx, taskID, wsFilter, items); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, errWrap("AddChecklistItem commit", err)
+	}
+	committed = true
+	return items, nil
+}
+
+// UpdateChecklistItem applies a partial patch to the checklist item identified
+// by itemID inside the given task. Returns the full updated checklist.
+// Returns gtd.ErrNotFound when task or item is not found.
+//
+// The load+save pair runs inside a BEGIN IMMEDIATE transaction to prevent lost
+// updates when concurrent callers modify the same task's checklist.
+func (s *GTDStore) UpdateChecklistItem(
+	ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID,
+	itemID uuid.UUID, update gtd.UpdateChecklistItemParams,
+) ([]gtd.ChecklistItem, error) {
+	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, errWrap("UpdateChecklistItem begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	wsFilter := sqliteWorkspaceFilter(workspaceID)
+	items, err := sqliteLoadChecklistTx(ctx, tx, taskID, wsFilter)
+	if err != nil {
+		return nil, err
+	}
+	// Delegate in-memory patch to the shared helper in the gtd package to
+	// keep cyclomatic complexity of this method below the lint threshold.
+	items, err = gtd.ApplyChecklistItemPatch(items, itemID, update)
+	if err != nil {
+		return nil, errWrap("UpdateChecklistItem patch", err)
+	}
+	if err := sqliteSaveChecklistTx(ctx, tx, taskID, wsFilter, items); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, errWrap("UpdateChecklistItem commit", err)
+	}
+	committed = true
+	return items, nil
+}
+
+// DeleteChecklistItem removes the item identified by itemID from the task's
+// checklist. Returns gtd.ErrNotFound when task or item is not found.
+//
+// The load+save pair runs inside a BEGIN IMMEDIATE transaction to prevent lost
+// updates when concurrent callers modify the same task's checklist.
+func (s *GTDStore) DeleteChecklistItem(ctx context.Context, taskID uuid.UUID, workspaceID uuid.UUID, itemID uuid.UUID) error {
+	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return errWrap("DeleteChecklistItem begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	wsFilter := sqliteWorkspaceFilter(workspaceID)
+	items, err := sqliteLoadChecklistTx(ctx, tx, taskID, wsFilter)
+	if err != nil {
+		return err
+	}
+	next := items[:0]
+	found := false
+	for _, it := range items {
+		if it.ID == itemID {
+			found = true
+			continue
+		}
+		next = append(next, it)
+	}
+	if !found {
+		return gtd.ErrNotFound
+	}
+	if err := sqliteSaveChecklistTx(ctx, tx, taskID, wsFilter, next); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return errWrap("DeleteChecklistItem commit", err)
+	}
+	committed = true
+	return nil
 }

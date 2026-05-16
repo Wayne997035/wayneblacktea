@@ -4,14 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// repoNameRe enforces a safe slug format for project repo_name values passed
+// through MCP tools. Keeps the column semantically queryable and prevents
+// control characters or path-traversal sequences from entering the DB.
+var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,100}$`)
 
 // maxPendingDeletions caps the number of valid (non-expired) delete tokens
 // held simultaneously. This prevents a loop caller from growing the sync.Map
@@ -31,7 +38,23 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("description", mcp.Description("Detailed description")),
 		mcp.WithString("goal_id", mcp.Description("Parent goal UUID")),
 		mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
+		mcp.WithString("repo_name", mcp.Description("VCS repository slug to link this project (e.g. wayneblacktea)")),
 	), s.handleCreateProject)
+
+	ms.AddTool(mcp.NewTool("update_project",
+		mcp.WithDescription("Updates mutable fields of a project. All params except project_id are optional. "+
+			"Omitted params preserve the existing value. Use update_project_status to change status only."),
+		mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
+		mcp.WithString("title", mcp.Description("Updated display title"), mcp.MaxLength(500)),
+		mcp.WithString("description", mcp.Description("Updated description"), mcp.MaxLength(5000)),
+		mcp.WithString("area", mcp.Description("Work area (e.g. engineering, personal)")),
+		mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
+		mcp.WithString("status",
+			mcp.Description("New status: active, completed, archived, or on_hold"),
+			mcp.Enum("active", "completed", "archived", "on_hold")),
+		mcp.WithString("goal_id", mcp.Description("Parent goal UUID (empty string clears the link)")),
+		mcp.WithString("repo_name", mcp.Description("VCS repository slug (empty string clears the link)")),
+	), s.handleUpdateProject)
 
 	ms.AddTool(mcp.NewTool("list_tasks",
 		mcp.WithDescription("Lists tasks, optionally filtered by project."),
@@ -127,6 +150,37 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
 		mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
 	), s.handleDeleteTask)
+
+	ms.AddTool(mcp.NewTool("task_checklist_add_item",
+		mcp.WithDescription(
+			"Appends a new checklist item to a task. Returns the full updated checklist. "+
+				"Use to track sub-steps or acceptance criteria for a task.",
+		),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("title", mcp.Description("Item title (max 500 chars)"), mcp.Required(), mcp.MaxLength(500)),
+		mcp.WithString("file_ref", mcp.Description("Optional file path reference (max 2000 chars)"), mcp.MaxLength(2000)),
+		mcp.WithString("notes", mcp.Description("Optional notes (max 2000 chars)"), mcp.MaxLength(2000)),
+	), s.handleChecklistAddItem)
+
+	ms.AddTool(mcp.NewTool("task_checklist_toggle",
+		mcp.WithDescription(
+			"Partially updates a checklist item (done flag, title, notes, evidence_url). "+
+				"Returns the full updated checklist.",
+		),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
+		mcp.WithBoolean("done", mcp.Description("Mark item done (true) or undone (false)"), mcp.Required()),
+		mcp.WithString("evidence_url", mcp.Description("Optional URL or note proving the item is done"), mcp.MaxLength(2000)),
+	), s.handleChecklistToggle)
+
+	ms.AddTool(mcp.NewTool("task_checklist_complete",
+		mcp.WithDescription(
+			"Shorthand for marking a checklist item done=true and recording completed_at=now. "+
+				"Returns the full updated checklist.",
+		),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
+	), s.handleChecklistComplete)
 }
 
 func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -144,12 +198,17 @@ func (s *Server) handleCreateProject(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("name, title and area are required"), nil
 	}
 
+	repoName := stringArg(args, "repo_name")
+	if repoName != "" && !repoNameRe.MatchString(repoName) {
+		return mcp.NewToolResultError("repo_name must match [a-zA-Z0-9_.-]{1,100}"), nil
+	}
 	p := gtd.CreateProjectParams{
 		Name:        name,
 		Title:       title,
 		Area:        area,
 		Description: stringArg(args, "description"),
 		Priority:    numberArg(args, "priority"),
+		RepoName:    repoName,
 	}
 	if raw := stringArg(args, "goal_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -167,6 +226,122 @@ func (s *Server) handleCreateProject(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError(fmt.Sprintf("creating project: %v", err)), nil
 	}
 	return jsonText(project)
+}
+
+func (s *Server) handleUpdateProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawID := stringArg(args, "project_id")
+	if rawID == "" {
+		return mcp.NewToolResultError("project_id is required"), nil
+	}
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		return mcp.NewToolResultError("invalid project_id UUID"), nil
+	}
+
+	// Load the existing project to fill omitted fields (preserve-on-omit semantics).
+	existing, err := s.gtd.GetProjectByID(ctx, id)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("project not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading project: %v", err)), nil
+	}
+
+	p, toolErr := buildUpdateProjectParams(args, existing)
+	if toolErr != "" {
+		return mcp.NewToolResultError(toolErr), nil
+	}
+
+	project, err := s.gtd.UpdateProject(ctx, id, p)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("project not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
+	}
+	return jsonText(project)
+}
+
+// buildUpdateProjectParams builds a gtd.UpdateProjectParams from MCP args,
+// filling omitted fields from the existing project row. Returns a non-empty
+// toolErr string on validation failure.
+func buildUpdateProjectParams(args map[string]any, existing *db.Project) (gtd.UpdateProjectParams, string) {
+	title := stringArg(args, "title")
+	if title == "" {
+		title = existing.Title
+	}
+	description := stringArg(args, "description")
+	if description == "" && existing.Description.Valid {
+		description = existing.Description.String
+	}
+	area := stringArg(args, "area")
+	if area == "" {
+		area = existing.Area
+	}
+	priority := int32(numberArg(args, "priority"))
+	if priority == 0 {
+		priority = existing.Priority
+	}
+
+	rawStatus := stringArg(args, "status")
+	status := gtd.ProjectStatus(rawStatus)
+	if rawStatus == "" {
+		status = gtd.ProjectStatus(existing.Status)
+	} else {
+		switch status {
+		case gtd.ProjectStatusActive, gtd.ProjectStatusCompleted, gtd.ProjectStatusArchived, gtd.ProjectStatusOnHold:
+		default:
+			return gtd.UpdateProjectParams{}, "status must be one of: active, completed, archived, on_hold"
+		}
+	}
+
+	p := gtd.UpdateProjectParams{
+		Title:       title,
+		Description: description,
+		Area:        area,
+		Priority:    priority,
+		Status:      status,
+	}
+
+	// goal_id: explicitly passed (even empty) → overwrite; absent → preserve.
+	if goalErr := resolveGoalID(args, existing, &p); goalErr != "" {
+		return gtd.UpdateProjectParams{}, goalErr
+	}
+
+	// repo_name: explicitly passed → overwrite (nil pointer = preserve existing).
+	if _, ok := args["repo_name"]; ok {
+		rn := stringArg(args, "repo_name")
+		if rn != "" && !repoNameRe.MatchString(rn) {
+			return gtd.UpdateProjectParams{}, "repo_name must match [a-zA-Z0-9_.-]{1,100}"
+		}
+		p.RepoName = &rn
+	}
+
+	return p, ""
+}
+
+// resolveGoalID applies goal_id from args to p, preserving the existing goal
+// when goal_id is absent. Returns a non-empty string on parse failure.
+func resolveGoalID(args map[string]any, existing *db.Project, p *gtd.UpdateProjectParams) string {
+	if _, ok := args["goal_id"]; ok {
+		rawGoal := stringArg(args, "goal_id")
+		if rawGoal == "" {
+			p.GoalID = nil // clear the link
+			return ""
+		}
+		gid, parseErr := uuid.Parse(rawGoal)
+		if parseErr != nil {
+			return "invalid goal_id UUID"
+		}
+		p.GoalID = &gid
+		return ""
+	}
+	if existing.GoalID.Valid {
+		gid := uuid.UUID(existing.GoalID.Bytes)
+		p.GoalID = &gid
+	}
+	return ""
 }
 
 func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -565,6 +740,147 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, req mcp.CallToolRequ
 		body = "No upcoming tasks found."
 	}
 	return mcp.NewToolResultText(header + body), nil
+}
+
+func (s *Server) handleChecklistAddItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawTaskID := stringArg(args, "task_id")
+	if rawTaskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	taskID, err := uuid.Parse(rawTaskID)
+	if err != nil {
+		return mcp.NewToolResultError("invalid task_id UUID"), nil
+	}
+
+	title := stringArg(args, "title")
+	if title == "" {
+		return mcp.NewToolResultError("title is required"), nil
+	}
+	title = sanitiseMCPText(title)
+	if title == "" {
+		return mcp.NewToolResultError("title must not be blank after sanitisation"), nil
+	}
+	if len([]rune(title)) > gtd.ChecklistMaxTitle {
+		return mcp.NewToolResultError("title exceeds 500 characters"), nil
+	}
+
+	fileRef := sanitiseMCPText(stringArg(args, "file_ref"))
+	notes := sanitiseMCPText(stringArg(args, "notes"))
+	if len([]rune(fileRef)) > gtd.ChecklistMaxText {
+		return mcp.NewToolResultError("file_ref exceeds 2000 characters"), nil
+	}
+	if len([]rune(notes)) > gtd.ChecklistMaxText {
+		return mcp.NewToolResultError("notes exceeds 2000 characters"), nil
+	}
+
+	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
+	item := gtd.ChecklistItem{
+		ID:        uuid.New(),
+		Title:     title,
+		FileRef:   fileRef,
+		Notes:     notes,
+		CreatedAt: s.now().UTC(),
+	}
+	items, err := s.gtd.AddChecklistItem(ctx, taskID, wsID, item)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("adding checklist item: %v", err)), nil
+	}
+	return jsonText(items)
+}
+
+func (s *Server) handleChecklistToggle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID, itemID, errMsg := parseChecklistIDs(args)
+	if errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
+	}
+
+	if _, ok := args["done"]; !ok {
+		return mcp.NewToolResultError("done is required"), nil
+	}
+	done := boolArg(args, "done")
+	evidenceURL := sanitiseMCPText(stringArg(args, "evidence_url"))
+	if len([]rune(evidenceURL)) > gtd.ChecklistMaxText {
+		return mcp.NewToolResultError("evidence_url exceeds 2000 characters"), nil
+	}
+
+	update := gtd.UpdateChecklistItemParams{Done: &done}
+	if evidenceURL != "" {
+		update.EvidenceURL = &evidenceURL
+	}
+
+	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
+	items, err := s.gtd.UpdateChecklistItem(ctx, taskID, wsID, itemID, update)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task or item not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("toggling checklist item: %v", err)), nil
+	}
+	return jsonText(items)
+}
+
+func (s *Server) handleChecklistComplete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID, itemID, errMsg := parseChecklistIDs(args)
+	if errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
+	}
+
+	done := true
+	update := gtd.UpdateChecklistItemParams{Done: &done}
+
+	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
+	items, err := s.gtd.UpdateChecklistItem(ctx, taskID, wsID, itemID, update)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task or item not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("completing checklist item: %v", err)), nil
+	}
+	return jsonText(items)
+}
+
+// parseChecklistIDs extracts and validates task_id and item_id from MCP args.
+// Returns zero UUIDs and a non-empty errMsg on validation failure.
+func parseChecklistIDs(args map[string]any) (taskID, itemID uuid.UUID, errMsg string) {
+	rawTask := stringArg(args, "task_id")
+	if rawTask == "" {
+		return uuid.UUID{}, uuid.UUID{}, "task_id is required"
+	}
+	var err error
+	taskID, err = uuid.Parse(rawTask)
+	if err != nil {
+		return uuid.UUID{}, uuid.UUID{}, "invalid task_id UUID"
+	}
+	rawItem := stringArg(args, "item_id")
+	if rawItem == "" {
+		return uuid.UUID{}, uuid.UUID{}, "item_id is required"
+	}
+	itemID, err = uuid.Parse(rawItem)
+	if err != nil {
+		return uuid.UUID{}, uuid.UUID{}, "invalid item_id UUID"
+	}
+	return taskID, itemID, ""
+}
+
+// sanitiseMCPText strips null bytes and control characters from LLM-emitted text.
+// MCP inputs are treated as hostile (adversarial LLM output).
+func sanitiseMCPText(s string) string {
+	return gtd.SanitiseChecklistText(s)
+}
+
+// workspaceUUIDFromPgtype converts a pgtype.UUID into a plain uuid.UUID.
+// Invalid (zero) pgtype.UUID → zero uuid.UUID (unscoped mode).
+func workspaceUUIDFromPgtype(pg pgtype.UUID) uuid.UUID {
+	if !pg.Valid {
+		return uuid.UUID{}
+	}
+	return uuid.UUID(pg.Bytes)
 }
 
 // renderUpcomingBuckets formats the 5 task buckets as plain text for MCP responses.

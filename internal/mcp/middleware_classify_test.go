@@ -198,6 +198,22 @@ func (m *mockClassifyGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) AddChecklistItem(
+	_ context.Context, _ uuid.UUID, _ uuid.UUID, _ gtd.ChecklistItem,
+) ([]gtd.ChecklistItem, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) UpdateChecklistItem(
+	_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID, _ gtd.UpdateChecklistItemParams,
+) ([]gtd.ChecklistItem, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID) error {
+	return errMockNotImpl
+}
+
 // TestMaybeClassifyToolCall_NilClassifier verifies that a nil classifier results in no-op.
 func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
 	g := &mockClassifyGTDStore{}

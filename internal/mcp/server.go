@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,6 +61,14 @@ type Server struct {
 	// atomizeSem limits concurrent background atomize goroutines to prevent
 	// API budget exhaustion from rapid add_* bursts. (security M4)
 	atomizeSem chan struct{}
+	// atomizeFn is the function called inside the semaphore-guarded goroutine.
+	// nil means use atomizeAndPersist (the production default). Tests replace
+	// this with a lightweight fake to verify semaphore enforcement without
+	// hitting real LLM/DB dependencies.
+	atomizeFn func(
+		ctx context.Context, atomizer *ai.Atomizer, store atom.StoreIface,
+		wsID *uuid.UUID, parentTable string, parentID uuid.UUID, text string,
+	)
 
 	// pg* are concrete pg-backed Stores (or nil under SQLite) used by
 	// acceptProposal to call WithTx(tx). Add new tx-typed code paths

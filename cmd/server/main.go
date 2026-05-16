@@ -224,6 +224,9 @@ func run() error {
 	api.PATCH("/tasks/:id", gtdH.UpdateTask, mutationRL)
 	api.PATCH("/tasks/:id/status", gtdH.UpdateTaskStatus, mutationRL)
 	api.PATCH("/tasks/:id/complete", gtdH.CompleteTask, mutationRL)
+	api.POST("/tasks/:id/checklist/items", gtdH.AddChecklistItem, mutationRL)
+	api.PATCH("/tasks/:id/checklist/items/:item_id", gtdH.UpdateChecklistItem, mutationRL)
+	api.DELETE("/tasks/:id/checklist/items/:item_id", gtdH.DeleteChecklistItem, mutationRL)
 
 	api.GET("/decisions", decH.ListDecisions)
 	api.POST("/decisions", decH.LogDecision, mutationRL)
