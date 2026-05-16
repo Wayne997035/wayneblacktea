@@ -200,7 +200,7 @@ tasks:
     cmds:
       # Build tag + no -short: runs testcontainers-based integration tests.
       # -p 1 avoids concurrent Ryuk/container startup races across packages.
-      - go test -tags integration -p 1 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -tags integration -p 2 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:
