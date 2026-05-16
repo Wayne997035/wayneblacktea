@@ -116,6 +116,9 @@ func run() error {
 		dashH.SetCandidateStore(cs)
 	}
 	dashH.SetHandoffStore(stores.Session())
+	if as := buildActivityStore(stores); as != nil {
+		dashH.SetActivityStore(as)
+	}
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
@@ -281,6 +284,7 @@ func run() error {
 	api.GET("/dashboard/upcoming-tasks", dashH.GetUpcomingTasks, dashboardRL)
 	api.GET("/dashboard/upcoming", dashH.GetUpcoming, dashboardRL)
 	api.GET("/dashboard/automation-health", dashH.GetAutomationHealth, dashboardRL)
+	api.GET("/dashboard/automation-feed", dashH.GetAutomationFeed, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
@@ -569,6 +573,21 @@ func buildCandidateStore(stores storage.ServerStores) completioncandidate.Store 
 	}
 	if pool := stores.PgxPool(); pool != nil {
 		return completioncandidate.NewPgStore(pool, stores.WorkspaceID())
+	}
+	return nil
+}
+
+// buildActivityStore returns a handler.dashboardActivityStore for the active
+// backend by type-asserting the GTD store. Both *gtd.Store and
+// *sqlite.GTDStore implement the three new activity methods; if neither
+// assertion succeeds the function returns nil (dashboard falls back to
+// omitting last_updated_at / automation-feed).
+func buildActivityStore(stores storage.ServerStores) handler.DashboardActivityStoreIface {
+	if s := stores.PgGTD(); s != nil {
+		return s
+	}
+	if s := stores.SqliteGTD(); s != nil {
+		return s
 	}
 	return nil
 }

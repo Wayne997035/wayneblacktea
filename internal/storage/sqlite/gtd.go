@@ -1186,6 +1186,117 @@ func (s *GTDStore) RecentActivityByProject(
 	return out, errWrap("RecentActivityByProject iter", rows.Err())
 }
 
+// LatestActivityAt returns the created_at of the most-recent activity_log row,
+// workspace-scoped, or nil if the table is empty. SQLite parity with gtd.Store.LatestActivityAt.
+func (s *GTDStore) LatestActivityAt(ctx context.Context) (*time.Time, error) {
+	const q = `SELECT created_at FROM activity_log
+		WHERE (?1 IS NULL OR workspace_id = ?1)
+		ORDER BY created_at DESC LIMIT 1`
+	var createdNS sql.NullString
+	row := s.db.conn.QueryRowContext(ctx, q, s.db.workspaceArg())
+	if err := row.Scan(&createdNS); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil //nolint:nilnil // sentinel: empty table is not an error; callers render null timestamp
+		}
+		return nil, errWrap("LatestActivityAt", err)
+	}
+	ts := parseTimestamptz(createdNS)
+	if !ts.Valid {
+		return nil, nil //nolint:nilnil // sentinel: NULL timestamp in DB is not an error
+	}
+	t := ts.Time.UTC()
+	return &t, nil
+}
+
+// sqliteAutomationActions is the set of action strings considered "automation"
+// for SQLite's ListRecentAutomation. Must stay in sync with gtd.automationActions.
+var sqliteAutomationActions = map[string]bool{
+	"task:begin":               true,
+	"task:completed":           true,
+	"task:updated":             true,
+	"task:added":               true,
+	"decision:logged":          true,
+	"plan:confirmed":           true,
+	"session:handoff":          true,
+	"worksession:started":      true,
+	"worksession:finished":     true,
+	"worksession:checkpointed": true,
+	"dashboard:reconciled":     true,
+}
+
+// ListRecentAutomation returns recent automation activity_log rows, filtered
+// Go-side by sqliteAutomationActions, workspace-scoped.
+// Query: WHERE created_at >= NOW()-7d ORDER BY created_at DESC LIMIT 200,
+// then filter in Go, then slice to limit.
+func (s *GTDStore) ListRecentAutomation(ctx context.Context, limit int32) ([]db.ActivityLog, error) {
+	since := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	sinceStr := since.Format("2006-01-02T15:04:05.000Z07:00")
+	const q = `SELECT id, workspace_id, actor, project_id, action, notes, created_at
+		FROM activity_log
+		WHERE created_at >= ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC
+		LIMIT 200`
+	rows, err := s.db.conn.QueryContext(ctx, q, sinceStr, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("ListRecentAutomation", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.ActivityLog
+	for rows.Next() {
+		var (
+			a                      db.ActivityLog
+			idStr                  string
+			workspaceNS, projectNS sql.NullString
+			notesNS, createdNS     sql.NullString
+		)
+		if err := rows.Scan(&idStr, &workspaceNS, &a.Actor, &projectNS, &a.Action, &notesNS, &createdNS); err != nil {
+			return nil, errWrap("ListRecentAutomation scan", err)
+		}
+		if id, err := uuid.Parse(idStr); err == nil {
+			a.ID = id
+		}
+		a.WorkspaceID = pgtypeUUID(nsString(workspaceNS))
+		a.ProjectID = pgtypeUUID(nsString(projectNS))
+		a.Notes = pgtypeText(notesNS.String, notesNS.Valid)
+		a.CreatedAt = parseTimestamptz(createdNS)
+		if sqliteAutomationActions[a.Action] {
+			out = append(out, a)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("ListRecentAutomation iter", err)
+	}
+	if len(out) > int(limit) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// LatestActionAt returns the created_at of the most-recent activity_log row
+// matching the given action, workspace-scoped, or nil if none found.
+// SQLite parity with gtd.Store.LatestActionAt.
+func (s *GTDStore) LatestActionAt(ctx context.Context, action string) (*time.Time, error) {
+	const q = `SELECT created_at FROM activity_log
+		WHERE action = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC LIMIT 1`
+	var createdNS sql.NullString
+	row := s.db.conn.QueryRowContext(ctx, q, action, s.db.workspaceArg())
+	if err := row.Scan(&createdNS); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil //nolint:nilnil // sentinel: no matching action row is not an error; callers render null timestamp
+		}
+		return nil, errWrap("LatestActionAt", err)
+	}
+	ts := parseTimestamptz(createdNS)
+	if !ts.Valid {
+		return nil, nil //nolint:nilnil // sentinel: NULL timestamp in DB is not an error
+	}
+	t := ts.Time.UTC()
+	return &t, nil
+}
+
 // WeeklyProgress returns completed-this-week and total-active counts.
 func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	// SQLite has no date_trunc; compute Monday 00:00 UTC of this week in Go.

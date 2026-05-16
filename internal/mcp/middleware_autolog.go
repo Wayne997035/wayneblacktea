@@ -153,6 +153,9 @@ func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bo
 	case "get_active_work":
 		return "", "", false // read-only: no audit log needed
 
+	case "reconcile_dashboard":
+		return "dashboard:reconciled", "", true
+
 	default:
 		return "", "", false
 	}

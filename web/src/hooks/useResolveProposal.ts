@@ -24,6 +24,8 @@ export function useResolveProposal() {
       void qc.invalidateQueries({ queryKey: ['proposals', 'pending'] })
       void qc.invalidateQueries({ queryKey: ['proposals', 'all'] })
       void qc.invalidateQueries({ queryKey: ['knowledge'] })
+      void qc.invalidateQueries({ queryKey: ['dashboard', 'stats'] })
+      void qc.invalidateQueries({ queryKey: ['dashboard', 'automation-feed'] })
     },
   })
 }

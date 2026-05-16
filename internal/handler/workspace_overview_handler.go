@@ -380,23 +380,4 @@ func appendActivityCapped(acc []recentActivityItem, rows []db.ActivityLog, max i
 	return acc
 }
 
-// classifyActivityKind maps a raw activity_log.action string to a stable
-// "kind" the frontend uses for colour coding via eventStyles.ts. Keep the
-// mapping conservative — anything we don't recognise falls back to the
-// neutral "activity" tier.
-func classifyActivityKind(action string) string {
-	switch action {
-	case "task_completed", "complete_task":
-		return "task_completed"
-	case "task_created", "add_task":
-		return "task_created"
-	case "log_decision", "decision":
-		return "decision"
-	case "set_session_handoff":
-		return "handoff_created"
-	case "resolve_handoff":
-		return "handoff_resolved"
-	default:
-		return "activity"
-	}
-}
+// classifyActivityKind is defined in activity.go (package-level).

@@ -17,6 +17,28 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// fakeDashboardActivityStore satisfies dashboardActivityStore (unexported; tested via exported handler).
+type fakeDashboardActivityStore struct {
+	latestAt          *time.Time
+	latestAtErr       error
+	feedRows          []db.ActivityLog
+	feedErr           error
+	latestActionAt    *time.Time
+	latestActionAtErr error
+}
+
+func (f *fakeDashboardActivityStore) LatestActivityAt(_ context.Context) (*time.Time, error) {
+	return f.latestAt, f.latestAtErr
+}
+
+func (f *fakeDashboardActivityStore) ListRecentAutomation(_ context.Context, _ int32) ([]db.ActivityLog, error) {
+	return f.feedRows, f.feedErr
+}
+
+func (f *fakeDashboardActivityStore) LatestActionAt(_ context.Context, _ string) (*time.Time, error) {
+	return f.latestActionAt, f.latestActionAtErr
+}
+
 // jsonNull is the JSON encoding of null, used by tests that assert a nil value
 // is serialised correctly across multiple test cases.
 const jsonNull = "null"
@@ -808,6 +830,180 @@ func TestDashboardHandler_GetUpcoming(t *testing.T) {
 			rec := performRequest(e, http.MethodGet, "/api/dashboard/upcoming", "")
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.checkBody != nil && rec.Code == http.StatusOK {
+				tc.checkBody(t, rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// ---- D9: GetStats_LastUpdatedAt ----
+
+func TestDashboardHandler_GetStats_LastUpdatedAt(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name          string
+		actStore      *fakeDashboardActivityStore
+		wantCode      int
+		wantHasField  bool
+		wantFieldNull bool
+	}{
+		{
+			name:         "activity rows exist — last_updated_at present",
+			actStore:     &fakeDashboardActivityStore{latestAt: &now},
+			wantCode:     http.StatusOK,
+			wantHasField: true,
+		},
+		{
+			name:         "empty activity log — last_updated_at absent",
+			actStore:     &fakeDashboardActivityStore{latestAt: nil},
+			wantCode:     http.StatusOK,
+			wantHasField: false,
+		},
+		{
+			name:         "activity store error — field absent, response still 200",
+			actStore:     &fakeDashboardActivityStore{latestAtErr: errors.New("db down")},
+			wantCode:     http.StatusOK,
+			wantHasField: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(
+				&fakeDashboardGTDStore{completed: 1, total: 2},
+				&fakeDashboardDecisionStore{list: []db.Decision{}},
+				&fakeDashboardProposalStore{list: []db.PendingProposal{}},
+			)
+			h.SetActivityStore(tc.actStore)
+			e.GET("/api/dashboard/stats", h.GetStats)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/stats", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("status: got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+				return
+			}
+			var resp map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			_, hasField := resp["last_updated_at"]
+			if tc.wantHasField && !hasField {
+				t.Error("expected last_updated_at field in response, got none")
+			}
+			if !tc.wantHasField && hasField {
+				t.Errorf("expected last_updated_at absent, got: %s", resp["last_updated_at"])
+			}
+		})
+	}
+}
+
+// ---- D10: GetAutomationFeed ----
+
+func TestDashboardHandler_GetAutomationFeed(t *testing.T) {
+	now := time.Now().UTC()
+	actID := uuid.New()
+	rows := []db.ActivityLog{
+		{
+			ID:        actID,
+			Action:    "task:completed",
+			Notes:     pgtype.Text{String: "task_id=abc", Valid: true},
+			CreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		},
+	}
+
+	cases := []struct {
+		name      string
+		query     string
+		actStore  *fakeDashboardActivityStore
+		wantCode  int
+		checkBody func(t *testing.T, body []byte)
+	}{
+		{
+			name:     "happy path — one row returned",
+			query:    "",
+			actStore: &fakeDashboardActivityStore{feedRows: rows},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp map[string]json.RawMessage
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				if _, ok := resp["feed"]; !ok {
+					t.Error("missing key 'feed'")
+				}
+				if _, ok := resp["fetched_at"]; !ok {
+					t.Error("missing key 'fetched_at'")
+				}
+				var feed []map[string]json.RawMessage
+				if err := json.Unmarshal(resp["feed"], &feed); err != nil {
+					t.Fatalf("feed is not array: %v", err)
+				}
+				if len(feed) != 1 {
+					t.Errorf("expected 1 feed item, got %d", len(feed))
+				}
+				for _, key := range []string{"id", "action", "kind", "occurred_at"} {
+					if _, ok := feed[0][key]; !ok {
+						t.Errorf("feed item missing key %q", key)
+					}
+				}
+			},
+		},
+		{
+			name:     "empty activity log — empty feed array",
+			query:    "",
+			actStore: &fakeDashboardActivityStore{feedRows: nil},
+			wantCode: http.StatusOK,
+			checkBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				var resp map[string]json.RawMessage
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				var feed []json.RawMessage
+				if err := json.Unmarshal(resp["feed"], &feed); err != nil {
+					t.Fatalf("feed is not array: %v", err)
+				}
+				if len(feed) != 0 {
+					t.Errorf("expected empty feed, got %d items", len(feed))
+				}
+			},
+		},
+		{
+			name:     "limit=0 → 400 Bad Request",
+			query:    "?limit=0",
+			actStore: &fakeDashboardActivityStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "limit=51 → 400 Bad Request",
+			query:    "?limit=51",
+			actStore: &fakeDashboardActivityStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "store error → 500",
+			query:    "",
+			actStore: &fakeDashboardActivityStore{feedErr: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(
+				&fakeDashboardGTDStore{},
+				&fakeDashboardDecisionStore{},
+				&fakeDashboardProposalStore{},
+			)
+			h.SetActivityStore(tc.actStore)
+			e.GET("/api/dashboard/automation-feed", h.GetAutomationFeed)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/automation-feed"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("status: got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
 			if tc.checkBody != nil && rec.Code == http.StatusOK {
 				tc.checkBody(t, rec.Body.Bytes())

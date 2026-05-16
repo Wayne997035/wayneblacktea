@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useContextToday } from '../hooks/useContextToday'
 import { useApiPing } from '../hooks/useApiPing'
 import { useDashboardStats } from '../hooks/useDashboardStats'
+import { useAutomationHealth } from '../hooks/useAutomationHealth'
 import { ProjectCard } from '../components/dashboard/ProjectCard'
 import { GoalProgress } from '../components/dashboard/GoalProgress'
 import { HandoffCard } from '../components/dashboard/HandoffCard'
@@ -15,6 +16,8 @@ import { RecentDecisionsCard } from '../components/dashboard/RecentDecisionsCard
 import { PendingProposalsCard } from '../components/dashboard/PendingProposalsCard'
 import { DueReviewsCard } from '../components/dashboard/DueReviewsCard'
 import { RecentKnowledgeCard } from '../components/dashboard/RecentKnowledgeCard'
+import { RecentAutomationFeedCard } from '../components/dashboard/RecentAutomationFeedCard'
+import { StaleBadge } from '../components/ui/StaleBadge'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
@@ -42,6 +45,7 @@ export function DashboardPage() {
   const { data, isLoading, isError } = useContextToday()
   const pingQuery = useApiPing()
   const statsQuery = useDashboardStats()
+  const healthQuery = useAutomationHealth()
 
   const activeProjects = (data?.projects ?? [])
     .filter((p) => p.status === 'active')
@@ -53,9 +57,12 @@ export function DashboardPage() {
     <div className="p-6 max-w-[1200px] mx-auto">
       {/* Greeting row */}
       <div className="flex items-center justify-between py-3 mb-6">
-        <h1 className="text-section" style={{ color: 'var(--color-text-primary)' }}>
-          {t(getGreetingKey())}
-        </h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-section" style={{ color: 'var(--color-text-primary)' }}>
+            {t(getGreetingKey())}
+          </h1>
+          <StaleBadge stale={healthQuery.data?.stale_badge ?? false} />
+        </div>
         <span className="text-body" style={{ color: 'var(--color-text-muted)' }}>
           {formatDate(new Date())}
         </span>
@@ -172,6 +179,11 @@ export function DashboardPage() {
           {/* D4: Due Reviews */}
           <section>
             <DueReviewsCard onClick={() => navigate('/reviews')} />
+          </section>
+
+          {/* D6: Recent MCP Automation Feed */}
+          <section>
+            <RecentAutomationFeedCard />
           </section>
 
           {/* D5: Recent Knowledge */}
