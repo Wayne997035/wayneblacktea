@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -451,13 +452,28 @@ func (s *Store) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UU
 	}()
 
 	qtx := s.q.WithTx(tx)
-	task, err := qtx.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+	// Use BeginTaskStatus (AND status != 'in_progress' guard) to prevent
+	// duplicate activity_log rows when two concurrent calls race.
+	// ErrNoRows here means either not found OR already in_progress.
+	task, err := qtx.BeginTaskStatus(ctx, db.BeginTaskStatusParams{
 		ID:          id,
-		Status:      "in_progress",
-		WorkspaceID: s.workspaceID,
+		WorkspaceID: uuid.UUID(s.workspaceID.Bytes),
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Distinguish "already in_progress" (idempotent) from "not found".
+			reread, re := s.getTaskByID(ctx, id)
+			if re != nil {
+				return nil, re // ErrNotFound
+			}
+			if reread.Status == "in_progress" {
+				// Idempotent: commit empty tx, return existing row without logging.
+				if ce := tx.Commit(ctx); ce != nil {
+					return nil, fmt.Errorf("begin task %s: commit: %w", id, ce)
+				}
+				committed = true
+				return reread, nil
+			}
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("begin task %s: update status: %w", id, err)
@@ -466,7 +482,7 @@ func (s *Store) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UU
 	_, err = qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       "system",
 		Action:      "work_session_started",
-		Notes:       toText("task: " + task.Title),
+		Notes:       toText(sanitize.Notes("task: " + task.Title)),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {

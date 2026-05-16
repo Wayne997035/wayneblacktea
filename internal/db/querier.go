@@ -11,6 +11,10 @@ import (
 )
 
 type Querier interface {
+	// Atomically sets status to in_progress only when the current status is not
+	// already in_progress, preventing duplicate activity_log rows on concurrent calls.
+	// Returns pgx.ErrNoRows when the task is already in_progress or not found.
+	BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams) (Task, error)
 	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
 	CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { UpcomingNearTermCard, formatDueDate } from './UpcomingNearTermCard'
+import { UpcomingNearTermCard } from './UpcomingNearTermCard'
+import { formatDueDate } from '../../utils/dateFormat'
 
 vi.mock('../../hooks/useDashboardUpcoming', () => ({
   useDashboardUpcoming: vi.fn(),
@@ -62,7 +63,7 @@ describe('formatDueDate', () => {
 
 describe('UpcomingNearTermCard', () => {
   it('renders loading skeletons when isLoading is true', () => {
-    mockUseUpcoming.mockReturnValue({ data: undefined, isLoading: true } as ReturnType<typeof useDashboardUpcoming>)
+    mockUseUpcoming.mockReturnValue({ data: undefined, isLoading: true } as unknown as ReturnType<typeof useDashboardUpcoming>)
     const { container } = renderCard()
     // Loading state renders LoadingSkeleton divs (no role=list)
     expect(container.querySelector('[role="list"]')).toBeNull()
@@ -70,7 +71,7 @@ describe('UpcomingNearTermCard', () => {
   })
 
   it('renders empty state when data is an empty array', () => {
-    mockUseUpcoming.mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof useDashboardUpcoming>)
+    mockUseUpcoming.mockReturnValue({ data: [], isLoading: false } as unknown as ReturnType<typeof useDashboardUpcoming>)
     renderCard()
     expect(screen.queryByRole('list')).toBeNull()
     // EmptyState renders the noNearTermTasks message key
@@ -84,7 +85,7 @@ describe('UpcomingNearTermCard', () => {
       { id: 'task-1', title: 'Ship MCP-3 vagueness', due_date: tomorrow.toISOString(), status: 'in_progress', priority: 1 },
       { id: 'task-2', title: 'Review PR #109', due_date: tomorrow.toISOString(), status: 'pending', priority: 2 },
     ]
-    mockUseUpcoming.mockReturnValue({ data: tasks, isLoading: false } as ReturnType<typeof useDashboardUpcoming>)
+    mockUseUpcoming.mockReturnValue({ data: tasks, isLoading: false } as unknown as ReturnType<typeof useDashboardUpcoming>)
     renderCard()
 
     expect(screen.getByRole('list')).toBeInTheDocument()
@@ -103,7 +104,7 @@ describe('UpcomingNearTermCard', () => {
       status: 'pending',
       priority: i + 1,
     }))
-    mockUseUpcoming.mockReturnValue({ data: tasks, isLoading: false } as ReturnType<typeof useDashboardUpcoming>)
+    mockUseUpcoming.mockReturnValue({ data: tasks, isLoading: false } as unknown as ReturnType<typeof useDashboardUpcoming>)
     renderCard()
 
     const items = screen.getAllByRole('listitem')
@@ -111,7 +112,7 @@ describe('UpcomingNearTermCard', () => {
   })
 
   it('handles null/undefined data gracefully (data ?? [] guard)', () => {
-    mockUseUpcoming.mockReturnValue({ data: undefined, isLoading: false } as ReturnType<typeof useDashboardUpcoming>)
+    mockUseUpcoming.mockReturnValue({ data: undefined, isLoading: false } as unknown as ReturnType<typeof useDashboardUpcoming>)
     renderCard()
     // data ?? [] → tasks = [] → empty state, no crash
     expect(screen.getByText('No tasks due in the next 7 days')).toBeInTheDocument()
@@ -123,7 +124,7 @@ describe('UpcomingNearTermCard', () => {
     const tasks = [
       { id: 'abc-123', title: 'Fix login', due_date: tomorrow.toISOString(), status: 'pending', priority: 1 },
     ]
-    mockUseUpcoming.mockReturnValue({ data: tasks, isLoading: false } as ReturnType<typeof useDashboardUpcoming>)
+    mockUseUpcoming.mockReturnValue({ data: tasks, isLoading: false } as unknown as ReturnType<typeof useDashboardUpcoming>)
     renderCard()
 
     const link = screen.getByText('Fix login').closest('a')

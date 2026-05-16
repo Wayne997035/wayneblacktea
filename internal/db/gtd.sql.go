@@ -12,6 +12,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const beginTaskStatus = `-- name: BeginTaskStatus :one
+UPDATE tasks SET status = 'in_progress', updated_at = NOW()
+WHERE id = $1::uuid
+  AND workspace_id = $2::uuid
+  AND status != 'in_progress'
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind
+`
+
+type BeginTaskStatusParams struct {
+	ID          uuid.UUID `json:"id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+}
+
+// Atomically sets status to in_progress only when the current status is not
+// already in_progress, preventing duplicate activity_log rows on concurrent calls.
+// Returns pgx.ErrNoRows when the task is already in_progress or not found.
+func (q *Queries) BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams) (Task, error) {
+	row := q.db.QueryRow(ctx, beginTaskStatus, arg.ID, arg.WorkspaceID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.Assignee,
+		&i.DueDate,
+		&i.Artifact,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
+		&i.Checklist,
+		&i.Kind,
+	)
+	return i, err
+}
+
 const completeTask = `-- name: CompleteTask :one
 UPDATE tasks SET status = 'completed', artifact = $1, updated_at = NOW()
 WHERE id = $2

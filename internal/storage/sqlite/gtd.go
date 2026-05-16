@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -777,7 +778,7 @@ func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
 		 VALUES (?1, ?2, 'system', NULL, 'work_session_started', ?3)`,
-		uuid.New().String(), s.db.workspaceArg(), "task: "+existing.Title,
+		uuid.New().String(), s.db.workspaceArg(), sanitize.Notes("task: "+existing.Title),
 	)
 	if err != nil {
 		return nil, errWrap("BeginTask log activity", err)

@@ -410,7 +410,7 @@ func (h *DashboardHandler) GetUpcoming(c echo.Context) error {
 	tasks, err := h.gtd.TasksByDueDateRange(ctx, now, now.AddDate(0, 0, 7))
 	if err != nil {
 		c.Logger().Errorf("GetUpcoming: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "internal server error")
 	}
 	if tasks == nil {
 		tasks = []db.Task{}

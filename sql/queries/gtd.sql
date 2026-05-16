@@ -94,6 +94,16 @@ WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 RETURNING *;
 
+-- name: BeginTaskStatus :one
+-- Atomically sets status to in_progress only when the current status is not
+-- already in_progress, preventing duplicate activity_log rows on concurrent calls.
+-- Returns pgx.ErrNoRows when the task is already in_progress or not found.
+UPDATE tasks SET status = 'in_progress', updated_at = NOW()
+WHERE id = sqlc.arg('id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND status != 'in_progress'
+RETURNING *;
+
 -- name: CountTotalActiveTasks :one
 SELECT COUNT(*) FROM tasks
 WHERE status IN ('pending', 'in_progress')

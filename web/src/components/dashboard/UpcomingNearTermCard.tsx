@@ -5,22 +5,9 @@ import { useTranslation } from 'react-i18next'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { useDashboardUpcoming, type UpcomingTask } from '../../hooks/useDashboardUpcoming'
+import { formatDueDate } from '../../utils/dateFormat'
 
 const MAX_TASKS = 5
-
-export function formatDueDate(due: string): string {
-  const date = new Date(due)
-  const now = new Date()
-
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-
-  const diff = dateStart.getTime() - todayStart.getTime()
-
-  if (diff === 0) return 'Today'
-  if (diff === 86_400_000) return 'Tomorrow'
-  return date.toLocaleDateString('en', { month: 'short', day: 'numeric' })
-}
 
 interface TaskRowProps {
   task: UpcomingTask

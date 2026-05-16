@@ -1,46 +1,52 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import React from 'react'
+import { useDashboardUpcoming } from './useDashboardUpcoming'
 
-// useDashboardUpcoming is a thin useQuery wrapper; we verify it calls the
-// correct API path so a URL typo would be caught without spinning up a server.
 const apiFetchMock = vi.fn()
 vi.mock('../lib/api', () => ({
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }))
 
+function makeWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const Wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(QueryClientProvider, { client: queryClient }, children)
+  return Wrapper
+}
+
 describe('useDashboardUpcoming', () => {
-  it('is importable and exports UpcomingTask type', async () => {
-    // Verify the module exports without error and exposes the hook function.
-    const mod = await import('./useDashboardUpcoming')
-    expect(typeof mod.useDashboardUpcoming).toBe('function')
+  beforeEach(() => {
+    apiFetchMock.mockReset()
   })
 
-  it('calls /api/dashboard/upcoming via apiFetch when queryFn is invoked', async () => {
-    // Extract the queryFn by introspecting useQuery's config through the hook.
-    // We mock @tanstack/react-query so we can capture the options object.
-    const capturedOpts = { current: null as unknown }
-    vi.doMock('@tanstack/react-query', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('@tanstack/react-query')>()
-      return {
-        ...actual,
-        useQuery: (opts: unknown) => {
-          capturedOpts.current = opts
-          return { data: undefined, isLoading: false }
-        },
-      }
-    })
+  it('is importable and exports useDashboardUpcoming function', () => {
+    expect(typeof useDashboardUpcoming).toBe('function')
+  })
 
-    // Re-import after mocking to get the patched version.
-    const { useDashboardUpcoming } = await import('./useDashboardUpcoming?test-hook')
-    useDashboardUpcoming()
+  it('calls /api/dashboard/upcoming and returns data', async () => {
+    const tomorrow = new Date()
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    const tasks = [
+      { id: 'task-1', title: 'Test task', due_date: tomorrow.toISOString(), status: 'pending', priority: 1 },
+    ]
+    apiFetchMock.mockResolvedValueOnce(tasks)
 
-    const opts = capturedOpts.current as { queryKey: string[]; staleTime: number; queryFn: () => Promise<unknown> }
-    expect(opts.queryKey).toEqual(['dashboard', 'upcoming'])
-    expect(opts.staleTime).toBe(30_000)
+    const { result } = renderHook(() => useDashboardUpcoming(), { wrapper: makeWrapper() })
 
-    apiFetchMock.mockResolvedValueOnce([])
-    await opts.queryFn()
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
     expect(apiFetchMock).toHaveBeenCalledWith('/api/dashboard/upcoming')
+    expect(result.current.data).toEqual(tasks)
+  })
 
-    vi.doUnmock('@tanstack/react-query')
+  it('returns isLoading true while fetching', () => {
+    apiFetchMock.mockReturnValueOnce(new Promise(() => {}))
+
+    const { result } = renderHook(() => useDashboardUpcoming(), { wrapper: makeWrapper() })
+
+    expect(result.current.isLoading).toBe(true)
   })
 })

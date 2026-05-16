@@ -298,15 +298,12 @@ func TestGTDHandler_CreateTask(t *testing.T) {
 	dueTime, _ := time.Parse(time.RFC3339, dueStr)
 
 	cases := []struct {
-		name              string
-		body              string
-		store             *fakeGTDStore
-		wantCode          int
-		checkDueDate      bool
-		expectDueDate     bool
-		strictEnv         bool
-		checkWarnings     bool
-		wantWarningsEmpty bool
+		name          string
+		body          string
+		store         *fakeGTDStore
+		wantCode      int
+		checkDueDate  bool
+		expectDueDate bool
 	}{
 		{
 			name:          "with due_date → persisted",
@@ -342,45 +339,10 @@ func TestGTDHandler_CreateTask(t *testing.T) {
 			store:    &fakeGTDStore{err: errors.New("db write fail")},
 			wantCode: http.StatusInternalServerError,
 		},
-		{
-			name:     "invalid kind → 400",
-			body:     `{"title":"Fix login","kind":"unknown-kind"}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			// strict mode: vague description blocks the request with 400
-			name:      "strict mode + vague description → 400",
-			body:      `{"title":"Fix login","description":"TBD","kind":"general"}`,
-			store:     &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Fix login"}},
-			wantCode:  http.StatusBadRequest,
-			strictEnv: true,
-		},
-		{
-			// warn mode (default): vague description proceeds with X-Vagueness-Warnings header
-			name:          "warn mode + vague description → 201 with warnings header",
-			body:          `{"title":"Fix login","description":"TBD","kind":"general"}`,
-			store:         &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Fix login"}},
-			wantCode:      http.StatusCreated,
-			checkWarnings: true,
-		},
-		{
-			// chore kind bypasses all vagueness checks even when strict mode is active
-			name:              "chore + TBD description → 201 (bypass)",
-			body:              `{"title":"Cleanup temp files","description":"TBD","kind":"chore"}`,
-			store:             &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Cleanup temp files"}},
-			wantCode:          http.StatusCreated,
-			strictEnv:         true,
-			checkWarnings:     true,
-			wantWarningsEmpty: true,
-		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.strictEnv {
-				t.Setenv("WBT_STRICT_VAGUENESS", "true")
-			}
 			e := newEcho()
 			h := handler.NewGTDHandler(tc.store)
 			e.POST("/api/tasks", h.CreateTask)
@@ -401,17 +363,76 @@ func TestGTDHandler_CreateTask(t *testing.T) {
 					}
 				}
 			}
-			if tc.checkWarnings {
-				hdr := rec.Header().Get("X-Vagueness-Warnings")
-				if tc.wantWarningsEmpty {
-					if hdr != "" {
-						t.Errorf("expected no X-Vagueness-Warnings header, got: %s", hdr)
-					}
-				} else {
-					if hdr == "" {
-						t.Errorf("expected X-Vagueness-Warnings header to be set, got empty")
-					}
-				}
+		})
+	}
+}
+
+// TestGTDHandler_CreateTask_Validation covers the vagueness/kind validation paths
+// added in MCP-3 sprint. Split from TestGTDHandler_CreateTask to keep cyclomatic
+// complexity below the gocyclo threshold.
+func TestGTDHandler_CreateTask_Validation(t *testing.T) {
+	taskID := uuid.New()
+
+	cases := []struct {
+		name              string
+		body              string
+		store             *fakeGTDStore
+		wantCode          int
+		strictEnv         bool
+		wantWarningsSet   bool
+		wantWarningsEmpty bool
+	}{
+		{
+			name:     "invalid kind → 400",
+			body:     `{"title":"Fix login","kind":"unknown-kind"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			// strict mode: vague description blocks the request with 400
+			name:      "strict mode + vague description → 400",
+			body:      `{"title":"Fix login","description":"TBD","kind":"general"}`,
+			store:     &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Fix login"}},
+			wantCode:  http.StatusBadRequest,
+			strictEnv: true,
+		},
+		{
+			// warn mode (default): vague description proceeds with X-Vagueness-Warnings header
+			name:            "warn mode + vague description → 201 with warnings header",
+			body:            `{"title":"Fix login","description":"TBD","kind":"general"}`,
+			store:           &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Fix login"}},
+			wantCode:        http.StatusCreated,
+			wantWarningsSet: true,
+		},
+		{
+			// chore kind bypasses all vagueness checks even when strict mode is active
+			name:              "chore + TBD description → 201 (bypass)",
+			body:              `{"title":"Cleanup temp files","description":"TBD","kind":"chore"}`,
+			store:             &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Cleanup temp files"}},
+			wantCode:          http.StatusCreated,
+			strictEnv:         true,
+			wantWarningsEmpty: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.strictEnv {
+				t.Setenv("WBT_STRICT_VAGUENESS", "true")
+			}
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.POST("/api/tasks", h.CreateTask)
+			rec := performRequest(e, http.MethodPost, "/api/tasks", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			hdr := rec.Header().Get("X-Vagueness-Warnings")
+			if tc.wantWarningsSet && hdr == "" {
+				t.Error("expected X-Vagueness-Warnings header to be set, got empty")
+			}
+			if tc.wantWarningsEmpty && hdr != "" {
+				t.Errorf("expected no X-Vagueness-Warnings header, got: %s", hdr)
 			}
 		})
 	}
