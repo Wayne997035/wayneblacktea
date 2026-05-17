@@ -105,7 +105,6 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 	return testPgPool
 }
 
-
 // TestStore_AddAtom verifies happy path and edge cases of AddAtom.
 func TestStore_AddAtom(t *testing.T) {
 	pool := openTestPgPool(t)
