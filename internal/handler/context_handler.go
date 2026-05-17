@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/labstack/echo/v4"
 )
 
@@ -43,11 +46,50 @@ type latestStatusSnapshotResponse struct {
 	SotaCatchupPct int    `json:"sota_catchup_pct"`
 }
 
+// pendingHandoffHTTPView is the JSON-friendly view of a session handoff returned
+// in GET /api/context/today. next_actions is decoded from raw bytes to a typed
+// slice so callers see a JSON array, not a base64-encoded string.
+type pendingHandoffHTTPView struct {
+	ID             uuid.UUID            `json:"id"`
+	ProjectID      pgtype.UUID          `json:"project_id"`
+	RepoName       pgtype.Text          `json:"repo_name"`
+	Intent         string               `json:"intent"`
+	ContextSummary pgtype.Text          `json:"context_summary"`
+	ResolvedAt     pgtype.Timestamptz   `json:"resolved_at"`
+	CreatedAt      pgtype.Timestamptz   `json:"created_at"`
+	WorkspaceID    pgtype.UUID          `json:"workspace_id"`
+	NextActions    []session.NextAction `json:"next_actions"`
+}
+
+func buildPendingHandoffHTTPView(h *db.SessionHandoff) *pendingHandoffHTTPView {
+	if h == nil {
+		return nil
+	}
+	v := &pendingHandoffHTTPView{
+		ID:             h.ID,
+		ProjectID:      h.ProjectID,
+		RepoName:       h.RepoName,
+		Intent:         h.Intent,
+		ContextSummary: h.ContextSummary,
+		ResolvedAt:     h.ResolvedAt,
+		CreatedAt:      h.CreatedAt,
+		WorkspaceID:    h.WorkspaceID,
+		NextActions:    []session.NextAction{},
+	}
+	if len(h.NextActions) > 0 && string(h.NextActions) != "[]" {
+		var actions []session.NextAction
+		if err := json.Unmarshal(h.NextActions, &actions); err == nil {
+			v.NextActions = actions
+		}
+	}
+	return v
+}
+
 type todayContextResponse struct {
 	Goals                []db.Goal                     `json:"goals"`
 	Projects             []db.Project                  `json:"projects"`
 	WeeklyProgress       weeklyProgressResponse        `json:"weekly_progress"`
-	PendingHandoff       *db.SessionHandoff            `json:"pending_handoff"`
+	PendingHandoff       *pendingHandoffHTTPView       `json:"pending_handoff"`
 	LatestStatusSnapshot *latestStatusSnapshotResponse `json:"latest_status_snapshot,omitempty"`
 }
 
@@ -102,7 +144,7 @@ func (h *ContextHandler) GetTodayContext(c echo.Context) error {
 			Completed: completed,
 			Total:     total,
 		},
-		PendingHandoff:       handoff,
+		PendingHandoff:       buildPendingHandoffHTTPView(handoff),
 		LatestStatusSnapshot: latestSnap,
 	})
 }
