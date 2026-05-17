@@ -1081,7 +1081,7 @@ func TestGTDHandler_UpdateTask(t *testing.T) {
 		{
 			name:     "branch_name too long → 400",
 			paramID:  id.String(),
-			body:     `{"branch_name":"` + string(make([]byte, 256)) + `"}`,
+			body:     `{"branch_name":"` + strings.Repeat("a", 256) + `"}`,
 			store:    &fakeGTDStore{},
 			wantCode: http.StatusBadRequest,
 		},
@@ -1096,6 +1096,13 @@ func TestGTDHandler_UpdateTask(t *testing.T) {
 			name:     "branch_name with DEL (0x7F) → 400",
 			paramID:  id.String(),
 			body:     "{\"branch_name\":\"feature/bad\x7fname\"}",
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "branch_name with U+200B zero-width space → 400",
+			paramID:  id.String(),
+			body:     "{\"branch_name\":\"feature/bad\u200bname\"}",
 			store:    &fakeGTDStore{},
 			wantCode: http.StatusBadRequest,
 		},
