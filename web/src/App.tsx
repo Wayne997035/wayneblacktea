@@ -11,6 +11,7 @@ import { ProjectDetailPage } from './pages/ProjectDetailPage'
 import { RepoDetailPage } from './pages/RepoDetailPage'
 import { LearningHistoryPage } from './pages/LearningHistoryPage'
 import { CalendarPage } from './pages/CalendarPage'
+import { ProposalsPage } from './pages/ProposalsPage'
 import { LoginPage } from './pages/LoginPage'
 import { useAuthStore } from './stores/authStore'
 import { apiFetch } from './lib/api'
@@ -30,6 +31,7 @@ const router = createBrowserRouter([
       { path: 'reviews', element: <ReviewsPage /> },
       { path: 'learning/history', element: <LearningHistoryPage /> },
       { path: 'calendar', element: <CalendarPage /> },
+      { path: 'proposals', element: <ProposalsPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },
