@@ -14,18 +14,10 @@ tasks:
       - task: check
 
   check:
-    desc: "Quality gate (< 5 min target) — lint + unit tests + frontend + vuln in parallel. No testcontainers. Use check-full for integration."
+    desc: "Full quality gate — lint + unit tests + integration tests + frontend + vuln, all in parallel after mod-tidy"
     cmds:
       - task: mod-tidy
       - task: _check-parallel
-      - task: build-all
-    silent: false
-
-  check-full:
-    desc: "Full gate including testcontainers integration tests — use in CI and before release"
-    cmds:
-      - task: mod-tidy
-      - task: _check-full-parallel
       - task: build-all
     silent: false
 
@@ -45,14 +37,6 @@ tasks:
     silent: false
 
   _check-parallel:
-    internal: true
-    deps:
-      - frontend-check
-      - vuln
-      - lint
-      - test
-
-  _check-full-parallel:
     internal: true
     deps:
       - frontend-check

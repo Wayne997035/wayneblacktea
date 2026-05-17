@@ -2,7 +2,10 @@ package worksession_test
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
@@ -11,18 +14,21 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// openTestPgPool starts a throwaway Postgres container and returns a
-// pgxpool connected to it. The container and pool are cleaned up via t.Cleanup.
-//
-// Skip with -short flag: testcontainers requires Docker and adds ~5-10 s.
-func openTestPgPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
-	}
+var testPgPool *pgxpool.Pool
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx,
+	// postgres:16-alpine is intentional — worksession uses minimal DDL,
+	// not the full migration stack (no pgvector extension needed).
+	c, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -30,33 +36,42 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		log.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
+	defer func() { _ = c.Terminate(ctx) }()
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("get connection string: %v", err)
+		log.Printf("get connection string: %v", err)
+		return 1
 	}
-
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		log.Printf("pgxpool.New: %v", err)
+		return 1
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 
 	// Apply the work_sessions and work_session_tasks DDL directly.
 	// We skip the full migration stack to keep test startup fast; only the
 	// tables under test are needed.
 	if err := applyWorkSessionSchema(ctx, pool); err != nil {
-		t.Fatalf("apply schema: %v", err)
+		log.Printf("apply schema: %v", err)
+		return 1
 	}
 
-	return pool
+	testPgPool = pool
+	return m.Run()
+}
+
+// openTestPgPool returns the package-level singleton pool initialised in TestMain.
+// Skip with -short flag: testcontainers requires Docker and adds ~5-10 s.
+func openTestPgPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
+	}
+	return testPgPool
 }
 
 // applyWorkSessionSchema creates the minimal schema required by worksession.Store.

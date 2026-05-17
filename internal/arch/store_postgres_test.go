@@ -5,7 +5,10 @@ package arch_test
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -20,10 +23,19 @@ var archSkipMigrations = map[string]bool{
 	"000011_backfill_workspace_id.up.sql": true,
 }
 
-func openArchTestPgPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
+var testPgPool *pgxpool.Pool
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_arch_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -31,33 +43,32 @@ func openArchTestPgPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		log.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
+	defer func() { _ = c.Terminate(ctx) }()
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("get connection string: %v", err)
+		log.Printf("get connection string: %v", err)
+		return 1
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		log.Printf("pgxpool.New: %v", err)
+		return 1
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 
-	applyArchUpMigrations(t, ctx, pool)
-	return pool
+	applyArchUpMigrationsOnce(ctx, pool)
+
+	testPgPool = pool
+	return m.Run()
 }
 
-func applyArchUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
+func applyArchUpMigrationsOnce(ctx context.Context, pool *pgxpool.Pool) {
 	entries, err := migrationfs.FS.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read embedded migrations dir: %v", err)
+		log.Fatalf("read embedded migrations dir: %v", err)
 	}
 	var ups []string
 	for _, e := range entries {
@@ -71,17 +82,25 @@ func applyArchUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 
 	for _, name := range ups {
 		if archSkipMigrations[name] {
-			t.Logf("applyArchUpMigrations: skipping %s", name)
+			log.Printf("applyArchUpMigrations: skipping %s", name)
 			continue
 		}
 		body, err := migrationfs.FS.ReadFile(name)
 		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+			log.Fatalf("read %s: %v", name, err)
 		}
 		if _, err := pool.Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
+			log.Fatalf("apply %s: %v", name, err)
 		}
 	}
+}
+
+func openArchTestPgPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
+	}
+	return testPgPool
 }
 
 func TestStorePostgres_UpsertAndGet(t *testing.T) {

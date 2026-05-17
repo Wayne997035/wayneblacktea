@@ -3,6 +3,8 @@ package guard
 import (
 	"context"
 	"encoding/json"
+	"flag"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,42 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
+
+// testContainerDSN is the DSN of the shared Postgres container started in TestMain.
+// Tests that need a fresh pool (e.g. TestIntegration_FailOpenOnPoolClosed) create
+// their own pool from this DSN without starting a new container.
+var testContainerDSN string
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
+	ctx := context.Background()
+	c, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("testguard"),
+		tcpostgres.WithUsername("testuser"),
+		tcpostgres.WithPassword("testpass"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		log.Fatalf("start postgres container: %v", err)
+	}
+	defer func() { _ = c.Terminate(ctx) }()
+
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		log.Printf("get connection string: %v", err)
+		return 1
+	}
+	testContainerDSN = dsn
+	return m.Run()
+}
 
 // migrationsDir resolves to the repo's migrations/ directory.
 //
@@ -47,6 +85,7 @@ func readMigration(t *testing.T, name string) string {
 // startPostgresContainer launches a throwaway Postgres container with
 // BasicWaitStrategies so pgx connects only after the server is ready.
 // Returns the connection DSN and registers cleanup on t.
+// Used only by tests that require a dedicated container (e.g. down-migration test).
 func startPostgresContainer(t *testing.T, dbName string) string {
 	t.Helper()
 	if testing.Short() {
@@ -108,14 +147,18 @@ func applyDownMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 	}
 }
 
-// setupTestDB starts a Postgres container, applies real migration SQL files,
-// and returns a Store backed by the resulting pool.
+// setupTestDB creates a new pool from the shared container DSN, applies
+// migrations once per call, and returns a Store backed by the pool.
+// Each call gets its own pool so TestIntegration_FailOpenOnPoolClosed can
+// close the pool without affecting other tests.
 func setupTestDB(t *testing.T) *Store {
 	t.Helper()
-	dsn := startPostgresContainer(t, "testguard")
+	if testing.Short() {
+		t.Skip("integration test: requires Docker (skipping under -short)")
+	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.New(ctx, testContainerDSN)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
