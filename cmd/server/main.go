@@ -373,7 +373,9 @@ func run() error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-quit
-		if err := e.Shutdown(context.Background()); err != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer shutCancel()
+		if err := e.Shutdown(shutCtx); err != nil {
 			log.Printf("server shutdown error: %v", err)
 		}
 	}()

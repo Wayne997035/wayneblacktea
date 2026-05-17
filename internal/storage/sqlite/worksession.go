@@ -5,11 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 )
+
+// txBeginnerConn is the minimal interface of *sql.DB needed by createSessionTx.
+type txBeginnerConn interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
 
 // sqliteInClause builds positional-placeholder strings "?1,?2,...,?N" for
 // SQLite batch updates. Returns the IN clause string (task ID args must be
@@ -161,36 +167,32 @@ func scanWorkSession(scan func(...any) error) (*worksession.Session, error) {
 	return &s, nil
 }
 
-// Create inserts a new in_progress work session and links task_ids as primary.
-func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParams) (*worksession.Session, error) {
-	if p.RepoName == "" {
-		return nil, fmt.Errorf("worksession.Create: repo_name is required")
+// validateCreateParams returns an error if any required field is missing.
+func validateCreateParams(p worksession.CreateParams) error {
+	switch {
+	case p.RepoName == "":
+		return fmt.Errorf("worksession.Create: repo_name is required")
+	case p.Title == "":
+		return fmt.Errorf("worksession.Create: title is required")
+	case p.Goal == "":
+		return fmt.Errorf("worksession.Create: goal is required")
+	case p.Source == "":
+		return fmt.Errorf("worksession.Create: source is required")
 	}
-	if p.Title == "" {
-		return nil, fmt.Errorf("worksession.Create: title is required")
-	}
-	if p.Goal == "" {
-		return nil, fmt.Errorf("worksession.Create: goal is required")
-	}
-	if p.Source == "" {
-		return nil, fmt.Errorf("worksession.Create: source is required")
-	}
+	return nil
+}
 
-	wsID := p.WorkspaceID.String()
-	if s.db.workspaceID != "" {
-		wsID = s.db.workspaceID
-	}
-
-	id := uuid.New()
-
+// createSessionTx inserts the work_session row and links task_ids inside a
+// single transaction. Extracted from Create to reduce cyclomatic complexity.
+func createSessionTx(ctx context.Context, conn txBeginnerConn, wsID string, id uuid.UUID, p worksession.CreateParams, now string) error {
 	firstTaskIDArg := any(nil)
 	if len(p.TaskIDs) > 0 {
 		firstTaskIDArg = p.TaskIDs[0].String()
 	}
 
-	tx, err := s.db.conn.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("worksession.Create begin tx: %w", err)
+		return fmt.Errorf("worksession.Create begin tx: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -203,7 +205,6 @@ func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParam
 		 confirmed_plan_id, current_task_id, started_at, created_at, updated_at)
 		VALUES (?1,?2,?3,?4,?5,?6,'in_progress',?7,?8,?9,?10,?11,?12)`
 
-	now := nowRFC3339()
 	_, err = tx.ExecContext(ctx, insertQ,
 		id.String(), wsID, p.RepoName,
 		nullStringFromUUID(p.ProjectID),
@@ -214,30 +215,54 @@ func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParam
 	)
 	if err != nil {
 		if isUniqueViolationSQLite(err) {
-			return nil, worksession.ErrAlreadyActive
+			return worksession.ErrAlreadyActive
 		}
-		return nil, fmt.Errorf("worksession.Create insert: %w", err)
+		return fmt.Errorf("worksession.Create insert: %w", err)
 	}
 
-	// Link tasks with role=primary.
+	const linkQ = `INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
+		VALUES (?1,?2,'primary',?3)
+		ON CONFLICT (session_id, task_id) DO NOTHING`
 	for _, taskID := range p.TaskIDs {
-		const linkQ = `INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
-			VALUES (?1,?2,'primary',?3)
-			ON CONFLICT (session_id, task_id) DO NOTHING`
 		if _, e := tx.ExecContext(ctx, linkQ, id.String(), taskID.String(), now); e != nil {
 			err = fmt.Errorf("worksession.Create link task %s: %w", taskID, e)
-			return nil, err
+			return err
 		}
 	}
 
 	if err = tx.Commit(); err != nil {
-		return nil, fmt.Errorf("worksession.Create commit: %w", err)
+		return fmt.Errorf("worksession.Create commit: %w", err)
+	}
+	return nil
+}
+
+// Create inserts a new in_progress work session and links task_ids as primary.
+func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParams) (*worksession.Session, error) {
+	if err := validateCreateParams(p); err != nil {
+		return nil, err
+	}
+
+	wsID := p.WorkspaceID.String()
+	if s.db.workspaceID != "" {
+		wsID = s.db.workspaceID
+	}
+
+	id := uuid.New()
+	now := nowRFC3339()
+
+	if err := createSessionTx(ctx, s.db.conn, wsID, id, p, now); err != nil {
+		return nil, err
 	}
 
 	// Batch-update linked tasks to in_progress after the session tx commits.
 	// Non-fatal: session is committed; task status update is best-effort.
 	if len(p.TaskIDs) > 0 {
-		_ = batchMarkTasksInProgressSQLite(ctx, s.db.conn, s.db.workspaceArg(), p.TaskIDs)
+		if err := batchMarkTasksInProgressSQLite(ctx, s.db.conn, s.db.workspaceArg(), p.TaskIDs); err != nil {
+			slog.Warn("batchMarkTasksInProgressSQLite: failed to mark tasks in_progress",
+				"session_id", id,
+				"err", err,
+			)
+		}
 	}
 
 	return s.byID(ctx, id)

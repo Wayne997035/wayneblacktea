@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -19,8 +18,10 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// githubPRURLRe matches GitHub PR URLs (same pattern as mcp/tools_gtd.go).
-var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/)?$`)
+// githubPRURLRe is the canonical GitHub PR URL pattern from the shared validator
+// package. Kept as a package-level alias so call-sites within this file remain
+// unchanged while the single source of truth lives in internal/validator.
+var githubPRURLRe = validator.GitHubPRURLRe
 
 func validateBranchName(s string) string {
 	if len(s) > 255 {
@@ -124,6 +125,7 @@ type createProjectRequest struct {
 	Description string     `json:"description"`
 	GoalID      *uuid.UUID `json:"goal_id"`
 	Priority    int32      `json:"priority"`
+	RepoName    string     `json:"repo_name"`
 }
 
 // CreateProject inserts a new project.
@@ -143,6 +145,7 @@ func (h *GTDHandler) CreateProject(c echo.Context) error {
 		Description: req.Description,
 		GoalID:      req.GoalID,
 		Priority:    req.Priority,
+		RepoName:    req.RepoName,
 	})
 	if err != nil {
 		if errors.Is(err, gtd.ErrConflict) {
@@ -248,6 +251,10 @@ type createTaskRequest struct {
 	Priority    int32      `json:"priority"`
 	DueDate     *time.Time `json:"due_date"`
 	Kind        string     `json:"kind"`
+	Context     string     `json:"context"`
+	Importance  int16      `json:"importance"`
+	BranchName  string     `json:"branch_name"`
+	PRUrl       string     `json:"pr_url"`
 }
 
 // strictVaguenessEnabled returns true when WBT_STRICT_VAGUENESS=true in the
@@ -256,6 +263,53 @@ type createTaskRequest struct {
 // The value is NEVER sourced from request headers.
 func strictVaguenessEnabled() bool {
 	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
+}
+
+// validateCreateTaskRequest validates the optional extra fields on createTaskRequest
+// and returns a user-facing error message, or "" if valid. This extracts branches
+// from CreateTask to keep its cyclomatic complexity within the configured limit.
+func validateCreateTaskRequest(req *createTaskRequest) string {
+	if req.Importance != 0 {
+		if msg := validateImportance(req.Importance); msg != "" {
+			return msg
+		}
+	}
+	if req.BranchName != "" {
+		if msg := validateBranchName(req.BranchName); msg != "" {
+			return msg
+		}
+	}
+	if req.PRUrl != "" && !githubPRURLRe.MatchString(req.PRUrl) {
+		return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+	}
+	return ""
+}
+
+// buildCreateTaskParams constructs gtd.CreateTaskParams from a validated request.
+func buildCreateTaskParams(req *createTaskRequest, kind string) gtd.CreateTaskParams {
+	p := gtd.CreateTaskParams{
+		Title:       req.Title,
+		ProjectID:   req.ProjectID,
+		Description: req.Description,
+		Assignee:    req.Assignee,
+		Priority:    req.Priority,
+		DueDate:     req.DueDate,
+		Kind:        kind,
+		Context:     req.Context,
+	}
+	if req.Importance != 0 {
+		imp := req.Importance
+		p.Importance = &imp
+	}
+	if req.BranchName != "" {
+		bn := req.BranchName
+		p.BranchName = &bn
+	}
+	if req.PRUrl != "" {
+		pru := req.PRUrl
+		p.PRUrl = &pru
+	}
+	return p
 }
 
 // CreateTask inserts a new task.
@@ -275,6 +329,9 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 	if !validator.IsValidKind(kind) {
 		return c.JSON(http.StatusBadRequest, errResp("kind must be one of: general, fix-pr, feature, refactor, research, chore"))
 	}
+	if msg := validateCreateTaskRequest(&req); msg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(msg))
+	}
 
 	// Vagueness and kind-field checks — warn-by-default, strict on opt-in.
 	var allWarnings []string
@@ -287,15 +344,7 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 		})
 	}
 
-	task, err := h.store.CreateTask(c.Request().Context(), gtd.CreateTaskParams{
-		Title:       req.Title,
-		ProjectID:   req.ProjectID,
-		Description: req.Description,
-		Assignee:    req.Assignee,
-		Priority:    req.Priority,
-		DueDate:     req.DueDate,
-		Kind:        kind,
-	})
+	task, err := h.store.CreateTask(c.Request().Context(), buildCreateTaskParams(&req, kind))
 	if err != nil {
 		c.Logger().Errorf("CreateTask: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -407,6 +456,7 @@ type updateProjectRequest struct {
 	Priority    int32      `json:"priority"`
 	Status      string     `json:"status"`
 	GoalID      *uuid.UUID `json:"goal_id"`
+	RepoName    *string    `json:"repo_name"` // nil → preserve; empty string → clear to NULL
 }
 
 // UpdateProject handles PATCH /api/projects/:id — full update of a project's mutable fields.
@@ -442,6 +492,7 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 		Priority:    req.Priority,
 		Status:      status,
 		GoalID:      req.GoalID,
+		RepoName:    req.RepoName,
 	})
 	if err != nil {
 		if errors.Is(err, gtd.ErrNotFound) {
@@ -601,6 +652,10 @@ type completeTaskRequest struct {
 }
 
 // CompleteTask marks a task as completed.
+// If the artifact is a GitHub PR URL or a 40-hex commit SHA, the corresponding
+// task fields (pr_url / commit_shas) are updated as a side-effect so the HTTP
+// path stays in parity with the MCP complete_task tool.
+// SECURITY: only the string is stored — no HTTP fetch is made.
 func (h *GTDHandler) CompleteTask(c echo.Context) error {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -620,6 +675,13 @@ func (h *GTDHandler) CompleteTask(c echo.Context) error {
 		c.Logger().Errorf("CompleteTask: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
+
+	if req.Artifact != nil && *req.Artifact != "" {
+		if updated := gtd.ApplyArtifactSideEffects(c.Request().Context(), h.store, id, task, *req.Artifact); updated != nil {
+			task = updated
+		}
+	}
+
 	return c.JSON(http.StatusOK, task)
 }
 
@@ -810,27 +872,7 @@ func (h *GTDHandler) BeginTask(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"task":                   task,
-		"branch_name_suggestion": taskTitleToBranchSlug(task.Title),
+		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
 		"work_session_id":        uuid.New().String(),
 	})
-}
-
-// branchSlugRe matches any character sequence that is not a lowercase letter or digit.
-var branchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
-
-// taskTitleToBranchSlug converts a task title into a git branch name slug of
-// the form "feature/<slug>" or "fix/<slug>" (the latter when the title starts
-// with "fix"). Slug characters are restricted to [a-z0-9-] and capped at 60
-// characters so the full branch name stays within Git's 255-byte ref limit.
-func taskTitleToBranchSlug(title string) string {
-	lower := strings.ToLower(title)
-	slug := branchSlugRe.ReplaceAllString(lower, "-")
-	slug = strings.Trim(slug, "-")
-	if len(slug) > 60 {
-		slug = strings.TrimRight(slug[:60], "-")
-	}
-	if strings.HasPrefix(lower, "fix") {
-		return "fix/" + slug
-	}
-	return "feature/" + slug
 }

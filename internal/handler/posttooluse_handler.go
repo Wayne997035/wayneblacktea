@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -41,6 +42,7 @@ type PostToolUseHandler struct {
 	gtd    autologGTDStore
 	queue  chan postToolUseEvent
 	stopCh chan struct{}
+	wg     sync.WaitGroup
 }
 
 // NewPostToolUseHandler creates a PostToolUseHandler and starts the background
@@ -51,6 +53,7 @@ func NewPostToolUseHandler(g autologGTDStore) *PostToolUseHandler {
 		queue:  make(chan postToolUseEvent, postToolUseChannelSize),
 		stopCh: make(chan struct{}),
 	}
+	h.wg.Add(1)
 	go h.drainWorker()
 	return h
 }
@@ -90,15 +93,20 @@ func (h *PostToolUseHandler) PostToolUse(c echo.Context) error {
 	return c.JSON(http.StatusAccepted, map[string]string{"status": "queued"})
 }
 
-// Stop signals the drain worker to exit and waits for it.
+// Stop signals the drain worker to exit and waits for the flush to complete.
+// It blocks until drainWorker has finished persisting all queued events so
+// that in-flight events are never lost on server shutdown.
 func (h *PostToolUseHandler) Stop() {
 	close(h.stopCh)
+	h.wg.Wait()
 }
 
 // drainWorker runs in a background goroutine and writes batched events to the
 // activity_log table via the GTD store.  It uses context.Background() with an
 // independent timeout so DB writes are never cancelled by a request context.
+// It signals h.wg.Done() after flush() completes so Stop() can safely wait.
 func (h *PostToolUseHandler) drainWorker() {
+	defer h.wg.Done()
 	for {
 		select {
 		case <-h.stopCh:

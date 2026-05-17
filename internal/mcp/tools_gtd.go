@@ -30,13 +30,13 @@ func (s *Server) strictVagueness() bool {
 // control characters or path-traversal sequences from entering the DB.
 var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,100}$`)
 
-// githubPRURLRe matches GitHub PR URLs of the form
-// https://github.com/{owner}/{repo}/pull/{number}
-// SECURITY: we only store the URL string — no HTTP fetch is ever made.
-var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/)?$`)
-
-// commitSHARe matches a 40-hex-character commit SHA.
-var commitSHARe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+// githubPRURLRe and commitSHARe are canonical definitions in the shared
+// internal/validator and internal/gtd packages respectively. Package-level
+// aliases keep call-sites in this file unchanged while eliminating duplication.
+var (
+	githubPRURLRe = validator.GitHubPRURLRe
+	commitSHARe   = gtd.CommitSHARe
+)
 
 // branchNameHasControlChars returns true if s contains characters invalid in
 // git branch names: ASCII control chars (< 0x20), DEL (0x7F), or Unicode
@@ -1029,29 +1029,9 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 	}
 	return jsonText(map[string]any{
 		"task":                   task,
-		"branch_name_suggestion": mcpTaskTitleToBranchSlug(task.Title),
+		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
 		"work_session_id":        uuid.New().String(),
 	})
-}
-
-// mcpBranchSlugRe matches any character sequence that is not a lowercase letter or digit.
-var mcpBranchSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
-
-// mcpTaskTitleToBranchSlug converts a task title into a git branch name slug of
-// the form "feature/<slug>" or "fix/<slug>" (the latter when the title starts
-// with "fix"). Slug characters are restricted to [a-z0-9-] and capped at 60
-// characters so the full branch name stays within Git's 255-byte ref limit.
-func mcpTaskTitleToBranchSlug(title string) string {
-	lower := strings.ToLower(title)
-	slug := mcpBranchSlugRe.ReplaceAllString(lower, "-")
-	slug = strings.Trim(slug, "-")
-	if len(slug) > 60 {
-		slug = strings.TrimRight(slug[:60], "-")
-	}
-	if strings.HasPrefix(lower, "fix") {
-		return "fix/" + slug
-	}
-	return "feature/" + slug
 }
 
 // parseChecklistIDs extracts and validates task_id and item_id from MCP args.
