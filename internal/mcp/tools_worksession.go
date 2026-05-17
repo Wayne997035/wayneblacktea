@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -75,6 +76,7 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 		mcp.WithString("deferred_task_ids", mcp.Description(`JSON array of task UUIDs deferred to next session`)),
 		mcp.WithString("artifact", mcp.Description("PR URL or artifact reference (optional)")),
 		mcp.WithString("follow_up_tasks", mcp.Description(`JSON array of new follow-up task titles`)),
+		mcp.WithString("new_decisions", mcp.Description(`JSON array of decision titles to log`)),
 	), s.handleFinishWork)
 }
 
@@ -294,6 +296,9 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		artifact = &raw
 	}
 
+	// Log new_decisions before finishing the session (best-effort, non-fatal).
+	s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), stringArg(args, "repo_name"))
+
 	slog.Info("finish_work", "session_id", sessID, "workspace_id", s.workspaceUUIDVal())
 	sess, err := s.workSession.Finish(ctx, worksession.FinishParams{
 		SessionID:        sessID,
@@ -322,4 +327,42 @@ func (s *Server) workspaceUUIDVal() uuid.UUID {
 		return uuid.Nil
 	}
 	return *s.workspaceID
+}
+
+// logFinishWorkDecisions parses a JSON array of decision title strings from
+// rawDecisions and logs each one via s.decision.Log. All errors are logged as
+// Warn so the finish_work call is never aborted by a failed decision write.
+func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, rawDecisions, repoName string) {
+	if rawDecisions == "" {
+		return
+	}
+	var titles []string
+	if err := json.Unmarshal([]byte(rawDecisions), &titles); err != nil {
+		slog.Warn("finish_work: invalid new_decisions JSON, skipping", "session_id", sessID, "err", err)
+		return
+	}
+	const maxFinishWorkDecisions = 50
+	if len(titles) > maxFinishWorkDecisions {
+		slog.Warn("finish_work: new_decisions exceeds cap, truncating",
+			"session_id", sessID,
+			"count", len(titles),
+			"cap", maxFinishWorkDecisions,
+		)
+		titles = titles[:maxFinishWorkDecisions]
+	}
+	for _, title := range titles {
+		if title == "" {
+			continue
+		}
+		if _, logErr := s.decision.Log(ctx, decision.LogParams{
+			Title:    title,
+			RepoName: repoName,
+		}); logErr != nil {
+			slog.Warn("finish_work: failed to log decision",
+				"session_id", sessID,
+				"title", title,
+				"err", logErr,
+			)
+		}
+	}
 }

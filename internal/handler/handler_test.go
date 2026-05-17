@@ -1501,6 +1501,74 @@ func TestContextHandler_GetTodayContext(t *testing.T) {
 	}
 }
 
+// TestContextHandler_PendingHandoffNextActionsDecodedAsArray verifies that
+// buildPendingHandoffHTTPView correctly decodes the next_actions []byte column
+// into a typed JSON array — NOT a raw base64 string — when the HTTP endpoint
+// returns pending_handoff.
+//
+// This is a regression test for the M-3 bug where jsonText(h) was returned
+// instead of jsonText(buildPendingHandoffHTTPView(h)), causing next_actions to
+// appear as the base64 string "W10=" in the API response.
+func TestContextHandler_PendingHandoffNextActionsDecodedAsArray(t *testing.T) {
+	nextActionsJSON := []byte(`[{"step":1,"title":"check deploy","command":"railway status","expected":"running","status":"pending"}]`)
+	handoff := &db.SessionHandoff{
+		ID:          uuid.New(),
+		Intent:      "test",
+		NextActions: nextActionsJSON,
+	}
+
+	e := newEcho()
+	h := handler.NewContextHandler(
+		&fakeGTDStore{goals: []db.Goal{}, projects: []db.Project{}},
+		&fakeSessionStore{handoff: handoff},
+	)
+	e.GET("/api/context/today", h.GetTodayContext)
+	rec := performRequest(e, http.MethodGet, "/api/context/today", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+
+	rawHandoff, ok := resp["pending_handoff"]
+	if !ok {
+		t.Fatal("response missing pending_handoff field")
+	}
+
+	var pendingHandoff map[string]json.RawMessage
+	if err := json.Unmarshal(rawHandoff, &pendingHandoff); err != nil {
+		t.Fatalf("pending_handoff is not a JSON object: %v — got: %s", err, string(rawHandoff))
+	}
+
+	rawNextActions, ok := pendingHandoff["next_actions"]
+	if !ok {
+		t.Fatal("pending_handoff missing next_actions field")
+	}
+
+	// next_actions must be a JSON array, not a quoted base64 string like "W10=".
+	if strings.HasPrefix(string(rawNextActions), `"`) {
+		t.Errorf("next_actions is a quoted string (likely base64), want JSON array — got: %s", string(rawNextActions))
+	}
+
+	var nextActions []map[string]any
+	if err := json.Unmarshal(rawNextActions, &nextActions); err != nil {
+		t.Fatalf("next_actions cannot be unmarshalled as array: %v — got: %s", err, string(rawNextActions))
+	}
+	if len(nextActions) != 1 {
+		t.Fatalf("expected 1 next action, got %d", len(nextActions))
+	}
+	if step, _ := nextActions[0]["step"].(float64); step != 1 {
+		t.Errorf("next_actions[0].step = %v, want 1", nextActions[0]["step"])
+	}
+	if title, _ := nextActions[0]["title"].(string); title != "check deploy" {
+		t.Errorf("next_actions[0].title = %q, want %q", title, "check deploy")
+	}
+}
+
 // ---- API key middleware tests ----
 
 func TestAPIKeyMiddleware(t *testing.T) {

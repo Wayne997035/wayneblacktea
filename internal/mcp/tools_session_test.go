@@ -164,6 +164,61 @@ func TestParseAndValidateNextActions_ValidRefTaskID(t *testing.T) {
 	}
 }
 
+// TestParseAndValidateNextActions_CommandTooLong verifies that command fields
+// longer than maxNextActionFieldLen (500 runes) are rejected.
+func TestParseAndValidateNextActions_CommandTooLong(t *testing.T) {
+	longCmd := strings.Repeat("x", 501)
+	raw, _ := json.Marshal([]map[string]any{{"title": "do thing", "command": longCmd, "status": "pending"}})
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for command exceeding 500 runes")
+	}
+	if !strings.Contains(msg, "command") {
+		t.Errorf("error should mention command, got: %s", msg)
+	}
+}
+
+// TestParseAndValidateNextActions_ExpectedTooLong verifies that expected fields
+// longer than maxNextActionFieldLen (500 runes) are rejected.
+func TestParseAndValidateNextActions_ExpectedTooLong(t *testing.T) {
+	longExp := strings.Repeat("y", 501)
+	raw, _ := json.Marshal([]map[string]any{{"title": "do thing", "expected": longExp, "status": "pending"}})
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for expected exceeding 500 runes")
+	}
+	if !strings.Contains(msg, "expected") {
+		t.Errorf("error should mention expected, got: %s", msg)
+	}
+}
+
+// TestParseAndValidateNextActions_CommandControlChar verifies that command fields
+// containing a newline are rejected (adversarial injection defence).
+func TestParseAndValidateNextActions_CommandControlChar(t *testing.T) {
+	raw, _ := json.Marshal([]map[string]any{{"title": "run deploy", "command": "railway status\ngit push", "status": "pending"}})
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for command containing newline")
+	}
+	if !strings.Contains(msg, "command") {
+		t.Errorf("error should mention command, got: %s", msg)
+	}
+}
+
+// TestParseAndValidateNextActions_ExpectedNullByte verifies that expected fields
+// containing a null byte are rejected (adversarial injection defence).
+func TestParseAndValidateNextActions_ExpectedNullByte(t *testing.T) {
+	// Embed a null byte in the expected string.
+	raw, _ := json.Marshal([]map[string]any{{"title": "check output", "expected": "ok\x00hidden", "status": "pending"}})
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for expected field containing null byte")
+	}
+	if !strings.Contains(msg, "expected") {
+		t.Errorf("error should mention expected, got: %s", msg)
+	}
+}
+
 // TestSetSessionHandoff_InvalidNextActionsJSON verifies that malformed JSON in
 // next_actions is rejected with a tool error.
 func TestSetSessionHandoff_InvalidNextActionsJSON(t *testing.T) {

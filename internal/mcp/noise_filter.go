@@ -59,6 +59,27 @@ func checkDecisionNoise(title, ctx, decision, rationale string) noiseReason {
 	return ""
 }
 
+// checkCommandField rejects strings that contain ASCII control characters
+// (< 0x20, excluding tab \t=0x09), carriage return \r, newline \n, or null
+// byte \x00. These characters are adversarial in shell command or expected-
+// output fields: a prompt-injected agent could store "\ngit push" to make
+// the LLM interpret the second line as a separate shell instruction.
+//
+// Returns a non-empty noiseReason when the value is unsafe, empty string otherwise.
+func checkCommandField(name, value string) noiseReason {
+	for _, r := range value {
+		// Reject newline, carriage return, null byte explicitly for clarity.
+		if r == '\n' || r == '\r' || r == 0x00 {
+			return name + " must not contain newline, carriage return, or null byte"
+		}
+		// Reject other ASCII control characters (< 0x20) except tab (0x09).
+		if r < 0x20 && r != '\t' {
+			return name + " must not contain ASCII control characters"
+		}
+	}
+	return ""
+}
+
 // checkHandoffNoise validates the text fields of set_session_handoff.
 // Returns a non-empty noiseReason when any field is noisy, empty string otherwise.
 func checkHandoffNoise(intent, contextSummary string) noiseReason {

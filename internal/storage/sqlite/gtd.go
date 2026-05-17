@@ -1165,7 +1165,25 @@ func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
 		return errWrap("DeleteTask nullify work_sessions.current_task_id", err)
 	}
 
-	// 3. Delete the task itself, scoped to the configured workspace.
+	// 3. Remove completion_candidates rows referencing this task.
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM completion_candidates WHERE task_id = ?1`, idStr,
+	); err != nil {
+		return errWrap("DeleteTask cleanup completion_candidates", err)
+	}
+
+	// 4. Reset vision_items that were promoted from this task.
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE vision_items
+		    SET promoted_task_id = NULL,
+		        status           = 'open'
+		  WHERE promoted_task_id = ?1`,
+		idStr,
+	); err != nil {
+		return errWrap("DeleteTask reset vision_items.promoted_task_id", err)
+	}
+
+	// 5. Delete the task itself, scoped to the configured workspace.
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM tasks
 		   WHERE id = ?1
