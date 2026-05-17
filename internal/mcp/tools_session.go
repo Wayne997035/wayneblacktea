@@ -64,23 +64,9 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 
 	// Parse optional next_actions JSON array.
 	if raw := stringArg(args, "next_actions"); raw != "" {
-		var actions []session.NextAction
-		if jsonErr := json.Unmarshal([]byte(raw), &actions); jsonErr != nil {
-			return mcp.NewToolResultError("invalid next_actions: must be a valid JSON array of next-action objects"), nil
-		}
-		// Validate each action.
-		for i, a := range actions {
-			if a.Title == "" {
-				return mcp.NewToolResultError(fmt.Sprintf("next_actions[%d]: title is required", i)), nil
-			}
-			switch a.Status {
-			case session.NextActionPending, session.NextActionDone, session.NextActionSkipped, "":
-			default:
-				return mcp.NewToolResultError(fmt.Sprintf("next_actions[%d]: status must be pending, done, or skipped", i)), nil
-			}
-			if actions[i].Status == "" {
-				actions[i].Status = session.NextActionPending
-			}
+		actions, errMsg := parseAndValidateNextActions(raw)
+		if errMsg != "" {
+			return mcp.NewToolResultError(errMsg), nil
 		}
 		p.NextActions = actions
 	}
@@ -136,4 +122,50 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("marking next action done: %v", err)), nil
 	}
 	return jsonText(buildPendingHandoffView(h))
+}
+
+const (
+	maxNextActionItems    = 50
+	maxNextActionFieldLen = 500
+)
+
+// parseAndValidateNextActions parses a JSON array of NextAction objects,
+// enforces count/field-length/UUID caps, and defaults empty Status to pending.
+// Returns the validated slice and an empty errMsg on success.
+func parseAndValidateNextActions(raw string) ([]session.NextAction, string) {
+	var actions []session.NextAction
+	if err := json.Unmarshal([]byte(raw), &actions); err != nil {
+		return nil, "invalid next_actions: must be a valid JSON array of next-action objects"
+	}
+	if len(actions) > maxNextActionItems {
+		return nil, fmt.Sprintf("next_actions: at most %d items allowed", maxNextActionItems)
+	}
+	for i, a := range actions {
+		if a.Title == "" {
+			return nil, fmt.Sprintf("next_actions[%d]: title is required", i)
+		}
+		if len([]rune(a.Title)) > maxNextActionFieldLen {
+			return nil, fmt.Sprintf("next_actions[%d]: title exceeds %d characters", i, maxNextActionFieldLen)
+		}
+		if len([]rune(a.Command)) > maxNextActionFieldLen {
+			return nil, fmt.Sprintf("next_actions[%d]: command exceeds %d characters", i, maxNextActionFieldLen)
+		}
+		if len([]rune(a.Expected)) > maxNextActionFieldLen {
+			return nil, fmt.Sprintf("next_actions[%d]: expected exceeds %d characters", i, maxNextActionFieldLen)
+		}
+		if a.RefTaskID != nil && *a.RefTaskID != "" {
+			if _, err := uuid.Parse(*a.RefTaskID); err != nil {
+				return nil, fmt.Sprintf("next_actions[%d]: ref_task_id must be a valid UUID", i)
+			}
+		}
+		switch a.Status {
+		case session.NextActionPending, session.NextActionDone, session.NextActionSkipped, "":
+		default:
+			return nil, fmt.Sprintf("next_actions[%d]: status must be pending, done, or skipped", i)
+		}
+		if actions[i].Status == "" {
+			actions[i].Status = session.NextActionPending
+		}
+	}
+	return actions, ""
 }

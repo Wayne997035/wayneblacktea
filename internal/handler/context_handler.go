@@ -78,7 +78,9 @@ func buildPendingHandoffHTTPView(h *db.SessionHandoff) *pendingHandoffHTTPView {
 	}
 	if len(h.NextActions) > 0 && string(h.NextActions) != "[]" {
 		var actions []session.NextAction
-		if err := json.Unmarshal(h.NextActions, &actions); err == nil {
+		if err := json.Unmarshal(h.NextActions, &actions); err != nil {
+			slog.Warn("buildPendingHandoffHTTPView: corrupt next_actions column", "handoff_id", h.ID, "err", err)
+		} else {
 			v.NextActions = actions
 		}
 	}

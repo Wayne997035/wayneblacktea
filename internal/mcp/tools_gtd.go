@@ -33,7 +33,7 @@ var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,100}$`)
 // githubPRURLRe matches GitHub PR URLs of the form
 // https://github.com/{owner}/{repo}/pull/{number}
 // SECURITY: we only store the URL string — no HTTP fetch is ever made.
-var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/|$)`)
+var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/)?$`)
 
 // commitSHARe matches a 40-hex-character commit SHA.
 var commitSHARe = regexp.MustCompile(`^[0-9a-f]{40}$`)

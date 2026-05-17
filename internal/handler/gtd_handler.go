@@ -20,7 +20,7 @@ import (
 )
 
 // githubPRURLRe matches GitHub PR URLs (same pattern as mcp/tools_gtd.go).
-var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/|$)`)
+var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/)?$`)
 
 func validateBranchName(s string) string {
 	if len(s) > 255 {
