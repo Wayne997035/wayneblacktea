@@ -4,6 +4,9 @@ package workspace_test
 
 import (
 	"context"
+	"flag"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -24,23 +27,23 @@ var skipMigrations = map[string]bool{
 	"000011_backfill_workspace_id.up.sql": true, // psql `\set` metacommand
 }
 
-// openTestPgPool starts a throwaway Postgres container, applies the FULL
-// migration stack, and returns a pgxpool. The container, pool, and applied
-// migrations are torn down via t.Cleanup.
-//
-// Skip with -short flag: testcontainers requires Docker and adds ~5-10 s.
-func openTestPgPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
-	}
+var testPgPool *pgxpool.Pool
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
 	ctx := context.Background()
 	// pgvector/pgvector:pg16 is the upstream image with the `vector` extension
 	// pre-installed. Migration 000005_knowledge.up.sql does
 	// `CREATE EXTENSION vector` so the vanilla `postgres:16-alpine` image
 	// fails with `extension "vector" is not available`.
-	container, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -48,45 +51,43 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		log.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
+	defer func() { _ = c.Terminate(ctx) }()
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("get connection string: %v", err)
+		log.Printf("get connection string: %v", err)
+		return 1
 	}
-
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		log.Printf("pgxpool.New: %v", err)
+		return 1
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 
 	// Apply migrations with a custom runner that skips the documented
 	// "NOT AUTO-RUN" psql-metacommand files (see skipMigrations comment).
-	applied := applyAllUpMigrations(t, ctx, pool)
+	applied := applyAllUpMigrationsOnce(ctx, pool)
 	if !applied["000028_repos_composite_unique.up.sql"] {
-		t.Fatal("migration 000028 was not applied — test would not exercise per-workspace unique constraint")
+		log.Print("migration 000028 was not applied — test would not exercise per-workspace unique constraint")
+		return 1
 	}
-	t.Logf("applyAllUpMigrations: applied %d migrations including 000028_repos_composite_unique.up.sql", len(applied))
+	log.Printf("applyAllUpMigrations: applied %d migrations including 000028_repos_composite_unique.up.sql", len(applied))
 
-	return pool
+	testPgPool = pool
+	return m.Run()
 }
 
-// applyAllUpMigrations executes every *.up.sql file in the embedded
+// applyAllUpMigrationsOnce executes every *.up.sql file in the embedded
 // migrations FS in numeric (filename-sorted) order against pool, skipping the
 // known-incompatible files in skipMigrations. Returns the set of applied
 // filenames so callers can assert specific migrations ran.
-func applyAllUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[string]bool {
-	t.Helper()
+func applyAllUpMigrationsOnce(ctx context.Context, pool *pgxpool.Pool) map[string]bool {
 	entries, err := migrationfs.FS.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read embedded migrations dir: %v", err)
+		log.Fatalf("read embedded migrations dir: %v", err)
 	}
 	var ups []string
 	for _, e := range entries {
@@ -101,19 +102,29 @@ func applyAllUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	applied := make(map[string]bool, len(ups))
 	for _, name := range ups {
 		if skipMigrations[name] {
-			t.Logf("applyAllUpMigrations: skipping %s (psql-metacommand-only file)", name)
+			log.Printf("applyAllUpMigrations: skipping %s (psql-metacommand-only file)", name)
 			continue
 		}
 		body, readErr := migrationfs.FS.ReadFile(name)
 		if readErr != nil {
-			t.Fatalf("read %s: %v", name, readErr)
+			log.Fatalf("read %s: %v", name, readErr)
 		}
 		if _, execErr := pool.Exec(ctx, string(body)); execErr != nil {
-			t.Fatalf("apply %s: %v", name, execErr)
+			log.Fatalf("apply %s: %v", name, execErr)
 		}
 		applied[name] = true
 	}
 	return applied
+}
+
+// openTestPgPool returns the package-level singleton pool initialised in TestMain.
+// Skip with -short flag: testcontainers requires Docker and adds ~5-10 s.
+func openTestPgPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
+	}
+	return testPgPool
 }
 
 // TestUpsertRepo_PerWorkspaceConflict verifies that two distinct workspaces can

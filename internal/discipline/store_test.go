@@ -4,6 +4,9 @@ package discipline_test
 
 import (
 	"context"
+	"flag"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -22,14 +25,19 @@ var skipMigrations = map[string]bool{
 	"000011_backfill_workspace_id.up.sql": true,
 }
 
-func openTestPgPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
-	}
+var testPgPool *pgxpool.Pool
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -37,34 +45,32 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		log.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
+	defer func() { _ = c.Terminate(ctx) }()
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		log.Printf("get connection string: %v", err)
+		return 1
 	}
-
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		log.Printf("pgxpool.New: %v", err)
+		return 1
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 
-	applyAllUpMigrations(t, ctx, pool)
-	return pool
+	applyAllUpMigrationsOnce(ctx, pool)
+
+	testPgPool = pool
+	return m.Run()
 }
 
-func applyAllUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
+func applyAllUpMigrationsOnce(ctx context.Context, pool *pgxpool.Pool) {
 	entries, err := migrationfs.FS.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read embedded migrations dir: %v", err)
+		log.Fatalf("read embedded migrations dir: %v", err)
 	}
 	var ups []string
 	for _, e := range entries {
@@ -78,17 +84,25 @@ func applyAllUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 
 	for _, name := range ups {
 		if skipMigrations[name] {
-			t.Logf("skipping %s (psql metacommands)", name)
+			log.Printf("skipping %s (psql metacommands)", name)
 			continue
 		}
 		body, err := migrationfs.FS.ReadFile(name)
 		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+			log.Fatalf("read %s: %v", name, err)
 		}
 		if _, err := pool.Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
+			log.Fatalf("apply %s: %v", name, err)
 		}
 	}
+}
+
+func openTestPgPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
+	}
+	return testPgPool
 }
 
 func TestPgStore_InsertAndRecentMutating(t *testing.T) {

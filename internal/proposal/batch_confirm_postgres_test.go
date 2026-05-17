@@ -2,6 +2,9 @@ package proposal_test
 
 import (
 	"context"
+	"flag"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -13,25 +16,25 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// skipMigrations are .up.sql files that MUST NOT be applied by the proposal
+// batchSkipMigrations are .up.sql files that MUST NOT be applied by the proposal
 // test runner — they contain psql metacommands that pgx cannot parse.
 var batchSkipMigrations = map[string]bool{
 	"000011_backfill_workspace_id.up.sql": true, // psql `\set` metacommand
 }
 
-// openBatchTestPgPool starts a throwaway Postgres container with full
-// migrations applied and returns a pgxpool ready for use. The container is
-// terminated and the pool is closed via t.Cleanup.
-//
-// Skip with -short flag: requires Docker and adds ~5-10 s.
-func openBatchTestPgPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
-	}
+var testPgPool *pgxpool.Pool
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_batch_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -39,34 +42,32 @@ func openBatchTestPgPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		log.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
+	defer func() { _ = c.Terminate(ctx) }()
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("get connection string: %v", err)
+		log.Printf("get connection string: %v", err)
+		return 1
 	}
-
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		log.Printf("pgxpool.New: %v", err)
+		return 1
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 
-	applyBatchUpMigrations(t, ctx, pool)
-	return pool
+	applyBatchUpMigrationsOnce(ctx, pool)
+
+	testPgPool = pool
+	return m.Run()
 }
 
-func applyBatchUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
+func applyBatchUpMigrationsOnce(ctx context.Context, pool *pgxpool.Pool) {
 	entries, err := migrationfs.FS.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read embedded migrations dir: %v", err)
+		log.Fatalf("read embedded migrations dir: %v", err)
 	}
 	var ups []string
 	for _, e := range entries {
@@ -80,17 +81,27 @@ func applyBatchUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 
 	for _, name := range ups {
 		if batchSkipMigrations[name] {
-			t.Logf("applyBatchUpMigrations: skipping %s (psql-metacommand-only file)", name)
+			log.Printf("applyBatchUpMigrations: skipping %s (psql-metacommand-only file)", name)
 			continue
 		}
 		body, err := migrationfs.FS.ReadFile(name)
 		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+			log.Fatalf("read %s: %v", name, err)
 		}
 		if _, err := pool.Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
+			log.Fatalf("apply %s: %v", name, err)
 		}
 	}
+}
+
+// openBatchTestPgPool returns the package-level singleton pool initialised in TestMain.
+// Skip with -short flag: requires Docker and adds ~5-10 s.
+func openBatchTestPgPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
+	}
+	return testPgPool
 }
 
 func TestBatchConfirm_PG(t *testing.T) {

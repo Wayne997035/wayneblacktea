@@ -3,8 +3,6 @@ package gtd_test
 import (
 	"context"
 	"errors"
-	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +11,6 @@ import (
 	migrationfs "github.com/Wayne997035/wayneblacktea/migrations"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 // timeAgoHours returns now - h hours; negative h returns a future time.
@@ -22,113 +19,14 @@ func timeAgoHours(h float64) time.Time {
 	return time.Now().Add(-time.Duration(h * float64(time.Hour)))
 }
 
-// skipMigrations are .up.sql files that MUST NOT be applied by the test
-// runner. They contain psql metacommands (`\set`) that pgx (and golang-migrate
-// when fed plain SQL) cannot parse. Production handles them via manual
-// `psql -f` after substitution. Documented as "NOT AUTO-RUN" in the migration
-// file header.
-var skipMigrations = map[string]bool{
-	"000011_backfill_workspace_id.up.sql": true, // psql `\set` metacommand
-}
-
-// openTestPgPool starts a throwaway Postgres container, applies the FULL
-// migration stack (including 000026), and returns a pgxpool. The container,
-// pool, and applied migrations are torn down via t.Cleanup.
-//
+// openTestPgPool returns the package-level singleton pool initialised in TestMain.
 // Skip with -short flag: testcontainers requires Docker and adds ~5-10 s.
-//
-// Critically, this test exercises migration 000026 end-to-end (drop FK
-// constraints) — without it the original ON DELETE CASCADE / SET NULL would
-// silently mask the cleanup logic in gtd.Store.DeleteTask, producing a green
-// test that says nothing about whether the code-side cascade works.
 func openTestPgPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}
-
-	ctx := context.Background()
-	// pgvector/pgvector:pg16 is the upstream image with the `vector` extension
-	// pre-installed. Migration 000005_knowledge.up.sql does
-	// `CREATE EXTENSION vector` so the vanilla `postgres:16-alpine` image
-	// fails with `extension "vector" is not available`.
-	container, err := tcpostgres.Run(ctx,
-		"pgvector/pgvector:pg16",
-		tcpostgres.WithDatabase("wbt_test"),
-		tcpostgres.WithUsername("wbt"),
-		tcpostgres.WithPassword("wbt"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
-
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("get connection string: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	// Apply migrations with a custom runner that skips the documented
-	// "NOT AUTO-RUN" psql-metacommand files (see skipMigrations comment).
-	// This still applies migration 000026 end-to-end — the whole point of
-	// the test is to verify GTDStore.DeleteTask performs the cascade in
-	// code, not by leaning on a leftover FK.
-	applied := applyAllUpMigrations(t, ctx, pool)
-	if !applied["000026_drop_fk_constraints.up.sql"] {
-		t.Fatal("migration 000026 was not applied — test would not exercise FK-drop cascade")
-	}
-	t.Logf("applyAllUpMigrations: applied %d migrations including 000026_drop_fk_constraints.up.sql", len(applied))
-
-	return pool
-}
-
-// applyAllUpMigrations executes every *.up.sql file in the embedded
-// migrations FS in numeric (filename-sorted) order against pool, skipping the
-// known-incompatible files in skipMigrations. Returns the set of applied
-// filenames so callers can assert specific migrations ran.
-func applyAllUpMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[string]bool {
-	t.Helper()
-	entries, err := migrationfs.FS.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read embedded migrations dir: %v", err)
-	}
-	var ups []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".up.sql") {
-			continue
-		}
-		ups = append(ups, name)
-	}
-	sort.Strings(ups)
-
-	applied := make(map[string]bool, len(ups))
-	for _, name := range ups {
-		if skipMigrations[name] {
-			t.Logf("applyAllUpMigrations: skipping %s (psql-metacommand-only file)", name)
-			continue
-		}
-		body, err := migrationfs.FS.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if _, err := pool.Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
-		applied[name] = true
-	}
-	return applied
+	return testPgPool
 }
 
 // newPgGTDStore returns a Postgres-backed gtd.Store scoped to wsID. nil

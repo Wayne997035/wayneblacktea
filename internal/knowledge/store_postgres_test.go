@@ -3,6 +3,9 @@ package knowledge_test
 import (
 	"context"
 	"errors"
+	"flag"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -20,16 +23,19 @@ var knowledgeSkipMigrations = map[string]bool{
 	"000011_backfill_workspace_id.up.sql": true,
 }
 
-// openKnowledgePgPool starts a throwaway Postgres+pgvector container, applies
-// all migrations, and returns a pool. Skipped when -short is set (requires Docker).
-func openKnowledgePgPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
-	}
+var testPgPool *pgxpool.Pool
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
+	if testing.Short() {
+		return m.Run()
+	}
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -37,34 +43,32 @@ func openKnowledgePgPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		log.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() {
-		if tErr := container.Terminate(ctx); tErr != nil {
-			t.Logf("terminate container: %v", tErr)
-		}
-	})
+	defer func() { _ = c.Terminate(ctx) }()
 
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("get connection string: %v", err)
+		log.Printf("get connection string: %v", err)
+		return 1
 	}
-
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		log.Printf("pgxpool.New: %v", err)
+		return 1
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 
-	applyKnowledgeMigrations(t, ctx, pool)
-	return pool
+	applyKnowledgeMigrationsOnce(ctx, pool)
+
+	testPgPool = pool
+	return m.Run()
 }
 
-func applyKnowledgeMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
+func applyKnowledgeMigrationsOnce(ctx context.Context, pool *pgxpool.Pool) {
 	entries, err := migrationfs.FS.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read embedded migrations dir: %v", err)
+		log.Fatalf("read embedded migrations dir: %v", err)
 	}
 	var ups []string
 	for _, e := range entries {
@@ -82,12 +86,22 @@ func applyKnowledgeMigrations(t *testing.T, ctx context.Context, pool *pgxpool.P
 		}
 		body, err := migrationfs.FS.ReadFile(name)
 		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+			log.Fatalf("read %s: %v", name, err)
 		}
 		if _, err := pool.Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
+			log.Fatalf("apply %s: %v", name, err)
 		}
 	}
+}
+
+// openKnowledgePgPool returns the package-level singleton pool initialised in TestMain.
+// Skipped when -short is set (requires Docker).
+func openKnowledgePgPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
+	}
+	return testPgPool
 }
 
 // TestKnowledgeStore_Pg_UpdateLearningValue verifies that the Postgres-backed
