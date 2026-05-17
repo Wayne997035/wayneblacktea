@@ -201,7 +201,7 @@ tasks:
       # cmd/server embeds web/dist which requires a prior `npm run build`.
       # Exclude it so tests are not blocked by a missing frontend build artifact.
       # -short skips testcontainers-based integration tests that require Docker.
-      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -short -race -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   go-cache:
