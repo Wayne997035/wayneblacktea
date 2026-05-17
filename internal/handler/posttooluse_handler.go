@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/labstack/echo/v4"
 )
 
@@ -67,6 +68,8 @@ func (h *PostToolUseHandler) PostToolUse(c echo.Context) error {
 	if req.Actor == "" {
 		req.Actor = "claude-code"
 	}
+	req.Actor = sanitize.Notes(req.Actor)
+	req.Action = sanitize.Notes(req.Action)
 	if req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("tool_name is required"))
 	}
