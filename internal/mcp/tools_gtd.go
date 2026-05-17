@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -37,11 +38,13 @@ var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d
 // commitSHARe matches a 40-hex-character commit SHA.
 var commitSHARe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// branchNameHasControlChars returns true if s contains ASCII control chars
-// (any byte < 0x20, including \x00, \r, \n) which are invalid in git branch names.
+// branchNameHasControlChars returns true if s contains characters invalid in
+// git branch names: ASCII control chars (< 0x20), DEL (0x7F), or Unicode
+// "Other" characters (Cc control, Cf format like U+200B zero-width space /
+// U+FEFF BOM, Co private-use, Cs surrogates).
 func branchNameHasControlChars(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
 			return true
 		}
 	}

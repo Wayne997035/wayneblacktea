@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -25,8 +26,8 @@ func validateBranchName(s string) string {
 	if len(s) > 255 {
 		return "branch_name must not exceed 255 characters"
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
 			return "branch_name must not contain control characters"
 		}
 	}
