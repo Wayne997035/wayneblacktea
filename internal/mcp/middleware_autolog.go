@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/redact"
+	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -66,7 +68,25 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 
-				if logErr := s.gtd.LogActivity(bgCtx, "wayneblacktea-auto", action, nil, notes); logErr != nil {
+				var projectID *uuid.UUID
+				if taskIDStr := stringArg(args, "task_id"); taskIDStr != "" {
+					if taskID, parseErr := uuid.Parse(taskIDStr); parseErr == nil {
+						if task, lookupErr := s.gtd.GetTaskByID(bgCtx, taskID); lookupErr == nil {
+							if task.ProjectID.Valid {
+								pid := uuid.UUID(task.ProjectID.Bytes)
+								projectID = &pid
+							}
+						} else if lookupErr != gtd.ErrNotFound {
+							slog.Warn("autoLogMiddleware: task lookup failed",
+								"tool", tool,
+								"task_id", taskIDStr,
+								"error", lookupErr,
+							)
+						}
+					}
+				}
+
+				if logErr := s.gtd.LogActivity(bgCtx, "wayneblacktea-auto", action, projectID, notes); logErr != nil {
 					slog.Warn("autoLogMiddleware: failed to log activity",
 						"tool", tool,
 						"action", action,

@@ -594,6 +594,12 @@ func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	return &t, nil
 }
 
+// GetTaskByID returns a single task by UUID, scoped to the configured workspace.
+// Returns ErrNotFound when no matching row exists. Satisfies gtd.StoreIface.
+func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
+	return s.taskByID(ctx, id)
+}
+
 // CompleteTask marks a task completed and records the optional artifact URL.
 func (s *GTDStore) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error) {
 	const q = `UPDATE tasks
