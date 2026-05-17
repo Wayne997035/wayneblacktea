@@ -290,7 +290,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete, footer 
                 {t('gtd.pullRequest')}
               </p>
               <a
-                href={task.pr_url}
+                href={task.pr_url.startsWith('https://') ? task.pr_url : '#'}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-body-sm underline"
