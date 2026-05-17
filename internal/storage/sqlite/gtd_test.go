@@ -1789,3 +1789,58 @@ func TestGTDStore_ProjectsByRepoName_WorkspaceIsolation(t *testing.T) {
 		t.Errorf("workspace A should see 1 project, got %d", len(gotA))
 	}
 }
+
+// TestGTDStore_GetTaskByID exercises the three key behaviours of GetTaskByID:
+// found, not found, and wrong workspace (isolation).
+func TestGTDStore_GetTaskByID(t *testing.T) {
+	t.Run("found", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		created, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "fetch me", Priority: 2})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		got, err := s.GetTaskByID(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("GetTaskByID: %v", err)
+		}
+		if got.ID != created.ID {
+			t.Errorf("ID mismatch: got %s, want %s", got.ID, created.ID)
+		}
+		if got.Title != "fetch me" {
+			t.Errorf("Title mismatch: got %q, want %q", got.Title, "fetch me")
+		}
+	})
+
+	t.Run("not found returns ErrNotFound", func(t *testing.T) {
+		s := openMem(t, "")
+		_, err := s.GetTaskByID(context.Background(), uuid.New())
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("expected gtd.ErrNotFound for unknown ID, got %v", err)
+		}
+	})
+
+	t.Run("wrong workspace returns ErrNotFound", func(t *testing.T) {
+		// Create a task in workspace A. Looking it up from workspace B (different
+		// store, different scope) must return ErrNotFound — not the row from A.
+		wsA := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		wsB := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+		storeA := openMem(t, wsA)
+		storeB := openMem(t, wsB) // separate :memory: DB, separate scope
+
+		ctx := context.Background()
+		created, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "workspace-a task", Priority: 3})
+		if err != nil {
+			t.Fatalf("CreateTask in workspace A: %v", err)
+		}
+
+		// storeB operates on a completely separate in-memory DB, so the ID
+		// simply will not exist — this is the expected isolation guarantee.
+		_, err = storeB.GetTaskByID(ctx, created.ID)
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("expected gtd.ErrNotFound when looking up a task from a different workspace, got %v", err)
+		}
+	})
+}

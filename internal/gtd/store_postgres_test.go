@@ -1600,3 +1600,62 @@ func countAction(logs []db.ActivityLog, action string) int {
 	}
 	return n
 }
+
+// TestGTDStore_PG_GetTaskByID exercises GetTaskByID on Postgres:
+// found, not found (ErrNotFound), and wrong workspace (ErrNotFound).
+// Uses testcontainers (Docker required); skipped with -short.
+func TestGTDStore_PG_GetTaskByID(t *testing.T) {
+	t.Run("found", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+
+		created, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg fetch me", Priority: 2})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		got, err := store.GetTaskByID(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("GetTaskByID: %v", err)
+		}
+		if got.ID != created.ID {
+			t.Errorf("ID mismatch: got %s, want %s", got.ID, created.ID)
+		}
+		if got.Title != "pg fetch me" {
+			t.Errorf("Title mismatch: got %q, want %q", got.Title, "pg fetch me")
+		}
+	})
+
+	t.Run("not found returns ErrNotFound", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+
+		_, err := store.GetTaskByID(context.Background(), uuid.New())
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("expected gtd.ErrNotFound for unknown ID, got %v", err)
+		}
+	})
+
+	t.Run("wrong workspace returns ErrNotFound", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsA := uuid.New()
+		wsB := uuid.New()
+		storeA := newPgGTDStore(pool, &wsA)
+		storeB := newPgGTDStore(pool, &wsB)
+		ctx := context.Background()
+
+		created, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a task", Priority: 3})
+		if err != nil {
+			t.Fatalf("CreateTask in workspace A: %v", err)
+		}
+
+		// Workspace B must not see workspace A's task.
+		_, err = storeB.GetTaskByID(ctx, created.ID)
+		if !errors.Is(err, gtd.ErrNotFound) {
+			t.Errorf("expected gtd.ErrNotFound from wrong workspace, got %v", err)
+		}
+	})
+}

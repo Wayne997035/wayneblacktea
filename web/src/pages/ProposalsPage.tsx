@@ -16,6 +16,7 @@ function ProposalTypeBadge({ type }: { type: PendingProposal['type'] }) {
     task:      { bg: 'var(--color-status-archived-bg)',  text: 'var(--color-status-archived-text)' },
     concept:   { bg: 'var(--color-accent-blue-bg, rgba(88,166,255,.15))', text: 'var(--color-accent-blue)' },
     knowledge: { bg: 'var(--color-status-completed-bg)', text: 'var(--color-status-completed-text)' },
+    decision:  { bg: 'var(--color-status-on-hold-bg, rgba(210,153,34,.15))', text: 'var(--color-status-on-hold-text)' },
   }
   const { bg, text } = colorMap[type]
   return (
@@ -48,7 +49,7 @@ function ProposalStatusBadge({ status }: { status: PendingProposal['status'] }) 
 
 function ProposalCard({ proposal }: { proposal: PendingProposal }) {
   const { t } = useTranslation()
-  const { mutate: resolve, isPending } = useResolveProposal()
+  const { mutate: resolve, isPending, isError } = useResolveProposal()
   const [confirming, setConfirming] = useState(false)
 
   const title = 'title' in proposal.payload ? proposal.payload.title : ''
@@ -111,6 +112,16 @@ function ProposalCard({ proposal }: { proposal: PendingProposal }) {
         </p>
       )}
 
+      {isError && (
+        <p
+          className="text-body-sm mt-2"
+          role="alert"
+          style={{ color: 'var(--color-error)' }}
+        >
+          {t('common.errors.saveFailed')}
+        </p>
+      )}
+
       {proposal.status === 'pending' && (
         <div className="flex items-center gap-2 mt-3">
           <button
@@ -168,11 +179,18 @@ export function ProposalsPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 p-1 rounded-lg" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', width: 'fit-content' }}>
+      <div
+        role="tablist"
+        aria-label={t('knowledge.proposals.sectionTitle')}
+        className="flex gap-1 mb-6 p-1 rounded-lg"
+        style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', width: 'fit-content' }}
+      >
         {TABS.map((t_) => (
           <button
             key={t_}
             type="button"
+            role="tab"
+            aria-selected={tab === t_}
             onClick={() => setTab(t_)}
             className="px-4 py-1.5 rounded-md text-body-sm transition-colors"
             style={{
@@ -201,21 +219,23 @@ export function ProposalsPage() {
         </div>
       )}
 
-      {isLoading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 4 }, (_, i) => (
-            <LoadingSkeleton key={i} className="h-24 w-full" />
-          ))}
-        </div>
-      ) : !proposals || proposals.length === 0 ? (
-        <EmptyState messageKey="proposals.allCaughtUp" />
-      ) : (
-        <div className="space-y-3">
-          {proposals.map((p) => (
-            <ProposalCard key={p.id} proposal={p} />
-          ))}
-        </div>
-      )}
+      <div role="tabpanel" aria-label={t(`proposals.tabs.${tab}`)}>
+        {isLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 4 }, (_, i) => (
+              <LoadingSkeleton key={i} className="h-24 w-full" />
+            ))}
+          </div>
+        ) : !proposals || proposals.length === 0 ? (
+          <EmptyState messageKey="proposals.allCaughtUp" />
+        ) : (
+          <div className="space-y-3">
+            {proposals.map((p) => (
+              <ProposalCard key={p.id} proposal={p} />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

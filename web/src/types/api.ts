@@ -194,7 +194,7 @@ export interface SearchResponse {
   results: SearchResult[];
 }
 
-export type ProposalType = 'goal' | 'project' | 'task' | 'concept' | 'knowledge'
+export type ProposalType = 'goal' | 'project' | 'task' | 'concept' | 'knowledge' | 'decision'
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected'
 
 export interface ConceptCandidatePayload {

@@ -61,6 +61,9 @@ type Server struct {
 	// atomizeSem limits concurrent background atomize goroutines to prevent
 	// API budget exhaustion from rapid add_* bursts. (security M4)
 	atomizeSem chan struct{}
+	// autologSem caps concurrent background autoLog goroutines to 50 to
+	// prevent goroutine accumulation under burst MCP traffic.
+	autologSem chan struct{}
 	// atomizeFn is the function called inside the semaphore-guarded goroutine.
 	// nil means use atomizeAndPersist (the production default). Tests replace
 	// this with a lightweight fake to verify semaphore enforcement without
@@ -167,6 +170,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		atom:           stores.Atom(),
 		atomizer:       ai.NewAtomizer(),
 		atomizeSem:     make(chan struct{}, 5),
+		autologSem:     make(chan struct{}, 50),
 		pgGTD:          stores.PgGTD(),
 		pgProposal:     stores.PgProposal(),
 		pgLearning:     stores.PgLearning(),
