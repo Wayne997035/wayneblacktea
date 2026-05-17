@@ -15,7 +15,7 @@ import (
 const createSessionHandoff = `-- name: CreateSessionHandoff :one
 INSERT INTO session_handoffs (project_id, repo_name, intent, context_summary, workspace_id)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id
+RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions
 `
 
 type CreateSessionHandoffParams struct {
@@ -44,12 +44,13 @@ func (q *Queries) CreateSessionHandoff(ctx context.Context, arg CreateSessionHan
 		&i.ResolvedAt,
 		&i.CreatedAt,
 		&i.WorkspaceID,
+		&i.NextActions,
 	)
 	return i, err
 }
 
 const getLatestUnresolvedHandoff = `-- name: GetLatestUnresolvedHandoff :one
-SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id FROM session_handoffs
+SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions FROM session_handoffs
 WHERE resolved_at IS NULL
   AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
@@ -68,12 +69,13 @@ func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pg
 		&i.ResolvedAt,
 		&i.CreatedAt,
 		&i.WorkspaceID,
+		&i.NextActions,
 	)
 	return i, err
 }
 
 const handoffsSince = `-- name: HandoffsSince :many
-SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id FROM session_handoffs
+SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions FROM session_handoffs
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
   AND (created_at >= $2 OR (resolved_at IS NOT NULL AND resolved_at >= $2))
 ORDER BY created_at DESC
@@ -104,6 +106,7 @@ func (q *Queries) HandoffsSince(ctx context.Context, arg HandoffsSinceParams) ([
 			&i.ResolvedAt,
 			&i.CreatedAt,
 			&i.WorkspaceID,
+			&i.NextActions,
 		); err != nil {
 			return nil, err
 		}

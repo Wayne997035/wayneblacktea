@@ -13,10 +13,12 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-WBT_URL="${WBT_API_URL:-https://wayneblacktea-production.up.railway.app}"
+WBT_URL="${WBT_API_URL:-http://localhost:8080}"
 
 # Claude project directory where session JSONL files live.
-CLAUDE_PROJECTS_DIR="${HOME}/.claude/projects/-Users-waynechen--project"
+# Set CLAUDE_PROJECTS_DIR to your own path, e.g.:
+#   export CLAUDE_PROJECTS_DIR="${HOME}/.claude/projects/$(pwd | tr '/' '-')"
+CLAUDE_PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-}"
 
 warn_if_insecure_env_file() {
     local path="$1"
@@ -68,7 +70,7 @@ except Exception:
 
     # --- Build transcript JSON (last 50 user/assistant messages, capped at 64KB) ---
     local transcript_json="[]"
-    if [[ -n "$session_id" ]]; then
+    if [[ -n "$session_id" && -n "$CLAUDE_PROJECTS_DIR" ]]; then
         printf '%s' "$session_id" | grep -qE '^[0-9a-fA-F-]{36}$' || return 0
         local jsonl_path="${CLAUDE_PROJECTS_DIR}/${session_id}.jsonl"
         local resolved_projects_dir resolved_jsonl_path

@@ -72,6 +72,9 @@ type StoreIface interface {
 	// that are non-nil in p. Nil fields are preserved from the existing row.
 	// Returns ErrNotFound when no row matching id exists in the configured workspace.
 	UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams) (*db.Task, error)
+	// GetTaskByID returns a single task by UUID, scoped to the configured workspace.
+	// Returns ErrNotFound when no matching row exists.
+	GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error)
 	// UpdateGoal performs a full update of a goal, replacing all mutable fields.
 	UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams) (*db.Goal, error)

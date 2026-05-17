@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/redact"
+	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -52,8 +54,33 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// Launch in a background goroutine so the log write cannot block
 			// or fail the tool response. Use context.Background() with a
 			// timeout so the write survives request-context cancellation.
-			//nolint:gosec // G118: intentional — goroutine must outlive request ctx to prevent DB write cancellation
-			go func() {
+			//
+			// A buffered semaphore (cap 50) caps concurrent goroutines to
+			// prevent accumulation under sustained MCP burst traffic.
+			// If autologSem is nil (e.g. in unit tests that construct Server
+			// directly), fall back to the unbounded path so existing tests
+			// are not broken by the addition of this cap.
+			// launchAutolog starts fn in a background goroutine, guarded by
+			// autologSem (cap 50). If the semaphore is nil (direct-struct
+			// construction in unit tests), it falls back to an uncapped goroutine
+			// so existing tests are not affected by the cap.
+			launchAutolog := func(fn func()) {
+				if s.autologSem == nil {
+					go fn()
+					return
+				}
+				select {
+				case s.autologSem <- struct{}{}:
+					go func() {
+						defer func() { <-s.autologSem }()
+						fn()
+					}()
+				default:
+					slog.Warn("autoLogMiddleware: semaphore full, skipping autolog", "tool", tool)
+				}
+			}
+
+			launchAutolog(func() {
 				// Recover from any panic so a log failure never crashes the server.
 				defer func() {
 					if r := recover(); r != nil {
@@ -66,14 +93,32 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 
-				if logErr := s.gtd.LogActivity(bgCtx, "wayneblacktea-auto", action, nil, notes); logErr != nil {
+				var projectID *uuid.UUID
+				if taskIDStr := stringArg(args, "task_id"); taskIDStr != "" {
+					if taskID, parseErr := uuid.Parse(taskIDStr); parseErr == nil {
+						if task, lookupErr := s.gtd.GetTaskByID(bgCtx, taskID); lookupErr == nil {
+							if task.ProjectID.Valid {
+								pid := uuid.UUID(task.ProjectID.Bytes)
+								projectID = &pid
+							}
+						} else if lookupErr != gtd.ErrNotFound {
+							slog.Warn("autoLogMiddleware: task lookup failed",
+								"tool", tool,
+								"task_id", taskIDStr,
+								"error", lookupErr,
+							)
+						}
+					}
+				}
+
+				if logErr := s.gtd.LogActivity(bgCtx, "wayneblacktea-auto", action, projectID, notes); logErr != nil {
 					slog.Warn("autoLogMiddleware: failed to log activity",
 						"tool", tool,
 						"action", action,
 						"error", logErr,
 					)
 				}
-			}()
+			})
 
 			return res, err
 		}

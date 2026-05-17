@@ -18,6 +18,9 @@ sql:
       - "migrations/000027_knowledge_hierarchy.up.sql"
       - "migrations/000043_task_checklist.up.sql"
       - "migrations/000044_task_kind.up.sql"
+      - "migrations/000045_composite_indexes.up.sql"
+      - "migrations/000046_handoff_next_actions.up.sql"
+      - "migrations/000047_task_pr_branch.up.sql"
     gen:
       go:
         package: "db"
@@ -26,6 +29,9 @@ sql:
         emit_interface: true
         emit_exact_table_names: false
         sql_package: "pgx/v5"
+        rename:
+          pr_url: "PRUrl"
+          commit_shas: "CommitSHAs"
         overrides:
           - db_type: "uuid"
             go_type:

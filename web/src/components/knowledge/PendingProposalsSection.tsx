@@ -24,13 +24,14 @@ interface OptimisticResolution {
 
 // ----- helpers -----
 
-const TYPE_ORDER: ProposalType[] = ['goal', 'project', 'task', 'concept', 'knowledge']
+const TYPE_ORDER: ProposalType[] = ['goal', 'project', 'task', 'concept', 'knowledge', 'decision']
 const TYPE_LABELS: Record<ProposalType, string> = {
   goal: 'Goals',
   project: 'Projects',
   task: 'Tasks',
   concept: 'Concepts',
   knowledge: 'Knowledge',
+  decision: 'Decisions',
 }
 
 const VALID_STATUSES = ['pending', 'accepted', 'rejected', 'all'] as const
@@ -42,7 +43,7 @@ function isValidStatus(s: string | null): s is TabStatus {
 
 function groupByType(proposals: PendingProposal[]): Record<ProposalType, PendingProposal[]> {
   const result: Record<ProposalType, PendingProposal[]> = {
-    goal: [], project: [], task: [], concept: [], knowledge: [],
+    goal: [], project: [], task: [], concept: [], knowledge: [], decision: [],
   }
   for (const p of proposals) {
     if (p.type in result) {
@@ -81,6 +82,7 @@ export function PendingProposalsSection() {
     task: { collapsed: false },
     concept: { collapsed: false },
     knowledge: { collapsed: false },
+    decision: { collapsed: false },
   })
 
   // Single-item pending state

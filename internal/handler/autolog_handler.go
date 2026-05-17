@@ -114,6 +114,7 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	}
 	req.Actor = sanitize.Notes(req.Actor)
 	req.Action = sanitize.Notes(req.Action)
+	req.Notes = sanitize.Notes(req.Notes)
 	if req.Actor == "" || req.Action == "" {
 		return c.JSON(http.StatusBadRequest, errResp("actor and action are required"))
 	}

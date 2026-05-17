@@ -190,7 +190,14 @@ func run() error {
 					"font-src 'self' https://fonts.gstatic.com; "+
 					"script-src 'self'; "+
 					"connect-src 'self'; "+
-					"img-src 'self' data:")
+					"img-src 'self' data:; "+
+					"frame-ancestors 'none'")
+			c.Response().Header().Set("X-Frame-Options", "DENY")
+			c.Response().Header().Set("X-Content-Type-Options", "nosniff")
+			c.Response().Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			if os.Getenv("APP_ENV") == "production" {
+				c.Response().Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
 			return next(c)
 		}
 	})

@@ -101,6 +101,13 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 	}
 
 	repoName := stringArg(args, "repo_name")
+	if repoName == "" {
+		decisions, err := s.decision.All(ctx, limit)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+		}
+		return jsonText(decisions)
+	}
 	decisions, err := s.decision.ByRepo(ctx, repoName, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil

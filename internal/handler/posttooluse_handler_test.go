@@ -193,3 +193,89 @@ func TestPostToolUseHandler_ChannelFull_DropsGracefully(t *testing.T) {
 		}
 	}
 }
+
+// TestPostToolUseHandler_SanitizesActorActionNotes verifies that control
+// characters are stripped from actor, tool_name, and notes before the event
+// is enqueued. The assertions use Go string escapes — never literal NUL bytes.
+func TestPostToolUseHandler_SanitizesActorActionNotes(t *testing.T) {
+	cases := []struct {
+		name       string
+		actor      string
+		toolName   string
+		notes      string
+		wantActor  string
+		wantAction string
+		wantNotes  string
+	}{
+		{
+			name:       "NUL byte stripped from actor",
+			actor:      "claude\x00-code",
+			toolName:   "Read",
+			notes:      "normal",
+			wantActor:  "claude-code",
+			wantAction: "Read",
+			wantNotes:  "normal",
+		},
+		{
+			name:       "ANSI escape stripped from action",
+			actor:      "claude-code",
+			toolName:   "\x1b[31mBash\x1b[0m",
+			notes:      "sha256:abc",
+			wantActor:  "claude-code",
+			wantAction: "Bash",
+			wantNotes:  "sha256:abc",
+		},
+		{
+			name:       "CR+LF injection stripped from notes",
+			actor:      "claude-code",
+			toolName:   "Edit",
+			notes:      "line1\r\nline2",
+			wantActor:  "claude-code",
+			wantAction: "Edit",
+			wantNotes:  "line1line2",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakePostToolUseGTDStore{}
+			h := handler.NewPostToolUseHandler(store)
+			defer h.Stop()
+
+			e := newEcho()
+			e.POST("/api/activity/posttooluse", h.PostToolUse)
+
+			body, err := json.Marshal(map[string]string{
+				"actor":     tc.actor,
+				"tool_name": tc.toolName,
+				"notes":     tc.notes,
+			})
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+
+			rec := performRequest(e, http.MethodPost, "/api/activity/posttooluse", string(body))
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("got %d, want 202 (body: %s)", rec.Code, rec.Body.String())
+			}
+
+			if !waitForLogged(store, 1, 500*time.Millisecond) {
+				t.Fatal("expected activity to be logged within 500ms")
+			}
+
+			store.mu.Lock()
+			got := store.logged[0]
+			store.mu.Unlock()
+
+			if got.Actor != tc.wantActor {
+				t.Errorf("actor = %q, want %q", got.Actor, tc.wantActor)
+			}
+			if got.Action != tc.wantAction {
+				t.Errorf("action = %q, want %q", got.Action, tc.wantAction)
+			}
+			if got.Notes != tc.wantNotes {
+				t.Errorf("notes = %q, want %q", got.Notes, tc.wantNotes)
+			}
+		})
+	}
+}

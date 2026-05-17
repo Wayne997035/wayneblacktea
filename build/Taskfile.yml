@@ -14,10 +14,18 @@ tasks:
       - task: check
 
   check:
-    desc: "Full quality gate — all checks run in parallel after mod-tidy"
+    desc: "Quality gate (< 5 min target) — lint + unit tests + frontend + vuln in parallel. No testcontainers. Use check-full for integration."
     cmds:
       - task: mod-tidy
       - task: _check-parallel
+      - task: build-all
+    silent: false
+
+  check-full:
+    desc: "Full gate including testcontainers integration tests — use in CI and before release"
+    cmds:
+      - task: mod-tidy
+      - task: _check-full-parallel
       - task: build-all
     silent: false
 
@@ -37,6 +45,14 @@ tasks:
     silent: false
 
   _check-parallel:
+    internal: true
+    deps:
+      - frontend-check
+      - vuln
+      - lint
+      - test
+
+  _check-full-parallel:
     internal: true
     deps:
       - frontend-check
@@ -194,14 +210,22 @@ tasks:
     dir: ..
 
   test:
-    desc: "Run unit tests (-short, no Docker required)"
+    desc: "Run unit tests (-short, no Docker, no race detector — fast path)"
     deps:
       - go-cache
     cmds:
-      # cmd/server embeds web/dist which requires a prior `npm run build`.
-      # Exclude it so tests are not blocked by a missing frontend build artifact.
       # -short skips testcontainers-based integration tests that require Docker.
-      - go test -short -race ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      # No -race: mcp + sqlite packages are goroutine-heavy; race adds 5-10× overhead
+      # and pushes unit tests past the 5-min budget. Use test-race for targeted race checks.
+      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+    dir: ..
+
+  test-race:
+    desc: "Run unit tests with race detector — slower, use before release or when debugging data races"
+    deps:
+      - go-cache
+    cmds:
+      - go test -short -race -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   go-cache:

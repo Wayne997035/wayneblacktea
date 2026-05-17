@@ -170,6 +170,10 @@ func (m *mockGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) GetTaskByID(_ context.Context, _ uuid.UUID) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 // successHandler returns a fixed success result — simulates a tool that completed OK.
 func successHandler(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 	return mcpmsg.NewToolResultText("ok"), nil
@@ -327,6 +331,149 @@ func TestAutoLogMiddleware(t *testing.T) {
 			}
 			if tc.wantNotesHas != "" && !strings.Contains(got.notes, tc.wantNotesHas) {
 				t.Errorf("notes = %q, want to contain %q", got.notes, tc.wantNotesHas)
+			}
+		})
+	}
+}
+
+// mockGTDStoreWithTaskLookup embeds mockGTDStore and also satisfies
+// taskProjectGetter, enabling tests that verify project_id enrichment.
+type mockGTDStoreWithTaskLookup struct {
+	*mockGTDStore
+	// tasksByID maps task UUID to the task returned by GetTaskByID.
+	// If the UUID is not present, GetTaskByID returns gtd.ErrNotFound.
+	tasksByID map[uuid.UUID]*db.Task
+}
+
+func (m *mockGTDStoreWithTaskLookup) GetTaskByID(_ context.Context, id uuid.UUID) (*db.Task, error) {
+	if t, ok := m.tasksByID[id]; ok {
+		return t, nil
+	}
+	return nil, gtd.ErrNotFound
+}
+
+// waitForLogsWithLookup is like waitForLogs but for mockGTDStoreWithTaskLookup.
+func waitForLogsWithLookup(t *testing.T, store *mockGTDStoreWithTaskLookup, n int, deadline time.Duration) []logCall {
+	t.Helper()
+	timeout := time.After(deadline)
+	for {
+		logs := store.recordedLogs()
+		if len(logs) >= n {
+			return logs
+		}
+		select {
+		case <-timeout:
+			t.Fatalf("timed out waiting for %d log entries; got %d", n, len(logs))
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+// TestAutoLogMiddleware_ProjectIDEnrichment verifies that autoLogMiddleware
+// populates project_id on the activity_log entry when the GTD store implements
+// taskProjectGetter and the task has a project_id.
+func TestAutoLogMiddleware_ProjectIDEnrichment(t *testing.T) {
+	projectID := uuid.New()
+	taskID := uuid.New()
+	unknownTaskID := uuid.New()
+
+	validTask := &db.Task{
+		ID: taskID,
+		ProjectID: func() pgtype.UUID {
+			return pgtype.UUID{Bytes: [16]byte(projectID), Valid: true}
+		}(),
+	}
+
+	cases := []struct {
+		name          string
+		tool          string
+		args          map[string]any
+		wantProjectID *uuid.UUID
+		wantLogged    bool
+		wantAction    string
+	}{
+		{
+			name:          "complete_task with known task propagates project_id",
+			tool:          "complete_task",
+			args:          map[string]any{"task_id": taskID.String(), "artifact": "https://example.com/pr/1"},
+			wantProjectID: &projectID,
+			wantLogged:    true,
+			wantAction:    "task:completed",
+		},
+		{
+			name:          "begin_task with known task propagates project_id",
+			tool:          "begin_task",
+			args:          map[string]any{"task_id": taskID.String()},
+			wantProjectID: &projectID,
+			wantLogged:    true,
+			wantAction:    "task:begin",
+		},
+		{
+			name:          "update_task with known task propagates project_id",
+			tool:          "update_task",
+			args:          map[string]any{"task_id": taskID.String()},
+			wantProjectID: &projectID,
+			wantLogged:    true,
+			wantAction:    "task:updated",
+		},
+		{
+			name:          "complete_task with unknown task_id falls back to nil project_id",
+			tool:          "complete_task",
+			args:          map[string]any{"task_id": unknownTaskID.String()},
+			wantProjectID: nil,
+			wantLogged:    true,
+			wantAction:    "task:completed",
+		},
+		{
+			name:          "complete_task with invalid task_id falls back to nil project_id",
+			tool:          "complete_task",
+			args:          map[string]any{"task_id": "not-a-uuid"},
+			wantProjectID: nil,
+			wantLogged:    true,
+			wantAction:    "task:completed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &mockGTDStore{}
+			store := &mockGTDStoreWithTaskLookup{
+				mockGTDStore: inner,
+				tasksByID:    map[uuid.UUID]*db.Task{taskID: validTask},
+			}
+			srv := &Server{gtd: store}
+			mw := srv.autoLogMiddleware()
+			wrapped := mw(successHandler)
+
+			req := mcpmsg.CallToolRequest{}
+			req.Params.Name = tc.tool
+			req.Params.Arguments = tc.args
+
+			_, err := wrapped(context.Background(), req)
+			if err != nil {
+				t.Fatalf("wrapped handler returned unexpected error: %v", err)
+			}
+
+			logs := waitForLogsWithLookup(t, store, 1, 2*time.Second)
+			if len(logs) != 1 {
+				t.Fatalf("expected exactly 1 log entry, got %d", len(logs))
+			}
+			got := logs[0]
+
+			if got.action != tc.wantAction {
+				t.Errorf("action = %q, want %q", got.action, tc.wantAction)
+			}
+			if tc.wantProjectID == nil {
+				if got.projectID != nil {
+					t.Errorf("projectID = %v, want nil", got.projectID)
+				}
+			} else {
+				if got.projectID == nil {
+					t.Errorf("projectID = nil, want %v", *tc.wantProjectID)
+				} else if *got.projectID != *tc.wantProjectID {
+					t.Errorf("projectID = %v, want %v", *got.projectID, *tc.wantProjectID)
+				}
 			}
 		})
 	}

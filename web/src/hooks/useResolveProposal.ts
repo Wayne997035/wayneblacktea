@@ -27,5 +27,10 @@ export function useResolveProposal() {
       void qc.invalidateQueries({ queryKey: ['dashboard', 'stats'] })
       void qc.invalidateQueries({ queryKey: ['dashboard', 'automation-feed'] })
     },
+    onError: (error: Error) => {
+      // Error state is surfaced via mutation.isError in the calling component.
+      // Log here for observability without crashing the UI.
+      console.error('useResolveProposal: resolve failed', error)
+    },
   })
 }

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Sprint 0517-P1
+
+- Dashboard: new `/proposals` page lists pending proposals for review.
+- Dashboard: `HandoffCard` now displays the `next_actions` field from session handoffs.
+- GTD Store interface: `GetTaskByID(ctx, uuid) (*gtd.Task, error)` added to both SQLite and Postgres backends.
+- Session rows now carry `branch_name`, `pr_url`, `commit_shas`, and `next_actions` fields.
+- `list_decisions` MCP tool: fixed a fallthrough bug in the switch statement that could return incorrect results.
+- `cmd/server`: HTTP security response headers added (`X-Content-Type-Options`, `X-Frame-Options`, and others).
+- Build: `go test` now runs with `-p 4` for parallel package execution.
+
+### Fixed — Sprint 0517-P1
+
+- `posttooluse` handler: `actor`, `action`, and `notes` fields are now sanitized before DB write.
+- `autolog` handler: input fields are now validated before DB write.
+- `autolog` middleware: `project_id` is now correctly propagated from task lookup context.
+
 ### Added — Phase A (schema)
 - 10 domain tables now carry a nullable `workspace_id` column with a partial
   index (`WHERE workspace_id IS NOT NULL`) for future per-workspace scoping.
@@ -75,4 +91,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `migrations/000011_backfill_workspace_id.sql` (commented; customise
   before running).
 
-[Unreleased]: https://github.com/waynechen/wayneblacktea/commits/master
+[Unreleased]: https://github.com/Wayne997035/wayneblacktea/commits/master

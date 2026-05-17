@@ -88,6 +88,10 @@ func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error        {
 func (s *stubGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) { return 0, 0, nil }
 func (s *stubGTDStore) TopPendingTask(_ context.Context) (*db.Task, error)     { return nil, nil }
 func (s *stubGTDStore) WorkspaceID() pgtype.UUID                               { return pgtype.UUID{} }
+func (s *stubGTDStore) GetTaskByID(_ context.Context, _ uuid.UUID) (*db.Task, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) RecentCompletedTasks(_ context.Context, _ uuid.UUID, _ int32) ([]db.Task, error) {
 	return nil, nil
 }

@@ -584,6 +584,12 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 	return &row, nil
 }
 
+// GetTaskByID returns a single task by UUID, scoped to the configured workspace.
+// Returns ErrNotFound when no matching row exists. Satisfies StoreIface.
+func (s *Store) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
+	return s.getTaskByID(ctx, id)
+}
+
 // getTaskByID fetches a single task by ID, scoped to the configured workspace.
 // Returns ErrNotFound when no matching row exists. Hand-rolled query (not sqlc)
 // to avoid churning the codegen surface for a single read.
