@@ -14,6 +14,10 @@ type StoreIface interface {
 	SetHandoff(ctx context.Context, p HandoffParams) (*db.SessionHandoff, error)
 	LatestHandoff(ctx context.Context) (*db.SessionHandoff, error)
 	Resolve(ctx context.Context, id uuid.UUID) error
+	// MarkNextActionDone sets next_actions[step].status = "done" for the
+	// handoff identified by id, scoped to the caller's workspace.
+	// Returns ErrNotFound when no matching handoff exists in the workspace.
+	MarkNextActionDone(ctx context.Context, handoffID uuid.UUID, step int) (*db.SessionHandoff, error)
 	// UpdateSummary writes a plain-text session summary to the most recent
 	// unresolved handoff's summary_text column. Used by the Stop hook after
 	// SummarizeSession produces a ≤500-char digest. Silently no-ops when no

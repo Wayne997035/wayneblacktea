@@ -42,7 +42,7 @@ var _ gtd.StoreIface = (*GTDStore)(nil)
 
 const tasksSelectCols = `id, workspace_id, project_id, title, description, status,
 	priority, importance, context, assignee, due_date, artifact,
-	created_at, updated_at, kind`
+	created_at, updated_at, kind, branch_name, pr_url, commit_shas`
 
 // scanTask reads a row in tasksSelectCols order into db.Task, converting
 // SQLite TEXT columns to the pgtype values the Postgres stores already use.
@@ -55,11 +55,13 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		statusStr                                                              string
 		importanceNI                                                           sql.NullInt32
 		kindStr                                                                string
+		branchNameNS, prURLNS                                                  sql.NullString
+		commitSHAsStr                                                          sql.NullString
 	)
 
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &t.Title, &descNS, &statusStr,
 		&t.Priority, &importanceNI, &contextNS, &assigneeNS, &dueDateNS, &artifactNS,
-		&createdNS, &updNS, &kindStr)
+		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr)
 	if err != nil {
 		return db.Task{}, err
 	}
@@ -86,6 +88,15 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		kindStr = "general"
 	}
 	t.Kind = kindStr
+	t.BranchName = pgtypeText(branchNameNS.String, branchNameNS.Valid)
+	t.PRUrl = pgtypeText(prURLNS.String, prURLNS.Valid)
+	// commit_shas is stored as JSON TEXT in SQLite; decode into []string.
+	if commitSHAsStr.Valid && commitSHAsStr.String != "" && commitSHAsStr.String != "[]" {
+		var shas []string
+		if jsonErr := json.Unmarshal([]byte(commitSHAsStr.String), &shas); jsonErr == nil {
+			t.CommitSHAs = shas
+		}
+	}
 	return t, nil
 }
 
@@ -522,6 +533,9 @@ func (s *GTDStore) TasksByProjectAllStatuses(ctx context.Context, projectID uuid
 }
 
 // CreateTask inserts a new task with all Phase A/B fields supported.
+// Hand-rolled INSERT (instead of sqlc CreateTask) so that branch_name, pr_url,
+// and commit_shas columns added in migration 000047 are included without
+// requiring a sqlc regeneration run.
 func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
 	id := uuid.New()
 	priority := p.Priority
@@ -540,15 +554,27 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	if kind == "" {
 		kind = "general"
 	}
+	// commit_shas stored as JSON TEXT in SQLite; always empty on creation.
+	const commitSHAsJSON = "[]"
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, priority,
-		 importance, context, assignee, due_date, kind, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)`
+		 importance, context, assignee, due_date, kind,
+		 branch_name, pr_url, commit_shas, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)`
 	now := nowRFC3339()
+	var branchVal any
+	if p.BranchName != nil && *p.BranchName != "" {
+		branchVal = *p.BranchName
+	}
+	var prURLVal any
+	if p.PRUrl != nil && *p.PRUrl != "" {
+		prURLVal = *p.PRUrl
+	}
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
-		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, kind, now)
+		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, kind,
+		branchVal, prURLVal, commitSHAsJSON, now)
 	if err != nil {
 		return nil, errWrap("CreateTask", err)
 	}
@@ -794,19 +820,31 @@ func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid
 // mergedTaskFields holds the resolved column values for an UpdateTask write,
 // computed by mergeTaskFields from the existing row and the patch params.
 type mergedTaskFields struct {
-	title      string
-	desc       any
-	priority   int32
-	importance any
-	assignee   any
-	dueDate    any
-	taskCtx    any
-	status     string
+	title          string
+	desc           any
+	priority       int32
+	importance     any
+	assignee       any
+	dueDate        any
+	taskCtx        any
+	status         string
+	branchName     any
+	prURL          any
+	commitSHAsJSON string
 }
 
 // mergeTaskFields merges non-nil patch params over the existing task row values,
 // producing a complete set of column values ready for an UPDATE statement.
+// Split into two helpers (mergeTaskBaseFields + mergeTaskPRFields) to keep each
+// below the gocyclo threshold of 15.
 func mergeTaskFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFields {
+	m := mergeTaskBaseFields(existing, p)
+	mergeTaskPRFields(existing, p, &m)
+	return m
+}
+
+// mergeTaskBaseFields resolves the core (non-PR) task columns.
+func mergeTaskBaseFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFields {
 	m := mergedTaskFields{
 		title:    existing.Title,
 		priority: existing.Priority,
@@ -821,7 +859,6 @@ func mergeTaskFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFields
 	if p.Status != nil {
 		m.status = *p.Status
 	}
-
 	if p.Description != nil {
 		m.desc = nullStringIfEmpty(*p.Description)
 	} else if existing.Description.Valid {
@@ -850,6 +887,43 @@ func mergeTaskFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFields
 	return m
 }
 
+// mergeTaskPRFields resolves the branch_name / pr_url / commit_shas columns
+// and writes them into m. Extracted to keep mergeTaskBaseFields complexity low.
+func mergeTaskPRFields(existing *db.Task, p gtd.UpdateTaskParams, m *mergedTaskFields) {
+	// branch_name: nil → preserve; non-nil → overwrite (empty string clears to NULL)
+	if p.BranchName != nil {
+		if *p.BranchName != "" {
+			m.branchName = *p.BranchName
+		}
+	} else if existing.BranchName.Valid {
+		m.branchName = existing.BranchName.String
+	}
+
+	// pr_url: nil → preserve; non-nil → overwrite (empty string clears to NULL)
+	if p.PRUrl != nil {
+		if *p.PRUrl != "" {
+			m.prURL = *p.PRUrl
+		}
+	} else if existing.PRUrl.Valid {
+		m.prURL = existing.PRUrl.String
+	}
+
+	// commit_shas: nil → preserve; non-nil → replace entirely.
+	commitSHAs := existing.CommitSHAs
+	if p.CommitSHAs != nil {
+		commitSHAs = p.CommitSHAs
+	}
+	if len(commitSHAs) == 0 {
+		m.commitSHAsJSON = "[]"
+		return
+	}
+	if b, marshalErr := json.Marshal(commitSHAs); marshalErr == nil {
+		m.commitSHAsJSON = string(b)
+	} else {
+		m.commitSHAsJSON = "[]"
+	}
+}
+
 // UpdateTask performs a partial update of a task by ID. nil fields in p are
 // preserved from the existing row (no null-clear support). Pre-reads the existing
 // task to fill nil params, then executes a single UPDATE.
@@ -871,12 +945,16 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		    due_date    = ?7,
 		    context     = ?8,
 		    status      = ?9,
-		    updated_at  = ?10
+		    branch_name = ?10,
+		    pr_url      = ?11,
+		    commit_shas = ?12,
+		    updated_at  = ?13
 		WHERE id = ?1
-		  AND (?11 IS NULL OR workspace_id = ?11)`
+		  AND (?14 IS NULL OR workspace_id = ?14)`
 	now := nowRFC3339()
 	res, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status,
+		m.branchName, m.prURL, m.commitSHAsJSON,
 		now, s.db.workspaceArg(),
 	)
 	if err != nil {

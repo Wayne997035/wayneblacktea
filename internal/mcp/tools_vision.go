@@ -55,6 +55,7 @@ func (s *Server) registerVisionTools(ms *server.MCPServer) {
 		mcp.WithString("title", mcp.Description("GTD task title (defaults to vision item title if omitted)")),
 		mcp.WithString("description", mcp.Description("GTD task description")),
 		mcp.WithNumber("priority", mcp.Description("GTD task priority 1-5 (lower is higher). Default: 3.")),
+		mcp.WithString("due_date", mcp.Description("Optional due date for the promoted task in RFC3339 format (e.g. 2026-05-31T00:00:00Z)")),
 	), s.handlePromoteVisionToTask)
 }
 
@@ -206,6 +207,13 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 		Title:       title,
 		Description: stringArg(args, "description"),
 		Priority:    priority,
+	}
+	if rawDue := stringArg(args, "due_date"); rawDue != "" {
+		t, parseErr := time.Parse(time.RFC3339, rawDue)
+		if parseErr != nil {
+			return mcp.NewToolResultError("invalid due_date: must be RFC3339 (e.g. 2026-05-31T00:00:00Z)"), nil
+		}
+		taskParams.DueDate = &t
 	}
 	task, err := s.gtd.CreateTask(ctx, taskParams)
 	if err != nil {

@@ -1,8 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { DayDrawer } from './DayDrawer'
 import { ALL_KINDS } from './eventStyles'
 import type { TimelineEvent, TimelineKind } from '../../types/api'
+
+function renderInRouter(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>)
+}
 
 function evt(kind: TimelineKind, occurredAt: string, title: string): TimelineEvent {
   return { kind, occurred_at: occurredAt, ref_id: `${kind}-${occurredAt}`, title }
@@ -12,7 +17,7 @@ describe('DayDrawer', () => {
   const allFilter = new Set<TimelineKind>(ALL_KINDS)
 
   it('does not render dialog content when day is null', () => {
-    render(
+    renderInRouter(
       <DayDrawer day={null} events={[]} kindFilter={allFilter} onClose={() => {}} />,
     )
     // The aside is always present (for animation), but headers/body only when day is set.
@@ -23,7 +28,7 @@ describe('DayDrawer', () => {
   })
 
   it('renders the dialog with full date heading when day is set', () => {
-    render(
+    renderInRouter(
       <DayDrawer
         day={new Date(2025, 4, 15)}
         events={[]}
@@ -43,7 +48,7 @@ describe('DayDrawer', () => {
       evt('decision',     '2025-05-15T13:00:00Z', 'Decision A'),
       evt('decision',     '2025-05-14T12:00:00Z', 'Other day'),
     ]
-    render(
+    renderInRouter(
       <DayDrawer
         day={new Date(2025, 4, 15)}
         events={events}
@@ -62,7 +67,7 @@ describe('DayDrawer', () => {
 
   it('calls onClose when the close button is clicked', () => {
     const onClose = vi.fn()
-    render(
+    renderInRouter(
       <DayDrawer
         day={new Date(2025, 4, 15)}
         events={[]}
@@ -76,7 +81,7 @@ describe('DayDrawer', () => {
 
   it('calls onClose when ESC is pressed', () => {
     const onClose = vi.fn()
-    render(
+    renderInRouter(
       <DayDrawer
         day={new Date(2025, 4, 15)}
         events={[]}
@@ -90,7 +95,7 @@ describe('DayDrawer', () => {
 
   it('does not call onClose on ESC when day is null', () => {
     const onClose = vi.fn()
-    render(
+    renderInRouter(
       <DayDrawer day={null} events={[]} kindFilter={allFilter} onClose={onClose} />,
     )
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -102,12 +107,12 @@ describe('DayDrawer', () => {
     // then open and close the drawer. Focus MUST land back on the trigger.
     function Harness({ day }: { day: Date | null }) {
       return (
-        <>
+        <MemoryRouter>
           <button type="button" data-testid="trigger">
             Open
           </button>
           <DayDrawer day={day} events={[]} kindFilter={allFilter} onClose={() => {}} />
-        </>
+        </MemoryRouter>
       )
     }
 
@@ -133,7 +138,7 @@ describe('DayDrawer', () => {
       evt('decision',     '2025-05-15T12:30:00Z', 'Visible'),
     ]
     const filter = new Set<TimelineKind>(['decision'])
-    render(
+    renderInRouter(
       <DayDrawer
         day={new Date(2025, 4, 15)}
         events={events}

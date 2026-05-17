@@ -13,6 +13,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -53,11 +55,52 @@ type latestStatusSnapshot struct {
 	SotaCatchupPct int    `json:"sota_catchup_pct"`
 }
 
+// pendingHandoffView is the JSON-friendly view of a session handoff returned
+// in get_today_context. next_actions is decoded from raw JSON bytes to a typed
+// slice so callers see a proper array (not base64-encoded bytes).
+type pendingHandoffView struct {
+	ID             uuid.UUID            `json:"id"`
+	ProjectID      pgtype.UUID          `json:"project_id"`
+	RepoName       pgtype.Text          `json:"repo_name"`
+	Intent         string               `json:"intent"`
+	ContextSummary pgtype.Text          `json:"context_summary"`
+	ResolvedAt     pgtype.Timestamptz   `json:"resolved_at"`
+	CreatedAt      pgtype.Timestamptz   `json:"created_at"`
+	WorkspaceID    pgtype.UUID          `json:"workspace_id"`
+	NextActions    []session.NextAction `json:"next_actions"`
+}
+
+// buildPendingHandoffView converts a db.SessionHandoff into a pendingHandoffView,
+// decoding the raw next_actions bytes into a typed slice.
+func buildPendingHandoffView(h *db.SessionHandoff) *pendingHandoffView {
+	if h == nil {
+		return nil
+	}
+	v := &pendingHandoffView{
+		ID:             h.ID,
+		ProjectID:      h.ProjectID,
+		RepoName:       h.RepoName,
+		Intent:         h.Intent,
+		ContextSummary: h.ContextSummary,
+		ResolvedAt:     h.ResolvedAt,
+		CreatedAt:      h.CreatedAt,
+		WorkspaceID:    h.WorkspaceID,
+		NextActions:    []session.NextAction{},
+	}
+	if len(h.NextActions) > 0 && string(h.NextActions) != "[]" {
+		var actions []session.NextAction
+		if err := json.Unmarshal(h.NextActions, &actions); err == nil {
+			v.NextActions = actions
+		}
+	}
+	return v
+}
+
 type todayContext struct {
 	Goals                []db.Goal             `json:"goals"`
 	Projects             []db.Project          `json:"projects"`
 	WeeklyProgress       weeklyProgress        `json:"weekly_progress"`
-	PendingHandoff       *db.SessionHandoff    `json:"pending_handoff"`
+	PendingHandoff       *pendingHandoffView   `json:"pending_handoff"`
 	ArchSnapshotData     string                `json:"arch_snapshot_data,omitempty"` // empty when no snapshot stored
 	LatestStatusSnapshot *latestStatusSnapshot `json:"latest_status_snapshot,omitempty"`
 }
@@ -115,7 +158,7 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 		Goals:                goals,
 		Projects:             projects,
 		WeeklyProgress:       weeklyProgress{Completed: completed, Total: total},
-		PendingHandoff:       handoff,
+		PendingHandoff:       buildPendingHandoffView(handoff),
 		ArchSnapshotData:     archData,
 		LatestStatusSnapshot: latestSnap,
 	})

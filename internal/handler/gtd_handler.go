@@ -423,13 +423,16 @@ type updateTaskRequest struct {
 	DueDate     *time.Time `json:"due_date"`
 	Context     *string    `json:"context"`
 	Status      *string    `json:"status"`
+	BranchName  *string    `json:"branch_name"` // nil → preserve; empty string → clear to NULL
+	PRUrl       *string    `json:"pr_url"`      // nil → preserve; empty string → clear to NULL
 }
 
 // updateTaskRequestIsEmpty returns true when all patch fields are nil (nothing to update).
 func updateTaskRequestIsEmpty(req *updateTaskRequest) bool {
 	return req.Title == nil && req.Description == nil && req.Priority == nil &&
 		req.Importance == nil && req.Assignee == nil && req.DueDate == nil &&
-		req.Context == nil && req.Status == nil
+		req.Context == nil && req.Status == nil &&
+		req.BranchName == nil && req.PRUrl == nil
 }
 
 // validateUpdateTaskFields validates individual field values in the request,
@@ -481,7 +484,40 @@ func updateTaskParamsFromRequest(req *updateTaskRequest) gtd.UpdateTaskParams {
 		DueDate:     req.DueDate,
 		Context:     req.Context,
 		Status:      req.Status,
+		BranchName:  req.BranchName,
+		PRUrl:       req.PRUrl,
 	}
+}
+
+// ListTasks returns all pending/in-progress tasks, optionally filtered by
+// branch_name or pr_url query parameters. Filter is applied Go-side after
+// fetching all tasks (personal-scale, low row count).
+func (h *GTDHandler) ListTasks(c echo.Context) error {
+	tasks, err := h.store.Tasks(c.Request().Context(), nil)
+	if err != nil {
+		c.Logger().Errorf("ListTasks: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	branchFilter := c.QueryParam("branch")
+	prURLFilter := c.QueryParam("pr_url")
+
+	if branchFilter == "" && prURLFilter == "" {
+		return c.JSON(http.StatusOK, tasks)
+	}
+
+	// Apply Go-side filtering for new columns.
+	filtered := tasks[:0]
+	for _, t := range tasks {
+		if branchFilter != "" && (!t.BranchName.Valid || t.BranchName.String != branchFilter) {
+			continue
+		}
+		if prURLFilter != "" && (!t.PRUrl.Valid || t.PRUrl.String != prURLFilter) {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return c.JSON(http.StatusOK, filtered)
 }
 
 // UpdateTask handles PATCH /api/tasks/:id — partial update of a task's mutable fields.

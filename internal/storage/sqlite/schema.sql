@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     artifact     TEXT,
     checklist    TEXT NOT NULL DEFAULT '[]', -- JSON array of ChecklistItem; parity with Postgres jsonb checklist column (migration 000043)
     kind         TEXT NOT NULL DEFAULT 'general' CHECK (kind IN ('general','fix-pr','feature','refactor','research','chore')), -- task kind; parity with Postgres kind column (migration 000044)
+    branch_name  TEXT,                       -- git branch name for the task (migration 000047)
+    pr_url       TEXT,                       -- GitHub PR URL for the task (migration 000047)
+    commit_shas  TEXT NOT NULL DEFAULT '[]', -- JSON array of commit SHAs (migration 000047)
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -79,7 +82,8 @@ CREATE TABLE IF NOT EXISTS session_handoffs (
     resolved_at     TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     summary_text    TEXT,
-    embedding       BLOB
+    embedding       BLOB,
+    next_actions    TEXT NOT NULL DEFAULT '[]' -- JSON array of NextAction; parity with Postgres jsonb next_actions column (migration 000046)
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_status               ON projects(status);
@@ -479,6 +483,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_completion_candidates_task_reason
     ON completion_candidates(task_id, reason);
 CREATE INDEX IF NOT EXISTS idx_completion_candidates_workspace_id
     ON completion_candidates(workspace_id) WHERE workspace_id IS NOT NULL;
+
+-- Mirrored from migrations/sqlite/000047_task_pr_branch.up.sql.
+CREATE INDEX IF NOT EXISTS idx_tasks_branch_name ON tasks(branch_name) WHERE branch_name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_pr_url ON tasks(pr_url) WHERE pr_url IS NOT NULL;
 
 -- Mirrored from migrations/sqlite/000045_composite_indexes.up.sql.
 -- Composite indexes for frequent multi-column query patterns.

@@ -1,0 +1,3 @@
+ALTER TABLE tasks ADD COLUMN branch_name TEXT;
+ALTER TABLE tasks ADD COLUMN pr_url TEXT;
+ALTER TABLE tasks ADD COLUMN commit_shas TEXT NOT NULL DEFAULT '[]';
