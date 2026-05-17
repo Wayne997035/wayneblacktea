@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { TaskRow } from './TaskRow'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
-import { useTasksByProject, useTasksForAllProjects, useCompleteTask } from '../../hooks/useTasks'
+import { useTasksByProject, useAllTasks, useCompleteTask } from '../../hooks/useTasks'
 import type { Project } from '../../types/api'
 
 interface TaskListProps {
@@ -57,8 +57,7 @@ interface AllProjectsTasksProps {
 }
 
 function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
-  const activeProjects = projects.filter((p) => p.status === 'active')
-  const { isLoading, tasks } = useTasksForAllProjects(activeProjects)
+  const { data: tasks = [], isLoading } = useAllTasks()
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const completeTask = useCompleteTask()
@@ -88,6 +87,7 @@ function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
             onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
             onComplete={(taskId) => {
               void completeTask.mutateAsync(taskId).then(() => {
+                void queryClient.invalidateQueries({ queryKey: ['tasks'] })
                 if (task.project_id) {
                   void queryClient.invalidateQueries({ queryKey: ['projects', task.project_id, 'tasks'] })
                 }

@@ -25,6 +25,14 @@ export function useTasksByProject(projectId: string, statusFilter: TaskStatusFil
   })
 }
 
+export function useAllTasks(statusFilter: TaskStatusFilter = 'active') {
+  const suffix = statusFilter === 'all' ? '?status=all' : ''
+  return useQuery<Task[]>({
+    queryKey: ['tasks', statusFilter],
+    queryFn: () => apiFetch<Task[]>(`/api/tasks${suffix}`),
+  })
+}
+
 export function useTasksForAllProjects(projects: Project[]) {
   const queries = useQueries({
     queries: projects.map((p) => ({

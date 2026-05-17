@@ -13,6 +13,7 @@ AGENTS.md
 !.env.example
 !.env.sample
 .cache/
+node_modules/
 bin/
 dist/
 /tmp/
@@ -32,6 +33,7 @@ secrets/
 vendor/
 *.test
 coverage.out
+/build/.task/
 /server
 /discordbot
 /wayneblacktea-server
