@@ -110,7 +110,10 @@ func TestHashedEmbedding_AllDimsInRange(t *testing.T) {
 
 func TestNewEmbeddingProvider_Defaults(t *testing.T) {
 	t.Setenv("EMBEDDING_PROVIDER", "")
-	p := localai.NewEmbeddingProvider()
+	p, err := localai.NewEmbeddingProvider()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}
@@ -125,7 +128,10 @@ func TestNewEmbeddingProvider_Defaults(t *testing.T) {
 
 func TestNewEmbeddingProvider_Hashed(t *testing.T) {
 	t.Setenv("EMBEDDING_PROVIDER", "hashed")
-	p := localai.NewEmbeddingProvider()
+	p, err := localai.NewEmbeddingProvider()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}
@@ -138,18 +144,14 @@ func TestNewEmbeddingProvider_Hashed(t *testing.T) {
 	}
 }
 
-func TestNewEmbeddingProvider_UnknownFallsBackToHashed(t *testing.T) {
+func TestNewEmbeddingProvider_UnknownReturnsError(t *testing.T) {
 	t.Setenv("EMBEDDING_PROVIDER", "unknown-provider")
-	p := localai.NewEmbeddingProvider()
-	if p == nil {
-		t.Fatal("expected non-nil provider")
+	p, err := localai.NewEmbeddingProvider()
+	if err == nil {
+		t.Fatal("expected error for unknown provider, got nil")
 	}
-	vec, err := p.Embed("fallback test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(vec) != 32 {
-		t.Errorf("expected 32-dim vector from fallback, got %d", len(vec))
+	if p != nil {
+		t.Errorf("expected nil provider on error, got %T", p)
 	}
 }
 

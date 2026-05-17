@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -47,9 +48,12 @@ func (h *AuthSessionHandler) IssueSession(c echo.Context) error {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	token := buildAuthToken(h.apiKey, ts)
 
-	// Secure=true only when the request arrived over HTTPS (production/Railway).
-	// Local dev over plain HTTP leaves the flag false so the browser accepts it.
-	secure := c.Request().Header.Get("X-Forwarded-Proto") == "https" || c.Request().TLS != nil
+	// Secure=true when APP_ENV=production (set by Railway operator config) or when
+	// the connection itself is TLS. We deliberately do NOT read X-Forwarded-Proto
+	// here: that header is client-controllable when no trusted-proxy CIDR is
+	// configured, so an attacker on plain HTTP could spoof "https" and cause the
+	// browser to set the cookie with Secure=true on an insecure channel (M-4).
+	secure := os.Getenv("APP_ENV") == "production" || c.Request().TLS != nil
 
 	cookie := &http.Cookie{
 		Name:     WbtSessionCookie,

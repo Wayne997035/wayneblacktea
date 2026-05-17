@@ -289,7 +289,16 @@ func (s *SQLiteStore) DetectAndUpsert(ctx context.Context, p DetectParams) ([]Ca
 
 // detectStaleInProgress runs rule 1: in_progress tasks not updated within staleHours.
 func (s *SQLiteStore) detectStaleInProgress(ctx context.Context, ws any, staleHours int) ([]Candidate, error) {
-	//nolint:gosec // reason: staleHours is a server-validated integer (1-168); no user string interpolated; no SQL injection risk
+	// Defence-in-depth cap: the MCP handler already caps at 168 h, but this
+	// store-layer guard ensures no future caller can inject an unbounded SQL
+	// datetime() interval via fmt.Sprintf (M-6). SQLite's datetime() function
+	// does not support bind parameters for interval strings, so fmt.Sprintf is
+	// required; an integer cap is the safe alternative to parameterisation.
+	const maxStaleHours = 168 * 7 // 4 weeks maximum window
+	if staleHours > maxStaleHours {
+		staleHours = maxStaleHours
+	}
+	//nolint:gosec // reason: staleHours is capped above to ≤1176 (int); no user string interpolated; no SQL injection risk
 	q := fmt.Sprintf(`SELECT id, updated_at FROM tasks
 		WHERE status = 'in_progress'
 		  AND (?1 IS NULL OR workspace_id = ?1)

@@ -177,7 +177,11 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		return "" // nothing to embed → skip recall
 	}
 
-	embedder := localai.NewEmbeddingProvider()
+	embedder, err := localai.NewEmbeddingProvider()
+	if err != nil {
+		slog.Warn("wbt-context: unknown embedding provider", "err", err)
+		return ""
+	}
 	queryVec, err := embedder.Embed(queryText)
 	if err != nil || len(queryVec) == 0 {
 		slog.Warn("wbt-context: embedding failed for semantic recall", "err", err)
