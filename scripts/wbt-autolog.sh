@@ -6,12 +6,11 @@
 # it logs an activity entry to wayneblacktea via HTTP (curl).
 #
 # Silently exits on any failure — hooks must never block the main workflow.
-# WBT_API_URL defaults to the Railway production URL; override with a local
-# value (e.g. http://localhost:8080) for development.
+# Set WBT_API_URL to your server address (default: http://localhost:8080).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-WBT_URL="${WBT_API_URL:-https://wayneblacktea-production.up.railway.app}"
+WBT_URL="${WBT_API_URL:-http://localhost:8080}"
 FALLBACK_LOG="$PROJECT_ROOT/.cache/wbt-pending-decisions.jsonl"
 
 warn_if_insecure_env_file() {
