@@ -264,6 +264,13 @@ func TestParseUpdateTaskArgs_PRUrlIssuesNotPulls(t *testing.T) {
 	}
 }
 
+func TestParseUpdateTaskArgs_PRUrlTrailingPath(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://github.com/owner/repo/pull/42/files"})
+	if msg == "" {
+		t.Fatal("expected error for pr_url with trailing path /files")
+	}
+}
+
 func TestParseUpdateTaskArgs_ValidBranchAndPR(t *testing.T) {
 	p, msg := parseUpdateTaskArgs(map[string]any{
 		"branch_name": "feature/my-feature",

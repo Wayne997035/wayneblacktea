@@ -92,6 +92,78 @@ func TestSetSessionHandoff_EmptyNextActions(t *testing.T) {
 	}
 }
 
+// --- parseAndValidateNextActions constraint tests ---
+
+func TestParseAndValidateNextActions_TooManyItems(t *testing.T) {
+	// Build 51 items — one over the maxNextActionItems = 50 cap.
+	items := make([]map[string]any, 51)
+	for i := range items {
+		items[i] = map[string]any{"title": "item", "status": "pending"}
+	}
+	raw, _ := json.Marshal(items)
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for 51 items")
+	}
+	if !strings.Contains(msg, "50") {
+		t.Errorf("error should mention 50, got: %s", msg)
+	}
+}
+
+func TestParseAndValidateNextActions_ExactlyFiftyItems(t *testing.T) {
+	items := make([]map[string]any, 50)
+	for i := range items {
+		items[i] = map[string]any{"title": "item", "status": "pending"}
+	}
+	raw, _ := json.Marshal(items)
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg != "" {
+		t.Fatalf("50 items should be accepted, got: %s", msg)
+	}
+}
+
+func TestParseAndValidateNextActions_TitleTooLong(t *testing.T) {
+	longTitle := strings.Repeat("あ", 501) // 501 runes, each is multi-byte
+	raw, _ := json.Marshal([]map[string]any{{"title": longTitle, "status": "pending"}})
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for title exceeding 500 runes")
+	}
+	if !strings.Contains(msg, "title") {
+		t.Errorf("error should mention title, got: %s", msg)
+	}
+}
+
+func TestParseAndValidateNextActions_InvalidRefTaskID(t *testing.T) {
+	raw, _ := json.Marshal([]map[string]any{{
+		"title":       "do something",
+		"status":      "pending",
+		"ref_task_id": "not-a-uuid",
+	}})
+	_, msg := parseAndValidateNextActions(string(raw))
+	if msg == "" {
+		t.Fatal("expected error for invalid ref_task_id UUID")
+	}
+	if !strings.Contains(msg, "ref_task_id") {
+		t.Errorf("error should mention ref_task_id, got: %s", msg)
+	}
+}
+
+func TestParseAndValidateNextActions_ValidRefTaskID(t *testing.T) {
+	raw, _ := json.Marshal([]map[string]any{{
+		"title":       "do something",
+		"status":      "pending",
+		"ref_task_id": "123e4567-e89b-12d3-a456-426614174000",
+	}})
+	actions, msg := parseAndValidateNextActions(string(raw))
+	if msg != "" {
+		t.Fatalf("valid UUID ref_task_id should pass, got: %s", msg)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+}
+
 // TestSetSessionHandoff_InvalidNextActionsJSON verifies that malformed JSON in
 // next_actions is rejected with a tool error.
 func TestSetSessionHandoff_InvalidNextActionsJSON(t *testing.T) {
