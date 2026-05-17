@@ -302,6 +302,30 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete, footer 
             </div>
           )}
 
+          {/* Commit SHAs */}
+          {task.commit_shas && task.commit_shas.length > 0 && (
+            <div>
+              <p className="text-label mb-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {t('gtd.commits')}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {task.commit_shas.map((sha) => (
+                  <span
+                    key={sha}
+                    className="inline-flex items-center rounded px-2 py-0.5 text-caption font-mono"
+                    style={{
+                      background: 'var(--color-bg-input)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-primary)',
+                    }}
+                  >
+                    {sha.slice(0, 7)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Recent decisions — only when project_id is set */}
           {task.project_id && (
             <RecentDecisions projectId={task.project_id} isExpanded={expanded} />

@@ -188,6 +188,7 @@ export function ProposalsPage() {
         {TABS.map((t_) => (
           <button
             key={t_}
+            id={`tab-${t_}`}
             type="button"
             role="tab"
             aria-selected={tab === t_}
@@ -219,7 +220,7 @@ export function ProposalsPage() {
         </div>
       )}
 
-      <div role="tabpanel" aria-label={t(`proposals.tabs.${tab}`)}>
+      <div role="tabpanel" aria-labelledby={`tab-${tab}`}>
         {isLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 4 }, (_, i) => (

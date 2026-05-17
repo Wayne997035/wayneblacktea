@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { TaskRow } from './TaskRow'
@@ -9,6 +9,7 @@ import type { Project } from '../../types/api'
 
 interface TaskListProps {
   projects: Project[];
+  linkedTaskId?: string;
 }
 
 interface SingleProjectTasksProps {
@@ -54,13 +55,28 @@ function SingleProjectTasks({ projectId, projects }: SingleProjectTasksProps) {
 
 interface AllProjectsTasksProps {
   projects: Project[];
+  linkedTaskId?: string;
 }
 
-function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
+function AllProjectsTasks({ projects, linkedTaskId }: AllProjectsTasksProps) {
   const { data: tasks = [], isLoading } = useAllTasks()
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const completeTask = useCompleteTask()
+  const didAutoExpand = useRef(false)
+
+  useEffect(() => {
+    if (!linkedTaskId || isLoading || didAutoExpand.current) return
+    const found = tasks.find((t) => t.id === linkedTaskId)
+    if (!found) return
+    didAutoExpand.current = true
+    setExpandedTaskId(linkedTaskId)
+    // Scroll the task row into view after React renders
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`task-detail-${linkedTaskId}`)?.closest('li')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+  }, [linkedTaskId, tasks, isLoading])
 
   if (isLoading) {
     return (
@@ -100,7 +116,7 @@ function AllProjectsTasks({ projects }: AllProjectsTasksProps) {
   )
 }
 
-export function TaskList({ projects }: TaskListProps) {
+export function TaskList({ projects, linkedTaskId }: TaskListProps) {
   const { t } = useTranslation()
   const [selectedProjectId, setSelectedProjectId] = useState<string>('all')
 
@@ -126,7 +142,7 @@ export function TaskList({ projects }: TaskListProps) {
       </div>
 
       {selectedProjectId === 'all' ? (
-        <AllProjectsTasks projects={projects} />
+        <AllProjectsTasks projects={projects} linkedTaskId={linkedTaskId} />
       ) : (
         <SingleProjectTasks projectId={selectedProjectId} projects={projects} />
       )}
