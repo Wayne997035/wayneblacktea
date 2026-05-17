@@ -18,6 +18,44 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// githubPRURLRe matches GitHub PR URLs (same pattern as mcp/tools_gtd.go).
+var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/|$)`)
+
+func validateBranchName(s string) string {
+	if len(s) > 255 {
+		return "branch_name must not exceed 255 characters"
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 {
+			return "branch_name must not contain control characters"
+		}
+	}
+	return ""
+}
+
+func validateTaskStatus(s string) string {
+	switch gtd.TaskStatus(s) {
+	case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
+		return ""
+	default:
+		return "status must be one of: pending, in_progress, cancelled"
+	}
+}
+
+func validatePriority(n int32) string {
+	if n < 1 || n > 5 {
+		return "priority must be between 1 and 5"
+	}
+	return ""
+}
+
+func validateImportance(n int16) string {
+	if n < 1 || n > 3 {
+		return "importance must be between 1 and 3"
+	}
+	return ""
+}
+
 // GTDHandler handles all GTD-domain endpoints.
 type GTDHandler struct {
 	store gtdStore
@@ -441,19 +479,28 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
 		return "title must not be empty"
 	}
-	if req.Priority != nil && (*req.Priority < 1 || *req.Priority > 5) {
-		return "priority must be between 1 and 5"
+	if req.Priority != nil {
+		if msg := validatePriority(*req.Priority); msg != "" {
+			return msg
+		}
 	}
-	if req.Importance != nil && (*req.Importance < 1 || *req.Importance > 3) {
-		return "importance must be between 1 and 3"
+	if req.Importance != nil {
+		if msg := validateImportance(*req.Importance); msg != "" {
+			return msg
+		}
 	}
 	if req.Status != nil {
-		switch gtd.TaskStatus(*req.Status) {
-		case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
-			// valid
-		default:
-			return "status must be one of: pending, in_progress, cancelled"
+		if msg := validateTaskStatus(*req.Status); msg != "" {
+			return msg
 		}
+	}
+	if req.BranchName != nil {
+		if msg := validateBranchName(*req.BranchName); msg != "" {
+			return msg
+		}
+	}
+	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
+		return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 	}
 	return ""
 }

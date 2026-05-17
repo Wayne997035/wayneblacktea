@@ -37,6 +37,64 @@ var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d
 // commitSHARe matches a 40-hex-character commit SHA.
 var commitSHARe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// branchNameHasControlChars returns true if s contains ASCII control chars
+// (any byte < 0x20, including \x00, \r, \n) which are invalid in git branch names.
+func branchNameHasControlChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 {
+			return true
+		}
+	}
+	return false
+}
+
+// applyBranchAndPR validates and sets branch_name and pr_url on a CreateTaskParams.
+// Returns a non-empty error message on validation failure.
+func applyBranchAndPR(args map[string]any, p *gtd.CreateTaskParams) string {
+	if bn := stringArg(args, "branch_name"); bn != "" {
+		if len(bn) > 255 {
+			return "branch_name must not exceed 255 characters"
+		}
+		if branchNameHasControlChars(bn) {
+			return "branch_name must not contain control characters"
+		}
+		p.BranchName = &bn
+	}
+	if pu := stringArg(args, "pr_url"); pu != "" {
+		if !githubPRURLRe.MatchString(pu) {
+			return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+		}
+		p.PRUrl = &pu
+	}
+	return ""
+}
+
+// applyBranchAndPRUpdate validates and sets branch_name and pr_url on an UpdateTaskParams.
+// Explicit empty string clears the field; absent key leaves it unchanged.
+// Returns a non-empty error message on validation failure.
+func applyBranchAndPRUpdate(args map[string]any, p *gtd.UpdateTaskParams) string {
+	if _, ok := args["branch_name"]; ok {
+		bn := stringArg(args, "branch_name")
+		if bn != "" {
+			if len(bn) > 255 {
+				return "branch_name must not exceed 255 characters"
+			}
+			if branchNameHasControlChars(bn) {
+				return "branch_name must not contain control characters"
+			}
+		}
+		p.BranchName = &bn
+	}
+	if _, ok := args["pr_url"]; ok {
+		pu := stringArg(args, "pr_url")
+		if pu != "" && !githubPRURLRe.MatchString(pu) {
+			return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+		}
+		p.PRUrl = &pu
+	}
+	return ""
+}
+
 // maxPendingDeletions caps the number of valid (non-expired) delete tokens
 // held simultaneously. This prevents a loop caller from growing the sync.Map
 // without bound if tokens are issued faster than they expire.
@@ -444,11 +502,8 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 		v := int16(imp)
 		p.Importance = &v
 	}
-	if bn := stringArg(args, "branch_name"); bn != "" {
-		p.BranchName = &bn
-	}
-	if pu := stringArg(args, "pr_url"); pu != "" {
-		p.PRUrl = &pu
+	if msg := applyBranchAndPR(args, &p); msg != "" {
+		return mcp.NewToolResultError(msg), nil
 	}
 
 	task, err := s.gtd.CreateTask(ctx, p)
@@ -610,15 +665,8 @@ func parseUpdateTaskArgs(args map[string]any) (gtd.UpdateTaskParams, string) {
 		p.Context = &taskCtx
 	}
 
-	// branch_name: explicitly present (even empty string) → overwrite
-	if _, ok := args["branch_name"]; ok {
-		bn := stringArg(args, "branch_name")
-		p.BranchName = &bn
-	}
-	// pr_url: explicitly present (even empty string) → overwrite
-	if _, ok := args["pr_url"]; ok {
-		pu := stringArg(args, "pr_url")
-		p.PRUrl = &pu
+	if msg := applyBranchAndPRUpdate(args, &p); msg != "" {
+		return p, msg
 	}
 
 	return p, ""

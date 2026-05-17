@@ -89,7 +89,7 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("setting handoff: %v", err)), nil
 	}
-	return jsonText(h)
+	return jsonText(buildPendingHandoffView(h))
 }
 
 func (s *Server) handleResolveHandoff(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -135,5 +135,5 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marking next action done: %v", err)), nil
 	}
-	return jsonText(h)
+	return jsonText(buildPendingHandoffView(h))
 }
