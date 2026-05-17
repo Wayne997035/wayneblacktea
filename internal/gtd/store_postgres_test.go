@@ -420,7 +420,7 @@ func TestStore_TasksByProjectAllStatuses_WorkspaceMismatch(t *testing.T) {
 	ctx := context.Background()
 
 	project, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
-		Name: "ws-a-proj", Title: "WS A", Area: "engineering",
+		Name: "ws-a-proj-" + wsA.String()[:8], Title: "WS A", Area: "engineering",
 	})
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -770,7 +770,7 @@ func TestStore_ProjectsByRepoName_WorkspaceMismatch_PG(t *testing.T) {
 	ctx := context.Background()
 
 	pA, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
-		Name: "ws-a-proj", Title: "WS A",
+		Name: "ws-a-proj-" + wsA.String()[:8], Title: "WS A",
 	})
 	if err != nil {
 		t.Fatalf("CreateProject pA: %v", err)

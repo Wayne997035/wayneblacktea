@@ -49,6 +49,31 @@ func run(m *testing.M) int {
 		return 1
 	}
 	testContainerDSN = dsn
+
+	// Apply guard migrations once so all setupTestDB calls share a pre-migrated schema.
+	initPool, initErr := pgxpool.New(ctx, dsn)
+	if initErr != nil {
+		log.Printf("pgxpool for migration setup: %v", initErr)
+		return 1
+	}
+	wd, _ := os.Getwd()
+	mdir := filepath.Clean(filepath.Join(wd, "..", "..", "migrations"))
+	if _, execErr := initPool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`); execErr != nil {
+		log.Printf("create uuid-ossp: %v", execErr)
+		return 1
+	}
+	for _, file := range []string{"000024_guard_events.up.sql", "000025_guard_bypasses.up.sql"} {
+		data, readErr := os.ReadFile(filepath.Join(mdir, file)) //nolint:gosec // path built from test-controlled migrations dir + constant filename
+		if readErr != nil {
+			log.Printf("read %s: %v", file, readErr)
+			return 1
+		}
+		if _, execErr := initPool.Exec(ctx, string(data)); execErr != nil {
+			log.Printf("apply %s: %v", file, execErr)
+			return 1
+		}
+	}
+	initPool.Close()
 	return m.Run()
 }
 
@@ -147,8 +172,8 @@ func applyDownMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 	}
 }
 
-// setupTestDB creates a new pool from the shared container DSN, applies
-// migrations once per call, and returns a Store backed by the pool.
+// setupTestDB creates a new pool from the shared container DSN and returns a
+// Store backed by it. Migrations are applied once in TestMain/run().
 // Each call gets its own pool so TestIntegration_FailOpenOnPoolClosed can
 // close the pool without affecting other tests.
 func setupTestDB(t *testing.T) *Store {
@@ -164,7 +189,6 @@ func setupTestDB(t *testing.T) *Store {
 	}
 	t.Cleanup(pool.Close)
 
-	applyUpMigrations(t, ctx, pool)
 	return NewStore(pool)
 }
 

@@ -157,7 +157,8 @@ func TestStorePostgres_ListFiltersByWorkspaceID(t *testing.T) {
 }
 
 func TestStorePostgres_ListKeywordsORCombineAndCaseInsensitive(t *testing.T) {
-	store := playbook.NewStore(openPlaybookTestPgPool(t), nil)
+	ws := uuid.New()
+	store := playbook.NewStore(openPlaybookTestPgPool(t), &ws)
 	ctx := context.Background()
 	if _, err := store.Create(ctx, playbook.CreateParams{TriggerPattern: "Before Complex Task", ActionTemplate: "query playbooks"}); err != nil {
 		t.Fatalf("create complex: %v", err)
