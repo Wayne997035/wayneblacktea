@@ -92,6 +92,8 @@ type CreateTaskParams struct {
 	Importance  *int16     // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
 	Context     string     // empty → NULL; free-form discussion background
 	Kind        string     // empty → defaults to "general"; one of general/fix-pr/feature/refactor/research/chore
+	BranchName  *string    // nil → NULL; git branch name (migration 000047)
+	PRUrl       *string    // nil → NULL; GitHub PR URL (migration 000047)
 }
 
 // UpdateGoalParams holds parameters for a full update of a goal.
@@ -126,6 +128,9 @@ type UpdateTaskParams struct {
 	DueDate     *time.Time
 	Context     *string
 	Status      *string
+	BranchName  *string  // nil → preserve existing; set to update (migration 000047)
+	PRUrl       *string  // nil → preserve existing; set to update (migration 000047)
+	CommitSHAs  []string // nil → preserve existing; set to append/replace (migration 000047)
 }
 
 // ChecklistItem represents a single item in a task's structured checklist.

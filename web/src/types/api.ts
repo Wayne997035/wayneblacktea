@@ -28,6 +28,12 @@ export interface Task {
   artifact?: string | null;
   created_at: string;
   updated_at: string;
+  /** Git branch name associated with this task (migration 000047). */
+  branch_name?: string | null;
+  /** GitHub PR URL for this task (migration 000047). */
+  pr_url?: string | null;
+  /** Commit SHAs appended via complete_task or update_task (migration 000047). */
+  commit_shas?: string[];
 }
 
 export interface Goal {
@@ -68,6 +74,15 @@ export interface Decision {
   created_at: string;
 }
 
+export interface NextAction {
+  step: number;
+  title: string;
+  command?: string;
+  expected?: string;
+  status: 'pending' | 'done' | 'skipped';
+  ref_task_id?: string | null;
+}
+
 export interface SessionHandoff {
   id: string;
   project_id?: string | null;
@@ -76,6 +91,8 @@ export interface SessionHandoff {
   context_summary?: string | null;
   resolved_at?: string | null;
   created_at: string;
+  /** Structured next-action checklist (migration 000046). */
+  next_actions?: NextAction[];
 }
 
 export interface WeeklyProgress {

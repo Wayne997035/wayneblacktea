@@ -69,7 +69,9 @@
     "noDescription": "No description",
     "unassigned": "Unassigned",
     "noDecisionsForProject": "No decisions logged for this project yet",
-    "projectNotFound": "Project not found"
+    "projectNotFound": "Project not found",
+    "branch": "Branch",
+    "pullRequest": "Pull Request"
   },
   "project": {
     "back": "Back",
@@ -358,7 +360,10 @@
       "date": "Date",
       "viewMonth": "Month",
       "viewWeek": "Week",
-      "viewYear": "Year"
+      "viewYear": "Year",
+      "repoFilter": "Repo",
+      "allRepos": "All repos",
+      "clearFilter": "Clear"
     },
     "errors": {
       "loadFailed": "Failed to load timeline"

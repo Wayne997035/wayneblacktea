@@ -1077,6 +1077,71 @@ func TestGTDHandler_UpdateTask(t *testing.T) {
 			store:    &fakeGTDStore{err: errors.New("db down")},
 			wantCode: http.StatusInternalServerError,
 		},
+		// branch_name validation (M-2)
+		{
+			name:     "branch_name too long → 400",
+			paramID:  id.String(),
+			body:     `{"branch_name":"` + strings.Repeat("a", 256) + `"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "branch_name with newline control char → 400",
+			paramID:  id.String(),
+			body:     "{\"branch_name\":\"feature/bad\nname\"}",
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "branch_name with DEL (0x7F) → 400",
+			paramID:  id.String(),
+			body:     "{\"branch_name\":\"feature/bad\x7fname\"}",
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "branch_name with U+200B zero-width space → 400",
+			paramID:  id.String(),
+			body:     "{\"branch_name\":\"feature/bad\u200bname\"}",
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		// pr_url validation (M-1)
+		{
+			name:     "pr_url not a GitHub PR URL → 400",
+			paramID:  id.String(),
+			body:     `{"pr_url":"https://notgithub.com/foo/bar/pull/1"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "pr_url points to issues not pulls → 400",
+			paramID:  id.String(),
+			body:     `{"pr_url":"https://github.com/foo/bar/issues/1"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "pr_url javascript scheme → 400",
+			paramID:  id.String(),
+			body:     `{"pr_url":"javascript:alert(1)"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "valid pr_url → 200",
+			paramID:  id.String(),
+			body:     `{"pr_url":"https://github.com/owner/repo/pull/42"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "valid branch_name → 200",
+			paramID:  id.String(),
+			body:     `{"branch_name":"feature/my-feature"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
 	}
 
 	for _, tc := range cases {

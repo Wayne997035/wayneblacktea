@@ -264,6 +264,44 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete, footer 
             )}
           </div>
 
+          {/* Branch name badge */}
+          {task.branch_name && (
+            <div>
+              <p className="text-label mb-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {t('gtd.branch')}
+              </p>
+              <span
+                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-mono"
+                style={{
+                  background: 'var(--color-bg-input)',
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text-primary)',
+                }}
+              >
+                {task.branch_name}
+              </span>
+            </div>
+          )}
+
+          {/* PR link */}
+          {task.pr_url && (
+            <div>
+              <p className="text-label mb-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {t('gtd.pullRequest')}
+              </p>
+              <a
+                href={task.pr_url.startsWith('https://') ? task.pr_url : '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-body-sm underline"
+                style={{ color: 'var(--color-accent-blue)' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {task.pr_url}
+              </a>
+            </div>
+          )}
+
           {/* Recent decisions — only when project_id is set */}
           {task.project_id && (
             <RecentDecisions projectId={task.project_id} isExpanded={expanded} />

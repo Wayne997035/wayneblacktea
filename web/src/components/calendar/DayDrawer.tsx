@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import { X } from 'lucide-react'
 import type { TimelineEvent, TimelineKind } from '../../types/api'
 import { ALL_KINDS, kindColor, kindLabelKey } from './eventStyles'
@@ -11,6 +12,35 @@ interface DayDrawerProps {
   events: TimelineEvent[]
   kindFilter: Set<TimelineKind>
   onClose: () => void
+}
+
+/**
+ * resolveDeepLink maps a TimelineEvent to a target URL path+query string,
+ * or null when there is no navigable destination.
+ *
+ * entity_id values come from the API (UUID-shaped); React Router's navigate()
+ * encodes query params automatically, so no additional sanitisation is needed
+ * for XSS. repo_name is also API-originated.
+ */
+function resolveDeepLink(ev: TimelineEvent): string | null {
+  switch (ev.kind) {
+    case 'task_created':
+    case 'task_completed':
+    case 'task_due':
+      return `/gtd?task=${encodeURIComponent(ev.ref_id)}`
+    case 'decision':
+      return `/decisions?id=${encodeURIComponent(ev.ref_id)}`
+    case 'knowledge':
+    case 'concept':
+      return `/knowledge?id=${encodeURIComponent(ev.ref_id)}`
+    case 'activity':
+      if (ev.repo_name) {
+        return `/workspace?repo=${encodeURIComponent(ev.repo_name)}`
+      }
+      return null
+    default:
+      return null
+  }
 }
 
 function fmtTime(iso: string): string {
@@ -39,6 +69,7 @@ function fmtFullDate(d: Date): string {
  */
 export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const open = day !== null
   const closeBtnRef = useRef<HTMLButtonElement>(null)
   const drawerRef = useRef<HTMLDivElement>(null)
@@ -186,25 +217,50 @@ export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) 
                       {t(kindLabelKey(kind))} ({list.length})
                     </h3>
                     <ul className="flex flex-col gap-1">
-                      {list.map((ev) => (
-                        <li
-                          key={`${ev.ref_id}-${ev.occurred_at}`}
-                          className="flex items-start gap-2 px-2 py-1 rounded"
-                          style={{ background: 'var(--color-bg-base)' }}
-                        >
-                          <span className="text-caption tabular-nums w-[68px] shrink-0 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                            {fmtTime(ev.occurred_at)}
-                          </span>
-                          <span className="text-body-sm flex-1" style={{ color: 'var(--color-text-primary)' }}>
-                            {ev.title}
-                            {ev.repo_name && (
-                              <span className="ml-2 text-caption" style={{ color: 'var(--color-text-muted)' }}>
-                                ({ev.repo_name})
-                              </span>
-                            )}
-                          </span>
-                        </li>
-                      ))}
+                      {list.map((ev) => {
+                        const deepLink = resolveDeepLink(ev)
+                        const isClickable = deepLink !== null
+                        return (
+                          <li
+                            key={`${ev.ref_id}-${ev.occurred_at}`}
+                            className={`flex items-start gap-2 px-2 py-1 rounded${isClickable ? ' cursor-pointer hover:bg-[var(--color-bg-hover)]' : ''}`}
+                            style={{ background: 'var(--color-bg-base)' }}
+                            role={isClickable ? 'button' : undefined}
+                            tabIndex={isClickable ? 0 : undefined}
+                            aria-label={isClickable ? `Go to ${ev.title}` : undefined}
+                            onClick={() => {
+                              if (deepLink) {
+                                onClose()
+                                navigate(deepLink)
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (isClickable && (e.key === 'Enter' || e.key === ' ')) {
+                                e.preventDefault()
+                                onClose()
+                                navigate(deepLink!)
+                              }
+                            }}
+                          >
+                            <span className="text-caption tabular-nums w-[68px] shrink-0 mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                              {fmtTime(ev.occurred_at)}
+                            </span>
+                            <span className="text-body-sm flex-1" style={{ color: 'var(--color-text-primary)' }}>
+                              {ev.title}
+                              {ev.repo_name && (
+                                <span className="ml-2 text-caption" style={{ color: 'var(--color-text-muted)' }}>
+                                  ({ev.repo_name})
+                                </span>
+                              )}
+                              {isClickable && (
+                                <span className="ml-1 text-caption" style={{ color: 'var(--color-accent-blue)' }} aria-hidden="true">
+                                  →
+                                </span>
+                              )}
+                            </span>
+                          </li>
+                        )
+                      })}
                     </ul>
                   </section>
                 )

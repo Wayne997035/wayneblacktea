@@ -223,6 +223,7 @@ func run() error {
 	api.PATCH("/projects/:id/status", gtdH.UpdateProjectStatus, mutationRL)
 	api.GET("/projects/:id/tasks", gtdH.ListProjectTasks)
 
+	api.GET("/tasks", gtdH.ListTasks)
 	api.POST("/tasks", gtdH.CreateTask, mutationRL)
 	api.PATCH("/tasks/:id", gtdH.UpdateTask, mutationRL)
 	api.PATCH("/tasks/:id/status", gtdH.UpdateTaskStatus, mutationRL)

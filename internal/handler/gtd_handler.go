@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -17,6 +18,44 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
+
+// githubPRURLRe matches GitHub PR URLs (same pattern as mcp/tools_gtd.go).
+var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/)?$`)
+
+func validateBranchName(s string) string {
+	if len(s) > 255 {
+		return "branch_name must not exceed 255 characters"
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
+			return "branch_name must not contain control characters"
+		}
+	}
+	return ""
+}
+
+func validateTaskStatus(s string) string {
+	switch gtd.TaskStatus(s) {
+	case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
+		return ""
+	default:
+		return "status must be one of: pending, in_progress, cancelled"
+	}
+}
+
+func validatePriority(n int32) string {
+	if n < 1 || n > 5 {
+		return "priority must be between 1 and 5"
+	}
+	return ""
+}
+
+func validateImportance(n int16) string {
+	if n < 1 || n > 3 {
+		return "importance must be between 1 and 3"
+	}
+	return ""
+}
 
 // GTDHandler handles all GTD-domain endpoints.
 type GTDHandler struct {
@@ -423,13 +462,16 @@ type updateTaskRequest struct {
 	DueDate     *time.Time `json:"due_date"`
 	Context     *string    `json:"context"`
 	Status      *string    `json:"status"`
+	BranchName  *string    `json:"branch_name"` // nil → preserve; empty string → clear to NULL
+	PRUrl       *string    `json:"pr_url"`      // nil → preserve; empty string → clear to NULL
 }
 
 // updateTaskRequestIsEmpty returns true when all patch fields are nil (nothing to update).
 func updateTaskRequestIsEmpty(req *updateTaskRequest) bool {
 	return req.Title == nil && req.Description == nil && req.Priority == nil &&
 		req.Importance == nil && req.Assignee == nil && req.DueDate == nil &&
-		req.Context == nil && req.Status == nil
+		req.Context == nil && req.Status == nil &&
+		req.BranchName == nil && req.PRUrl == nil
 }
 
 // validateUpdateTaskFields validates individual field values in the request,
@@ -438,19 +480,28 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
 		return "title must not be empty"
 	}
-	if req.Priority != nil && (*req.Priority < 1 || *req.Priority > 5) {
-		return "priority must be between 1 and 5"
+	if req.Priority != nil {
+		if msg := validatePriority(*req.Priority); msg != "" {
+			return msg
+		}
 	}
-	if req.Importance != nil && (*req.Importance < 1 || *req.Importance > 3) {
-		return "importance must be between 1 and 3"
+	if req.Importance != nil {
+		if msg := validateImportance(*req.Importance); msg != "" {
+			return msg
+		}
 	}
 	if req.Status != nil {
-		switch gtd.TaskStatus(*req.Status) {
-		case gtd.TaskStatusPending, gtd.TaskStatusInProgress, gtd.TaskStatusCancelled:
-			// valid
-		default:
-			return "status must be one of: pending, in_progress, cancelled"
+		if msg := validateTaskStatus(*req.Status); msg != "" {
+			return msg
 		}
+	}
+	if req.BranchName != nil {
+		if msg := validateBranchName(*req.BranchName); msg != "" {
+			return msg
+		}
+	}
+	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
+		return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 	}
 	return ""
 }
@@ -481,7 +532,40 @@ func updateTaskParamsFromRequest(req *updateTaskRequest) gtd.UpdateTaskParams {
 		DueDate:     req.DueDate,
 		Context:     req.Context,
 		Status:      req.Status,
+		BranchName:  req.BranchName,
+		PRUrl:       req.PRUrl,
 	}
+}
+
+// ListTasks returns all pending/in-progress tasks, optionally filtered by
+// branch_name or pr_url query parameters. Filter is applied Go-side after
+// fetching all tasks (personal-scale, low row count).
+func (h *GTDHandler) ListTasks(c echo.Context) error {
+	tasks, err := h.store.Tasks(c.Request().Context(), nil)
+	if err != nil {
+		c.Logger().Errorf("ListTasks: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	branchFilter := c.QueryParam("branch")
+	prURLFilter := c.QueryParam("pr_url")
+
+	if branchFilter == "" && prURLFilter == "" {
+		return c.JSON(http.StatusOK, tasks)
+	}
+
+	// Apply Go-side filtering for new columns.
+	filtered := tasks[:0]
+	for _, t := range tasks {
+		if branchFilter != "" && (!t.BranchName.Valid || t.BranchName.String != branchFilter) {
+			continue
+		}
+		if prURLFilter != "" && (!t.PRUrl.Valid || t.PRUrl.String != prURLFilter) {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return c.JSON(http.StatusOK, filtered)
 }
 
 // UpdateTask handles PATCH /api/tasks/:id — partial update of a task's mutable fields.

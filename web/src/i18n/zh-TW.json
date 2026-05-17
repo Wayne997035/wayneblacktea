@@ -69,7 +69,9 @@
     "noDescription": "無描述",
     "unassigned": "未指定專案",
     "noDecisionsForProject": "此專案尚無決策紀錄",
-    "projectNotFound": "找不到專案"
+    "projectNotFound": "找不到專案",
+    "branch": "分支",
+    "pullRequest": "Pull Request"
   },
   "project": {
     "back": "返回",
@@ -358,7 +360,10 @@
       "date": "日期",
       "viewMonth": "月",
       "viewWeek": "週",
-      "viewYear": "年"
+      "viewYear": "年",
+      "repoFilter": "Repo",
+      "allRepos": "所有 Repo",
+      "clearFilter": "清除"
     },
     "errors": {
       "loadFailed": "載入時間軸失敗"

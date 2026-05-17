@@ -3,7 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -26,7 +28,7 @@ func NewSessionStore(d *DB) *SessionStore {
 var _ session.StoreIface = (*SessionStore)(nil)
 
 const sessionHandoffsSelectCols = `id, workspace_id, project_id, repo_name, intent,
-	context_summary, resolved_at, created_at`
+	context_summary, resolved_at, created_at, next_actions`
 
 func scanSessionHandoff(scan func(...any) error) (db.SessionHandoff, error) {
 	var (
@@ -34,9 +36,10 @@ func scanSessionHandoff(scan func(...any) error) (db.SessionHandoff, error) {
 		idStr                              string
 		workspaceIDNS, projectIDNS, repoNS sql.NullString
 		summaryNS, resolvedNS, createdNS   sql.NullString
+		nextActionsStr                     sql.NullString
 	)
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &repoNS, &h.Intent,
-		&summaryNS, &resolvedNS, &createdNS)
+		&summaryNS, &resolvedNS, &createdNS, &nextActionsStr)
 	if err != nil {
 		return db.SessionHandoff{}, err
 	}
@@ -49,19 +52,34 @@ func scanSessionHandoff(scan func(...any) error) (db.SessionHandoff, error) {
 	h.ContextSummary = pgtypeText(summaryNS.String, summaryNS.Valid)
 	h.ResolvedAt = parseTimestamptz(resolvedNS)
 	h.CreatedAt = parseTimestamptz(createdNS)
+	if nextActionsStr.Valid && nextActionsStr.String != "" {
+		h.NextActions = []byte(nextActionsStr.String)
+	} else {
+		h.NextActions = []byte("[]")
+	}
 	return h, nil
 }
 
 // SetHandoff records a new session handoff for the next session to pick up.
 func (s *SessionStore) SetHandoff(ctx context.Context, p session.HandoffParams) (*db.SessionHandoff, error) {
 	id := uuid.New()
+
+	nextActionsJSON := "[]"
+	if len(p.NextActions) > 0 {
+		b, err := json.Marshal(p.NextActions)
+		if err != nil {
+			return nil, errWrap("SetHandoff marshal next_actions", err)
+		}
+		nextActionsJSON = string(b)
+	}
+
 	const q = `INSERT INTO session_handoffs
-		(id, workspace_id, project_id, repo_name, intent, context_summary, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+		(id, workspace_id, project_id, repo_name, intent, context_summary, next_actions, created_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Intent, nullStringIfEmpty(p.ContextSummary),
-		nowRFC3339())
+		nextActionsJSON, nowRFC3339())
 	if err != nil {
 		return nil, errWrap("SetHandoff", err)
 	}
@@ -277,6 +295,61 @@ func (s *SessionStore) HandoffsSince(ctx context.Context, since time.Time, limit
 		return nil, errWrap("HandoffsSince iter", err)
 	}
 	return out, nil
+}
+
+// MarkNextActionDone sets next_actions[step].status = "done" for the handoff
+// identified by id, scoped to the configured workspace.
+// Returns session.ErrNotFound when no matching handoff exists in the workspace.
+//
+// SECURITY: workspace isolation enforced — id is validated against workspace_id.
+func (s *SessionStore) MarkNextActionDone(ctx context.Context, handoffID uuid.UUID, step int) (*db.SessionHandoff, error) {
+	// 1. Load with workspace isolation.
+	const loadQ = `SELECT ` + sessionHandoffsSelectCols + ` FROM session_handoffs
+		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	row := s.db.conn.QueryRowContext(ctx, loadQ, handoffID.String(), s.db.workspaceArg())
+	h, err := scanSessionHandoff(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, session.ErrNotFound
+	}
+	if err != nil {
+		return nil, errWrap("MarkNextActionDone load", err)
+	}
+
+	// 2. Parse, update step.
+	var actions []session.NextAction
+	if len(h.NextActions) > 0 && string(h.NextActions) != "[]" {
+		if jsonErr := json.Unmarshal(h.NextActions, &actions); jsonErr != nil {
+			return nil, fmt.Errorf("sqlite MarkNextActionDone: parse next_actions: %w", jsonErr)
+		}
+	}
+	updated := false
+	for i := range actions {
+		if actions[i].Step == step {
+			actions[i].Status = session.NextActionDone
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return nil, fmt.Errorf("sqlite MarkNextActionDone: step %d not found in handoff %s", step, handoffID)
+	}
+
+	// 3. Marshal and write back.
+	newJSON, jsonErr := json.Marshal(actions)
+	if jsonErr != nil {
+		return nil, fmt.Errorf("sqlite MarkNextActionDone: marshal next_actions: %w", jsonErr)
+	}
+	const updateQ = `UPDATE session_handoffs SET next_actions = ?1 WHERE id = ?2 AND (?3 IS NULL OR workspace_id = ?3)`
+	res, err := s.db.conn.ExecContext(ctx, updateQ, string(newJSON), handoffID.String(), s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("MarkNextActionDone update", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, session.ErrNotFound
+	}
+	return s.handoffByID(ctx, handoffID)
 }
 
 func (s *SessionStore) handoffByID(ctx context.Context, id uuid.UUID) (*db.SessionHandoff, error) {

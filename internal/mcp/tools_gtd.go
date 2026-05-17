@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -28,6 +29,74 @@ func (s *Server) strictVagueness() bool {
 // through MCP tools. Keeps the column semantically queryable and prevents
 // control characters or path-traversal sequences from entering the DB.
 var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,100}$`)
+
+// githubPRURLRe matches GitHub PR URLs of the form
+// https://github.com/{owner}/{repo}/pull/{number}
+// SECURITY: we only store the URL string — no HTTP fetch is ever made.
+var githubPRURLRe = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/\d+(/)?$`)
+
+// commitSHARe matches a 40-hex-character commit SHA.
+var commitSHARe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// branchNameHasControlChars returns true if s contains characters invalid in
+// git branch names: ASCII control chars (< 0x20), DEL (0x7F), or Unicode
+// "Other" characters (Cc control, Cf format like U+200B zero-width space /
+// U+FEFF BOM, Co private-use, Cs surrogates).
+func branchNameHasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyBranchAndPR validates and sets branch_name and pr_url on a CreateTaskParams.
+// Returns a non-empty error message on validation failure.
+func applyBranchAndPR(args map[string]any, p *gtd.CreateTaskParams) string {
+	if bn := stringArg(args, "branch_name"); bn != "" {
+		if len(bn) > 255 {
+			return "branch_name must not exceed 255 characters"
+		}
+		if branchNameHasControlChars(bn) {
+			return "branch_name must not contain control characters"
+		}
+		p.BranchName = &bn
+	}
+	if pu := stringArg(args, "pr_url"); pu != "" {
+		if !githubPRURLRe.MatchString(pu) {
+			return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+		}
+		p.PRUrl = &pu
+	}
+	return ""
+}
+
+// applyBranchAndPRUpdate validates and sets branch_name and pr_url on an UpdateTaskParams.
+// Explicit empty string clears the field; absent key leaves it unchanged.
+// Returns a non-empty error message on validation failure.
+func applyBranchAndPRUpdate(args map[string]any, p *gtd.UpdateTaskParams) string {
+	if _, ok := args["branch_name"]; ok {
+		bn := stringArg(args, "branch_name")
+		if bn != "" {
+			if len(bn) > 255 {
+				return "branch_name must not exceed 255 characters"
+			}
+			if branchNameHasControlChars(bn) {
+				return "branch_name must not contain control characters"
+			}
+		}
+		p.BranchName = &bn
+	}
+	if _, ok := args["pr_url"]; ok {
+		pu := stringArg(args, "pr_url")
+		if pu != "" && !githubPRURLRe.MatchString(pu) {
+			return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+		}
+		p.PRUrl = &pu
+	}
+	return ""
+}
 
 // maxPendingDeletions caps the number of valid (non-expired) delete tokens
 // held simultaneously. This prevents a loop caller from growing the sync.Map
@@ -85,14 +154,18 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("kind",
 			mcp.Description("Task kind: general, fix-pr, feature, refactor, research, or chore. Defaults to 'general'."),
 			mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
+		mcp.WithString("branch_name", mcp.Description("Git branch name associated with this task (e.g. feature/my-feature)")),
+		mcp.WithString("pr_url", mcp.Description("GitHub PR URL for this task (e.g. https://github.com/org/repo/pull/123)")),
 	), s.handleAddTask)
 
 	ms.AddTool(mcp.NewTool("complete_task",
 		mcp.WithDescription(
-			"CALL after task is verified done (build pass, tests pass). Marks task completed and records artifact.",
+			"CALL after task is verified done (build pass, tests pass). Marks task completed and records artifact. "+
+				"If artifact is a GitHub PR URL (https://github.com/.../pull/N) it is also stored as pr_url. "+
+				"If artifact is a 40-character hex SHA it is appended to commit_shas.",
 		),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
-		mcp.WithString("artifact", mcp.Description("Link or note for the output")),
+		mcp.WithString("artifact", mcp.Description("Link or note for the output (PR URL or commit SHA auto-detected)")),
 	), s.handleCompleteTask)
 
 	ms.AddTool(mcp.NewTool("list_goals",
@@ -121,6 +194,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(200)),
 		mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
 		mcp.WithString("context", mcp.Description("Free-form discussion background"), mcp.MaxLength(10000)),
+		mcp.WithString("branch_name", mcp.Description("Git branch name (empty string clears the field)")),
+		mcp.WithString("pr_url", mcp.Description("GitHub PR URL (empty string clears the field)")),
 	), s.handleUpdateTask)
 
 	ms.AddTool(mcp.NewTool("update_project_status",
@@ -430,6 +505,9 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 		v := int16(imp)
 		p.Importance = &v
 	}
+	if msg := applyBranchAndPR(args, &p); msg != "" {
+		return mcp.NewToolResultError(msg), nil
+	}
 
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {
@@ -466,7 +544,41 @@ func (s *Server) handleCompleteTask(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("completing task: %v", err)), nil
 	}
+
+	// Auto-parse artifact: PR URL → set pr_url; 40-hex SHA → append to commit_shas.
+	// SECURITY: we only store the strings, never fetch the URLs.
+	if artifact != nil && *artifact != "" {
+		if updated := s.applyArtifactSideEffects(ctx, id, task, strings.TrimSpace(*artifact)); updated != nil {
+			task = updated
+		}
+	}
+
 	return jsonText(task)
+}
+
+// applyArtifactSideEffects detects whether artifact is a GitHub PR URL or a
+// 40-hex commit SHA and applies the corresponding side-effect update on the
+// task. Returns the updated task on success, nil if no side-effect applied or
+// the update failed (caller uses the original completed task in that case).
+// SECURITY: only stores the URL string, never makes an HTTP fetch.
+func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, task *db.Task, artifact string) *db.Task {
+	var up gtd.UpdateTaskParams
+	if githubPRURLRe.MatchString(artifact) {
+		up.PRUrl = &artifact
+	} else if commitSHARe.MatchString(artifact) {
+		newSHAs := make([]string, len(task.CommitSHAs)+1)
+		copy(newSHAs, task.CommitSHAs)
+		newSHAs[len(task.CommitSHAs)] = artifact
+		up.CommitSHAs = newSHAs
+	}
+	if up.PRUrl == nil && up.CommitSHAs == nil {
+		return nil
+	}
+	updated, updateErr := s.gtd.UpdateTask(ctx, id, up)
+	if updateErr != nil {
+		return nil
+	}
+	return updated
 }
 
 func (s *Server) handleListGoals(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -556,7 +668,20 @@ func parseUpdateTaskArgs(args map[string]any) (gtd.UpdateTaskParams, string) {
 		p.Context = &taskCtx
 	}
 
+	if msg := applyBranchAndPRUpdate(args, &p); msg != "" {
+		return p, msg
+	}
+
 	return p, ""
+}
+
+// updateTaskParamsIsEmpty returns true when no field is set in p — the caller
+// must reject the request when all fields are nil/empty to avoid a no-op write.
+func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
+	return p.Status == nil && p.Title == nil && p.Description == nil &&
+		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
+		p.DueDate == nil && p.Context == nil &&
+		p.BranchName == nil && p.PRUrl == nil && p.CommitSHAs == nil
 }
 
 func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -574,11 +699,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) 
 	if errMsg != "" {
 		return mcp.NewToolResultError(errMsg), nil
 	}
-
-	// At least one field must be provided.
-	if p.Status == nil && p.Title == nil && p.Description == nil &&
-		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
-		p.DueDate == nil && p.Context == nil {
+	if updateTaskParamsIsEmpty(p) {
 		return mcp.NewToolResultError("at least one field is required"), nil
 	}
 

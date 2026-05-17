@@ -2,7 +2,7 @@ package session
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -44,6 +44,32 @@ func toUUID(id *uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
+// marshalNextActions serialises []NextAction to JSON bytes, returning '[]'
+// (the empty JSON array) when the slice is nil or empty.
+func marshalNextActions(actions []NextAction) ([]byte, error) {
+	if len(actions) == 0 {
+		return []byte("[]"), nil
+	}
+	b, err := json.Marshal(actions)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling next_actions: %w", err)
+	}
+	return b, nil
+}
+
+// unmarshalNextActions deserialises raw JSON bytes into []NextAction.
+// nil or empty bytes → empty slice (not an error).
+func unmarshalNextActions(raw []byte) ([]NextAction, error) {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == "[]" {
+		return []NextAction{}, nil
+	}
+	var actions []NextAction
+	if err := json.Unmarshal(raw, &actions); err != nil {
+		return nil, fmt.Errorf("unmarshalling next_actions: %w", err)
+	}
+	return actions, nil
+}
+
 // SetHandoff records a new session handoff for the next session to pick up.
 // Returns a descriptive error wrapping sanitize.ErrTagNoise if any text field
 // contains tool-call serialization fragments (XML tags leaked from the MCP
@@ -58,29 +84,70 @@ func (s *Store) SetHandoff(ctx context.Context, p HandoffParams) (*db.SessionHan
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("set_session_handoff: repo_name %w", err)
 	}
-	row, err := s.q.CreateSessionHandoff(ctx, db.CreateSessionHandoffParams{
-		ProjectID:      toUUID(p.ProjectID),
-		RepoName:       toText(p.RepoName),
-		Intent:         p.Intent,
-		ContextSummary: toText(p.ContextSummary),
-		WorkspaceID:    s.workspaceID,
-	})
+
+	nextActionsJSON, err := marshalNextActions(p.NextActions)
+	if err != nil {
+		return nil, fmt.Errorf("set_session_handoff: %w", err)
+	}
+
+	// Hand-rolled INSERT so next_actions column (migration 000046) is persisted
+	// without requiring a sqlc regen.
+	const q = `INSERT INTO session_handoffs
+		(project_id, repo_name, intent, context_summary, next_actions, workspace_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions`
+	rows, err := s.dbtx.Query(ctx, q,
+		toUUID(p.ProjectID), toText(p.RepoName), p.Intent, toText(p.ContextSummary),
+		nextActionsJSON, s.workspaceID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("creating session handoff: %w", err)
 	}
-	return &row, nil
+	defer rows.Close()
+	if !rows.Next() {
+		if rErr := rows.Err(); rErr != nil {
+			return nil, fmt.Errorf("iterating create session handoff: %w", rErr)
+		}
+		return nil, fmt.Errorf("creating session handoff: no row returned")
+	}
+	var h db.SessionHandoff
+	if err := rows.Scan(
+		&h.ID, &h.ProjectID, &h.RepoName, &h.Intent, &h.ContextSummary,
+		&h.ResolvedAt, &h.CreatedAt, &h.WorkspaceID, &h.NextActions,
+	); err != nil {
+		return nil, fmt.Errorf("scanning created session handoff: %w", err)
+	}
+	return &h, nil
 }
 
 // LatestHandoff returns the most recent unresolved handoff, or ErrNotFound.
 func (s *Store) LatestHandoff(ctx context.Context) (*db.SessionHandoff, error) {
-	row, err := s.q.GetLatestUnresolvedHandoff(ctx, s.workspaceID)
+	// Hand-rolled query so next_actions (migration 000046) is included.
+	const q = `SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions
+		FROM session_handoffs
+		WHERE resolved_at IS NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT 1`
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
 		return nil, fmt.Errorf("getting latest handoff: %w", err)
 	}
-	return &row, nil
+	defer rows.Close()
+	if !rows.Next() {
+		if rErr := rows.Err(); rErr != nil {
+			return nil, fmt.Errorf("iterating latest handoff: %w", rErr)
+		}
+		return nil, ErrNotFound
+	}
+	var h db.SessionHandoff
+	if err := rows.Scan(
+		&h.ID, &h.ProjectID, &h.RepoName, &h.Intent, &h.ContextSummary,
+		&h.ResolvedAt, &h.CreatedAt, &h.WorkspaceID, &h.NextActions,
+	); err != nil {
+		return nil, fmt.Errorf("scanning latest handoff: %w", err)
+	}
+	return &h, nil
 }
 
 // UpdateSummary writes summary to the most recent unresolved handoff's
@@ -260,6 +327,88 @@ func (s *Store) HandoffsByRepo(ctx context.Context, repoName string, limit int) 
 		return nil, fmt.Errorf("iterating handoffs: %w", err)
 	}
 	return out, nil
+}
+
+// MarkNextActionDone updates next_actions[step].status = "done" for the
+// handoff identified by id, scoped to the caller's workspace_id.
+// Returns ErrNotFound when no matching handoff exists in the workspace.
+//
+// SECURITY: workspace isolation enforced — the handoff_id is validated against
+// the configured workspace_id before any mutation.
+func (s *Store) MarkNextActionDone(ctx context.Context, handoffID uuid.UUID, step int) (*db.SessionHandoff, error) {
+	// 1. Load the handoff with workspace isolation.
+	const loadQ = `SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions
+		FROM session_handoffs
+		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		LIMIT 1`
+	loadRows, err := s.dbtx.Query(ctx, loadQ, handoffID, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("mark_next_action_done: load handoff %s: %w", handoffID, err)
+	}
+	defer loadRows.Close()
+	if !loadRows.Next() {
+		if rErr := loadRows.Err(); rErr != nil {
+			return nil, fmt.Errorf("mark_next_action_done: iterating handoff %s: %w", handoffID, rErr)
+		}
+		return nil, ErrNotFound
+	}
+	var h db.SessionHandoff
+	if err := loadRows.Scan(
+		&h.ID, &h.ProjectID, &h.RepoName, &h.Intent, &h.ContextSummary,
+		&h.ResolvedAt, &h.CreatedAt, &h.WorkspaceID, &h.NextActions,
+	); err != nil {
+		return nil, fmt.Errorf("mark_next_action_done: scan handoff %s: %w", handoffID, err)
+	}
+	loadRows.Close()
+
+	// 2. Parse, update step.
+	actions, err := unmarshalNextActions(h.NextActions)
+	if err != nil {
+		return nil, fmt.Errorf("mark_next_action_done: parse next_actions: %w", err)
+	}
+	updated := false
+	for i := range actions {
+		if actions[i].Step == step {
+			actions[i].Status = NextActionDone
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return nil, fmt.Errorf("mark_next_action_done: step %d not found in handoff %s", step, handoffID)
+	}
+
+	// 3. Marshal and write back.
+	newJSON, err := marshalNextActions(actions)
+	if err != nil {
+		return nil, fmt.Errorf("mark_next_action_done: marshal next_actions: %w", err)
+	}
+
+	const updateQ = `UPDATE session_handoffs
+		SET next_actions = $1
+		WHERE id = $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions`
+	updateRows, err := s.dbtx.Query(ctx, updateQ, newJSON, handoffID, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("mark_next_action_done: update handoff %s: %w", handoffID, err)
+	}
+	defer updateRows.Close()
+	if !updateRows.Next() {
+		if rErr := updateRows.Err(); rErr != nil {
+			return nil, fmt.Errorf("mark_next_action_done: iterating update result %s: %w", handoffID, rErr)
+		}
+		return nil, ErrNotFound
+	}
+	var updated2 db.SessionHandoff
+	if err := updateRows.Scan(
+		&updated2.ID, &updated2.ProjectID, &updated2.RepoName, &updated2.Intent, &updated2.ContextSummary,
+		&updated2.ResolvedAt, &updated2.CreatedAt, &updated2.WorkspaceID, &updated2.NextActions,
+	); err != nil {
+		return nil, fmt.Errorf("mark_next_action_done: scan update result %s: %w", handoffID, err)
+	}
+	return &updated2, nil
 }
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.

@@ -9,6 +9,18 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
+// callAddTask invokes handleAddTask with the given args.
+func callAddTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	res, err := s.handleAddTask(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAddTask error: %v", err)
+	}
+	return res
+}
+
 // callUpdateTask invokes handleUpdateTask with the given args. Never returns a
 // Go error; tool-level errors surface via CallToolResult.IsError.
 func callUpdateTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
@@ -191,5 +203,201 @@ func TestGetUpcomingWork_DefaultsApplied(t *testing.T) {
 	// Default window is 7 days — header says "next 7 days".
 	if !strings.Contains(resultText(r), "7 days") {
 		t.Errorf("expected '7 days' in header, got: %s", resultText(r))
+	}
+}
+
+// --- branch_name / pr_url validation (M-1, M-2) ---
+
+func TestParseUpdateTaskArgs_BranchNameTooLong(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": strings.Repeat("a", 256)})
+	if msg == "" {
+		t.Fatal("expected error for branch_name > 255 chars")
+	}
+	if !strings.Contains(msg, "255") {
+		t.Errorf("error should mention 255, got: %s", msg)
+	}
+}
+
+func TestParseUpdateTaskArgs_BranchNameNewline(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": "feature/bad\nname"})
+	if msg == "" {
+		t.Fatal("expected error for branch_name with \\n control char")
+	}
+	if !strings.Contains(msg, "control") {
+		t.Errorf("error should mention control characters, got: %s", msg)
+	}
+}
+
+func TestParseUpdateTaskArgs_BranchNameDEL(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": "feature/bad\x7fname"})
+	if msg == "" {
+		t.Fatal("expected error for branch_name with DEL (0x7F)")
+	}
+}
+
+func TestParseUpdateTaskArgs_BranchNameUnicodeControl(t *testing.T) {
+	// U+200B zero-width space — a Unicode format char (Cf) that bytes < 0x20 alone would miss.
+	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": "feature/bad" + "\u200b" + "name"})
+	if msg == "" {
+		t.Fatal("expected error for branch_name with U+200B zero-width space")
+	}
+}
+
+func TestParseUpdateTaskArgs_PRUrlInvalidHost(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://notgithub.com/foo/bar/pull/1"})
+	if msg == "" {
+		t.Fatal("expected error for pr_url on non-github host")
+	}
+}
+
+func TestParseUpdateTaskArgs_PRUrlJavaScript(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "javascript:alert(1)"})
+	if msg == "" {
+		t.Fatal("expected error for javascript: pr_url")
+	}
+}
+
+func TestParseUpdateTaskArgs_PRUrlIssuesNotPulls(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://github.com/foo/bar/issues/1"})
+	if msg == "" {
+		t.Fatal("expected error for pr_url pointing to issues (not pulls)")
+	}
+}
+
+func TestParseUpdateTaskArgs_PRUrlTrailingPath(t *testing.T) {
+	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://github.com/owner/repo/pull/42/files"})
+	if msg == "" {
+		t.Fatal("expected error for pr_url with trailing path /files")
+	}
+}
+
+func TestParseUpdateTaskArgs_ValidBranchAndPR(t *testing.T) {
+	p, msg := parseUpdateTaskArgs(map[string]any{
+		"branch_name": "feature/my-feature",
+		"pr_url":      "https://github.com/owner/repo/pull/42",
+	})
+	if msg != "" {
+		t.Fatalf("valid branch_name+pr_url should pass, got: %s", msg)
+	}
+	if p.BranchName == nil || *p.BranchName != "feature/my-feature" {
+		t.Errorf("BranchName not set correctly, got: %v", p.BranchName)
+	}
+	if p.PRUrl == nil || *p.PRUrl != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("PRUrl not set correctly, got: %v", p.PRUrl)
+	}
+}
+
+func TestParseUpdateTaskArgs_ClearPRUrl(t *testing.T) {
+	// Explicit empty string clears the field without triggering URL validation.
+	p, msg := parseUpdateTaskArgs(map[string]any{"pr_url": ""})
+	if msg != "" {
+		t.Fatalf("explicit empty pr_url should pass (clear semantics), got: %s", msg)
+	}
+	if p.PRUrl == nil {
+		t.Fatal("PRUrl should be set (to empty string) for explicit clear")
+	}
+	if *p.PRUrl != "" {
+		t.Errorf("expected empty string, got: %q", *p.PRUrl)
+	}
+}
+
+// --- handleAddTask branch_name / pr_url end-to-end ---
+
+func TestAddTask_BranchNameTooLong(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddTask(t, s, map[string]any{
+		"title":       "test task",
+		"branch_name": strings.Repeat("a", 256),
+	})
+	if !r.IsError {
+		t.Fatalf("add_task with branch_name > 255 must error, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "255") {
+		t.Errorf("error should mention 255, got: %s", resultText(r))
+	}
+}
+
+func TestAddTask_BranchNameControlChar(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddTask(t, s, map[string]any{
+		"title":       "test task",
+		"branch_name": "feature/bad\nname",
+	})
+	if !r.IsError {
+		t.Fatalf("add_task with control char in branch_name must error, got: %s", resultText(r))
+	}
+}
+
+func TestAddTask_PRUrlInvalid(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddTask(t, s, map[string]any{
+		"title":  "test task",
+		"pr_url": "javascript:alert(1)",
+	})
+	if !r.IsError {
+		t.Fatalf("add_task with invalid pr_url must error, got: %s", resultText(r))
+	}
+}
+
+func TestAddTask_ValidBranchAndPR(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddTask(t, s, map[string]any{
+		"title":       "test task",
+		"branch_name": "feature/my-feature",
+		"pr_url":      "https://github.com/owner/repo/pull/42",
+	})
+	if r.IsError {
+		t.Fatalf("add_task with valid branch+pr must succeed, got: %s", resultText(r))
+	}
+}
+
+// --- handleUpdateTask branch_name / pr_url end-to-end ---
+
+func TestUpdateTask_BranchNameTooLong(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	r := callUpdateTask(t, s, map[string]any{
+		"task_id":     id.String(),
+		"branch_name": strings.Repeat("a", 256),
+	})
+	if !r.IsError {
+		t.Fatalf("update_task with branch_name > 255 must error, got: %s", resultText(r))
+	}
+}
+
+func TestUpdateTask_BranchNameDEL(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	r := callUpdateTask(t, s, map[string]any{
+		"task_id":     id.String(),
+		"branch_name": "feature/bad\x7fname",
+	})
+	if !r.IsError {
+		t.Fatalf("update_task with DEL in branch_name must error, got: %s", resultText(r))
+	}
+}
+
+func TestUpdateTask_PRUrlNotGitHub(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	r := callUpdateTask(t, s, map[string]any{
+		"task_id": id.String(),
+		"pr_url":  "https://notgithub.com/foo/bar/pull/1",
+	})
+	if !r.IsError {
+		t.Fatalf("update_task with non-github pr_url must error, got: %s", resultText(r))
+	}
+}
+
+func TestUpdateTask_ValidBranchAndPR(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	r := callUpdateTask(t, s, map[string]any{
+		"task_id":     id.String(),
+		"branch_name": "feature/my-feature",
+		"pr_url":      "https://github.com/owner/repo/pull/42",
+	})
+	if r.IsError {
+		t.Fatalf("update_task with valid branch+pr must succeed, got: %s", resultText(r))
 	}
 }

@@ -320,3 +320,56 @@ func TestHandlePromoteVisionToTask_HappyPath(t *testing.T) {
 		t.Error("result should have 'vision_item' key")
 	}
 }
+
+func TestHandlePromoteVisionToTask_WithDueDate(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	added := callAddVision(t, s, map[string]any{
+		"title":       "Vision with due date",
+		"why_blocked": "timing",
+	})
+	if added.IsError {
+		t.Fatalf("add failed: %s", resultText(added))
+	}
+	id := extractVisionID(t, added)
+
+	r := callPromoteVision(t, s, map[string]any{
+		"id":       id.String(),
+		"due_date": "2026-05-31T00:00:00Z",
+	})
+	if r.IsError {
+		t.Fatalf("promote with due_date failed: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	task, ok := result["task"].(map[string]any)
+	if !ok {
+		t.Fatal("result missing 'task' key")
+	}
+	if task["due_date"] == nil {
+		t.Error("promoted task should have due_date set")
+	}
+}
+
+func TestHandlePromoteVisionToTask_InvalidDueDate(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	added := callAddVision(t, s, map[string]any{
+		"title":       "Vision bad due date",
+		"why_blocked": "timing",
+	})
+	if added.IsError {
+		t.Fatalf("add failed: %s", resultText(added))
+	}
+	id := extractVisionID(t, added)
+
+	r := callPromoteVision(t, s, map[string]any{
+		"id":       id.String(),
+		"due_date": "not-a-date",
+	})
+	if !r.IsError {
+		t.Error("expected error for invalid due_date")
+	}
+}
