@@ -63,7 +63,7 @@ func run(m *testing.M) int {
 		return 1
 	}
 	for _, file := range []string{"000024_guard_events.up.sql", "000025_guard_bypasses.up.sql"} {
-		data, readErr := os.ReadFile(filepath.Join(mdir, file)) //nolint:gosec // path built from test-controlled migrations dir + constant filename
+		data, readErr := os.ReadFile(filepath.Join(mdir, file)) //nolint:gosec // test-controlled path
 		if readErr != nil {
 			log.Printf("read %s: %v", file, readErr)
 			return 1
