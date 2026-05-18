@@ -1,6 +1,7 @@
 /**
  * Tests that useCompleteTask and useCreateTask invalidate the new
- * dashboard query keys after a successful mutation.
+ * dashboard query keys after a successful mutation, and that
+ * useCompleteTask surfaces toast notifications on error.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
@@ -11,6 +12,12 @@ import { useCompleteTask, useCreateTask } from './useTasks'
 const apiFetchMock = vi.fn()
 vi.mock('../lib/api', () => ({
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
+}))
+
+const addToastMock = vi.fn()
+vi.mock('../stores/toastStore', () => ({
+  useToastStore: (selector: (s: { addToast: typeof addToastMock }) => unknown) =>
+    selector({ addToast: addToastMock }),
 }))
 
 function makeWrapper() {
@@ -65,5 +72,26 @@ describe('useCreateTask invalidations', () => {
     const calledKeys = invalidateSpy.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey: unknown[] }).queryKey))
     expect(calledKeys).toContain(JSON.stringify(['dashboard', 'stats']))
     expect(calledKeys).toContain(JSON.stringify(['dashboard', 'automation-feed']))
+  })
+})
+
+describe('useCompleteTask onError toast', () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+    addToastMock.mockReset()
+  })
+
+  it('exposes isError state when the API call fails', async () => {
+    const { Wrapper } = makeWrapper()
+    apiFetchMock.mockRejectedValueOnce(new Error('500: server error'))
+
+    const { result } = renderHook(() => useCompleteTask(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate('task-1')
+    })
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error).toBeInstanceOf(Error)
   })
 })

@@ -12,6 +12,7 @@ import { RepoDetailPage } from './pages/RepoDetailPage'
 import { LearningHistoryPage } from './pages/LearningHistoryPage'
 import { CalendarPage } from './pages/CalendarPage'
 import { ProposalsPage } from './pages/ProposalsPage'
+import { VisionPage } from './pages/VisionPage'
 import { LoginPage } from './pages/LoginPage'
 import { useAuthStore } from './stores/authStore'
 import { apiFetch } from './lib/api'
@@ -32,6 +33,7 @@ const router = createBrowserRouter([
       { path: 'learning/history', element: <LearningHistoryPage /> },
       { path: 'calendar', element: <CalendarPage /> },
       { path: 'proposals', element: <ProposalsPage /> },
+      { path: 'vision', element: <VisionPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

@@ -325,6 +325,56 @@ export interface TimelineResponse {
   to: string
 }
 
+// --- Vision ---
+
+export type VisionStatus = 'open' | 'discussing' | 'maturing' | 'promoted' | 'dismissed'
+
+export interface VisionItem {
+  id: string
+  workspace_id?: string | null
+  repo_name?: string
+  project_id?: string | null
+  title: string
+  why_blocked: string
+  depends_on: string[]
+  parent_initiative?: string
+  status: VisionStatus
+  context_md?: string
+  promoted_task_id?: string | null
+  last_discussed_at?: string | null
+  created_at: string
+}
+
+export interface VisionItemSummary {
+  id: string
+  workspace_id?: string | null
+  repo_name?: string
+  project_id?: string | null
+  title: string
+  why_blocked: string
+  depends_on: string[]
+  parent_initiative?: string
+  status: VisionStatus
+  promoted_task_id?: string | null
+  last_discussed_at?: string | null
+  created_at: string
+}
+
+export interface CreateVisionRequest {
+  title: string
+  why_blocked: string
+  depends_on?: string[]
+  parent_initiative?: string
+  context_md?: string
+  repo_name?: string
+}
+
+export interface UpdateVisionRequest {
+  status?: VisionStatus
+  context_md?: string
+  last_discussed_at?: string | null
+}
+
 // --- Repo Detail / Workspace Overview ---
 
 export interface RepoOverviewSummary {

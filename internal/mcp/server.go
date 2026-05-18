@@ -147,6 +147,16 @@ type deletionToken struct {
 // back, short enough that a leaked token isn't useful long.
 const deleteTokenTTL = 60 * time.Second
 
+// errMsgInvalidTaskIDUUID is the canonical error message returned to the MCP
+// caller when a task_id argument cannot be parsed as a UUID. Centralised here
+// to satisfy the goconst linter and to keep the message consistent across all
+// tool handlers that accept a task_id parameter.
+const errMsgInvalidTaskIDUUID = "invalid task_id UUID"
+
+// errMsgInvalidProjectIDUUID is the canonical error message returned to the MCP
+// caller when a project_id argument cannot be parsed as a UUID.
+const errMsgInvalidProjectIDUUID = "invalid project_id UUID"
+
 // New creates a Server backed by the given pre-built ServerStores bundle.
 // The bundle is responsible for the workspace-id scoping and the underlying
 // connection lifecycle; cmd/mcp/main.go MUST defer stores.Close() after this

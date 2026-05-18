@@ -83,17 +83,18 @@ type CreateGoalParams struct {
 
 // CreateTaskParams holds parameters for creating a new task.
 type CreateTaskParams struct {
-	ProjectID   *uuid.UUID // nil → no project
-	Title       string
-	Description string     // empty → NULL
-	Priority    int32      // defaults to 3
-	Assignee    string     // empty → NULL
-	DueDate     *time.Time // nil → NULL
-	Importance  *int16     // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
-	Context     string     // empty → NULL; free-form discussion background
-	Kind        string     // empty → defaults to "general"; one of general/fix-pr/feature/refactor/research/chore
-	BranchName  *string    // nil → NULL; git branch name (migration 000047)
-	PRUrl       *string    // nil → NULL; GitHub PR URL (migration 000047)
+	ProjectID    *uuid.UUID // nil → no project
+	Title        string
+	Description  string     // empty → NULL
+	Priority     int32      // defaults to 3
+	Assignee     string     // empty → NULL
+	DueDate      *time.Time // nil → NULL
+	Importance   *int16     // nil → NULL; valid range 1..3 (1=high, 2=med, 3=low)
+	Context      string     // empty → NULL; free-form discussion background
+	Kind         string     // empty → defaults to "general"; one of general/fix-pr/feature/refactor/research/chore
+	BranchName   *string    // nil → NULL; git branch name (migration 000047)
+	PRUrl        *string    // nil → NULL; GitHub PR URL (migration 000047)
+	VisionItemID *uuid.UUID // nil → NULL; vision item this task was promoted from (migration 000050)
 }
 
 // UpdateGoalParams holds parameters for a full update of a goal.

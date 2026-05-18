@@ -38,6 +38,10 @@ func (d *trackingDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int3
 	return nil, nil
 }
 
+func (d *trackingDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+	return nil, nil
+}
+
 func (d *trackingDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
 	return nil, nil
 }
@@ -122,5 +126,38 @@ func TestHandleListDecisions_OmittedRepoName(t *testing.T) {
 	}
 	if dec.byRepoCalled {
 		t.Error("expected decision.ByRepo() NOT to be called when repo_name is absent")
+	}
+}
+
+// callLogDecision invokes handleLogDecision with the given args.
+func callLogDecision(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	result, err := s.handleLogDecision(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleLogDecision returned unexpected Go error: %v", err)
+	}
+	return result
+}
+
+// TestHandleLogDecision_InvalidTaskIDUUID verifies that a malformed task_id
+// UUID causes handleLogDecision to return a tool-level error result
+// (IsError=true) rather than a Go error, matching the MCP contract.
+func TestHandleLogDecision_InvalidTaskIDUUID(t *testing.T) {
+	s := &Server{decision: &trackingDecisionStore{}}
+
+	r := callLogDecision(t, s, map[string]any{
+		"title":     "ADR: use SQLite for local dev",
+		"context":   "we want zero-dependency local setup",
+		"decision":  "ship SQLite backend",
+		"rationale": "no Postgres required",
+		"task_id":   "not-a-valid-uuid",
+	})
+	if !r.IsError {
+		t.Fatalf("expected IsError=true for invalid task_id UUID, got result: %s", resultText(r))
+	}
+	if txt := resultText(r); txt != errMsgInvalidTaskIDUUID {
+		t.Errorf("unexpected error message: %q", txt)
 	}
 }

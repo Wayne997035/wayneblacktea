@@ -67,6 +67,7 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 	}
 	row, err := s.q.CreateDecision(ctx, db.CreateDecisionParams{
 		ProjectID:    toUUID(p.ProjectID),
+		TaskID:       toUUID(p.TaskID),
 		RepoName:     toText(p.RepoName),
 		Title:        p.Title,
 		Context:      p.Context,
@@ -117,7 +118,7 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 	}
 
 	const q = `SELECT id, project_id, repo_name, title, context, decision, rationale,
-		alternatives, created_at, workspace_id, embedding
+		alternatives, created_at, workspace_id, task_id, embedding
 		FROM decisions
 		WHERE embedding IS NOT NULL
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
@@ -141,7 +142,7 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 		if err := rows.Scan(
 			&d.ID, &d.ProjectID, &d.RepoName, &d.Title,
 			&d.Context, &d.Decision, &d.Rationale, &d.Alternatives,
-			&d.CreatedAt, &d.WorkspaceID, &rawEmbed,
+			&d.CreatedAt, &d.WorkspaceID, &d.TaskID, &rawEmbed,
 		); err != nil {
 			continue
 		}
@@ -166,6 +167,20 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 		result = append(result, c.d)
 	}
 	return result, nil
+}
+
+// ByTask returns the most recent decisions for a given task ID.
+// SECURITY: scoped to workspace_id.
+func (s *Store) ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error) {
+	rows, err := s.q.ListDecisionsByTaskID(ctx, db.ListDecisionsByTaskIDParams{
+		TaskID:      toUUID(&taskID),
+		WorkspaceID: s.workspaceID,
+		LimitN:      limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing decisions for task %s: %w", taskID, err)
+	}
+	return rows, nil
 }
 
 // ByProject returns the most recent decisions for a given project ID.

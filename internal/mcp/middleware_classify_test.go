@@ -45,6 +45,10 @@ func (m *mockDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) (
 	return nil, nil
 }
 
+func (m *mockDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+	return nil, nil
+}
+
 func (m *mockDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
 	return nil, nil
 }
@@ -552,6 +556,10 @@ func (m *mockDecisionStoreWithAll) ByRepo(_ context.Context, _ string, _ int32) 
 }
 
 func (m *mockDecisionStoreWithAll) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+	return nil, nil
+}
+
+func (m *mockDecisionStoreWithAll) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 

@@ -1,6 +1,6 @@
 -- name: CreateDecision :one
-INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: ListDecisionsByRepo :many
@@ -20,5 +20,12 @@ LIMIT sqlc.arg('limit_n');
 -- name: ListAllDecisions :many
 SELECT * FROM decisions
 WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit_n');
+
+-- name: ListDecisionsByTaskID :many
+SELECT * FROM decisions
+WHERE task_id = sqlc.arg('task_id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit_n');

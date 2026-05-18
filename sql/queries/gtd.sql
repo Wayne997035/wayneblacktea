@@ -66,8 +66,16 @@ WHERE status IN ('pending', 'in_progress')
 ORDER BY priority ASC, created_at ASC;
 
 -- name: CreateTask :one
-INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, kind, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, kind, workspace_id, vision_item_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING *;
+
+-- name: SetTaskVisionItemID :one
+UPDATE tasks
+SET vision_item_id = sqlc.arg('vision_item_id'),
+    updated_at     = NOW()
+WHERE id = sqlc.arg('id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 RETURNING *;
 
 -- name: CompleteTask :one

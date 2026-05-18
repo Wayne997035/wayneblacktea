@@ -8,7 +8,8 @@
     "reviews": "Reviews",
     "learningHistory": "Learning History",
     "calendar": "Calendar",
-    "proposals": "Proposals"
+    "proposals": "Proposals",
+    "vision": "Vision"
   },
   "dashboard": {
     "greeting": {
@@ -425,5 +426,8 @@
       "pending": "Pending"
     },
     "resolvedAgo": "{{time}} ago"
+  },
+  "vision": {
+    "empty": "No vision items yet"
   }
 }

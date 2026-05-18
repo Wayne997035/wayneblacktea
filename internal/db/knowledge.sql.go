@@ -14,9 +14,9 @@ import (
 )
 
 const createKnowledgeItem = `-- name: CreateKnowledgeItem :one
-INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level
+INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id, project_id, task_id, decision_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, project_id, task_id, decision_id
 `
 
 type CreateKnowledgeItemParams struct {
@@ -28,6 +28,9 @@ type CreateKnowledgeItemParams struct {
 	Source        string      `json:"source"`
 	LearningValue pgtype.Int4 `json:"learning_value"`
 	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ProjectID     pgtype.UUID `json:"project_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+	DecisionID    pgtype.UUID `json:"decision_id"`
 }
 
 func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeItemParams) (KnowledgeItem, error) {
@@ -40,6 +43,9 @@ func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeIt
 		arg.Source,
 		arg.LearningValue,
 		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.TaskID,
+		arg.DecisionID,
 	)
 	var i KnowledgeItem
 	err := row.Scan(
@@ -63,6 +69,9 @@ func (q *Queries) CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeIt
 		&i.ParentID,
 		&i.HeadingPath,
 		&i.HeadingLevel,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.DecisionID,
 	)
 	return i, err
 }
@@ -81,9 +90,32 @@ type GetKnowledgeByIDParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (KnowledgeItem, error) {
+type GetKnowledgeByIDRow struct {
+	ID             uuid.UUID          `json:"id"`
+	Type           string             `json:"type"`
+	Title          string             `json:"title"`
+	Content        string             `json:"content"`
+	Url            pgtype.Text        `json:"url"`
+	Tags           []string           `json:"tags"`
+	Embedding      pgvector.Vector    `json:"embedding"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Source         string             `json:"source"`
+	LearningValue  pgtype.Int4        `json:"learning_value"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Importance     float64            `json:"importance"`
+	RecallCount    int32              `json:"recall_count"`
+	LastRecalledAt pgtype.Timestamptz `json:"last_recalled_at"`
+	BaseLambda     float64            `json:"base_lambda"`
+	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
+	ParentID       pgtype.UUID        `json:"parent_id"`
+	HeadingPath    pgtype.Text        `json:"heading_path"`
+	HeadingLevel   pgtype.Int4        `json:"heading_level"`
+}
+
+func (q *Queries) GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (GetKnowledgeByIDRow, error) {
 	row := q.db.QueryRow(ctx, getKnowledgeByID, arg.ID, arg.WorkspaceID)
-	var i KnowledgeItem
+	var i GetKnowledgeByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Type,
@@ -112,7 +144,8 @@ func (q *Queries) GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDPara
 const listKnowledge = `-- name: ListKnowledge :many
 SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
        learning_value, workspace_id, importance, recall_count, last_recalled_at,
-       base_lambda, archived_at, parent_id, heading_path, heading_level
+       base_lambda, archived_at, parent_id, heading_path, heading_level,
+       project_id, task_id, decision_id
 FROM knowledge_items
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
@@ -155,6 +188,133 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 			&i.ParentID,
 			&i.HeadingPath,
 			&i.HeadingLevel,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.DecisionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listKnowledgeByProjectID = `-- name: ListKnowledgeByProjectID :many
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
+       learning_value, workspace_id, importance, recall_count, last_recalled_at,
+       base_lambda, archived_at, parent_id, heading_path, heading_level,
+       project_id, task_id, decision_id
+FROM knowledge_items
+WHERE project_id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListKnowledgeByProjectIDParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
+}
+
+func (q *Queries) ListKnowledgeByProjectID(ctx context.Context, arg ListKnowledgeByProjectIDParams) ([]KnowledgeItem, error) {
+	rows, err := q.db.Query(ctx, listKnowledgeByProjectID, arg.ProjectID, arg.WorkspaceID, arg.LimitN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KnowledgeItem
+	for rows.Next() {
+		var i KnowledgeItem
+		if err := rows.Scan(
+			&i.ID,
+			&i.Type,
+			&i.Title,
+			&i.Content,
+			&i.Url,
+			&i.Tags,
+			&i.Embedding,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Source,
+			&i.LearningValue,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.RecallCount,
+			&i.LastRecalledAt,
+			&i.BaseLambda,
+			&i.ArchivedAt,
+			&i.ParentID,
+			&i.HeadingPath,
+			&i.HeadingLevel,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.DecisionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listKnowledgeByTaskID = `-- name: ListKnowledgeByTaskID :many
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
+       learning_value, workspace_id, importance, recall_count, last_recalled_at,
+       base_lambda, archived_at, parent_id, heading_path, heading_level,
+       project_id, task_id, decision_id
+FROM knowledge_items
+WHERE task_id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListKnowledgeByTaskIDParams struct {
+	TaskID      pgtype.UUID `json:"task_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitN      int32       `json:"limit_n"`
+}
+
+func (q *Queries) ListKnowledgeByTaskID(ctx context.Context, arg ListKnowledgeByTaskIDParams) ([]KnowledgeItem, error) {
+	rows, err := q.db.Query(ctx, listKnowledgeByTaskID, arg.TaskID, arg.WorkspaceID, arg.LimitN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KnowledgeItem
+	for rows.Next() {
+		var i KnowledgeItem
+		if err := rows.Scan(
+			&i.ID,
+			&i.Type,
+			&i.Title,
+			&i.Content,
+			&i.Url,
+			&i.Tags,
+			&i.Embedding,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Source,
+			&i.LearningValue,
+			&i.WorkspaceID,
+			&i.Importance,
+			&i.RecallCount,
+			&i.LastRecalledAt,
+			&i.BaseLambda,
+			&i.ArchivedAt,
+			&i.ParentID,
+			&i.HeadingPath,
+			&i.HeadingLevel,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.DecisionID,
 		); err != nil {
 			return nil, err
 		}
@@ -167,8 +327,8 @@ func (q *Queries) ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([
 }
 
 const searchKnowledgeFTS = `-- name: SearchKnowledgeFTS :many
-SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, rank FROM (
-    SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, project_id, task_id, decision_id, rank FROM (
+    SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source, learning_value, workspace_id, importance, recall_count, last_recalled_at, base_lambda, archived_at, parent_id, heading_path, heading_level, project_id, task_id, decision_id, ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
     FROM knowledge_items
     WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
       AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -204,6 +364,9 @@ type SearchKnowledgeFTSRow struct {
 	ParentID       pgtype.UUID        `json:"parent_id"`
 	HeadingPath    pgtype.Text        `json:"heading_path"`
 	HeadingLevel   pgtype.Int4        `json:"heading_level"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	DecisionID     pgtype.UUID        `json:"decision_id"`
 	Rank           float32            `json:"rank"`
 }
 
@@ -239,6 +402,9 @@ func (q *Queries) SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTS
 			&i.ParentID,
 			&i.HeadingPath,
 			&i.HeadingLevel,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.DecisionID,
 			&i.Rank,
 		); err != nil {
 			return nil, err

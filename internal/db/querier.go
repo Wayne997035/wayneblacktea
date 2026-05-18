@@ -34,7 +34,7 @@ type Querier interface {
 	DeleteTask(ctx context.Context, arg DeleteTaskParams) error
 	GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUID) ([]Task, error)
 	GetConceptByID(ctx context.Context, arg GetConceptByIDParams) (Concept, error)
-	GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (KnowledgeItem, error)
+	GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (GetKnowledgeByIDRow, error)
 	GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pgtype.UUID) (SessionHandoff, error)
 	GetPendingProposal(ctx context.Context, arg GetPendingProposalParams) (PendingProposal, error)
 	GetProjectByID(ctx context.Context, arg GetProjectByIDParams) (Project, error)
@@ -52,8 +52,11 @@ type Querier interface {
 	ListConceptsForAIReview(ctx context.Context, arg ListConceptsForAIReviewParams) ([]ListConceptsForAIReviewRow, error)
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
+	ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsByTaskIDParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
 	ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([]KnowledgeItem, error)
+	ListKnowledgeByProjectID(ctx context.Context, arg ListKnowledgeByProjectIDParams) ([]KnowledgeItem, error)
+	ListKnowledgeByTaskID(ctx context.Context, arg ListKnowledgeByTaskIDParams) ([]KnowledgeItem, error)
 	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
 	// All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to
 	// render both the "open" and the "completed/cancelled" sections; the default
@@ -67,6 +70,7 @@ type Querier interface {
 	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
 	// alias (rank) in the same query level — wrapping materialises it first.
 	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
+	SetTaskVisionItemID(ctx context.Context, arg SetTaskVisionItemIDParams) (Task, error)
 	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
 	UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error)
 	UpdateKnowledgeEmbedding(ctx context.Context, arg UpdateKnowledgeEmbeddingParams) error

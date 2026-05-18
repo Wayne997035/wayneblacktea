@@ -57,7 +57,7 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		p.ProjectID = &id
 	}

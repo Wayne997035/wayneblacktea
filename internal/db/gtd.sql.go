@@ -17,7 +17,7 @@ UPDATE tasks SET status = 'in_progress', updated_at = NOW()
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
   AND status != 'in_progress'
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
 `
 
 type BeginTaskStatusParams struct {
@@ -51,6 +51,7 @@ func (q *Queries) BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams
 		&i.BranchName,
 		&i.PRUrl,
 		&i.CommitSHAs,
+		&i.VisionItemID,
 	)
 	return i, err
 }
@@ -59,7 +60,7 @@ const completeTask = `-- name: CompleteTask :one
 UPDATE tasks SET status = 'completed', artifact = $1, updated_at = NOW()
 WHERE id = $2
   AND ($3::uuid IS NULL OR workspace_id = $3)
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
 `
 
 type CompleteTaskParams struct {
@@ -91,6 +92,7 @@ func (q *Queries) CompleteTask(ctx context.Context, arg CompleteTaskParams) (Tas
 		&i.BranchName,
 		&i.PRUrl,
 		&i.CommitSHAs,
+		&i.VisionItemID,
 	)
 	return i, err
 }
@@ -239,22 +241,23 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, kind, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas
+INSERT INTO tasks (project_id, title, description, priority, assignee, due_date, importance, context, kind, workspace_id, vision_item_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
 `
 
 type CreateTaskParams struct {
-	ProjectID   pgtype.UUID        `json:"project_id"`
-	Title       string             `json:"title"`
-	Description pgtype.Text        `json:"description"`
-	Priority    int32              `json:"priority"`
-	Assignee    pgtype.Text        `json:"assignee"`
-	DueDate     pgtype.Timestamptz `json:"due_date"`
-	Importance  pgtype.Int2        `json:"importance"`
-	Context     pgtype.Text        `json:"context"`
-	Kind        string             `json:"kind"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	Title        string             `json:"title"`
+	Description  pgtype.Text        `json:"description"`
+	Priority     int32              `json:"priority"`
+	Assignee     pgtype.Text        `json:"assignee"`
+	DueDate      pgtype.Timestamptz `json:"due_date"`
+	Importance   pgtype.Int2        `json:"importance"`
+	Context      pgtype.Text        `json:"context"`
+	Kind         string             `json:"kind"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	VisionItemID pgtype.UUID        `json:"vision_item_id"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -269,6 +272,7 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.Context,
 		arg.Kind,
 		arg.WorkspaceID,
+		arg.VisionItemID,
 	)
 	var i Task
 	err := row.Scan(
@@ -291,6 +295,7 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.BranchName,
 		&i.PRUrl,
 		&i.CommitSHAs,
+		&i.VisionItemID,
 	)
 	return i, err
 }
@@ -315,7 +320,7 @@ func (q *Queries) DeleteTask(ctx context.Context, arg DeleteTaskParams) error {
 }
 
 const getAllPendingTasks = `-- name: GetAllPendingTasks :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas FROM tasks
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id FROM tasks
 WHERE status IN ('pending', 'in_progress')
   AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY priority ASC, created_at ASC
@@ -350,6 +355,7 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUI
 			&i.BranchName,
 			&i.PRUrl,
 			&i.CommitSHAs,
+			&i.VisionItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -424,7 +430,7 @@ func (q *Queries) GetProjectByName(ctx context.Context, arg GetProjectByNamePara
 }
 
 const getTasksByProject = `-- name: GetTasksByProject :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas FROM tasks
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id FROM tasks
 WHERE project_id = $1
   AND status IN ('pending', 'in_progress')
   AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -465,6 +471,7 @@ func (q *Queries) GetTasksByProject(ctx context.Context, arg GetTasksByProjectPa
 			&i.BranchName,
 			&i.PRUrl,
 			&i.CommitSHAs,
+			&i.VisionItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -556,7 +563,7 @@ func (q *Queries) ListActiveProjects(ctx context.Context, workspaceID pgtype.UUI
 }
 
 const listProjectTasksAllStatuses = `-- name: ListProjectTasksAllStatuses :many
-SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas FROM tasks
+SELECT id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id FROM tasks
 WHERE project_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY COALESCE(updated_at, created_at) DESC
@@ -601,6 +608,7 @@ func (q *Queries) ListProjectTasksAllStatuses(ctx context.Context, arg ListProje
 			&i.BranchName,
 			&i.PRUrl,
 			&i.CommitSHAs,
+			&i.VisionItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -610,6 +618,49 @@ func (q *Queries) ListProjectTasksAllStatuses(ctx context.Context, arg ListProje
 		return nil, err
 	}
 	return items, nil
+}
+
+const setTaskVisionItemID = `-- name: SetTaskVisionItemID :one
+UPDATE tasks
+SET vision_item_id = $1,
+    updated_at     = NOW()
+WHERE id = $2
+  AND ($3::uuid IS NULL OR workspace_id = $3)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
+`
+
+type SetTaskVisionItemIDParams struct {
+	VisionItemID pgtype.UUID `json:"vision_item_id"`
+	ID           uuid.UUID   `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) SetTaskVisionItemID(ctx context.Context, arg SetTaskVisionItemIDParams) (Task, error) {
+	row := q.db.QueryRow(ctx, setTaskVisionItemID, arg.VisionItemID, arg.ID, arg.WorkspaceID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.Assignee,
+		&i.DueDate,
+		&i.Artifact,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
+		&i.Checklist,
+		&i.Kind,
+		&i.BranchName,
+		&i.PRUrl,
+		&i.CommitSHAs,
+		&i.VisionItemID,
+	)
+	return i, err
 }
 
 const updateGoal = `-- name: UpdateGoal :one
@@ -749,7 +800,7 @@ const updateTaskStatus = `-- name: UpdateTaskStatus :one
 UPDATE tasks SET status = $1, updated_at = NOW()
 WHERE id = $2
   AND ($3::uuid IS NULL OR workspace_id = $3)
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
 `
 
 type UpdateTaskStatusParams struct {
@@ -781,6 +832,7 @@ func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusPara
 		&i.BranchName,
 		&i.PRUrl,
 		&i.CommitSHAs,
+		&i.VisionItemID,
 	)
 	return i, err
 }

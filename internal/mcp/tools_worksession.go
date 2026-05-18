@@ -372,9 +372,13 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 			Title:    title,
 			RepoName: repoName,
 		}); logErr != nil {
+			logTitle := title
+			if runes := []rune(logTitle); len(runes) > 80 {
+				logTitle = string(runes[:80]) + "..."
+			}
 			slog.Warn("finish_work: failed to log decision",
 				"session_id", sessID,
-				"title", title,
+				"title", logTitle,
 				"err", logErr,
 			)
 		}

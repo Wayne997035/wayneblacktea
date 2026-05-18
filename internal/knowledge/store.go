@@ -46,11 +46,13 @@ func NewStore(pool *pgxpool.Pool, embed ai.ContextEmbeddingProvider, workspaceID
 // and pgvector-go v0.3.0 DecodeBinary panics on empty bytes even with a pointer scan destination.
 // Decay fields (importance, recall_count, last_recalled_at, base_lambda, archived_at) added in
 // migration 000019. Hierarchy fields (parent_id, heading_path, heading_level) added in 000027.
+// Cross-domain reference fields (project_id, task_id, decision_id) added in migration 000049.
 const selectCols = `id, type, title, content, url, tags, created_at, updated_at, source, learning_value,
 	importance, recall_count, last_recalled_at, base_lambda, archived_at,
-	parent_id, heading_path, heading_level`
+	parent_id, heading_path, heading_level,
+	project_id, task_id, decision_id`
 
-// scanKnowledgeItem scans a row (18 columns, no embedding) into db.KnowledgeItem.
+// scanKnowledgeItem scans a row (21 columns, no embedding) into db.KnowledgeItem.
 func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	var i db.KnowledgeItem
 	err := scan(
@@ -60,6 +62,7 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 		&i.Source, &i.LearningValue,
 		&i.Importance, &i.RecallCount, &i.LastRecalledAt, &i.BaseLambda, &i.ArchivedAt,
 		&i.ParentID, &i.HeadingPath, &i.HeadingLevel,
+		&i.ProjectID, &i.TaskID, &i.DecisionID,
 	)
 	return i, err
 }
@@ -123,16 +126,31 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		headingLevel = pgtype.Int4{Int32: int32(p.HeadingLevel), Valid: true} //nolint:gosec // G115: HeadingLevel is ATX depth 0-6
 	}
 
+	var projectID pgtype.UUID
+	if p.ProjectID != nil {
+		projectID = pgtype.UUID{Bytes: *p.ProjectID, Valid: true}
+	}
+	var taskID pgtype.UUID
+	if p.TaskID != nil {
+		taskID = pgtype.UUID{Bytes: *p.TaskID, Valid: true}
+	}
+	var decisionID pgtype.UUID
+	if p.DecisionID != nil {
+		decisionID = pgtype.UUID{Bytes: *p.DecisionID, Valid: true}
+	}
+
 	const q = `INSERT INTO knowledge_items
 		(type, title, content, url, tags, source, learning_value, workspace_id,
-		 parent_id, heading_path, heading_level)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 parent_id, heading_path, heading_level,
+		 project_id, task_id, decision_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING ` + selectCols
 
 	item, err := scanKnowledgeItem(func(args ...any) error {
 		return s.pool.QueryRow(ctx, q,
 			p.Type, p.Title, p.Content, itemURL, tags, source, lv, s.workspaceID,
 			parentID, headingPath, headingLevel,
+			projectID, taskID, decisionID,
 		).Scan(args...)
 	})
 	if err != nil {
@@ -442,6 +460,7 @@ func scanKnowledgeItemWithScore(scan func(...any) error) (db.KnowledgeItem, erro
 		&i.Source, &i.LearningValue,
 		&i.Importance, &i.RecallCount, &i.LastRecalledAt, &i.BaseLambda, &i.ArchivedAt,
 		&i.ParentID, &i.HeadingPath, &i.HeadingLevel,
+		&i.ProjectID, &i.TaskID, &i.DecisionID,
 		&strength, &sim,
 	)
 	return i, err
@@ -563,6 +582,74 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]db.KnowledgeItem
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating knowledge items: %w", err)
+	}
+	if items == nil {
+		return []db.KnowledgeItem{}, nil
+	}
+	return items, nil
+}
+
+// ListByProjectID returns knowledge items associated with a given project ID.
+// Results are ordered by created_at DESC and capped at limit rows.
+// SECURITY: scoped to workspace_id.
+//
+//nolint:dupl // intentionally mirrors ListByTaskID; WHERE column differs (project_id vs task_id); extraction adds no value
+func (s *Store) ListByProjectID(ctx context.Context, projectID uuid.UUID, limit int) ([]db.KnowledgeItem, error) {
+	const q = `SELECT ` + selectCols + `
+		FROM knowledge_items
+		WHERE project_id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at DESC
+		LIMIT $3`
+	rows, err := s.pool.Query(ctx, q, projectID, s.workspaceID, int32(limit)) //nolint:gosec // G115: limit positive by caller
+	if err != nil {
+		return nil, fmt.Errorf("listing knowledge by project_id %s: %w", projectID, err)
+	}
+	defer rows.Close()
+	var items []db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning knowledge item for project: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating knowledge items for project: %w", err)
+	}
+	if items == nil {
+		return []db.KnowledgeItem{}, nil
+	}
+	return items, nil
+}
+
+// ListByTaskID returns knowledge items associated with a given task ID.
+// Results are ordered by created_at DESC and capped at limit rows.
+// SECURITY: scoped to workspace_id.
+//
+//nolint:dupl // intentionally mirrors ListByProjectID; WHERE column differs (task_id vs project_id); extraction adds no value
+func (s *Store) ListByTaskID(ctx context.Context, taskID uuid.UUID, limit int) ([]db.KnowledgeItem, error) {
+	const q = `SELECT ` + selectCols + `
+		FROM knowledge_items
+		WHERE task_id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at DESC
+		LIMIT $3`
+	rows, err := s.pool.Query(ctx, q, taskID, s.workspaceID, int32(limit)) //nolint:gosec // G115: limit positive by caller
+	if err != nil {
+		return nil, fmt.Errorf("listing knowledge by task_id %s: %w", taskID, err)
+	}
+	defer rows.Close()
+	var items []db.KnowledgeItem
+	for rows.Next() {
+		item, err := scanKnowledgeItem(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning knowledge item for task: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating knowledge items for task: %w", err)
 	}
 	if items == nil {
 		return []db.KnowledgeItem{}, nil
