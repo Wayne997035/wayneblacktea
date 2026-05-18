@@ -30,3 +30,33 @@ type KnowledgePayload struct {
 	Content string   `json:"content"`
 	Tags    []string `json:"tags,omitempty"`
 }
+
+// TaskPayload is the JSONB shape stored in pending_proposals.payload when
+// type='task'. Written by the auto-capture paths (internal/mcp/middleware_classify.go
+// autoCaptureMCPTask + internal/handler/autolog_handler.go autoCreateTask) so an
+// LLM classifier's IsTask=true verdict goes through the user review queue
+// instead of bypassing the validator that handleAddTask runs.
+//
+// SuggestedKind defaults to "general" — the classifier doesn't predict task
+// kind. confirm_proposal materialises the row via gtd.Store.CreateTask only
+// after running validator.CheckVagueness / CheckKindFields against Title +
+// (optional) Description that the user may have edited during review.
+//
+// Lives in the proposal package so both producers (mcp / handler) and the
+// confirm materialiser (in tools_proposal.go + proposal_handler.go) share the
+// same wire format without a circular dep.
+type TaskPayload struct {
+	Title               string `json:"title"`
+	SourceTool          string `json:"source_tool"`
+	ArgSummary          string `json:"arg_summary,omitempty"`
+	ResultSummary       string `json:"result_summary,omitempty"`
+	ClassifierRationale string `json:"classifier_rationale,omitempty"`
+	SuggestedKind       string `json:"suggested_kind,omitempty"`
+	Description         string `json:"description,omitempty"`
+}
+
+// MaxTaskPayloadBytes caps the JSON-encoded TaskPayload size before persist.
+// 4 KiB is comfortably above the redacted arg/result summaries (each ≤ 500/300
+// runes) and any classifier rationale, but small enough to bound DB row size
+// in a high-frequency auto-capture loop.
+const MaxTaskPayloadBytes = 4 * 1024
