@@ -14,6 +14,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
@@ -395,8 +396,12 @@ func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error
 // back to direct task creation — preserves prior behaviour.
 //
 // argSummary/resultSummary equivalents here are the actor/action/notes triple
-// already sanitised by LogActivity via sanitize.Notes before reaching this
-// path; we do not re-redact, only enforce payload-size caps.
+// already control-char sanitised by LogActivity via sanitize.Notes. Because
+// the proposal payload is persisted long-lived (pending_proposals.payload row
+// surfaced in the proposal UI), we additionally run redact.ForLLM on the
+// summary + rationale to scrub credential-shape patterns (token=ghp_…,
+// password=…, AKIA…, postgres://user:pass@…) before write — defence-in-depth
+// per security review M-1 (PR #120).
 func (h *AutologHandler) autoCreateTaskFromClassifier(
 	ctx context.Context,
 	title, actor, action, notes, classifierRationale string,
@@ -439,8 +444,8 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 	payload := proposal.TaskPayload{
 		Title:               title,
 		SourceTool:          "activity:" + actor + ":" + action,
-		ArgSummary:          notes, // notes is the activity-log "result" equivalent
-		ClassifierRationale: classifierRationale,
+		ArgSummary:          redact.ForLLM(notes),
+		ClassifierRationale: redact.ForLLM(classifierRationale),
 		SuggestedKind:       "general",
 	}
 	encoded, err := json.Marshal(payload)
