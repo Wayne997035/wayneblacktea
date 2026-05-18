@@ -14,11 +14,27 @@ vi.mock('../lib/api', () => ({
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }))
 
-const addToastMock = vi.fn()
-vi.mock('../stores/toastStore', () => ({
-  useToastStore: (selector: (s: { addToast: typeof addToastMock }) => unknown) =>
-    selector({ addToast: addToastMock }),
+// Use vi.hoisted so the mocks are defined before vi.mock's hoisted factory
+// runs (vi.mock is hoisted to the top of the file by Vitest).
+const { addToastMock, removeToastMock } = vi.hoisted(() => ({
+  addToastMock: vi.fn(),
+  removeToastMock: vi.fn(),
 }))
+
+// Match the real Zustand store shape from web/src/stores/toastStore.ts so
+// callers using either `useToastStore()` (no-arg destructure, as in
+// useCompleteTask) or `useToastStore(selector)` (selector-style) both work.
+vi.mock('../stores/toastStore', () => {
+  const state = {
+    toasts: [] as Array<{ id: string; message: string; type: 'error' | 'success' | 'info' }>,
+    addToast: addToastMock,
+    removeToast: removeToastMock,
+  }
+  return {
+    useToastStore: <T,>(selector?: (s: typeof state) => T): T | typeof state =>
+      selector ? selector(state) : state,
+  }
+})
 
 function makeWrapper() {
   const queryClient = new QueryClient({
