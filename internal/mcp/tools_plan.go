@@ -75,7 +75,7 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		projectID = &id
 	}

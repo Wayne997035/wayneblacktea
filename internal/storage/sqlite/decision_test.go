@@ -172,3 +172,75 @@ func TestDecisionStore_ContextCanceled(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+// TestDecisionStore_ByTask_HappyPath verifies that a decision linked to a
+// task_id is returned by ByTask.
+func TestDecisionStore_ByTask_HappyPath(t *testing.T) {
+	_, s := openDecisionDB(t, ":memory:", "")
+	ctx := context.Background()
+
+	taskID := uuid.New()
+	got, err := s.Log(ctx, decision.LogParams{
+		TaskID:    &taskID,
+		Title:     "Decision for task",
+		Context:   "ctx",
+		Decision:  "decide",
+		Rationale: "because",
+	})
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+
+	rows, err := s.ByTask(ctx, taskID, 10)
+	if err != nil {
+		t.Fatalf("ByTask: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	if rows[0].ID != got.ID {
+		t.Errorf("want ID %s, got %s", got.ID, rows[0].ID)
+	}
+}
+
+// TestDecisionStore_ByTask_EmptyResult verifies that querying an unknown task
+// ID returns an empty slice with no error.
+func TestDecisionStore_ByTask_EmptyResult(t *testing.T) {
+	_, s := openDecisionDB(t, ":memory:", "")
+	rows, err := s.ByTask(context.Background(), uuid.New(), 10)
+	if err != nil {
+		t.Fatalf("ByTask: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("want 0 rows for unknown task_id, got %d", len(rows))
+	}
+}
+
+// TestDecisionStore_ByTask_WorkspaceScoping verifies that decisions belonging
+// to workspace A are not visible when queried from workspace B via ByTask.
+func TestDecisionStore_ByTask_WorkspaceScoping(t *testing.T) {
+	ctx := context.Background()
+	wsA, wsB := uuid.New().String(), uuid.New().String()
+	dsn := "file:decision-task-ws-" + uuid.New().String() + "?mode=memory&cache=shared"
+	_, storeA := openDecisionDB(t, dsn, wsA)
+	_, storeB := openDecisionDB(t, dsn, wsB)
+
+	taskID := uuid.New()
+	if _, err := storeA.Log(ctx, decision.LogParams{
+		TaskID:    &taskID,
+		Title:     "only-in-ws-a",
+		Context:   "c",
+		Decision:  "d",
+		Rationale: "r",
+	}); err != nil {
+		t.Fatalf("Log A: %v", err)
+	}
+
+	rowsB, err := storeB.ByTask(ctx, taskID, 10)
+	if err != nil {
+		t.Fatalf("ByTask from wsB: %v", err)
+	}
+	if len(rowsB) != 0 {
+		t.Errorf("workspace B must not see workspace A decisions, got %d rows", len(rowsB))
+	}
+}

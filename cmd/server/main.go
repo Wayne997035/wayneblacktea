@@ -133,6 +133,7 @@ func run() error {
 		Concepts:  stores.Learning(),
 		Reviews:   stores.Learning(),
 		Handoffs:  stores.Session(),
+		Visions:   stores.Vision(),
 	}
 	timelineH := handler.NewTimelineHandler(timelineAgg)
 	// LLM provider chain (Phase 1-4 of docs/openrouter-fallback.md):

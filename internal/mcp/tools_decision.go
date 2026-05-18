@@ -65,14 +65,14 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		p.ProjectID = &id
 	}
 	if raw := stringArg(args, "task_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid task_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
 		}
 		p.TaskID = &id
 	}
@@ -99,7 +99,7 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		decisions, err := s.decision.ByProject(ctx, id, limit)
 		if err != nil {

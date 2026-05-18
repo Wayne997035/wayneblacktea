@@ -118,7 +118,7 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 	}
 
 	const q = `SELECT id, project_id, repo_name, title, context, decision, rationale,
-		alternatives, created_at, workspace_id, embedding
+		alternatives, created_at, workspace_id, task_id, embedding
 		FROM decisions
 		WHERE embedding IS NOT NULL
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
@@ -142,7 +142,7 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 		if err := rows.Scan(
 			&d.ID, &d.ProjectID, &d.RepoName, &d.Title,
 			&d.Context, &d.Decision, &d.Rationale, &d.Alternatives,
-			&d.CreatedAt, &d.WorkspaceID, &rawEmbed,
+			&d.CreatedAt, &d.WorkspaceID, &d.TaskID, &rawEmbed,
 		); err != nil {
 			continue
 		}

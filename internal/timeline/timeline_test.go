@@ -8,6 +8,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/timeline"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -90,6 +91,15 @@ type fakeHandoffSource struct {
 
 func (f *fakeHandoffSource) HandoffsSince(_ context.Context, _ time.Time, _ int) ([]db.SessionHandoff, error) {
 	return f.handoffs, f.err
+}
+
+type fakeVisionSource struct {
+	items []vision.VisionItemSummary
+	err   error
+}
+
+func (f *fakeVisionSource) List(_ context.Context, _ vision.ListVisionFilter) ([]vision.VisionItemSummary, error) {
+	return f.items, f.err
 }
 
 // ----- helpers -----
@@ -663,5 +673,155 @@ func TestCollectTasks_TimelineErrorPropagated(t *testing.T) {
 	_, err := agg.Aggregate(context.Background(), from, to)
 	if err == nil {
 		t.Fatal("want error from TasksForTimeline, got nil")
+	}
+}
+
+// ----- VisionSource tests -----
+
+// TestAggregate_VisionKinds verifies KindVisionCreated and KindVisionPromoted
+// are emitted when a VisionSource is wired into the Aggregator.
+func TestAggregate_VisionKinds(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-30 * 24 * time.Hour)
+	to := now.Add(30 * 24 * time.Hour)
+	createdAt := now.Add(-10 * 24 * time.Hour)
+	promotedAt := now.Add(-5 * 24 * time.Hour)
+
+	visionID := uuid.New()
+	agg := &timeline.Aggregator{
+		Visions: &fakeVisionSource{
+			items: []vision.VisionItemSummary{
+				{
+					ID:              visionID,
+					Title:           "shipped vision",
+					Status:          vision.VisionStatusPromoted,
+					CreatedAt:       createdAt,
+					LastDiscussedAt: &promotedAt,
+				},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	kindSet := make(map[timeline.Kind]bool)
+	for _, e := range events {
+		kindSet[e.Kind] = true
+		if e.RefID != visionID.String() {
+			t.Errorf("unexpected RefID %s, want %s", e.RefID, visionID)
+		}
+	}
+	if !kindSet[timeline.KindVisionCreated] {
+		t.Error("missing KindVisionCreated event")
+	}
+	if !kindSet[timeline.KindVisionPromoted] {
+		t.Error("missing KindVisionPromoted event")
+	}
+	if len(events) != 2 {
+		t.Errorf("want 2 events (created + promoted), got %d", len(events))
+	}
+}
+
+// TestAggregate_VisionCreatedOnly verifies that a non-promoted vision item
+// produces only KindVisionCreated (no KindVisionPromoted).
+func TestAggregate_VisionCreatedOnly(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-30 * 24 * time.Hour)
+	to := now.Add(30 * 24 * time.Hour)
+	createdAt := now.Add(-7 * 24 * time.Hour)
+
+	agg := &timeline.Aggregator{
+		Visions: &fakeVisionSource{
+			items: []vision.VisionItemSummary{
+				{
+					ID:        uuid.New(),
+					Title:     "open vision",
+					Status:    vision.VisionStatusOpen,
+					CreatedAt: createdAt,
+				},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event (created only), got %d", len(events))
+	}
+	if events[0].Kind != timeline.KindVisionCreated {
+		t.Errorf("want KindVisionCreated, got %q", events[0].Kind)
+	}
+}
+
+// TestAggregate_VisionNilSourceSkipped verifies that a nil Visions source
+// produces no events and no error.
+func TestAggregate_VisionNilSourceSkipped(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-30 * 24 * time.Hour)
+	to := now
+
+	agg := &timeline.Aggregator{} // Visions == nil
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("want 0 events for nil Visions, got %d", len(events))
+	}
+}
+
+// TestAggregate_VisionErrorPropagated verifies an error from the VisionSource
+// is surfaced through Aggregate (first error returned).
+func TestAggregate_VisionErrorPropagated(t *testing.T) {
+	now := time.Now().UTC()
+	from := now.Add(-7 * 24 * time.Hour)
+	to := now
+
+	sentinel := &testError{"vision source down"}
+	agg := &timeline.Aggregator{
+		Visions: &fakeVisionSource{err: sentinel},
+	}
+
+	_, err := agg.Aggregate(context.Background(), from, to)
+	if err == nil {
+		t.Fatal("want error from VisionSource, got nil")
+	}
+}
+
+// TestAggregate_VisionOutsideRangeFiltered verifies that a vision item whose
+// created_at is outside [from, to] does not appear in the timeline.
+func TestAggregate_VisionOutsideRangeFiltered(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	from := now.Add(-7 * 24 * time.Hour)
+	to := now
+
+	outsideCreatedAt := now.Add(-30 * 24 * time.Hour) // before from
+	agg := &timeline.Aggregator{
+		Visions: &fakeVisionSource{
+			items: []vision.VisionItemSummary{
+				{
+					ID:        uuid.New(),
+					Title:     "old vision",
+					Status:    vision.VisionStatusOpen,
+					CreatedAt: outsideCreatedAt,
+				},
+			},
+		},
+	}
+
+	events, err := agg.Aggregate(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == timeline.KindVisionCreated || e.Kind == timeline.KindVisionPromoted {
+			t.Errorf("vision event outside range should be filtered, got %+v", e)
+		}
 	}
 }

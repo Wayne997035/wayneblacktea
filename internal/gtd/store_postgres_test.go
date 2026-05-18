@@ -1499,6 +1499,68 @@ func countAction(logs []db.ActivityLog, action string) int {
 	return n
 }
 
+// TestStore_SetVisionItemID_HappyPath verifies that SetVisionItemID persists
+// the vision_item_id column on the task row and returns the updated task.
+func TestStore_SetVisionItemID_HappyPath(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "vision task", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	visionID := uuid.New()
+	updated, err := store.SetVisionItemID(ctx, task.ID, visionID)
+	if err != nil {
+		t.Fatalf("SetVisionItemID: %v", err)
+	}
+	if !updated.VisionItemID.Valid {
+		t.Fatal("want VisionItemID.Valid=true after SetVisionItemID")
+	}
+	gotVisionID := uuid.UUID(updated.VisionItemID.Bytes)
+	if gotVisionID != visionID {
+		t.Errorf("VisionItemID: got %s, want %s", gotVisionID, visionID)
+	}
+}
+
+// TestStore_SetVisionItemID_NotFound verifies that SetVisionItemID returns
+// ErrNotFound when the task does not exist in the store's workspace.
+func TestStore_SetVisionItemID_NotFound(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	_, err := store.SetVisionItemID(ctx, uuid.New(), uuid.New())
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected gtd.ErrNotFound for unknown task ID, got %v", err)
+	}
+}
+
+// TestStore_SetVisionItemID_WorkspaceIsolation verifies that a store scoped to
+// workspace B cannot set vision_item_id on a task owned by workspace A.
+func TestStore_SetVisionItemID_WorkspaceIsolation(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+	ctx := context.Background()
+
+	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a vision task", Priority: 2})
+	if err != nil {
+		t.Fatalf("CreateTask in wsA: %v", err)
+	}
+
+	_, err = storeB.SetVisionItemID(ctx, task.ID, uuid.New())
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for cross-workspace SetVisionItemID, got %v", err)
+	}
+}
+
 // TestGTDStore_PG_GetTaskByID exercises GetTaskByID on Postgres:
 // found, not found (ErrNotFound), and wrong workspace (ErrNotFound).
 // Uses testcontainers (Docker required); skipped with -short.

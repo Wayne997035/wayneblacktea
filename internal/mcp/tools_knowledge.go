@@ -124,7 +124,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		b := [16]byte(id)
 		addParams.ProjectID = &b
@@ -132,7 +132,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	if raw := stringArg(args, "task_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid task_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
 		}
 		b := [16]byte(id)
 		addParams.TaskID = &b

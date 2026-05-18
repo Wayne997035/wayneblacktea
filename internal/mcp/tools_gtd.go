@@ -332,7 +332,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, req mcp.CallToolReques
 	}
 	id, err := uuid.Parse(rawID)
 	if err != nil {
-		return mcp.NewToolResultError("invalid project_id UUID"), nil
+		return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 	}
 
 	// Load the existing project to fill omitted fields (preserve-on-omit semantics).
@@ -446,7 +446,7 @@ func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		projectID = &id
 	}
@@ -494,7 +494,7 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		p.ProjectID = &id
 	}
@@ -529,7 +529,7 @@ func (s *Server) handleCompleteTask(ctx context.Context, req mcp.CallToolRequest
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return mcp.NewToolResultError("invalid task_id UUID"), nil
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
 	}
 
 	var artifact *string
@@ -692,7 +692,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) 
 	}
 	id, err := uuid.Parse(rawID)
 	if err != nil {
-		return mcp.NewToolResultError("invalid task_id UUID"), nil
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
 	}
 
 	p, errMsg := parseUpdateTaskArgs(args)
@@ -721,7 +721,7 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, req mcp.CallTool
 	}
 	id, err := uuid.Parse(rawID)
 	if err != nil {
-		return mcp.NewToolResultError("invalid project_id UUID"), nil
+		return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 	}
 	rawStatus := stringArg(args, "status")
 	if rawStatus == "" {
@@ -783,7 +783,7 @@ func (s *Server) handleLogActivity(ctx context.Context, req mcp.CallToolRequest)
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid project_id UUID"), nil
+			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
 		}
 		projectID = &id
 	}
@@ -817,7 +817,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) 
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return mcp.NewToolResultError("invalid task_id UUID"), nil
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
 	}
 
 	confirm := boolArg(args, "confirm")
@@ -917,7 +917,7 @@ func (s *Server) handleChecklistAddItem(ctx context.Context, req mcp.CallToolReq
 	}
 	taskID, err := uuid.Parse(rawTaskID)
 	if err != nil {
-		return mcp.NewToolResultError("invalid task_id UUID"), nil
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
 	}
 
 	title := stringArg(args, "title")
@@ -1044,7 +1044,7 @@ func parseChecklistIDs(args map[string]any) (taskID, itemID uuid.UUID, errMsg st
 	var err error
 	taskID, err = uuid.Parse(rawTask)
 	if err != nil {
-		return uuid.UUID{}, uuid.UUID{}, "invalid task_id UUID"
+		return uuid.UUID{}, uuid.UUID{}, errMsgInvalidTaskIDUUID
 	}
 	rawItem := stringArg(args, "item_id")
 	if rawItem == "" {
