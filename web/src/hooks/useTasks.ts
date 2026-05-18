@@ -1,5 +1,6 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
+import { useToastStore } from '../stores/toastStore'
 import type { Task, CreateTaskRequest, Project } from '../types/api'
 
 /**
@@ -49,6 +50,7 @@ export function useTasksForAllProjects(projects: Project[]) {
 
 export function useCompleteTask(projectId?: string) {
   const queryClient = useQueryClient()
+  const { addToast } = useToastStore()
   return useMutation<Task, Error, string>({
     mutationFn: (taskId) =>
       apiFetch<Task>(`/api/tasks/${taskId}/complete`, { method: 'PATCH' }),
@@ -60,6 +62,10 @@ export function useCompleteTask(projectId?: string) {
       void queryClient.invalidateQueries({ queryKey: ['dashboard', 'upcoming'] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard', 'stats'] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard', 'automation-feed'] })
+    },
+    onError: (error: Error) => {
+      console.error('useCompleteTask: complete failed', error)
+      addToast({ type: 'error', message: 'Could not complete task. Try again.' })
     },
   })
 }

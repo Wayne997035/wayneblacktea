@@ -325,6 +325,30 @@ export interface TimelineResponse {
   to: string
 }
 
+// --- Vision ---
+
+export type VisionStatus = 'open' | 'promoted' | 'archived'
+
+export interface VisionItem {
+  id: string
+  title: string
+  description?: string | null
+  status: VisionStatus
+  created_at: string
+  promoted_task_id?: string | null
+}
+
+export interface CreateVisionRequest {
+  title: string
+  description?: string | null
+  status?: VisionStatus
+}
+
+export interface UpdateVisionRequest {
+  status?: VisionStatus
+  description?: string | null
+}
+
 // --- Repo Detail / Workspace Overview ---
 
 export interface RepoOverviewSummary {

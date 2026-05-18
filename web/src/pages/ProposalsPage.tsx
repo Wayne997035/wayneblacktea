@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CheckCircle, XCircle } from 'lucide-react'
 import { useAllProposals } from '../hooks/usePendingProposals'
@@ -51,6 +51,21 @@ function ProposalCard({ proposal }: { proposal: PendingProposal }) {
   const { t } = useTranslation()
   const { mutate: resolve, isPending, isError } = useResolveProposal()
   const [confirming, setConfirming] = useState(false)
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (confirming) {
+      dismissTimerRef.current = setTimeout(() => {
+        setConfirming(false)
+      }, 8000)
+    }
+    return () => {
+      if (dismissTimerRef.current !== null) {
+        clearTimeout(dismissTimerRef.current)
+        dismissTimerRef.current = null
+      }
+    }
+  }, [confirming])
 
   const title = 'title' in proposal.payload ? proposal.payload.title : ''
   const content = 'content' in proposal.payload ? proposal.payload.content : ''
@@ -169,6 +184,21 @@ export function ProposalsPage() {
   const { t } = useTranslation()
   const [tab, setTab] = useState<Tab>('pending')
   const { data: proposals, isLoading, isError } = useAllProposals(tab)
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
+
+  function handleTabKeyDown(e: React.KeyboardEvent, idx: number) {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      const next = (idx + 1) % TABS.length
+      setTab(TABS[next])
+      tabRefs.current[next]?.focus()
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      const prev = (idx - 1 + TABS.length) % TABS.length
+      setTab(TABS[prev])
+      tabRefs.current[prev]?.focus()
+    }
+  }
 
   return (
     <div className="p-6 max-w-[900px] mx-auto">
@@ -185,15 +215,17 @@ export function ProposalsPage() {
         className="flex gap-1 mb-6 p-1 rounded-lg"
         style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', width: 'fit-content' }}
       >
-        {TABS.map((t_) => (
+        {TABS.map((t_, idx) => (
           <button
             key={t_}
+            ref={(el) => { tabRefs.current[idx] = el }}
             id={`tab-${t_}`}
             type="button"
             role="tab"
             aria-selected={tab === t_}
             aria-controls="tabpanel"
             onClick={() => setTab(t_)}
+            onKeyDown={(e) => handleTabKeyDown(e, idx)}
             className="px-4 py-1.5 rounded-md text-body-sm transition-colors"
             style={{
               background: tab === t_ ? 'var(--color-accent-blue)' : 'transparent',

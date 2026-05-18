@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useQueryClient } from '@tanstack/react-query'
 import { TaskRow } from './TaskRow'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { EmptyState } from '../ui/EmptyState'
@@ -61,7 +60,6 @@ interface AllProjectsTasksProps {
 function AllProjectsTasks({ projects, linkedTaskId }: AllProjectsTasksProps) {
   const { data: tasks = [], isLoading } = useAllTasks()
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
-  const queryClient = useQueryClient()
   const completeTask = useCompleteTask()
   const didAutoExpand = useRef(false)
 
@@ -101,14 +99,7 @@ function AllProjectsTasks({ projects, linkedTaskId }: AllProjectsTasksProps) {
             project={project}
             expanded={expandedTaskId === task.id}
             onToggle={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
-            onComplete={(taskId) => {
-              void completeTask.mutateAsync(taskId).then(() => {
-                void queryClient.invalidateQueries({ queryKey: ['tasks'] })
-                if (task.project_id) {
-                  void queryClient.invalidateQueries({ queryKey: ['projects', task.project_id, 'tasks'] })
-                }
-              })
-            }}
+            onComplete={(taskId) => { void completeTask.mutateAsync(taskId) }}
           />
         )
       })}
