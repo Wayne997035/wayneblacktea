@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,8 @@ type fakeDashboardGTDStore struct {
 	upcomingTaskErr error
 	dueDateTasks    []db.Task
 	dueDateTasksErr error
+	allTasks        []db.Task
+	allTasksErr     error
 	err             error
 }
 
@@ -75,6 +78,10 @@ func (f *fakeDashboardGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _,
 
 func (f *fakeDashboardGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
 	return f.dueDateTasks, f.dueDateTasksErr
+}
+
+func (f *fakeDashboardGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
+	return f.allTasks, f.allTasksErr
 }
 
 // fakeDashboardDecisionStore satisfies dashboardDecisionStore.
@@ -1009,5 +1016,147 @@ func TestDashboardHandler_GetAutomationFeed(t *testing.T) {
 				tc.checkBody(t, rec.Body.Bytes())
 			}
 		})
+	}
+}
+
+// ---- GetVagueTasks: sprint feature/gtd-enforce-server-side TASK 5 ----
+
+// makeVagueDashboardTask is a local helper for assembling db.Task rows in
+// the vague-task tests. Status/desc/kind cover the inputs CheckVagueness reads.
+func makeVagueDashboardTask(status, desc, kind string) db.Task {
+	return db.Task{
+		ID:     uuid.New(),
+		Title:  "task",
+		Status: status,
+		Kind:   kind,
+		Description: pgtype.Text{
+			String: desc,
+			Valid:  desc != "",
+		},
+	}
+}
+
+// TestDashboardHandler_GetVagueTasks_ShapeAndCount asserts that the endpoint
+// returns the right JSON shape (count + sample_ids), counts only vague
+// pending/in_progress tasks, and stays consistent with the validator output.
+func TestDashboardHandler_GetVagueTasks_ShapeAndCount(t *testing.T) {
+	vagueA := makeVagueDashboardTask("pending", "TBD", "feature")
+	vagueB := makeVagueDashboardTask("pending", "auto-captured from MCP: complete_task", "fix-pr")
+	healthy := makeVagueDashboardTask(
+		"pending",
+		"Refactor internal/storage/factory.go:42 to inject *pgxpool.Pool via constructor",
+		"refactor",
+	)
+
+	gtdStore := &fakeDashboardGTDStore{
+		allTasks: []db.Task{vagueA, vagueB, healthy},
+	}
+	e := newEcho()
+	h := handler.NewDashboardHandler(gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+	e.GET("/api/dashboard/vague-tasks", h.GetVagueTasks)
+	rec := performRequest(e, http.MethodGet, "/api/dashboard/vague-tasks", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Count     int      `json:"count"`
+		SampleIDs []string `json:"sample_ids"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if resp.Count != 2 {
+		t.Errorf("count = %d, want 2", resp.Count)
+	}
+	if len(resp.SampleIDs) != 2 {
+		t.Fatalf("SampleIDs len = %d, want 2 (got %v)", len(resp.SampleIDs), resp.SampleIDs)
+	}
+	gotIDs := map[string]bool{}
+	for _, id := range resp.SampleIDs {
+		gotIDs[id] = true
+	}
+	if !gotIDs[vagueA.ID.String()] || !gotIDs[vagueB.ID.String()] {
+		t.Errorf("SampleIDs missing one of the seeded vague IDs; got %v", resp.SampleIDs)
+	}
+	if gotIDs[healthy.ID.String()] {
+		t.Errorf("SampleIDs unexpectedly contains healthy ID")
+	}
+}
+
+// TestDashboardHandler_GetVagueTasks_EmptyReturnsEmptyArray asserts that
+// SampleIDs is serialised as `[]` not `null` when no tasks are vague.
+func TestDashboardHandler_GetVagueTasks_EmptyReturnsEmptyArray(t *testing.T) {
+	healthy := makeVagueDashboardTask(
+		"pending",
+		"Refactor internal/storage/factory.go:42 to inject *pgxpool.Pool via constructor",
+		"refactor",
+	)
+
+	gtdStore := &fakeDashboardGTDStore{
+		allTasks: []db.Task{healthy},
+	}
+	e := newEcho()
+	h := handler.NewDashboardHandler(gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+	e.GET("/api/dashboard/vague-tasks", h.GetVagueTasks)
+	rec := performRequest(e, http.MethodGet, "/api/dashboard/vague-tasks", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// Body MUST contain `"sample_ids":[]`, never `"sample_ids":null` — frontend
+	// clients can iterate without a nil-check.
+	body := rec.Body.String()
+	if !strings.Contains(body, `"sample_ids":[]`) {
+		t.Errorf("expected sample_ids:[] in body; got %s", body)
+	}
+	if strings.Contains(body, `"sample_ids":null`) {
+		t.Errorf("sample_ids must not serialise as null; got %s", body)
+	}
+}
+
+// TestDashboardHandler_GetVagueTasks_StoreError verifies a 500 on store failure.
+func TestDashboardHandler_GetVagueTasks_StoreError(t *testing.T) {
+	gtdStore := &fakeDashboardGTDStore{
+		allTasksErr: errors.New("db down"),
+	}
+	e := newEcho()
+	h := handler.NewDashboardHandler(gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+	e.GET("/api/dashboard/vague-tasks", h.GetVagueTasks)
+	rec := performRequest(e, http.MethodGet, "/api/dashboard/vague-tasks", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDashboardHandler_GetVagueTasks_SampleCappedAt5 ensures the 5-ID cap holds
+// when many tasks are vague — count reflects total, SampleIDs is bounded.
+func TestDashboardHandler_GetVagueTasks_SampleCappedAt5(t *testing.T) {
+	tasks := make([]db.Task, 0, 8)
+	for i := 0; i < 8; i++ {
+		tasks = append(tasks, makeVagueDashboardTask("pending", "TBD", "feature"))
+	}
+	gtdStore := &fakeDashboardGTDStore{allTasks: tasks}
+	e := newEcho()
+	h := handler.NewDashboardHandler(gtdStore, &fakeDashboardDecisionStore{}, &fakeDashboardProposalStore{})
+	e.GET("/api/dashboard/vague-tasks", h.GetVagueTasks)
+	rec := performRequest(e, http.MethodGet, "/api/dashboard/vague-tasks", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp struct {
+		Count     int      `json:"count"`
+		SampleIDs []string `json:"sample_ids"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if resp.Count != 8 {
+		t.Errorf("count = %d, want 8", resp.Count)
+	}
+	if len(resp.SampleIDs) != 5 {
+		t.Errorf("SampleIDs len = %d, want 5 (cap)", len(resp.SampleIDs))
 	}
 }

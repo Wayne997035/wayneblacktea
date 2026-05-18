@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -43,17 +44,24 @@ func (s *Server) registerHealthTools(ms *server.MCPServer) {
 
 // healthSnapshot is the JSON shape returned by system_health.
 type healthSnapshot struct {
-	GeneratedAt      time.Time           `json:"generated_at"`
-	Workspace        string              `json:"workspace,omitempty"`
-	Tasks            taskHealth          `json:"tasks"`
-	PendingProposals proposalHealth      `json:"pending_proposals"`
-	DueReviews       reviewHealth        `json:"due_reviews"`
-	ToolCallSummary  map[string]int      `json:"tool_call_counts"`
-	RecentCalls      []watchdog.ToolCall `json:"recent_calls"`
-	ForgottenSignals []string            `json:"forgotten_signals,omitempty"`
-	CompletionDrift  []DriftCandidate    `json:"completion_drift_candidates,omitempty"`
-	Discipline       disciplineHealth    `json:"discipline,omitempty"`
+	GeneratedAt           time.Time           `json:"generated_at"`
+	Workspace             string              `json:"workspace,omitempty"`
+	Tasks                 taskHealth          `json:"tasks"`
+	PendingProposals      proposalHealth      `json:"pending_proposals"`
+	DueReviews            reviewHealth        `json:"due_reviews"`
+	ToolCallSummary       map[string]int      `json:"tool_call_counts"`
+	RecentCalls           []watchdog.ToolCall `json:"recent_calls"`
+	ForgottenSignals      []string            `json:"forgotten_signals,omitempty"`
+	CompletionDrift       []DriftCandidate    `json:"completion_drift_candidates,omitempty"`
+	Discipline            disciplineHealth    `json:"discipline,omitempty"`
+	VaguePendingTaskCount int                 `json:"vague_pending_task_count"`
+	VagueSampleIDs        []string            `json:"vague_sample_ids,omitempty"`
 }
+
+// maxVagueSampleIDs caps how many vague-task IDs are surfaced per snapshot.
+// Matches the SA spec — enough to inspect a leak signal, small enough to keep
+// the JSON response bounded.
+const maxVagueSampleIDs = 5
 
 // disciplineHealth is the per-snapshot discipline drift summary surfaced by
 // system_health. DriftCount24h is the number of mutating MCP tool calls in
@@ -145,6 +153,7 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 				snap.Tasks.StuckIDs = append(snap.Tasks.StuckIDs, t.ID.String())
 			}
 		}
+		snap.VaguePendingTaskCount, snap.VagueSampleIDs = countVaguePending(tasks)
 	}
 
 	if proposals, err := s.proposal.ListPending(ctx); err == nil {
@@ -172,6 +181,12 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 		signals = append(signals, fmt.Sprintf(
 			"%d mutating MCP calls in last 24h with no preceding log_decision — likely undocumented changes.",
 			snap.Discipline.DriftCount24h,
+		))
+	}
+	if snap.VaguePendingTaskCount > 0 {
+		signals = append(signals, fmt.Sprintf(
+			"%d pending/in_progress task(s) flagged by validator.CheckVagueness — descriptions are placeholders or too vague.",
+			snap.VaguePendingTaskCount,
 		))
 	}
 	snap.ForgottenSignals = signals
@@ -539,6 +554,42 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 		}
 	}
 	return candidates
+}
+
+// countVaguePending scans tasks for pending/in_progress entries whose
+// Description triggers validator.CheckVagueness for the task's Kind. Returns
+// the total count plus the first maxVagueSampleIDs IDs (lexical UUID order as
+// returned by the store query — sample, not ranked).
+//
+// Status filter mirrors detectCompletionDrift: both pending and in_progress
+// are inspected so a vague placeholder noticed after the task has already
+// been started is still surfaced.
+//
+// CheckVagueness already returns nil for kind=="chore" so chore tasks with
+// short or marker-flavoured descriptions are correctly skipped here too.
+// Tasks with an empty / unset description are NOT considered vague by this
+// helper — an empty description is a separate signal handled elsewhere (and
+// the validator would otherwise flag every empty-string task as "too short").
+func countVaguePending(tasks []db.Task) (int, []string) {
+	count := 0
+	var sampleIDs []string
+	for _, t := range tasks {
+		if t.Status != taskStatusPending && t.Status != taskStatusInProgress {
+			continue
+		}
+		if !t.Description.Valid || t.Description.String == "" {
+			continue
+		}
+		warnings := validator.CheckVagueness("description", t.Description.String, t.Kind)
+		if len(warnings) == 0 {
+			continue
+		}
+		count++
+		if len(sampleIDs) < maxVagueSampleIDs {
+			sampleIDs = append(sampleIDs, t.ID.String())
+		}
+	}
+	return count, sampleIDs
 }
 
 // findRepoRoot returns the git repository root by walking up from cwd.

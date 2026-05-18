@@ -314,6 +314,8 @@ func run() error {
 	api.GET("/dashboard/upcoming", dashH.GetUpcoming, dashboardRL)
 	api.GET("/dashboard/automation-health", dashH.GetAutomationHealth, dashboardRL)
 	api.GET("/dashboard/automation-feed", dashH.GetAutomationFeed, dashboardRL)
+	// vague-tasks dashboard endpoint (sprint feature/gtd-enforce-server-side TASK 5)
+	api.GET("/dashboard/vague-tasks", dashH.GetVagueTasks, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
