@@ -1,65 +1,58 @@
-import { useState, useRef, useEffect } from 'react'
-import { Eye, Plus, X, ChevronDown } from 'lucide-react'
+import { useState } from 'react'
+import { Plus } from 'lucide-react'
 import { useVision, useCreateVision, useUpdateVision } from '../hooks/useVision'
-import { useToastStore } from '../stores/toastStore'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
-import type { VisionItem, VisionStatus } from '../types/api'
+import type { VisionItemSummary, VisionStatus } from '../types/api'
 
-type StatusTab = 'all' | VisionStatus
+// --- Status configuration ---
 
-const STATUS_TABS: StatusTab[] = ['all', 'open', 'promoted', 'archived']
+const STATUS_TABS: VisionStatus[] = ['open', 'discussing', 'maturing', 'promoted', 'dismissed']
 
-const STATUS_LABELS: Record<StatusTab, string> = {
-  all: 'All',
-  open: 'Open',
-  promoted: 'Promoted',
-  archived: 'Archived',
+const STATUS_LABELS: Record<VisionStatus, string> = {
+  open:       'Open',
+  discussing: 'Discussing',
+  maturing:   'Maturing',
+  promoted:   'Promoted',
+  dismissed:  'Dismissed',
 }
 
 const STATUS_STYLE: Record<VisionStatus, { bg: string; text: string }> = {
-  open:     { bg: 'var(--color-status-active-bg)',    text: 'var(--color-status-active-text)' },
-  promoted: { bg: 'var(--color-status-completed-bg)', text: 'var(--color-status-completed-text)' },
-  archived: { bg: 'var(--color-status-archived-bg)',  text: 'var(--color-status-archived-text)' },
+  open:       { bg: 'var(--color-status-active-bg)',    text: 'var(--color-status-active-text)' },
+  discussing: { bg: 'var(--color-status-on-hold-bg)',   text: 'var(--color-status-on-hold-text)' },
+  maturing:   { bg: 'var(--color-accent-blue-bg, rgba(88,166,255,.15))', text: 'var(--color-accent-blue)' },
+  promoted:   { bg: 'var(--color-status-completed-bg)', text: 'var(--color-status-completed-text)' },
+  dismissed:  { bg: 'var(--color-status-archived-bg)',  text: 'var(--color-status-archived-text)' },
+}
+
+// --- Sub-components ---
+
+interface StatusBadgeProps {
+  status: VisionStatus
+}
+
+function VisionStatusBadge({ status }: StatusBadgeProps) {
+  const { bg, text } = STATUS_STYLE[status]
+  return (
+    <span
+      className="px-2 py-0.5 rounded-full font-mono whitespace-nowrap uppercase"
+      style={{ background: bg, color: text, fontSize: '10px' }}
+    >
+      {STATUS_LABELS[status]}
+    </span>
+  )
 }
 
 interface VisionCardProps {
-  item: VisionItem
+  item: VisionItemSummary
 }
 
 function VisionCard({ item }: VisionCardProps) {
-  const updateVision = useUpdateVision()
-  const { addToast } = useToastStore()
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
+  const { mutate: update, isPending } = useUpdateVision()
 
-  useEffect(() => {
-    if (!menuOpen) return
-    function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [menuOpen])
-
-  function handleStatusChange(status: VisionStatus) {
-    setMenuOpen(false)
-    updateVision.mutate(
-      { id: item.id, status },
-      {
-        onSuccess: () => {
-          addToast({ type: 'success', message: `Vision item marked as ${status}` })
-        },
-        onError: () => {
-          addToast({ type: 'error', message: 'Could not update vision item. Try again.' })
-        },
-      }
-    )
+  function handleStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    update({ id: item.id, data: { status: e.target.value as VisionStatus } })
   }
-
-  const { bg, text } = STATUS_STYLE[item.status]
 
   return (
     <article
@@ -69,134 +62,111 @@ function VisionCard({ item }: VisionCardProps) {
         border: '1px solid var(--color-border)',
       }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span
-              className="px-2 py-0.5 rounded-full font-mono whitespace-nowrap uppercase"
-              style={{ background: bg, color: text, fontSize: '10px' }}
-            >
-              {item.status}
-            </span>
-            <span className="text-caption shrink-0" style={{ color: 'var(--color-text-muted)' }}>
-              {new Date(item.created_at).toLocaleDateString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-              })}
-            </span>
-          </div>
-          <p className="text-body font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {item.title}
-          </p>
-          {item.description && (
-            <p
-              className="text-body-sm mt-1"
-              style={{
-                color: 'var(--color-text-muted)',
-                display: '-webkit-box',
-                WebkitLineClamp: 3,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-            >
-              {item.description}
-            </p>
-          )}
-        </div>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <VisionStatusBadge status={item.status} />
+        <span className="text-caption shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+          {new Date(item.created_at).toLocaleDateString(undefined, {
+            month: 'short',
+            day: 'numeric',
+          })}
+        </span>
+      </div>
 
-        <div className="relative shrink-0" ref={menuRef}>
-          <button
-            type="button"
-            aria-label="Change status"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((v) => !v)}
-            disabled={updateVision.isPending}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-body-sm transition-colors"
-            style={{
-              background: 'var(--color-bg-input)',
-              border: '1px solid var(--color-border)',
-              color: 'var(--color-text-muted)',
-              cursor: updateVision.isPending ? 'not-allowed' : 'pointer',
-              opacity: updateVision.isPending ? 0.6 : 1,
-            }}
-          >
-            <ChevronDown size={12} aria-hidden="true" />
-          </button>
+      <p className="text-body font-medium mb-1" style={{ color: 'var(--color-text-primary)' }}>
+        {item.title}
+      </p>
 
-          {menuOpen && (
-            <div
-              role="menu"
-              className="absolute right-0 top-full mt-1 z-10 rounded-md py-1 min-w-[120px]"
-              style={{
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border)',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-              }}
-            >
-              {(['open', 'promoted', 'archived'] as VisionStatus[]).map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleStatusChange(s)}
-                  className="w-full text-left px-3 py-1.5 text-body-sm capitalize transition-colors"
-                  style={{
-                    background: item.status === s ? 'var(--color-bg-input)' : 'transparent',
-                    color: item.status === s ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+      {item.why_blocked && (
+        <p
+          className="text-body-sm mb-3"
+          style={{
+            color: 'var(--color-text-muted)',
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}
+        >
+          {item.why_blocked}
+        </p>
+      )}
+
+      {item.parent_initiative && (
+        <p className="text-caption mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          Initiative: {item.parent_initiative}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2 mt-3">
+        <label
+          htmlFor={`status-${item.id}`}
+          className="text-caption shrink-0"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          Status:
+        </label>
+        <select
+          id={`status-${item.id}`}
+          value={item.status}
+          onChange={handleStatusChange}
+          disabled={isPending}
+          className="rounded-md px-2 py-1 text-body-sm"
+          style={{
+            background: 'var(--color-bg-input)',
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text-primary)',
+            cursor: isPending ? 'not-allowed' : 'pointer',
+            opacity: isPending ? 0.6 : 1,
+          }}
+          aria-label={`Change status for ${item.title}`}
+        >
+          {STATUS_TABS.map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABELS[s]}
+            </option>
+          ))}
+        </select>
       </div>
     </article>
   )
 }
+
+// --- Create form ---
 
 interface CreateVisionFormProps {
   onClose: () => void
 }
 
 function CreateVisionForm({ onClose }: CreateVisionFormProps) {
-  const createVision = useCreateVision()
-  const { addToast } = useToastStore()
   const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
+  const [whyBlocked, setWhyBlocked] = useState('')
   const [titleError, setTitleError] = useState('')
-  const titleRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    titleRef.current?.focus()
-  }, [])
+  const [whyError, setWhyError] = useState('')
+  const { mutate: create, isPending } = useCreateVision()
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    let valid = true
+
     if (!title.trim()) {
       setTitleError('Title is required')
-      return
+      valid = false
+    } else {
+      setTitleError('')
     }
-    createVision.mutate(
-      {
-        title: title.trim(),
-        description: description.trim() || null,
-        status: 'open',
-      },
-      {
-        onSuccess: () => {
-          addToast({ type: 'success', message: 'Vision item created' })
-          onClose()
-        },
-        onError: () => {
-          addToast({ type: 'error', message: 'Could not create vision item. Try again.' })
-        },
-      }
+
+    if (!whyBlocked.trim()) {
+      setWhyError('Why blocked is required')
+      valid = false
+    } else {
+      setWhyError('')
+    }
+
+    if (!valid) return
+
+    create(
+      { title: title.trim(), why_blocked: whyBlocked.trim() },
+      { onSuccess: onClose },
     )
   }
 
@@ -208,139 +178,137 @@ function CreateVisionForm({ onClose }: CreateVisionFormProps) {
 
   return (
     <div
-      className="rounded-lg p-4 mb-4"
-      style={{
-        background: 'var(--color-bg-card)',
-        border: '1px solid var(--color-border)',
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.5)' }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Create vision item"
     >
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-body font-medium" style={{ color: 'var(--color-text-primary)' }}>
+      <div
+        className="rounded-lg p-6 w-full max-w-md"
+        style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}
+      >
+        <h2 className="text-page-title mb-4" style={{ color: 'var(--color-text-primary)' }}>
           New Vision Item
-        </p>
-        <button
-          type="button"
-          aria-label="Close form"
-          onClick={onClose}
-          className="rounded-md p-1 transition-colors"
-          style={{ background: 'transparent', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}
-        >
-          <X size={14} aria-hidden="true" />
-        </button>
+        </h2>
+
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="mb-4">
+            <label
+              htmlFor="vision-title"
+              className="block text-body-sm mb-1"
+              style={{ color: 'var(--color-text-primary)' }}
+            >
+              Title <span aria-hidden="true" style={{ color: 'var(--color-error)' }}>*</span>
+            </label>
+            <input
+              id="vision-title"
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              required
+              aria-required="true"
+              aria-describedby={titleError ? 'vision-title-error' : undefined}
+              className="w-full rounded-md px-3 py-2 text-body"
+              style={inputStyle}
+            />
+            {titleError && (
+              <p id="vision-title-error" className="text-caption mt-1" style={{ color: 'var(--color-error)' }} role="alert">
+                {titleError}
+              </p>
+            )}
+          </div>
+
+          <div className="mb-6">
+            <label
+              htmlFor="vision-why-blocked"
+              className="block text-body-sm mb-1"
+              style={{ color: 'var(--color-text-primary)' }}
+            >
+              Why Blocked <span aria-hidden="true" style={{ color: 'var(--color-error)' }}>*</span>
+            </label>
+            <textarea
+              id="vision-why-blocked"
+              value={whyBlocked}
+              onChange={(e) => setWhyBlocked(e.target.value)}
+              required
+              aria-required="true"
+              aria-describedby={whyError ? 'vision-why-error' : undefined}
+              rows={4}
+              className="w-full rounded-md px-3 py-2 text-body resize-none"
+              style={inputStyle}
+              placeholder="What is currently preventing this from being actionable?"
+            />
+            {whyError && (
+              <p id="vision-why-error" className="text-caption mt-1" style={{ color: 'var(--color-error)' }} role="alert">
+                {whyError}
+              </p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-md text-body-sm"
+              style={{
+                background: 'var(--color-bg-input)',
+                border: '1px solid var(--color-border)',
+                color: 'var(--color-text-muted)',
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isPending}
+              className="px-4 py-2 rounded-md text-body-sm"
+              style={{
+                background: 'var(--color-accent-blue)',
+                color: 'var(--color-bg-base)',
+                border: 'none',
+                cursor: isPending ? 'not-allowed' : 'pointer',
+                opacity: isPending ? 0.6 : 1,
+              }}
+            >
+              {isPending ? 'Creating…' : 'Create'}
+            </button>
+          </div>
+        </form>
       </div>
-
-      <form onSubmit={handleSubmit} noValidate>
-        <div className="mb-3">
-          <label htmlFor="vision-title" className="block text-body-sm mb-1" style={{ color: 'var(--color-text-muted)' }}>
-            Title <span aria-hidden="true">*</span>
-          </label>
-          <input
-            id="vision-title"
-            ref={titleRef}
-            type="text"
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value)
-              if (titleError) setTitleError('')
-            }}
-            placeholder="What do you want to achieve?"
-            className="w-full rounded-md px-3 py-2 text-body"
-            style={inputStyle}
-            aria-describedby={titleError ? 'vision-title-error' : undefined}
-            aria-invalid={Boolean(titleError)}
-          />
-          {titleError && (
-            <p id="vision-title-error" className="text-body-sm mt-1" role="alert" style={{ color: 'var(--color-error)' }}>
-              {titleError}
-            </p>
-          )}
-        </div>
-
-        <div className="mb-4">
-          <label htmlFor="vision-description" className="block text-body-sm mb-1" style={{ color: 'var(--color-text-muted)' }}>
-            Description
-          </label>
-          <textarea
-            id="vision-description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Optional details…"
-            rows={3}
-            className="w-full rounded-md px-3 py-2 text-body resize-none"
-            style={inputStyle}
-          />
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="submit"
-            disabled={createVision.isPending}
-            className="flex items-center gap-2 px-4 py-2 rounded-md text-body-sm transition-colors"
-            style={{
-              background: 'var(--color-accent-blue)',
-              color: 'var(--color-bg-base)',
-              border: 'none',
-              cursor: createVision.isPending ? 'not-allowed' : 'pointer',
-              opacity: createVision.isPending ? 0.6 : 1,
-            }}
-          >
-            {createVision.isPending ? 'Saving…' : 'Add Vision'}
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-md text-body-sm transition-colors"
-            style={{
-              background: 'var(--color-bg-input)',
-              color: 'var(--color-text-muted)',
-              border: '1px solid var(--color-border)',
-              cursor: 'pointer',
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
     </div>
   )
 }
 
+// --- Page ---
+
+type StatusFilter = VisionStatus | 'all'
+
+const FILTER_TABS: StatusFilter[] = ['all', ...STATUS_TABS]
+
+const FILTER_LABELS: Record<StatusFilter, string> = {
+  all: 'All',
+  ...STATUS_LABELS,
+}
+
 export function VisionPage() {
-  const { data: items, isLoading, isError } = useVision()
-  const [activeTab, setActiveTab] = useState<StatusTab>('open')
-  const [creating, setCreating] = useState(false)
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const [activeTab, setActiveTab] = useState<StatusFilter>('all')
+  const [showCreate, setShowCreate] = useState(false)
 
-  const filtered = (items ?? []).filter((item) =>
-    activeTab === 'all' ? true : item.status === activeTab
+  const { data: items, isLoading, isError } = useVision(
+    activeTab === 'all' ? undefined : activeTab,
   )
-
-  function handleTabKeyDown(e: React.KeyboardEvent, idx: number) {
-    if (e.key === 'ArrowRight') {
-      e.preventDefault()
-      const next = (idx + 1) % STATUS_TABS.length
-      setActiveTab(STATUS_TABS[next])
-      tabRefs.current[next]?.focus()
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault()
-      const prev = (idx - 1 + STATUS_TABS.length) % STATUS_TABS.length
-      setActiveTab(STATUS_TABS[prev])
-      tabRefs.current[prev]?.focus()
-    }
-  }
 
   return (
     <div className="p-6 max-w-[900px] mx-auto">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Eye size={20} style={{ color: 'var(--color-accent-blue)' }} aria-hidden="true" />
-          <h1 className="text-page-title" style={{ color: 'var(--color-text-primary)' }}>
-            Vision
-          </h1>
-        </div>
+        <h1 className="text-page-title" style={{ color: 'var(--color-text-primary)' }}>
+          Vision
+        </h1>
         <button
           type="button"
-          onClick={() => setCreating(true)}
+          onClick={() => setShowCreate(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-md text-body-sm transition-colors"
           style={{
             background: 'var(--color-accent-blue)',
@@ -348,6 +316,7 @@ export function VisionPage() {
             border: 'none',
             cursor: 'pointer',
           }}
+          aria-label="Create new vision item"
         >
           <Plus size={14} aria-hidden="true" />
           New Vision
@@ -358,24 +327,22 @@ export function VisionPage() {
       <div
         role="tablist"
         aria-label="Vision status filter"
-        className="flex gap-1 mb-6 p-1 rounded-lg"
+        className="flex flex-wrap gap-1 mb-6 p-1 rounded-lg"
         style={{
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border)',
           width: 'fit-content',
         }}
       >
-        {STATUS_TABS.map((tab, idx) => (
+        {FILTER_TABS.map((tab) => (
           <button
             key={tab}
-            ref={(el) => { tabRefs.current[idx] = el }}
             id={`vision-tab-${tab}`}
             type="button"
             role="tab"
             aria-selected={activeTab === tab}
             aria-controls="vision-tabpanel"
             onClick={() => setActiveTab(tab)}
-            onKeyDown={(e) => handleTabKeyDown(e, idx)}
             className="px-4 py-1.5 rounded-md text-body-sm transition-colors"
             style={{
               background: activeTab === tab ? 'var(--color-accent-blue)' : 'transparent',
@@ -384,7 +351,7 @@ export function VisionPage() {
               cursor: 'pointer',
             }}
           >
-            {STATUS_LABELS[tab]}
+            {FILTER_LABELS[tab]}
           </button>
         ))}
       </div>
@@ -393,35 +360,35 @@ export function VisionPage() {
         <div
           className="rounded-md p-3 mb-6 text-body-sm"
           style={{
-            background: '#2e0a0a',
+            background: 'var(--color-error-bg, #2e0a0a)',
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}
           role="alert"
         >
-          Failed to load vision items. Try refreshing.
+          Failed to load vision items.
         </div>
       )}
-
-      {creating && <CreateVisionForm onClose={() => setCreating(false)} />}
 
       <div id="vision-tabpanel" role="tabpanel" aria-labelledby={`vision-tab-${activeTab}`}>
         {isLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 4 }, (_, i) => (
-              <LoadingSkeleton key={i} className="h-20 w-full" />
+              <LoadingSkeleton key={i} className="h-24 w-full" />
             ))}
           </div>
-        ) : filtered.length === 0 ? (
-          <EmptyState messageKey="common.empty" />
+        ) : !items || items.length === 0 ? (
+          <EmptyState messageKey="vision.empty" />
         ) : (
           <div className="space-y-3">
-            {filtered.map((item) => (
+            {items.map((item) => (
               <VisionCard key={item.id} item={item} />
             ))}
           </div>
         )}
       </div>
+
+      {showCreate && <CreateVisionForm onClose={() => setShowCreate(false)} />}
     </div>
   )
 }
