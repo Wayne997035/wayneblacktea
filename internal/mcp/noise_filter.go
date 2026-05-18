@@ -76,6 +76,11 @@ func checkCommandField(name, value string) noiseReason {
 		if r < 0x20 && r != '\t' {
 			return name + " must not contain ASCII control characters"
 		}
+		// Reject Unicode line separator (U+2028) and paragraph separator (U+2029).
+		// Some terminals and log processors treat these as newlines.
+		if r == ' ' || r == ' ' {
+			return name + " must not contain Unicode line/paragraph separator"
+		}
 	}
 	return ""
 }

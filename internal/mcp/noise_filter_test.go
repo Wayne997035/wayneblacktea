@@ -353,6 +353,18 @@ func TestCheckCommandField(t *testing.T) {
 			wantNoisy: true,
 			wantMsg:   "control",
 		},
+		{
+			name:      "Unicode line separator U+2028 is rejected",
+			value:     "before after",
+			wantNoisy: true,
+			wantMsg:   "separator",
+		},
+		{
+			name:      "Unicode paragraph separator U+2029 is rejected",
+			value:     "before after",
+			wantNoisy: true,
+			wantMsg:   "separator",
+		},
 	}
 
 	for _, tc := range tests {
