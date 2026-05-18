@@ -38,6 +38,10 @@ func (d *trackingDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int3
 	return nil, nil
 }
 
+func (d *trackingDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+	return nil, nil
+}
+
 func (d *trackingDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
 	return nil, nil
 }

@@ -47,6 +47,7 @@ type Decision struct {
 	Alternatives pgtype.Text        `json:"alternatives"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
 }
 
 type Goal struct {
@@ -82,6 +83,9 @@ type KnowledgeItem struct {
 	ParentID       pgtype.UUID        `json:"parent_id"`
 	HeadingPath    pgtype.Text        `json:"heading_path"`
 	HeadingLevel   pgtype.Int4        `json:"heading_level"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	DecisionID     pgtype.UUID        `json:"decision_id"`
 }
 
 type KnowledgeRanked struct {
@@ -172,23 +176,24 @@ type SessionHandoff struct {
 }
 
 type Task struct {
-	ID          uuid.UUID          `json:"id"`
-	ProjectID   pgtype.UUID        `json:"project_id"`
-	Title       string             `json:"title"`
-	Description pgtype.Text        `json:"description"`
-	Status      string             `json:"status"`
-	Priority    int32              `json:"priority"`
-	Assignee    pgtype.Text        `json:"assignee"`
-	DueDate     pgtype.Timestamptz `json:"due_date"`
-	Artifact    pgtype.Text        `json:"artifact"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Importance  pgtype.Int2        `json:"importance"`
-	Context     pgtype.Text        `json:"context"`
-	Checklist   []byte             `json:"checklist"`
-	Kind        string             `json:"kind"`
-	BranchName  pgtype.Text        `json:"branch_name"`
-	PRUrl       pgtype.Text        `json:"pr_url"`
-	CommitSHAs  []string           `json:"commit_shas"`
+	ID           uuid.UUID          `json:"id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	Title        string             `json:"title"`
+	Description  pgtype.Text        `json:"description"`
+	Status       string             `json:"status"`
+	Priority     int32              `json:"priority"`
+	Assignee     pgtype.Text        `json:"assignee"`
+	DueDate      pgtype.Timestamptz `json:"due_date"`
+	Artifact     pgtype.Text        `json:"artifact"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Importance   pgtype.Int2        `json:"importance"`
+	Context      pgtype.Text        `json:"context"`
+	Checklist    []byte             `json:"checklist"`
+	Kind         string             `json:"kind"`
+	BranchName   pgtype.Text        `json:"branch_name"`
+	PRUrl        pgtype.Text        `json:"pr_url"`
+	CommitSHAs   []string           `json:"commit_shas"`
+	VisionItemID pgtype.UUID        `json:"vision_item_id"`
 }

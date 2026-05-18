@@ -55,11 +55,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     artifact     TEXT,
     checklist    TEXT NOT NULL DEFAULT '[]', -- JSON array of ChecklistItem; parity with Postgres jsonb checklist column (migration 000043)
     kind         TEXT NOT NULL DEFAULT 'general' CHECK (kind IN ('general','fix-pr','feature','refactor','research','chore')), -- task kind; parity with Postgres kind column (migration 000044)
-    branch_name  TEXT,                       -- git branch name for the task (migration 000047)
-    pr_url       TEXT,                       -- GitHub PR URL for the task (migration 000047)
-    commit_shas  TEXT NOT NULL DEFAULT '[]', -- JSON array of commit SHAs (migration 000047)
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    branch_name    TEXT,                       -- git branch name for the task (migration 000047)
+    pr_url         TEXT,                       -- GitHub PR URL for the task (migration 000047)
+    commit_shas    TEXT NOT NULL DEFAULT '[]', -- JSON array of commit SHAs (migration 000047)
+    vision_item_id TEXT,                       -- vision item this task was promoted from (migration 000050); referential integrity in code (red line #9)
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 CREATE TABLE IF NOT EXISTS activity_log (
@@ -93,6 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_workspace_repo_name  ON projects(workspa
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id              ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status                  ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id            ON tasks(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_vision_item_id          ON tasks(vision_item_id);
 CREATE INDEX IF NOT EXISTS idx_goals_workspace_id            ON goals(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_activity_log_project_id       ON activity_log(project_id);
 CREATE INDEX IF NOT EXISTS idx_activity_log_created_at       ON activity_log(created_at DESC);
@@ -125,7 +127,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     decision     TEXT NOT NULL,
     rationale    TEXT NOT NULL,
     alternatives TEXT,
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    task_id      TEXT          -- cross-domain ref (migration 000048); referential integrity in code (red line #9)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_items (
@@ -150,7 +153,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     -- K1 hierarchy fields (migration 000027): self-referential parent, no FK (CLAUDE.md #9)
     parent_id        TEXT    DEFAULT NULL, -- referential integrity in code (red line #9)
     heading_path     TEXT    DEFAULT NULL, -- e.g. "Introduction › Key Concepts"
-    heading_level    INTEGER DEFAULT NULL  -- 0=root, 1=section, 2=subsection
+    heading_level    INTEGER DEFAULT NULL, -- 0=root, 1=section, 2=subsection
+    -- Cross-domain reference fields (migration 000049); referential integrity in code (red line #9)
+    project_id       TEXT    DEFAULT NULL,
+    task_id          TEXT    DEFAULT NULL,
+    decision_id      TEXT    DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS concepts (
@@ -208,6 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_decisions_project_id                 ON decisions
 CREATE INDEX IF NOT EXISTS idx_decisions_repo_name                  ON decisions(repo_name);
 CREATE INDEX IF NOT EXISTS idx_decisions_created_at                 ON decisions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decisions_workspace_id               ON decisions(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_decisions_task_id                    ON decisions(task_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_type                       ON knowledge_items(type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_created_at                 ON knowledge_items(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_workspace_id         ON knowledge_items(workspace_id) WHERE workspace_id IS NOT NULL;
@@ -218,6 +226,10 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_items_parent_id
     ON knowledge_items(parent_id) WHERE parent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_heading_path
     ON knowledge_items(heading_path) WHERE heading_path IS NOT NULL;
+-- Cross-domain reference indexes (migration 000049).
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_project_id  ON knowledge_items(project_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_task_id     ON knowledge_items(task_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_decision_id ON knowledge_items(decision_id);
 
 -- FTS5 virtual table (SQLite-only; Postgres uses pg_trgm/tsvector natively via sqlc queries).
 -- sqlite-vec (vector ANN) is deferred: modernc.org/sqlite cannot load C extensions.

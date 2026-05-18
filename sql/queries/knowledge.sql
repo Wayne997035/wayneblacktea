@@ -1,6 +1,6 @@
 -- name: CreateKnowledgeItem :one
-INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO knowledge_items (type, title, content, url, tags, source, learning_value, workspace_id, project_id, task_id, decision_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
 -- name: UpdateKnowledgeEmbedding :exec
@@ -29,8 +29,31 @@ WHERE id = sqlc.arg('id')
 -- name: ListKnowledge :many
 SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
        learning_value, workspace_id, importance, recall_count, last_recalled_at,
-       base_lambda, archived_at, parent_id, heading_path, heading_level
+       base_lambda, archived_at, parent_id, heading_path, heading_level,
+       project_id, task_id, decision_id
 FROM knowledge_items
 WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit_n') OFFSET sqlc.arg('offset_n');
+
+-- name: ListKnowledgeByProjectID :many
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
+       learning_value, workspace_id, importance, recall_count, last_recalled_at,
+       base_lambda, archived_at, parent_id, heading_path, heading_level,
+       project_id, task_id, decision_id
+FROM knowledge_items
+WHERE project_id = sqlc.arg('project_id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit_n');
+
+-- name: ListKnowledgeByTaskID :many
+SELECT id, type, title, content, url, tags, embedding, created_at, updated_at, source,
+       learning_value, workspace_id, importance, recall_count, last_recalled_at,
+       base_lambda, archived_at, parent_id, heading_path, heading_level,
+       project_id, task_id, decision_id
+FROM knowledge_items
+WHERE task_id = sqlc.arg('task_id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit_n');

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -28,6 +29,8 @@ const (
 	KindReviewSubmitted Kind = "review_submitted"
 	KindHandoffCreated  Kind = "handoff_created"
 	KindHandoffResolved Kind = "handoff_resolved"
+	KindVisionCreated   Kind = "vision_created"
+	KindVisionPromoted  Kind = "vision_promoted"
 )
 
 // Event is a single unit in the aggregated timeline feed.
@@ -87,6 +90,14 @@ type HandoffSource interface {
 	HandoffsSince(ctx context.Context, since time.Time, limit int) ([]db.SessionHandoff, error)
 }
 
+// VisionSource returns all non-dismissed vision items for the workspace.
+// The timeline uses List with an empty filter (all statuses) so it can emit
+// KindVisionCreated on created_at and KindVisionPromoted on last_discussed_at
+// when status == "promoted".
+type VisionSource interface {
+	List(ctx context.Context, filter vision.ListVisionFilter) ([]vision.VisionItemSummary, error)
+}
+
 // Aggregator pulls events from all domain stores and merges them into a
 // single sorted timeline.
 type Aggregator struct {
@@ -97,6 +108,7 @@ type Aggregator struct {
 	Concepts  ConceptSource
 	Reviews   ReviewSource
 	Handoffs  HandoffSource
+	Visions   VisionSource
 }
 
 // maxRowsPerSource caps the rows fetched from each source at personal OS
@@ -125,6 +137,7 @@ func (a *Aggregator) Aggregate(ctx context.Context, from, to time.Time) ([]Event
 	record(a.collectConcepts(ctx, from, to))
 	record(a.collectReviews(ctx, from, to))
 	record(a.collectHandoffs(ctx, from, to))
+	record(a.collectVisions(ctx, from, to))
 
 	sort.Slice(events, func(i, j int) bool {
 		return events[i].OccurredAt.After(events[j].OccurredAt)
@@ -300,6 +313,33 @@ func (a *Aggregator) collectHandoffs(ctx context.Context, from, to time.Time) ([
 		if h.ResolvedAt.Valid {
 			if e := newEvent(KindHandoffResolved, h.ResolvedAt.Time, h.ID.String(), h.Intent, from, to); e != nil {
 				e.RepoName = h.RepoName.String
+				out = append(out, *e)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (a *Aggregator) collectVisions(ctx context.Context, from, to time.Time) ([]Event, error) {
+	if a.Visions == nil {
+		return nil, nil
+	}
+	// Empty filter = all non-dismissed items (open, discussing, maturing, promoted).
+	// This single query captures both creation events and promotion events.
+	items, err := a.Visions.List(ctx, vision.ListVisionFilter{})
+	if err != nil {
+		return nil, fmt.Errorf("timeline visions: %w", err)
+	}
+	var out []Event
+	for _, v := range items {
+		if e := newEvent(KindVisionCreated, v.CreatedAt, v.ID.String(), v.Title, from, to); e != nil {
+			out = append(out, *e)
+		}
+		// Emit a KindVisionPromoted event when last_discussed_at was set by
+		// the Promote call (status == "promoted"). last_discussed_at is set
+		// to NOW() by vision.Store.Promote so it approximates the promotion time.
+		if v.Status == vision.VisionStatusPromoted && v.LastDiscussedAt != nil {
+			if e := newEvent(KindVisionPromoted, *v.LastDiscussedAt, v.ID.String(), v.Title, from, to); e != nil {
 				out = append(out, *e)
 			}
 		}

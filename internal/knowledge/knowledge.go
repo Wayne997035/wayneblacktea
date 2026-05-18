@@ -31,4 +31,10 @@ type AddItemParams struct {
 
 	// HeadingLevel is the ATX heading depth (1–6) for a section, 0 for root.
 	HeadingLevel int
+
+	// Cross-domain reference fields (migration 000049).
+	// No FK constraint (CLAUDE.md red-line §9); referential integrity in code.
+	ProjectID  *[16]byte // nil → NULL
+	TaskID     *[16]byte // nil → NULL
+	DecisionID *[16]byte // nil → NULL
 }

@@ -33,10 +33,12 @@ var _ knowledge.StoreIface = (*KnowledgeStore)(nil)
 // Decay fields (importance, recall_count, last_recalled_at, base_lambda, archived_at)
 // were added in migration 000019. Hierarchy fields (parent_id, heading_path,
 // heading_level) were added in schema.sql alongside migration 000027.
+// Cross-domain reference fields (project_id, task_id, decision_id) added in migration 000049.
 const knowledgeSelectCols = `id, type, title, content, url, tags,
 	created_at, updated_at, source, learning_value, workspace_id,
 	importance, recall_count, last_recalled_at, base_lambda, archived_at,
-	parent_id, heading_path, heading_level`
+	parent_id, heading_path, heading_level,
+	project_id, task_id, decision_id`
 
 // knowledgeSelectColsKI is the same column list fully qualified with the "ki"
 // table alias, for use in FTS5 JOIN queries where bare column names are
@@ -44,7 +46,8 @@ const knowledgeSelectCols = `id, type, title, content, url, tags,
 const knowledgeSelectColsKI = `ki.id, ki.type, ki.title, ki.content, ki.url, ki.tags,
 	ki.created_at, ki.updated_at, ki.source, ki.learning_value, ki.workspace_id,
 	ki.importance, ki.recall_count, ki.last_recalled_at, ki.base_lambda, ki.archived_at,
-	ki.parent_id, ki.heading_path, ki.heading_level`
+	ki.parent_id, ki.heading_path, ki.heading_level,
+	ki.project_id, ki.task_id, ki.decision_id`
 
 func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	var (
@@ -59,12 +62,15 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 		parentIDNS                   sql.NullString
 		headingPathNS                sql.NullString
 		headingLevelNS               sql.NullInt32
+		projectIDNS, taskIDNS        sql.NullString
+		decisionIDNS                 sql.NullString
 	)
 	err := scan(
 		&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
 		&createdNS, &updatedNS, &item.Source, &learningValueNullableInteger, &workspaceNS,
 		&item.Importance, &item.RecallCount, &lastRecalledNS, &item.BaseLambda, &archivedNS,
 		&parentIDNS, &headingPathNS, &headingLevelNS,
+		&projectIDNS, &taskIDNS, &decisionIDNS,
 	)
 	if err != nil {
 		return db.KnowledgeItem{}, err
@@ -93,7 +99,26 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 	if headingLevelNS.Valid {
 		item.HeadingLevel = pgtype.Int4{Int32: headingLevelNS.Int32, Valid: true}
 	}
+	item.ProjectID = pgtypeUUID(nsString(projectIDNS))
+	item.TaskID = pgtypeUUID(nsString(taskIDNS))
+	item.DecisionID = pgtypeUUID(nsString(decisionIDNS))
 	return item, nil
+}
+
+// crossDomainArgs converts optional UUID pointers to SQLite-ready args (nil → NULL).
+// Extracted to reduce cyclomatic complexity of AddItem (migration 000049 added 3 branches).
+func crossDomainArgs(projectID, taskID, decisionID *[16]byte) (any, any, any) {
+	var p, t, d any
+	if projectID != nil {
+		p = uuid.UUID(*projectID).String()
+	}
+	if taskID != nil {
+		t = uuid.UUID(*taskID).String()
+	}
+	if decisionID != nil {
+		d = uuid.UUID(*decisionID).String()
+	}
+	return p, t, d
 }
 
 // AddItem creates a knowledge item using LIKE/search-only SQLite v2 semantics.
@@ -136,14 +161,20 @@ func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams)
 		headingLevelArg = p.HeadingLevel
 	}
 
+	// Cross-domain reference fields (migration 000049).
+	// No FK constraint (CLAUDE.md red-line §9); nil → NULL.
+	projectIDArg, taskIDArg, decisionIDArg := crossDomainArgs(p.ProjectID, p.TaskID, p.DecisionID)
+
 	const q = `INSERT INTO knowledge_items
 		(id, workspace_id, type, title, content, url, tags, source, learning_value,
-		 created_at, updated_at, parent_id, heading_path, heading_level)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13)`
+		 created_at, updated_at, parent_id, heading_path, heading_level,
+		 project_id, task_id, decision_id)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`
 	_, err = s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), p.Type, p.Title, p.Content,
 		nullStringIfEmpty(p.URL), tagsJSON, source, learningValue, now,
-		parentIDArg, headingPathArg, headingLevelArg)
+		parentIDArg, headingPathArg, headingLevelArg,
+		projectIDArg, taskIDArg, decisionIDArg)
 	if err != nil {
 		return nil, errWrap("AddKnowledgeItem", err)
 	}
@@ -520,11 +551,12 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 	}
 	var candidates []scored
 	for rows.Next() {
-		// SECURITY/correctness: scan list MUST match knowledgeSelectCols (19 cols)
-		// + trailing embedding BLOB = 20 destinations. Migration 000019 added
+		// SECURITY/correctness: scan list MUST match knowledgeSelectCols (22 cols)
+		// + trailing embedding BLOB = 23 destinations. Migration 000019 added
 		// 5 decay columns; migration 000027 added 3 hierarchy columns
-		// (parent_id, heading_path, heading_level). A shorter scan silently
-		// fails and returns zero results (security audit C-1).
+		// (parent_id, heading_path, heading_level); migration 000049 added 3
+		// cross-domain reference columns (project_id, task_id, decision_id).
+		// A shorter scan silently fails and returns zero results (security audit C-1).
 		var item db.KnowledgeItem
 		var idStr string
 		var urlNS, tagsNS, createdNS, updatedNS, workspaceNS sql.NullString
@@ -532,12 +564,14 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 		var lastRecalledNS, archivedNS sql.NullString
 		var parentIDNS, headingPathNS sql.NullString
 		var headingLevelNS sql.NullInt32
+		var projectIDNS, taskIDNS, decisionIDNS sql.NullString
 		var rawEmbed []byte
 		if err := rows.Scan(
 			&idStr, &item.Type, &item.Title, &item.Content, &urlNS, &tagsNS,
 			&createdNS, &updatedNS, &item.Source, &learningValue, &workspaceNS,
 			&item.Importance, &item.RecallCount, &lastRecalledNS, &item.BaseLambda, &archivedNS,
 			&parentIDNS, &headingPathNS, &headingLevelNS,
+			&projectIDNS, &taskIDNS, &decisionIDNS,
 			&rawEmbed,
 		); err != nil {
 			continue
@@ -563,6 +597,9 @@ func (s *KnowledgeStore) SearchByCosine(ctx context.Context, queryEmbedding []fl
 		if headingLevelNS.Valid {
 			item.HeadingLevel = pgtype.Int4{Int32: headingLevelNS.Int32, Valid: true}
 		}
+		item.ProjectID = pgtypeUUID(nsString(projectIDNS))
+		item.TaskID = pgtypeUUID(nsString(taskIDNS))
+		item.DecisionID = pgtypeUUID(nsString(decisionIDNS))
 
 		vec := localai.DeserializeEmbedding(rawEmbed)
 		if vec == nil {
@@ -666,6 +703,30 @@ func (s *KnowledgeStore) ListChildren(ctx context.Context, parentID uuid.UUID) (
 		result[i] = &cp
 	}
 	return result, nil
+}
+
+// ListByProjectID returns knowledge items associated with a project UUID.
+// Added in migration 000049; no FK constraint (CLAUDE.md red-line §9).
+// SECURITY: workspace-scoped.
+func (s *KnowledgeStore) ListByProjectID(ctx context.Context, projectID uuid.UUID, limit int) ([]db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE project_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?3`
+	return s.list(ctx, "ListKnowledgeByProjectID", q, projectID.String(), s.db.workspaceArg(), limit)
+}
+
+// ListByTaskID returns knowledge items associated with a task UUID.
+// Added in migration 000049; no FK constraint (CLAUDE.md red-line §9).
+// SECURITY: workspace-scoped.
+func (s *KnowledgeStore) ListByTaskID(ctx context.Context, taskID uuid.UUID, limit int) ([]db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE task_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?3`
+	return s.list(ctx, "ListKnowledgeByTaskID", q, taskID.String(), s.db.workspaceArg(), limit)
 }
 
 // ListRoots returns top-level items (parent_id IS NULL) ordered by creation

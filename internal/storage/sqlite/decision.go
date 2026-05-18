@@ -30,8 +30,10 @@ func sqliteNowMillis() string {
 	return time.Now().UTC().Format(sqliteMillisLayout)
 }
 
+// decisionsSelectCols lists all columns returned by decision read queries.
+// task_id was added in migration 000048.
 const decisionsSelectCols = `id, project_id, repo_name, title, context, decision,
-	rationale, alternatives, created_at, workspace_id`
+	rationale, alternatives, created_at, workspace_id, task_id`
 
 func scanDecision(scan func(...any) error) (db.Decision, error) {
 	var (
@@ -39,9 +41,10 @@ func scanDecision(scan func(...any) error) (db.Decision, error) {
 		idStr                     string
 		projectIDNS, repoNS, wsNS sql.NullString
 		alternativesNS, createdNS sql.NullString
+		taskIDNS                  sql.NullString
 	)
 	err := scan(&idStr, &projectIDNS, &repoNS, &d.Title, &d.Context, &d.Decision,
-		&d.Rationale, &alternativesNS, &createdNS, &wsNS)
+		&d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS)
 	if err != nil {
 		return db.Decision{}, err
 	}
@@ -53,19 +56,21 @@ func scanDecision(scan func(...any) error) (db.Decision, error) {
 	d.Alternatives = pgtypeText(alternativesNS.String, alternativesNS.Valid)
 	d.CreatedAt = parseTimestamptz(createdNS)
 	d.WorkspaceID = pgtypeUUID(nsString(wsNS))
+	d.TaskID = pgtypeUUID(nsString(taskIDNS))
 	return d, nil
 }
 
 // Log records a new architectural decision.
+// task_id (migration 000048) is stored as nullable TEXT UUID.
 func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Decision, error) {
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
-		nullStringIfEmpty(p.Alternatives), sqliteNowMillis())
+		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID))
 	if err != nil {
 		return nil, errWrap("LogDecision", err)
 	}
@@ -80,12 +85,12 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogParams) (uuid.UUID, error) {
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
 	_, err := tx.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
-		nullStringIfEmpty(p.Alternatives), sqliteNowMillis())
+		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID))
 	if err != nil {
 		return uuid.UUID{}, errWrap("LogDecisionTx", err)
 	}
@@ -121,6 +126,18 @@ func (s *DecisionStore) ByProject(ctx context.Context, projectID uuid.UUID, limi
 	return s.list(ctx, "ByProject", q, projectID.String(), s.db.workspaceArg(), limit)
 }
 
+// ByTask returns the most recent decisions for a given task ID.
+// Migration 000048 added task_id to the decisions table.
+// SECURITY: workspace-scoped.
+func (s *DecisionStore) ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error) {
+	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions
+		WHERE task_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?3`
+	return s.list(ctx, "ByTask", q, taskID.String(), s.db.workspaceArg(), limit)
+}
+
 // SearchByCosine returns the top-limit decisions most similar to queryEmbedding.
 // SQLite has no pgvector — brute-force Go-side cosine scan.
 //
@@ -150,9 +167,10 @@ func (s *DecisionStore) SearchByCosine(ctx context.Context, queryEmbedding []flo
 		var idStr string
 		var projectIDNS, repoNS, wsNS sql.NullString
 		var alternativesNS, createdNS sql.NullString
+		var taskIDNS sql.NullString
 		var rawEmbed []byte
 		if err := rows.Scan(&idStr, &projectIDNS, &repoNS, &d.Title, &d.Context,
-			&d.Decision, &d.Rationale, &alternativesNS, &createdNS, &wsNS, &rawEmbed); err != nil {
+			&d.Decision, &d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &rawEmbed); err != nil {
 			continue
 		}
 		if id, parseErr := uuid.Parse(idStr); parseErr == nil {
@@ -163,6 +181,7 @@ func (s *DecisionStore) SearchByCosine(ctx context.Context, queryEmbedding []flo
 		d.Alternatives = pgtypeText(alternativesNS.String, alternativesNS.Valid)
 		d.CreatedAt = parseTimestamptz(createdNS)
 		d.WorkspaceID = pgtypeUUID(nsString(wsNS))
+		d.TaskID = pgtypeUUID(nsString(taskIDNS))
 
 		vec := localai.DeserializeEmbedding(rawEmbed)
 		if vec == nil {

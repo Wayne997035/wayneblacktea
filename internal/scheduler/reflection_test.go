@@ -156,6 +156,10 @@ func (s *stubDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) (
 	return nil, nil
 }
 
+func (s *stubDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+	return nil, nil
+}
+
 func (s *stubDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
 	return nil, nil
 }

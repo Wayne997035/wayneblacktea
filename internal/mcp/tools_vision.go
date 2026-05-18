@@ -198,15 +198,16 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 		title = visionItem.Title
 	}
 
-	// Create GTD task.
+	// Create GTD task, linking back to the vision item (migration 000050).
 	priority := numberArg(args, "priority")
 	if priority == 0 {
 		priority = 3
 	}
 	taskParams := gtd.CreateTaskParams{
-		Title:       title,
-		Description: stringArg(args, "description"),
-		Priority:    priority,
+		Title:        title,
+		Description:  stringArg(args, "description"),
+		Priority:     priority,
+		VisionItemID: &visionID,
 	}
 	if rawDue := stringArg(args, "due_date"); rawDue != "" {
 		t, parseErr := time.Parse(time.RFC3339, rawDue)

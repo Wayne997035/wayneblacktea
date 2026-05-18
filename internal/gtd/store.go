@@ -372,9 +372,9 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 }
 
 // CreateTask inserts a new task.
-// Hand-rolled INSERT (instead of sqlc CreateTask) so that the branch_name and
-// pr_url columns added in migration 000047 are included without requiring a
-// sqlc regen on every contributor's machine.
+// Hand-rolled INSERT so that all columns (including branch_name/pr_url from
+// migration 000047 and vision_item_id from migration 000050) are included
+// without requiring a sqlc regen on every contributor's machine.
 func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error) {
 	priority := p.Priority
 	if priority == 0 {
@@ -386,16 +386,16 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 	}
 	const q = `INSERT INTO tasks
 		(project_id, title, description, status, priority, assignee, due_date, importance, context, kind,
-		 branch_name, pr_url, commit_shas, workspace_id)
-		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, '{}', $12)
+		 branch_name, pr_url, commit_shas, workspace_id, vision_item_id)
+		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, '{}', $12, $13)
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		          branch_name, pr_url, commit_shas`
+		          branch_name, pr_url, commit_shas, vision_item_id`
 	rows, err := s.dbtx.Query(ctx, q,
 		toUUID(p.ProjectID), p.Title, toText(p.Description), priority, toText(p.Assignee),
 		toTimestamptz(p.DueDate), toInt2(p.Importance), toText(p.Context), kind,
 		toText(coalesceStringPtr(p.BranchName)), toText(coalesceStringPtr(p.PRUrl)),
-		s.workspaceID,
+		s.workspaceID, toUUID(p.VisionItemID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating task %q: %w", p.Title, err)
@@ -411,11 +411,29 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-		&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+		&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.VisionItemID,
 	); err != nil {
 		return nil, fmt.Errorf("scanning created task %q: %w", p.Title, err)
 	}
 	return &t, nil
+}
+
+// SetVisionItemID links a task to the vision item it was promoted from.
+// Returns ErrNotFound when no task matches id in the configured workspace.
+// SECURITY: workspace-scoped.
+func (s *Store) SetVisionItemID(ctx context.Context, taskID uuid.UUID, visionItemID uuid.UUID) (*db.Task, error) {
+	row, err := s.q.SetTaskVisionItemID(ctx, db.SetTaskVisionItemIDParams{
+		ID:           taskID,
+		VisionItemID: toUUID(&visionItemID),
+		WorkspaceID:  s.workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("setting vision_item_id on task %s: %w", taskID, err)
+	}
+	return &row, nil
 }
 
 // coalesceStringPtr returns the dereferenced value when non-nil, else empty string.

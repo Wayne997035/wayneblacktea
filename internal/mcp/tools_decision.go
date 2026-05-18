@@ -25,6 +25,7 @@ func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 		mcp.WithString("rationale", mcp.Description("Why this decision was made"), mcp.Required()),
 		mcp.WithString("repo_name", mcp.Description("Repository this decision relates to")),
 		mcp.WithString("project_id", mcp.Description("Project UUID this decision relates to")),
+		mcp.WithString("task_id", mcp.Description("Task UUID this decision relates to")),
 		mcp.WithString("alternatives", mcp.Description("Other options that were considered")),
 	), s.handleLogDecision)
 
@@ -67,6 +68,13 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 			return mcp.NewToolResultError("invalid project_id UUID"), nil
 		}
 		p.ProjectID = &id
+	}
+	if raw := stringArg(args, "task_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return mcp.NewToolResultError("invalid task_id UUID"), nil
+		}
+		p.TaskID = &id
 	}
 
 	d, err := s.decision.Log(ctx, p)

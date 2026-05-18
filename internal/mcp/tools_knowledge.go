@@ -27,6 +27,8 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 		mcp.WithString("content", mcp.Description("Item body / notes")),
 		mcp.WithString("url", mcp.Description("Source URL")),
 		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("project_id", mcp.Description("Project UUID this knowledge item relates to")),
+		mcp.WithString("task_id", mcp.Description("Task UUID this knowledge item relates to")),
 	), s.handleAddKnowledge)
 
 	ms.AddTool(mcp.NewTool("search_knowledge",
@@ -112,13 +114,30 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	}
 	tags = cleanedTags
 
-	item, err := s.knowledge.AddItem(ctx, knowledge.AddItemParams{
+	addParams := knowledge.AddItemParams{
 		Type:    itemType,
 		Title:   title,
 		Content: content,
 		URL:     url,
 		Tags:    tags,
-	})
+	}
+	if raw := stringArg(args, "project_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return mcp.NewToolResultError("invalid project_id UUID"), nil
+		}
+		b := [16]byte(id)
+		addParams.ProjectID = &b
+	}
+	if raw := stringArg(args, "task_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return mcp.NewToolResultError("invalid task_id UUID"), nil
+		}
+		b := [16]byte(id)
+		addParams.TaskID = &b
+	}
+	item, err := s.knowledge.AddItem(ctx, addParams)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("adding knowledge item: %v", err)), nil
 	}

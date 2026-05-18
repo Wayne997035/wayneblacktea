@@ -21,6 +21,9 @@ sql:
       - "migrations/000045_composite_indexes.up.sql"
       - "migrations/000046_handoff_next_actions.up.sql"
       - "migrations/000047_task_pr_branch.up.sql"
+      - "migrations/000048_decisions_task_id.up.sql"
+      - "migrations/000049_knowledge_cross_domain.up.sql"
+      - "migrations/000050_tasks_vision_item_id.up.sql"
     gen:
       go:
         package: "db"

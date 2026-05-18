@@ -31,6 +31,14 @@ type StoreIface interface {
 	// ListRoots returns top-level items (parent_id IS NULL) scoped to the workspace.
 	// Used by navigate_knowledge when no parent_id argument is supplied.
 	ListRoots(ctx context.Context) ([]*db.KnowledgeItem, error)
+	// ListByProjectID returns knowledge items associated with a project UUID.
+	// Results are ordered by created_at DESC and capped at limit rows.
+	// SECURITY: scoped to workspace_id.
+	ListByProjectID(ctx context.Context, projectID uuid.UUID, limit int) ([]db.KnowledgeItem, error)
+	// ListByTaskID returns knowledge items associated with a task UUID.
+	// Results are ordered by created_at DESC and capped at limit rows.
+	// SECURITY: scoped to workspace_id.
+	ListByTaskID(ctx context.Context, taskID uuid.UUID, limit int) ([]db.KnowledgeItem, error)
 }
 
 var _ StoreIface = (*Store)(nil)
