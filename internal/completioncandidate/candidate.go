@@ -91,4 +91,16 @@ type Store interface {
 	// Returns all upserted candidates (including previously pending ones that were
 	// refreshed). Read-only for tasks; writes to completion_candidates only.
 	DetectAndUpsert(ctx context.Context, p DetectParams) ([]Candidate, error)
+
+	// WriteAutoApplied inserts a completion_candidates row recording an auto-apply
+	// event (status='auto_applied', reason='artifact_evidence'). Used by the
+	// reconcile_merged_prs flow (sprint feature/gtd-enforce-server-side
+	// GTD-fix 9/12) to audit-log which task was auto-closed by which PR.
+	//
+	// On conflict (task_id, reason) the existing row is refreshed (detected_at
+	// updated, evidence_refs replaced, suggested_artifact set, status forced to
+	// auto_applied so a previously-pending candidate is closed). This mirrors
+	// the UpsertCandidate ON CONFLICT semantics but additionally forces the
+	// status column.
+	WriteAutoApplied(ctx context.Context, taskID uuid.UUID, evidenceRefs []string, suggestedArtifact string) error
 }

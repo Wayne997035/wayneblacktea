@@ -54,6 +54,18 @@ type StoreIface interface {
 	TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error)
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
+	// BatchCompleteTasksByPRMatch marks every Match in matches as completed,
+	// sets pr_url + artifact = PR URL, and writes a single activity_log entry per
+	// task (action="pr_auto_close"). Used by the reconcile_merged_prs MCP tool /
+	// HTTP handler (sprint feature/gtd-enforce-server-side GTD-fix 9/12).
+	//
+	// Idempotent: a task already in 'completed' status is left untouched and not
+	// re-logged. Implementations MUST ignore matches whose task is already
+	// completed so a repeated reconcile call returns 0 changes.
+	//
+	// Returns the count of tasks actually transitioned (excluding already-done
+	// no-ops). Returns nil + count 0 on an empty input.
+	BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match) (int, error)
 	// BeginTask atomically sets task status to in_progress and records a
 	// work_session_started activity log entry. Returns ErrNotFound when no task
 	// matches id + workspaceID.

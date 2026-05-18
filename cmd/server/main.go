@@ -244,6 +244,15 @@ func run() error {
 	api.PATCH("/tasks/:id/checklist/items/:item_id", gtdH.UpdateChecklistItem, mutationRL)
 	api.DELETE("/tasks/:id/checklist/items/:item_id", gtdH.DeleteChecklistItem, mutationRL)
 
+	// reconcile handler wiring (sprint feature/gtd-enforce-server-side GTD-fix 9/12)
+	// Closes the "PR merged but task still pending" gap: Claude posts a list of
+	// recently-merged PRs and the server auto-applies the matching tasks.
+	// candidate store may be nil under unusual configs; the handler tolerates nil.
+	reconcileH := handler.NewReconcileHandler(stores.GTD(), buildCandidateStore(stores))
+	// Rate limit shared with other mutation endpoints (30 req/min) — reconcile
+	// is bursty (post-merge sweep) but capped by 200-entry payload limit anyway.
+	api.POST("/tasks/reconcile-merged-prs", reconcileH.Reconcile, mutationRL)
+
 	api.GET("/decisions", decH.ListDecisions)
 	api.POST("/decisions", decH.LogDecision, mutationRL)
 

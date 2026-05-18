@@ -370,6 +370,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerProceduralTools(ms)
 	s.registerAtomTools(ms)
 	s.registerDashboardTools(ms)
+	s.registerReconcileTools(ms)
 	s.registerCloseoutTools(ms)
 	s.registerResources(ms)
 	s.registerPrompts(ms)

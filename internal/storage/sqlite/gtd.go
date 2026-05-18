@@ -600,6 +600,67 @@ func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, err
 	return s.taskByID(ctx, id)
 }
 
+// BatchCompleteTasksByPRMatch implements gtd.StoreIface.BatchCompleteTasksByPRMatch
+// for the SQLite backend. Runs inside a single *sql.Tx so a partial auto-close
+// cannot leave half the matches done. See internal/gtd/iface.go for contract.
+func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gtd.Match) (int, error) {
+	if len(matches) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, errWrap("BatchCompleteTasksByPRMatch begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	applied := 0
+	now := nowRFC3339()
+	for _, m := range matches {
+		// Guarded UPDATE: skip rows already completed → idempotent across repeats.
+		const upd = `UPDATE tasks
+			SET status     = 'completed',
+			    artifact   = ?2,
+			    pr_url     = ?2,
+			    updated_at = ?3
+			WHERE id = ?1
+			  AND (?4 IS NULL OR workspace_id = ?4)
+			  AND status != 'completed'`
+		res, uerr := tx.ExecContext(ctx, upd, m.TaskID.String(), m.PRUrl, now, s.db.workspaceArg())
+		if uerr != nil {
+			return 0, errWrap("BatchCompleteTasksByPRMatch update", uerr)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			continue
+		}
+		applied++
+
+		// audit: same notes shape as the PG path so reads are uniform.
+		notes := "auto-closed by reconcile_merged_prs reason=" + string(m.Reason) +
+			" pr_url=" + m.PRUrl + " head_ref=" + m.PRHeadRef
+		if m.BodyExcerpt != "" {
+			notes += " body=" + m.BodyExcerpt
+		}
+		const ins = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+			VALUES (?1, ?2, 'system', NULL, 'pr_auto_close', ?3)`
+		if _, ierr := tx.ExecContext(ctx, ins,
+			uuid.New().String(), s.db.workspaceArg(), sanitize.Notes(notes),
+		); ierr != nil {
+			return 0, errWrap("BatchCompleteTasksByPRMatch activity_log", ierr)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, errWrap("BatchCompleteTasksByPRMatch commit", err)
+	}
+	committed = true
+	return applied, nil
+}
+
 // CompleteTask marks a task completed and records the optional artifact URL.
 func (s *GTDStore) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error) {
 	const q = `UPDATE tasks

@@ -213,6 +213,48 @@ func (s *SQLiteStore) UpsertCandidate(ctx context.Context, p UpsertParams) (*Can
 	return c, nil
 }
 
+// WriteAutoApplied inserts (or refreshes) a completion_candidates row with
+// status='auto_applied' reason='artifact_evidence'. SQLite-side parity for the
+// reconcile_merged_prs flow; see Store interface doc + the Postgres twin.
+func (s *SQLiteStore) WriteAutoApplied(
+	ctx context.Context,
+	taskID uuid.UUID,
+	evidenceRefs []string,
+	suggestedArtifact string,
+) error {
+	if taskID == uuid.Nil {
+		return errors.New("WriteAutoApplied: task_id is required")
+	}
+	id := uuid.New()
+	now := nowRFC3339()
+	evidenceJSON := sliceToJSONArray(evidenceRefs)
+
+	var wsArg any
+	if s.workspaceID != "" {
+		wsArg = s.workspaceID
+	}
+	var artifactArg any
+	if suggestedArtifact != "" {
+		artifactArg = suggestedArtifact
+	}
+
+	const q = `INSERT INTO completion_candidates
+		(id, workspace_id, task_id, reason, evidence_refs, confidence, suggested_artifact, status, detected_at, resolved_at)
+		VALUES (?1, ?2, ?3, 'artifact_evidence', ?4, 'high', ?5, 'auto_applied', ?6, ?6)
+		ON CONFLICT (task_id, reason) DO UPDATE SET
+			detected_at        = excluded.detected_at,
+			evidence_refs      = excluded.evidence_refs,
+			suggested_artifact = COALESCE(excluded.suggested_artifact, completion_candidates.suggested_artifact),
+			status             = 'auto_applied',
+			resolved_at        = excluded.detected_at`
+	if _, err := s.db.ExecContext(ctx, q,
+		id.String(), wsArg, taskID.String(), evidenceJSON, artifactArg, now,
+	); err != nil {
+		return fmt.Errorf("completioncandidate.SQLiteStore.WriteAutoApplied: %w", err)
+	}
+	return nil
+}
+
 // PruneResolved deletes candidates whose resolved_at is older than olderThan.
 func (s *SQLiteStore) PruneResolved(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan).Format(time.RFC3339)
