@@ -23,6 +23,12 @@ import (
 // unchanged while the single source of truth lives in internal/validator.
 var githubPRURLRe = validator.GitHubPRURLRe
 
+// errMsgInvalidPRURL is the user-facing error string returned when a supplied
+// pr_url does not match the GitHub PR URL regex. Hoisted to a constant so the
+// CreateTask / UpdateTask / BeginTask handlers all surface the same phrasing
+// (and the goconst linter stays happy).
+const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+
 func validateBranchName(s string) string {
 	if len(s) > 255 {
 		return "branch_name must not exceed 255 characters"
@@ -280,7 +286,7 @@ func validateCreateTaskRequest(req *createTaskRequest) string {
 		}
 	}
 	if req.PRUrl != "" && !githubPRURLRe.MatchString(req.PRUrl) {
-		return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+		return errMsgInvalidPRURL
 	}
 	return ""
 }
@@ -552,7 +558,7 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 		}
 	}
 	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
-		return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+		return errMsgInvalidPRURL
 	}
 	return ""
 }
@@ -852,15 +858,45 @@ func (h *GTDHandler) DeleteChecklistItem(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// beginTaskRequest is the optional JSON body for POST /api/tasks/:id/begin.
+// Both fields are optional; when non-empty they are validated and persisted on
+// the task row before the response is returned. This closes the GTD linkage
+// gap (sprint feature/gtd-enforce-server-side GTD-fix 8/12) where Claude
+// returned branch_name_suggestion but never persisted the actual linkage.
+type beginTaskRequest struct {
+	BranchName string `json:"branch_name"`
+	PRUrl      string `json:"pr_url"`
+}
+
+// beginTaskBodyLimit caps the begin-task request body. Both fields are short
+// strings (branch_name ≤ 255 chars, pr_url ≤ ~200 chars), so 8 KiB is generous
+// while still bounding DoS / accidental large-paste risk.
+const beginTaskBodyLimit = 8 * 1024
+
 // BeginTask handles POST /api/tasks/:id/begin.
 // It atomically marks the task in_progress and records a work_session_started
 // activity log entry. Idempotent: calling on an already in_progress task
 // returns the task without duplicate logging.
+//
+// Optional JSON body: {"branch_name"?: string, "pr_url"?: string}. When either
+// field is supplied and validates, the task row is updated with the linkage
+// BEFORE the response returns (sprint feature/gtd-enforce-server-side
+// GTD-fix 8/12 — closes the opt-in linkage gap surfaced by today's 5 stale
+// tasks).
 func (h *GTDHandler) BeginTask(c echo.Context) error {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid task id")
 	}
+
+	req, parseErr := parseBeginTaskBody(c)
+	if parseErr != nil {
+		return parseErr
+	}
+	if vmsg := validateBeginTaskLinkage(req); vmsg != "" {
+		return echo.NewHTTPError(http.StatusBadRequest, vmsg)
+	}
+
 	wsID := workspaceUUIDFromStore(h.store)
 	task, err := h.store.BeginTask(c.Request().Context(), id, wsID)
 	if errors.Is(err, gtd.ErrNotFound) {
@@ -870,9 +906,74 @@ func (h *GTDHandler) BeginTask(c echo.Context) error {
 		c.Logger().Errorf("BeginTask: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "internal server error")
 	}
+
+	// Persist branch_name / pr_url linkage after the status flip.
+	// We deliberately call UpdateTask (not BeginTask) because BeginTask is
+	// designed to be idempotent and only flips status — extending it would
+	// risk masking pre-flip linkage updates as no-ops on the second call.
+	if req.BranchName != "" || req.PRUrl != "" {
+		updated, uerr := h.store.UpdateTask(c.Request().Context(), id, buildBeginTaskUpdateParams(req))
+		if uerr != nil {
+			// Status was already flipped to in_progress; surface the persist
+			// failure but log so operators can detect drift.
+			c.Logger().Errorf("BeginTask linkage persist: %v", uerr)
+			return echo.NewHTTPError(http.StatusInternalServerError, "internal server error")
+		}
+		task = updated
+	}
+
 	return c.JSON(http.StatusOK, map[string]any{
 		"task":                   task,
 		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
 		"work_session_id":        uuid.New().String(),
 	})
+}
+
+// parseBeginTaskBody reads the optional JSON body. Empty body → zero-value req
+// (legacy contract preserved). Returns a 400 echo.HTTPError on read/parse fail.
+func parseBeginTaskBody(c echo.Context) (beginTaskRequest, error) {
+	var req beginTaskRequest
+	if c.Request().ContentLength == 0 {
+		return req, nil
+	}
+	body, readErr := io.ReadAll(io.LimitReader(c.Request().Body, beginTaskBodyLimit))
+	if readErr != nil {
+		return req, echo.NewHTTPError(http.StatusBadRequest, "failed to read request body")
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return req, nil
+	}
+	if jsonErr := json.NewDecoder(bytes.NewReader(body)).Decode(&req); jsonErr != nil {
+		return req, echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
+	}
+	return req, nil
+}
+
+// validateBeginTaskLinkage returns a non-empty user-facing error message when
+// either branch_name or pr_url is supplied but invalid. "" on valid (or empty).
+func validateBeginTaskLinkage(req beginTaskRequest) string {
+	if req.BranchName != "" {
+		if msg := validateBranchName(req.BranchName); msg != "" {
+			return msg
+		}
+	}
+	if req.PRUrl != "" && !githubPRURLRe.MatchString(req.PRUrl) {
+		return errMsgInvalidPRURL
+	}
+	return ""
+}
+
+// buildBeginTaskUpdateParams turns the validated request into UpdateTaskParams.
+// Only non-empty fields are set, matching the partial-update semantics.
+func buildBeginTaskUpdateParams(req beginTaskRequest) gtd.UpdateTaskParams {
+	up := gtd.UpdateTaskParams{}
+	if req.BranchName != "" {
+		bn := req.BranchName
+		up.BranchName = &bn
+	}
+	if req.PRUrl != "" {
+		pu := req.PRUrl
+		up.PRUrl = &pu
+	}
+	return up
 }

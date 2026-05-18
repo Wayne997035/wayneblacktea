@@ -108,7 +108,8 @@ func run() error {
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
 		WithDecision(stores.Decision()).
-		WithKnowledge(stores.Knowledge())
+		WithKnowledge(stores.Knowledge()).
+		WithTask(stores.GTD())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(stores.Learning(),
 		handler.WithKnowledgeStore(stores.Knowledge()),
@@ -160,7 +161,14 @@ func run() error {
 		sum = ai.New(claudeKey)
 		reflector = ai.NewReflector(claudeKey)
 	}
-	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
+	// auto-capture proposal wiring (sprint feature/gtd-enforce-server-side TASK 2)
+	// Routes IsTask=true classifier verdicts through the TypeTask proposal queue
+	// instead of direct task creation, so the user reviews and validator runs at
+	// confirm time (SA decision 42e0b783). nil-safe: if stores.Proposal() is nil
+	// (no SQLite / no PG), AutologHandler falls back to legacy direct create.
+	autologH := handler.NewAutologHandlerWithClassifierAndProposal(
+		stores.GTD(), stores.Session(), stores.Decision(), sum, clf, stores.Proposal(),
+	)
 	postToolUseH := handler.NewPostToolUseHandler(stores.GTD())
 	defer postToolUseH.Stop()
 
@@ -244,6 +252,15 @@ func run() error {
 	api.PATCH("/tasks/:id/checklist/items/:item_id", gtdH.UpdateChecklistItem, mutationRL)
 	api.DELETE("/tasks/:id/checklist/items/:item_id", gtdH.DeleteChecklistItem, mutationRL)
 
+	// reconcile handler wiring (sprint feature/gtd-enforce-server-side GTD-fix 9/12)
+	// Closes the "PR merged but task still pending" gap: Claude posts a list of
+	// recently-merged PRs and the server auto-applies the matching tasks.
+	// candidate store may be nil under unusual configs; the handler tolerates nil.
+	reconcileH := handler.NewReconcileHandler(stores.GTD(), buildCandidateStore(stores))
+	// Rate limit shared with other mutation endpoints (30 req/min) — reconcile
+	// is bursty (post-merge sweep) but capped by 200-entry payload limit anyway.
+	api.POST("/tasks/reconcile-merged-prs", reconcileH.Reconcile, mutationRL)
+
 	api.GET("/decisions", decH.ListDecisions)
 	api.POST("/decisions", decH.LogDecision, mutationRL)
 
@@ -297,6 +314,8 @@ func run() error {
 	api.GET("/dashboard/upcoming", dashH.GetUpcoming, dashboardRL)
 	api.GET("/dashboard/automation-health", dashH.GetAutomationHealth, dashboardRL)
 	api.GET("/dashboard/automation-feed", dashH.GetAutomationFeed, dashboardRL)
+	// vague-tasks dashboard endpoint (sprint feature/gtd-enforce-server-side TASK 5)
+	api.GET("/dashboard/vague-tasks", dashH.GetVagueTasks, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)

@@ -134,6 +134,10 @@ func (s *stubGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*
 	return nil, nil
 }
 
+func (s *stubGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (int, error) {
+	return 0, nil
+}
+
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.
 type stubDecisionStore struct {
 	decisions []db.Decision

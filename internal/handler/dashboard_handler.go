@@ -9,6 +9,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -36,6 +37,12 @@ type dashboardGTDStore interface {
 	// falls inside [from, to] inclusive, ordered by due_date ASC.
 	// Workspace isolation is enforced by the store implementation.
 	TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error)
+	// Tasks returns all tasks for the configured workspace (optionally scoped
+	// to projectID). Used by GetVagueTasks to surface descriptions that the
+	// validator flags as too-vague / placeholder — a defence-in-depth signal
+	// that the auto-capture regression (or any future bug) has leaked a
+	// placeholder description into the GTD store.
+	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
 }
 
 // dashboardDecisionStore covers the decision methods used by DashboardHandler.
@@ -519,4 +526,78 @@ func (h *DashboardHandler) GetAutomationFeed(c echo.Context) error {
 		Feed:      feed,
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// vagueTasksResponse is the JSON shape for GET /api/dashboard/vague-tasks.
+// Mirrors the system_health VaguePendingTaskCount / VagueSampleIDs fields so
+// frontend / monitoring clients can subscribe to either signal without
+// translating shapes.
+type vagueTasksResponse struct {
+	Count     int      `json:"count"`
+	SampleIDs []string `json:"sample_ids"`
+}
+
+// maxDashboardVagueSampleIDs caps the number of vague-task IDs returned by
+// the HTTP endpoint. Kept consistent with the system_health cap so the two
+// signals agree.
+const maxDashboardVagueSampleIDs = 5
+
+// countVagueTasks scans tasks for pending/in_progress entries whose
+// Description is flagged by validator.CheckVagueness for the task's Kind.
+// Returns the total count plus the first `sampleCap` IDs in scan order.
+//
+// Mirrors the MCP system_health helper of the same purpose — kept in the
+// handler package to avoid importing internal/mcp (cycle), and to keep the
+// HTTP surface self-contained. Behavioural drift between the two helpers is
+// guarded by validator.CheckVagueness being the single source of truth.
+func countVagueTasks(tasks []db.Task, sampleCap int) (int, []string) {
+	count := 0
+	var sampleIDs []string
+	const (
+		statusPending    = "pending"
+		statusInProgress = "in_progress"
+	)
+	for _, t := range tasks {
+		if t.Status != statusPending && t.Status != statusInProgress {
+			continue
+		}
+		if !t.Description.Valid || t.Description.String == "" {
+			continue
+		}
+		warnings := validator.CheckVagueness("description", t.Description.String, t.Kind)
+		if len(warnings) == 0 {
+			continue
+		}
+		count++
+		if len(sampleIDs) < sampleCap {
+			sampleIDs = append(sampleIDs, t.ID.String())
+		}
+	}
+	return count, sampleIDs
+}
+
+// GetVagueTasks handles GET /api/dashboard/vague-tasks.
+//
+// It scans pending/in_progress tasks in the configured workspace and counts
+// those whose Description triggers validator.CheckVagueness for the task's
+// Kind (chore tasks are exempt per CheckVagueness). The first
+// maxDashboardVagueSampleIDs IDs are returned alongside the total count.
+//
+// This is a defence-in-depth surface: the structural fix for the
+// auto-capture regression (engineer A's TASK 4) is the must-have; this
+// endpoint exists so any future leak — whether from auto-capture or another
+// path — is visible without spelunking system_health.
+func (h *DashboardHandler) GetVagueTasks(c echo.Context) error {
+	ctx := c.Request().Context()
+	tasks, err := h.gtd.Tasks(ctx, nil)
+	if err != nil {
+		c.Logger().Errorf("GetVagueTasks Tasks: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+
+	count, sampleIDs := countVagueTasks(tasks, maxDashboardVagueSampleIDs)
+	if sampleIDs == nil {
+		sampleIDs = []string{}
+	}
+	return c.JSON(http.StatusOK, vagueTasksResponse{Count: count, SampleIDs: sampleIDs})
 }

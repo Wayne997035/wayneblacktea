@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
-	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 )
 
 // mcpClassifySem caps concurrent classifier goroutines spawned by the MCP
@@ -117,8 +118,15 @@ func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary strin
 			if result.IsTask && result.TaskTitle != "" {
 				bgCtx, cancel := context.WithTimeout(context.Background(), mcpClassifyTimeout)
 				defer cancel()
-				if err := s.autoCaptureMCPTask(bgCtx, result.TaskTitle, toolName); err != nil {
-					slog.Warn("maybeClassifyToolCall: create task failed",
+				if err := s.autoCaptureMCPTask(
+					bgCtx,
+					result.TaskTitle,
+					toolName,
+					argSummary,
+					resultSummary,
+					result.Rationale,
+				); err != nil {
+					slog.Warn("maybeClassifyToolCall: enqueue task proposal failed",
 						"tool", toolName,
 						"err", err,
 					)
@@ -163,9 +171,25 @@ func (s *Server) logMCPDecision(ctx context.Context, title, toolName string) err
 	return nil
 }
 
-// autoCaptureMCPTask creates a GTD task for the given title if no active task
-// with the same title already exists. Dedup is scoped to pending/in_progress.
-func (s *Server) autoCaptureMCPTask(ctx context.Context, title, toolName string) error {
+// autoCaptureMCPTask enqueues a TypeTask proposal (NOT a real task row) so the
+// user can review the LLM classifier's IsTask=true verdict via the proposal UI
+// before it materialises into a GTD task. Routing through proposal.Store.Create
+// ensures the validator that handleAddTask runs is invoked at confirm time,
+// closing the bypass identified by SA decision 42e0b783.
+//
+// Dedup: scoped to EXISTING pending TypeTask proposals (case-insensitive
+// title), NOT to the tasks table — a closed task with the same title may have
+// legitimately resurfaced. argSummary/resultSummary are already redacted by
+// autoLogMiddleware (sanitize.Notes) before reaching this function; we do not
+// re-redact here, only enforce length + payload-size caps.
+func (s *Server) autoCaptureMCPTask(
+	ctx context.Context,
+	title, toolName, argSummary, resultSummary, classifierRationale string,
+) error {
+	if s.proposal == nil {
+		return nil
+	}
+
 	runes := []rune(title)
 	if len(runes) > mcpTaskMaxTitle {
 		title = string(runes[:mcpTaskMaxTitle])
@@ -175,23 +199,55 @@ func (s *Server) autoCaptureMCPTask(ctx context.Context, title, toolName string)
 		return nil
 	}
 
-	tasks, err := s.gtd.Tasks(ctx, nil)
+	// Dedup against EXISTING pending TypeTask proposals — not against the
+	// `tasks` table — so a closed task can legitimately recur as a proposal.
+	pending, err := s.proposal.ListPending(ctx)
 	if err != nil {
-		return fmt.Errorf("auto-capture mcp task: list tasks: %w", err)
+		return fmt.Errorf("auto-capture mcp task: list pending proposals: %w", err)
 	}
-	for _, t := range tasks {
-		if (t.Status == taskStatusPending || t.Status == taskStatusInProgress) && strings.EqualFold(t.Title, title) {
+	for _, p := range pending {
+		if p.Type != string(proposal.TypeTask) {
+			continue
+		}
+		var existing proposal.TaskPayload
+		if uerr := json.Unmarshal(p.Payload, &existing); uerr != nil {
+			continue
+		}
+		if strings.EqualFold(existing.Title, title) {
 			return nil
 		}
 	}
 
-	_, err = s.gtd.CreateTask(ctx, gtd.CreateTaskParams{
-		Title:       title,
-		Description: "auto-captured from MCP: " + toolName,
+	payload := proposal.TaskPayload{
+		Title:               title,
+		SourceTool:          toolName,
+		ArgSummary:          argSummary,
+		ResultSummary:       resultSummary,
+		ClassifierRationale: classifierRationale,
+		SuggestedKind:       "general",
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("auto-capture mcp task: marshal payload: %w", err)
+	}
+	if len(encoded) > proposal.MaxTaskPayloadBytes {
+		slog.Warn("autoCaptureMCPTask: payload exceeds cap, skipping",
+			"tool", toolName, "bytes", len(encoded), "cap", proposal.MaxTaskPayloadBytes)
+		return nil
+	}
+
+	row, err := s.proposal.Create(ctx, proposal.CreateParams{
+		Type:       proposal.TypeTask,
+		Payload:    encoded,
+		ProposedBy: "claude-code",
 	})
 	if err != nil {
-		return fmt.Errorf("auto-capture mcp task: %w", err)
+		return fmt.Errorf("auto-capture mcp task: create proposal: %w", err)
 	}
+	slog.Info("autoCaptureMCPTask: enqueued task proposal",
+		"proposal_id", row.ID.String(),
+		"tool", toolName,
+	)
 	return nil
 }
 

@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -9,9 +11,79 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+// --- mock proposal store ---
+
+// mockProposalStore implements proposal.StoreIface for middleware_classify tests.
+// Only Create + ListPending are exercised by autoCaptureMCPTask; other methods
+// satisfy the interface and return errors to surface accidental usage.
+type mockProposalStore struct {
+	mu        sync.Mutex
+	pending   []db.PendingProposal
+	created   []proposal.CreateParams
+	listErr   error
+	createErr error
+}
+
+func (m *mockProposalStore) Create(_ context.Context, p proposal.CreateParams) (*db.PendingProposal, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	m.created = append(m.created, p)
+	row := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    string(p.Type),
+		Status:  string(proposal.StatusPending),
+		Payload: p.Payload,
+	}
+	m.pending = append(m.pending, row)
+	return &row, nil
+}
+
+func (m *mockProposalStore) Get(_ context.Context, _ uuid.UUID) (*db.PendingProposal, error) {
+	return nil, proposal.ErrNotFound
+}
+
+func (m *mockProposalStore) ListPending(_ context.Context) ([]db.PendingProposal, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	out := make([]db.PendingProposal, len(m.pending))
+	copy(out, m.pending)
+	return out, nil
+}
+
+func (m *mockProposalStore) ListAll(_ context.Context, _ string, _ int32) ([]db.PendingProposal, error) {
+	return nil, nil
+}
+
+func (m *mockProposalStore) Resolve(_ context.Context, _ uuid.UUID, _ proposal.Status) (*db.PendingProposal, error) {
+	return nil, proposal.ErrNotFound
+}
+
+func (m *mockProposalStore) BatchConfirm(_ context.Context, _ []uuid.UUID, _ proposal.Status) (proposal.BatchConfirmResult, error) {
+	return proposal.BatchConfirmResult{}, nil
+}
+
+func (m *mockProposalStore) AutoProposeConceptFromKnowledge(_ context.Context, _ *db.KnowledgeItem, _ string) (*db.PendingProposal, error) {
+	return nil, nil
+}
+
+func (m *mockProposalStore) recordedCreates() []proposal.CreateParams {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]proposal.CreateParams, len(m.created))
+	copy(out, m.created)
+	return out
+}
 
 // --- mock decision store ---
 
@@ -222,6 +294,10 @@ func (m *mockClassifyGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (int, error) {
+	return 0, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) GetTaskByID(_ context.Context, _ uuid.UUID) (*db.Task, error) {
 	return nil, errMockNotImpl
 }
@@ -355,64 +431,190 @@ func TestLogMCPDecision_EmptyTitle(t *testing.T) {
 	}
 }
 
-// TestAutoCaptureMCPTask_Dedup verifies that an existing active task with the same title is skipped.
+// TestAutoCaptureMCPTask_Dedup verifies that an existing pending TypeTask
+// proposal with the same title is skipped (dedup is against the proposal
+// queue, NOT the tasks table — a closed task can legitimately recur).
 func TestAutoCaptureMCPTask_Dedup(t *testing.T) {
-	g := &mockClassifyGTDStore{
-		activeTasks: []db.Task{
-			{Title: "Write integration tests", Status: "pending"},
+	existingPayload, _ := json.Marshal(proposal.TaskPayload{Title: "Write integration tests"})
+	p := &mockProposalStore{
+		pending: []db.PendingProposal{
+			{
+				ID:      uuid.New(),
+				Type:    string(proposal.TypeTask),
+				Status:  string(proposal.StatusPending),
+				Payload: existingPayload,
+			},
 		},
 	}
-	s := &Server{gtd: g}
+	s := &Server{proposal: p}
 
-	if err := s.autoCaptureMCPTask(context.Background(), "write integration tests", "complete_task"); err != nil {
+	// Case-insensitive title match must dedup.
+	if err := s.autoCaptureMCPTask(context.Background(), "write integration tests", "complete_task", "", "", ""); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
-	if len(g.recordedCreates()) != 0 {
-		t.Errorf("expected 0 creates due to dedup, got %d", len(g.recordedCreates()))
+	if len(p.recordedCreates()) != 0 {
+		t.Errorf("expected 0 creates due to dedup, got %d", len(p.recordedCreates()))
 	}
 }
 
-// TestAutoCaptureMCPTask_CreatesNewTask verifies a new task is created when no duplicate exists.
-func TestAutoCaptureMCPTask_CreatesNewTask(t *testing.T) {
-	g := &mockClassifyGTDStore{}
-	s := &Server{gtd: g}
+// TestAutoCaptureMCPTask_CreatesProposal verifies a TypeTask proposal is
+// enqueued (NOT a real task row) when no duplicate pending proposal exists.
+// This is the core SA-decision-42e0b783 behaviour.
+func TestAutoCaptureMCPTask_CreatesProposal(t *testing.T) {
+	p := &mockProposalStore{}
+	s := &Server{proposal: p}
 
-	if err := s.autoCaptureMCPTask(context.Background(), "Add rate limiting", "resolve_handoff"); err != nil {
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		"Add rate limiting",
+		"resolve_handoff",
+		"arg=foo",
+		"result=ok",
+		"classifier said it's a task",
+	); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
-	creates := g.recordedCreates()
+	creates := p.recordedCreates()
 	if len(creates) != 1 {
-		t.Fatalf("expected 1 create, got %d", len(creates))
+		t.Fatalf("expected 1 proposal create, got %d", len(creates))
 	}
-	if creates[0].params.Title != "Add rate limiting" {
-		t.Errorf("title = %q, want %q", creates[0].params.Title, "Add rate limiting")
+	if creates[0].Type != proposal.TypeTask {
+		t.Errorf("type = %q, want %q", creates[0].Type, proposal.TypeTask)
+	}
+	if creates[0].ProposedBy != "claude-code" {
+		t.Errorf("proposed_by = %q, want claude-code", creates[0].ProposedBy)
+	}
+	var payload proposal.TaskPayload
+	if err := json.Unmarshal(creates[0].Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Title != "Add rate limiting" {
+		t.Errorf("payload title = %q, want %q", payload.Title, "Add rate limiting")
+	}
+	if payload.SourceTool != "resolve_handoff" {
+		t.Errorf("payload source_tool = %q, want resolve_handoff", payload.SourceTool)
+	}
+	if payload.SuggestedKind != "general" {
+		t.Errorf("payload suggested_kind = %q, want general", payload.SuggestedKind)
+	}
+	if payload.ArgSummary != "arg=foo" {
+		t.Errorf("payload arg_summary = %q, want arg=foo", payload.ArgSummary)
+	}
+	if payload.ResultSummary != "result=ok" {
+		t.Errorf("payload result_summary = %q, want result=ok", payload.ResultSummary)
+	}
+	if payload.ClassifierRationale != "classifier said it's a task" {
+		t.Errorf("payload classifier_rationale = %q", payload.ClassifierRationale)
 	}
 }
 
-// TestAutoCaptureMCPTask_TruncatesTitle verifies rune-safe truncation.
+// TestAutoCaptureMCPTask_TruncatesTitle verifies rune-safe truncation
+// applied to the proposal payload title (NOT to a task row).
 func TestAutoCaptureMCPTask_TruncatesTitle(t *testing.T) {
-	g := &mockClassifyGTDStore{}
-	s := &Server{gtd: g}
+	p := &mockProposalStore{}
+	s := &Server{proposal: p}
 
-	longTitle := string(make([]rune, mcpTaskMaxTitle+100))
-	for i := range []rune(longTitle) {
-		_ = i
-	}
-	// Build a long rune string
+	// Build a long rune string (3-byte UTF-8).
 	runes := make([]rune, mcpTaskMaxTitle+100)
 	for i := range runes {
-		runes[i] = 'あ' // 3-byte UTF-8
+		runes[i] = 'あ'
 	}
-	if err := s.autoCaptureMCPTask(context.Background(), string(runes), "sync_repo"); err != nil {
+	if err := s.autoCaptureMCPTask(context.Background(), string(runes), "sync_repo", "", "", ""); err != nil {
 		t.Fatalf("autoCaptureMCPTask with long title: %v", err)
 	}
-	creates := g.recordedCreates()
+	creates := p.recordedCreates()
 	if len(creates) != 1 {
 		t.Fatalf("expected 1 create, got %d", len(creates))
 	}
-	gotRunes := []rune(creates[0].params.Title)
+	var payload proposal.TaskPayload
+	if err := json.Unmarshal(creates[0].Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	gotRunes := []rune(payload.Title)
 	if len(gotRunes) > mcpTaskMaxTitle {
-		t.Errorf("task title rune length = %d, want ≤ %d", len(gotRunes), mcpTaskMaxTitle)
+		t.Errorf("payload title rune length = %d, want ≤ %d", len(gotRunes), mcpTaskMaxTitle)
+	}
+}
+
+// TestAutoCaptureMCPTask_NilProposalStore verifies that nil proposal store
+// is a graceful no-op (legacy callers without proposal wiring should not
+// panic when classifier verdict triggers task capture).
+func TestAutoCaptureMCPTask_NilProposalStore(t *testing.T) {
+	s := &Server{proposal: nil}
+	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", "", "", ""); err != nil {
+		t.Errorf("nil proposal store should be no-op, got err: %v", err)
+	}
+}
+
+// TestAutoCaptureMCPTask_EmptyTitleSkips verifies blank/whitespace title is
+// skipped before any DB call.
+func TestAutoCaptureMCPTask_EmptyTitleSkips(t *testing.T) {
+	p := &mockProposalStore{}
+	s := &Server{proposal: p}
+	for _, title := range []string{"", "   ", "\t\n"} {
+		if err := s.autoCaptureMCPTask(context.Background(), title, "complete_task", "", "", ""); err != nil {
+			t.Errorf("autoCaptureMCPTask(%q): %v", title, err)
+		}
+	}
+	if len(p.recordedCreates()) != 0 {
+		t.Errorf("expected 0 creates for blank titles, got %d", len(p.recordedCreates()))
+	}
+}
+
+// TestAutoCaptureMCPTask_OversizePayloadSkipped verifies the 4 KiB payload
+// cap (proposal.MaxTaskPayloadBytes) drops oversize payloads with a warning
+// instead of writing a giant row.
+func TestAutoCaptureMCPTask_OversizePayloadSkipped(t *testing.T) {
+	p := &mockProposalStore{}
+	s := &Server{proposal: p}
+
+	// argSummary contains 5000 bytes — pushes JSON over the 4 KiB cap.
+	big := strings.Repeat("x", 5000)
+	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", big, "", ""); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+	if len(p.recordedCreates()) != 0 {
+		t.Errorf("expected oversize payload to be dropped, got %d creates", len(p.recordedCreates()))
+	}
+}
+
+// TestMaybeClassifyToolCall_CreatesProposalNotTask is the SA-decision-42e0b783
+// integration test: when the classifier returns IsTask=true the side-effect
+// MUST be a TypeTask proposal (queue), NOT a tasks-table insert. The
+// classifier itself is hard to mock without booting an LLM provider, so this
+// drives the same code path by invoking autoCaptureMCPTask directly with a
+// realistic argSummary / resultSummary and verifies the proposal carries the
+// expected payload shape AND the gtd store is NOT touched.
+func TestMaybeClassifyToolCall_CreatesProposalNotTask(t *testing.T) {
+	p := &mockProposalStore{}
+	g := &mockClassifyGTDStore{} // must NOT be touched
+	s := &Server{
+		proposal: p,
+		gtd:      g,
+	}
+
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		"Add audit log for confirm_proposal",
+		"confirm_proposal",
+		"id=...",
+		"status=accepted",
+		"side-effect implies follow-up audit task",
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+
+	// 1 proposal must be created.
+	creates := p.recordedCreates()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 proposal create, got %d", len(creates))
+	}
+	// 0 task creates on the gtd store — this is the bypass-closure assertion.
+	if len(g.recordedCreates()) != 0 {
+		t.Errorf("expected 0 task creates (bypass closed), got %d", len(g.recordedCreates()))
+	}
+	if creates[0].Type != proposal.TypeTask {
+		t.Errorf("proposal type = %q, want %q", creates[0].Type, proposal.TypeTask)
 	}
 }
 
@@ -572,4 +774,5 @@ var (
 	_ decision.StoreIface = (*mockDecisionStore)(nil)
 	_ decision.StoreIface = (*mockDecisionStoreWithAll)(nil)
 	_ gtd.StoreIface      = (*mockClassifyGTDStore)(nil)
+	_ proposal.StoreIface = (*mockProposalStore)(nil)
 )

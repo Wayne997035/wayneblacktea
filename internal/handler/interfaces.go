@@ -10,6 +10,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/timeline"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
@@ -152,6 +153,15 @@ type autologSessionStore interface {
 type autologDecisionStore interface {
 	All(ctx context.Context, limit int32) ([]db.Decision, error)
 	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
+}
+
+// autologProposalStore covers the subset of proposal.Store used by
+// AutologHandler when routing auto-capture verdicts through the proposal
+// queue (TASK 2 of feature/gtd-enforce-server-side). Kept narrow so tests can
+// inject a fake without pulling in the full proposal.StoreIface surface.
+type autologProposalStore interface {
+	Create(ctx context.Context, p proposal.CreateParams) (*db.PendingProposal, error)
+	ListPending(ctx context.Context) ([]db.PendingProposal, error)
 }
 
 // searchKnowledgeStore covers the subset of knowledge.Store used by SearchHandler.

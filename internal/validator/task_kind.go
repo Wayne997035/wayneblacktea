@@ -2,10 +2,14 @@ package validator
 
 import "strings"
 
+// KindGeneral is the default task kind used when none is supplied; centralised
+// here so MCP / HTTP handlers don't duplicate the string literal (goconst).
+const KindGeneral = "general"
+
 // ValidTaskKinds is the allowlist of accepted task kind values. The CHECK
 // constraint in the DB migration (000044) is a secondary defence; this
 // allowlist is the primary client-side gate.
-var ValidTaskKinds = []string{"general", "fix-pr", "feature", "refactor", "research", "chore"}
+var ValidTaskKinds = []string{KindGeneral, "fix-pr", "feature", "refactor", "research", "chore"}
 
 // IsValidKind reports whether kind is a known task kind.
 func IsValidKind(kind string) bool {

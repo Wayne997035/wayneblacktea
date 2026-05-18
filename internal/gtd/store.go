@@ -451,6 +451,87 @@ func toInt2(v *int16) pgtype.Int2 {
 	return pgtype.Int2{Int16: *v, Valid: true}
 }
 
+// BatchCompleteTasksByPRMatch implements StoreIface.BatchCompleteTasksByPRMatch
+// for the Postgres backend. Runs inside a single transaction so a partial
+// auto-close cannot leave half the matches done. See iface.go for contract.
+func (s *Store) BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match) (int, error) {
+	if len(matches) == 0 {
+		return 0, nil
+	}
+	beginner, ok := s.dbtx.(txBeginner)
+	if !ok {
+		return 0, fmt.Errorf("BatchCompleteTasksByPRMatch: dbtx does not support Begin")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("BatchCompleteTasksByPRMatch: begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	qtx := s.q.WithTx(tx)
+	applied := 0
+	for _, m := range matches {
+		ok, perr := s.applyOnePRMatch(ctx, qtx, m)
+		if perr != nil {
+			return 0, fmt.Errorf("BatchCompleteTasksByPRMatch task %s: %w", m.TaskID, perr)
+		}
+		if ok {
+			applied++
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("BatchCompleteTasksByPRMatch: commit: %w", err)
+	}
+	committed = true
+	return applied, nil
+}
+
+// applyOnePRMatch performs the per-task work for BatchCompleteTasksByPRMatch:
+// guarded UPDATE (skip if already completed) + activity_log INSERT. Returns
+// true when the row actually transitioned, false when it was already done.
+func (s *Store) applyOnePRMatch(ctx context.Context, qtx *db.Queries, m Match) (bool, error) {
+	// Guarded UPDATE: only flip non-completed tasks. Setting status,
+	// artifact, and pr_url in one statement keeps the row consistent. The
+	// AND status != 'completed' clause is what makes the operation idempotent.
+	const upd = `UPDATE tasks
+		SET status     = 'completed',
+		    artifact   = $1,
+		    pr_url     = $1,
+		    updated_at = NOW()
+		WHERE id = $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		  AND status != 'completed'`
+	res, err := s.dbtx.Exec(ctx, upd, m.PRUrl, m.TaskID, s.workspaceID)
+	if err != nil {
+		return false, fmt.Errorf("update task: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		// Already completed or wrong workspace — idempotent no-op.
+		return false, nil
+	}
+
+	// audit: record what closed the task and why.
+	notes := fmt.Sprintf("auto-closed by reconcile_merged_prs reason=%s pr_url=%s head_ref=%s",
+		m.Reason, m.PRUrl, m.PRHeadRef)
+	if m.BodyExcerpt != "" {
+		notes += " body=" + m.BodyExcerpt
+	}
+	if _, err := qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       "system",
+		Action:      "pr_auto_close",
+		Notes:       toText(sanitize.Notes(notes)),
+		WorkspaceID: s.workspaceID,
+	}); err != nil {
+		return false, fmt.Errorf("activity log: %w", err)
+	}
+	return true, nil
+}
+
 // CompleteTask marks a task as completed with an optional artifact URL.
 func (s *Store) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error) {
 	var art pgtype.Text

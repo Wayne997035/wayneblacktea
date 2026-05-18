@@ -13,6 +13,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
@@ -53,6 +55,12 @@ type AutologHandler struct {
 	decision   autologDecisionStore
 	summarizer transcriptSummarizer
 	classifier activityClassifier
+	// proposalStore is the optional gate that converts IsTask=true classifier
+	// verdicts into TypeTask proposals (user-reviewed) instead of direct task
+	// rows. nil = legacy direct-create path (kept for the few call sites that
+	// do not yet wire the proposal store, e.g. unit tests that don't exercise
+	// auto-capture). When non-nil the autoCreateTask routes via Create.
+	proposalStore autologProposalStore
 }
 
 // NewAutologHandler creates an AutologHandler.
@@ -84,6 +92,26 @@ func NewAutologHandlerWithClassifier(
 	h := NewAutologHandler(g, s, d, sum)
 	if clf != nil {
 		h.classifier = clf
+	}
+	return h
+}
+
+// NewAutologHandlerWithClassifierAndProposal extends NewAutologHandlerWithClassifier
+// by also wiring the proposal store. When proposalStore is non-nil, IsTask=true
+// classifier verdicts go through the TypeTask proposal queue for user review
+// (TASK 2 of feature/gtd-enforce-server-side); when nil the legacy direct-task
+// path is preserved so existing callers / tests are unaffected.
+func NewAutologHandlerWithClassifierAndProposal(
+	g autologGTDStore,
+	s autologSessionStore,
+	d autologDecisionStore,
+	sum *ai.Summarizer,
+	clf *ai.ActivityClassifier,
+	proposalStore autologProposalStore,
+) *AutologHandler {
+	h := NewAutologHandlerWithClassifier(g, s, d, sum, clf)
+	if proposalStore != nil {
+		h.proposalStore = proposalStore
 	}
 	return h
 }
@@ -150,8 +178,10 @@ func (h *AutologHandler) maybeClassifyAsync(actor, action, notes string) {
 			if result.IsTask && result.TaskTitle != "" {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
-				if err := h.autoCreateTask(bgCtx, result.TaskTitle); err != nil {
-					slog.Warn("auto-task classify: create failed", "err", err)
+				if err := h.autoCreateTaskFromClassifier(
+					bgCtx, result.TaskTitle, actor, action, notes, result.Rationale,
+				); err != nil {
+					slog.Warn("auto-task classify: enqueue/create failed", "err", err)
 				}
 			}
 		}()
@@ -319,6 +349,12 @@ func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) 
 // autoCreateTask creates a GTD task for the given title if no active task with
 // the same title exists. Dedup is scoped to pending/in_progress tasks only;
 // completed tasks with the same title may be re-created.
+//
+// This path is the legacy direct-create flow still used by the transcript
+// summarizer in AutoHandoff (where the summary is itself user-attested).
+// The IsTask=true classifier verdict path (maybeClassifyAsync) routes through
+// autoCreateTaskFromClassifier instead so it goes via the proposal queue when
+// proposalStore is wired.
 func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error {
 	if len(title) > maxTaskTitle {
 		runes := []rune(title)
@@ -349,5 +385,90 @@ func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error
 	if err != nil {
 		return fmt.Errorf("auto-create task: %w", err)
 	}
+	return nil
+}
+
+// autoCreateTaskFromClassifier is the IsTask=true classifier branch of the
+// /api/activity auto-capture. When proposalStore is wired (production wiring),
+// the verdict goes onto the TypeTask proposal queue so the user reviews and
+// validator.CheckVagueness runs at confirm time. When proposalStore is nil
+// (legacy callers and unit tests that don't exercise auto-capture), it falls
+// back to direct task creation — preserves prior behaviour.
+//
+// argSummary/resultSummary equivalents here are the actor/action/notes triple
+// already control-char sanitised by LogActivity via sanitize.Notes. Because
+// the proposal payload is persisted long-lived (pending_proposals.payload row
+// surfaced in the proposal UI), we additionally run redact.ForLLM on the
+// summary + rationale to scrub credential-shape patterns (token=ghp_…,
+// password=…, AKIA…, postgres://user:pass@…) before write — defence-in-depth
+// per security review M-1 (PR #120).
+func (h *AutologHandler) autoCreateTaskFromClassifier(
+	ctx context.Context,
+	title, actor, action, notes, classifierRationale string,
+) error {
+	if h.proposalStore == nil {
+		// Legacy direct path — unit tests rely on this when they don't
+		// inject a proposalStore. Production wiring always sets it.
+		return h.autoCreateTask(ctx, title)
+	}
+
+	if len(title) > maxTaskTitle {
+		runes := []rune(title)
+		if len(runes) > maxTaskTitle {
+			title = string(runes[:maxTaskTitle])
+		}
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+
+	// Dedup against EXISTING pending TypeTask proposals (not the tasks table).
+	pending, err := h.proposalStore.ListPending(ctx)
+	if err != nil {
+		return fmt.Errorf("auto-create task: list pending proposals: %w", err)
+	}
+	for _, p := range pending {
+		if p.Type != string(proposal.TypeTask) {
+			continue
+		}
+		var existing proposal.TaskPayload
+		if uerr := json.Unmarshal(p.Payload, &existing); uerr != nil {
+			continue
+		}
+		if strings.EqualFold(existing.Title, title) {
+			return nil
+		}
+	}
+
+	payload := proposal.TaskPayload{
+		Title:               title,
+		SourceTool:          "activity:" + actor + ":" + action,
+		ArgSummary:          redact.ForLLM(notes),
+		ClassifierRationale: redact.ForLLM(classifierRationale),
+		SuggestedKind:       "general",
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("auto-create task: marshal payload: %w", err)
+	}
+	if len(encoded) > proposal.MaxTaskPayloadBytes {
+		slog.Warn("autoCreateTaskFromClassifier: payload exceeds cap, skipping",
+			"actor", actor, "bytes", len(encoded), "cap", proposal.MaxTaskPayloadBytes)
+		return nil
+	}
+
+	row, err := h.proposalStore.Create(ctx, proposal.CreateParams{
+		Type:       proposal.TypeTask,
+		Payload:    encoded,
+		ProposedBy: "claude-code",
+	})
+	if err != nil {
+		return fmt.Errorf("auto-create task: create proposal: %w", err)
+	}
+	slog.Info("autoCreateTaskFromClassifier: enqueued task proposal",
+		"proposal_id", row.ID.String(),
+		"actor", actor,
+	)
 	return nil
 }

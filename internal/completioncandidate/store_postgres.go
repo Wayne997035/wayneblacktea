@@ -160,6 +160,49 @@ func (s *PgStore) UpsertCandidate(ctx context.Context, p UpsertParams) (*Candida
 	return c, nil
 }
 
+// WriteAutoApplied inserts (or refreshes) a completion_candidates row with
+// status='auto_applied' reason='artifact_evidence'. Used by reconcile_merged_prs
+// (sprint feature/gtd-enforce-server-side GTD-fix 9/12) to audit the auto-close.
+//
+// ON CONFLICT (task_id, reason) the existing row is updated: detected_at
+// refreshed, evidence_refs replaced, suggested_artifact set, AND status forced
+// to 'auto_applied' (in contrast to UpsertCandidate which preserves existing
+// status). This ensures a previously pending candidate flips to auto_applied
+// on the second pass.
+func (s *PgStore) WriteAutoApplied(
+	ctx context.Context,
+	taskID uuid.UUID,
+	evidenceRefs []string,
+	suggestedArtifact string,
+) error {
+	if taskID == uuid.Nil {
+		return fmt.Errorf("WriteAutoApplied: task_id is required")
+	}
+	refs := evidenceRefs
+	if refs == nil {
+		refs = []string{}
+	}
+	var artifactArg *string
+	if suggestedArtifact != "" {
+		artifactArg = &suggestedArtifact
+	}
+	ws := s.wsArg()
+
+	const q = `INSERT INTO completion_candidates
+		(workspace_id, task_id, reason, evidence_refs, confidence, suggested_artifact, status, resolved_at)
+		VALUES ($1, $2, 'artifact_evidence', $3, 'high', $4, 'auto_applied', NOW())
+		ON CONFLICT (task_id, reason) DO UPDATE SET
+			detected_at        = now(),
+			evidence_refs      = excluded.evidence_refs,
+			suggested_artifact = COALESCE(excluded.suggested_artifact, completion_candidates.suggested_artifact),
+			status             = 'auto_applied',
+			resolved_at        = now()`
+	if _, err := s.pool.Exec(ctx, q, ws, taskID, refs, artifactArg); err != nil {
+		return fmt.Errorf("completioncandidate.PgStore.WriteAutoApplied: %w", err)
+	}
+	return nil
+}
+
 // PruneResolved deletes candidates whose resolved_at is older than olderThan.
 func (s *PgStore) PruneResolved(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
