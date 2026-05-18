@@ -160,6 +160,92 @@ func TestCheckVagueness(t *testing.T) {
 	}
 }
 
+// TestCheckVagueness_AutoCapturedMarker verifies that the literal placeholder
+// strings the auto-capture path historically produced are now flagged as
+// vague. Cases cover both the canonical upper-cased literal and the lower-
+// cased phrase form (defence in depth against future case-flip regressions),
+// plus a non-vague descriptive baseline to confirm the markers do not
+// over-match.
+func TestCheckVagueness_AutoCapturedMarker(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		field       string
+		text        string
+		kind        string
+		wantContain string // substring expected in at least one warning
+	}{
+		{
+			name:        "literal auto-captured from MCP — exact bug-day form",
+			field:       "description",
+			text:        "auto-captured from MCP: complete_task",
+			kind:        "general",
+			wantContain: "AUTO-CAPTURED FROM MCP",
+		},
+		{
+			name:        "literal auto-captured from activity log — exact bug-day form",
+			field:       "description",
+			text:        "auto-captured from activity log",
+			kind:        "general",
+			wantContain: "AUTO-CAPTURED FROM ACTIVITY LOG",
+		},
+		{
+			name:        "upper-cased AUTO-CAPTURED FROM MCP embedded in longer text",
+			field:       "description",
+			text:        "Long story short: AUTO-CAPTURED FROM MCP placeholder leaked into the description",
+			kind:        "general",
+			wantContain: "AUTO-CAPTURED FROM MCP",
+		},
+		{
+			name:        "mixed-case Auto-Captured From Activity Log still triggers",
+			field:       "description",
+			text:        "Auto-Captured From Activity Log entry; needs real description",
+			kind:        "general",
+			wantContain: "AUTO-CAPTURED FROM ACTIVITY LOG",
+		},
+		{
+			name:        "phrase form lower-cased embedded in sentence",
+			field:       "description",
+			text:        "Note that this is auto-captured from activity log and should be rewritten",
+			kind:        "general",
+			wantContain: "auto-captured from activity log",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := CheckVagueness(tc.field, tc.text, tc.kind)
+			if len(got) == 0 {
+				t.Fatalf("CheckVagueness(%q, %q, %q) = empty; want at least one warning containing %q", tc.field, tc.text, tc.kind, tc.wantContain)
+			}
+			found := false
+			for _, w := range got {
+				if strings.Contains(w, tc.wantContain) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("CheckVagueness(%q, %q, %q) = %v; want a warning containing %q", tc.field, tc.text, tc.kind, got, tc.wantContain)
+			}
+		})
+	}
+}
+
+// TestCheckVagueness_AutoCapturedMarker_ChoreKindSkipped verifies that the
+// chore-kind exemption still applies to the new markers. A chore task with
+// an auto-capture placeholder MUST NOT produce a warning, matching the
+// pre-existing chore-skips-all-checks contract.
+func TestCheckVagueness_AutoCapturedMarker_ChoreKindSkipped(t *testing.T) {
+	t.Parallel()
+	got := CheckVagueness("description", "auto-captured from MCP: complete_task", "chore")
+	if len(got) != 0 {
+		t.Errorf("CheckVagueness with kind=chore = %v; want empty (chore skips all checks)", got)
+	}
+}
+
 func TestHasFileLineRef(t *testing.T) {
 	t.Parallel()
 

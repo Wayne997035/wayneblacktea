@@ -10,13 +10,25 @@ import (
 
 // vaguenessMarkers is the exact-match set (checked case-insensitively after
 // strings.ToUpper). Each entry triggers a warning on its own.
+//
+// The "AUTO-CAPTURED FROM ..." entries flag placeholder descriptions
+// historically emitted by the auto-capture path when a real description was
+// missing. They are a defence-in-depth safety net — the structural fix lives
+// in the auto-capture handler; this exists so future regressions cannot
+// silently re-introduce blank placeholders.
 var vaguenessMarkers = []string{
 	"TBD", "???", "N/A", "TODO", "FIXME", "WIP", "(BLANK)",
+	"AUTO-CAPTURED FROM MCP",
+	"AUTO-CAPTURED FROM ACTIVITY LOG",
 }
 
 // vaguenessPhrasesLower is the phrase set (checked case-insensitively via
 // strings.Contains on a lower-cased copy of the input). Each entry triggers
 // a warning when found anywhere in the text.
+//
+// The lower-cased "auto-captured from ..." variants are explicit defence in
+// depth: even if upstream code drops the uppercase form for some encoding /
+// case-flip path, the phrase set still catches the literal placeholder.
 var vaguenessPhrasesLower = []string{
 	"see audit",
 	"see above",
@@ -33,6 +45,8 @@ var vaguenessPhrasesLower = []string{
 	"詳述",
 	"略",
 	"等等",
+	"auto-captured from mcp",
+	"auto-captured from activity log",
 }
 
 // minDescriptionRunes is the minimum rune count below which a text that also
