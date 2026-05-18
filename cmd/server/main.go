@@ -160,7 +160,14 @@ func run() error {
 		sum = ai.New(claudeKey)
 		reflector = ai.NewReflector(claudeKey)
 	}
-	autologH := handler.NewAutologHandlerWithClassifier(stores.GTD(), stores.Session(), stores.Decision(), sum, clf)
+	// auto-capture proposal wiring (sprint feature/gtd-enforce-server-side TASK 2)
+	// Routes IsTask=true classifier verdicts through the TypeTask proposal queue
+	// instead of direct task creation, so the user reviews and validator runs at
+	// confirm time (SA decision 42e0b783). nil-safe: if stores.Proposal() is nil
+	// (no SQLite / no PG), AutologHandler falls back to legacy direct create.
+	autologH := handler.NewAutologHandlerWithClassifierAndProposal(
+		stores.GTD(), stores.Session(), stores.Decision(), sum, clf, stores.Proposal(),
+	)
 	postToolUseH := handler.NewPostToolUseHandler(stores.GTD())
 	defer postToolUseH.Stop()
 

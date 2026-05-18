@@ -16,6 +16,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -710,6 +711,206 @@ func TestAutoHandoff_WithTranscriptTasks(t *testing.T) {
 	defer gtdStore.mu.Unlock()
 	if len(gtdStore.createdTasks) != 2 {
 		t.Errorf("expected 2 tasks created, got %d", len(gtdStore.createdTasks))
+	}
+}
+
+// ---- TASK 2: proposal-queue auto-capture tests ----
+
+// fakeAutologProposalStore is the narrow fake for autologProposalStore. Only
+// Create + ListPending are exercised by autoCreateTaskFromClassifier.
+type fakeAutologProposalStore struct {
+	mu      sync.Mutex
+	pending []db.PendingProposal
+	created []proposal.CreateParams
+}
+
+func (f *fakeAutologProposalStore) Create(_ context.Context, p proposal.CreateParams) (*db.PendingProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, p)
+	row := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    string(p.Type),
+		Status:  "pending",
+		Payload: p.Payload,
+	}
+	f.pending = append(f.pending, row)
+	return &row, nil
+}
+
+func (f *fakeAutologProposalStore) ListPending(_ context.Context) ([]db.PendingProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]db.PendingProposal, len(f.pending))
+	copy(out, f.pending)
+	return out, nil
+}
+
+func (f *fakeAutologProposalStore) snapshotCreates() []proposal.CreateParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]proposal.CreateParams, len(f.created))
+	copy(out, f.created)
+	return out
+}
+
+// TestAutoCreateTask_CreatesProposalNotTask is the SA-decision-42e0b783 HTTP
+// twin of the MCP test: when /api/activity classifier returns IsTask=true and
+// a proposalStore is wired, the side-effect MUST be a TypeTask proposal — NOT
+// a direct task-table insert. Bypass closure is verified by asserting gtd
+// store has 0 createdTasks.
+func TestAutoCreateTask_CreatesProposalNotTask(t *testing.T) {
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:    true,
+		TaskTitle: "Add audit log for PR #42 merge",
+		Rationale: "merging implies follow-up audit task",
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	propStore := &fakeAutologProposalStore{}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"pr_merge","notes":"merged feature/X"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+
+	// Wait up to 500ms for the goroutine.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(propStore.snapshotCreates()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	creates := propStore.snapshotCreates()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 proposal created, got %d", len(creates))
+	}
+	if creates[0].Type != proposal.TypeTask {
+		t.Errorf("proposal type = %q, want %q", creates[0].Type, proposal.TypeTask)
+	}
+	if creates[0].ProposedBy != "claude-code" {
+		t.Errorf("proposed_by = %q, want claude-code", creates[0].ProposedBy)
+	}
+
+	// Verify payload shape.
+	var payload proposal.TaskPayload
+	if err := json.Unmarshal(creates[0].Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Title != "Add audit log for PR #42 merge" {
+		t.Errorf("payload title = %q", payload.Title)
+	}
+	if payload.SuggestedKind != "general" {
+		t.Errorf("payload suggested_kind = %q, want general", payload.SuggestedKind)
+	}
+	if !strings.Contains(payload.SourceTool, "bash-hook") {
+		t.Errorf("payload source_tool = %q (should encode actor)", payload.SourceTool)
+	}
+	if payload.ClassifierRationale != "merging implies follow-up audit task" {
+		t.Errorf("payload classifier_rationale = %q", payload.ClassifierRationale)
+	}
+
+	// Bypass-closure assertion: NO tasks-table writes.
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 0 {
+		t.Errorf("expected 0 task creates (bypass closed), got %d", len(gtdStore.createdTasks))
+	}
+}
+
+// TestAutoCreateTask_LegacyDirectPath_NoProposalStore verifies the back-compat
+// path: when proposalStore is nil the IsTask=true verdict creates a task
+// directly via gtd.CreateTask. Existing callers (e.g. unit tests that don't
+// wire proposalStore) continue to work.
+func TestAutoCreateTask_LegacyDirectPath_NoProposalStore(t *testing.T) {
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:    true,
+		TaskTitle: "Add CI cache",
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+
+	e := newEcho()
+	// proposalStore intentionally nil.
+	h := handler.NewAutologHandlerWithClassifierForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{}, nil, clf,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"ci","notes":"slow build"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		gtdStore.mu.Lock()
+		n := len(gtdStore.createdTasks)
+		gtdStore.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 1 {
+		t.Errorf("expected 1 task create (legacy direct path), got %d", len(gtdStore.createdTasks))
+	}
+}
+
+// TestAutoCreateTask_ProposalDedup verifies dedup against EXISTING pending
+// TypeTask proposals (case-insensitive title match) — second identical
+// classifier verdict does not enqueue a duplicate.
+func TestAutoCreateTask_ProposalDedup(t *testing.T) {
+	// Pre-seed an existing pending proposal.
+	existing, _ := json.Marshal(proposal.TaskPayload{Title: "Add audit log"})
+	propStore := &fakeAutologProposalStore{
+		pending: []db.PendingProposal{{
+			ID:      uuid.New(),
+			Type:    string(proposal.TypeTask),
+			Status:  "pending",
+			Payload: existing,
+		}},
+	}
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:    true,
+		TaskTitle: "add audit log", // different casing, same logical title
+	}}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		&fakeAutologGTDStore{}, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"x","notes":"y"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+
+	// Give classifier goroutine time to run.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if clf.wasCalled() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Additional wait for the actual dedup decision to materialise.
+	time.Sleep(50 * time.Millisecond)
+
+	if got := len(propStore.snapshotCreates()); got != 0 {
+		t.Errorf("expected dedup (0 new creates), got %d", got)
 	}
 }
 

@@ -29,3 +29,20 @@ func NewAutologHandlerWithClassifierForTest(
 ) *AutologHandler {
 	return &AutologHandler{gtd: g, sess: s, decision: d, summarizer: sum, classifier: clf}
 }
+
+// NewAutologHandlerWithClassifierAndProposalForTest is the test-only ctor
+// variant that injects all four collaborators including the proposalStore —
+// required to exercise the TASK-2 proposal-queue path.
+func NewAutologHandlerWithClassifierAndProposalForTest(
+	g autologGTDStore,
+	s autologSessionStore,
+	d autologDecisionStore,
+	sum transcriptSummarizer,
+	clf activityClassifier,
+	proposalStore autologProposalStore,
+) *AutologHandler {
+	return &AutologHandler{
+		gtd: g, sess: s, decision: d, summarizer: sum,
+		classifier: clf, proposalStore: proposalStore,
+	}
+}
