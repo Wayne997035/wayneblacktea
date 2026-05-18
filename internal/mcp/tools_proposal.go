@@ -15,13 +15,19 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const errTaskProposalNotMaterialized = "task proposals are not materialized via confirm_proposal in Phase B1; use add_task directly"
+// errTaskProposalNotMaterialized was the pre-TASK-3 placeholder error message.
+// Retained as a fallback constant only — TypeTask proposals are now
+// materialised by decodeTaskProposalParams + the per-backend gtd.CreateTask
+// branch (TASK 3 of feature/gtd-enforce-server-side). The string is returned
+// only when the gtd store is unavailable at materialise time.
+const errTaskProposalNotMaterialized = "task proposal materialisation requires gtd store; verify confirm_proposal wiring"
 
 // goalPayload is the JSONB shape stored in pending_proposals when type=goal.
 type goalPayload struct {
@@ -447,19 +453,7 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		return mcp.NewToolResultError(fmt.Sprintf("committing transaction: %v", err)), nil
 	}
 
-	// Post-commit: for TypeKnowledge the tx path only validated the payload
-	// and flipped the proposal status. The actual AddItem write must happen
-	// here — outside the tx — because knowledge.Store has no WithTx variant
-	// and SQLite is single-writer (calling AddItem inside the tx would deadlock).
-	if proposal.Type(prop.Type) == proposal.TypeKnowledge && created == nil {
-		postCreated, errMsg := s.materializeKnowledgeIface(ctx, prop)
-		if errMsg == "" {
-			created = postCreated
-		} else {
-			slog.Warn("acceptProposalSQLite: knowledge post-commit materialise failed",
-				"proposal_id", id, "err", errMsg)
-		}
-	}
+	created = s.runSQLitePostCommitMaterialisers(ctx, id, prop, created)
 
 	// Fetch the resolved proposal for the response (committed tx is closed).
 	resolved, err := s.proposal.Get(ctx, id)
@@ -468,6 +462,40 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		return jsonText(confirmResult{Created: created})
 	}
 	return jsonText(confirmResult{Proposal: resolved, Created: created})
+}
+
+// runSQLitePostCommitMaterialisers runs the post-commit materialise step for
+// types that cannot share the SQLite tx (knowledge / task) — see
+// acceptProposalSQLite for why. Returns the updated created value (or the
+// original if no post-commit step applies). Errors are logged but never
+// surfaced to the caller because the tx already committed; the proposal is
+// already accepted.
+func (s *Server) runSQLitePostCommitMaterialisers(
+	ctx context.Context, id uuid.UUID, prop *db.PendingProposal, created any,
+) any {
+	if created != nil {
+		return created
+	}
+	switch proposal.Type(prop.Type) {
+	case proposal.TypeKnowledge:
+		postCreated, errMsg := s.materializeKnowledgeIface(ctx, prop)
+		if errMsg != "" {
+			slog.Warn("acceptProposalSQLite: knowledge post-commit materialise failed",
+				"proposal_id", id, "err", errMsg)
+			return created
+		}
+		return postCreated
+	case proposal.TypeTask:
+		postCreated, errMsg := s.materializeTaskIface(ctx, prop)
+		if errMsg != "" {
+			slog.Warn("acceptProposalSQLite: task post-commit materialise failed",
+				"proposal_id", id, "err", errMsg)
+			return created
+		}
+		return postCreated
+	default:
+		return created
+	}
 }
 
 // proposalWorkspaceID safely unpacks the optional workspace UUID from a
@@ -533,7 +561,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 		}
 		return nil, "" // signals tx can commit; post-commit path does AddItem
 	case proposal.TypeTask:
-		return nil, errTaskProposalNotMaterialized
+		return s.materializeTaskSQLite(ctx, tx, prop)
 	case proposal.TypePlaybook:
 		cp, errMsg := decodePlaybookPayload(prop.Payload, proposalWorkspaceID(prop))
 		if errMsg != "" {
@@ -547,6 +575,22 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
+}
+
+// materializeTaskSQLite validates a TypeTask payload inside the open tx so a
+// bad payload aborts cleanly. The actual gtd.CreateTask write happens AFTER
+// tx.Commit in the post-commit path of acceptProposalSQLite — matching the
+// TypeKnowledge pattern. SQLite is single-writer, so calling gtd.CreateTask
+// inside the open tx would deadlock on the shared connection.
+//
+// The "nil, "" return signals "tx may commit; do post-commit materialise".
+// The post-commit step is keyed off prop.Type == TypeTask plus created == nil
+// (same dispatch as TypeKnowledge).
+func (s *Server) materializeTaskSQLite(_ context.Context, _ *sql.Tx, prop *db.PendingProposal) (any, string) {
+	if _, _, errMsg := decodeTaskProposalParams(prop.Payload, s.strictVagueness()); errMsg != "" {
+		return nil, errMsg
+	}
+	return nil, "" // signals tx can commit; post-commit path does CreateTask
 }
 
 // materializeDecisionSQLite is the per-type SQLite-Tx materialiser for
@@ -609,7 +653,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 	case proposal.TypeKnowledge:
 		return s.materializeKnowledgePg(ctx, prop)
 	case proposal.TypeTask:
-		return nil, errTaskProposalNotMaterialized
+		return s.materializeTaskPg(ctx, tx, prop)
 	case proposal.TypePlaybook:
 		cp, errMsg := decodePlaybookPayload(prop.Payload, proposalWorkspaceID(prop))
 		if errMsg != "" {
@@ -623,6 +667,28 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
+}
+
+// materializeTaskPg validates a TypeTask payload and creates the task row
+// inside the given pgx transaction so create + proposal-resolve commit
+// atomically. Strict-mode validator failures return errMsg → tx rolls back.
+// Warn mode returns a {task, warnings} map so the response surfaces them.
+func (s *Server) materializeTaskPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
+	params, warnings, errMsg := decodeTaskProposalParams(prop.Payload, s.strictVagueness())
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	if s.pgGTD == nil {
+		return nil, errTaskProposalNotMaterialized
+	}
+	task, err := s.pgGTD.WithTx(tx).CreateTask(ctx, params)
+	if err != nil {
+		return nil, fmt.Sprintf("creating task: %v", err)
+	}
+	if len(warnings) > 0 {
+		return map[string]any{"task": task, "warnings": warnings}, ""
+	}
+	return task, ""
 }
 
 // materializeDecisionPg is the per-type Postgres-Tx materialiser for
@@ -684,7 +750,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 	case proposal.TypeKnowledge:
 		return s.materializeKnowledgeIface(ctx, prop)
 	case proposal.TypeTask:
-		return nil, errTaskProposalNotMaterialized
+		return s.materializeTaskIface(ctx, prop)
 	case proposal.TypePlaybook:
 		cp, errMsg := decodePlaybookPayload(prop.Payload, proposalWorkspaceID(prop))
 		if errMsg != "" {
@@ -698,6 +764,28 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 	default:
 		return nil, fmt.Sprintf("unknown proposal type %q", prop.Type)
 	}
+}
+
+// materializeTaskIface is the backend-agnostic materialiser for TypeTask used
+// by acceptProposalSequential and (post-commit) acceptProposalSQLite. Runs
+// validator → calls s.gtd.CreateTask (no tx — see TypeKnowledge pattern).
+// Strict mode errMsg aborts; warn mode wraps the task with warnings.
+func (s *Server) materializeTaskIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
+	params, warnings, errMsg := decodeTaskProposalParams(prop.Payload, s.strictVagueness())
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	if s.gtd == nil {
+		return nil, errTaskProposalNotMaterialized
+	}
+	task, err := s.gtd.CreateTask(ctx, params)
+	if err != nil {
+		return nil, fmt.Sprintf("creating task: %v", err)
+	}
+	if len(warnings) > 0 {
+		return map[string]any{"task": task, "warnings": warnings}, ""
+	}
+	return task, ""
 }
 
 // materializeDecisionIface is the per-type backend-agnostic materialiser for
@@ -896,4 +984,54 @@ func decodePlaybookPayload(payload []byte, wsID *uuid.UUID) (playbook.CreatePara
 		SourceDecisionIDs: p.SourceDecisionIDs,
 		Confidence:        0.50,
 	}, ""
+}
+
+// decodeTaskProposalParams decodes a TypeTask payload into gtd.CreateTaskParams
+// and runs the SAME validator (CheckVagueness + CheckKindFields) that
+// handleAddTask runs at the MCP layer — closing the bypass identified by SA
+// decision 42e0b783 for the confirm_proposal path.
+//
+// Returns:
+//   - params:   ready-to-pass gtd.CreateTaskParams
+//   - warnings: non-empty when description / kind fields trigger vagueness
+//   - errMsg:   non-empty fatal error (malformed JSON, missing title, or
+//     strict-mode rejection). When errMsg is non-empty params is zero-value
+//     and warnings carries the validator output for callers that want to
+//     surface the reason.
+//
+// Strict mode (WBT_STRICT_VAGUENESS=true) → warnings convert to errMsg so
+// the per-backend materialiser aborts. Warn mode → warnings are returned
+// alongside ok params; the caller embeds them in the response body.
+func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams, []string, string) {
+	var tp proposal.TaskPayload
+	if err := json.Unmarshal(payload, &tp); err != nil {
+		return gtd.CreateTaskParams{}, nil, fmt.Sprintf("decoding task payload: %v", err)
+	}
+	if tp.Title == "" {
+		return gtd.CreateTaskParams{}, nil, "task payload missing title"
+	}
+	if len(tp.Title) > mcpTaskMaxTitle {
+		return gtd.CreateTaskParams{}, nil, "task title exceeds 500 characters"
+	}
+
+	kind := tp.SuggestedKind
+	if kind == "" {
+		kind = validator.KindGeneral
+	}
+	if !validator.IsValidKind(kind) {
+		kind = validator.KindGeneral
+	}
+
+	var warnings []string
+	warnings = append(warnings, validator.CheckVagueness("description", tp.Description, kind)...)
+	warnings = append(warnings, validator.CheckKindFields(kind, tp.Description)...)
+	if len(warnings) > 0 && strict {
+		return gtd.CreateTaskParams{}, warnings, fmt.Sprintf("vagueness check failed: %v", warnings)
+	}
+
+	return gtd.CreateTaskParams{
+		Title:       tp.Title,
+		Description: tp.Description,
+		Kind:        kind,
+	}, warnings, ""
 }

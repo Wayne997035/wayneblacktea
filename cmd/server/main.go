@@ -108,7 +108,8 @@ func run() error {
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
 		WithDecision(stores.Decision()).
-		WithKnowledge(stores.Knowledge())
+		WithKnowledge(stores.Knowledge()).
+		WithTask(stores.GTD())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(stores.Learning(),
 		handler.WithKnowledgeStore(stores.Knowledge()),

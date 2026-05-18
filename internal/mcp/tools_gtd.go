@@ -475,7 +475,7 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	kind := stringArg(args, "kind")
 	if kind == "" {
-		kind = "general"
+		kind = validator.KindGeneral
 	}
 	if !validator.IsValidKind(kind) {
 		return mcp.NewToolResultError("kind must be one of: general, fix-pr, feature, refactor, research, chore"), nil

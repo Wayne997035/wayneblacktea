@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -599,5 +601,184 @@ func TestProposalHandler_ListPendingProposals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---- TASK 3: TypeTask materialise + validator tests ----
+
+// fakeProposalTaskStore is the narrow fake for proposalTaskStore.
+type fakeProposalTaskStore struct {
+	mu        sync.Mutex
+	created   []gtd.CreateTaskParams
+	createErr error
+}
+
+func (f *fakeProposalTaskStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	f.created = append(f.created, p)
+	return &db.Task{ID: uuid.New(), Title: p.Title}, nil
+}
+
+func (f *fakeProposalTaskStore) snapshot() []gtd.CreateTaskParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]gtd.CreateTaskParams, len(f.created))
+	copy(out, f.created)
+	return out
+}
+
+// makeTaskProposal builds a pending TypeTask proposal for tests.
+func makeTaskProposal(id uuid.UUID, title, description, kind string) db.PendingProposal {
+	payload, _ := json.Marshal(proposal.TaskPayload{
+		Title:         title,
+		Description:   description,
+		SuggestedKind: kind,
+		SourceTool:    "test",
+	})
+	return db.PendingProposal{
+		ID:      id,
+		Type:    string(proposal.TypeTask),
+		Status:  string(proposal.StatusPending),
+		Payload: payload,
+	}
+}
+
+// vagueDescriptionFixture is the canonical vague description used across the
+// TypeTask validator tests — "TBD" hits validator.vaguenessMarkers.
+const vagueDescriptionFixture = "TBD"
+
+// confirmTaskProposal runs a single confirm_proposal request against a fresh
+// handler wired with the supplied stores; returns the recorder + parsed body.
+func confirmTaskProposal(
+	t *testing.T, store *fakeProposalStore, taskStore *fakeProposalTaskStore, id uuid.UUID,
+) (code int, body map[string]any, raw string) {
+	t.Helper()
+	e := newEcho()
+	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).WithTask(taskStore)
+	e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
+	rec := performRequest(e, http.MethodPost, "/api/proposals/"+id.String()+"/confirm", `{"action":"accept"}`)
+	raw = rec.Body.String()
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	return rec.Code, body, raw
+}
+
+// TestConfirmProposal_TypeTask_RunsVagueness_WarnMode: warn mode (default env)
+// returns 200 with warnings in body AND task is materialised.
+func TestConfirmProposal_TypeTask_RunsVagueness_WarnMode(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Add audit log", vagueDescriptionFixture, "general")
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", code, raw)
+	}
+	warnings, ok := body["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Errorf("expected non-empty warnings, body=%s", raw)
+	}
+	if len(taskStore.snapshot()) != 1 {
+		t.Errorf("expected 1 task created in warn mode, got %d", len(taskStore.snapshot()))
+	}
+}
+
+// TestConfirmProposal_TypeTask_RunsVagueness_StrictMode: strict mode returns
+// 400 with warnings, NO task created, proposal stays pending.
+func TestConfirmProposal_TypeTask_RunsVagueness_StrictMode(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "true")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Add audit log", vagueDescriptionFixture, "general")
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", code, raw)
+	}
+	warnings, ok := body["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Errorf("expected non-empty warnings, body=%s", raw)
+	}
+	if len(taskStore.snapshot()) != 0 {
+		t.Errorf("expected 0 tasks in strict mode, got %d", len(taskStore.snapshot()))
+	}
+	if len(store.resolved) != 0 {
+		t.Errorf("expected proposal to stay pending, got resolved=%v", store.resolved)
+	}
+}
+
+// TestConfirmProposal_TypeTask_RunsVagueness_NoWarnings: non-vague description
+// passes validator → 200, no warnings array, task is created with full
+// description preserved.
+func TestConfirmProposal_TypeTask_RunsVagueness_NoWarnings(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	const goodDescription = "Add slog.Info audit row to confirm_proposal at internal/handler/proposal_handler.go:240 with proposal_id"
+	prop := makeTaskProposal(id, "Audit log proposal", goodDescription, "general")
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", code, raw)
+	}
+	if warnings, ok := body["warnings"].([]any); ok && len(warnings) > 0 {
+		t.Errorf("expected no warnings, got %v", warnings)
+	}
+	creates := taskStore.snapshot()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 task created, got %d", len(creates))
+	}
+	if creates[0].Title != "Audit log proposal" {
+		t.Errorf("title = %q", creates[0].Title)
+	}
+	if creates[0].Description != goodDescription {
+		t.Errorf("description = %q", creates[0].Description)
+	}
+}
+
+// TestConfirmProposal_TypeTask_MalformedPayload: malformed JSON → 400, no task.
+func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
+	id := uuid.New()
+	prop := db.PendingProposal{
+		ID:      id,
+		Type:    string(proposal.TypeTask),
+		Status:  string(proposal.StatusPending),
+		Payload: []byte(`{bad json`),
+	}
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, _, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d: %s", code, raw)
+	}
+	if len(taskStore.snapshot()) != 0 {
+		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
+	}
+}
+
+// TestConfirmProposal_TypeTask_MissingTitle: payload without title → 400.
+func TestConfirmProposal_TypeTask_MissingTitle(t *testing.T) {
+	id := uuid.New()
+	payload, _ := json.Marshal(proposal.TaskPayload{Description: "desc"})
+	prop := db.PendingProposal{
+		ID:      id,
+		Type:    string(proposal.TypeTask),
+		Status:  string(proposal.StatusPending),
+		Payload: payload,
+	}
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, _, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d: %s", code, raw)
 	}
 }
