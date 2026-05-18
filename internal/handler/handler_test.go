@@ -26,23 +26,26 @@ import (
 // ---- fake store implementations ----
 
 type fakeGTDStore struct {
-	goals              []db.Goal
-	projects           []db.Project
-	tasks              []db.Task
-	allStatusTasks     []db.Task
-	allStatusCalls     int
-	tasksCalls         int
-	createdGoal        *db.Goal
-	createdProj        *db.Project
-	createdTask        *db.Task
-	capturedTaskParams *gtd.CreateTaskParams
-	updatedTask        *db.Task
-	updatedProj        *db.Project
-	updatedGoal        *db.Goal
-	completed          *db.Task
-	completed_         int64
-	total_             int64
-	err                error
+	goals                    []db.Goal
+	projects                 []db.Project
+	tasks                    []db.Task
+	allStatusTasks           []db.Task
+	allStatusCalls           int
+	tasksCalls               int
+	createdGoal              *db.Goal
+	createdProj              *db.Project
+	createdTask              *db.Task
+	capturedTaskParams       *gtd.CreateTaskParams
+	updatedTask              *db.Task
+	updatedProj              *db.Project
+	updatedGoal              *db.Goal
+	completed                *db.Task
+	completed_               int64
+	total_                   int64
+	err                      error
+	beginTaskCalls           int
+	capturedUpdateTaskParams *gtd.UpdateTaskParams
+	beginTaskResult          *db.Task
 }
 
 func (f *fakeGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) {
@@ -96,7 +99,8 @@ func (f *fakeGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.Ta
 	return f.updatedTask, f.err
 }
 
-func (f *fakeGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
+func (f *fakeGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, p gtd.UpdateTaskParams) (*db.Task, error) {
+	f.capturedUpdateTaskParams = &p
 	return f.updatedTask, f.err
 }
 
@@ -135,6 +139,10 @@ func (f *fakeGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uui
 }
 
 func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+	f.beginTaskCalls++
+	if f.beginTaskResult != nil {
+		return f.beginTaskResult, f.err
+	}
 	return f.updatedTask, f.err
 }
 

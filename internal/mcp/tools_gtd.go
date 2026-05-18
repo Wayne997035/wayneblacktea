@@ -273,9 +273,18 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithDescription(
 			"Atomically marks a task in_progress, logs a work_session_started activity, "+
 				"and returns the task with a branch_name_suggestion and work_session_id. "+
-				"Call this INSTEAD of update_task when starting work on a task.",
+				"Call this INSTEAD of update_task when starting work on a task. "+
+				"Optionally pass branch_name and/or pr_url to persist the linkage so "+
+				"reconcile_merged_prs can auto-close the task on PR merge "+
+				"(sprint feature/gtd-enforce-server-side GTD-fix 8/12).",
 		),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("branch_name",
+			mcp.Description("Optional git branch name to persist on the task (e.g. feature/my-feature). "+
+				"Pass this when you already know the branch so the task can be linked for auto-close.")),
+		mcp.WithString("pr_url",
+			mcp.Description("Optional GitHub PR URL to persist on the task (e.g. https://github.com/org/repo/pull/123). "+
+				"Pass this once the PR is open so reconcile_merged_prs can match on merge.")),
 	), s.handleBeginTask)
 }
 
@@ -1019,6 +1028,25 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 	if err != nil {
 		return mcp.NewToolResultError("invalid task_id: " + err.Error()), nil
 	}
+
+	// Validate optional linkage args BEFORE we mutate the task so the caller
+	// gets a clean error instead of a half-applied state (sprint
+	// feature/gtd-enforce-server-side GTD-fix 8/12).
+	branchName := stringArg(args, "branch_name")
+	prURL := stringArg(args, "pr_url")
+	if branchName != "" {
+		if len(branchName) > 255 {
+			return mcp.NewToolResultError("branch_name must not exceed 255 characters"), nil
+		}
+		if branchNameHasControlChars(branchName) {
+			return mcp.NewToolResultError("branch_name must not contain control characters"), nil
+		}
+	}
+	if prURL != "" && !githubPRURLRe.MatchString(prURL) {
+		return mcp.NewToolResultError(
+			"pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"), nil
+	}
+
 	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
 	task, err := s.gtd.BeginTask(ctx, id, wsID)
 	if errors.Is(err, gtd.ErrNotFound) {
@@ -1027,6 +1055,25 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("beginning task: %v", err)), nil
 	}
+
+	// Persist linkage after status flip via UpdateTask so we don't disturb
+	// BeginTask's idempotency contract.
+	if branchName != "" || prURL != "" {
+		up := gtd.UpdateTaskParams{}
+		if branchName != "" {
+			up.BranchName = &branchName
+		}
+		if prURL != "" {
+			up.PRUrl = &prURL
+		}
+		updated, uerr := s.gtd.UpdateTask(ctx, id, up)
+		if uerr != nil {
+			return mcp.NewToolResultError(
+				fmt.Sprintf("beginning task linkage persist: %v", uerr)), nil
+		}
+		task = updated
+	}
+
 	return jsonText(map[string]any{
 		"task":                   task,
 		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),

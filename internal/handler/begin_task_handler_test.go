@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -186,6 +187,237 @@ func TestTaskTitleToBranchSlug(t *testing.T) {
 			}
 			if resp.BranchNameSuggestion != tc.want {
 				t.Errorf("branch_name_suggestion = %q, want %q", resp.BranchNameSuggestion, tc.want)
+			}
+		})
+	}
+}
+
+// TestGTDHandler_BeginTask_PersistsBranchAndPR covers the M-8 sprint linkage:
+// POST /api/tasks/:id/begin with body {branch_name, pr_url} MUST forward both
+// values to UpdateTask after BeginTask succeeds. Closes the gap that today's
+// 5 stale tasks demonstrated.
+func TestGTDHandler_BeginTask_PersistsBranchAndPR(t *testing.T) {
+	taskID := uuid.New()
+	postBegin := &db.Task{
+		ID:     taskID,
+		Title:  "implement reconcile",
+		Status: "in_progress",
+	}
+	store := &fakeGTDStore{
+		beginTaskResult: postBegin,
+		updatedTask:     postBegin,
+	}
+	h := handler.NewGTDHandler(store)
+
+	body := `{"branch_name":"feature/foo","pr_url":"https://github.com/Wayne997035/wayneblacktea/pull/999"}`
+	e := echo.New()
+	req := httptest.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost, "/api/tasks/"+taskID.String()+"/begin",
+		strings.NewReader(body),
+	)
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues(taskID.String())
+
+	if err := h.BeginTask(c); err != nil {
+		t.Fatalf("BeginTask: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Verify UpdateTask was called with the linkage params.
+	if store.capturedUpdateTaskParams == nil {
+		t.Fatal("UpdateTask was not called — branch/pr_url not persisted")
+	}
+	if store.capturedUpdateTaskParams.BranchName == nil ||
+		*store.capturedUpdateTaskParams.BranchName != "feature/foo" {
+		t.Errorf("BranchName = %+v, want feature/foo", store.capturedUpdateTaskParams.BranchName)
+	}
+	if store.capturedUpdateTaskParams.PRUrl == nil ||
+		*store.capturedUpdateTaskParams.PRUrl != "https://github.com/Wayne997035/wayneblacktea/pull/999" {
+		t.Errorf("PRUrl = %+v, want the PR URL", store.capturedUpdateTaskParams.PRUrl)
+	}
+	if store.beginTaskCalls != 1 {
+		t.Errorf("beginTaskCalls = %d, want 1", store.beginTaskCalls)
+	}
+}
+
+// TestGTDHandler_BeginTask_RejectsInvalidPRURL covers the validation path —
+// malformed pr_url MUST return 400 without touching the store.
+func TestGTDHandler_BeginTask_RejectsInvalidPRURL(t *testing.T) {
+	taskID := uuid.New()
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "non-github host",
+			body: `{"pr_url":"https://notgithub.com/foo/bar/pull/1"}`,
+		},
+		{
+			name: "issues path not pull",
+			body: `{"pr_url":"https://github.com/foo/bar/issues/1"}`,
+		},
+		{
+			name: "javascript scheme",
+			body: `{"pr_url":"javascript:alert(1)"}`,
+		},
+		{
+			name: "branch name with newline",
+			body: "{\"branch_name\":\"feature/bad\nname\"}",
+		},
+		{
+			name: "branch_name too long",
+			body: `{"branch_name":"` + strings.Repeat("a", 256) + `"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeGTDStore{}
+			h := handler.NewGTDHandler(store)
+			e := echo.New()
+			req := httptest.NewRequestWithContext(
+				context.Background(),
+				http.MethodPost, "/api/tasks/"+taskID.String()+"/begin",
+				strings.NewReader(tc.body),
+			)
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("id")
+			c.SetParamValues(taskID.String())
+
+			err := h.BeginTask(c)
+			var he *echo.HTTPError
+			if !errors.As(err, &he) {
+				t.Fatalf("expected echo.HTTPError, got %v", err)
+			}
+			if he.Code != http.StatusBadRequest {
+				t.Errorf("got HTTP %d, want 400 (msg: %v)", he.Code, he.Message)
+			}
+			if store.beginTaskCalls != 0 {
+				t.Errorf("beginTaskCalls = %d, want 0 (store must be untouched on validation fail)", store.beginTaskCalls)
+			}
+			if store.capturedUpdateTaskParams != nil {
+				t.Errorf("UpdateTask was called: %+v — must not run on validation fail", store.capturedUpdateTaskParams)
+			}
+		})
+	}
+}
+
+// TestGTDHandler_BeginTask_EmptyBodyStillWorks covers the legacy contract:
+// callers that POST without a body must still get the status flip.
+func TestGTDHandler_BeginTask_EmptyBodyStillWorks(t *testing.T) {
+	taskID := uuid.New()
+	store := &fakeGTDStore{
+		beginTaskResult: &db.Task{ID: taskID, Title: "x", Status: "in_progress"},
+	}
+	h := handler.NewGTDHandler(store)
+	e := echo.New()
+	req := httptest.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost, "/api/tasks/"+taskID.String()+"/begin", nil,
+	)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues(taskID.String())
+
+	if err := h.BeginTask(c); err != nil {
+		t.Fatalf("BeginTask: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if store.beginTaskCalls != 1 {
+		t.Errorf("beginTaskCalls = %d, want 1", store.beginTaskCalls)
+	}
+	if store.capturedUpdateTaskParams != nil {
+		t.Error("UpdateTask should NOT be called when no linkage was supplied")
+	}
+}
+
+// TestGTDHandler_BeginTask_PartialLinkage covers only-branch and only-pr cases.
+func TestGTDHandler_BeginTask_PartialLinkage(t *testing.T) {
+	taskID := uuid.New()
+	completed := &db.Task{ID: taskID, Title: "x", Status: "in_progress"}
+
+	cases := []struct {
+		name           string
+		body           string
+		wantBranch     string
+		wantPR         string
+		expectBranch   bool
+		expectPRSet    bool
+		expectUpdCall  bool
+		expectStoreErr bool
+	}{
+		{
+			name:          "only branch_name",
+			body:          `{"branch_name":"feature/x"}`,
+			wantBranch:    "feature/x",
+			expectBranch:  true,
+			expectUpdCall: true,
+		},
+		{
+			name:          "only pr_url",
+			body:          `{"pr_url":"https://github.com/owner/repo/pull/42"}`,
+			wantPR:        "https://github.com/owner/repo/pull/42",
+			expectPRSet:   true,
+			expectUpdCall: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeGTDStore{
+				beginTaskResult: completed,
+				updatedTask:     completed,
+			}
+			h := handler.NewGTDHandler(store)
+			e := echo.New()
+			req := httptest.NewRequestWithContext(
+				context.Background(),
+				http.MethodPost, "/api/tasks/"+taskID.String()+"/begin",
+				strings.NewReader(tc.body),
+			)
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("id")
+			c.SetParamValues(taskID.String())
+
+			if err := h.BeginTask(c); err != nil {
+				t.Fatalf("BeginTask: %v", err)
+			}
+			if tc.expectUpdCall && store.capturedUpdateTaskParams == nil {
+				t.Fatal("UpdateTask not called")
+			}
+			if tc.expectBranch {
+				if store.capturedUpdateTaskParams.BranchName == nil ||
+					*store.capturedUpdateTaskParams.BranchName != tc.wantBranch {
+					t.Errorf("BranchName mismatch: got %+v want %q",
+						store.capturedUpdateTaskParams.BranchName, tc.wantBranch)
+				}
+				if store.capturedUpdateTaskParams.PRUrl != nil {
+					t.Errorf("PRUrl set when only branch was supplied: %+v",
+						store.capturedUpdateTaskParams.PRUrl)
+				}
+			}
+			if tc.expectPRSet {
+				if store.capturedUpdateTaskParams.PRUrl == nil ||
+					*store.capturedUpdateTaskParams.PRUrl != tc.wantPR {
+					t.Errorf("PRUrl mismatch: got %+v want %q",
+						store.capturedUpdateTaskParams.PRUrl, tc.wantPR)
+				}
+				if store.capturedUpdateTaskParams.BranchName != nil {
+					t.Errorf("BranchName set when only PR was supplied: %+v",
+						store.capturedUpdateTaskParams.BranchName)
+				}
 			}
 		})
 	}
