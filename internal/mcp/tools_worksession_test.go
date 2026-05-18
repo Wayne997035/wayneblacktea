@@ -654,3 +654,59 @@ func TestStartWork_CrossWorkspaceIsolation(t *testing.T) {
 	// Silence unused-variable lint.
 	_ = worksession.ErrAlreadyActive
 }
+
+// TestHandleFinishWork_WithDecisions verifies that finish_work accepts a
+// new_decisions JSON array and completes successfully (decisions are best-effort,
+// so even noisy titles must not prevent completion).
+func TestHandleFinishWork_WithDecisions(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "decisions-test-repo",
+		"title":     "test session",
+		"goal":      "verify decision logging",
+	})
+	if startR.IsError {
+		t.Fatalf("start_work failed: %s", resultText(startR))
+	}
+	var startResult map[string]any
+	if err := json.Unmarshal([]byte(resultText(startR)), &startResult); err != nil {
+		t.Fatalf("unmarshal start: %v", err)
+	}
+	sessID, _ := startResult["session_id"].(string)
+
+	// Valid decisions should be logged; noisy title with newline should be skipped without error.
+	decisionsJSON := `["Switch to pgx/v5 for connection pooling","Adopt testcontainers for integration tests"]`
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":    sessID,
+		"summary":       "wrapped up the session",
+		"new_decisions": decisionsJSON,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work with new_decisions must succeed, got: %s", resultText(r))
+	}
+
+	// A noisy decision title (contains newline) must not prevent completion.
+	startR2 := callStartWork(t, s, map[string]any{
+		"repo_name": "decisions-test-repo2",
+		"title":     "test session 2",
+		"goal":      "verify noisy title handling",
+	})
+	if startR2.IsError {
+		t.Fatalf("start_work 2 failed: %s", resultText(startR2))
+	}
+	var startResult2 map[string]any
+	if err := json.Unmarshal([]byte(resultText(startR2)), &startResult2); err != nil {
+		t.Fatalf("unmarshal start 2: %v", err)
+	}
+	sessID2, _ := startResult2["session_id"].(string)
+
+	noisyJSON := `["injected\ndecision","clean decision title"]`
+	r2 := callFinishWork(t, s, map[string]any{
+		"session_id":    sessID2,
+		"summary":       "done",
+		"new_decisions": noisyJSON,
+	})
+	if r2.IsError {
+		t.Fatalf("finish_work with noisy decisions must still succeed (best-effort), got: %s", resultText(r2))
+	}
+}

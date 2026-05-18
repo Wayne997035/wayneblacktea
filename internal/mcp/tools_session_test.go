@@ -231,3 +231,80 @@ func TestSetSessionHandoff_InvalidNextActionsJSON(t *testing.T) {
 		t.Fatalf("next_actions as object (not array) must error, got: %s", resultText(r))
 	}
 }
+
+func callMarkNextActionDone(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	res, err := s.handleMarkNextActionDone(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleMarkNextActionDone error: %v", err)
+	}
+	return res
+}
+
+// TestHandleMarkNextActionDone_HappyPath verifies that a valid step can be
+// marked done after a handoff is created.
+func TestHandleMarkNextActionDone_HappyPath(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	nextActionsJSON := `[{"step":0,"title":"run tests","status":"pending"},{"step":1,"title":"push branch","status":"pending"}]`
+	setR := callSetSessionHandoff(t, s, map[string]any{
+		"intent":       "finish review",
+		"next_actions": nextActionsJSON,
+	})
+	if setR.IsError {
+		t.Fatalf("set_session_handoff failed: %s", resultText(setR))
+	}
+	var view map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(resultText(setR)), &view); err != nil {
+		t.Fatalf("unmarshal handoff: %v", err)
+	}
+	var handoffID string
+	if err := json.Unmarshal(view["id"], &handoffID); err != nil {
+		t.Fatalf("parse handoff id: %v", err)
+	}
+
+	doneR := callMarkNextActionDone(t, s, map[string]any{
+		"handoff_id": handoffID,
+		"step":       float64(0),
+	})
+	if doneR.IsError {
+		t.Fatalf("mark_next_action_done failed: %s", resultText(doneR))
+	}
+}
+
+// TestHandleMarkNextActionDone_MissingHandoffID verifies that missing handoff_id returns an error.
+func TestHandleMarkNextActionDone_MissingHandoffID(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callMarkNextActionDone(t, s, map[string]any{"step": float64(0)})
+	if !r.IsError {
+		t.Fatal("expected error for missing handoff_id")
+	}
+}
+
+// TestHandleMarkNextActionDone_InvalidUUID verifies that an invalid UUID returns an error.
+func TestHandleMarkNextActionDone_InvalidUUID(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callMarkNextActionDone(t, s, map[string]any{
+		"handoff_id": "not-a-uuid",
+		"step":       float64(0),
+	})
+	if !r.IsError {
+		t.Fatal("expected error for invalid UUID")
+	}
+}
+
+// TestHandleMarkNextActionDone_StepOutOfRange verifies that a step > maxNextActionItems returns an error.
+func TestHandleMarkNextActionDone_StepOutOfRange(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callMarkNextActionDone(t, s, map[string]any{
+		"handoff_id": "123e4567-e89b-12d3-a456-426614174000",
+		"step":       float64(maxNextActionItems + 1),
+	})
+	if !r.IsError {
+		t.Fatal("expected error for out-of-range step")
+	}
+	if !strings.Contains(resultText(r), "range") {
+		t.Errorf("error should mention range, got: %s", resultText(r))
+	}
+}

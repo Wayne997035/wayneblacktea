@@ -29,7 +29,7 @@ export function GtdPage() {
   const [fabOpen, setFabOpen] = useState(false)
   const goalsQuery = useGoals()
   const projectsQuery = useProjects()
-  const tasksQuery = useAllTasks('active')
+  const tasksQuery = useAllTasks('all')
 
   const goals = goalsQuery.data ?? []
   const projects = projectsQuery.data ?? []

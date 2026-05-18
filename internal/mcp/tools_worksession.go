@@ -354,6 +354,20 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 		if title == "" {
 			continue
 		}
+		if reason := checkField("title", title); reason != "" {
+			slog.Warn("finish_work: skipping noisy decision title",
+				"session_id", sessID,
+				"reason", reason,
+			)
+			continue
+		}
+		if reason := checkCommandField("title", title); reason != "" {
+			slog.Warn("finish_work: skipping decision title with control chars",
+				"session_id", sessID,
+				"reason", reason,
+			)
+			continue
+		}
 		if _, logErr := s.decision.Log(ctx, decision.LogParams{
 			Title:    title,
 			RepoName: repoName,

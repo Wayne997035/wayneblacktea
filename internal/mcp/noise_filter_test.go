@@ -317,6 +317,62 @@ func TestSanitizeTags(t *testing.T) {
 	}
 }
 
+func TestCheckCommandField(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		wantNoisy bool
+		wantMsg   string
+	}{
+		{name: "clean command passes", value: "cd build && task check", wantNoisy: false},
+		{name: "tab is allowed", value: "key\tvalue", wantNoisy: false},
+		{name: "empty passes", value: "", wantNoisy: false},
+		{
+			name:      "newline is rejected",
+			value:     "git status\ngit push origin main",
+			wantNoisy: true,
+			wantMsg:   "newline",
+		},
+		{
+			name:      "carriage return is rejected",
+			value:     "value\rwith CR",
+			wantNoisy: true,
+			wantMsg:   "carriage return",
+		},
+		{
+			name:      "null byte is rejected",
+			value:     "value\x00with null",
+			wantNoisy: true,
+			wantMsg:   "null byte",
+		},
+		{
+			name:      "control char below 0x20 (except tab) is rejected",
+			value:     "value\x01with ctrl",
+			wantNoisy: true,
+			wantMsg:   "control",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reason := checkCommandField("field", tc.value)
+			if tc.wantNoisy {
+				if reason == "" {
+					t.Errorf("expected rejection reason but got empty string")
+				}
+				if tc.wantMsg != "" && !strings.Contains(reason, tc.wantMsg) {
+					t.Errorf("reason %q does not contain %q", reason, tc.wantMsg)
+				}
+			} else if reason != "" {
+				t.Errorf("expected pass but got reason: %q", reason)
+			}
+		})
+	}
+}
+
 // makeNTags returns a slice of n unique tag strings.
 func makeNTags(n int) []string {
 	out := make([]string, n)
