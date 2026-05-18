@@ -45,8 +45,14 @@ func (h *VisionHandler) AddVision(c echo.Context) error {
 	if req.Title == "" {
 		return c.JSON(http.StatusBadRequest, errResp("title is required"))
 	}
+	if len([]rune(req.Title)) > 255 {
+		return c.JSON(http.StatusBadRequest, errResp("title exceeds 255 characters"))
+	}
 	if req.WhyBlocked == "" {
 		return c.JSON(http.StatusBadRequest, errResp("why_blocked is required"))
+	}
+	if len([]rune(req.WhyBlocked)) > 2000 {
+		return c.JSON(http.StatusBadRequest, errResp("why_blocked exceeds 2000 characters"))
 	}
 
 	// Vagueness check on title and why_blocked (warn-only; vision items are

@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { useToastStore } from '../stores/toastStore'
-import type { VisionItemSummary, CreateVisionRequest, UpdateVisionRequest, VisionStatus } from '../types/api'
+import type { VisionItem, VisionItemSummary, CreateVisionRequest, UpdateVisionRequest, VisionStatus } from '../types/api'
 
 export function useVision(status?: VisionStatus) {
   const params = status ? `?status=${encodeURIComponent(status)}` : ''
@@ -14,9 +14,9 @@ export function useVision(status?: VisionStatus) {
 export function useCreateVision() {
   const queryClient = useQueryClient()
   const addToast = useToastStore((s) => s.addToast)
-  return useMutation<VisionItemSummary, Error, CreateVisionRequest>({
+  return useMutation<VisionItem, Error, CreateVisionRequest>({
     mutationFn: (data) =>
-      apiFetch<VisionItemSummary>('/api/vision', {
+      apiFetch<VisionItem>('/api/vision', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
@@ -32,9 +32,9 @@ export function useCreateVision() {
 export function useUpdateVision() {
   const queryClient = useQueryClient()
   const addToast = useToastStore((s) => s.addToast)
-  return useMutation<VisionItemSummary, Error, { id: string; data: UpdateVisionRequest }>({
+  return useMutation<VisionItem, Error, { id: string; data: UpdateVisionRequest }>({
     mutationFn: ({ id, data }) =>
-      apiFetch<VisionItemSummary>(`/api/vision/${id}`, {
+      apiFetch<VisionItem>(`/api/vision/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
       }),

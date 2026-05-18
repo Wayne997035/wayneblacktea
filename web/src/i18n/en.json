@@ -426,5 +426,8 @@
       "pending": "Pending"
     },
     "resolvedAgo": "{{time}} ago"
+  },
+  "vision": {
+    "empty": "No vision items yet"
   }
 }

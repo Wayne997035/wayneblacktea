@@ -424,5 +424,8 @@
       "pending": "待處理"
     },
     "resolvedAgo": "{{time}} 前"
+  },
+  "vision": {
+    "empty": "目前沒有願景項目"
   }
 }

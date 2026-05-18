@@ -209,6 +209,7 @@ function CreateVisionForm({ onClose }: CreateVisionFormProps) {
               required
               aria-required="true"
               aria-describedby={titleError ? 'vision-title-error' : undefined}
+              maxLength={255}
               className="w-full rounded-md px-3 py-2 text-body"
               style={inputStyle}
             />
@@ -235,6 +236,7 @@ function CreateVisionForm({ onClose }: CreateVisionFormProps) {
               aria-required="true"
               aria-describedby={whyError ? 'vision-why-error' : undefined}
               rows={4}
+              maxLength={2000}
               className="w-full rounded-md px-3 py-2 text-body resize-none"
               style={inputStyle}
               placeholder="What is currently preventing this from being actionable?"

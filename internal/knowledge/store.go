@@ -598,10 +598,10 @@ func (s *Store) ListByProjectID(ctx context.Context, projectID uuid.UUID, limit 
 	const q = `SELECT ` + selectCols + `
 		FROM knowledge_items
 		WHERE project_id = $1
-		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
 		ORDER BY created_at DESC
-		LIMIT $2`
-	rows, err := s.pool.Query(ctx, q, projectID, int32(limit), s.workspaceID) //nolint:gosec // G115: limit positive by caller
+		LIMIT $3`
+	rows, err := s.pool.Query(ctx, q, projectID, s.workspaceID, int32(limit)) //nolint:gosec // G115: limit positive by caller
 	if err != nil {
 		return nil, fmt.Errorf("listing knowledge by project_id %s: %w", projectID, err)
 	}
@@ -632,10 +632,10 @@ func (s *Store) ListByTaskID(ctx context.Context, taskID uuid.UUID, limit int) (
 	const q = `SELECT ` + selectCols + `
 		FROM knowledge_items
 		WHERE task_id = $1
-		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
 		ORDER BY created_at DESC
-		LIMIT $2`
-	rows, err := s.pool.Query(ctx, q, taskID, int32(limit), s.workspaceID) //nolint:gosec // G115: limit positive by caller
+		LIMIT $3`
+	rows, err := s.pool.Query(ctx, q, taskID, s.workspaceID, int32(limit)) //nolint:gosec // G115: limit positive by caller
 	if err != nil {
 		return nil, fmt.Errorf("listing knowledge by task_id %s: %w", taskID, err)
 	}
