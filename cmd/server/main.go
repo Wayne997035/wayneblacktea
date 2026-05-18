@@ -70,6 +70,9 @@ func run() error {
 	if err := validateAPIKey(apiKey); err != nil {
 		return err
 	}
+	if os.Getenv("RAILWAY_ENVIRONMENT") != "" && os.Getenv("APP_ENV") == "" {
+		log.Printf("WARNING: RAILWAY_ENVIRONMENT is set but APP_ENV is not — cookie Secure flag will not be enabled; set APP_ENV=production on Railway")
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -373,7 +376,9 @@ func run() error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-quit
-		if err := e.Shutdown(context.Background()); err != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer shutCancel()
+		if err := e.Shutdown(shutCtx); err != nil {
 			log.Printf("server shutdown error: %v", err)
 		}
 	}()

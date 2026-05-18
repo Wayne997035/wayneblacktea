@@ -21,6 +21,7 @@ package ai
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -105,20 +106,21 @@ func normalise(s string) string {
 }
 
 // NewEmbeddingProvider returns the EmbeddingProvider selected by the
-// EMBEDDING_PROVIDER environment variable.  Defaults to "hashed" (v1
-// placeholder) when the variable is unset or unrecognised.
+// EMBEDDING_PROVIDER environment variable. Returns an error for unrecognised
+// values so operators discover misconfiguration at startup rather than silently
+// getting hashed (non-semantic) embeddings (Info-level fix).
 //
 // Supported values:
 //   - "hashed" (default) — deterministic SHA-256 hash, no external deps
+//   - ""                 — same as "hashed"
 //
 // TODO(5/5): add "openai" and "gemini" cases here.
-func NewEmbeddingProvider() EmbeddingProvider {
+func NewEmbeddingProvider() (EmbeddingProvider, error) {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("EMBEDDING_PROVIDER"))) {
 	case "hashed", "":
-		return HashedEmbeddingProvider{}
+		return HashedEmbeddingProvider{}, nil
 	default:
-		// Unknown provider → fall back to hashed so the hook never fails.
-		return HashedEmbeddingProvider{}
+		return nil, fmt.Errorf("unknown embedding provider %q; supported values: \"hashed\"", os.Getenv("EMBEDDING_PROVIDER"))
 	}
 }
 

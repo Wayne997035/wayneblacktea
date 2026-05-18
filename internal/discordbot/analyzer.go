@@ -105,7 +105,13 @@ func (a *Analyzer) Analyze(ctx context.Context, content string) (*AnalysisResult
 	if a == nil || a.llm == nil {
 		return nil, ErrAnalyzerDisabled
 	}
-	wrapped := "[BEGIN UNTRUSTED CONTENT]\n" + content + "\n[END UNTRUSTED CONTENT]"
+	// Escape boundary markers inside the untrusted content so a malicious page
+	// cannot close the boundary block early and inject instructions into the
+	// trusted prompt context (M-5 prompt-injection boundary escape defence).
+	// This mirrors the escapeUntrusted pattern in internal/snapshot/generator.go.
+	safeContent := strings.ReplaceAll(content, "[END UNTRUSTED CONTENT]", "[END UNTRUSTED CONTENT (escaped)]")
+	safeContent = strings.ReplaceAll(safeContent, "[BEGIN UNTRUSTED CONTENT]", "[BEGIN UNTRUSTED CONTENT (escaped)]")
+	wrapped := "[BEGIN UNTRUSTED CONTENT]\n" + safeContent + "\n[END UNTRUSTED CONTENT]"
 	out, err := a.llm.CompleteJSON(ctx, llm.JSONRequest{
 		Task:        "analyze",
 		System:      analyzePrompt,

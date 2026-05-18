@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -21,8 +22,26 @@ func NewDecisionHandler(s decisionStore) *DecisionHandler {
 }
 
 // ListDecisions returns decisions, optionally filtered by repo_name or project_id query params.
+// The ?limit= query parameter controls how many results to return (default 20, max 100).
 func (h *DecisionHandler) ListDecisions(c echo.Context) error {
-	const defaultLimit int32 = 20
+	const (
+		defaultLimit int32 = 20
+		maxLimit     int32 = 100
+	)
+
+	limit := defaultLimit
+	if rawLimit := c.QueryParam("limit"); rawLimit != "" {
+		n, err := strconv.ParseInt(rawLimit, 10, 32)
+		switch {
+		case err != nil || n < 1:
+			limit = defaultLimit
+		case int32(n) > maxLimit:
+			limit = maxLimit
+		default:
+			limit = int32(n)
+		}
+	}
+
 	ctx := c.Request().Context()
 
 	if projectIDStr := c.QueryParam("project_id"); projectIDStr != "" {
@@ -30,7 +49,7 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, errResp("invalid project_id"))
 		}
-		decisions, err := h.store.ByProject(ctx, id, defaultLimit)
+		decisions, err := h.store.ByProject(ctx, id, limit)
 		if err != nil {
 			c.Logger().Errorf("ListDecisions ByProject: %v", err)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -39,7 +58,7 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 	}
 
 	if repoName := c.QueryParam("repo_name"); repoName != "" {
-		decisions, err := h.store.ByRepo(ctx, repoName, defaultLimit)
+		decisions, err := h.store.ByRepo(ctx, repoName, limit)
 		if err != nil {
 			c.Logger().Errorf("ListDecisions ByRepo: %v", err)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -47,7 +66,7 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 		return c.JSON(http.StatusOK, decisions)
 	}
 
-	decisions, err := h.store.All(ctx, defaultLimit)
+	decisions, err := h.store.All(ctx, limit)
 	if err != nil {
 		c.Logger().Errorf("ListDecisions All: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))

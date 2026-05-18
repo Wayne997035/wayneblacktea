@@ -22,13 +22,22 @@
       "nextSession": "NEXT SESSION",
       "nextTask": "NEXT TASK",
       "pendingTasks": "Pending Tasks",
-      "decisionsToday": "Decisions Today"
+      "decisionsToday": "Decisions Today",
+      "upcomingTasks": "Upcoming Tasks"
+    },
+    "upcoming": {
+      "today": "Today",
+      "tomorrow": "Tomorrow",
+      "dayAfter": "Day After",
+      "upcoming": "Upcoming",
+      "unscheduledImportant": "High Priority / No Date"
     },
     "noProjects": "No active projects",
     "noTasksThisWeek": "No tasks this week",
     "noHandoff": "No pending handoff",
     "noNextTask": "No pending tasks",
     "noNearTermTasks": "No tasks due in the next 7 days",
+    "noUpcomingTasks": "No upcoming tasks",
     "tasksDone": "tasks done",
     "widgets": {
       "nextTask": "NEXT TASK",
@@ -40,7 +49,8 @@
       "dueReviews": "DUE REVIEWS",
       "dueReviewsCount": "{{count}} due",
       "recentKnowledge": "RECENT KNOWLEDGE",
-      "moreItems": "+ {{count}} more"
+      "moreItems": "+ {{count}} more",
+      "upcomingTasks": "Upcoming Tasks"
     }
   },
   "gtd": {
@@ -72,7 +82,8 @@
     "noDecisionsForProject": "No decisions logged for this project yet",
     "projectNotFound": "Project not found",
     "branch": "Branch",
-    "pullRequest": "Pull Request"
+    "pullRequest": "Pull Request",
+    "commits": "Commits"
   },
   "project": {
     "back": "Back",
@@ -307,6 +318,8 @@
       "title": "Add Task",
       "titleLabel": "Task title",
       "titlePlaceholder": "Task title...",
+      "descriptionLabel": "Description (optional)",
+      "descriptionPlaceholder": "Add notes or context...",
       "projectLabel": "Project (optional)",
       "priorityLabel": "Priority",
       "dueDateLabel": "Due date (optional)",
@@ -337,7 +350,8 @@
     "type": {
       "knowledge": "Knowledge",
       "decision": "Decision",
-      "task": "Task"
+      "task": "Task",
+      "project": "Project"
     }
   },
   "learningHistory": {

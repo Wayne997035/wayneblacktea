@@ -22,8 +22,17 @@
       "nextSession": "下次工作",
       "nextTask": "下個任務",
       "pendingTasks": "待辦事項",
-      "decisionsToday": "今日決策"
+      "decisionsToday": "今日決策",
+      "upcomingTasks": "即將到來的任務"
     },
+    "upcoming": {
+      "today": "今天",
+      "tomorrow": "明天",
+      "dayAfter": "後天",
+      "upcoming": "即將到來",
+      "unscheduledImportant": "高優先 / 無日期"
+    },
+    "noUpcomingTasks": "沒有即將到來的任務",
     "noProjects": "目前沒有進行中的專案",
     "noTasksThisWeek": "本週沒有任務",
     "noHandoff": "沒有待辦的交接事項",
@@ -40,7 +49,8 @@
       "dueReviews": "待複習",
       "dueReviewsCount": "{{count}} 筆",
       "recentKnowledge": "最近知識",
-      "moreItems": "+ {{count}} 筆"
+      "moreItems": "+ {{count}} 筆",
+      "upcomingTasks": "即將到來的任務"
     }
   },
   "gtd": {
@@ -72,7 +82,8 @@
     "noDecisionsForProject": "此專案尚無決策紀錄",
     "projectNotFound": "找不到專案",
     "branch": "分支",
-    "pullRequest": "Pull Request"
+    "pullRequest": "Pull Request",
+    "commits": "Commits"
   },
   "project": {
     "back": "返回",
@@ -307,6 +318,8 @@
       "title": "新增任務",
       "titleLabel": "任務標題",
       "titlePlaceholder": "任務標題...",
+      "descriptionLabel": "描述（選填）",
+      "descriptionPlaceholder": "新增備註或背景說明...",
       "projectLabel": "專案（選填）",
       "priorityLabel": "優先級",
       "dueDateLabel": "截止日期（選填）",
@@ -337,7 +350,8 @@
     "type": {
       "knowledge": "知識",
       "decision": "決策",
-      "task": "任務"
+      "task": "任務",
+      "project": "專案"
     }
   },
   "learningHistory": {

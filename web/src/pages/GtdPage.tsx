@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Plus, Target, FolderKanban, CheckSquare } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { useGoals } from '../hooks/useGoals'
 import { useProjects } from '../hooks/useProjects'
+import { useAllTasks } from '../hooks/useTasks'
 import { GoalCard } from '../components/gtd/GoalCard'
 import { ProjectList } from '../components/gtd/ProjectList'
 import { TaskList } from '../components/gtd/TaskList'
@@ -19,15 +21,43 @@ type ModalType = 'task' | 'goal' | 'project' | 'editGoal' | 'editProject' | null
 
 export function GtdPage() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
+  const linkedTaskId = searchParams.get('task_id')
   const [activeModal, setActiveModal] = useState<ModalType>(null)
   const [editGoal, setEditGoal] = useState<Goal | null>(null)
   const [editProject, setEditProject] = useState<Project | null>(null)
   const [fabOpen, setFabOpen] = useState(false)
   const goalsQuery = useGoals()
   const projectsQuery = useProjects()
+  const tasksQuery = useAllTasks('all')
 
   const goals = goalsQuery.data ?? []
   const projects = projectsQuery.data ?? []
+
+  // Build per-goal task counts: task -> project -> goal
+  // Using projectsQuery.data / tasksQuery.data (stable TanStack Query refs) as deps
+  const goalTaskCounts = useMemo(() => {
+    const projectData = projectsQuery.data
+    const taskData = tasksQuery.data
+    if (!projectData || !taskData) return {}
+
+    const projectIdToGoalId = new Map<string, string>()
+    for (const project of projectData) {
+      if (project.goal_id) {
+        projectIdToGoalId.set(project.id, project.goal_id)
+      }
+    }
+    const counts: Record<string, { completed: number; total: number }> = {}
+    for (const task of taskData) {
+      if (!task.project_id) continue
+      const goalId = projectIdToGoalId.get(task.project_id)
+      if (!goalId) continue
+      if (!counts[goalId]) counts[goalId] = { completed: 0, total: 0 }
+      counts[goalId].total++
+      if (task.status === 'completed') counts[goalId].completed++
+    }
+    return counts
+  }, [projectsQuery.data, tasksQuery.data])
 
   const openModal = (type: ModalType) => {
     setFabOpen(false)
@@ -67,8 +97,8 @@ export function GtdPage() {
               <GoalCard
                 key={goal.id}
                 goal={goal}
-                completedTasks={0}
-                totalTasks={0}
+                completedTasks={goalTaskCounts[goal.id]?.completed ?? 0}
+                totalTasks={goalTaskCounts[goal.id]?.total ?? 0}
                 onEdit={(g) => { setEditGoal(g); setActiveModal('editGoal') }}
               />
             ))}
@@ -100,7 +130,7 @@ export function GtdPage() {
         <h2 className="text-section mb-4" style={{ color: 'var(--color-text-primary)' }}>
           {t('gtd.tasks')}
         </h2>
-        <TaskList projects={projects} />
+        <TaskList projects={projects} linkedTaskId={linkedTaskId ?? undefined} />
       </section>
 
       {/* FAB backdrop */}

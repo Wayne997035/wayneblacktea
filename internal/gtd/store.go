@@ -961,7 +961,24 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("deleting task %s: nullify work_sessions.current_task_id: %w", id, err)
 	}
 
-	// 3. Delete the task itself, scoped to the configured workspace.
+	// 3a. Remove completion_candidates rows referencing this task.
+	if _, err = tx.Exec(ctx,
+		`DELETE FROM completion_candidates WHERE task_id = $1`, id,
+	); err != nil {
+		return fmt.Errorf("deleting task %s: cleanup completion_candidates: %w", id, err)
+	}
+
+	// 3b. Reset vision_items that were promoted from this task.
+	if _, err = tx.Exec(ctx,
+		`UPDATE vision_items
+		    SET promoted_task_id = NULL,
+		        status           = 'open'
+		  WHERE promoted_task_id = $1`, id,
+	); err != nil {
+		return fmt.Errorf("deleting task %s: reset vision_items.promoted_task_id: %w", id, err)
+	}
+
+	// 5. Delete the task itself, scoped to the configured workspace.
 	if err = s.q.WithTx(tx).DeleteTask(ctx, db.DeleteTaskParams{
 		ID:          id,
 		WorkspaceID: s.workspaceID,

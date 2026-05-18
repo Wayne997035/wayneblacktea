@@ -188,9 +188,11 @@ export function ProposalsPage() {
         {TABS.map((t_) => (
           <button
             key={t_}
+            id={`tab-${t_}`}
             type="button"
             role="tab"
             aria-selected={tab === t_}
+            aria-controls="tabpanel"
             onClick={() => setTab(t_)}
             className="px-4 py-1.5 rounded-md text-body-sm transition-colors"
             style={{
@@ -219,7 +221,7 @@ export function ProposalsPage() {
         </div>
       )}
 
-      <div role="tabpanel" aria-label={t(`proposals.tabs.${tab}`)}>
+      <div id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
         {isLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 4 }, (_, i) => (

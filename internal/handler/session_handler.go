@@ -53,10 +53,11 @@ func (h *SessionHandler) GetHandoff(c echo.Context) error {
 }
 
 type setHandoffRequest struct {
-	Intent         string     `json:"intent"`
-	RepoName       string     `json:"repo_name"`
-	ProjectID      *uuid.UUID `json:"project_id"`
-	ContextSummary string     `json:"context_summary"`
+	Intent         string          `json:"intent"`
+	RepoName       string          `json:"repo_name"`
+	ProjectID      *uuid.UUID      `json:"project_id"`
+	ContextSummary string          `json:"context_summary"`
+	NextActions    json.RawMessage `json:"next_actions"` // optional []session.NextAction; nil/[] → empty slice
 }
 
 // SetHandoff records a new session handoff and async-embeds it when an
@@ -76,11 +77,19 @@ func (h *SessionHandler) SetHandoff(c echo.Context) error {
 		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 
+	var nextActions []session.NextAction
+	if len(req.NextActions) > 0 && string(req.NextActions) != "[]" && string(req.NextActions) != "null" {
+		if err := json.Unmarshal(req.NextActions, &nextActions); err != nil {
+			return c.JSON(http.StatusBadRequest, errResp("next_actions must be a valid JSON array of next-action objects"))
+		}
+	}
+
 	handoff, err := h.store.SetHandoff(c.Request().Context(), session.HandoffParams{
 		Intent:         req.Intent,
 		RepoName:       req.RepoName,
 		ProjectID:      req.ProjectID,
 		ContextSummary: req.ContextSummary,
+		NextActions:    nextActions,
 	})
 	if err != nil {
 		c.Logger().Errorf("SetHandoff: %v", err)

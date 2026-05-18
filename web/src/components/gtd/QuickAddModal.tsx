@@ -17,6 +17,7 @@ export function QuickAddModal({ projects, onClose }: QuickAddModalProps) {
   const createTask = useCreateTask()
 
   const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
   const [projectId, setProjectId] = useState('')
   const [priority, setPriority] = useState<1 | 2 | 3 | 4 | 5>(3)
   const [dueDate, setDueDate] = useState('')
@@ -45,6 +46,7 @@ export function QuickAddModal({ projects, onClose }: QuickAddModalProps) {
 
     const payload: CreateTaskRequest = {
       title: title.trim(),
+      description: description.trim() || null,
       project_id: projectId || null,
       priority,
       due_date: dueDate ? new Date(dueDate).toISOString() : null,
@@ -123,6 +125,33 @@ export function QuickAddModal({ projects, onClose }: QuickAddModalProps) {
               onChange={(e) => setTitle(e.target.value)}
               placeholder={t('modal.addTask.titlePlaceholder')}
               className="w-full rounded-md px-3 py-2 text-body"
+              style={{
+                background: 'var(--color-bg-input)',
+                border: '1px solid var(--color-border)',
+                color: 'var(--color-text-primary)',
+                outline: 'none',
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--color-border-focus)' }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--color-border)' }}
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <label
+              htmlFor="task-description"
+              className="text-label block mb-1"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {t('modal.addTask.descriptionLabel')}
+            </label>
+            <textarea
+              id="task-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t('modal.addTask.descriptionPlaceholder')}
+              rows={3}
+              className="w-full rounded-md px-3 py-2 text-body resize-none"
               style={{
                 background: 'var(--color-bg-input)',
                 border: '1px solid var(--color-border)',

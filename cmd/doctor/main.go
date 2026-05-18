@@ -242,7 +242,11 @@ func writeHandoffEmbedding(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.U
 		summary = string(runes[:embeddingSummaryCap])
 	}
 
-	embedder := localai.NewEmbeddingProvider()
+	embedder, err := localai.NewEmbeddingProvider()
+	if err != nil {
+		slog.Warn("doctor: unknown embedding provider", "err", err)
+		return
+	}
 	vec, err := embedder.Embed(summary)
 	if err != nil || len(vec) == 0 {
 		slog.Warn("doctor: embedding generation failed", "err", err)

@@ -53,6 +53,7 @@ export function useCompleteTask(projectId?: string) {
     mutationFn: (taskId) =>
       apiFetch<Task>(`/api/tasks/${taskId}/complete`, { method: 'PATCH' }),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
       if (projectId) {
         void queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'tasks'] })
       }

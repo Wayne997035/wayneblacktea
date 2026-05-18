@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -205,6 +206,14 @@ func (h *LearningHandler) SubmitReview(c echo.Context) error {
 	}
 	if req.Rating < 1 || req.Rating > 4 {
 		return c.JSON(http.StatusBadRequest, errResp("rating must be between 1 and 4"))
+	}
+	// Guard against NaN/Inf floats that would propagate into the FSRS algorithm
+	// and produce NaN-scheduled items or a runtime panic (Minor-2 defence).
+	if math.IsNaN(req.Difficulty) || math.IsInf(req.Difficulty, 0) || req.Difficulty < 0 || req.Difficulty > 10 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "difficulty must be a finite number in [0, 10]"})
+	}
+	if math.IsNaN(req.Stability) || math.IsInf(req.Stability, 0) || req.Stability < 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "stability must be a non-negative finite number"})
 	}
 
 	stability := req.Stability

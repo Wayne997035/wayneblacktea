@@ -104,30 +104,45 @@ func TestAuthSessionHandler_EmptyAPIKey(t *testing.T) {
 	}
 }
 
+// TestAuthSessionHandler_SecureFlag verifies the Secure cookie flag is driven by
+// APP_ENV=production (or a real TLS connection), NOT by the client-controllable
+// X-Forwarded-Proto header (M-4 mitigation).
 func TestAuthSessionHandler_SecureFlag(t *testing.T) {
 	const apiKey = "test-key"
 
 	cases := []struct {
-		name           string
-		forwardedProto string
-		wantSecure     bool
+		name       string
+		appEnv     string
+		wantSecure bool
 	}{
-		{"no X-Forwarded-Proto (local HTTP) → Secure=false", "", false},
-		{"X-Forwarded-Proto: https → Secure=true", "https", true},
-		{"X-Forwarded-Proto: http → Secure=false", "http", false},
+		{
+			name:       "APP_ENV unset → Secure=false (local dev)",
+			appEnv:     "",
+			wantSecure: false,
+		},
+		{
+			name:       "APP_ENV=production → Secure=true regardless of X-Forwarded-Proto",
+			appEnv:     "production",
+			wantSecure: true,
+		},
+		{
+			name:       "APP_ENV=staging → Secure=false (not production)",
+			appEnv:     "staging",
+			wantSecure: false,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("APP_ENV", tc.appEnv)
+
 			e := echo.New()
 			h := handler.NewAuthSessionHandler(apiKey)
 			e.POST("/api/session", h.IssueSession)
 
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/session", nil)
 			req.Header.Set("X-API-Key", apiKey)
-			if tc.forwardedProto != "" {
-				req.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
-			}
+			// Deliberately do NOT set X-Forwarded-Proto to confirm it has no effect.
 			rec := httptest.NewRecorder()
 			e.ServeHTTP(rec, req)
 
@@ -148,6 +163,41 @@ func TestAuthSessionHandler_SecureFlag(t *testing.T) {
 				t.Errorf("Secure=%v, want %v", found.Secure, tc.wantSecure)
 			}
 		})
+	}
+}
+
+// TestAuthSessionHandler_XForwardedProtoIgnored verifies that a spoofed
+// X-Forwarded-Proto: https header does NOT cause Secure=true when APP_ENV is
+// not "production" (M-4: attacker cannot spoof HTTPS on a plain HTTP channel).
+func TestAuthSessionHandler_XForwardedProtoIgnored(t *testing.T) {
+	const apiKey = "test-key"
+	t.Setenv("APP_ENV", "") // local dev — not production
+
+	e := echo.New()
+	h := handler.NewAuthSessionHandler(apiKey)
+	e.POST("/api/session", h.IssueSession)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/session", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("X-Forwarded-Proto", "https") // attacker-controlled header
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+	var found *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == handler.WbtSessionCookie {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("cookie not set")
+	}
+	if found.Secure {
+		t.Error("Secure=true, want false: X-Forwarded-Proto must not control the Secure flag")
 	}
 }
 

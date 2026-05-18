@@ -82,7 +82,10 @@ func TestKnowledgeStore_SearchByCosine_ScanColumnsMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddItem: %v", err)
 	}
-	prov := localai.NewEmbeddingProvider()
+	prov, err := localai.NewEmbeddingProvider()
+	if err != nil {
+		t.Fatalf("NewEmbeddingProvider: %v", err)
+	}
 	vec, err := prov.Embed("with embed")
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -120,7 +123,10 @@ func TestKnowledgeStore_SearchByCosine_WorkspaceIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddItem A: %v", err)
 	}
-	prov := localai.NewEmbeddingProvider()
+	prov, err := localai.NewEmbeddingProvider()
+	if err != nil {
+		t.Fatalf("NewEmbeddingProvider: %v", err)
+	}
 	vec, _ := prov.Embed("A")
 	if err := storeA.UpdateEmbedding(context.Background(), itemA.ID, localai.SerializeEmbedding(vec)); err != nil {
 		t.Fatalf("UpdateEmbedding A: %v", err)

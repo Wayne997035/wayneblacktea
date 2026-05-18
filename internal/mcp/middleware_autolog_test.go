@@ -19,6 +19,10 @@ import (
 // expected to be called during middleware tests.
 var errMockNotImpl = errors.New("mock: method not expected to be called")
 
+// toolCompleteTask is the MCP tool name used in autolog middleware tests.
+// Declared as a constant to satisfy goconst (repeated ≥3 times in this file).
+const toolCompleteTask = "complete_task"
+
 // logCall captures a single LogActivity invocation for assertion.
 type logCall struct {
 	actor     string
@@ -217,7 +221,7 @@ func TestAutoLogMiddleware(t *testing.T) {
 	cases := []testCase{
 		{
 			name:         "complete_task fires task:completed",
-			tool:         "complete_task",
+			tool:         toolCompleteTask,
 			args:         map[string]any{"task_id": "abc-123", "artifact": "https://github.com/pr/1"},
 			handler:      successHandler,
 			wantLogged:   true,
@@ -269,7 +273,7 @@ func TestAutoLogMiddleware(t *testing.T) {
 		},
 		{
 			name:       "complete_task with error result does not fire",
-			tool:       "complete_task",
+			tool:       toolCompleteTask,
 			args:       map[string]any{"task_id": "bad-id"},
 			handler:    errorResultHandler,
 			wantLogged: false,
@@ -395,7 +399,7 @@ func TestAutoLogMiddleware_ProjectIDEnrichment(t *testing.T) {
 	}{
 		{
 			name:          "complete_task with known task propagates project_id",
-			tool:          "complete_task",
+			tool:          toolCompleteTask,
 			args:          map[string]any{"task_id": taskID.String(), "artifact": "https://example.com/pr/1"},
 			wantProjectID: &projectID,
 			wantLogged:    true,
@@ -419,7 +423,7 @@ func TestAutoLogMiddleware_ProjectIDEnrichment(t *testing.T) {
 		},
 		{
 			name:          "complete_task with unknown task_id falls back to nil project_id",
-			tool:          "complete_task",
+			tool:          toolCompleteTask,
 			args:          map[string]any{"task_id": unknownTaskID.String()},
 			wantProjectID: nil,
 			wantLogged:    true,
@@ -427,7 +431,7 @@ func TestAutoLogMiddleware_ProjectIDEnrichment(t *testing.T) {
 		},
 		{
 			name:          "complete_task with invalid task_id falls back to nil project_id",
-			tool:          "complete_task",
+			tool:          toolCompleteTask,
 			args:          map[string]any{"task_id": "not-a-uuid"},
 			wantProjectID: nil,
 			wantLogged:    true,
@@ -488,7 +492,7 @@ func TestAutoLogEntry_KnownTools(t *testing.T) {
 		wantAction string
 		wantOK     bool
 	}{
-		{"complete_task", map[string]any{"task_id": "t1", "artifact": "link"}, "task:completed", true},
+		{toolCompleteTask, map[string]any{"task_id": "t1", "artifact": "link"}, "task:completed", true},
 		{"add_task", map[string]any{"title": "fix bug"}, "task:added", true},
 		{"log_decision", map[string]any{"title": "go with echo"}, "decision:logged", true},
 		{"confirm_plan", map[string]any{"phases": `[{}]`, "decisions": `[{},{}]`}, "plan:confirmed", true},
@@ -510,6 +514,57 @@ func TestAutoLogEntry_KnownTools(t *testing.T) {
 		if tc.wantOK && action != tc.wantAction {
 			t.Errorf("[%s] action = %q, want %q", tc.tool, action, tc.wantAction)
 		}
+	}
+}
+
+// TestAutologSem_SaturationDropPath asserts the drop path in autoLogMiddleware:
+// when autologSem is at capacity, the select default branch fires immediately
+// (slog.Warn + drop), and the wrapped call returns without blocking.
+// Pattern mirrors TestClassifySem_SelectDefaultDrops_WhenFull in middleware_classify_test.go.
+func TestAutologSem_SaturationDropPath(t *testing.T) {
+	mock := &mockGTDStore{}
+
+	// Build a Server with a saturated autologSem (capacity = 50).
+	const semCap = 50
+	sem := make(chan struct{}, semCap)
+	for i := 0; i < semCap; i++ {
+		sem <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for len(sem) > 0 {
+			<-sem
+		}
+	})
+
+	srv := &Server{gtd: mock, autologSem: sem}
+	mw := srv.autoLogMiddleware()
+	wrapped := mw(successHandler)
+
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Name = toolCompleteTask
+	req.Params.Arguments = map[string]any{"task_id": "abc-123", "artifact": "https://github.com/pr/1"}
+
+	// The call must return quickly — the goroutine launch is dropped, not queued.
+	start := time.Now()
+	res, err := wrapped(context.Background(), req)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("wrapped handler returned unexpected error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("wrapped handler returned error result")
+	}
+	// The response must arrive well under 100 ms — no goroutine was launched.
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("call took %v; want < 100ms when semaphore is full", elapsed)
+	}
+
+	// Give any rogue goroutine a moment to fire (it must NOT, semaphore was full).
+	time.Sleep(50 * time.Millisecond)
+	logs := mock.recordedLogs()
+	if len(logs) != 0 {
+		t.Errorf("expected 0 log entries when semaphore is saturated, got %d", len(logs))
 	}
 }
 

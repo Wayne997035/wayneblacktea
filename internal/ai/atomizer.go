@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -120,5 +121,31 @@ func (a *Atomizer) Atomize(ctx context.Context, text string) (*AtomizeResult, er
 		return nil, fmt.Errorf("atomizer: parse JSON response: %w", err)
 	}
 
+	CapAtomizeResult(&result)
 	return &result, nil
+}
+
+// MaxAtoms is the maximum number of atom candidates accepted from a single LLM
+// response. Exported so callers and tests can reference the same constant.
+const MaxAtoms = 100
+
+// MaxLinks is the maximum number of link candidates accepted from a single LLM
+// response. Exported so callers and tests can reference the same constant.
+const MaxLinks = 200
+
+// CapAtomizeResult truncates Atoms and Links in-place when the LLM returns
+// more than the allowed maximums. It emits a slog.Warn for each truncation so
+// operators can detect hallucination spikes in production logs.
+// Exported so tests can invoke the cap logic directly without a live API call.
+func CapAtomizeResult(r *AtomizeResult) {
+	// Cap LLM output to prevent a hallucinating model from writing unbounded
+	// amounts of data in a single call (Minor-5 defence).
+	if len(r.Atoms) > MaxAtoms {
+		slog.Warn("atomizer: LLM returned excessive atoms, truncating", "count", len(r.Atoms))
+		r.Atoms = r.Atoms[:MaxAtoms]
+	}
+	if len(r.Links) > MaxLinks {
+		slog.Warn("atomizer: LLM returned excessive links, truncating", "count", len(r.Links))
+		r.Links = r.Links[:MaxLinks]
+	}
 }

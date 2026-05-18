@@ -112,6 +112,12 @@ export interface CreateTaskRequest {
   project_id?: string | null;
   priority: 1 | 2 | 3 | 4 | 5;
   due_date?: string | null;
+  description?: string | null;
+  assignee?: string | null;
+  branch_name?: string | null;
+  pr_url?: string | null;
+  context?: string | null;
+  importance?: number | null;
 }
 
 export interface DueReview {

@@ -109,10 +109,11 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError("invalid handoff_id UUID"), nil
 	}
 
-	step := int(numberArg(args, "step"))
-	if step < 0 {
-		return mcp.NewToolResultError("step must be a non-negative integer"), nil
+	stepN := numberArg(args, "step")
+	if stepN < 0 || stepN > maxNextActionItems {
+		return mcp.NewToolResultError(fmt.Sprintf("step out of range: must be 0-%d", maxNextActionItems)), nil
 	}
+	step := int(stepN)
 
 	h, err := s.session.MarkNextActionDone(ctx, handoffID, step)
 	if errors.Is(err, session.ErrNotFound) {
@@ -150,8 +151,14 @@ func parseAndValidateNextActions(raw string) ([]session.NextAction, string) {
 		if len([]rune(a.Command)) > maxNextActionFieldLen {
 			return nil, fmt.Sprintf("next_actions[%d]: command exceeds %d characters", i, maxNextActionFieldLen)
 		}
+		if reason := checkCommandField("command", a.Command); reason != "" {
+			return nil, fmt.Sprintf("next_actions[%d]: %s", i, reason)
+		}
 		if len([]rune(a.Expected)) > maxNextActionFieldLen {
 			return nil, fmt.Sprintf("next_actions[%d]: expected exceeds %d characters", i, maxNextActionFieldLen)
+		}
+		if reason := checkCommandField("expected", a.Expected); reason != "" {
+			return nil, fmt.Sprintf("next_actions[%d]: %s", i, reason)
 		}
 		if a.RefTaskID != nil && *a.RefTaskID != "" {
 			if _, err := uuid.Parse(*a.RefTaskID); err != nil {
