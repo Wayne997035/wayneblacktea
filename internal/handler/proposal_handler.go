@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -20,11 +21,13 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// strictVagueness returns true when WBT_STRICT_VAGUENESS env is set to "true".
-// Centralised so the literal lives in one place (matches MCP tools_gtd.go:25).
-// TODO: track GTD task to switch to strconv.ParseBool (see security review m-2).
+// strictVagueness returns true when WBT_STRICT_VAGUENESS env is set to a
+// truthy value as understood by strconv.ParseBool ("1", "t", "T", "true",
+// "True", "TRUE"). Centralised so the literal lives in one place (matches
+// MCP tools_gtd.go:24).
 func strictVagueness() bool {
-	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
+	b, _ := strconv.ParseBool(os.Getenv("WBT_STRICT_VAGUENESS"))
+	return b
 }
 
 const (

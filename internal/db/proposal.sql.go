@@ -15,7 +15,7 @@ import (
 const createPendingProposal = `-- name: CreatePendingProposal :one
 INSERT INTO pending_proposals (workspace_id, type, payload, proposed_by)
 VALUES ($1, $2, $3, $4)
-RETURNING id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at
+RETURNING id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason
 `
 
 type CreatePendingProposalParams struct {
@@ -42,12 +42,13 @@ func (q *Queries) CreatePendingProposal(ctx context.Context, arg CreatePendingPr
 		&i.ProposedBy,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.Reason,
 	)
 	return i, err
 }
 
 const getPendingProposal = `-- name: GetPendingProposal :one
-SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at FROM pending_proposals
+SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason FROM pending_proposals
 WHERE id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 LIMIT 1
@@ -70,12 +71,13 @@ func (q *Queries) GetPendingProposal(ctx context.Context, arg GetPendingProposal
 		&i.ProposedBy,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.Reason,
 	)
 	return i, err
 }
 
 const listPendingProposals = `-- name: ListPendingProposals :many
-SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at FROM pending_proposals
+SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason FROM pending_proposals
 WHERE status = 'pending'
   AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
@@ -99,6 +101,7 @@ func (q *Queries) ListPendingProposals(ctx context.Context, workspaceID pgtype.U
 			&i.ProposedBy,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.Reason,
 		); err != nil {
 			return nil, err
 		}
@@ -116,7 +119,7 @@ SET status = $1, resolved_at = NOW()
 WHERE id = $2
   AND status = 'pending'
   AND ($3::uuid IS NULL OR workspace_id = $3)
-RETURNING id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at
+RETURNING id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason
 `
 
 type ResolvePendingProposalParams struct {
@@ -137,6 +140,7 @@ func (q *Queries) ResolvePendingProposal(ctx context.Context, arg ResolvePending
 		&i.ProposedBy,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.Reason,
 	)
 	return i, err
 }

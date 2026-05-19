@@ -30,7 +30,10 @@ var githubPRURLRe = validator.GitHubPRURLRe
 const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 
 func validateBranchName(s string) string {
-	if len(s) > 255 {
+	// Count characters by rune, not byte: a 255-character CJK branch name
+	// is well within git's branch-name limits but trips a byte-length check
+	// because each char is 2-3 bytes in UTF-8.
+	if len([]rune(s)) > 255 {
 		return "branch_name must not exceed 255 characters"
 	}
 	for _, r := range s {

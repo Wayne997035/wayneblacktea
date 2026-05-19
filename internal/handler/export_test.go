@@ -7,6 +7,18 @@ func BuildAuthTokenForTest(apiKey, ts string) string {
 	return buildAuthToken(apiKey, ts)
 }
 
+// ValidateBranchNameForTest exposes validateBranchName for unit testing.
+// Empty return string == valid; non-empty == error message.
+func ValidateBranchNameForTest(s string) string {
+	return validateBranchName(s)
+}
+
+// StrictVaguenessForTest exposes the package-level strictVagueness helper for
+// unit testing. The MCP variant has its own copy on *Server.
+func StrictVaguenessForTest() bool {
+	return strictVagueness()
+}
+
 // ValidateAuthTokenForTest exposes validateAuthToken for unit testing.
 func ValidateAuthTokenForTest(apiKey, token string) bool {
 	return validateAuthToken(apiKey, token)

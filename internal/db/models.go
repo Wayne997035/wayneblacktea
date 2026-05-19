@@ -118,6 +118,7 @@ type PendingProposal struct {
 	ProposedBy  pgtype.Text        `json:"proposed_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	ResolvedAt  pgtype.Timestamptz `json:"resolved_at"`
+	Reason      pgtype.Text        `json:"reason"`
 }
 
 type Project struct {
