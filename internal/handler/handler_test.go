@@ -1204,7 +1204,7 @@ func TestWorkspaceHandler_ListRepos(t *testing.T) {
 }
 
 func TestWorkspaceHandler_UpsertRepo(t *testing.T) {
-	repo := &db.Repo{ID: uuid.New(), Name: "wayneblacktea"}
+	repo := &db.Repo{ID: uuid.New(), Name: "Wayne997035/wayneblacktea"}
 	cases := []struct {
 		name     string
 		body     string
@@ -1213,7 +1213,7 @@ func TestWorkspaceHandler_UpsertRepo(t *testing.T) {
 	}{
 		{
 			name:     "upserts repo",
-			body:     `{"name":"wayneblacktea","language":"Go"}`,
+			body:     `{"name":"Wayne997035/wayneblacktea","language":"Go"}`,
 			store:    &fakeWorkspaceStore{repo: repo},
 			wantCode: http.StatusOK,
 		},
@@ -1231,7 +1231,7 @@ func TestWorkspaceHandler_UpsertRepo(t *testing.T) {
 		},
 		{
 			name:     "store error → 500",
-			body:     `{"name":"wayneblacktea"}`,
+			body:     `{"name":"Wayne997035/wayneblacktea"}`,
 			store:    &fakeWorkspaceStore{err: errors.New("write fail")},
 			wantCode: http.StatusInternalServerError,
 		},
@@ -1245,6 +1245,69 @@ func TestWorkspaceHandler_UpsertRepo(t *testing.T) {
 			rec := performRequest(e, http.MethodPost, "/api/workspace/repos", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestUpsertRepo_RejectsBadSlug verifies the write-boundary defence added in
+// M-1 round-2 fix: the canonical POST /api/workspace/repos path must reject
+// any name that does not match validator.RepoSlugRe, so that downstream
+// readers (reconcile handler / MCP / wbt reconcile CLI) never see a hostile
+// slug even though they each also validate read-time.
+func TestUpsertRepo_RejectsBadSlug(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "path traversal segment",
+			body:     `{"name":"../etc/passwd"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: "owner/repo slug pattern",
+		},
+		{
+			name:     "shell metacharacter semicolon",
+			body:     `{"name":"owner;rm -rf"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: "owner/repo slug pattern",
+		},
+		{
+			name:     "embedded newline",
+			body:     `{"name":"owner\nrepo"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: "owner/repo slug pattern",
+		},
+		{
+			name:     "no slash separator",
+			body:     `{"name":"wayneblacktea"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: "owner/repo slug pattern",
+		},
+		{
+			name:     "empty string still 400 (preserves existing behaviour)",
+			body:     `{"name":""}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: "name is required",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			// store should NOT be called when slug is rejected — supply a
+			// store with err set so any accidental call surfaces as 500
+			// (not the expected 400) and fails the test.
+			h := handler.NewWorkspaceHandler(&fakeWorkspaceStore{err: errors.New("store must not be called")})
+			e.POST("/api/workspace/repos", h.UpsertRepo)
+			rec := performRequest(e, http.MethodPost, "/api/workspace/repos", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Errorf("body = %q, want it to contain %q", rec.Body.String(), tc.wantBody)
 			}
 		})
 	}

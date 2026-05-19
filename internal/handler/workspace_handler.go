@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/labstack/echo/v4"
 )
@@ -45,6 +46,9 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 	}
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, errResp("name is required"))
+	}
+	if !validator.RepoSlugRe.MatchString(req.Name) {
+		return c.JSON(http.StatusBadRequest, errResp("name must match owner/repo slug pattern"))
 	}
 
 	repo, err := h.store.UpsertRepo(c.Request().Context(), workspace.UpsertRepoParams{
