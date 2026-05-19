@@ -105,6 +105,9 @@ type Scheduler struct {
 	// candidatePruner deletes resolved completion_candidates older than 30d.
 	// Set via WithCandidatePruner after New(); nil skips the prune job.
 	candidatePruner candidateRetentionStore
+	// mergedPRsPruner deletes merged_prs_observed rows older than 30d.
+	// Set via WithMergedPRsPruner after New(); nil skips the prune job.
+	mergedPRsPruner mergedPRsRetentionStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -117,6 +120,25 @@ type DiscordSender interface {
 type candidateRetentionStore interface {
 	PruneResolved(ctx context.Context, olderThan time.Duration) (int64, error)
 }
+
+// mergedPRsRetentionStore is the narrow prune interface used by the daily
+// merged_prs_observed cleanup job. mergedprs.Store satisfies it.
+// 30-day retention codified by backend-security-design.md §1.3 (observability
+// table TTL).
+type mergedPRsRetentionStore interface {
+	PruneOlderThan(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// mergedPRsObservedRetention is the retention window for merged_prs_observed.
+// 30 days mirrors discipline / guard / completion-candidate retention so the
+// daily 03:00 prune cluster handles every observability table with the same
+// budget. Documented in migrations/000052_merged_prs_observed.up.sql.
+const mergedPRsObservedRetention = 30 * 24 * time.Hour
+
+// mergedPRsObservedPruneTimeout caps the daily DELETE. Same 60 s budget as
+// the discipline / guard prune jobs — well under a second on personal-OS
+// scale, the ceiling leaves room for a momentarily slow Aiven Postgres.
+const mergedPRsObservedPruneTimeout = 60 * time.Second
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -505,6 +527,48 @@ func (s *Scheduler) runDailyCandidatePrune() {
 		return
 	}
 	slog.Info("daily candidate prune: completed", "rows_deleted", n)
+}
+
+// WithMergedPRsPruner wires the merged_prs_observed retention store and
+// registers the daily 03:00 prune job. Must be called before Start().
+// 30-day TTL per backend-security-design.md §1.3 (observability tables).
+// 03:00 keeps it inside the existing 03:00 pending_proposals prune cluster
+// instead of growing the 23:00 cluster — avoids slamming the pgxpool with
+// multiple concurrent DELETEs against large tables.
+func (sc *Scheduler) WithMergedPRsPruner(p mergedPRsRetentionStore) error {
+	sc.mergedPRsPruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 0, 0))),
+		gocron.NewTask(sc.runDailyMergedPRsObservedPrune),
+		gocron.WithName("daily-merged-prs-observed-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily merged_prs_observed prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyMergedPRsObservedPrune scheduled at 03:00 Asia/Taipei")
+	return nil
+}
+
+// runDailyMergedPRsObservedPrune deletes merged_prs_observed rows older than
+// the 30-day retention window. Errors are logged at warn level so the
+// scheduler keeps running other jobs regardless.
+func (s *Scheduler) runDailyMergedPRsObservedPrune() {
+	if s.mergedPRsPruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mergedPRsObservedPruneTimeout)
+	defer cancel()
+
+	n, err := s.mergedPRsPruner.PruneOlderThan(ctx, mergedPRsObservedRetention)
+	if err != nil {
+		slog.Warn("daily merged_prs_observed prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily merged_prs_observed prune: completed",
+		"rows_deleted", n,
+		"retention", mergedPRsObservedRetention.String(),
+	)
 }
 
 func (s *Scheduler) sendDailyReviewReminder() {

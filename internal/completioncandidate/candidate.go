@@ -36,6 +36,15 @@ const (
 	ReasonFinishWorkGap    Reason = "finish_work_gap"
 	ReasonArtifactEvidence Reason = "artifact_evidence"
 	ReasonCompletionSignal Reason = "completion_signal"
+	// ReasonPRMerged indicates a fuzzy-matched PR likely closes this task.
+	// Surfaced by the Phase 2 reconcile detector (GTD-fix 10/12, sprint
+	// feature/0519-gtd-reconcile-phase2) for tasks whose branch_name and
+	// pr_url linkage are both NULL — i.e. legacy backlog where the GTD-fix
+	// 9/12 exact-match path can never apply. Confidence is always 'medium'
+	// (not 'high') so the candidate enters the manual-accept queue; this
+	// matcher MUST NOT auto-apply because Jaccard similarity false-positives
+	// are common enough that silent task closure would damage trust.
+	ReasonPRMerged Reason = "pr_merged_fuzzy"
 )
 
 // Candidate is the domain model for a completion_candidates row.

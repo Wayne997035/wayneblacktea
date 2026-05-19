@@ -497,6 +497,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_completion_candidates_task_reason
 CREATE INDEX IF NOT EXISTS idx_completion_candidates_workspace_id
     ON completion_candidates(workspace_id) WHERE workspace_id IS NOT NULL;
 
+-- Mirrored from migrations/sqlite/000052_merged_prs_observed.up.sql.
+-- Persists observed merged PRs (Phase 2 of reconcile_merged_prs, GTD-fix
+-- 10/12) so the daily fuzzy-match detector can correlate them against
+-- pending tasks with null branch_name/pr_url linkage. 30-day TTL enforced
+-- by the scheduler (backend-security-design.md §1.3). No FK per #9.
+CREATE TABLE IF NOT EXISTS merged_prs_observed (
+    id            TEXT PRIMARY KEY,
+    workspace_id  TEXT,
+    repo          TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    head_ref      TEXT,
+    title         TEXT,
+    body_excerpt  TEXT,
+    merged_at     TEXT NOT NULL,
+    observed_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_merged_prs_observed_url
+    ON merged_prs_observed(url);
+CREATE INDEX IF NOT EXISTS idx_merged_prs_observed_observed_at_desc
+    ON merged_prs_observed(observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_merged_prs_observed_workspace_id
+    ON merged_prs_observed(workspace_id) WHERE workspace_id IS NOT NULL;
+
 -- Mirrored from migrations/sqlite/000047_task_pr_branch.up.sql.
 CREATE INDEX IF NOT EXISTS idx_tasks_branch_name ON tasks(branch_name) WHERE branch_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_pr_url ON tasks(pr_url) WHERE pr_url IS NOT NULL;
