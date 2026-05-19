@@ -586,7 +586,8 @@ func validateUpsertParams(p UpsertParams) error {
 // validateReason returns an error if r is not a known Reason.
 func validateReason(r Reason) error {
 	switch r {
-	case ReasonStaleInProgress, ReasonFinishWorkGap, ReasonArtifactEvidence, ReasonCompletionSignal:
+	case ReasonStaleInProgress, ReasonFinishWorkGap, ReasonArtifactEvidence,
+		ReasonCompletionSignal, ReasonPRMerged:
 		return nil
 	default:
 		return fmt.Errorf("unknown reason %q", r)

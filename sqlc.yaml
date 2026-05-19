@@ -25,6 +25,7 @@ sql:
       - "migrations/000049_knowledge_cross_domain.up.sql"
       - "migrations/000050_tasks_vision_item_id.up.sql"
       - "migrations/000051_pending_proposals_reason.up.sql"
+      - "migrations/000052_merged_prs_observed.up.sql"
     gen:
       go:
         package: "db"

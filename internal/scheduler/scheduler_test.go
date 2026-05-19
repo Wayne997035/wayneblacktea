@@ -456,3 +456,70 @@ func TestWithCandidatePruner_RegistersJob_And_Delegates(t *testing.T) {
 		t.Error("PruneResolved was not called by runDailyCandidatePrune")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WithMergedPRsPruner / runDailyMergedPRsObservedPrune tests
+// ---------------------------------------------------------------------------
+
+type stubMergedPRsPruner struct {
+	called      bool
+	gotDuration time.Duration
+	n           int64
+	err         error
+}
+
+func (s *stubMergedPRsPruner) PruneOlderThan(_ context.Context, d time.Duration) (int64, error) {
+	s.called = true
+	s.gotDuration = d
+	return s.n, s.err
+}
+
+// TestRunDailyMergedPRsObservedPrune_NilPruner_NoPanic verifies the runner
+// short-circuits cleanly when no mergedPRsPruner is wired.
+func TestRunDailyMergedPRsObservedPrune_NilPruner_NoPanic(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	// mergedPRsPruner is nil → must short-circuit without panicking.
+	sc.runDailyMergedPRsObservedPrune()
+}
+
+// TestWithMergedPRsPruner_RegistersJob_And_Delegates verifies that
+// WithMergedPRsPruner registers the daily-merged-prs-observed-prune gocron
+// job and that the runner delegates to PruneOlderThan with the 30-day
+// retention duration.
+func TestWithMergedPRsPruner_RegistersJob_And_Delegates(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	pruner := &stubMergedPRsPruner{n: 5}
+	if err := sc.WithMergedPRsPruner(pruner); err != nil {
+		t.Fatalf("WithMergedPRsPruner() error: %v", err)
+	}
+
+	// Job must be registered with gocron.
+	found := false
+	for _, j := range sc.s.Jobs() {
+		if j.Name() == "daily-merged-prs-observed-prune" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("daily-merged-prs-observed-prune job not found after WithMergedPRsPruner")
+	}
+
+	// Direct invocation must delegate to PruneOlderThan with 30d.
+	sc.runDailyMergedPRsObservedPrune()
+	if !pruner.called {
+		t.Error("PruneOlderThan was not called by runDailyMergedPRsObservedPrune")
+	}
+	if pruner.gotDuration != 30*24*time.Hour {
+		t.Errorf("PruneOlderThan got %v, want 30 days", pruner.gotDuration)
+	}
+}

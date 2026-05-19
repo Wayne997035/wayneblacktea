@@ -11,11 +11,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -120,6 +122,12 @@ func (s *Server) handleReconcileMergedPRs(
 		return mcpmsg.NewToolResultError(msg), nil
 	}
 
+	// Persist every observed PR into merged_prs_observed (Phase 2 audit
+	// trail). Idempotent on the url UNIQUE INDEX. Persistence failure does
+	// NOT fail the tool call — log + continue so the exact-match path still
+	// runs end-to-end.
+	reconcileMCPPersistObserved(ctx, s.mergedPRsStore, prs)
+
 	result, err := gtd.MatchMergedPRs(ctx, s.gtd, prs)
 	if err != nil {
 		return mcpmsg.NewToolResultError(fmt.Sprintf("match: %v", err)), nil
@@ -142,6 +150,8 @@ func (s *Server) handleReconcileMergedPRs(
 			}
 			candidateWrites++
 		}
+		// Phase 2 fuzzy candidates (medium confidence, never auto-applied).
+		candidateWrites += reconcileMCPWriteFuzzyCandidates(ctx, s.gtd, cs, prs)
 	}
 
 	matchOut := make([]reconcileMCPMatch, 0, len(result.Matches))
@@ -242,4 +252,95 @@ func (s *Server) reconcileCandidateStore() completioncandidate.Store {
 		return cs
 	}
 	return nil
+}
+
+// reconcileMCPAuditBodyExcerptMaxLen caps the body excerpt persisted into
+// merged_prs_observed.body_excerpt for the MCP path. Mirrors the HTTP
+// handler's auditBodyExcerptMaxLen so both surfaces enforce the same cap.
+const reconcileMCPAuditBodyExcerptMaxLen = 500
+
+// reconcileMCPCapBodyExcerpt truncates s at reconcileMCPAuditBodyExcerptMaxLen
+// runes (UTF-8 safe).
+func reconcileMCPCapBodyExcerpt(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= reconcileMCPAuditBodyExcerptMaxLen {
+		return s
+	}
+	return string(runes[:reconcileMCPAuditBodyExcerptMaxLen])
+}
+
+// reconcileMCPPersistObserved upserts every PR into the merged_prs_observed
+// table. nil store → no-op. Mirrors the HTTP handler's persistObservedPRs.
+func reconcileMCPPersistObserved(
+	ctx context.Context,
+	store mergedprs.Store,
+	prs []gtd.MergedPR,
+) {
+	if store == nil || len(prs) == 0 {
+		return
+	}
+	for _, pr := range prs {
+		err := store.Upsert(ctx, mergedprs.UpsertParams{
+			Repo:        pr.Repo,
+			URL:         pr.URL,
+			HeadRef:     pr.HeadRef,
+			Title:       pr.Title,
+			BodyExcerpt: reconcileMCPCapBodyExcerpt(pr.Body),
+			MergedAt:    pr.MergedAt,
+		})
+		if err != nil {
+			slog.Warn("reconcile_mcp persistObservedPRs",
+				"err", err, "url", pr.URL, "repo", pr.Repo)
+		}
+	}
+}
+
+// reconcileMCPWriteFuzzyCandidates runs the Phase 2 fuzzy matcher and writes
+// each hit as a 'medium'-confidence completion_candidate (reason=
+// pr_merged_fuzzy). Returns the number of candidates persisted. Mirrors the
+// HTTP handler's writeFuzzyCandidates.
+func reconcileMCPWriteFuzzyCandidates(
+	ctx context.Context,
+	gtdStore gtd.StoreIface,
+	candStore completioncandidate.Store,
+	prs []gtd.MergedPR,
+) int {
+	if candStore == nil || len(prs) == 0 {
+		return 0
+	}
+	tasks, err := gtdStore.Tasks(ctx, nil)
+	if err != nil {
+		slog.Warn("reconcile_mcp writeFuzzyCandidates: load tasks failed", "err", err)
+		return 0
+	}
+	matches := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	if len(matches) == 0 {
+		return 0
+	}
+	wrote := 0
+	for _, m := range matches {
+		slog.Info("reconcile_mcp fuzzy match",
+			"task_id", m.TaskID,
+			"pr_url", m.PRURL,
+			"score", m.Score,
+			"reason", m.Reason,
+		)
+		_, upErr := candStore.UpsertCandidate(ctx, completioncandidate.UpsertParams{
+			TaskID:            m.TaskID,
+			Reason:            completioncandidate.ReasonPRMerged,
+			Confidence:        completioncandidate.ConfidenceMedium,
+			EvidenceRefs:      []string{m.Reason, m.PRURL},
+			SuggestedArtifact: m.PRURL,
+		})
+		if upErr != nil {
+			slog.Warn("reconcile_mcp writeFuzzyCandidates: upsert failed",
+				"err", upErr, "task_id", m.TaskID, "pr_url", m.PRURL)
+			continue
+		}
+		wrote++
+	}
+	return wrote
 }

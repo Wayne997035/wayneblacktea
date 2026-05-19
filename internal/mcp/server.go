@@ -16,6 +16,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
@@ -122,6 +123,12 @@ type Server struct {
 	// completionCandidates is the optional completion-candidate store used by
 	// dashboard automation MCP tools. nil = feature disabled.
 	completionCandidates completionCandidateStore
+
+	// mergedPRsStore persists observed merged PRs for the Phase 2 fuzzy
+	// matcher (sprint feature/0519-gtd-reconcile-phase2, GTD-fix 10/12).
+	// nil = persistence + fuzzy candidate emission disabled; the exact-match
+	// path continues to work.
+	mergedPRsStore mergedprs.Store
 
 	// deleteTokens holds one-time confirmation tokens issued by the first
 	// invocation of delete_task. Keys are uuid.UUID strings; values are
@@ -251,6 +258,15 @@ func (s *Server) WithDecisionDrafter(d *ai.DecisionDrafter) *Server {
 // available. Passing nil disables the feature (store not configured or operator opted out).
 func (s *Server) WithCompletionCandidates(store completionCandidateStore) *Server {
 	s.completionCandidates = store
+	return s
+}
+
+// WithMergedPRsStore wires the merged_prs_observed store into the server.
+// Used by the reconcile_merged_prs MCP tool to (a) persist every observed PR
+// for audit + replay and (b) enable the Phase 2 fuzzy matcher. nil disables
+// both behaviours; the exact-match path remains available.
+func (s *Server) WithMergedPRsStore(store mergedprs.Store) *Server {
+	s.mergedPRsStore = store
 	return s
 }
 

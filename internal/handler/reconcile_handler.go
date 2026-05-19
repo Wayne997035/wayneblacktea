@@ -31,14 +31,17 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/labstack/echo/v4"
@@ -62,14 +65,30 @@ const reconcileMaxStringField = 4 * 1024
 type ReconcileHandler struct {
 	gtd       gtd.StoreIface
 	candidate completioncandidate.Store
+	mergedPRs mergedprs.Store
 }
 
 // NewReconcileHandler wires the GTD store + completion-candidate store into
 // the handler. candidate MAY be nil — in that case auto-close still happens
 // and the candidate-write step is a no-op (the GTD store carries the audit
 // via activity_log, so the candidate row is supplementary).
+//
+// The merged_prs_observed persistence (Phase 2 fuzzy-match audit trail) is
+// wired separately via WithMergedPRsStore so existing tests that only need
+// the exact-match path don't have to construct that store. Both stores can
+// be nil — exact-match continues to work; only fuzzy candidates require the
+// candidate store, and the audit trail requires the merged_prs store.
 func NewReconcileHandler(g gtd.StoreIface, c completioncandidate.Store) *ReconcileHandler {
 	return &ReconcileHandler{gtd: g, candidate: c}
+}
+
+// WithMergedPRsStore wires the merged_prs_observed store into the handler so
+// every incoming PR is persisted (idempotent on URL conflict) and so the
+// Phase 2 fuzzy candidate detection can surface null-linkage matches.
+// Returns the receiver to enable fluent wiring at construction time.
+func (h *ReconcileHandler) WithMergedPRsStore(m mergedprs.Store) *ReconcileHandler {
+	h.mergedPRs = m
+	return h
 }
 
 // reconcileRequest is the JSON body.
@@ -145,6 +164,13 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errResp(msg))
 	}
 
+	// Persist every observed PR into merged_prs_observed so the Phase 2
+	// fuzzy detector + later replays can correlate them against null-linkage
+	// tasks. Upsert is idempotent on the `url` UNIQUE INDEX (ON CONFLICT
+	// refreshes observed_at). Persistence failure MUST NOT fail the request:
+	// the exact-match path (and any in-batch fuzzy path below) still runs.
+	persistObservedPRs(c.Request().Context(), h.mergedPRs, prs)
+
 	result, err := gtd.MatchMergedPRs(c.Request().Context(), h.gtd, prs)
 	if err != nil {
 		c.Logger().Errorf("Reconcile match: %v", err)
@@ -174,6 +200,11 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 			candidateWrites++
 		}
 	}
+
+	// Phase 2 (GTD-fix 10/12): fuzzy-match the input PRs against pending
+	// tasks with NULL linkage. Each fuzzy hit becomes a 'medium'-confidence
+	// completion_candidate — never auto-applied.
+	candidateWrites += h.writeFuzzyCandidates(c.Request().Context(), prs)
 
 	// Build response.
 	matchOut := make([]matchSummary, 0, len(result.Matches))
@@ -291,4 +322,96 @@ func hasReconcileControlChars(s string) bool {
 		}
 	}
 	return false
+}
+
+// persistObservedPRs upserts every PR into the merged_prs_observed table.
+// nil store → no-op (handler is wired without the Phase 2 store). Each Upsert
+// failure is logged at warn level; the loop continues so a single transient
+// error doesn't block the remaining inserts. The body excerpt was already
+// sanitised + length-capped by validateAndConvertMergedPRs/sanitiseBodyExcerpt
+// upstream, but we re-cap defensively to keep the audit row size predictable.
+func persistObservedPRs(ctx context.Context, store mergedprs.Store, prs []gtd.MergedPR) {
+	if store == nil || len(prs) == 0 {
+		return
+	}
+	for _, pr := range prs {
+		err := store.Upsert(ctx, mergedprs.UpsertParams{
+			Repo:        pr.Repo,
+			URL:         pr.URL,
+			HeadRef:     pr.HeadRef,
+			Title:       pr.Title,
+			BodyExcerpt: capBodyExcerptForAudit(pr.Body),
+			MergedAt:    pr.MergedAt,
+		})
+		if err != nil {
+			slog.Warn("reconcile persistObservedPRs",
+				"err", err, "url", pr.URL, "repo", pr.Repo)
+		}
+	}
+}
+
+// auditBodyExcerptMaxLen caps the body excerpt persisted into
+// merged_prs_observed.body_excerpt. 500 chars matches the matcher's
+// sanitiseBodyExcerpt cap in internal/gtd/reconcile.go — keeping the two
+// in sync so the dashboard sees a consistent length budget.
+const auditBodyExcerptMaxLen = 500
+
+// capBodyExcerptForAudit truncates s at auditBodyExcerptMaxLen runes
+// (UTF-8 safe). Used by the merged_prs_observed audit-write path.
+func capBodyExcerptForAudit(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= auditBodyExcerptMaxLen {
+		return s
+	}
+	return string(runes[:auditBodyExcerptMaxLen])
+}
+
+// writeFuzzyCandidates runs the Phase 2 fuzzy matcher against all tasks and
+// upserts any hits into completion_candidates with confidence='medium' and
+// reason='pr_merged_fuzzy'. Returns the number of candidates successfully
+// written. Skips silently when either candidate store or input PR list is
+// empty. Every match is also slog.Info-logged with score so the threshold
+// (matchThreshold=0.6) can be calibrated from real-world data later.
+func (h *ReconcileHandler) writeFuzzyCandidates(
+	ctx context.Context,
+	prs []gtd.MergedPR,
+) int {
+	if h.candidate == nil || len(prs) == 0 {
+		return 0
+	}
+	tasks, err := h.gtd.Tasks(ctx, nil)
+	if err != nil {
+		slog.Warn("reconcile writeFuzzyCandidates: load tasks failed", "err", err)
+		return 0
+	}
+	matches := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	if len(matches) == 0 {
+		return 0
+	}
+	wrote := 0
+	for _, m := range matches {
+		slog.Info("reconcile fuzzy match",
+			"task_id", m.TaskID,
+			"pr_url", m.PRURL,
+			"score", m.Score,
+			"reason", m.Reason,
+		)
+		_, upErr := h.candidate.UpsertCandidate(ctx, completioncandidate.UpsertParams{
+			TaskID:            m.TaskID,
+			Reason:            completioncandidate.ReasonPRMerged,
+			Confidence:        completioncandidate.ConfidenceMedium,
+			EvidenceRefs:      []string{m.Reason, m.PRURL},
+			SuggestedArtifact: m.PRURL,
+		})
+		if upErr != nil {
+			slog.Warn("reconcile writeFuzzyCandidates: upsert failed",
+				"err", upErr, "task_id", m.TaskID, "pr_url", m.PRURL)
+			continue
+		}
+		wrote++
+	}
+	return wrote
 }

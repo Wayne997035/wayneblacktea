@@ -20,6 +20,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
+	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -256,7 +257,8 @@ func run() error {
 	// Closes the "PR merged but task still pending" gap: Claude posts a list of
 	// recently-merged PRs and the server auto-applies the matching tasks.
 	// candidate store may be nil under unusual configs; the handler tolerates nil.
-	reconcileH := handler.NewReconcileHandler(stores.GTD(), buildCandidateStore(stores))
+	reconcileH := handler.NewReconcileHandler(stores.GTD(), buildCandidateStore(stores)).
+		WithMergedPRsStore(buildMergedPRsStore(stores))
 	// Rate limit shared with other mutation endpoints (30 req/min) — reconcile
 	// is bursty (post-merge sweep) but capped by 200-entry payload limit anyway.
 	api.POST("/tasks/reconcile-merged-prs", reconcileH.Reconcile, mutationRL)
@@ -355,6 +357,9 @@ func run() error {
 	if cs := buildCandidateStore(stores); cs != nil {
 		mcpServer.WithCompletionCandidates(cs)
 	}
+	if mps := buildMergedPRsStore(stores); mps != nil {
+		mcpServer.WithMergedPRsStore(mps)
+	}
 	knowledgeH.WithAtomizer(mcpServer.LaunchAtomize)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
 	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
@@ -381,6 +386,11 @@ func run() error {
 	if cs := buildCandidateStore(stores); cs != nil {
 		if err := sched.WithCandidatePruner(cs); err != nil {
 			return fmt.Errorf("wiring candidate pruner: %w", err)
+		}
+	}
+	if mps := buildMergedPRsStore(stores); mps != nil {
+		if err := sched.WithMergedPRsPruner(mps); err != nil {
+			return fmt.Errorf("wiring merged_prs_observed pruner: %w", err)
 		}
 	}
 	sched.Start()
@@ -606,6 +616,20 @@ func buildCandidateStore(stores storage.ServerStores) completioncandidate.Store 
 	}
 	if pool := stores.PgxPool(); pool != nil {
 		return completioncandidate.NewPgStore(pool, stores.WorkspaceID())
+	}
+	return nil
+}
+
+// buildMergedPRsStore returns a merged_prs_observed store for the active
+// backend. Used by the reconcile handler + MCP tool to persist every PR
+// (audit trail) and to power the Phase 2 fuzzy matcher
+// (sprint feature/0519-gtd-reconcile-phase2, GTD-fix 10/12).
+func buildMergedPRsStore(stores storage.ServerStores) mergedprs.Store {
+	if sqliteDB := stores.SqliteDB(); sqliteDB != nil {
+		return mergedprs.NewSQLiteStore(sqliteDB.SqlConn(), sqliteDB.WorkspaceID())
+	}
+	if pool := stores.PgxPool(); pool != nil {
+		return mergedprs.NewPgStore(pool, stores.WorkspaceID())
 	}
 	return nil
 }

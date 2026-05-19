@@ -13,9 +13,14 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
+	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/labstack/echo/v4"
 )
+
+// statusPending is the literal task status used across multiple test-case
+// assertions. Promoted to a constant to keep goconst happy.
+const statusPending = "pending"
 
 // openMemForReconcile spins up an in-memory SQLite GTDStore + matching
 // completioncandidate.SQLiteStore on the same connection.
@@ -27,6 +32,22 @@ func openMemForReconcile(t *testing.T) (*sqlite.GTDStore, completioncandidate.St
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return sqlite.NewGTDStore(d), completioncandidate.NewSQLiteStore(d.SqlConn(), "")
+}
+
+// openMemForReconcileWithMergedPRs returns the existing GTD+candidate stores
+// alongside a mergedprs.Store + raw *sql.DB so tests can assert directly on
+// the merged_prs_observed table.
+func openMemForReconcileWithMergedPRs(t *testing.T) (*sqlite.GTDStore, completioncandidate.Store, mergedprs.Store, *sqlite.DB) {
+	t.Helper()
+	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return sqlite.NewGTDStore(d),
+		completioncandidate.NewSQLiteStore(d.SqlConn(), ""),
+		mergedprs.NewSQLiteStore(d.SqlConn(), ""),
+		d
 }
 
 // runReconcileRequest is a thin helper that posts the JSON body and returns
@@ -209,7 +230,7 @@ func TestReconcileMergedPRs_NoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID: %v", err)
 	}
-	if got.Status != "pending" {
+	if got.Status != statusPending {
 		t.Errorf("task status = %q, want pending", got.Status)
 	}
 }
@@ -275,7 +296,7 @@ func TestReconcileMergedPRs_MultipleSameBranch_PicksMostRecent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID older: %v", err)
 	}
-	if gotOld.Status != "pending" {
+	if gotOld.Status != statusPending {
 		t.Errorf("older.status = %q, want pending (ambiguous → unchanged)", gotOld.Status)
 	}
 }
@@ -414,4 +435,174 @@ func mustJSON(t *testing.T, v any) []byte {
 // to differ between two writes. 50ms is comfortably above SQLite's resolution.
 func sleepShort() {
 	time.Sleep(50 * time.Millisecond)
+}
+
+// TestReconcileMergedPRs_PersistsMergedPRsObserved verifies the Phase 2
+// audit-trail write (sprint feature/0519-gtd-reconcile-phase2): every
+// incoming PR ends up in merged_prs_observed exactly once, idempotent on a
+// second POST with the same payload.
+func TestReconcileMergedPRs_PersistsMergedPRsObserved(t *testing.T) {
+	store, candStore, mpsStore, d := openMemForReconcileWithMergedPRs(t)
+	h := handler.NewReconcileHandler(store, candStore).WithMergedPRsStore(mpsStore)
+
+	prURL := "https://github.com/owner/repo/pull/501"
+	body := mustJSON(t, map[string]any{
+		"merged_prs": []map[string]any{{
+			"url": prURL, "head_ref": "feature/persistence",
+			"merged_at": "2026-05-19T12:00:00Z",
+			"title":     "feat: persistence test",
+			"body":      "the body",
+			"repo":      "owner/repo",
+		}},
+	})
+
+	// 1st POST → row inserted
+	rec1 := runReconcileRequest(t, h, body)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first POST status = %d (body: %s)", rec1.Code, rec1.Body.String())
+	}
+
+	row1 := getMergedPRsObservedRow(t, d, prURL)
+	if row1.repo == "" {
+		t.Fatalf("row not persisted on first POST")
+	}
+	if row1.title == "" || !strings.Contains(row1.title, "persistence") {
+		t.Errorf("title = %q, want substring 'persistence'", row1.title)
+	}
+	firstObservedAt := row1.observedAt
+
+	// 2nd POST → idempotent: same row, observed_at refreshed.
+	sleepShort()
+	rec2 := runReconcileRequest(t, h, body)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second POST status = %d", rec2.Code)
+	}
+
+	count := countMergedPRsObservedByURL(t, d, prURL)
+	if count != 1 {
+		t.Errorf("rows for url = %d, want 1 (idempotent on url UNIQUE)", count)
+	}
+	row2 := getMergedPRsObservedRow(t, d, prURL)
+	if !row2.observedAt.After(firstObservedAt) {
+		t.Errorf("observed_at not refreshed: first=%v second=%v", firstObservedAt, row2.observedAt)
+	}
+}
+
+// TestReconcileMergedPRs_FuzzyCandidateForNullLinkageTask verifies the
+// Phase 2 detection rule: a pending task with NULL branch_name AND NULL
+// pr_url whose title overlaps the PR title surfaces as a 'medium'-
+// confidence completion_candidate (reason='pr_merged_fuzzy'). Crucially the
+// task must remain pending — fuzzy candidates NEVER auto-apply.
+func TestReconcileMergedPRs_FuzzyCandidateForNullLinkageTask(t *testing.T) {
+	store, candStore, mpsStore, _ := openMemForReconcileWithMergedPRs(t)
+	h := handler.NewReconcileHandler(store, candStore).WithMergedPRsStore(mpsStore)
+	ctx := context.Background()
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:    "fix useCompleteTask onError invalidation regression",
+		Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	// Branch + pr_url intentionally NOT set — fuzzy eligibility.
+
+	body := mustJSON(t, map[string]any{
+		"merged_prs": []map[string]any{{
+			"url":      "https://github.com/owner/repo/pull/777",
+			"head_ref": "feature/unlinked",
+			"title":    "fix: useCompleteTask onError invalidation",
+			"body":     "unrelated body",
+			"repo":     "owner/repo",
+		}},
+	})
+	rec := runReconcileRequest(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Applied         int `json:"applied"`
+		NoMatch         int `json:"no_match"`
+		CandidateWrites int `json:"candidate_writes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Applied != 0 {
+		t.Errorf("applied = %d, want 0 (no exact-match path; fuzzy never auto-applies)", resp.Applied)
+	}
+	if resp.CandidateWrites != 1 {
+		t.Errorf("candidate_writes = %d, want 1 (one fuzzy candidate written)", resp.CandidateWrites)
+	}
+
+	// Task must remain pending.
+	got, err := store.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != statusPending {
+		t.Errorf("status = %q, want pending (fuzzy candidate is manual-accept only)", got.Status)
+	}
+
+	// The candidate row must be queryable via ListPendingCandidates.
+	pendings, err := candStore.ListPendingCandidates(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListPendingCandidates: %v", err)
+	}
+	var found bool
+	for _, c := range pendings {
+		if c.TaskID == task.ID && c.Reason == completioncandidate.ReasonPRMerged {
+			if c.Confidence != completioncandidate.ConfidenceMedium {
+				t.Errorf("confidence = %q, want medium", c.Confidence)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no pending candidate with reason=pr_merged_fuzzy for task %s", task.ID)
+	}
+}
+
+// observedRow is a tiny test helper for asserting on merged_prs_observed.
+type observedRow struct {
+	repo       string
+	url        string
+	title      string
+	observedAt time.Time
+}
+
+// getMergedPRsObservedRow reads the single merged_prs_observed row matching
+// url; fails the test if zero or multiple rows match.
+func getMergedPRsObservedRow(t *testing.T, d *sqlite.DB, url string) observedRow {
+	t.Helper()
+	row := d.SqlConn().QueryRow(
+		`SELECT repo, url, COALESCE(title,''), observed_at
+		FROM merged_prs_observed WHERE url = ?1`, url)
+	var (
+		r           observedRow
+		observedStr string
+	)
+	if err := row.Scan(&r.repo, &r.url, &r.title, &observedStr); err != nil {
+		t.Fatalf("scan merged_prs_observed url=%s: %v", url, err)
+	}
+	t2, err := time.Parse(time.RFC3339Nano, observedStr)
+	if err != nil {
+		t.Fatalf("parse observed_at %q: %v", observedStr, err)
+	}
+	r.observedAt = t2
+	return r
+}
+
+// countMergedPRsObservedByURL returns the number of rows matching url.
+func countMergedPRsObservedByURL(t *testing.T, d *sqlite.DB, url string) int {
+	t.Helper()
+	var n int
+	if err := d.SqlConn().QueryRow(
+		`SELECT COUNT(*) FROM merged_prs_observed WHERE url = ?1`, url,
+	).Scan(&n); err != nil {
+		t.Fatalf("count merged_prs_observed: %v", err)
+	}
+	return n
 }
