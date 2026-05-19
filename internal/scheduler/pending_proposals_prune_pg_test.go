@@ -1,9 +1,11 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -358,4 +360,97 @@ func TestScheduler_DailyGuardPrune_EmptyTableNoPanic(t *testing.T) {
 	pool := openSchedulerTestPgPool(t)
 	sc := &Scheduler{disciplinePool: pool}
 	sc.runDailyGuardPrune()
+}
+
+// TestRunDailyPendingProposalsPrune_PartialSuccess_LogsWarn exercises the
+// partial-success telemetry path (GTD 0ba91291): when the mark step
+// successfully flags ≥1 stale TypeTask row, but the shared ctx deadline
+// trips DURING the DELETE step, the function MUST emit a distinct
+// warn-level log naming the situation ("mark succeeded but delete timed
+// out") so operators have actionable signal — distinct from a generic
+// "DELETE failed" warn.
+//
+// Strategy (chosen): shrink pendingProposalsPruneTimeout to a small window
+// + install a between-steps hook that sleeps past the remaining deadline.
+// This is deterministic on real Postgres (mark completes in <50 ms on
+// near-empty test table; hook sleeps long enough that DELETE always sees
+// DeadlineExceeded). The mock-pool alt was not adopted because the
+// scheduler holds *pgxpool.Pool directly, and refactoring to an interface
+// solely for this test would be a much larger blast radius.
+func TestRunDailyPendingProposalsPrune_PartialSuccess_LogsWarn(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	ctx := context.Background()
+
+	// Seed 1 stale (>30d) pending TypeTask so the mark step has a row to
+	// affect → markedRows > 0 → partial-success branch is reachable.
+	staleID := uuid.New()
+	staleCreated := time.Now().UTC().AddDate(0, 0, -31)
+	if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals
+		(id, type, payload, status, created_at, resolved_at)
+		VALUES ($1, 'task', '{}'::jsonb, 'pending', $2, NULL)`,
+		staleID, staleCreated); err != nil {
+		t.Fatalf("seed stale TypeTask: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", staleID)
+	})
+
+	// Override the timeout so mark fits comfortably (200 ms is >>> mark
+	// latency on a near-empty pg16 testcontainer) but the between-steps
+	// sleep (300 ms) blows past the remaining deadline before DELETE runs.
+	prevTimeout := pendingProposalsPruneTimeout
+	pendingProposalsPruneTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { pendingProposalsPruneTimeout = prevTimeout })
+
+	prevHook := pendingProposalsPruneBetweenSteps
+	pendingProposalsPruneBetweenSteps = func(c context.Context) {
+		// Sleep past the remaining deadline. We use the parent test
+		// context's done channel as a safety bound so a future timeout
+		// tweak can't hang the test forever.
+		select {
+		case <-time.After(300 * time.Millisecond):
+		case <-c.Done():
+		}
+	}
+	t.Cleanup(func() { pendingProposalsPruneBetweenSteps = prevHook })
+
+	// Capture slog at warn level so we can assert the partial-success line.
+	prevLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	buf := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	logOut := buf.String()
+	if !strings.Contains(logOut, "mark succeeded but delete timed out") {
+		t.Errorf("expected partial-success warn, got log:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "marked_rows=") {
+		t.Errorf("expected marked_rows attribute in warn, got log:\n%s", logOut)
+	}
+	// Sanity-check we did NOT fall through to the generic "DELETE failed"
+	// branch — that would indicate the partial-success condition wasn't
+	// recognised (mark failed, markedRows=0, or err wasn't DeadlineExceeded).
+	if strings.Contains(logOut, "DELETE failed") {
+		t.Errorf("partial-success path should NOT emit generic DELETE-failed warn, got log:\n%s", logOut)
+	}
+
+	// And: the stale row MUST actually be marked rejected (proves the mark
+	// step really did succeed before the ctx tripped — otherwise the warn
+	// would be misleading).
+	var status string
+	var reason *string
+	if err := pool.QueryRow(ctx,
+		"SELECT status, reason FROM pending_proposals WHERE id = $1",
+		staleID).Scan(&status, &reason); err != nil {
+		t.Fatalf("query staleID: %v", err)
+	}
+	if status != "rejected" {
+		t.Errorf("stale row: status = %q, want %q (mark step must have succeeded)", status, "rejected")
+	}
+	if reason == nil || *reason != "ttl-expired-30d" {
+		t.Errorf("stale row: reason = %v, want %q", reason, "ttl-expired-30d")
+	}
 }

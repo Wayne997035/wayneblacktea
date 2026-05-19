@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -41,7 +42,21 @@ const (
 // query touches resolved_at + created_at (both indexed) and finishes well
 // under a second on personal-OS scale; 60 s leaves room for a momentarily
 // slow Aiven Postgres without wedging the scheduler goroutine.
-const pendingProposalsPruneTimeout = 60 * time.Second
+//
+// `var` (not `const`) so the partial-success telemetry test can shrink the
+// timeout to deterministically force a context.DeadlineExceeded on the
+// DELETE step after the mark step has already succeeded. Production
+// callers MUST NOT mutate this — it is effectively a constant outside of
+// internal/scheduler tests.
+var pendingProposalsPruneTimeout = 60 * time.Second
+
+// pendingProposalsPruneBetweenSteps is a test-only hook invoked between the
+// mark step and the DELETE step of runDailyPendingProposalsPrune. Production
+// code leaves this nil. The partial-success telemetry test sets it to a
+// sleep long enough to exhaust the (test-shortened) context deadline,
+// guaranteeing the DELETE step observes context.DeadlineExceeded after
+// mark has already affected rows.
+var pendingProposalsPruneBetweenSteps func(ctx context.Context)
 
 // pendingProposalsResolvedRetention / pendingProposalsPendingDecisionRetention
 // / pendingProposalsPendingTaskRetention document the per-status TTL on
@@ -761,14 +776,23 @@ func (s *Scheduler) runDailyPendingProposalsPrune() {
 SET status = 'rejected', resolved_at = NOW(), reason = 'ttl-expired-30d'
 WHERE status = 'pending' AND type = 'task'
   AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingTaskRetention + `'`
-	markTag, err := s.disciplinePool.Exec(ctx, markStaleTaskProposals)
-	if err != nil {
-		slog.Warn("daily pending_proposals prune: mark TTL-stale task proposals failed", "err", err)
+	markTag, markErr := s.disciplinePool.Exec(ctx, markStaleTaskProposals)
+	markedRows := int64(0)
+	if markErr != nil {
+		slog.Warn("daily pending_proposals prune: mark TTL-stale task proposals failed", "err", markErr)
 	} else {
+		markedRows = markTag.RowsAffected()
 		slog.Info("daily pending_proposals prune: marked TTL-stale task proposals",
-			"rows_updated", markTag.RowsAffected(),
+			"rows_updated", markedRows,
 			"pending_task_retention", pendingProposalsPendingTaskRetention,
 		)
+	}
+
+	// Test-only hook between mark and delete (nil in prod). Used by the
+	// partial-success telemetry test to deterministically blow the ctx
+	// deadline after mark has already affected rows.
+	if pendingProposalsPruneBetweenSteps != nil {
+		pendingProposalsPruneBetweenSteps(ctx)
 	}
 
 	// Both interval literals are code constants — parameter binding is
@@ -781,6 +805,23 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
    OR (status = 'pending' AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingDecisionRetention + `' AND type = 'decision')`
 	tag, err := s.disciplinePool.Exec(ctx, q)
 	if err != nil {
+		// Partial-success telemetry: if mark succeeded with rows-affected
+		// but the ctx deadline tripped DURING the DELETE, the table is in
+		// a consistent intermediate state (rows marked rejected but not
+		// yet purged). Functionally fine — the 90 d resolved retention
+		// will pick them up on the next run — but operators need a
+		// distinct warn-level signal so they can monitor for chronic
+		// deadline pressure (which would mean the timeout needs tuning
+		// or the table needs more aggressive indexing). GTD 0ba91291.
+		if errors.Is(err, context.DeadlineExceeded) && markErr == nil && markedRows > 0 {
+			slog.Warn("daily pending_proposals prune: mark succeeded but delete timed out — will retry next run",
+				"marked_rows", markedRows,
+				"task_retention", pendingProposalsPendingTaskRetention,
+				"decision_retention", pendingProposalsPendingDecisionRetention,
+				"resolved_retention", pendingProposalsResolvedRetention,
+			)
+			return
+		}
 		slog.Warn("daily pending_proposals prune: DELETE failed", "err", err)
 		return
 	}
