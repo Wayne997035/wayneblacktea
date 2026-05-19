@@ -68,6 +68,9 @@ func (s *SQLiteStore) Upsert(ctx context.Context, p UpsertParams) error {
 	}
 
 	id := uuid.New().String()
+	// Requires SQLite >= 3.24 (released 2018-06) for ON CONFLICT DO UPDATE
+	// UPSERT syntax. modernc.org/sqlite bundles SQLite 3.45+ so production
+	// is guaranteed; tests use the same driver.
 	const q = `INSERT INTO merged_prs_observed
 		(id, workspace_id, repo, url, head_ref, title, body_excerpt, merged_at, observed_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)

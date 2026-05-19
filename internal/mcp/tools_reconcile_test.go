@@ -90,6 +90,7 @@ func TestMCPReconcileMergedPRs_ExactMatch_AutoApplies(t *testing.T) {
 			"url":       "https://github.com/owner/repo/pull/77",
 			"head_ref":  branch,
 			"merged_at": "2026-05-18T12:00:00Z",
+			"repo":      "owner/repo",
 		}},
 	})
 	if r.IsError {
@@ -157,6 +158,76 @@ func TestMCPReconcileMergedPRs_InvalidPayloads(t *testing.T) {
 	}
 }
 
+// TestMCPReconcileMergedPRs_RepoValidation — MCP-side mirror of the HTTP
+// handler's repo required + slug regex check. The slug downstream flows into
+// `gh -R <slug>` so any whitespace / shell meta / path-traversal MUST be
+// rejected at this boundary.
+func TestMCPReconcileMergedPRs_RepoValidation(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	cases := []struct {
+		name      string
+		repo      any // nil = field omitted entirely; "" = present but empty
+		wantInErr string
+	}{
+		{
+			name:      "missing repo (field omitted)",
+			repo:      nil,
+			wantInErr: "repo is required",
+		},
+		{
+			name:      "empty repo string",
+			repo:      "",
+			wantInErr: "repo is required",
+		},
+		{
+			name:      "path traversal",
+			repo:      "../etc/passwd",
+			wantInErr: "owner/repo slug pattern",
+		},
+		{
+			name:      "shell injection semi+rm",
+			repo:      "owner/repo;rm -rf",
+			wantInErr: "owner/repo slug pattern",
+		},
+		{
+			name:      "whitespace in segment",
+			repo:      "owner/repo with space",
+			wantInErr: "owner/repo slug pattern",
+		},
+		{
+			name:      "trailing newline",
+			repo:      "owner/repo\n",
+			wantInErr: "owner/repo slug pattern",
+		},
+		{
+			name:      "missing slash",
+			repo:      "owner",
+			wantInErr: "owner/repo slug pattern",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := map[string]any{
+				"url":      "https://github.com/o/r/pull/1",
+				"head_ref": "feature/x",
+			}
+			if tc.repo != nil {
+				entry["repo"] = tc.repo
+			}
+			r := callReconcile(t, s, map[string]any{
+				"merged_prs": []map[string]any{entry},
+			})
+			if !r.IsError {
+				t.Fatalf("expected tool error, got: %s", resultText(r))
+			}
+			if !strings.Contains(resultText(r), tc.wantInErr) {
+				t.Errorf("error must contain %q, got: %s", tc.wantInErr, resultText(r))
+			}
+		})
+	}
+}
+
 // TestMCPReconcileMergedPRs_TooManyEntries — cap enforcement.
 func TestMCPReconcileMergedPRs_TooManyEntries(t *testing.T) {
 	s := newTestWorkSessionServer(t)
@@ -165,6 +236,7 @@ func TestMCPReconcileMergedPRs_TooManyEntries(t *testing.T) {
 	for i := range prs {
 		prs[i] = map[string]any{
 			"url": "https://github.com/o/r/pull/1", "head_ref": "feature/x",
+			"repo": "o/r",
 		}
 	}
 	r := callReconcile(t, s, map[string]any{"merged_prs": prs})
@@ -193,6 +265,7 @@ func TestMCPReconcileMergedPRs_Idempotent(t *testing.T) {
 	payload := map[string]any{
 		"merged_prs": []map[string]any{{
 			"url": "https://github.com/o/r/pull/88", "head_ref": branch,
+			"repo": "o/r",
 		}},
 	}
 
