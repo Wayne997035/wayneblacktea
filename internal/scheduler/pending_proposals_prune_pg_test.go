@@ -180,6 +180,104 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 	}
 }
 
+// TestRunDailyPendingProposalsPrune_TypeTaskTTL exercises the round-1
+// follow-up GTD 947f3f12: pending TypeTask proposals older than 30 days are
+// marked status='rejected', reason='ttl-expired-30d', resolved_at=NOW() —
+// they are NOT deleted (they age out through the 90d resolved retention so
+// the audit trail survives). Fresh TypeTask + already-resolved TypeTask
+// rows are left untouched.
+func TestRunDailyPendingProposalsPrune_TypeTaskTTL(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	freshCreated := now.AddDate(0, 0, -1)      // 1 day old, inside 30d → keep pending
+	staleCreated := now.AddDate(0, 0, -31)     // 31 days old → mark rejected
+	staleAccepted := now.AddDate(0, 0, -31)    // already accepted, shouldn't be re-touched
+	staleAcceptedRes := now.AddDate(0, 0, -29) // accepted within last 30d (inside 90d resolved retention)
+
+	freshID := uuid.New()
+	staleID := uuid.New()
+	staleAcceptedID := uuid.New()
+
+	insert := func(id uuid.UUID, status string, createdAt time.Time, resolvedAt *time.Time) {
+		t.Helper()
+		var resolvedArg any
+		if resolvedAt != nil {
+			resolvedArg = *resolvedAt
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals
+			(id, type, payload, status, created_at, resolved_at)
+			VALUES ($1, 'task', '{}'::jsonb, $2, $3, $4)`,
+			id, status, createdAt, resolvedArg); err != nil {
+			t.Fatalf("seed %s status=%s: %v", id, status, err)
+		}
+		t.Cleanup(func() {
+			_, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", id)
+		})
+	}
+
+	insert(freshID, "pending", freshCreated, nil)
+	insert(staleID, "pending", staleCreated, nil)
+	rt := staleAcceptedRes
+	insert(staleAcceptedID, "accepted", staleAccepted, &rt)
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	// staleID: should now be rejected with reason='ttl-expired-30d'.
+	var (
+		gotStatus string
+		gotReason *string
+		gotRes    *time.Time
+	)
+	err := pool.QueryRow(ctx,
+		"SELECT status, reason, resolved_at FROM pending_proposals WHERE id = $1",
+		staleID).Scan(&gotStatus, &gotReason, &gotRes)
+	if err != nil {
+		t.Fatalf("query staleID: %v", err)
+	}
+	if gotStatus != "rejected" {
+		t.Errorf("stale TypeTask: status = %q, want %q", gotStatus, "rejected")
+	}
+	if gotReason == nil || *gotReason != "ttl-expired-30d" {
+		t.Errorf("stale TypeTask: reason = %v, want %q", gotReason, "ttl-expired-30d")
+	}
+	if gotRes == nil {
+		t.Errorf("stale TypeTask: resolved_at = nil, want NOW()-ish")
+	}
+
+	// freshID: still pending, reason nil.
+	var freshStatus string
+	var freshReason *string
+	if err := pool.QueryRow(ctx,
+		"SELECT status, reason FROM pending_proposals WHERE id = $1",
+		freshID).Scan(&freshStatus, &freshReason); err != nil {
+		t.Fatalf("query freshID: %v", err)
+	}
+	if freshStatus != "pending" {
+		t.Errorf("fresh TypeTask: status = %q, want %q", freshStatus, "pending")
+	}
+	if freshReason != nil {
+		t.Errorf("fresh TypeTask: reason = %q, want nil", *freshReason)
+	}
+
+	// staleAcceptedID: untouched (was already accepted, still inside 90d).
+	var accStatus string
+	var accReason *string
+	if err := pool.QueryRow(ctx,
+		"SELECT status, reason FROM pending_proposals WHERE id = $1",
+		staleAcceptedID).Scan(&accStatus, &accReason); err != nil {
+		t.Fatalf("query staleAcceptedID: %v", err)
+	}
+	if accStatus != "accepted" {
+		t.Errorf("stale-accepted TypeTask: status = %q, want %q", accStatus, "accepted")
+	}
+	if accReason != nil {
+		t.Errorf("stale-accepted TypeTask: reason = %q, want nil (not re-touched)", *accReason)
+	}
+}
+
 // TestScheduler_PendingProposalsPrune_EmptyTableNoPanic verifies the prune
 // query is safe to run against an empty table — production may go days with
 // no rows to drop.

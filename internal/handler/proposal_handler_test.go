@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -761,6 +762,209 @@ func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 	}
 	if len(taskStore.snapshot()) != 0 {
 		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
+	}
+}
+
+// batchConfirmTypeTaskResp is the narrow JSON shape exercised by the
+// batch-confirm TypeTask round-1 follow-up tests.
+type batchConfirmTypeTaskResp struct {
+	Results []struct {
+		ID      string `json:"id"`
+		OK      bool   `json:"ok"`
+		Skipped bool   `json:"skipped"`
+		Error   string `json:"error"`
+	} `json:"results"`
+}
+
+// runBatchConfirmTypeTask wires a fresh handler + store, POSTs a single-ID
+// confirm-batch accept request, decodes the response, and returns it
+// alongside the seed store/taskStore for further assertions. Keeps the
+// per-case TestProposalHandler_ConfirmBatch_TypeTask_* tests below short
+// enough to stay under gocyclo:15 (combined version tripped 22).
+func runBatchConfirmTypeTask(
+	t *testing.T, prop db.PendingProposal, id uuid.UUID,
+) (*fakeProposalStore, *fakeProposalTaskStore, batchConfirmTypeTaskResp) {
+	t.Helper()
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	e := newEcho()
+	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).WithTask(taskStore)
+	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
+	body := `{"ids":["` + id.String() + `"],"action":"accept"}`
+	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var resp batchConfirmTypeTaskResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v (body: %s)", err, rec.Body.String())
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("got %d results, want 1", len(resp.Results))
+	}
+	return store, taskStore, resp
+}
+
+// TestProposalHandler_ConfirmBatch_TypeTask_Materialises (round-1 follow-up
+// GTD 95bd2a09): a clean TypeTask payload accepted via the batch endpoint
+// inserts a task row and resolves the proposal as accepted.
+func TestProposalHandler_ConfirmBatch_TypeTask_Materialises(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	const goodDescription = "Add slog.Info audit row to confirm_proposal at internal/handler/proposal_handler.go:240 with proposal_id"
+	prop := makeTaskProposal(id, "Audit log proposal", goodDescription, "general")
+
+	store, taskStore, resp := runBatchConfirmTypeTask(t, prop, id)
+	if !resp.Results[0].OK {
+		t.Errorf("result.OK = false, want true (error=%q)", resp.Results[0].Error)
+	}
+	if resp.Results[0].Error != "" {
+		t.Errorf("unexpected entry.Error = %q", resp.Results[0].Error)
+	}
+	if creates := taskStore.snapshot(); len(creates) != 1 {
+		t.Errorf("expected 1 task created, got %d", len(creates))
+	}
+	if store.resolvedAs != proposal.StatusAccepted {
+		t.Errorf("resolvedAs = %q, want accepted", store.resolvedAs)
+	}
+}
+
+// TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload (round-1
+// follow-up GTD 95bd2a09): garbage JSON in payload surfaces "task proposal
+// payload is malformed" as entry.Error, leaves the proposal pending, and
+// inserts no task row.
+func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	prop := db.PendingProposal{
+		ID:      id,
+		Type:    string(proposal.TypeTask),
+		Status:  string(proposal.StatusPending),
+		Payload: []byte(`{not valid json`),
+	}
+
+	store, taskStore, resp := runBatchConfirmTypeTask(t, prop, id)
+	if resp.Results[0].OK {
+		t.Errorf("result.OK = true, want false on malformed payload")
+	}
+	const wantSubstr = "task proposal payload is malformed"
+	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
+		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
+	}
+	if len(taskStore.snapshot()) != 0 {
+		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
+	}
+	if len(store.resolved) != 0 {
+		t.Errorf("expected proposal to stay pending, got resolved=%v", store.resolved)
+	}
+}
+
+// TestProposalHandler_ConfirmBatch_TypeTask_StrictVague (round-1 follow-up
+// GTD 95bd2a09): WBT_STRICT_VAGUENESS=1 + a vague description blocks task
+// materialisation, surfaces "vagueness check failed" in entry.Error, and
+// keeps the proposal pending.
+func TestProposalHandler_ConfirmBatch_TypeTask_StrictVague(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "1")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Audit log proposal", vagueDescriptionFixture, "general")
+
+	store, taskStore, resp := runBatchConfirmTypeTask(t, prop, id)
+	if resp.Results[0].OK {
+		t.Errorf("result.OK = true, want false on strict-mode vagueness")
+	}
+	const wantSubstr = "vagueness check failed"
+	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
+		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
+	}
+	if len(taskStore.snapshot()) != 0 {
+		t.Errorf("expected 0 tasks in strict mode, got %d", len(taskStore.snapshot()))
+	}
+	if len(store.resolved) != 0 {
+		t.Errorf("expected proposal to stay pending, got resolved=%v", store.resolved)
+	}
+}
+
+// TestPendingProposalResponse_ReasonField (round-2 follow-up N-1) verifies
+// that pending_proposals.reason (migration 000051) round-trips through the
+// API response when present, and is omitted entirely when NULL.
+//
+// Drives GET /api/proposals?status=all (the response path uses toResponse()
+// just like /api/proposals/pending and /api/proposals/:id/confirm), then
+// asserts:
+//   - row with reason="ttl-expired-30d" → JSON includes `"reason":"ttl-expired-30d"`
+//   - row with NULL reason → JSON object has no `reason` key at all
+func TestPendingProposalResponse_ReasonField(t *testing.T) {
+	rowWithReason := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "rejected",
+		Payload: []byte(`{}`),
+		Reason:  pgtype.Text{String: "ttl-expired-30d", Valid: true},
+	}
+	rowWithoutReason := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "rejected",
+		Payload: []byte(`{}`),
+		Reason:  pgtype.Text{Valid: false},
+	}
+
+	cases := []struct {
+		name      string
+		row       db.PendingProposal
+		wantKey   bool
+		wantValue string
+	}{
+		{
+			name:      "non-null reason → field present in JSON",
+			row:       rowWithReason,
+			wantKey:   true,
+			wantValue: "ttl-expired-30d",
+		},
+		{
+			name:    "null reason → field omitted (omitempty)",
+			row:     rowWithoutReason,
+			wantKey: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeProposalStore{
+				byID: map[uuid.UUID]*db.PendingProposal{tc.row.ID: &tc.row},
+				all:  []db.PendingProposal{tc.row},
+			}
+			e := newEcho()
+			h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+			e.GET("/api/proposals", h.ListProposals)
+			rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+			// Decode into []map[string]any so we can check key presence directly
+			// (this is the spec — Reason is `*string` with `omitempty`, so a nil
+			// Reason MUST omit the key entirely, not emit `"reason":null`).
+			var items []map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+				t.Fatalf("response not valid JSON array: %v (body: %s)", err, rec.Body.String())
+			}
+			if len(items) != 1 {
+				t.Fatalf("got %d items, want 1", len(items))
+			}
+			val, hasKey := items[0]["reason"]
+			if hasKey != tc.wantKey {
+				t.Errorf("reason key present = %v, want %v (body: %s)", hasKey, tc.wantKey, rec.Body.String())
+			}
+			if tc.wantKey {
+				got, ok := val.(string)
+				if !ok {
+					t.Errorf("reason value type = %T, want string", val)
+				} else if got != tc.wantValue {
+					t.Errorf("reason value = %q, want %q", got, tc.wantValue)
+				}
+			}
+		})
 	}
 }
 

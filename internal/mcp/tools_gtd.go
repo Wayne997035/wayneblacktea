@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -19,10 +20,13 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// strictVagueness reports whether WBT_STRICT_VAGUENESS=true is set in the
-// server environment. Never sourced from tool arguments (user-controlled).
+// strictVagueness reports whether WBT_STRICT_VAGUENESS is set to a truthy
+// value in the server environment. Accepts the canonical strconv.ParseBool
+// set ("1", "t", "T", "true", "True", "TRUE"). Never sourced from tool
+// arguments (user-controlled).
 func (s *Server) strictVagueness() bool {
-	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
+	b, _ := strconv.ParseBool(os.Getenv("WBT_STRICT_VAGUENESS"))
+	return b
 }
 
 // repoNameRe enforces a safe slug format for project repo_name values passed

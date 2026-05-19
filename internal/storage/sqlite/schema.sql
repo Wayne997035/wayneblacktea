@@ -198,7 +198,8 @@ CREATE TABLE IF NOT EXISTS pending_proposals (
     status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
     proposed_by   TEXT,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    resolved_at   TEXT
+    resolved_at   TEXT,
+    reason        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_repos_status                         ON repos(status);

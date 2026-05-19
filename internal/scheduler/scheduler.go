@@ -44,21 +44,30 @@ const (
 const pendingProposalsPruneTimeout = 60 * time.Second
 
 // pendingProposalsResolvedRetention / pendingProposalsPendingDecisionRetention
-// document the per-status TTL on pending_proposals (backend-security-design.md
-// §1.3 — observability tables MUST have a working retention policy in the
-// same PR that introduces them).
+// / pendingProposalsPendingTaskRetention document the per-status TTL on
+// pending_proposals (backend-security-design.md §1.3 — observability tables
+// MUST have a working retention policy in the same PR that introduces them).
 //
 //   - 90 days for resolved (accepted / rejected) rows: the user has already
 //     acted on them; we keep ~1 quarter for retrospective audit + then drop.
 //   - 180 days for pending rows of type='decision': the auto-decision
 //     proposer is opt-out enabled by default and can fill the queue; old
 //     pending decisions are usually obsolete (the user moved on without
-//     accepting). Other pending types (goal, project, concept, …) still
-//     require manual review and are NOT touched by the cleanup so we don't
-//     silently drop a user's intent.
+//     accepting).
+//   - 30 days for pending rows of type='task': the auto-task proposer (via
+//     /api/activity classifier) emits high-frequency low-signal task
+//     candidates; the user typically accepts within a day or two and stale
+//     ones older than a month are noise. Marked as rejected (status, reason)
+//     rather than deleted so the audit trail survives the 90-day resolved
+//     retention. GTD 947f3f12.
+//
+// Other pending types (goal, project, concept, …) still require manual
+// review and are NOT touched by the cleanup so we don't silently drop a
+// user's intent.
 const (
 	pendingProposalsResolvedRetention        = "90 days"
 	pendingProposalsPendingDecisionRetention = "180 days"
+	pendingProposalsPendingTaskRetention     = "30 days"
 )
 
 // dailyBriefingTimeout caps each Notion morning briefing run. The aggregate
@@ -648,17 +657,22 @@ DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAg
 	)
 }
 
-// runDailyPendingProposalsPrune deletes stale pending_proposals rows.
-// Two retention policies, OR'd in a single DELETE so the pool sees one
-// statement per night:
+// runDailyPendingProposalsPrune marks stale TypeTask pending proposals as
+// rejected (with reason='ttl-expired-30d'), then deletes long-resolved rows
+// according to the per-status retention policy:
 //
-//   - resolved (status IN ('accepted','rejected')) older than 90 days:
-//     user has acted on them; keep ~1 quarter for retrospective audit.
-//   - pending decision proposals (type='decision') older than 180 days:
-//     auto-decision proposer can fill the queue and stale ones are noise.
+//   - mark step: pending TypeTask older than 30 days → status='rejected',
+//     reason='ttl-expired-30d'. Stays in the table until it ages out via
+//     the 90-day resolved retention so the audit trail survives.
+//   - delete: resolved (status IN ('accepted','rejected')) older than 90
+//     days: user has acted on them; keep ~1 quarter for retrospective audit.
+//   - delete: pending decision proposals (type='decision') older than 180
+//     days: auto-decision proposer can fill the queue and stale ones are
+//     noise.
 //
-// Other pending types (goal/project/concept/…) are NOT touched — they
-// represent unresolved user intent and silent deletion would be hostile.
+// Other pending types (goal/project/concept/knowledge/playbook) are NOT
+// touched — they represent unresolved user intent and silent deletion or
+// auto-reject would be hostile.
 //
 // Backend-security-design.md §1.3 mandates a working retention policy in the
 // same PR that introduces the auto-proposer (which can write unbounded
@@ -666,13 +680,32 @@ DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAg
 // offset from the 23:00 decay/discipline cluster to spread DB load.
 //
 // Errors are logged at warn level — the scheduler MUST keep running other
-// jobs regardless of a single DB hiccup.
+// jobs regardless of a single DB hiccup. The mark step's outcome does NOT
+// gate the delete step: a transient mark failure shouldn't block the 90-day
+// resolved-row cleanup.
 func (s *Scheduler) runDailyPendingProposalsPrune() {
 	if s.disciplinePool == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pendingProposalsPruneTimeout)
 	defer cancel()
+
+	// Mark stale TypeTask pending proposals as rejected with an audit
+	// reason. Run BEFORE the DELETE so newly-marked rows enter the resolved
+	// retention window (90d) instead of being silently dropped.
+	const markStaleTaskProposals = `UPDATE pending_proposals
+SET status = 'rejected', resolved_at = NOW(), reason = 'ttl-expired-30d'
+WHERE status = 'pending' AND type = 'task'
+  AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingTaskRetention + `'`
+	markTag, err := s.disciplinePool.Exec(ctx, markStaleTaskProposals)
+	if err != nil {
+		slog.Warn("daily pending_proposals prune: mark TTL-stale task proposals failed", "err", err)
+	} else {
+		slog.Info("daily pending_proposals prune: marked TTL-stale task proposals",
+			"rows_updated", markTag.RowsAffected(),
+			"pending_task_retention", pendingProposalsPendingTaskRetention,
+		)
+	}
 
 	// Both interval literals are code constants — parameter binding is
 	// unnecessary and would also confuse pg's planner about the predicate.
@@ -691,6 +724,7 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 		"rows_deleted", tag.RowsAffected(),
 		"resolved_retention", pendingProposalsResolvedRetention,
 		"pending_decision_retention", pendingProposalsPendingDecisionRetention,
+		"pending_task_retention", pendingProposalsPendingTaskRetention,
 	)
 }
 

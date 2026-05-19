@@ -914,6 +914,90 @@ func TestAutoCreateTask_ProposalDedup(t *testing.T) {
 	}
 }
 
+// TestAutoCreateTaskFromClassifier_RedactsCredentials is the regression test
+// for GTD 95bd2a09 (round-1 follow-up): autoCreateTaskFromClassifier wraps
+// the activity notes + classifier rationale through redact.ForLLM before
+// persisting them in pending_proposals.payload, so a GitHub token leaking
+// into a /api/activity note never lands on disk in plaintext.
+//
+// Scenario: classifier returns IsTask=true with a rationale mentioning a
+// 40-char fake GitHub PAT, AND the activity notes themselves contain another
+// fake PAT. After the handler enqueues the TypeTask proposal we decode the
+// payload and assert: (a) neither raw token survives, (b) the canonical
+// placeholder "[REDACTED:github-token]" appears in BOTH arg_summary (notes)
+// and classifier_rationale.
+func TestAutoCreateTaskFromClassifier_RedactsCredentials(t *testing.T) {
+	const fakePAT = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 40 chars, fake
+	const wantPlaceholder = "[REDACTED:github-token]"
+
+	rationaleWithToken := "discovered token " + fakePAT + " in CI logs, follow-up task"
+	notesWithToken := "the leaked token is " + fakePAT + " — rotate before merge"
+
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:    true,
+		TaskTitle: "Rotate leaked GitHub PAT",
+		Rationale: rationaleWithToken,
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	propStore := &fakeAutologProposalStore{}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	body := `{"actor":"bash-hook","action":"audit:logs","notes":` +
+		strconvQuote(notesWithToken) + `}`
+	rec := performRequest(e, http.MethodPost, "/api/activity", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Wait for the classifier goroutine to enqueue the proposal.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(propStore.snapshotCreates()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	creates := propStore.snapshotCreates()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 proposal created, got %d", len(creates))
+	}
+
+	var payload proposal.TaskPayload
+	if err := json.Unmarshal(creates[0].Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+
+	if strings.Contains(payload.ArgSummary, fakePAT) {
+		t.Errorf("arg_summary leaked raw PAT: %q", payload.ArgSummary)
+	}
+	if !strings.Contains(payload.ArgSummary, wantPlaceholder) {
+		t.Errorf("arg_summary missing placeholder %q, got %q",
+			wantPlaceholder, payload.ArgSummary)
+	}
+	if strings.Contains(payload.ClassifierRationale, fakePAT) {
+		t.Errorf("classifier_rationale leaked raw PAT: %q", payload.ClassifierRationale)
+	}
+	if !strings.Contains(payload.ClassifierRationale, wantPlaceholder) {
+		t.Errorf("classifier_rationale missing placeholder %q, got %q",
+			wantPlaceholder, payload.ClassifierRationale)
+	}
+}
+
+// strconvQuote JSON-quotes a string so it can be embedded in a fixed test
+// body. Avoids pulling fmt.Sprintf("%q",...) ambiguities (the JSON spec is a
+// strict subset of Go's %q output but for ASCII-only input as used here the
+// two coincide).
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func TestAutoHandoff_TaskCreateFailsStillReturns200(t *testing.T) {
 	// autoCreateTask fails → handler must still return 200 + handoff_id.
 	handoffID := uuid.New()
