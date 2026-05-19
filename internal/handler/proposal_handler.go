@@ -124,6 +124,12 @@ func (h *ProposalHandler) WithTask(t proposalTaskStore) *ProposalHandler {
 
 // pendingProposalResponse is the JSON shape returned to the frontend.
 // payload is decoded from []byte to avoid double-encoding.
+//
+// Reason carries the resolution rationale persisted by migration 000051
+// (`pending_proposals.reason`) — surfaced so the proposal UI can render
+// "rejected because ttl-expired-30d" rather than an unattributed cleanup row.
+// Pointer + omitempty: rows with a NULL Reason omit the field entirely so the
+// frontend can distinguish "no reason" from empty string.
 type pendingProposalResponse struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
@@ -132,6 +138,7 @@ type pendingProposalResponse struct {
 	ProposedBy *string         `json:"proposed_by"`
 	CreatedAt  string          `json:"created_at"`
 	ResolvedAt *string         `json:"resolved_at,omitempty"`
+	Reason     *string         `json:"reason,omitempty"`
 }
 
 func toResponse(p db.PendingProposal) pendingProposalResponse {
@@ -152,6 +159,10 @@ func toResponse(p db.PendingProposal) pendingProposalResponse {
 	if p.ResolvedAt.Valid {
 		ts := p.ResolvedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
 		r.ResolvedAt = &ts
+	}
+	if p.Reason.Valid {
+		s := p.Reason.String
+		r.Reason = &s
 	}
 	return r
 }

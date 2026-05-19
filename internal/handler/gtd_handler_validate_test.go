@@ -1,10 +1,13 @@
 package handler_test
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
+	"github.com/google/uuid"
 )
 
 // TestValidateBranchName_RuneLength is the round-1 follow-up for GTD
@@ -72,6 +75,77 @@ func TestStrictVagueness_ParseBool(t *testing.T) {
 			t.Setenv("WBT_STRICT_VAGUENESS", tc.env)
 			if got := handler.StrictVaguenessForTest(); got != tc.want {
 				t.Errorf("strictVagueness() with env=%q = %v, want %v", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCreateTaskRequest_StrictVagueness verifies that the CreateTask handler
+// reads WBT_STRICT_VAGUENESS through the unified strictVagueness() helper
+// (strconv.ParseBool) — round-2 follow-up for M-1, replacing the deleted
+// strictVaguenessEnabled() == "true" reader on gtd_handler.go.
+//
+// Drives the full CreateTask handler path with a vague description ("TBD")
+// and asserts:
+//   - env="true"  → 400 "vagueness check failed" (legacy literal still works)
+//   - env="1"     → 400 "vagueness check failed" (ParseBool truthy values)
+//   - env=""      → 201 Created with X-Vagueness-Warnings header (warn mode)
+//
+// The "1" case proves the unification: pre-M-1 it would have been treated as
+// warn mode by the old strictVaguenessEnabled, now it correctly blocks.
+func TestCreateTaskRequest_StrictVagueness(t *testing.T) {
+	taskID := uuid.New()
+	const vagueBody = `{"title":"Fix login","description":"TBD","kind":"general"}`
+
+	cases := []struct {
+		name            string
+		env             string
+		wantCode        int
+		wantBodySubstr  string
+		wantWarningsHdr bool
+	}{
+		{
+			name:            "env=true → strict blocks with 400",
+			env:             "true",
+			wantCode:        http.StatusBadRequest,
+			wantBodySubstr:  "vagueness check failed",
+			wantWarningsHdr: false,
+		},
+		{
+			name:            "env=1 → strict blocks with 400 (ParseBool truthy)",
+			env:             "1",
+			wantCode:        http.StatusBadRequest,
+			wantBodySubstr:  "vagueness check failed",
+			wantWarningsHdr: false,
+		},
+		{
+			name:            "env=empty → warn mode 201 with header",
+			env:             "",
+			wantCode:        http.StatusCreated,
+			wantWarningsHdr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WBT_STRICT_VAGUENESS", tc.env)
+			store := &fakeGTDStore{createdTask: &db.Task{ID: taskID, Title: "Fix login"}}
+			e := newEcho()
+			h := handler.NewGTDHandler(store)
+			e.POST("/api/tasks", h.CreateTask)
+			rec := performRequest(e, http.MethodPost, "/api/tasks", vagueBody)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.wantBodySubstr != "" && !strings.Contains(rec.Body.String(), tc.wantBodySubstr) {
+				t.Errorf("body %q does not contain %q", rec.Body.String(), tc.wantBodySubstr)
+			}
+			hdr := rec.Header().Get("X-Vagueness-Warnings")
+			if tc.wantWarningsHdr && hdr == "" {
+				t.Error("expected X-Vagueness-Warnings header to be set, got empty")
+			}
+			if !tc.wantWarningsHdr && hdr != "" && tc.wantCode == http.StatusBadRequest {
+				t.Errorf("expected no X-Vagueness-Warnings header on strict 400, got: %s", hdr)
 			}
 		})
 	}

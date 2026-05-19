@@ -885,6 +885,89 @@ func TestProposalHandler_ConfirmBatch_TypeTask_StrictVague(t *testing.T) {
 	}
 }
 
+// TestPendingProposalResponse_ReasonField (round-2 follow-up N-1) verifies
+// that pending_proposals.reason (migration 000051) round-trips through the
+// API response when present, and is omitted entirely when NULL.
+//
+// Drives GET /api/proposals?status=all (the response path uses toResponse()
+// just like /api/proposals/pending and /api/proposals/:id/confirm), then
+// asserts:
+//   - row with reason="ttl-expired-30d" → JSON includes `"reason":"ttl-expired-30d"`
+//   - row with NULL reason → JSON object has no `reason` key at all
+func TestPendingProposalResponse_ReasonField(t *testing.T) {
+	rowWithReason := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "rejected",
+		Payload: []byte(`{}`),
+		Reason:  pgtype.Text{String: "ttl-expired-30d", Valid: true},
+	}
+	rowWithoutReason := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "rejected",
+		Payload: []byte(`{}`),
+		Reason:  pgtype.Text{Valid: false},
+	}
+
+	cases := []struct {
+		name      string
+		row       db.PendingProposal
+		wantKey   bool
+		wantValue string
+	}{
+		{
+			name:      "non-null reason → field present in JSON",
+			row:       rowWithReason,
+			wantKey:   true,
+			wantValue: "ttl-expired-30d",
+		},
+		{
+			name:    "null reason → field omitted (omitempty)",
+			row:     rowWithoutReason,
+			wantKey: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeProposalStore{
+				byID: map[uuid.UUID]*db.PendingProposal{tc.row.ID: &tc.row},
+				all:  []db.PendingProposal{tc.row},
+			}
+			e := newEcho()
+			h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+			e.GET("/api/proposals", h.ListProposals)
+			rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+			// Decode into []map[string]any so we can check key presence directly
+			// (this is the spec — Reason is `*string` with `omitempty`, so a nil
+			// Reason MUST omit the key entirely, not emit `"reason":null`).
+			var items []map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+				t.Fatalf("response not valid JSON array: %v (body: %s)", err, rec.Body.String())
+			}
+			if len(items) != 1 {
+				t.Fatalf("got %d items, want 1", len(items))
+			}
+			val, hasKey := items[0]["reason"]
+			if hasKey != tc.wantKey {
+				t.Errorf("reason key present = %v, want %v (body: %s)", hasKey, tc.wantKey, rec.Body.String())
+			}
+			if tc.wantKey {
+				got, ok := val.(string)
+				if !ok {
+					t.Errorf("reason value type = %T, want string", val)
+				} else if got != tc.wantValue {
+					t.Errorf("reason value = %q, want %q", got, tc.wantValue)
+				}
+			}
+		})
+	}
+}
+
 // TestConfirmProposal_TypeTask_MissingTitle: payload without title → 400.
 func TestConfirmProposal_TypeTask_MissingTitle(t *testing.T) {
 	id := uuid.New()

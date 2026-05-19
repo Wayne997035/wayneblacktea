@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -266,14 +265,6 @@ type createTaskRequest struct {
 	PRUrl       string     `json:"pr_url"`
 }
 
-// strictVaguenessEnabled returns true when WBT_STRICT_VAGUENESS=true in the
-// server environment. Env is read per-call so it can be toggled without a
-// restart in development; the overhead is negligible for a single getenv.
-// The value is NEVER sourced from request headers.
-func strictVaguenessEnabled() bool {
-	return os.Getenv("WBT_STRICT_VAGUENESS") == "true"
-}
-
 // validateCreateTaskRequest validates the optional extra fields on createTaskRequest
 // and returns a user-facing error message, or "" if valid. This extracts branches
 // from CreateTask to keep its cyclomatic complexity within the configured limit.
@@ -346,7 +337,7 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 	var allWarnings []string
 	allWarnings = append(allWarnings, validator.CheckVagueness("description", req.Description, kind)...)
 	allWarnings = append(allWarnings, validator.CheckKindFields(kind, req.Description)...)
-	if len(allWarnings) > 0 && strictVaguenessEnabled() {
+	if len(allWarnings) > 0 && strictVagueness() {
 		return c.JSON(http.StatusBadRequest, map[string]any{
 			"error":    "vagueness check failed",
 			"warnings": allWarnings,
