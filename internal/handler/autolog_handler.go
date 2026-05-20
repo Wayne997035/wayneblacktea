@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,15 +12,23 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
+
+// errProposalPayloadOversize is the sentinel returned by enqueueTaskProposal
+// when the marshalled payload exceeds proposal.MaxTaskPayloadBytes. Callers
+// MUST treat it as a "skipped, no-op" and never bubble it up to a user-facing
+// error response — the cap is a defensive limit, not a real failure.
+var errProposalPayloadOversize = errors.New("auto-create task: payload exceeds size cap")
 
 const autoHandoffPrefix = "Auto-handoff:"
 
@@ -179,7 +188,8 @@ func (h *AutologHandler) maybeClassifyAsync(actor, action, notes string) {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
 				if err := h.autoCreateTaskFromClassifier(
-					bgCtx, result.TaskTitle, actor, action, notes, result.Rationale,
+					bgCtx, result.TaskTitle, actor, action, notes,
+					result.Rationale, result.Confidence,
 				); err != nil {
 					slog.Warn("auto-task classify: enqueue/create failed", "err", err)
 				}
@@ -389,22 +399,35 @@ func (h *AutologHandler) autoCreateTask(ctx context.Context, title string) error
 }
 
 // autoCreateTaskFromClassifier is the IsTask=true classifier branch of the
-// /api/activity auto-capture. When proposalStore is wired (production wiring),
-// the verdict goes onto the TypeTask proposal queue so the user reviews and
-// validator.CheckVagueness runs at confirm time. When proposalStore is nil
-// (legacy callers and unit tests that don't exercise auto-capture), it falls
-// back to direct task creation — preserves prior behaviour.
+// /api/activity auto-capture. Two paths gated by `confidence`:
+//
+//  1. **Auto-accept (1-call quick-capture)**: when `confidence` ≥
+//     ai.ClassifierAutoAcceptThreshold AND the synthesised description passes
+//     validator.CheckVagueness with zero warnings, the task is materialised
+//     directly via h.gtd.CreateTask (skipping the proposal review queue).
+//     Restores the pre-PR-#120 1-call UX for unambiguous classifications.
+//
+//  2. **Proposal queue (review-required)**: when confidence is below threshold
+//     OR the synthesised description is vague, OR proposalStore is nil
+//     (legacy callers), enqueue a TypeTask proposal so the user reviews and
+//     validator.CheckVagueness runs at confirm time.
+//
+// Legacy fallback: when proposalStore is nil the verdict still goes through
+// the direct-create path (h.autoCreateTask) — unit tests rely on this when
+// they don't wire a proposalStore. Production wiring always sets it.
 //
 // argSummary/resultSummary equivalents here are the actor/action/notes triple
 // already control-char sanitised by LogActivity via sanitize.Notes. Because
-// the proposal payload is persisted long-lived (pending_proposals.payload row
-// surfaced in the proposal UI), we additionally run redact.ForLLM on the
-// summary + rationale to scrub credential-shape patterns (token=ghp_…,
-// password=…, AKIA…, postgres://user:pass@…) before write — defence-in-depth
-// per security review M-1 (PR #120).
+// the persisted payload (tasks.description for auto-accept,
+// pending_proposals.payload for the proposal path) is long-lived, we
+// additionally run redact.ForLLM on the notes + rationale to scrub
+// credential-shape patterns (token=ghp_…, password=…, AKIA…,
+// postgres://user:pass@…) before write — defence-in-depth per security
+// review M-1 (PR #120).
 func (h *AutologHandler) autoCreateTaskFromClassifier(
 	ctx context.Context,
 	title, actor, action, notes, classifierRationale string,
+	confidence float64,
 ) error {
 	if h.proposalStore == nil {
 		// Legacy direct path — unit tests rely on this when they don't
@@ -412,21 +435,103 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 		return h.autoCreateTask(ctx, title)
 	}
 
-	if len(title) > maxTaskTitle {
-		runes := []rune(title)
-		if len(runes) > maxTaskTitle {
-			title = string(runes[:maxTaskTitle])
-		}
-	}
-	title = strings.TrimSpace(title)
+	title = truncateAndTrimTitle(title, maxTaskTitle)
 	if title == "" {
 		return nil
 	}
 
-	// Dedup against EXISTING pending TypeTask proposals (not the tasks table).
-	pending, err := h.proposalStore.ListPending(ctx)
+	dup, err := pendingTaskTitleExists(ctx, h.proposalStore.ListPending, title)
 	if err != nil {
-		return fmt.Errorf("auto-create task: list pending proposals: %w", err)
+		return fmt.Errorf("auto-create task: %w", err)
+	}
+	if dup {
+		return nil
+	}
+
+	redactedNotes := redact.ForLLM(notes)
+	redactedRationale := redact.ForLLM(classifierRationale)
+	description := synthesiseClassifierDescription(redactedNotes, redactedRationale)
+
+	// Auto-accept gate: high confidence AND zero vagueness warnings → direct
+	// materialise via gtd.CreateTask, skipping the proposal queue.
+	if shouldAutoAccept(confidence, description) {
+		task, terr := h.gtd.CreateTask(ctx, gtd.CreateTaskParams{
+			Title:       title,
+			Description: description,
+			Kind:        validator.KindGeneral,
+		})
+		if terr != nil {
+			return fmt.Errorf("auto-create task: direct create: %w", terr)
+		}
+		slog.Info("autoCreateTaskFromClassifier: auto-accepted task (high confidence)",
+			"task_id", task.ID.String(),
+			"actor", actor,
+			"confidence", confidence,
+		)
+		return nil
+	}
+
+	payload := proposal.TaskPayload{
+		Title:               title,
+		SourceTool:          "activity:" + actor + ":" + action,
+		ArgSummary:          redactedNotes,
+		ClassifierRationale: redactedRationale,
+		SuggestedKind:       validator.KindGeneral,
+	}
+	row, err := enqueueTaskProposal(ctx, h.proposalStore.Create, payload, actor)
+	if errors.Is(err, errProposalPayloadOversize) {
+		// Payload exceeded the cap — already logged inside the helper.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("auto-create task: %w", err)
+	}
+	slog.Info("autoCreateTaskFromClassifier: enqueued task proposal",
+		"proposal_id", row.ID.String(),
+		"actor", actor,
+		"confidence", confidence,
+	)
+	return nil
+}
+
+// shouldAutoAccept is the single source of truth for the auto-accept gate
+// shared by the HTTP path (this file) and the MCP twin (we re-implement the
+// same predicate there because the mcp package can't import handler). The
+// vagueness check uses field "description" + KindGeneral to match the
+// confirm-proposal handler at acceptTask (internal/handler/proposal_handler.go).
+func shouldAutoAccept(confidence float64, description string) bool {
+	if confidence < ai.ClassifierAutoAcceptThreshold {
+		return false
+	}
+	return len(validator.CheckVagueness("description", description, validator.KindGeneral)) == 0
+}
+
+// truncateAndTrimTitle caps `title` at `maxRunes` rune-safely and trims
+// whitespace. Pulled out so both the HTTP and MCP paths share the exact same
+// normalisation (an MCP test verifies the rune-len cap; the HTTP path
+// previously inlined the same logic — extracting prevents drift).
+func truncateAndTrimTitle(title string, maxRunes int) string {
+	if len(title) > maxRunes {
+		runes := []rune(title)
+		if len(runes) > maxRunes {
+			title = string(runes[:maxRunes])
+		}
+	}
+	return strings.TrimSpace(title)
+}
+
+// pendingTaskTitleExists returns true when ListPending contains a TypeTask
+// proposal whose title matches `title` case-insensitively. listFn is injected
+// so this helper is package-private but reusable across handler and mcp
+// paths via a thin shim.
+func pendingTaskTitleExists(
+	ctx context.Context,
+	listFn func(context.Context) ([]db.PendingProposal, error),
+	title string,
+) (bool, error) {
+	pending, err := listFn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list pending proposals: %w", err)
 	}
 	for _, p := range pending {
 		if p.Type != string(proposal.TypeTask) {
@@ -437,38 +542,60 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 			continue
 		}
 		if strings.EqualFold(existing.Title, title) {
-			return nil
+			return true, nil
 		}
 	}
+	return false, nil
+}
 
-	payload := proposal.TaskPayload{
-		Title:               title,
-		SourceTool:          "activity:" + actor + ":" + action,
-		ArgSummary:          redact.ForLLM(notes),
-		ClassifierRationale: redact.ForLLM(classifierRationale),
-		SuggestedKind:       "general",
-	}
+// enqueueTaskProposal marshals payload, enforces the size cap, and calls
+// createFn. Returns errProposalPayloadOversize (and only logs at warn level)
+// when the marshalled bytes exceed MaxTaskPayloadBytes — caller MUST treat
+// the sentinel as a no-op, not a real error. actor is included in the warn
+// log so a noisy caller is traceable.
+func enqueueTaskProposal(
+	ctx context.Context,
+	createFn func(context.Context, proposal.CreateParams) (*db.PendingProposal, error),
+	payload proposal.TaskPayload,
+	actor string,
+) (*db.PendingProposal, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("auto-create task: marshal payload: %w", err)
+		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 	if len(encoded) > proposal.MaxTaskPayloadBytes {
-		slog.Warn("autoCreateTaskFromClassifier: payload exceeds cap, skipping",
+		slog.Warn("enqueueTaskProposal: payload exceeds cap, skipping",
 			"actor", actor, "bytes", len(encoded), "cap", proposal.MaxTaskPayloadBytes)
-		return nil
+		return nil, errProposalPayloadOversize
 	}
-
-	row, err := h.proposalStore.Create(ctx, proposal.CreateParams{
+	row, err := createFn(ctx, proposal.CreateParams{
 		Type:       proposal.TypeTask,
 		Payload:    encoded,
 		ProposedBy: "claude-code",
 	})
 	if err != nil {
-		return fmt.Errorf("auto-create task: create proposal: %w", err)
+		return nil, fmt.Errorf("create proposal: %w", err)
 	}
-	slog.Info("autoCreateTaskFromClassifier: enqueued task proposal",
-		"proposal_id", row.ID.String(),
-		"actor", actor,
-	)
-	return nil
+	return row, nil
+}
+
+// synthesiseClassifierDescription composes the task description that the
+// auto-accept path persists into tasks.description AND that the vagueness
+// gate is evaluated against. MUST stay in sync with the MCP twin
+// (internal/mcp/middleware_classify.go) so identical (argSummary, rationale)
+// inputs produce identical descriptions — otherwise HTTP and MCP could
+// disagree on whether the synthesised text passes CheckVagueness.
+func synthesiseClassifierDescription(argSummary, classifierRationale string) string {
+	arg := strings.TrimSpace(argSummary)
+	rat := strings.TrimSpace(classifierRationale)
+	switch {
+	case arg == "" && rat == "":
+		return ""
+	case arg == "":
+		return rat
+	case rat == "":
+		return arg
+	default:
+		return arg + " | " + rat
+	}
 }

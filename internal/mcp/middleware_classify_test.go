@@ -448,8 +448,10 @@ func TestAutoCaptureMCPTask_Dedup(t *testing.T) {
 	}
 	s := &Server{proposal: p}
 
-	// Case-insensitive title match must dedup.
-	if err := s.autoCaptureMCPTask(context.Background(), "write integration tests", "complete_task", "", "", ""); err != nil {
+	// Case-insensitive title match must dedup. Confidence=0 keeps the test
+	// on the proposal-queue path (auto-accept threshold is 0.85), so this
+	// case still exercises the dedup branch as before.
+	if err := s.autoCaptureMCPTask(context.Background(), "write integration tests", "complete_task", "", "", "", 0); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
 	if len(p.recordedCreates()) != 0 {
@@ -471,6 +473,7 @@ func TestAutoCaptureMCPTask_CreatesProposal(t *testing.T) {
 		"arg=foo",
 		"result=ok",
 		"classifier said it's a task",
+		0, // confidence below auto-accept threshold → proposal-queue path
 	); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
@@ -519,7 +522,7 @@ func TestAutoCaptureMCPTask_TruncatesTitle(t *testing.T) {
 	for i := range runes {
 		runes[i] = 'あ'
 	}
-	if err := s.autoCaptureMCPTask(context.Background(), string(runes), "sync_repo", "", "", ""); err != nil {
+	if err := s.autoCaptureMCPTask(context.Background(), string(runes), "sync_repo", "", "", "", 0); err != nil {
 		t.Fatalf("autoCaptureMCPTask with long title: %v", err)
 	}
 	creates := p.recordedCreates()
@@ -541,7 +544,7 @@ func TestAutoCaptureMCPTask_TruncatesTitle(t *testing.T) {
 // panic when classifier verdict triggers task capture).
 func TestAutoCaptureMCPTask_NilProposalStore(t *testing.T) {
 	s := &Server{proposal: nil}
-	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", "", "", ""); err != nil {
+	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", "", "", "", 0); err != nil {
 		t.Errorf("nil proposal store should be no-op, got err: %v", err)
 	}
 }
@@ -552,7 +555,7 @@ func TestAutoCaptureMCPTask_EmptyTitleSkips(t *testing.T) {
 	p := &mockProposalStore{}
 	s := &Server{proposal: p}
 	for _, title := range []string{"", "   ", "\t\n"} {
-		if err := s.autoCaptureMCPTask(context.Background(), title, "complete_task", "", "", ""); err != nil {
+		if err := s.autoCaptureMCPTask(context.Background(), title, "complete_task", "", "", "", 0); err != nil {
 			t.Errorf("autoCaptureMCPTask(%q): %v", title, err)
 		}
 	}
@@ -570,7 +573,7 @@ func TestAutoCaptureMCPTask_OversizePayloadSkipped(t *testing.T) {
 
 	// argSummary contains 5000 bytes — pushes JSON over the 4 KiB cap.
 	big := strings.Repeat("x", 5000)
-	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", big, "", ""); err != nil {
+	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", big, "", "", 0); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
 	if len(p.recordedCreates()) != 0 {
@@ -600,6 +603,7 @@ func TestMaybeClassifyToolCall_CreatesProposalNotTask(t *testing.T) {
 		"id=...",
 		"status=accepted",
 		"side-effect implies follow-up audit task",
+		0, // low confidence keeps this on the proposal-queue path (existing assertion)
 	); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
@@ -650,6 +654,7 @@ func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
 		argSummaryWithToken,
 		"status=ok",
 		rationaleWithToken,
+		0, // confidence=0 routes through proposal queue (existing assertion)
 	); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
@@ -692,6 +697,7 @@ func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
 		payload.ArgSummary, // already redacted
 		"status=ok",
 		payload.ClassifierRationale, // already redacted
+		0,                           // confidence=0 keeps idempotency check on proposal-queue path
 	); err != nil {
 		t.Fatalf("autoCaptureMCPTask idempotency: %v", err)
 	}
@@ -871,3 +877,119 @@ var (
 	_ gtd.StoreIface      = (*mockClassifyGTDStore)(nil)
 	_ proposal.StoreIface = (*mockProposalStore)(nil)
 )
+
+// ---- GTD-fix 6/7: confidence-gated auto-accept tests (MCP twin) ----
+
+// TestAutoCaptureMCPTask_AutoAccept_HighConfidence verifies the MCP path
+// honours the same confidence-gated auto-accept as the HTTP twin: confidence
+// ≥ ClassifierAutoAcceptThreshold (0.85) + zero-warning synthesised
+// description → direct gtd.CreateTask, skipping the proposal queue.
+func TestAutoCaptureMCPTask_AutoAccept_HighConfidence(t *testing.T) {
+	const richArg = "complete_task(id=abc-123) for repo github.com/foo/bar at commit a1b2c3"
+	const richRationale = "completion implies follow-up regression task at " +
+		"internal/handler/cleanup.go:45 to drop expired session rows"
+
+	p := &mockProposalStore{}
+	g := &mockClassifyGTDStore{}
+	s := &Server{proposal: p, gtd: g}
+
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		"Drop expired session rows post-completion",
+		"complete_task",
+		richArg,
+		"status=ok",
+		richRationale,
+		0.95, // well above 0.85
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+
+	// 1 direct task create.
+	created := g.recordedCreates()
+	if len(created) != 1 {
+		t.Fatalf("expected 1 direct task create (auto-accept), got %d", len(created))
+	}
+	if created[0].params.Title != "Drop expired session rows post-completion" {
+		t.Errorf("title = %q", created[0].params.Title)
+	}
+	if created[0].params.Kind != "general" {
+		t.Errorf("kind = %q, want general", created[0].params.Kind)
+	}
+	if !strings.Contains(created[0].params.Description, richRationale) {
+		t.Errorf("description should contain rationale, got %q", created[0].params.Description)
+	}
+
+	// 0 proposal creates — auto-accept bypassed the queue.
+	if creates := p.recordedCreates(); len(creates) != 0 {
+		t.Errorf("expected 0 proposal creates (auto-accept skipped queue), got %d", len(creates))
+	}
+}
+
+// TestAutoCaptureMCPTask_AutoAccept_LowConfidence verifies the MCP path's
+// safety net: confidence below threshold routes through the proposal queue
+// regardless of how clean the description is.
+func TestAutoCaptureMCPTask_AutoAccept_LowConfidence(t *testing.T) {
+	const richArg = "complete_task(id=abc-123) for repo github.com/foo/bar at commit a1b2c3"
+	const richRationale = "completion implies follow-up regression task at " +
+		"internal/handler/cleanup.go:45 to drop expired session rows"
+
+	p := &mockProposalStore{}
+	g := &mockClassifyGTDStore{}
+	s := &Server{proposal: p, gtd: g}
+
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		"Drop expired session rows post-completion",
+		"complete_task",
+		richArg,
+		"status=ok",
+		richRationale,
+		0.6, // below 0.85 threshold
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+
+	// 0 direct task creates — safety net held.
+	if created := g.recordedCreates(); len(created) != 0 {
+		t.Errorf("expected 0 direct task creates (low confidence), got %d", len(created))
+	}
+	// 1 proposal queued.
+	creates := p.recordedCreates()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 proposal create (low confidence → queue), got %d", len(creates))
+	}
+	if creates[0].Type != proposal.TypeTask {
+		t.Errorf("proposal type = %q, want %q", creates[0].Type, proposal.TypeTask)
+	}
+}
+
+// TestAutoCaptureMCPTask_AutoAccept_VagueDescription verifies the second guard:
+// confidence ≥ 0.85 but a vague synthesised description trips
+// validator.CheckVagueness and routes the verdict through the proposal queue.
+func TestAutoCaptureMCPTask_AutoAccept_VagueDescription(t *testing.T) {
+	p := &mockProposalStore{}
+	g := &mockClassifyGTDStore{}
+	s := &Server{proposal: p, gtd: g}
+
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		"Fix the bug",
+		"complete_task",
+		"TBD", // canonical vague marker
+		"status=ok",
+		"",   // empty rationale — synthesised description = "TBD"
+		0.95, // well above threshold; vagueness is the blocker
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+
+	// 0 direct task creates — vagueness gate held the line.
+	if created := g.recordedCreates(); len(created) != 0 {
+		t.Errorf("expected 0 direct task creates (description vague), got %d", len(created))
+	}
+	// 1 proposal queued.
+	if creates := p.recordedCreates(); len(creates) != 1 {
+		t.Fatalf("expected 1 proposal create (vagueness blocks auto-accept), got %d", len(creates))
+	}
+}

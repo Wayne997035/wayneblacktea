@@ -1026,3 +1026,178 @@ func TestAutoHandoff_TaskCreateFailsStillReturns200(t *testing.T) {
 		t.Errorf("expected handoff_id in response, got: %s", rec.Body.String())
 	}
 }
+
+// ---- GTD-fix 6/7: confidence-gated auto-accept tests (HTTP path) ----
+
+// TestAutoCreateTaskFromClassifier_AutoAccept_HighConfidence verifies the
+// 1-call quick-capture UX restoration: when the classifier returns confidence
+// ≥ ClassifierAutoAcceptThreshold (0.85) AND the synthesised description
+// (notes | rationale, both redacted) passes validator.CheckVagueness with
+// zero warnings, the task is materialised DIRECTLY via gtd.CreateTask —
+// skipping the proposal review queue entirely. Bypass-closure assertion:
+// proposal store MUST have 0 creates.
+func TestAutoCreateTaskFromClassifier_AutoAccept_HighConfidence(t *testing.T) {
+	const richNotes = "merged PR #42 at github.com/foo/bar with schema migration in migrations/000051.sql"
+	const richRationale = "PR merge with schema change implies follow-up audit task at " +
+		"internal/handler/audit.go:120 to add structured logging"
+
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:     true,
+		TaskTitle:  "Add structured audit logging for PR #42 schema migration",
+		Rationale:  richRationale,
+		Confidence: 0.95,
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	propStore := &fakeAutologProposalStore{}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	body := `{"actor":"bash-hook","action":"pr_merge","notes":` + strconvQuote(richNotes) + `}`
+	rec := performRequest(e, http.MethodPost, "/api/activity", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Wait up to 500ms for the goroutine to materialise the task.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		gtdStore.mu.Lock()
+		n := len(gtdStore.createdTasks)
+		gtdStore.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 1 {
+		t.Fatalf("expected 1 direct task create (auto-accept), got %d", len(gtdStore.createdTasks))
+	}
+	created := gtdStore.createdTasks[0]
+	if created.Title != "Add structured audit logging for PR #42 schema migration" {
+		t.Errorf("created task title = %q", created.Title)
+	}
+	if created.Kind != "general" {
+		t.Errorf("created task kind = %q, want general", created.Kind)
+	}
+	if !strings.Contains(created.Description, richRationale) {
+		t.Errorf("created task description should contain rationale, got %q", created.Description)
+	}
+
+	// Bypass: NO proposal queue write — that's the quick-capture restoration.
+	if creates := propStore.snapshotCreates(); len(creates) != 0 {
+		t.Errorf("expected 0 proposal creates (auto-accept skipped queue), got %d", len(creates))
+	}
+}
+
+// TestAutoCreateTaskFromClassifier_NoAutoAccept_LowConfidence verifies the
+// review-required path: when confidence < ClassifierAutoAcceptThreshold the
+// verdict goes into the proposal queue regardless of how clean the
+// description is. Existing pre-fix behaviour preserved for low-confidence
+// classifications.
+func TestAutoCreateTaskFromClassifier_NoAutoAccept_LowConfidence(t *testing.T) {
+	const richNotes = "merged PR #42 at github.com/foo/bar with schema migration in migrations/000051.sql"
+	const richRationale = "PR merge with schema change implies follow-up audit task at " +
+		"internal/handler/audit.go:120 to add structured logging"
+
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:     true,
+		TaskTitle:  "Add structured audit logging for PR #42 schema migration",
+		Rationale:  richRationale,
+		Confidence: 0.6, // below 0.85 threshold
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	propStore := &fakeAutologProposalStore{}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	body := `{"actor":"bash-hook","action":"pr_merge","notes":` + strconvQuote(richNotes) + `}`
+	rec := performRequest(e, http.MethodPost, "/api/activity", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Wait up to 500ms for the proposal to be enqueued.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(propStore.snapshotCreates()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	creates := propStore.snapshotCreates()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 proposal create (low confidence → queue), got %d", len(creates))
+	}
+	if creates[0].Type != proposal.TypeTask {
+		t.Errorf("proposal type = %q, want %q", creates[0].Type, proposal.TypeTask)
+	}
+
+	// No direct task create — that's the safety net.
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 0 {
+		t.Errorf("expected 0 direct task creates (low confidence), got %d", len(gtdStore.createdTasks))
+	}
+}
+
+// TestAutoCreateTaskFromClassifier_NoAutoAccept_VagueDescription verifies the
+// second guard: even with confidence ≥ 0.85, a vague synthesised description
+// (e.g. notes="TBD", rationale="" → "TBD") trips validator.CheckVagueness and
+// routes the verdict through the proposal queue. The vagueness gate prevents
+// auto-accepting a task with a description that the user-create path would
+// reject anyway.
+func TestAutoCreateTaskFromClassifier_NoAutoAccept_VagueDescription(t *testing.T) {
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:    true,
+		TaskTitle: "Fix the bug",
+		Rationale: "", // empty rationale + vague notes → description = "TBD"
+		// 0.95 well above threshold; vagueness check is the blocker.
+		Confidence: 0.95,
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	propStore := &fakeAutologProposalStore{}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	// "TBD" is a canonical vague marker — validator.CheckVagueness MUST flag it.
+	body := `{"actor":"bash-hook","action":"x","notes":"TBD"}`
+	rec := performRequest(e, http.MethodPost, "/api/activity", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Wait up to 500ms for the proposal to be enqueued.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(propStore.snapshotCreates()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if creates := propStore.snapshotCreates(); len(creates) != 1 {
+		t.Fatalf("expected 1 proposal create (vagueness blocks auto-accept), got %d", len(creates))
+	}
+	// No direct task create — vagueness gate held the line.
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 0 {
+		t.Errorf("expected 0 direct task creates (description vague), got %d", len(gtdStore.createdTasks))
+	}
+}
