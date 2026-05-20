@@ -116,6 +116,35 @@ cosign verify-blob \
 
 The `.sig` and `.pem` files are attached to each GitHub Release alongside the binaries. The identity regex is anchored to the release workflow on a semver tag; verification is fail-closed.
 
+### Scripted install (curl | bash / irm | iex)
+
+Installer scripts download, cosign-verify, and place binaries + a starter `.env` / `.mcp.json`. See the foot-gun warning below before piping to a shell.
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh | bash
+```
+
+```powershell
+# Windows / WSL
+irm https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.ps1 | iex
+```
+
+**IMPORTANT — empty API_KEY foot-gun**: when piping to `bash` there is NO interactive wizard — stdin is the `curl` process, not your terminal. The script writes an EMPTY `API_KEY=` line and you MUST edit `~/.config/wayneblacktea/.env` before starting the server. To use the wizard, save the script first then run it directly.
+
+Environment overrides:
+
+| Env var | Purpose |
+|---------|---------|
+| `WBT_VERSION` | Pin to a specific release (default: latest) |
+| `WBT_PREFIX` | Install prefix (default: `$HOME/.local`) |
+| `WBT_CONFIG` | Config dir (default: `$HOME/.config/wayneblacktea`) |
+| `WBT_NO_MCP` | Skip `claude mcp add` registration |
+| `WBT_NO_PROMPT` | Force non-interactive (placeholders, empty API_KEY) |
+| `WBT_INSECURE_SKIP_VERIFY` | Skip cosign verification (NOT RECOMMENDED — default is fail-closed) |
+
+Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). Phase 3 will rewrite `install.sh` to delegate to `wbt setup` for end-to-end UX.
+
 ## Security notes
 
 - **Never commit `.env`** — it is in `.gitignore`. Verify before every `git add`.
