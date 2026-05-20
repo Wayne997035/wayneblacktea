@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -241,22 +242,31 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 // Validation per entry:
 //   - url MUST match GitHubPRURLRe
 //   - head_ref MUST be non-empty AND not contain control characters
+//   - repo MUST be non-empty AND match owner/repo slug pattern (the slug
+//     downstream flows into `gh -R <slug>` argv invocations so we reject
+//     shell metas / whitespace / path traversal here at the boundary)
 //   - each string field MUST NOT exceed reconcileMaxStringField runes
 //   - merged_at MUST parse as RFC3339 when provided (empty allowed for fixtures)
 func validateAndConvertMergedPRs(in []reconcileMergedPR) ([]gtd.MergedPR, string) {
 	out := make([]gtd.MergedPR, 0, len(in))
-	for _, e := range in {
+	for i, e := range in {
 		if e.URL == "" {
-			return nil, "merged_prs[i].url is required"
+			return nil, fmt.Sprintf("merged_prs[%d].url is required", i)
 		}
 		if !validator.GitHubPRURLRe.MatchString(e.URL) {
-			return nil, "merged_prs[i].url must be a valid GitHub PR URL"
+			return nil, fmt.Sprintf("merged_prs[%d].url must be a valid GitHub PR URL", i)
 		}
 		if e.HeadRef == "" {
-			return nil, "merged_prs[i].head_ref is required"
+			return nil, fmt.Sprintf("merged_prs[%d].head_ref is required", i)
 		}
 		if hasReconcileControlChars(e.HeadRef) {
-			return nil, "merged_prs[i].head_ref must not contain control characters"
+			return nil, fmt.Sprintf("merged_prs[%d].head_ref must not contain control characters", i)
+		}
+		if e.Repo == "" {
+			return nil, fmt.Sprintf("merged_prs[%d].repo is required", i)
+		}
+		if !validator.RepoSlugRe.MatchString(e.Repo) {
+			return nil, fmt.Sprintf("merged_prs[%d].repo must match owner/repo slug pattern", i)
 		}
 		if msg := checkReconcileFieldLen(e); msg != "" {
 			return nil, msg
@@ -350,23 +360,21 @@ func persistObservedPRs(ctx context.Context, store mergedprs.Store, prs []gtd.Me
 	}
 }
 
-// auditBodyExcerptMaxLen caps the body excerpt persisted into
-// merged_prs_observed.body_excerpt. 500 chars matches the matcher's
-// sanitiseBodyExcerpt cap in internal/gtd/reconcile.go — keeping the two
-// in sync so the dashboard sees a consistent length budget.
-const auditBodyExcerptMaxLen = 500
-
-// capBodyExcerptForAudit truncates s at auditBodyExcerptMaxLen runes
-// (UTF-8 safe). Used by the merged_prs_observed audit-write path.
+// capBodyExcerptForAudit truncates s at mergedprs.AuditBodyExcerptMaxLen runes
+// (UTF-8 safe). Used by the merged_prs_observed audit-write path. The cap is
+// owned by the persistence package (internal/mergedprs) so the HTTP and MCP
+// surfaces share a single source of truth — the matcher's sanitiseBodyExcerpt
+// cap in internal/gtd/reconcile.go intentionally mirrors the same number so
+// the dashboard sees a consistent length budget.
 func capBodyExcerptForAudit(s string) string {
 	if s == "" {
 		return ""
 	}
 	runes := []rune(s)
-	if len(runes) <= auditBodyExcerptMaxLen {
+	if len(runes) <= mergedprs.AuditBodyExcerptMaxLen {
 		return s
 	}
-	return string(runes[:auditBodyExcerptMaxLen])
+	return string(runes[:mergedprs.AuditBodyExcerptMaxLen])
 }
 
 // writeFuzzyCandidates runs the Phase 2 fuzzy matcher against all tasks and

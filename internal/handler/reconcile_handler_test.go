@@ -15,6 +15,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -151,6 +152,7 @@ func TestReconcileMergedPRs_Idempotent(t *testing.T) {
 	body := mustJSON(t, map[string]any{
 		"merged_prs": []map[string]any{{
 			"url": "https://github.com/owner/repo/pull/2", "head_ref": branch,
+			"repo": "owner/repo",
 		}},
 	})
 
@@ -209,6 +211,7 @@ func TestReconcileMergedPRs_NoMatch(t *testing.T) {
 	body := mustJSON(t, map[string]any{
 		"merged_prs": []map[string]any{{
 			"url": "https://github.com/owner/repo/pull/3", "head_ref": "feature/x",
+			"repo": "owner/repo",
 		}},
 	})
 	rec := runReconcileRequest(t, h, body)
@@ -263,6 +266,7 @@ func TestReconcileMergedPRs_MultipleSameBranch_PicksMostRecent(t *testing.T) {
 	body := mustJSON(t, map[string]any{
 		"merged_prs": []map[string]any{{
 			"url": "https://github.com/owner/repo/pull/4", "head_ref": branch,
+			"repo": "owner/repo",
 		}},
 	})
 	rec := runReconcileRequest(t, h, body)
@@ -320,6 +324,7 @@ func TestReconcileMergedPRs_PRURLMatch(t *testing.T) {
 	body := mustJSON(t, map[string]any{
 		"merged_prs": []map[string]any{{
 			"url": prURL, "head_ref": "irrelevant",
+			"repo": "owner/repo",
 		}},
 	})
 	rec := runReconcileRequest(t, h, body)
@@ -360,6 +365,7 @@ func TestReconcileMergedPRs_DoSGuards(t *testing.T) {
 					prs[i] = map[string]any{
 						"url":      "https://github.com/owner/repo/pull/1",
 						"head_ref": "feature/x",
+						"repo":     "owner/repo",
 					}
 				}
 				return mustJSON(t, map[string]any{"merged_prs": prs})
@@ -368,29 +374,67 @@ func TestReconcileMergedPRs_DoSGuards(t *testing.T) {
 			wantSub:  "200 entries",
 		},
 		{
-			name:     "malformed pr_url → 400",
-			body:     mustJSON(t, map[string]any{"merged_prs": []map[string]any{{"url": "javascript:alert(1)", "head_ref": "x"}}}),
+			name: "malformed pr_url → 400",
+			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
+				"url": "javascript:alert(1)", "head_ref": "x", "repo": "owner/repo",
+			}}}),
 			wantCode: http.StatusBadRequest,
 			wantSub:  "valid GitHub PR URL",
 		},
 		{
 			name:     "missing head_ref → 400",
-			body:     mustJSON(t, map[string]any{"merged_prs": []map[string]any{{"url": "https://github.com/o/r/pull/1"}}}),
+			body:     mustJSON(t, map[string]any{"merged_prs": []map[string]any{{"url": "https://github.com/o/r/pull/1", "repo": "owner/repo"}}}),
 			wantCode: http.StatusBadRequest,
 			wantSub:  "head_ref",
 		},
 		{
 			name: "head_ref with newline → 400",
 			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
-				"url": "https://github.com/o/r/pull/1", "head_ref": "bad\nbranch",
+				"url": "https://github.com/o/r/pull/1", "head_ref": "bad\nbranch", "repo": "owner/repo",
 			}}}),
 			wantCode: http.StatusBadRequest,
 			wantSub:  "control characters",
 		},
 		{
+			name: "missing repo → 400",
+			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
+				"url": "https://github.com/o/r/pull/1", "head_ref": "x",
+			}}}),
+			wantCode: http.StatusBadRequest,
+			wantSub:  "repo is required",
+		},
+		{
+			name: "repo path-traversal → 400",
+			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
+				"url": "https://github.com/o/r/pull/1", "head_ref": "x",
+				"repo": "../etc/passwd",
+			}}}),
+			wantCode: http.StatusBadRequest,
+			wantSub:  "owner/repo slug pattern",
+		},
+		{
+			name: "repo shell-injection → 400",
+			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
+				"url": "https://github.com/o/r/pull/1", "head_ref": "x",
+				"repo": "owner/repo;rm -rf",
+			}}}),
+			wantCode: http.StatusBadRequest,
+			wantSub:  "owner/repo slug pattern",
+		},
+		{
+			name: "repo with space → 400",
+			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
+				"url": "https://github.com/o/r/pull/1", "head_ref": "x",
+				"repo": "owner/repo with space",
+			}}}),
+			wantCode: http.StatusBadRequest,
+			wantSub:  "owner/repo slug pattern",
+		},
+		{
 			name: "invalid merged_at → 400",
 			body: mustJSON(t, map[string]any{"merged_prs": []map[string]any{{
-				"url": "https://github.com/o/r/pull/1", "head_ref": "x", "merged_at": "not-a-date",
+				"url": "https://github.com/o/r/pull/1", "head_ref": "x",
+				"repo": "owner/repo", "merged_at": "not-a-date",
 			}}}),
 			wantCode: http.StatusBadRequest,
 			wantSub:  "RFC3339",
@@ -562,6 +606,121 @@ func TestReconcileMergedPRs_FuzzyCandidateForNullLinkageTask(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no pending candidate with reason=pr_merged_fuzzy for task %s", task.ID)
+	}
+}
+
+// TestReconcileMergedPRs_FuzzyCandidateFromCurl (Sprint #3 GTD a2088783) is
+// the curl-style smoke test for the Phase 2 fuzzy path. It exercises the
+// full HTTP wire: a single pending task with null branch_name + null pr_url
+// whose title strongly overlaps an incoming PR title.
+//
+// Goals:
+//   - response.candidate_writes == 1
+//   - completion_candidates: one row with reason='pr_merged_fuzzy',
+//     confidence='medium', status='pending' (NOT auto-applied), task_id
+//     matches the seeded task
+//   - merged_prs_observed: one row whose url matches the incoming PR (verifies
+//     Task B's repo validation didn't reject a legitimate input)
+//
+// Scope: single-task scenario only — the multi-task ambiguity logic is
+// covered by gtd/fuzzy_reconcile_test.go (Engineer 1's worktree). We MUST
+// NOT touch fuzzy logic here.
+func TestReconcileMergedPRs_FuzzyCandidateFromCurl(t *testing.T) {
+	store, candStore, mpsStore, d := openMemForReconcileWithMergedPRs(t)
+	h := handler.NewReconcileHandler(store, candStore).WithMergedPRsStore(mpsStore)
+	ctx := context.Background()
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:    "implement OAuth refresh token rotation",
+		Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	// Branch + pr_url intentionally NOT set — fuzzy eligibility (NULL linkage).
+
+	prURL := "https://github.com/Wayne997035/wayneblacktea/pull/9999"
+	body := mustJSON(t, map[string]any{
+		"merged_prs": []map[string]any{{
+			"url":       prURL,
+			"head_ref":  "feat/oauth",
+			"merged_at": "2026-05-19T10:00:00Z",
+			"title":     "implement OAuth refresh token rotation",
+			"body":      "",
+			"repo":      "Wayne997035/wayneblacktea",
+		}},
+	})
+	rec := runReconcileRequest(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	assertReconcileFuzzyResponse(t, rec.Body.Bytes())
+	assertFuzzyCandidateRow(t, ctx, candStore, task.ID)
+	assertObservedRowForURL(t, d, prURL, "Wayne997035/wayneblacktea")
+}
+
+// assertReconcileFuzzyResponse parses the reconcile response and asserts the
+// fuzzy contract: candidate_writes=1, applied=0 (fuzzy NEVER auto-applies).
+func assertReconcileFuzzyResponse(t *testing.T, raw []byte) {
+	t.Helper()
+	var resp struct {
+		Applied         int `json:"applied"`
+		NoMatch         int `json:"no_match"`
+		CandidateWrites int `json:"candidate_writes"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body: %s)", err, string(raw))
+	}
+	if resp.CandidateWrites != 1 {
+		t.Errorf("candidate_writes = %d, want 1", resp.CandidateWrites)
+	}
+	if resp.Applied != 0 {
+		t.Errorf("applied = %d, want 0 (fuzzy NEVER auto-applies)", resp.Applied)
+	}
+}
+
+// assertFuzzyCandidateRow scans the pending-candidates list and asserts
+// exactly one row exists for taskID with the fuzzy reason + medium confidence
+// + pending status.
+func assertFuzzyCandidateRow(t *testing.T, ctx context.Context, candStore completioncandidate.Store, taskID uuid.UUID) {
+	t.Helper()
+	pendings, err := candStore.ListPendingCandidates(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListPendingCandidates: %v", err)
+	}
+	matched := 0
+	for _, c := range pendings {
+		if c.TaskID != taskID || c.Reason != completioncandidate.ReasonPRMerged {
+			continue
+		}
+		matched++
+		if c.Confidence != completioncandidate.ConfidenceMedium {
+			t.Errorf("confidence = %q, want medium", c.Confidence)
+		}
+		if c.Status != completioncandidate.StatusPending {
+			t.Errorf("status = %q, want pending (fuzzy is manual-accept only, NOT auto_applied)", c.Status)
+		}
+	}
+	if matched != 1 {
+		t.Errorf("fuzzy candidates for task = %d, want 1", matched)
+	}
+}
+
+// assertObservedRowForURL asserts exactly one merged_prs_observed row exists
+// for prURL with the expected repo (proves Task B's repo validation accepted
+// the legitimate slug).
+func assertObservedRowForURL(t *testing.T, d *sqlite.DB, prURL, wantRepo string) {
+	t.Helper()
+	if n := countMergedPRsObservedByURL(t, d, prURL); n != 1 {
+		t.Errorf("merged_prs_observed rows for url = %d, want 1", n)
+	}
+	row := getMergedPRsObservedRow(t, d, prURL)
+	if row.url != prURL {
+		t.Errorf("observed url = %q, want %q", row.url, prURL)
+	}
+	if row.repo != wantRepo {
+		t.Errorf("observed repo = %q, want %q", row.repo, wantRepo)
 	}
 }
 

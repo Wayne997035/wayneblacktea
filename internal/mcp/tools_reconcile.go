@@ -180,20 +180,34 @@ func (s *Server) handleReconcileMergedPRs(
 
 // reconcileMCPValidate is the MCP twin of validateAndConvertMergedPRs in
 // the HTTP handler. Kept separate so MCP error messages can evolve independently.
+//
+// Validation per entry — kept in sync with the HTTP handler:
+//   - url MUST match GitHubPRURLRe
+//   - head_ref MUST be non-empty AND not contain control characters
+//   - repo MUST be non-empty AND match owner/repo slug pattern (slug flows
+//     downstream into `gh -R <slug>` argv invocations)
+//   - each string field MUST NOT exceed reconcileMCPMaxStringField runes
+//   - merged_at MUST parse as RFC3339 when provided
 func reconcileMCPValidate(in []reconcileMCPMergedPR) ([]gtd.MergedPR, string) {
 	out := make([]gtd.MergedPR, 0, len(in))
-	for _, e := range in {
+	for i, e := range in {
 		if e.URL == "" {
-			return nil, "merged_prs[i].url is required"
+			return nil, fmt.Sprintf("merged_prs[%d].url is required", i)
 		}
 		if !validator.GitHubPRURLRe.MatchString(e.URL) {
-			return nil, "merged_prs[i].url must be a valid GitHub PR URL"
+			return nil, fmt.Sprintf("merged_prs[%d].url must be a valid GitHub PR URL", i)
 		}
 		if e.HeadRef == "" {
-			return nil, "merged_prs[i].head_ref is required"
+			return nil, fmt.Sprintf("merged_prs[%d].head_ref is required", i)
 		}
 		if reconcileMCPHasControlChars(e.HeadRef) {
-			return nil, "merged_prs[i].head_ref must not contain control characters"
+			return nil, fmt.Sprintf("merged_prs[%d].head_ref must not contain control characters", i)
+		}
+		if e.Repo == "" {
+			return nil, fmt.Sprintf("merged_prs[%d].repo is required", i)
+		}
+		if !validator.RepoSlugRe.MatchString(e.Repo) {
+			return nil, fmt.Sprintf("merged_prs[%d].repo must match owner/repo slug pattern", i)
 		}
 		for _, p := range []struct{ name, val string }{
 			{"url", e.URL},
@@ -203,7 +217,7 @@ func reconcileMCPValidate(in []reconcileMCPMergedPR) ([]gtd.MergedPR, string) {
 			{"repo", e.Repo},
 		} {
 			if len([]rune(p.val)) > reconcileMCPMaxStringField {
-				return nil, "merged_prs[i]." + p.name + " exceeds 4 KiB"
+				return nil, fmt.Sprintf("merged_prs[%d].%s exceeds 4 KiB", i, p.name)
 			}
 		}
 
@@ -214,7 +228,7 @@ func reconcileMCPValidate(in []reconcileMCPMergedPR) ([]gtd.MergedPR, string) {
 			} else if t, perr2 := time.Parse(time.RFC3339, mt); perr2 == nil {
 				merged = t
 			} else {
-				return nil, "merged_prs[i].merged_at must be RFC3339"
+				return nil, fmt.Sprintf("merged_prs[%d].merged_at must be RFC3339", i)
 			}
 		}
 
@@ -254,22 +268,19 @@ func (s *Server) reconcileCandidateStore() completioncandidate.Store {
 	return nil
 }
 
-// reconcileMCPAuditBodyExcerptMaxLen caps the body excerpt persisted into
-// merged_prs_observed.body_excerpt for the MCP path. Mirrors the HTTP
-// handler's auditBodyExcerptMaxLen so both surfaces enforce the same cap.
-const reconcileMCPAuditBodyExcerptMaxLen = 500
-
-// reconcileMCPCapBodyExcerpt truncates s at reconcileMCPAuditBodyExcerptMaxLen
-// runes (UTF-8 safe).
+// reconcileMCPCapBodyExcerpt truncates s at mergedprs.AuditBodyExcerptMaxLen
+// runes (UTF-8 safe). Both HTTP and MCP surfaces share the same cap so the
+// dashboard sees a consistent length budget; see internal/mergedprs/store.go
+// for the canonical definition.
 func reconcileMCPCapBodyExcerpt(s string) string {
 	if s == "" {
 		return ""
 	}
 	runes := []rune(s)
-	if len(runes) <= reconcileMCPAuditBodyExcerptMaxLen {
+	if len(runes) <= mergedprs.AuditBodyExcerptMaxLen {
 		return s
 	}
-	return string(runes[:reconcileMCPAuditBodyExcerptMaxLen])
+	return string(runes[:mergedprs.AuditBodyExcerptMaxLen])
 }
 
 // reconcileMCPPersistObserved upserts every PR into the merged_prs_observed

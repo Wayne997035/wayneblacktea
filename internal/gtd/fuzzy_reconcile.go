@@ -189,10 +189,18 @@ func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
 		bestFound := false
 		taskIDStr := t.ID.String()
 
+		forcedMatched := false
 		for i, pr := range prs {
-			// Rule 1: task UUID literally appears in body.
+			// Rule 1: task UUID literally appears in body. The first such PR
+			// wins for this task (subsequent PRs with the same UUID-in-body
+			// would be the same hit; candidate uniqueness key (task_id, reason)
+			// dedups at write time). break the inner PR loop, then continue
+			// the outer task loop — earlier revisions `return`-ed here, which
+			// aborted evaluation of every subsequent task in the batch.
 			if pr.Body != "" && strings.Contains(pr.Body, taskIDStr) {
-				return appendForcedMatch(out, t.ID, pr.URL, 1.0, FuzzyReasonTaskIDInBody, prs, tasks)
+				out = appendForcedMatch(out, t.ID, pr.URL, 1.0, FuzzyReasonTaskIDInBody)
+				forcedMatched = true
+				break
 			}
 
 			// Rule 2: Jaccard title similarity.
@@ -208,6 +216,10 @@ func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
 				bestFound = true
 			}
 		}
+		if forcedMatched {
+			// UUID-in-body rule wins; skip Jaccard for this task.
+			continue
+		}
 		if bestFound {
 			out = append(out, best)
 		}
@@ -215,24 +227,15 @@ func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
 	return out
 }
 
-// appendForcedMatch is the early-return helper for rule 1 (task UUID in
-// body). Returning at the first body match means a single task can be
-// claimed by exactly one PR via the UUID path; subsequent PRs in the same
-// batch with the same UUID-in-body would be the same hit anyway and the
-// candidate uniqueness key (task_id, reason) handles the dedup at write
-// time.
-//
-// We accept the unused prs/tasks parameters so the function signature can
-// stay flexible if a future revision needs to continue past the first hit
-// (currently it doesn't; we exit immediately for that single task).
+// appendForcedMatch appends a UUID-in-body (rule 1) hit to out and returns
+// the resulting slice. Single call site in MatchPendingTasksFuzzy — extracted
+// only to keep the inner PR loop tidy.
 func appendForcedMatch(
 	out []FuzzyMatch,
 	taskID uuid.UUID,
 	prURL string,
 	score float64,
 	reason string,
-	_ []MergedPR,
-	_ []db.Task,
 ) []FuzzyMatch {
 	return append(out, FuzzyMatch{
 		TaskID: taskID,

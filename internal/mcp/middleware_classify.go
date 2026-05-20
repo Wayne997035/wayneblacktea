@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/redact"
 )
 
 // mcpClassifySem caps concurrent classifier goroutines spawned by the MCP
@@ -179,9 +180,15 @@ func (s *Server) logMCPDecision(ctx context.Context, title, toolName string) err
 //
 // Dedup: scoped to EXISTING pending TypeTask proposals (case-insensitive
 // title), NOT to the tasks table — a closed task with the same title may have
-// legitimately resurfaced. argSummary/resultSummary are already redacted by
-// autoLogMiddleware (sanitize.Notes) before reaching this function; we do not
-// re-redact here, only enforce length + payload-size caps.
+// legitimately resurfaced. argSummary/resultSummary are sanitised upstream by
+// autoLogMiddleware (sanitize.Notes); here we additionally pass argSummary +
+// classifierRationale through redact.ForLLM as a defence-in-depth pass before
+// they land in pending_proposals.payload — matching the HTTP path in
+// autoCreateTaskFromClassifier (internal/handler/autolog_handler.go:447-448)
+// so both writers of this long-lived column share the same posture
+// (backend-security-design.md §3.1). redact.ForLLM is idempotent: re-applying
+// it to an already-redacted string is a safe no-op (the kv-secret catch-all
+// is guarded against re-matching its own placeholder).
 func (s *Server) autoCaptureMCPTask(
 	ctx context.Context,
 	title, toolName, argSummary, resultSummary, classifierRationale string,
@@ -221,9 +228,9 @@ func (s *Server) autoCaptureMCPTask(
 	payload := proposal.TaskPayload{
 		Title:               title,
 		SourceTool:          toolName,
-		ArgSummary:          argSummary,
+		ArgSummary:          redact.ForLLM(argSummary),
 		ResultSummary:       resultSummary,
-		ClassifierRationale: classifierRationale,
+		ClassifierRationale: redact.ForLLM(classifierRationale),
 		SuggestedKind:       "general",
 	}
 	encoded, err := json.Marshal(payload)

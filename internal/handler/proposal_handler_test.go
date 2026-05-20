@@ -968,6 +968,55 @@ func TestPendingProposalResponse_ReasonField(t *testing.T) {
 	}
 }
 
+// TestPendingProposalResponse_ReasonField_PresentCase (Sprint #3 GTD a2088783)
+// is the explicit positive-side regression guard for the reason field's
+// round-trip. The original TestPendingProposalResponse_ReasonField is
+// table-driven and DOES cover the present case, but a separate single-case
+// test keeps the contract obvious even if a future refactor reorders the
+// table or accidentally drops the assertion. We seed a row with
+// Reason=pgtype.Text{String: "ttl-expired-30d", Valid: true} and assert that
+// GET /api/proposals?status=all returns JSON where items[0]["reason"] is
+// present with the exact string value.
+func TestPendingProposalResponse_ReasonField_PresentCase(t *testing.T) {
+	row := db.PendingProposal{
+		ID:      uuid.New(),
+		Type:    "concept",
+		Status:  "rejected",
+		Payload: []byte(`{}`),
+		Reason:  pgtype.Text{String: "ttl-expired-30d", Valid: true},
+	}
+	store := &fakeProposalStore{
+		byID: map[uuid.UUID]*db.PendingProposal{row.ID: &row},
+		all:  []db.PendingProposal{row},
+	}
+	e := newEcho()
+	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	e.GET("/api/proposals", h.ListProposals)
+	rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("body not JSON array: %v (body: %s)", err, rec.Body.String())
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	val, hasKey := items[0]["reason"]
+	if !hasKey {
+		t.Fatalf("reason key absent — non-null Reason MUST emit the JSON key (body: %s)", rec.Body.String())
+	}
+	got, ok := val.(string)
+	if !ok {
+		t.Fatalf("reason value type = %T, want string", val)
+	}
+	if got != "ttl-expired-30d" {
+		t.Errorf("reason value = %q, want %q", got, "ttl-expired-30d")
+	}
+}
+
 // TestConfirmProposal_TypeTask_MissingTitle: payload without title → 400.
 func TestConfirmProposal_TypeTask_MissingTitle(t *testing.T) {
 	id := uuid.New()

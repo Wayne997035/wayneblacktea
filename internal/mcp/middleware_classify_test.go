@@ -618,6 +618,101 @@ func TestMaybeClassifyToolCall_CreatesProposalNotTask(t *testing.T) {
 	}
 }
 
+// TestAutoCaptureMCPTask_RedactsCredentials is the regression test for GTD
+// 393d945b: autoCaptureMCPTask MUST pass argSummary + classifierRationale
+// through redact.ForLLM before persisting them in pending_proposals.payload,
+// mirroring the HTTP path in autoCreateTaskFromClassifier
+// (internal/handler/autolog_handler.go:447-448). Otherwise the MCP writer
+// would land raw credentials on disk while the HTTP writer redacts them —
+// inconsistent defence-in-depth posture for a long-lived column
+// (backend-security-design.md §3.1).
+//
+// Scenario: invoke autoCaptureMCPTask directly with rationale AND argSummary
+// both containing a 40-char fake GitHub PAT. Decode the persisted payload
+// and assert: (a) neither field leaks the raw token, (b) the canonical
+// placeholder "[REDACTED:github-token]" appears in BOTH fields. Idempotency
+// is verified by re-invoking autoCaptureMCPTask with the already-redacted
+// strings and confirming the second payload is byte-identical to the first.
+func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
+	const fakePAT = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 40 chars, fake
+	const wantPlaceholder = "[REDACTED:github-token]"
+
+	argSummaryWithToken := "bash command leaked " + fakePAT + " before classify"
+	rationaleWithToken := "classifier saw " + fakePAT + " in arg, follow-up rotate task"
+
+	p := &mockProposalStore{}
+	s := &Server{proposal: p}
+
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		"Rotate leaked GitHub PAT (MCP path)",
+		"complete_task",
+		argSummaryWithToken,
+		"status=ok",
+		rationaleWithToken,
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+
+	creates := p.recordedCreates()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 proposal create, got %d", len(creates))
+	}
+
+	var payload proposal.TaskPayload
+	if err := json.Unmarshal(creates[0].Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+
+	if strings.Contains(payload.ArgSummary, fakePAT) {
+		t.Errorf("arg_summary leaked raw PAT: %q", payload.ArgSummary)
+	}
+	if !strings.Contains(payload.ArgSummary, wantPlaceholder) {
+		t.Errorf("arg_summary missing placeholder %q, got %q",
+			wantPlaceholder, payload.ArgSummary)
+	}
+	if strings.Contains(payload.ClassifierRationale, fakePAT) {
+		t.Errorf("classifier_rationale leaked raw PAT: %q", payload.ClassifierRationale)
+	}
+	if !strings.Contains(payload.ClassifierRationale, wantPlaceholder) {
+		t.Errorf("classifier_rationale missing placeholder %q, got %q",
+			wantPlaceholder, payload.ClassifierRationale)
+	}
+
+	// Idempotency check: re-feed the already-redacted strings; the placeholder
+	// substring "[REDACTED:github-token]" must survive a second pass through
+	// redact.ForLLM unchanged. Drives a fresh proposal store so the dedup
+	// branch isn't tripped by the title match.
+	p2 := &mockProposalStore{}
+	s2 := &Server{proposal: p2}
+	if err := s2.autoCaptureMCPTask(
+		context.Background(),
+		"Rotate leaked GitHub PAT (MCP path) idempotency",
+		"complete_task",
+		payload.ArgSummary, // already redacted
+		"status=ok",
+		payload.ClassifierRationale, // already redacted
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask idempotency: %v", err)
+	}
+	creates2 := p2.recordedCreates()
+	if len(creates2) != 1 {
+		t.Fatalf("idempotency: expected 1 create, got %d", len(creates2))
+	}
+	var payload2 proposal.TaskPayload
+	if err := json.Unmarshal(creates2[0].Payload, &payload2); err != nil {
+		t.Fatalf("idempotency: decode payload: %v", err)
+	}
+	if payload2.ArgSummary != payload.ArgSummary {
+		t.Errorf("idempotency: arg_summary changed on second pass:\n  first:  %q\n  second: %q",
+			payload.ArgSummary, payload2.ArgSummary)
+	}
+	if payload2.ClassifierRationale != payload.ClassifierRationale {
+		t.Errorf("idempotency: classifier_rationale changed on second pass:\n  first:  %q\n  second: %q",
+			payload.ClassifierRationale, payload2.ClassifierRationale)
+	}
+}
+
 // TestTruncateRunes verifies UTF-8-safe truncation.
 func TestTruncateRunes(t *testing.T) {
 	cases := []struct {

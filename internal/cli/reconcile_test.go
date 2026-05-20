@@ -116,6 +116,98 @@ func TestRunReconcile_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunReconcile_RejectsHostileSlug verifies the M-1 round-2 hardening:
+// when fetchActiveRepos returns a slug that does not match validator.RepoSlugRe,
+// the CLI must (a) NOT invoke gh with that slug as an argv segment, and
+// (b) emit a stderr warning containing "invalid repo slug" so the operator
+// sees what was filtered. The per-repo failure is swallowed (existing
+// behaviour — one bad slug shouldn't kill the whole batch) so the run
+// finishes nil; the assertions confirm the validator did its job.
+func TestRunReconcile_RejectsHostileSlug(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX shell-script stub for gh")
+	}
+
+	apiKey := "test-key-hostile"
+	t.Setenv("API_KEY", apiKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/workspace/repos":
+			// Hostile-slug fixture: shell-meta, path traversal, newline,
+			// missing-slash. The fix-under-test rejects all of these
+			// before they reach gh argv.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "evil;rm/repo"},
+				{"name": "../etc/passwd"},
+				{"name": "owner\nrepo"},
+				{"name": "no-slash-here"},
+			})
+		case "/api/tasks/reconcile-merged-prs":
+			// Any POST means the validator failed.
+			t.Errorf("unexpected POST: hostile slugs must not produce a PR batch")
+			http.Error(w, "should not be called", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// gh stub records its argv to a marker file. The test then asserts that
+	// no hostile slug ever appeared in any -R arg.
+	stubDir := t.TempDir()
+	markerPath := filepath.Join(stubDir, "gh-invocations.log")
+	stubScript := "#!/bin/sh\n" +
+		"case \"$1\" in\n  auth) exit 0 ;;\nesac\n" +
+		"printf '%s\\n' \"$*\" >> " + markerPath + "\n" +
+		"echo '[]'\n"
+	stubPath := filepath.Join(stubDir, "gh")
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil { //nolint:gosec // test fixture, intentional exec perm
+		t.Fatalf("write stub: %v", err)
+	}
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+origPath)
+
+	// Capture stderr to assert the "invalid repo slug" warning is emitted.
+	origStderr := os.Stderr
+	rPipe, wPipe, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("pipe: %v", pipeErr)
+	}
+	os.Stderr = wPipe
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	runErr := cli.RunReconcile([]string{"--server", srv.URL, "--since", "2025-01-01"})
+	_ = wPipe.Close()
+	stderrBytes, _ := io.ReadAll(rPipe)
+	stderrOut := string(stderrBytes)
+
+	if runErr != nil {
+		t.Errorf("RunReconcile returned err=%v; per-repo failures should be swallowed", runErr)
+	}
+	if !strings.Contains(stderrOut, "invalid repo slug") {
+		t.Errorf("stderr did not contain 'invalid repo slug'; got:\n%s", stderrOut)
+	}
+	// Verify gh was NOT invoked with any hostile slug. The marker file
+	// either doesn't exist (no gh runs) or contains no hostile substring.
+	if data, err := os.ReadFile(markerPath); err == nil { //nolint:gosec // G304: path is t.TempDir()-scoped
+		invocations := string(data)
+		hostileFragments := []string{"evil;", "../etc", "no-slash-here"}
+		// owner\nrepo is hard to grep cleanly through a shell stub; the regex
+		// rejection alone is the canonical assertion for that case.
+		for _, frag := range hostileFragments {
+			if strings.Contains(invocations, frag) {
+				t.Errorf("gh was invoked with hostile slug fragment %q; invocations:\n%s",
+					frag, invocations)
+			}
+		}
+	}
+}
+
 // TestRunReconcile_GhMissing_ExitsZero verifies the soft-fail when gh isn't
 // installed. PATH is overridden to a tempdir containing no `gh`.
 func TestRunReconcile_GhMissing_ExitsZero(t *testing.T) {

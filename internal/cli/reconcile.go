@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/joho/godotenv"
 )
 
@@ -265,8 +266,8 @@ type ghMergedPR struct {
 // A non-zero exit code from gh is propagated as an error so the caller can
 // log + skip the repo; the function itself does NOT print to stderr.
 func ghListMergedPRs(ctx context.Context, slug string, since time.Time) ([]reconcilePR, error) {
-	if strings.ContainsAny(slug, " \t\n\r") {
-		return nil, fmt.Errorf("invalid repo slug %q (contains whitespace)", slug)
+	if !validator.RepoSlugRe.MatchString(slug) {
+		return nil, fmt.Errorf("invalid repo slug %q (must match owner/repo pattern)", slug)
 	}
 	args := []string{
 		"-R", slug,
@@ -279,12 +280,12 @@ func ghListMergedPRs(ctx context.Context, slug string, since time.Time) ([]recon
 	cctx, cancel := context.WithTimeout(ctx, reconcileHTTPTimeout)
 	defer cancel()
 	// G204 rationale: the only variable argument is `slug` which we have
-	// already validated to be free of whitespace above; every other arg is a
-	// fixed string literal. The variadic call to exec.CommandContext does
-	// NOT invoke a shell — gh receives the args as a strict argv. Slug
-	// content can be arbitrary GitHub repo names ("owner/name"), which by
-	// GitHub policy contain only [A-Za-z0-9._-/] — those are safe argv.
-	//nolint:gosec // G204: gh argv is fully argv-style (no shell), slug pre-validated
+	// already validated against validator.RepoSlugRe (^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$);
+	// every other arg is a fixed string literal. The variadic call to
+	// exec.CommandContext does NOT invoke a shell — gh receives the args
+	// as a strict argv. Slug content is restricted to the GitHub-permitted
+	// charset, so no shell-meta / path-traversal / newline-smuggling is possible.
+	//nolint:gosec // G204: gh argv is fully argv-style (no shell), slug pre-validated by RepoSlugRe
 	cmd := exec.CommandContext(cctx, "gh", args...)
 	cmd.Stderr = nil // discard gh's "no merged PRs" warning
 	out, err := cmd.Output()

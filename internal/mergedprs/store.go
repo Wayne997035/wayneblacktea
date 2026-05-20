@@ -15,6 +15,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// AuditBodyExcerptMaxLen is the rune cap applied to body_excerpt before
+// it's persisted to merged_prs_observed. UTF-8 safe via []rune slicing.
+// Used by both HTTP (handler) and MCP reconcile paths so the dashboard
+// sees a consistent length budget. Kept here (the persistence package)
+// because the cap is a property of the audit row, not the call site.
+const AuditBodyExcerptMaxLen = 500
+
 // Observed is the domain record persisted into the merged_prs_observed table.
 // BodyExcerpt is the sanitised, length-capped slice of the original PR body
 // (sanitisation happens in the handler/MCP layer before invoking Upsert so

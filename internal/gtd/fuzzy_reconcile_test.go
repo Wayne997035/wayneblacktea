@@ -184,6 +184,74 @@ func TestMatchPendingTasksFuzzy_StopwordsDoNotDominate(t *testing.T) {
 	}
 }
 
+// TestMatchPendingTasksFuzzy_UUIDInBody_MultipleTasksAllScanned regresses the
+// PR #122 review finding: an earlier revision used `return appendForcedMatch(...)`
+// inside the inner PR loop, which aborted the outer task loop on the first
+// UUID-in-body hit, so subsequent tasks in the same batch were silently
+// skipped. The correct behaviour is to record the rule-1 hit, break the inner
+// PR loop for that task, and CONTINUE evaluating remaining tasks (each task
+// independently picks UUID-in-body OR best Jaccard).
+//
+// Seed: 2 pending null-linkage tasks. Task1 has its UUID in PR1.body; Task2
+// has Jaccard >= 0.6 against PR2.title. Expect 2 matches total, one per task.
+func TestMatchPendingTasksFuzzy_UUIDInBody_MultipleTasksAllScanned(t *testing.T) {
+	t.Parallel()
+	task1ID := uuid.New()
+	task2ID := uuid.New()
+	tasks := []db.Task{
+		pendingTask(task1ID, "wholly unrelated title for task one"),
+		pendingTask(task2ID, "refactor frontend dashboard pagination logic"),
+	}
+	prs := []gtd.MergedPR{
+		{
+			URL:   "https://github.com/o/r/pull/1001",
+			Title: "completely different bump dependency",
+			Body:  "Closes task " + task1ID.String() + " inline.",
+		},
+		{
+			URL:   "https://github.com/o/r/pull/1002",
+			Title: "refactor frontend dashboard pagination logic update",
+			Body:  "",
+		},
+	}
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	if len(got) != 2 {
+		t.Fatalf("got %d matches, want 2 (one per task — UUID-in-body MUST NOT short-circuit outer loop)", len(got))
+	}
+
+	byTask := make(map[uuid.UUID]gtd.FuzzyMatch, 2)
+	for _, m := range got {
+		byTask[m.TaskID] = m
+	}
+	t1, ok := byTask[task1ID]
+	if !ok {
+		t.Fatalf("task1 (%s) missing from results: %+v", task1ID, got)
+	}
+	if t1.Reason != gtd.FuzzyReasonTaskIDInBody {
+		t.Errorf("task1 reason = %q, want %q", t1.Reason, gtd.FuzzyReasonTaskIDInBody)
+	}
+	if t1.Score != 1.0 {
+		t.Errorf("task1 score = %f, want 1.0", t1.Score)
+	}
+	if t1.PRURL != "https://github.com/o/r/pull/1001" {
+		t.Errorf("task1 PRURL = %s, want pull/1001", t1.PRURL)
+	}
+
+	t2, ok := byTask[task2ID]
+	if !ok {
+		t.Fatalf("task2 (%s) missing from results — outer loop appears to have aborted after task1's UUID hit", task2ID)
+	}
+	if t2.Reason != gtd.FuzzyReasonJaccardTitle {
+		t.Errorf("task2 reason = %q, want %q", t2.Reason, gtd.FuzzyReasonJaccardTitle)
+	}
+	if t2.Score < 0.6 || t2.Score > 1.0 {
+		t.Errorf("task2 score = %f, want [0.6, 1.0]", t2.Score)
+	}
+	if t2.PRURL != "https://github.com/o/r/pull/1002" {
+		t.Errorf("task2 PRURL = %s, want pull/1002", t2.PRURL)
+	}
+}
+
 // TestMatchPendingTasksFuzzy_UUIDInBodyBeatsLowJaccard verifies rule 1 wins
 // even when the title overlap would be below threshold.
 func TestMatchPendingTasksFuzzy_UUIDInBodyBeatsLowJaccard(t *testing.T) {
