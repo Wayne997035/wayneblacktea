@@ -20,37 +20,47 @@
 
 ## 安裝
 
-單一 binary、互動 wizard、預設 SQLite — 不用自己起任何 infra。
-
-**MCP stdio（最簡 — 不需要跑 server process）：**
-
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # wizard：選 SQLite 或 Postgres，寫 .env 跟 .mcp.json
+wbt setup
 ```
 
-從產生 `.mcp.json` 的目錄開 Claude Code；核准 project MCP server 後，Claude Code 會自動啟動 `wbt mcp`。
+就這樣。`wbt setup` 一條龍：建立 SQLite 目錄、解析 port、佔用就 reclaim、用 `nohup` 在背景啟動 `wayneblacktea-server`（PID file 寫到 `$XDG_STATE_HOME/wayneblacktea/`）、輪詢 `/health`，最後用 `claude mcp add --transport http` 把 HTTP MCP 註冊到 Claude Code。
 
-**含 dashboard + HTTP MCP transport：**
-
-```bash
-# 另外 build server binary
-go build -o "$(go env GOPATH)/bin/wayneblacktea-server" ./cmd/server
-
-wbt serve   # 載入 config → 啟動 server → 自動開瀏覽器 http://localhost:8080
+```
+$ wbt setup
+==> Reading or creating config…          [ok] Config ready
+==> Ensuring SQLite directory…           [ok] SQLite directory ready
+==> Resolving port…                      [ok] Port resolved: 8080
+==> Checking for an existing healthy server…
+==> Reclaiming TCP port if occupied…     [ok] Port is free
+==> Spawning wayneblacktea-server in the background…
+                                         [ok] Server spawned (pid 12345, logs ~/.local/state/wayneblacktea/server.log)
+==> Waiting for /health…                 [ok] Server is healthy
+==> Registering MCP with Claude Code…    [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
+All set. wayneblacktea is running at http://127.0.0.1:8080
 ```
 
-server 跑起來後，把 HTTP transport 加進 Claude Code：
+從任何目錄開 Claude Code 即可使用，不用 `.mcp.json`。
 
-```bash
-claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
-```
+姊妹指令：
+
+| 指令 | 用途 |
+|------|------|
+| `wbt status [--format json\|plain]` | 看背景 server 有沒有跑、健康狀態 |
+| `wbt stop` | 停掉背景 server（idempotent，沒跑會回報 not running） |
+| `wbt restart` | `stop` + `setup` |
+| `wbt setup --port 9090` | 用非預設 port |
+| `wbt setup --no-mcp` | 跳過 `claude mcp add` 步驟 |
+| `wbt init` | `wbt setup` 的 deprecated alias |
 
 核心 MCP 記憶功能不需要 Anthropic API key。Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)。
 
+> **Phase 3 — 即將推出**：Homebrew tap（`brew install wayne997035/tap/wayneblacktea`）以及 DXT package（Claude Desktop one-click install）。
+
 ## 5 分鐘 onboarding
 
-`wbt init` 完成後，從有 `.mcp.json` 的目錄開 Claude Code，試試：
+`wbt setup` 完成後，從任何目錄開 Claude Code，試試：
 
 ```
 # 看看 server 現在記得什麼

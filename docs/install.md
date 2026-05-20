@@ -1,29 +1,69 @@
 # wayneblacktea install guide
 
-## Quick start (recommended)
+## Quick start
 
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # SQLite default, writes .env + .mcp.json
+wbt setup
 ```
 
-Open Claude Code from the directory containing the generated `.mcp.json`; it will start `wbt mcp` automatically after you approve the project MCP server. Verify with `> get_today_context`.
+`wbt setup` is the one-command install (shipped in Phase 2). It does end-to-end:
 
-`wbt init` is an interactive wizard: picks SQLite (default, zero infra) or Postgres, generates an `API_KEY`, and writes `.env` + `.mcp.json`. No Anthropic API key is required for core MCP memory features.
+1. Reads or creates global config (`~/.config/wayneblacktea/config.yaml`, mode 0600).
+2. Ensures the SQLite directory exists (default backend, zero infra).
+3. Resolves the HTTP port (CLI `--port` flag > `WBT_PORT` env > config > 8080).
+4. Probes `/health` on the resolved port; if a healthy wayneblacktea server is already there, reuses it.
+5. Otherwise, reclaims the TCP port (kills the occupier if needed) and spawns `wayneblacktea-server` in the background via `nohup`, writing the PID file to `$XDG_STATE_HOME/wayneblacktea/server.pid` (default `~/.local/state/wayneblacktea/`).
+6. Polls `/health` until the new server reports ready (15 s deadline).
+7. Calls `claude mcp add wayneblacktea --transport http http://127.0.0.1:<port>/mcp` so any Claude Code session can find it.
 
-**Want the web dashboard / HTTP MCP transport?** Also build the server binary, then start it:
+Expected output:
 
-```bash
-go build -o "$(go env GOPATH)/bin/wayneblacktea-server" ./cmd/server
-wbt serve                                                            # http://localhost:8080
-claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+```
+$ wbt setup
+==> Reading or creating config…          [ok] Config ready
+==> Ensuring SQLite directory…           [ok] SQLite directory ready
+==> Resolving port…                      [ok] Port resolved: 8080
+==> Checking for an existing healthy server…
+==> Reclaiming TCP port if occupied…     [ok] Port is free
+==> Spawning wayneblacktea-server in the background…
+                                         [ok] Server spawned (pid 12345, logs ~/.local/state/wayneblacktea/server.log)
+==> Waiting for /health…                 [ok] Server is healthy
+==> Registering MCP with Claude Code…    [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
+All set. wayneblacktea is running at http://127.0.0.1:8080
 ```
 
-## Coming soon (Phase 2 + 3 preview)
+Open Claude Code anywhere, approve the MCP server when prompted, then verify with `> get_today_context`.
 
-- **Phase 2 — `wbt setup`** one-command install with auto-start + MCP registration (in development)
-- **Phase 3 — Homebrew tap**: `brew install wayne997035/tap/wayneblacktea`
-- **Phase 3 — DXT package** for Claude Desktop one-click install
+### `wbt setup` flags
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--port=<n>` | `WBT_PORT` env or `8080` from config | Override the HTTP port (the resolved value is persisted to config so `wbt status` reports correctly). |
+| `--no-mcp` | off | Skip the `claude mcp add` step (useful if you manage MCP registrations manually). |
+| `--mcp-name=<n>` | `wayneblacktea` | Override the name `claude mcp add` registers (useful if you run multiple wayneblacktea instances). |
+| `--server-bin=<path>` | `exec.LookPath("wayneblacktea-server")` | Override the server binary location (intended for tests / non-standard installs). |
+
+### Sister commands
+
+| Command | What it does |
+|---------|--------------|
+| `wbt status` | Prints a one-line summary: `pid`, `port`, `transport`, `healthy`, `pid_file`, `started_at`. Exit 0 if running and healthy. |
+| `wbt status --format json` | Same data as a JSON object — useful for shell scripts. |
+| `wbt stop` | Terminates the background server identified by the PID file and removes the PID file. Idempotent (missing PID file → exits 0 with "not running"). |
+| `wbt restart` | `wbt stop` followed by `wbt setup`. |
+| `wbt mcp` | Run the MCP server over stdio in the foreground. Useful for legacy stdio MCP integrations or for `.mcp.json`-managed project servers. |
+| `wbt init` | Deprecated alias for `wbt setup`; prints a deprecation notice on stderr but still runs. |
+
+### Migration from earlier wbt
+
+Earlier versions documented `wbt init` as the install entry point. `wbt init` now redirects to `wbt setup` (with a stderr deprecation notice) and there is no on-disk migration to perform — existing `.env` / `.mcp.json` files keep working. If you have an older stdio-only setup, run `wbt setup` once and it will register the HTTP MCP transport alongside any existing stdio entry; remove the stdio entry afterwards with `claude mcp remove <old-name>` if you no longer need it.
+
+### Phase 3 — coming next
+
+- **Homebrew tap**: `brew install wayne997035/tap/wayneblacktea`
+- **DXT package** for Claude Desktop one-click install
+- **`scripts/install.sh` trimming** now that `wbt setup` carries the orchestration burden
 
 ## Postgres (advanced)
 
@@ -41,7 +81,7 @@ Managed providers (Railway, Aiven, Supabase) have pgvector available — enable 
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
 go build -o bin/wbt ./cmd/wbt
-./bin/wbt init                     # choose [2] Postgres, enter DATABASE_URL
+./bin/wbt setup                    # writes config; for Postgres, set DATABASE_URL in ~/.config/wayneblacktea/.env first
 for f in migrations/0000*.up.sql; do psql "$DATABASE_URL" -f "$f"; done
 cd build && task build-server build-mcp && cd ..
 ./bin/wbt serve
@@ -143,7 +183,7 @@ Environment overrides:
 | `WBT_NO_PROMPT` | Force non-interactive (placeholders, empty API_KEY) |
 | `WBT_INSECURE_SKIP_VERIFY` | Skip cosign verification (NOT RECOMMENDED — default is fail-closed) |
 
-Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). Phase 3 will rewrite `install.sh` to delegate to `wbt setup` for end-to-end UX.
+Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). The installer prints a "run `wbt setup` to finish" hint at the end so users get the same end-to-end UX as `go install` + `wbt setup`; Phase 3 will trim the installer further as Homebrew / DXT distribution channels come online.
 
 ## Security notes
 

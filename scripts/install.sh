@@ -9,6 +9,12 @@
 # line and you MUST edit ~/.config/wayneblacktea/.env before starting the
 # server. To use the wizard, save the script first then run it directly.
 #
+# This installer downloads + cosign-verifies + extracts the CLI binaries
+# (wbt, wbt-context, wbt-hook, wbt-guard, wbt-doctor) and writes a starter
+# .env. End-to-end orchestration (start server, register MCP, probe /health)
+# is delegated to `wbt setup`, which is invoked separately after install
+# completes. The installer prints a "next: run wbt setup" reminder.
+#
 # Environment overrides:
 #   WBT_VERSION              Pin to a specific release (default: latest)
 #   WBT_PREFIX               Install prefix (default: $HOME/.local)
@@ -429,7 +435,13 @@ main() {
   log_info "wayneblacktea v${version} installed successfully"
   log_info "binaries:    ${BIN_DIR}"
   log_info "config:      ${ENV_FILE}"
-  log_info "next steps:  edit ${ENV_FILE} (set API_KEY first) then run: wbt --help"
+  printf '\n' >&2
+  log_info "next: run 'wbt setup' to start the background server and register the HTTP MCP"
+  log_info "      transport with Claude Code. 'wbt setup' is idempotent and re-uses an"
+  log_info "      already-running healthy instance. See docs/install.md for flags."
+  if [ "${WBT_NO_PROMPT:-0}" = "1" ] || [ ! -t 0 ]; then
+    log_info "      (non-interactive install — edit ${ENV_FILE} first to set API_KEY)"
+  fi
 }
 
 main "$@"
