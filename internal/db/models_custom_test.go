@@ -82,11 +82,14 @@ func TestPendingProposalMarshalJSON_HidesPgxWrappers(t *testing.T) {
 	}
 }
 
-// TestPendingProposalMarshalJSON_OmitsNilFields verifies that NULL pgtype
-// columns produce NO key in the output (omitempty on *string pointers), so
-// the frontend can distinguish "field absent" from "field present but
-// null/empty". This is the same contract handler.pendingProposalResponse
-// honours (PR #121 / #123).
+// TestPendingProposalMarshalJSON_OmitsNilFields verifies how NULL pgtype
+// columns are emitted: workspace_id / resolved_at / reason are omitted (the
+// frontend distinguishes "field absent" from "field present but null"),
+// while proposed_by is ALWAYS present (emitted as JSON null when invalid) to
+// match handler.pendingProposalResponse — see proposal_handler.go:138 where
+// the field carries no omitempty tag. Keeping the two writers congruent so
+// any direct c.JSON(prop) produces the same shape as the handler path
+// (PR #123 / round-2 reviewer 🟡 consistency).
 func TestPendingProposalMarshalJSON_OmitsNilFields(t *testing.T) {
 	row := db.PendingProposal{
 		ID:          uuid.New(),
@@ -110,10 +113,21 @@ func TestPendingProposalMarshalJSON_OmitsNilFields(t *testing.T) {
 		t.Fatalf("output not valid JSON: %v (raw: %s)", err, raw)
 	}
 
-	for _, key := range []string{"workspace_id", "proposed_by", "resolved_at", "reason"} {
+	// workspace_id / resolved_at / reason remain omitempty.
+	for _, key := range []string{"workspace_id", "resolved_at", "reason"} {
 		if _, present := decoded[key]; present {
 			t.Errorf("key %q must be omitted when underlying pgtype is invalid (raw: %s)", key, raw)
 		}
+	}
+
+	// proposed_by is ALWAYS present — null when invalid, string when valid.
+	// Aligns with handler.pendingProposalResponse JSON tag (no omitempty).
+	pb, present := decoded["proposed_by"]
+	if !present {
+		t.Errorf("proposed_by must be present (as null) when invalid, got omitted (raw: %s)", raw)
+	}
+	if pb != nil {
+		t.Errorf("proposed_by = %v, want JSON null when pgtype invalid (raw: %s)", pb, raw)
 	}
 
 	// CreatedAt has no omitempty (matches handler.pendingProposalResponse),

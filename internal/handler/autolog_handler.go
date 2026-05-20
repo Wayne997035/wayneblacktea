@@ -176,7 +176,13 @@ func (h *AutologHandler) maybeClassifyAsync(actor, action, notes string) {
 	case classifySem <- struct{}{}:
 		go func() {
 			defer func() { <-classifySem }()
-			result := h.classifier.Classify(context.Background(), actor, action, notes)
+			// Redact credential-shape patterns from `notes` BEFORE the classifier
+			// call — symmetry with the MCP twin (internal/mcp/middleware_classify.go)
+			// which redacts upstream too. redact.ForLLM is idempotent so the
+			// downstream auto-accept / proposal path re-redact (lines ~451 below)
+			// is a safe no-op (backend-security-design.md §3.1 defence-in-depth).
+			redactedNotes := redact.ForLLM(notes)
+			result := h.classifier.Classify(context.Background(), actor, action, redactedNotes)
 			if result.IsDecision && result.Title != "" {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
@@ -188,7 +194,7 @@ func (h *AutologHandler) maybeClassifyAsync(actor, action, notes string) {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
 				if err := h.autoCreateTaskFromClassifier(
-					bgCtx, result.TaskTitle, actor, action, notes,
+					bgCtx, result.TaskTitle, actor, action, redactedNotes,
 					result.Rationale, result.Confidence,
 				); err != nil {
 					slog.Warn("auto-task classify: enqueue/create failed", "err", err)
@@ -436,6 +442,12 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 	}
 
 	title = truncateAndTrimTitle(title, maxTaskTitle)
+	// Redact credential-shape patterns from `title` before any persistence.
+	// The classifier may echo a prompt-injected token from `notes` into
+	// `task_title`; without redaction, the auto-accept path persists the raw
+	// token into tasks.title plaintext. redact.ForLLM is idempotent
+	// (backend-security-design.md §3.1, security M-1).
+	title = redact.ForLLM(title)
 	if title == "" {
 		return nil
 	}

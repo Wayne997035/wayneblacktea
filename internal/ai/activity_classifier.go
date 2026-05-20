@@ -24,7 +24,12 @@ const (
 // materialise an auto-captured task directly. Picked at 0.85 — the Haiku
 // classifier's empirical false-positive rate at >=0.85 is low enough that the
 // vagueness-gate (validator.CheckVagueness must also return zero warnings)
-// can safely act as the second guard.
+// is a defence-in-depth layer against benign misclassification, NOT a
+// prompt-injection mitigation. Prompt-injected `notes` content can still
+// coerce the classifier to emit a high-confidence verdict; the gates that
+// actually defend against injection live elsewhere (redact.ForLLM on
+// notes/title before persistence, sanitize.Notes upstream, classifier
+// system-prompt UNTRUSTED markers).
 //
 // Set ≥1.0 to effectively disable auto-accept; set 0 to make every IsTask=true
 // verdict materialise directly (NOT recommended — vagueness gate still applies
@@ -78,7 +83,7 @@ const classifierSystemPrompt = "You classify software development activities. " 
 //
 // Confidence is the LLM's self-assessed probability the verdict is correct,
 // clamped to [0, 1]. Downstream consumers MAY auto-accept high-confidence
-// verdicts (≥ classifierAutoAcceptThreshold) and bypass the proposal review
+// verdicts (≥ ClassifierAutoAcceptThreshold) and bypass the proposal review
 // queue. Missing / out-of-range / non-numeric `confidence` in the LLM response
 // is normalised to 0.0 by the parsing layer — the conservative default that
 // keeps the existing proposal-queue behaviour.

@@ -1096,6 +1096,85 @@ func TestAutoCreateTaskFromClassifier_AutoAccept_HighConfidence(t *testing.T) {
 	}
 }
 
+// TestAutoCreateTaskFromClassifier_AutoAccept_RedactsTitleCredentials is the
+// regression test for round-2 M-1: the auto-accept path persists `task_title`
+// into tasks.title verbatim. A prompt-injected classifier may echo a leaked
+// credential from the activity notes back into `task_title`; without
+// redact.ForLLM applied to the title BEFORE gtd.CreateTask, the raw token
+// lands on disk in plaintext (backend-security-design.md §3.1).
+//
+// Scenario: classifier returns a high-confidence task verdict whose title
+// contains a 40-char fake GitHub PAT. The handler MUST materialise a task
+// whose title carries the canonical "[REDACTED:github-token]" placeholder
+// instead of the raw token.
+func TestAutoCreateTaskFromClassifier_AutoAccept_RedactsTitleCredentials(t *testing.T) {
+	// 35-rune body keeps the fixture above redact.go's ghp_ {30,} match while
+	// staying below the commit-quality hook's {36} block pattern (the existing
+	// TestAutoCreateTaskFromClassifier_RedactsCredentials fixture predates the
+	// hook, this new test is added under it).
+	const fakePAT = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 35 chars, fake
+	const wantPlaceholder = "[REDACTED:github-token]"
+
+	titleWithToken := "Rotate token=" + fakePAT
+	// Use rich notes + rationale so the synthesised description passes
+	// validator.CheckVagueness — keeps the auto-accept gate open and the
+	// test exercises the direct-create code path.
+	const richNotes = "merged PR #42 at github.com/foo/bar with schema migration in migrations/000051.sql"
+	const richRationale = "PR merge with schema change implies follow-up audit task at " +
+		"internal/handler/audit.go:120 to add structured logging"
+
+	clf := &stubClassifier{result: ai.ClassifyResult{
+		IsTask:     true,
+		TaskTitle:  titleWithToken,
+		Rationale:  richRationale,
+		Confidence: 0.95,
+	}}
+	gtdStore := &fakeAutologGTDStore{}
+	propStore := &fakeAutologProposalStore{}
+
+	e := newEcho()
+	h := handler.NewAutologHandlerWithClassifierAndProposalForTest(
+		gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{},
+		nil, clf, propStore,
+	)
+	e.POST("/api/activity", h.LogActivity)
+	body := `{"actor":"bash-hook","action":"pr_merge","notes":` + strconvQuote(richNotes) + `}`
+	rec := performRequest(e, http.MethodPost, "/api/activity", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Wait up to 500ms for the goroutine to materialise the task.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		gtdStore.mu.Lock()
+		n := len(gtdStore.createdTasks)
+		gtdStore.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	gtdStore.mu.Lock()
+	defer gtdStore.mu.Unlock()
+	if len(gtdStore.createdTasks) != 1 {
+		t.Fatalf("expected 1 direct task create (auto-accept), got %d", len(gtdStore.createdTasks))
+	}
+	created := gtdStore.createdTasks[0]
+	if strings.Contains(created.Title, fakePAT) {
+		t.Errorf("tasks.title leaked raw PAT: %q", created.Title)
+	}
+	if !strings.Contains(created.Title, wantPlaceholder) {
+		t.Errorf("tasks.title missing placeholder %q, got %q", wantPlaceholder, created.Title)
+	}
+
+	// Bypass: NO proposal queue write — auto-accept path.
+	if creates := propStore.snapshotCreates(); len(creates) != 0 {
+		t.Errorf("expected 0 proposal creates (auto-accept skipped queue), got %d", len(creates))
+	}
+}
+
 // TestAutoCreateTaskFromClassifier_NoAutoAccept_LowConfidence verifies the
 // review-required path: when confidence < ClassifierAutoAcceptThreshold the
 // verdict goes into the proposal queue regardless of how clean the

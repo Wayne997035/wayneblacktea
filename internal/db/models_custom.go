@@ -32,7 +32,7 @@ type pendingProposalJSON struct {
 	Type        string          `json:"type"`
 	Payload     json.RawMessage `json:"payload"`
 	Status      string          `json:"status"`
-	ProposedBy  *string         `json:"proposed_by,omitempty"`
+	ProposedBy  *string         `json:"proposed_by"`
 	CreatedAt   string          `json:"created_at"`
 	ResolvedAt  *string         `json:"resolved_at,omitempty"`
 	Reason      *string         `json:"reason,omitempty"`

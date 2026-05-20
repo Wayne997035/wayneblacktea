@@ -194,10 +194,10 @@ func (s *Server) logMCPDecision(ctx context.Context, title, toolName string) err
 // Dedup is applied to BOTH paths: scoped to EXISTING pending TypeTask
 // proposals (case-insensitive title), NOT to the tasks table — a closed task
 // with the same title may have legitimately resurfaced. argSummary/
-// resultSummary are sanitised upstream by autoLogMiddleware (sanitize.Notes);
-// here we additionally pass argSummary + classifierRationale through
-// redact.ForLLM as a defence-in-depth pass before they land in either the
-// tasks.description column (auto-accept) or pending_proposals.payload
+// resultSummary are credential-redacted upstream by autoLogMiddleware via
+// redact.ForLLM; here we additionally pass argSummary + classifierRationale
+// through redact.ForLLM as a defence-in-depth pass before they land in either
+// the tasks.description column (auto-accept) or pending_proposals.payload
 // (proposal path) — matching the HTTP path in autoCreateTaskFromClassifier
 // (internal/handler/autolog_handler.go) so both writers of these long-lived
 // columns share the same posture (backend-security-design.md §3.1).
@@ -214,6 +214,12 @@ func (s *Server) autoCaptureMCPTask(
 	}
 
 	title = truncateAndTrimTitleMCP(title, mcpTaskMaxTitle)
+	// Redact credential-shape patterns from `title` before any persistence.
+	// The classifier may echo a prompt-injected token from argSummary into
+	// `task_title`; without redaction, the auto-accept path persists the raw
+	// token into tasks.title plaintext. redact.ForLLM is idempotent
+	// (backend-security-design.md §3.1, security M-1).
+	title = redact.ForLLM(title)
 	if title == "" {
 		return nil
 	}

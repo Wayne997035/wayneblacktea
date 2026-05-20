@@ -926,6 +926,62 @@ func TestAutoCaptureMCPTask_AutoAccept_HighConfidence(t *testing.T) {
 	}
 }
 
+// TestAutoCaptureMCPTask_AutoAccept_RedactsTitleCredentials is the round-2 M-1
+// regression test (MCP twin): the auto-accept path persists `task_title` into
+// tasks.title verbatim. A prompt-injected classifier may echo a leaked
+// credential from argSummary back into `task_title`; without redact.ForLLM
+// applied to the title BEFORE gtd.CreateTask, the raw token lands on disk in
+// plaintext. Mirror of the HTTP test in autolog_handler_test.go
+// (backend-security-design.md §3.1).
+func TestAutoCaptureMCPTask_AutoAccept_RedactsTitleCredentials(t *testing.T) {
+	// 35-rune body keeps the fixture above redact.go's ghp_ {30,} match while
+	// staying below the commit-quality hook's {36} block pattern (the existing
+	// TestAutoCaptureMCPTask_RedactsCredentials fixture predates the hook,
+	// this new test is added under it).
+	const fakePAT = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 35 chars, fake
+	const wantPlaceholder = "[REDACTED:github-token]"
+
+	titleWithToken := "Rotate token=" + fakePAT
+	// Use rich argSummary + rationale so the synthesised description passes
+	// validator.CheckVagueness — keeps the auto-accept gate open.
+	const richArg = "complete_task(id=abc-123) for repo github.com/foo/bar at commit a1b2c3"
+	const richRationale = "completion implies follow-up regression task at " +
+		"internal/handler/cleanup.go:45 to drop expired session rows"
+
+	p := &mockProposalStore{}
+	g := &mockClassifyGTDStore{}
+	s := &Server{proposal: p, gtd: g}
+
+	if err := s.autoCaptureMCPTask(
+		context.Background(),
+		titleWithToken,
+		"complete_task",
+		richArg,
+		"status=ok",
+		richRationale,
+		0.95, // well above 0.85
+	); err != nil {
+		t.Fatalf("autoCaptureMCPTask: %v", err)
+	}
+
+	created := g.recordedCreates()
+	if len(created) != 1 {
+		t.Fatalf("expected 1 direct task create (auto-accept), got %d", len(created))
+	}
+	gotTitle := created[0].params.Title
+	if strings.Contains(gotTitle, fakePAT) {
+		t.Errorf("tasks.title leaked raw PAT: %q", gotTitle)
+	}
+	if !strings.Contains(gotTitle, wantPlaceholder) {
+		t.Errorf("tasks.title missing placeholder %q, got %q", wantPlaceholder, gotTitle)
+	}
+
+	// 0 proposal creates — auto-accept bypassed the queue.
+	if creates := p.recordedCreates(); len(creates) != 0 {
+		t.Errorf("expected 0 proposal creates (auto-accept skipped queue), got %d", len(creates))
+	}
+}
+
 // TestAutoCaptureMCPTask_AutoAccept_LowConfidence verifies the MCP path's
 // safety net: confidence below threshold routes through the proposal queue
 // regardless of how clean the description is.
