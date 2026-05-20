@@ -222,3 +222,116 @@ func TestActivityClassifier_Classify_IsTask_FalseOnAPIError(t *testing.T) {
 		t.Errorf("expected empty TaskTitle on API error, got %q", result.TaskTitle)
 	}
 }
+
+// TestActivityClassifier_Classify_ConfidenceParsing verifies the LLM-returned
+// confidence value is parsed AND clamped into [0, 1]. Anything outside that
+// range — negative, > 1, missing field — normalises to 0 so downstream
+// auto-accept logic (gated on confidence >= ClassifierAutoAcceptThreshold)
+// defaults to the conservative proposal-queue path.
+func TestActivityClassifier_Classify_ConfidenceParsing(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string // raw JSON the model "returns" inside content[0].text
+		wantConf    float64
+		wantIsTask  bool
+		wantTask    string
+		description string
+	}{
+		{
+			name:        "high confidence — preserved as-is",
+			raw:         `{"is_decision":false,"title":"","rationale":"","is_task":true,"task_title":"Add log rotation","confidence":0.95}`,
+			wantConf:    0.95,
+			wantIsTask:  true,
+			wantTask:    "Add log rotation",
+			description: "0.95 is in-range and copied through unchanged",
+		},
+		{
+			name:        "boundary 0 — preserved",
+			raw:         `{"is_decision":false,"title":"","rationale":"","is_task":false,"task_title":"","confidence":0}`,
+			wantConf:    0,
+			wantIsTask:  false,
+			wantTask:    "",
+			description: "lower boundary preserved",
+		},
+		{
+			name:        "boundary 1 — preserved",
+			raw:         `{"is_decision":false,"title":"","rationale":"","is_task":true,"task_title":"X","confidence":1}`,
+			wantConf:    1,
+			wantIsTask:  true,
+			wantTask:    "X",
+			description: "upper boundary preserved",
+		},
+		{
+			name:        "negative — clamped to 0",
+			raw:         `{"is_decision":false,"title":"","rationale":"","is_task":true,"task_title":"X","confidence":-0.5}`,
+			wantConf:    0,
+			wantIsTask:  true,
+			wantTask:    "X",
+			description: "negative values are normalised to 0 (conservative default disables auto-accept)",
+		},
+		{
+			name:        "above 1 — clamped to 0",
+			raw:         `{"is_decision":false,"title":"","rationale":"","is_task":true,"task_title":"X","confidence":1.5}`,
+			wantConf:    0,
+			wantIsTask:  true,
+			wantTask:    "X",
+			description: "out-of-range high values default to 0",
+		},
+		{
+			name:        "missing field — defaults to 0",
+			raw:         `{"is_decision":false,"title":"","rationale":"","is_task":true,"task_title":"X"}`,
+			wantConf:    0,
+			wantIsTask:  true,
+			wantTask:    "X",
+			description: "json.Unmarshal leaves the field at zero; clamp keeps it at 0",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := map[string]any{
+				"id":    "msg_test",
+				"type":  "message",
+				"role":  "assistant",
+				"model": "claude-haiku-4-5",
+				"content": []map[string]any{
+					{"type": "text", "text": tc.raw},
+				},
+				"stop_reason":   "end_turn",
+				"stop_sequence": nil,
+				"usage": map[string]any{
+					"input_tokens":  10,
+					"output_tokens": 10,
+				},
+			}
+			out, _ := json.Marshal(resp)
+			srv := newMockServer(t, http.StatusOK, string(out))
+			defer srv.Close()
+
+			c := newClassifierWithBase(srv.URL)
+			result := c.Classify(context.Background(), "bash-hook", "x", "y")
+
+			if result.Confidence != tc.wantConf {
+				t.Errorf("[%s] Confidence = %v, want %v", tc.description, result.Confidence, tc.wantConf)
+			}
+			if result.IsTask != tc.wantIsTask {
+				t.Errorf("[%s] IsTask = %v, want %v", tc.description, result.IsTask, tc.wantIsTask)
+			}
+			if result.TaskTitle != tc.wantTask {
+				t.Errorf("[%s] TaskTitle = %q, want %q", tc.description, result.TaskTitle, tc.wantTask)
+			}
+		})
+	}
+}
+
+// TestActivityClassifier_Classify_ConfidenceAutoAcceptThresholdConst is a
+// guard that the published const ClassifierAutoAcceptThreshold is 0.85 — the
+// value the HTTP twin (internal/handler/autolog_handler.go) and the MCP path
+// (internal/mcp/middleware_classify.go) BOTH reference. Failing here is a
+// signal to also re-check the downstream tests, not just to bump this number.
+func TestActivityClassifier_Classify_ConfidenceAutoAcceptThresholdConst(t *testing.T) {
+	if localai.ClassifierAutoAcceptThreshold != 0.85 {
+		t.Errorf("ClassifierAutoAcceptThreshold = %v, want 0.85 (changing this affects auto-accept callers)",
+			localai.ClassifierAutoAcceptThreshold)
+	}
+}
