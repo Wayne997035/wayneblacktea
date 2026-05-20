@@ -8,6 +8,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 import { useCompleteTask, useCreateTask } from './useTasks'
+import type { Toast } from '../stores/toastStore'
 
 const apiFetchMock = vi.fn()
 vi.mock('../lib/api', () => ({
@@ -24,9 +25,14 @@ const { addToastMock, removeToastMock } = vi.hoisted(() => ({
 // Match the real Zustand store shape from web/src/stores/toastStore.ts so
 // callers using either `useToastStore()` (no-arg destructure, as in
 // useCompleteTask) or `useToastStore(selector)` (selector-style) both work.
+//
+// `toasts` is typed as `Toast[]` (re-using the real interface) so the mock
+// state stays structurally identical to the production store — otherwise an
+// inline `[]` literal would widen to `never[]` and drop optional fields like
+// `duration?`, masking accidental signature drift.
 vi.mock('../stores/toastStore', () => {
   const state = {
-    toasts: [] as Array<{ id: string; message: string; type: 'error' | 'success' | 'info' }>,
+    toasts: [] as Toast[],
     addToast: addToastMock,
     removeToast: removeToastMock,
   }
@@ -97,7 +103,7 @@ describe('useCompleteTask onError toast', () => {
     addToastMock.mockReset()
   })
 
-  it('exposes isError state when the API call fails', async () => {
+  it('exposes isError state and surfaces an error toast when the API call fails', async () => {
     const { Wrapper } = makeWrapper()
     apiFetchMock.mockRejectedValueOnce(new Error('500: server error'))
 
@@ -109,5 +115,15 @@ describe('useCompleteTask onError toast', () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error).toBeInstanceOf(Error)
+
+    // The hook's onError handler MUST also surface a user-visible toast so the
+    // failure does not silently swallow. The payload mirrors the literal in
+    // useTasks.ts (hooks/useTasks.ts:68) — kept as a concrete value (not
+    // `expect.anything()`) so any drift in the message will fail this test.
+    expect(addToastMock).toHaveBeenCalledTimes(1)
+    expect(addToastMock).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'Could not complete task. Try again.',
+    })
   })
 })
