@@ -1,7 +1,7 @@
-// Package mcprunner is the shared MCP stdio transport entry point used by
-// both `cmd/mcp` (the canonical binary) and `cmd/wbt mcp` (the user-facing
-// subcommand wired into .mcp.json by `wbt init`). Keeping the wiring in one
-// place ensures both binaries serve identical MCP behaviour.
+// Package mcprunner is the shared MCP stdio transport entry point invoked
+// by `cmd/wbt mcp` (wired into .mcp.json by `wbt init`). Keeping the wiring
+// in one place keeps the MCP boot path consistent across any future MCP
+// entry points (e.g. HTTP transport added by Phase 2 `wbt setup`).
 package mcprunner
 
 import (

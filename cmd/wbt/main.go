@@ -69,11 +69,11 @@ func main() {
 	case "mcp":
 		err = cli.RunMCP()
 	case "context":
-		err = cli.RunContext(os.Args[2:])
+		err = runHookSubcmd(os.Args[2:], cli.RunContext)
 	case "hook":
-		err = cli.RunHook(os.Args[2:])
+		err = runHookSubcmd(os.Args[2:], cli.RunHook)
 	case "doctor":
-		err = cli.RunDoctor(os.Args[2:])
+		err = runHookSubcmd(os.Args[2:], cli.RunDoctor)
 	case "guard":
 		err = cli.RunGuard(os.Args[2:])
 	case "reconcile":
@@ -91,6 +91,18 @@ func main() {
 // isVersionArg returns true for any of the conventional version flag forms.
 func isVersionArg(arg string) bool {
 	return arg == "version" || arg == "--version" || arg == "-v"
+}
+
+// runHookSubcmd dispatches a hook subcommand (context/hook/doctor), short-
+// circuiting on `--version` / `-v` so legacy self-identification callers
+// (PR #85 R3 contract) don't silently create /tmp/<binary>.log via the hook
+// path. Returns nil for the version case so main exits 0.
+func runHookSubcmd(args []string, run func([]string) error) error {
+	if len(args) >= 1 && isVersionArg(args[0]) {
+		printVersion()
+		return nil
+	}
+	return run(args)
 }
 
 // printVersion writes "<binary> <version> (<commit>)" to stdout. Install
