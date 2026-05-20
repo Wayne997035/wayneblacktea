@@ -9,6 +9,7 @@
     "learningHistory": "學習歷史",
     "calendar": "行事曆",
     "proposals": "提案",
+    "candidates": "完成候選",
     "vision": "願景"
   },
   "dashboard": {
@@ -438,7 +439,8 @@
       "accept": "接受",
       "reject": "拒絕",
       "acceptAria": "接受此候選",
-      "rejectAria": "拒絕此候選"
+      "rejectAria": "拒絕此候選",
+      "notYetAvailable": "尚未啟用"
     },
     "reason": {
       "stale_in_progress": "停滯中的進行中任務",

@@ -2,7 +2,7 @@
 
 exports[`CandidateRow snapshot > renders artifact_evidence auto-applied row without manual controls 1`] = `
 <article
-  class="flex flex-col gap-2 rounded-md border border-slate-200 bg-white p-3"
+  class="flex flex-col gap-2 rounded-md border p-3 bg-[var(--color-bg-card)] border-[var(--color-border)]"
   data-candidate-id="ghi-321"
   data-confidence="high"
   data-reason="artifact_evidence"
@@ -13,17 +13,17 @@ exports[`CandidateRow snapshot > renders artifact_evidence auto-applied row with
     class="flex items-center gap-2"
   >
     <span
-      class="text-sm font-medium text-slate-700"
+      class="text-sm font-medium text-[var(--color-text-primary)]"
       data-testid="reason-label"
     >
       Artifact evidence
     </span>
     <span
-      class="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-xs uppercase text-slate-600"
+      class="rounded-full px-2 py-0.5 font-mono text-xs uppercase bg-[var(--color-bg-hover)] text-[var(--color-text-muted)]"
       data-level="high"
       data-testid="confidence-badge"
     >
-      high
+      High
     </span>
   </header>
   <div
@@ -31,7 +31,7 @@ exports[`CandidateRow snapshot > renders artifact_evidence auto-applied row with
     data-testid="artifact"
   >
     <a
-      class="text-blue-600 underline hover:text-blue-700"
+      class="underline text-[var(--color-accent-blue)] hover:text-[var(--color-border-focus)]"
       href="https://github.com/owner/repo/pull/9"
       rel="noopener noreferrer"
       target="_blank"
@@ -40,7 +40,7 @@ exports[`CandidateRow snapshot > renders artifact_evidence auto-applied row with
     </a>
   </div>
   <div
-    class="flex items-center gap-2 text-xs text-slate-500"
+    class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]"
     data-testid="meta"
   >
     <time
@@ -51,15 +51,15 @@ exports[`CandidateRow snapshot > renders artifact_evidence auto-applied row with
     <span
       data-testid="status"
     >
-      auto_applied
+      Auto-applied
     </span>
   </div>
 </article>
 `;
 
-exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium confidence and manual-accept controls 1`] = `
+exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium confidence and disabled accept/reject when no handlers passed 1`] = `
 <article
-  class="flex flex-col gap-2 rounded-md border border-slate-200 bg-white p-3"
+  class="flex flex-col gap-2 rounded-md border p-3 bg-[var(--color-bg-card)] border-[var(--color-border)]"
   data-candidate-id="abc-123"
   data-confidence="medium"
   data-reason="pr_merged_fuzzy"
@@ -70,17 +70,17 @@ exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium conf
     class="flex items-center gap-2"
   >
     <span
-      class="text-sm font-medium text-slate-700"
+      class="text-sm font-medium text-[var(--color-text-primary)]"
       data-testid="reason-label"
     >
       PR merged (fuzzy match)
     </span>
     <span
-      class="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-xs uppercase text-slate-600"
+      class="rounded-full px-2 py-0.5 font-mono text-xs uppercase bg-[var(--color-bg-hover)] text-[var(--color-text-muted)]"
       data-level="medium"
       data-testid="confidence-badge"
     >
-      medium
+      Medium
     </span>
   </header>
   <div
@@ -88,7 +88,7 @@ exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium conf
     data-testid="artifact"
   >
     <a
-      class="text-blue-600 underline hover:text-blue-700"
+      class="underline text-[var(--color-accent-blue)] hover:text-[var(--color-border-focus)]"
       href="https://github.com/owner/repo/pull/123"
       rel="noopener noreferrer"
       target="_blank"
@@ -97,7 +97,7 @@ exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium conf
     </a>
   </div>
   <div
-    class="flex items-center gap-2 text-xs text-slate-500"
+    class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]"
     data-testid="meta"
   >
     <time
@@ -108,7 +108,7 @@ exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium conf
     <span
       data-testid="status"
     >
-      pending
+      Pending
     </span>
   </div>
   <div
@@ -116,15 +116,21 @@ exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium conf
     data-testid="actions"
   >
     <button
+      aria-disabled="true"
       aria-label="Accept candidate"
-      class="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700"
+      class="rounded px-2 py-1 text-xs font-medium bg-[var(--color-success)] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+      disabled=""
+      title="Not yet available"
       type="button"
     >
       Accept
     </button>
     <button
+      aria-disabled="true"
       aria-label="Reject candidate"
-      class="rounded bg-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-300"
+      class="rounded px-2 py-1 text-xs font-medium bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+      disabled=""
+      title="Not yet available"
       type="button"
     >
       Reject

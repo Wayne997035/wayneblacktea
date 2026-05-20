@@ -9,6 +9,7 @@
     "learningHistory": "Learning History",
     "calendar": "Calendar",
     "proposals": "Proposals",
+    "candidates": "Completion candidates",
     "vision": "Vision"
   },
   "dashboard": {
@@ -440,7 +441,8 @@
       "accept": "Accept",
       "reject": "Reject",
       "acceptAria": "Accept candidate",
-      "rejectAria": "Reject candidate"
+      "rejectAria": "Reject candidate",
+      "notYetAvailable": "Not yet available"
     },
     "reason": {
       "stale_in_progress": "Stale in progress",
