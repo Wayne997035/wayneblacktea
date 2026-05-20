@@ -427,5 +427,36 @@
   },
   "vision": {
     "empty": "目前沒有願景項目"
+  },
+  "candidates": {
+    "title": "完工候選清單",
+    "subtitle": "系統判斷可能已完成的任務 — 逐筆確認接受或拒絕",
+    "empty": "目前沒有待確認的候選",
+    "loading": "載入候選中…",
+    "error": "載入候選失敗",
+    "actions": {
+      "accept": "接受",
+      "reject": "拒絕",
+      "acceptAria": "接受此候選",
+      "rejectAria": "拒絕此候選"
+    },
+    "reason": {
+      "stale_in_progress": "停滯中的進行中任務",
+      "finish_work_gap": "完工差距偵測",
+      "artifact_evidence": "成果證據",
+      "completion_signal": "完工訊號",
+      "pr_merged_fuzzy": "PR 已合併（模糊比對）"
+    },
+    "confidence": {
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "status": {
+      "pending": "待確認",
+      "accepted": "已接受",
+      "rejected": "已拒絕",
+      "auto_applied": "自動套用"
+    }
   }
 }
