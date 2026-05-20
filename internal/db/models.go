@@ -109,6 +109,18 @@ type KnowledgeRanked struct {
 	Strength       interface{}        `json:"strength"`
 }
 
+type MergedPrsObserved struct {
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Repo        string             `json:"repo"`
+	Url         string             `json:"url"`
+	HeadRef     pgtype.Text        `json:"head_ref"`
+	Title       pgtype.Text        `json:"title"`
+	BodyExcerpt pgtype.Text        `json:"body_excerpt"`
+	MergedAt    pgtype.Timestamptz `json:"merged_at"`
+	ObservedAt  pgtype.Timestamptz `json:"observed_at"`
+}
+
 type PendingProposal struct {
 	ID          uuid.UUID          `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`

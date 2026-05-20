@@ -176,12 +176,71 @@ func TestWeeklyProgress(t *testing.T) {
 	store := gtd.NewStore(setupPool(t), nil)
 	ctx := context.Background()
 
-	completed, total, err := store.WeeklyProgress(ctx)
-	if err != nil {
-		t.Fatalf("WeeklyProgress: %v", err)
+	tests := []struct {
+		name string
+		fn   func(t *testing.T)
+	}{
+		{
+			name: "invariant: completed <= total",
+			fn: func(t *testing.T) {
+				completed, total, err := store.WeeklyProgress(ctx)
+				if err != nil {
+					t.Fatalf("WeeklyProgress: %v", err)
+				}
+				if completed < 0 || total < 0 {
+					t.Errorf("negative counts: completed=%d total=%d", completed, total)
+				}
+				if completed > total {
+					t.Errorf("invariant broken: completed > total (%d > %d)", completed, total)
+				}
+			},
+		},
+		{
+			name: "1 task created+completed this week",
+			fn: func(t *testing.T) {
+				task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "test_completed", Priority: 3})
+				if err != nil {
+					t.Fatalf("CreateTask: %v", err)
+				}
+				if _, err := store.CompleteTask(ctx, task.ID, nil); err != nil {
+					t.Fatalf("CompleteTask: %v", err)
+				}
+				completed, total, err := store.WeeklyProgress(ctx)
+				if err != nil {
+					t.Fatalf("WeeklyProgress: %v", err)
+				}
+				if completed < 1 {
+					t.Errorf("expected completed >= 1, got %d", completed)
+				}
+				if completed > total {
+					t.Errorf("invariant broken: completed > total (%d > %d)", completed, total)
+				}
+			},
+		},
+		{
+			name: "1 pending created this week",
+			fn: func(t *testing.T) {
+				if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "test_pending", Priority: 3}); err != nil {
+					t.Fatalf("CreateTask: %v", err)
+				}
+				completed, total, err := store.WeeklyProgress(ctx)
+				if err != nil {
+					t.Fatalf("WeeklyProgress: %v", err)
+				}
+				if total < 1 {
+					t.Errorf("expected total >= 1, got %d", total)
+				}
+				if completed > total {
+					t.Errorf("invariant broken: completed > total (%d > %d)", completed, total)
+				}
+			},
+		},
 	}
-	if completed < 0 || total < 0 {
-		t.Errorf("unexpected negative counts: completed=%d total=%d", completed, total)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.fn(t)
+		})
 	}
 }
 

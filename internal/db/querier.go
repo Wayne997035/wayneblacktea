@@ -18,6 +18,10 @@ type Querier interface {
 	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
 	CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
+	// Returns count of tasks that are "relevant to this week":
+	// (1) completed this week, OR
+	// (2) pending/in_progress AND (due_date this week OR created this week)
+	CountWeeklyRelevantTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	CreateActivityLog(ctx context.Context, arg CreateActivityLogParams) (ActivityLog, error)
 	CreateConcept(ctx context.Context, arg CreateConceptParams) (Concept, error)
 	CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error)

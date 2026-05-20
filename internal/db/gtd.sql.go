@@ -125,6 +125,30 @@ func (q *Queries) CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.
 	return count, err
 }
 
+const countWeeklyRelevantTasks = `-- name: CountWeeklyRelevantTasks :one
+SELECT COUNT(*) FROM tasks
+WHERE ($1::uuid IS NULL OR workspace_id = $1)
+  AND (
+    (status = 'completed'
+       AND updated_at >= date_trunc('week', NOW())
+       AND updated_at < date_trunc('week', NOW()) + interval '1 week')
+    OR (status IN ('pending','in_progress')
+       AND ((due_date >= date_trunc('week', NOW())
+             AND due_date < date_trunc('week', NOW()) + interval '1 week')
+         OR created_at >= date_trunc('week', NOW())))
+  )
+`
+
+// Returns count of tasks that are "relevant to this week":
+// (1) completed this week, OR
+// (2) pending/in_progress AND (due_date this week OR created this week)
+func (q *Queries) CountWeeklyRelevantTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countWeeklyRelevantTasks, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createActivityLog = `-- name: CreateActivityLog :one
 INSERT INTO activity_log (actor, project_id, action, notes, workspace_id)
 VALUES ($1, $2, $3, $4, $5)
