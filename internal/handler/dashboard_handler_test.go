@@ -194,6 +194,57 @@ func TestDashboardHandler_GetStats(t *testing.T) {
 	}
 }
 
+// TestDashboardHandler_GetStats_WeeklyInvariant verifies the field-semantics
+// contract documented on statsResponse: TaskCompleted and TaskTotal both come
+// from gtd.Store.WeeklyProgress (week-scoped) and the invariant
+// `TaskCompleted <= TaskTotal` MUST hold. Sibling regression for PR #125 which
+// redefined the underlying SQL. Regression for: if a future maintainer reverts
+// CountWeeklyRelevantTasks back to whole-backlog semantics, this test catches it
+// by asserting both that exact mocked values surface AND the invariant.
+func TestDashboardHandler_GetStats_WeeklyInvariant(t *testing.T) {
+	cases := []struct {
+		name      string
+		completed int64
+		total     int64
+	}{
+		{name: "empty week", completed: 0, total: 0},
+		{name: "mid week — some done some open", completed: 2, total: 5},
+		{name: "all done this week", completed: 7, total: 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(
+				&fakeDashboardGTDStore{completed: tc.completed, total: tc.total},
+				&fakeDashboardDecisionStore{list: []db.Decision{}},
+				&fakeDashboardProposalStore{list: []db.PendingProposal{}},
+			)
+			e.GET("/api/dashboard/stats", h.GetStats)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/stats", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+			var resp struct {
+				TaskCompleted int64 `json:"task_completed"`
+				TaskTotal     int64 `json:"task_total"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			if resp.TaskCompleted != tc.completed {
+				t.Errorf("task_completed = %d, want %d", resp.TaskCompleted, tc.completed)
+			}
+			if resp.TaskTotal != tc.total {
+				t.Errorf("task_total = %d, want %d", resp.TaskTotal, tc.total)
+			}
+			if resp.TaskCompleted > resp.TaskTotal {
+				t.Errorf("invariant violated: task_completed (%d) > task_total (%d) — gtd.WeeklyProgress semantics regressed?",
+					resp.TaskCompleted, resp.TaskTotal)
+			}
+		})
+	}
+}
+
 // TestDashboardHandler_GetStats_Unauthorized verifies that AuthMiddleware guards all dashboard endpoints.
 func TestDashboardHandler_GetStats_Unauthorized(t *testing.T) {
 	const apiKey = "secret"
