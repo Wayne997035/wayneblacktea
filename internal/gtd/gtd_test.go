@@ -4,38 +4,28 @@ package gtd_test
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// setupPool returns the package-level testcontainer Postgres pool initialised
+// in TestMain (see pg_test_main_test.go). Earlier the function read
+// `DATABASE_URL` and called `t.Skip` when unset — that silently SKIPPED every
+// integration test under `go test -tags=integration` because the env var is
+// never exported in CI. Mirror the `openTestPgPool` pattern used by the rest
+// of the package so all PG tests use the same source-of-truth pool.
 func setupPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set")
+	if testing.Short() {
+		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatalf("parse DATABASE_URL: %v", err)
+	if testPgPool == nil {
+		t.Fatal("testPgPool not initialised — TestMain did not run or container start failed")
 	}
-	tlsCfg, err := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
-	if err != nil {
-		t.Fatalf("build TLS config: %v", err)
-	}
-	if tlsCfg != nil {
-		cfg.ConnConfig.TLSConfig = tlsCfg
-	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return testPgPool
 }
 
 func TestListActiveProjects(t *testing.T) {
