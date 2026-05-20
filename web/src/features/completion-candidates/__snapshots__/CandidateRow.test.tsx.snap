@@ -1,0 +1,129 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CandidateRow snapshot > renders pr_merged_fuzzy reason with medium confidence and manual-accept controls 1`] = `
+<article
+  data-candidate-id="abc-123"
+  data-confidence="medium"
+  data-reason="pr_merged_fuzzy"
+  data-testid="candidate-row"
+>
+  <header>
+    <span
+      class="reason-label"
+    >
+      PR merged (fuzzy match)
+    </span>
+    <span
+      class="confidence-badge"
+      data-level="medium"
+    >
+      medium
+    </span>
+  </header>
+  <div
+    class="artifact"
+  >
+    <a
+      href="https://github.com/owner/repo/pull/123"
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      https://github.com/owner/repo/pull/123
+    </a>
+  </div>
+  <div
+    class="meta"
+  >
+    <time
+      datetime="2026-05-20T00:00:00Z"
+    >
+      2026-05-20T00:00:00Z
+    </time>
+    <span
+      class="status"
+    >
+      pending
+    </span>
+  </div>
+  <div
+    class="actions"
+  >
+    <button
+      aria-label="Accept candidate"
+      type="button"
+    >
+      Accept
+    </button>
+    <button
+      aria-label="Reject candidate"
+      type="button"
+    >
+      Reject
+    </button>
+  </div>
+</article>
+`;
+
+exports[`CandidateRow snapshot > renders ttl-expired-30d reason with low confidence and distinct label 1`] = `
+<article
+  data-candidate-id="def-789"
+  data-confidence="low"
+  data-reason="ttl-expired-30d"
+  data-testid="candidate-row"
+>
+  <header>
+    <span
+      class="reason-label"
+    >
+      TTL expired (30d)
+    </span>
+    <span
+      class="confidence-badge"
+      data-level="low"
+    >
+      low
+    </span>
+  </header>
+  <div
+    class="artifact"
+  >
+    <a
+      href="wbt://tasks/task-456"
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      wbt://tasks/task-456
+    </a>
+  </div>
+  <div
+    class="meta"
+  >
+    <time
+      datetime="2026-05-20T00:00:00Z"
+    >
+      2026-05-20T00:00:00Z
+    </time>
+    <span
+      class="status"
+    >
+      pending
+    </span>
+  </div>
+  <div
+    class="actions"
+  >
+    <button
+      aria-label="Accept candidate"
+      type="button"
+    >
+      Accept
+    </button>
+    <button
+      aria-label="Reject candidate"
+      type="button"
+    >
+      Reject
+    </button>
+  </div>
+</article>
+`;
