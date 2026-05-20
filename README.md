@@ -20,57 +20,18 @@
 
 ## Install
 
-Single binary, interactive wizard, SQLite-by-default — no infra to provision.
-
-**MCP stdio (simplest — no server process needed):**
-
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # wizard: picks SQLite or Postgres, writes .env + .mcp.json
+wbt init    # SQLite default, writes .env + .mcp.json
 ```
 
-Open Claude Code from the directory containing the generated `.mcp.json`; it will start `wbt mcp` automatically after you approve the project MCP server.
-
-**With dashboard + HTTP MCP transport:**
-
-```bash
-# Also build the server binary
-go build -o "$(go env GOPATH)/bin/wayneblacktea-server" ./cmd/server
-
-wbt serve   # loads config → starts server → opens http://localhost:8080
-```
-
-Then add the HTTP transport to Claude Code once the server is running:
-
-```bash
-claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
-```
-
-No Anthropic API key is required for core MCP memory features. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, and Railway options.
-
-## 5-minute onboarding
-
-After `wbt init`, open Claude Code from the directory containing `.mcp.json`, then try:
+Open Claude Code from the directory with `.mcp.json`, approve the project MCP server, then verify:
 
 ```
-# Check what's already remembered from past sessions
 > get_today_context
-
-# Log a decision (stored permanently, queryable by repo)
-> log_decision "chose SQLite over Postgres for this project because..."
-
-# Add a task with context
-> add_task "implement login flow" --project my-project
-
-# Confirm a multi-step plan atomically
-> confirm_plan {phases: [...], decisions: [...]}
-
-# Add a knowledge note (searchable by keyword + semantic vector)
-> add_knowledge {title: "JWT expiry best practices", content: "..."}
-
-# Store a deferred idea that's not ready to be a task yet
-> add_vision_item {title: "multi-agent coordination protocol", why_blocked: "needs E1 provider interface first"}
 ```
+
+> **Heads up — Phase 2 (in progress)**: a future `wbt setup` will collapse install to one command that auto-starts the server, registers MCP with Claude Code, and seeds SQLite — Serena-style. Phase 3 will add a Homebrew tap (`brew install wayne997035/tap/wayneblacktea`) and a DXT package for Claude Desktop one-click install. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and pre-built release binary options today.
 
 Full tool reference: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
 
