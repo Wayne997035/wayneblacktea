@@ -45,9 +45,10 @@ CONFIG_DIR="${WBT_CONFIG:-${HOME}/.config/wayneblacktea}"
 ENV_FILE="${CONFIG_DIR}/.env"
 
 # Binaries shipped in the cli archive (must stay in sync with .goreleaser.yaml
-# archive id "cli" `ids:` list).
+# archive id "cli" `ids:` list). The MCP stdio entry point is now `wbt mcp`
+# (Phase 2.3 of install simplification); the standalone wayneblacktea-mcp
+# binary was removed.
 CLI_BINARIES=(wbt wbt-context wbt-hook wbt-guard wbt-doctor)
-MCP_BINARY="wayneblacktea-mcp"
 
 # --- log helpers (stderr; stdout reserved for piped data only) ---
 log_info()  { printf '\033[1;34m[install]\033[0m %s\n' "$*" >&2; }
@@ -341,11 +342,14 @@ register_mcp() {
   if ! command -v claude >/dev/null 2>&1; then
     log_warn "claude CLI not found — skipping MCP registration"
     log_warn "after installing Claude Code, run:"
-    log_warn "  claude mcp add wayneblacktea -- ${BIN_DIR}/${MCP_BINARY}"
+    log_warn "  claude mcp add wayneblacktea -- ${BIN_DIR}/wbt mcp"
     return
   fi
   log_info "registering wayneblacktea MCP server with claude CLI"
-  if claude mcp add wayneblacktea -- "${BIN_DIR}/${MCP_BINARY}" 2>/dev/null; then
+  # Phase 2.3: MCP stdio entry point is now `wbt mcp` (the standalone
+  # wayneblacktea-mcp binary was removed); both serve the same
+  # internal/mcprunner.Run wiring.
+  if claude mcp add wayneblacktea -- "${BIN_DIR}/wbt" mcp 2>/dev/null; then
     log_info "MCP server registered"
   else
     log_warn "claude mcp add failed (already registered?) — verify with: claude mcp list"
@@ -364,8 +368,7 @@ main() {
   log_info "installing wayneblacktea v${version}"
   guard_existing_install "${version}"
 
-  local mcp_archive cli_archive checksums_file checksums_sig checksums_cert
-  mcp_archive="wayneblacktea-mcp_${version}_${os}_${arch}.tar.gz"
+  local cli_archive checksums_file checksums_sig checksums_cert
   cli_archive="wayneblacktea-cli_${version}_${os}_${arch}.tar.gz"
   checksums_file="checksums.txt"
   # goreleaser cosign signs/cmd publishes both .sig and .pem (cert).
@@ -392,33 +395,28 @@ main() {
   verify_cosign "${sums_path}" "${sig_path}" "${cert_path}"
 
   download_and_verify \
-    "${GITHUB_DL}/v${version}/${mcp_archive}" \
-    "${TMP_DIR}/${mcp_archive}" \
-    "${sums_path}"
-  download_and_verify \
     "${GITHUB_DL}/v${version}/${cli_archive}" \
     "${TMP_DIR}/${cli_archive}" \
     "${sums_path}"
 
   log_info "verifying archive contents are safe"
-  verify_archive_safe "${TMP_DIR}/${mcp_archive}"
   verify_archive_safe "${TMP_DIR}/${cli_archive}"
 
-  log_info "extracting archives"
+  log_info "extracting archive"
   # --no-same-owner / --no-same-permissions ensure the install user owns
   # the extracted files regardless of what the archive metadata claims.
-  tar -xzf "${TMP_DIR}/${mcp_archive}" -C "${TMP_DIR}" --no-same-owner --no-same-permissions
   tar -xzf "${TMP_DIR}/${cli_archive}" -C "${TMP_DIR}" --no-same-owner --no-same-permissions
 
   ensure_bin_dir
 
-  # Install all 6 binaries: wayneblacktea-mcp + 5 CLI tools (wbt, wbt-context,
-  # wbt-hook, wbt-guard, wbt-doctor). MUST stay aligned with .goreleaser.yaml
-  # archive `cli` ids list. (Round 2 / R-M2)
+  # Install the 5 CLI binaries (wbt, wbt-context, wbt-hook, wbt-guard,
+  # wbt-doctor). MUST stay aligned with .goreleaser.yaml archive `cli` ids
+  # list. The MCP stdio entry point is now `wbt mcp`; the standalone
+  # wayneblacktea-mcp binary was removed in Phase 2.3.
   local bin
-  for bin in "${MCP_BINARY}" "${CLI_BINARIES[@]}"; do
+  for bin in "${CLI_BINARIES[@]}"; do
     if [ ! -f "${TMP_DIR}/${bin}" ]; then
-      die "expected binary ${bin} missing from extracted archives"
+      die "expected binary ${bin} missing from extracted archive"
     fi
     install -m 0755 "${TMP_DIR}/${bin}" "${BIN_DIR}/${bin}"
     log_info "installed ${BIN_DIR}/${bin}"

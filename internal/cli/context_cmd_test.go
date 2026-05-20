@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"encoding/json"
@@ -37,7 +37,7 @@ func TestSortBySimDescStableForEqualScores(t *testing.T) {
 		{name: "second", score: 0.8},
 		{name: "third", score: 0.7},
 	}
-	sortBySimDesc(items, func(item scoredItem) float64 {
+	SortBySimDesc(items, func(item scoredItem) float64 {
 		return item.score
 	})
 
@@ -59,8 +59,8 @@ func TestDsnFromFallbackReadsTempEnvFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if got := dsnFromFallback(); got != wantDSN {
-		t.Fatalf("dsnFromFallback() = %q", got)
+	if got := DSNFromFallback(); got != wantDSN {
+		t.Fatalf("DSNFromFallback() = %q", got)
 	}
 }
 
@@ -76,11 +76,11 @@ func TestEmitContextAlwaysValidJSON(t *testing.T) {
 		_ = r.Close()
 	})
 
-	emitContext("hello\nworld")
+	EmitContext("hello\nworld")
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
-	var out sessionStartOutput
+	var out SessionStartOutput
 	if err := json.NewDecoder(r).Decode(&out); err != nil {
 		t.Fatalf("Decode emitted JSON: %v", err)
 	}

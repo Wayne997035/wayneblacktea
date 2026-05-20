@@ -5,6 +5,9 @@
 //	wbt init       — interactive wizard that writes .env and .mcp.json
 //	wbt serve      — loads .env and starts the wayneblacktea-server binary
 //	wbt mcp        — serve MCP stdio (wired into .mcp.json by `wbt init`)
+//	wbt context    — Claude Code SessionStart hook (subcommand: session-start)
+//	wbt hook       — Claude Code PostToolUse hook (reads JSON from stdin)
+//	wbt doctor     — Claude Code Stop hook + personal-OS health snapshot
 //	wbt guard      — manage guard bypass rules
 //	wbt reconcile  — drain merged-PR backlog into GTD tasks (Phase 2 fuzzy)
 //	wbt version    — print version info (also accepts --version)
@@ -37,6 +40,10 @@ Commands:
   wbt serve      Load .env and start the wayneblacktea-server (HTTP API)
   wbt mcp        Serve MCP stdio (wired into .mcp.json by ` + "`wbt init`" + `;
                  open Claude Code from the directory containing .mcp.json)
+  wbt context    Claude Code SessionStart hook
+                 (subcommand: ` + "`wbt context session-start`" + `)
+  wbt hook       Claude Code PostToolUse hook (reads JSON payload from stdin)
+  wbt doctor     Claude Code Stop hook + personal-OS health snapshot
   wbt guard      Manage guard bypass rules (see: wbt guard --help)
   wbt reconcile  Drain merged-PR backlog into GTD tasks (see: wbt reconcile --help)
   wbt version    Print version info (also accepts --version)
@@ -61,6 +68,12 @@ func main() {
 		err = cli.RunServe(os.Args[2:])
 	case "mcp":
 		err = cli.RunMCP()
+	case "context":
+		err = cli.RunContext(os.Args[2:])
+	case "hook":
+		err = cli.RunHook(os.Args[2:])
+	case "doctor":
+		err = cli.RunDoctor(os.Args[2:])
 	case "guard":
 		err = cli.RunGuard(os.Args[2:])
 	case "reconcile":
