@@ -22,16 +22,43 @@
 
 ```bash
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt init    # SQLite default, writes .env + .mcp.json
+wbt setup
 ```
 
-Open Claude Code from the directory with `.mcp.json`, approve the project MCP server, then verify:
+That's it. `wbt setup` does end-to-end: creates the SQLite store, reclaims the TCP port if something's squatting on it, spawns `wayneblacktea-server` in the background (PID file under `$XDG_STATE_HOME/wayneblacktea/`), waits for `/health`, and registers the HTTP MCP transport with Claude Code:
+
+```
+$ wbt setup
+==> Reading or creating config…          [ok] Config ready
+==> Ensuring SQLite directory…           [ok] SQLite directory ready
+==> Resolving port…                      [ok] Port resolved: 8080
+==> Checking for an existing healthy server…
+==> Reclaiming TCP port if occupied…     [ok] Port is free
+==> Spawning wayneblacktea-server in the background…
+                                         [ok] Server spawned (pid 12345, logs ~/.local/state/wayneblacktea/server.log)
+==> Waiting for /health…                 [ok] Server is healthy
+==> Registering MCP with Claude Code…    [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
+All set. wayneblacktea is running at http://127.0.0.1:8080
+```
+
+Open Claude Code anywhere and verify:
 
 ```
 > get_today_context
 ```
 
-> **Heads up — Phase 2 (in progress)**: a future `wbt setup` will collapse install to one command that auto-starts the server, registers MCP with Claude Code, and seeds SQLite — Serena-style. Phase 3 will add a Homebrew tap (`brew install wayne997035/tap/wayneblacktea`) and a DXT package for Claude Desktop one-click install. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and pre-built release binary options today.
+Sister commands:
+
+| Command | What it does |
+|---------|--------------|
+| `wbt status [--format json\|plain]` | Report whether the background server is running and healthy |
+| `wbt stop` | Terminate the background server (idempotent) |
+| `wbt restart` | `stop` then `setup` |
+| `wbt setup --port 9090` | Use a non-default port |
+| `wbt setup --no-mcp` | Skip the `claude mcp add` step |
+| `wbt init` | Deprecated alias for `wbt setup` |
+
+> **Phase 3 — coming next**: Homebrew tap (`brew install wayne997035/tap/wayneblacktea`) and a DXT package for Claude Desktop one-click install. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and pre-built release binary options today.
 
 Full tool reference: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
 

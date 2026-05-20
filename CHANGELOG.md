@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 2 install simplification
+
+- `wbt setup`: one-command install. Reads/creates global config, ensures SQLite directory, resolves the HTTP port, reclaims it if occupied, spawns `wayneblacktea-server` in the background via `nohup` (PID file at `$XDG_STATE_HOME/wayneblacktea/server.pid`), polls `/health`, then registers the HTTP MCP transport with Claude Code via `claude mcp add`. Supports `--port`, `--no-mcp`, `--mcp-name`, `--server-bin` flags. Reuses an already-running healthy instance instead of double-spawning.
+- `wbt status`: reports whether the background server is running and healthy. Supports `--format plain` (default, one-line summary) and `--format json` (machine-readable shape with `pid` / `port` / `transport` / `healthy` / `pid_file` / `started_at`).
+- `wbt stop`: terminates the background server identified by the PID file and removes the PID file. Idempotent.
+- `wbt restart`: `wbt stop` followed by `wbt setup`.
+- `internal/lifecycle` package: PID file management, port reclamation (`KillOccupier`), `NohupSupervisor` for background process spawning, all unit-tested against real processes / sockets.
+- README: install section rewritten around `wbt setup` (was `wbt init`); sister-command table added.
+- `docs/install.md`: "Quick start" rewritten with `wbt setup` flow + expected checkmark output; new "Migration from earlier wbt" subsection documents `wbt init` as deprecated alias.
+- `scripts/install.sh`: trims to download + verify + extract + write `.env`; prints "next: run `wbt setup`" hint instead of inlining MCP registration logic. Avoids duplicating `wbt setup` orchestration in two places.
+
+### Deprecated — Phase 2 install simplification
+
+- `wbt init`: deprecated alias for `wbt setup`. Still runs, prints a stderr deprecation notice. Will be removed in a future major version.
+
 ### Added — Sprint 0517-P1
 
 - Dashboard: new `/proposals` page lists pending proposals for review.

@@ -2,6 +2,10 @@
 
 Get wayneblacktea running locally in under 10 minutes.
 
+> **Just want to use it?** Run `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` — that's the entire install. See [`install.md`](./install.md) for the one-command flow, sister commands (`wbt status` / `wbt stop` / `wbt restart`), Postgres, Docker, and release binary options.
+>
+> The rest of this page is for **contributors / from-source builds**: cloning the repo, seeding demo data, hacking on the web UI.
+
 ## Prerequisites
 
 - Go 1.26+ (`go version`)
