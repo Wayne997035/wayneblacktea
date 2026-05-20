@@ -9,6 +9,7 @@
     "learningHistory": "Learning History",
     "calendar": "Calendar",
     "proposals": "Proposals",
+    "candidates": "Completion candidates",
     "vision": "Vision"
   },
   "dashboard": {
@@ -429,5 +430,37 @@
   },
   "vision": {
     "empty": "No vision items yet"
+  },
+  "candidates": {
+    "title": "Completion Candidates",
+    "subtitle": "Pending tasks the system thinks may be done — accept or reject each one",
+    "empty": "No pending candidates",
+    "loading": "Loading candidates…",
+    "error": "Failed to load candidates",
+    "actions": {
+      "accept": "Accept",
+      "reject": "Reject",
+      "acceptAria": "Accept candidate",
+      "rejectAria": "Reject candidate",
+      "notYetAvailable": "Not yet available"
+    },
+    "reason": {
+      "stale_in_progress": "Stale in progress",
+      "finish_work_gap": "Finish work gap",
+      "artifact_evidence": "Artifact evidence",
+      "completion_signal": "Completion signal",
+      "pr_merged_fuzzy": "PR merged (fuzzy match)"
+    },
+    "confidence": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "status": {
+      "pending": "Pending",
+      "accepted": "Accepted",
+      "rejected": "Rejected",
+      "auto_applied": "Auto-applied"
+    }
   }
 }
