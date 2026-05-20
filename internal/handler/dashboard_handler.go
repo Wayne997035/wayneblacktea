@@ -79,10 +79,25 @@ func (h *DashboardHandler) SetActivityStore(s dashboardActivityStore) {
 }
 
 // statsResponse is the JSON shape for GET /api/dashboard/stats.
+//
+// Field semantics for TaskCompleted / TaskTotal mirror gtd.Store.WeeklyProgress
+// (see internal/gtd/store.go) and were tightened in PR #125 — they are
+// week-scoped, not all-time.
 type statsResponse struct {
-	Period           string  `json:"period"`
-	TaskCompleted    int64   `json:"task_completed"`
-	TaskTotal        int64   `json:"task_total"`
+	Period string `json:"period"`
+
+	// TaskCompleted is the count of tasks with status='completed' whose
+	// updated_at falls in the current ISO week (Monday 00:00 UTC to next
+	// Monday 00:00 UTC). Source: gtd.Store.WeeklyProgress -> CountCompletedTasksThisWeek.
+	TaskCompleted int64 `json:"task_completed"`
+
+	// TaskTotal is the count of tasks RELEVANT to the current ISO week:
+	// (tasks completed this week) UNION (pending/in_progress tasks with
+	// due_date this week) UNION (pending/in_progress tasks created this week).
+	// Invariant: TaskCompleted <= TaskTotal.
+	// Source: gtd.Store.WeeklyProgress -> CountWeeklyRelevantTasks.
+	TaskTotal int64 `json:"task_total"`
+
 	DecisionCount    int     `json:"decision_count"`
 	PendingProposals int     `json:"pending_proposals"`
 	LastUpdatedAt    *string `json:"last_updated_at,omitempty"`
