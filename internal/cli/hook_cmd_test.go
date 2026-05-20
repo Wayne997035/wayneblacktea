@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -17,14 +17,14 @@ import (
 func TestBuildNotes_DefaultHash(t *testing.T) {
 	os.Unsetenv("WBT_HOOK_RAW") //nolint:errcheck // test cleanup, error not meaningful
 	input := "ls -la"
-	got := buildNotes(input)
+	got := BuildHookNotes(input)
 	if !strings.HasPrefix(got, "sha256:") {
-		t.Errorf("buildNotes without WBT_HOOK_RAW: got %q, want sha256: prefix", got)
+		t.Errorf("BuildHookNotes without WBT_HOOK_RAW: got %q, want sha256: prefix", got)
 	}
 	h := sha256.Sum256([]byte(input))
 	expected := "sha256:" + hex.EncodeToString(h[:])
 	if got != expected {
-		t.Errorf("buildNotes hash mismatch: got %q, want %q", got, expected)
+		t.Errorf("BuildHookNotes hash mismatch: got %q, want %q", got, expected)
 	}
 }
 
@@ -32,18 +32,18 @@ func TestBuildNotes_DefaultHash(t *testing.T) {
 func TestBuildNotes_RawMode(t *testing.T) {
 	t.Setenv("WBT_HOOK_RAW", "1")
 	input := "git status"
-	got := buildNotes(input)
+	got := BuildHookNotes(input)
 	if got != input {
-		t.Errorf("buildNotes raw mode: got %q, want %q", got, input)
+		t.Errorf("BuildHookNotes raw mode: got %q, want %q", got, input)
 	}
 }
 
 // TestBuildNotes_EmptyInput verifies that empty tool_input produces a stable hash.
 func TestBuildNotes_EmptyInput(t *testing.T) {
 	os.Unsetenv("WBT_HOOK_RAW") //nolint:errcheck // test cleanup
-	got := buildNotes("")
+	got := BuildHookNotes("")
 	if !strings.HasPrefix(got, "sha256:") {
-		t.Errorf("buildNotes empty input: got %q, want sha256: prefix", got)
+		t.Errorf("BuildHookNotes empty input: got %q, want sha256: prefix", got)
 	}
 }
 
@@ -91,13 +91,13 @@ func TestPostActivity_ServerReturns500_StillExitsClean(t *testing.T) {
 // TestLargeStdinTruncate verifies that the 300-byte read cap prevents over-reads.
 func TestLargeStdinTruncate(t *testing.T) {
 	large := strings.Repeat("x", 1000)
-	// Simulate what run() does: read at most maxStdinBytes.
+	// Simulate what runHookInner does: read at most HookMaxStdinBytes.
 	buf := []byte(large)
-	if len(buf) > maxStdinBytes {
-		buf = buf[:maxStdinBytes]
+	if len(buf) > HookMaxStdinBytes {
+		buf = buf[:HookMaxStdinBytes]
 	}
-	if len(buf) > maxStdinBytes {
-		t.Errorf("truncated buf len %d exceeds maxStdinBytes %d", len(buf), maxStdinBytes)
+	if len(buf) > HookMaxStdinBytes {
+		t.Errorf("truncated buf len %d exceeds HookMaxStdinBytes %d", len(buf), HookMaxStdinBytes)
 	}
 }
 

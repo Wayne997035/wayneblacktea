@@ -1,8 +1,6 @@
 version: '3'
 
 vars:
-  BINARY_NAME: wayneblacktea-mcp
-  BINARY_OUT: bin/{{.BINARY_NAME}}
   GO_BUILD_CACHE: "{{.TASKFILE_DIR}}/../tmp/go-build"
 
 env:
@@ -61,7 +59,6 @@ tasks:
   build-all:
     desc: "Build all binaries in parallel"
     deps:
-      - build-mcp
       - build-server
       - build-doctor
       - build-wbt
@@ -113,15 +110,6 @@ tasks:
       - rm -rf ../cmd/server/web/dist
       - cp -r dist ../cmd/server/web/dist
     dir: ../web
-
-  build-mcp:
-    desc: "Build MCP binary to bin/"
-    deps:
-      - go-cache
-    cmds:
-      - mkdir -p bin
-      - go build -o {{.BINARY_OUT}} ./cmd/mcp/
-    dir: ..
 
   build-server:
     desc: "Build REST API server binary to bin/"
@@ -185,7 +173,7 @@ tasks:
       - |
         # cmd/server embeds web/dist which requires a prior `npm run build`.
         # Exclude it so lint is not blocked by a missing frontend build artifact.
-        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
+        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
         if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
           GOPROXY=off golangci-lint run --config build/.golangci.yml $PKGS
         else
@@ -201,7 +189,7 @@ tasks:
       # -short skips testcontainers-based integration tests that require Docker.
       # No -race: mcp + sqlite packages are goroutine-heavy; race adds 5-10× overhead
       # and pushes unit tests past the 5-min budget. Use test-race for targeted race checks.
-      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   test-race:
@@ -209,7 +197,7 @@ tasks:
     deps:
       - go-cache
     cmds:
-      - go test -short -race -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -short -race -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   go-cache:
@@ -223,7 +211,7 @@ tasks:
     cmds:
       # Build tag + no -short: runs testcontainers-based integration tests.
       # -p 1 avoids concurrent Ryuk/container startup races across packages.
-      - go test -tags integration -p 3 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/mcp/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -tags integration -p 3 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:

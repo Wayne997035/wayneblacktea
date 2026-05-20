@@ -21,10 +21,12 @@ if [[ -f "$PROJECT_ROOT/.env.local" ]]; then
     set +a
 fi
 
-BINARY="$PROJECT_ROOT/bin/wayneblacktea-mcp"
+# Phase 2.3: MCP stdio is served by `wbt mcp` (the standalone
+# wayneblacktea-mcp binary was removed; both call internal/mcprunner.Run).
+BINARY="$PROJECT_ROOT/bin/wbt"
 if [[ ! -x "$BINARY" ]]; then
-    echo "Binary not found. Run: cd build && task build-mcp" >&2
+    echo "Binary not found. Run: cd build && task build-wbt" >&2
     exit 1
 fi
 
-exec "$BINARY"
+exec "$BINARY" mcp

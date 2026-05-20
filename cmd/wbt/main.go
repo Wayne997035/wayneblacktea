@@ -5,6 +5,9 @@
 //	wbt init       — interactive wizard that writes .env and .mcp.json
 //	wbt serve      — loads .env and starts the wayneblacktea-server binary
 //	wbt mcp        — serve MCP stdio (wired into .mcp.json by `wbt init`)
+//	wbt context    — Claude Code SessionStart hook (subcommand: session-start)
+//	wbt hook       — Claude Code PostToolUse hook (reads JSON from stdin)
+//	wbt doctor     — Claude Code Stop hook + personal-OS health snapshot
 //	wbt guard      — manage guard bypass rules
 //	wbt reconcile  — drain merged-PR backlog into GTD tasks (Phase 2 fuzzy)
 //	wbt version    — print version info (also accepts --version)
@@ -37,6 +40,10 @@ Commands:
   wbt serve      Load .env and start the wayneblacktea-server (HTTP API)
   wbt mcp        Serve MCP stdio (wired into .mcp.json by ` + "`wbt init`" + `;
                  open Claude Code from the directory containing .mcp.json)
+  wbt context    Claude Code SessionStart hook
+                 (subcommand: ` + "`wbt context session-start`" + `)
+  wbt hook       Claude Code PostToolUse hook (reads JSON payload from stdin)
+  wbt doctor     Claude Code Stop hook + personal-OS health snapshot
   wbt guard      Manage guard bypass rules (see: wbt guard --help)
   wbt reconcile  Drain merged-PR backlog into GTD tasks (see: wbt reconcile --help)
   wbt version    Print version info (also accepts --version)
@@ -61,6 +68,12 @@ func main() {
 		err = cli.RunServe(os.Args[2:])
 	case "mcp":
 		err = cli.RunMCP()
+	case "context":
+		err = runHookSubcmd(os.Args[2:], cli.RunContext)
+	case "hook":
+		err = runHookSubcmd(os.Args[2:], cli.RunHook)
+	case "doctor":
+		err = runHookSubcmd(os.Args[2:], cli.RunDoctor)
 	case "guard":
 		err = cli.RunGuard(os.Args[2:])
 	case "reconcile":
@@ -78,6 +91,18 @@ func main() {
 // isVersionArg returns true for any of the conventional version flag forms.
 func isVersionArg(arg string) bool {
 	return arg == "version" || arg == "--version" || arg == "-v"
+}
+
+// runHookSubcmd dispatches a hook subcommand (context/hook/doctor), short-
+// circuiting on `--version` / `-v` so legacy self-identification callers
+// (PR #85 R3 contract) don't silently create /tmp/<binary>.log via the hook
+// path. Returns nil for the version case so main exits 0.
+func runHookSubcmd(args []string, run func([]string) error) error {
+	if len(args) >= 1 && isVersionArg(args[0]) {
+		printVersion()
+		return nil
+	}
+	return run(args)
 }
 
 // printVersion writes "<binary> <version> (<commit>)" to stdout. Install

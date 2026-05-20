@@ -14,23 +14,6 @@ before:
     - sh -c 'mkdir -p cmd/server/web && rm -rf cmd/server/web/dist && cp -r web/dist cmd/server/web/dist'
 
 builds:
-  - id: mcp
-    binary: wayneblacktea-mcp
-    main: ./cmd/mcp
-    env:
-      - CGO_ENABLED=0
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
   - id: server
     binary: wayneblacktea-server
     main: ./cmd/server
@@ -151,23 +134,6 @@ builds:
       - arm64
 
 archives:
-  - id: mcp
-    ids:
-      - mcp
-    name_template: >-
-      wayneblacktea-mcp_{{ .Version }}_
-      {{- if eq .Os "darwin" }}macos
-      {{- else }}{{ .Os }}{{ end }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else }}{{ .Arch }}{{ end }}
-    formats: [tar.gz]
-    format_overrides:
-      - goos: windows
-        formats: [zip]
-    files:
-      - LICENSE
-      - README.md
-
   - id: server
     ids:
       - server
