@@ -71,8 +71,16 @@ func run() error {
 	if err := validateAPIKey(apiKey); err != nil {
 		return err
 	}
-	if os.Getenv("RAILWAY_ENVIRONMENT") != "" && os.Getenv("APP_ENV") == "" {
-		log.Printf("WARNING: RAILWAY_ENVIRONMENT is set but APP_ENV is not — cookie Secure flag will not be enabled; set APP_ENV=production on Railway")
+	if env := os.Getenv("RAILWAY_ENVIRONMENT"); env != "" && os.Getenv("APP_ENV") == "" {
+		// Secure-by-default: Railway's RAILWAY_ENVIRONMENT is authoritative on
+		// Railway-hosted deploys. Inheriting APP_ENV avoids cookie Secure flag
+		// being off in production when operator forgets to set APP_ENV
+		// explicitly. Set APP_ENV manually to override (e.g. staging-on-Railway).
+		if err := os.Setenv("APP_ENV", env); err != nil {
+			log.Printf("WARNING: failed to inherit APP_ENV from RAILWAY_ENVIRONMENT=%q: %v", env, err)
+		} else {
+			log.Printf("INFO: APP_ENV inherited from RAILWAY_ENVIRONMENT=%q (set APP_ENV explicitly to override)", env)
+		}
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
