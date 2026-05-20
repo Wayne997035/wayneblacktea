@@ -1,4 +1,4 @@
-// FIXTURE-ONLY — real <CandidateRow /> component pending GTD follow-up task <FOLLOW_UP_TASK_UUID>
+// FIXTURE-ONLY — real <CandidateRow /> component pending GTD follow-up task dbc2fef0-ce3d-43ea-a4e6-7b9b0962eaef
 //
 // grep this file for the string `FIXTURE-ONLY` when wiring the real component
 // in. The snapshots recorded here ARE the behavioural contract — when the real
