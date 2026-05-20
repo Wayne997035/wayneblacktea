@@ -37,7 +37,7 @@ type Client struct {
 //
 // The env var name matches Notion's public terminology ("Integration secret",
 // shown verbatim in https://www.notion.so/my-integrations) and is the same
-// name the project's .env.example, Railway, and docs/installation.md use.
+// name the project's .env.example, Railway, and docs/install.md use.
 func NewClient() *Client {
 	token := os.Getenv("NOTION_INTEGRATION_SECRET")
 	if token == "" {

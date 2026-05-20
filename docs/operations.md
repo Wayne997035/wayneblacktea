@@ -6,7 +6,7 @@ in order, verify the post-conditions before moving on.
 
 This file is the canonical place for one-shot ops actions. The
 day-to-day "how do I bring the server up" lives in
-[`installation.md`](installation.md).
+[`install.md`](install.md).
 
 ---
 

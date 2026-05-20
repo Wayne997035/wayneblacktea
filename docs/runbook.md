@@ -1,6 +1,6 @@
 # wayneblacktea Operations Runbook
 
-Production and self-host operational procedures. Day-to-day startup: see [`installation.md`](installation.md).
+Production and self-host operational procedures. Day-to-day startup: see [`install.md`](install.md).
 
 ---
 
