@@ -142,19 +142,29 @@ func TestGTDStore_WorkspaceIsolation(t *testing.T) {
 	}
 }
 
-func TestGTDStore_WeeklyProgress(t *testing.T) {
+func TestGTDStore_WeeklyProgress_Empty(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()
 
-	t1, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "a", Priority: 3})
+	completed, total, err := s.WeeklyProgress(ctx)
+	if err != nil {
+		t.Fatalf("WeeklyProgress: %v", err)
+	}
+	if completed != 0 || total != 0 {
+		t.Errorf("expected {0, 0}, got {%d, %d}", completed, total)
+	}
+}
+
+func TestGTDStore_WeeklyProgress_CompletedThisWeek(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	t1, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "task1", Priority: 3})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 	if _, err := s.CompleteTask(ctx, t1.ID, nil); err != nil {
 		t.Fatalf("CompleteTask: %v", err)
-	}
-	if _, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "b", Priority: 3}); err != nil {
-		t.Fatalf("CreateTask b: %v", err)
 	}
 
 	completed, total, err := s.WeeklyProgress(ctx)
@@ -162,7 +172,109 @@ func TestGTDStore_WeeklyProgress(t *testing.T) {
 		t.Fatalf("WeeklyProgress: %v", err)
 	}
 	if completed != 1 || total != 1 {
-		t.Errorf("expected completed=1 total=1, got completed=%d total=%d", completed, total)
+		t.Errorf("expected {1, 1}, got {%d, %d}", completed, total)
+	}
+	if completed > total {
+		t.Errorf("invariant broken: completed > total")
+	}
+}
+
+func TestGTDStore_WeeklyProgress_MixedStatuses(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	// Create and complete one
+	t1, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "task1", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask task1: %v", err)
+	}
+	if _, err := s.CompleteTask(ctx, t1.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	// Create a pending one
+	if _, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "task2", Priority: 3}); err != nil {
+		t.Fatalf("CreateTask task2: %v", err)
+	}
+
+	completed, total, err := s.WeeklyProgress(ctx)
+	if err != nil {
+		t.Fatalf("WeeklyProgress: %v", err)
+	}
+	if completed != 1 || total != 2 {
+		t.Errorf("expected {1, 2}, got {%d, %d}", completed, total)
+	}
+	if completed > total {
+		t.Errorf("invariant broken: completed > total")
+	}
+}
+
+func TestGTDStore_WeeklyProgress_FutureViaProperty(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	friday := now.Add(time.Duration(5-weekday) * 24 * time.Hour)
+
+	_, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:    "future_due_task",
+		Priority: 3,
+		DueDate:  &friday,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	completed, total, err := s.WeeklyProgress(ctx)
+	if err != nil {
+		t.Fatalf("WeeklyProgress: %v", err)
+	}
+	if completed > total {
+		t.Errorf("invariant broken: completed=%d > total=%d", completed, total)
+	}
+}
+
+func TestGTDStore_WeeklyProgress_AllStatuses(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	// Pending
+	_, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "pending", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask pending: %v", err)
+	}
+
+	// In progress
+	t2, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "in_progress", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask in_progress: %v", err)
+	}
+	if _, err := s.UpdateTaskStatus(ctx, t2.ID, "in_progress"); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+
+	// Completed
+	t3, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "completed", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask completed: %v", err)
+	}
+	if _, err := s.CompleteTask(ctx, t3.ID, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	completed, total, err := s.WeeklyProgress(ctx)
+	if err != nil {
+		t.Fatalf("WeeklyProgress: %v", err)
+	}
+	if completed != 1 || total != 3 {
+		t.Errorf("expected {1, 3}, got {%d, %d}", completed, total)
+	}
+	if completed > total {
+		t.Errorf("invariant broken: completed > total")
 	}
 }
 

@@ -1324,15 +1324,16 @@ func (s *Store) RecentActivityByProject(
 	return out, nil
 }
 
-// WeeklyProgress returns completed task count this week and total active task count.
+// WeeklyProgress returns completed task count this week and total week-relevant task count.
+// total = tasks completed this week + pending/in_progress due this week or created this week.
 func (s *Store) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	completed, err = s.q.CountCompletedTasksThisWeek(ctx, s.workspaceID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("counting completed tasks: %w", err)
 	}
-	total, err = s.q.CountTotalActiveTasks(ctx, s.workspaceID)
+	total, err = s.q.CountWeeklyRelevantTasks(ctx, s.workspaceID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("counting active tasks: %w", err)
+		return 0, 0, fmt.Errorf("counting week-relevant tasks: %w", err)
 	}
 	return completed, total, nil
 }

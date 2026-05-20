@@ -1460,7 +1460,8 @@ func (s *GTDStore) LatestActionAt(ctx context.Context, action string) (*time.Tim
 	return &t, nil
 }
 
-// WeeklyProgress returns completed-this-week and total-active counts.
+// WeeklyProgress returns completed-this-week and total-week-relevant counts.
+// total = tasks completed this week + pending/in_progress due this week or created this week.
 func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, err error) {
 	// SQLite has no date_trunc; compute Monday 00:00 UTC of this week in Go.
 	now := time.Now().UTC()
@@ -1470,6 +1471,7 @@ func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, 
 	}
 	monday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(-time.Duration(weekday-1) * 24 * time.Hour)
 	weekStart := monday.Format("2006-01-02T15:04:05.000Z07:00")
+	weekEnd := monday.Add(7 * 24 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
 
 	const completedQ = `SELECT COUNT(*) FROM tasks
 		WHERE status = 'completed'
@@ -1480,9 +1482,14 @@ func (s *GTDStore) WeeklyProgress(ctx context.Context) (completed, total int64, 
 	}
 
 	const totalQ = `SELECT COUNT(*) FROM tasks
-		WHERE status IN ('pending','in_progress')
-		  AND (?1 IS NULL OR workspace_id = ?1)`
-	if err = s.db.conn.QueryRowContext(ctx, totalQ, s.db.workspaceArg()).Scan(&total); err != nil {
+		WHERE (?1 IS NULL OR workspace_id = ?1)
+		  AND (
+		    (status = 'completed' AND updated_at >= ?2 AND updated_at < ?3)
+		    OR (status IN ('pending','in_progress')
+		        AND ((due_date >= ?2 AND due_date < ?3)
+		          OR created_at >= ?2))
+		  )`
+	if err = s.db.conn.QueryRowContext(ctx, totalQ, s.db.workspaceArg(), weekStart, weekEnd).Scan(&total); err != nil {
 		return 0, 0, errWrap("WeeklyProgress total", err)
 	}
 	return completed, total, nil

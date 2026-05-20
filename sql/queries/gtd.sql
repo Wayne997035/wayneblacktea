@@ -117,6 +117,22 @@ SELECT COUNT(*) FROM tasks
 WHERE status IN ('pending', 'in_progress')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
 
+-- name: CountWeeklyRelevantTasks :one
+-- Returns count of tasks that are "relevant to this week":
+-- (1) completed this week, OR
+-- (2) pending/in_progress AND (due_date this week OR created this week)
+SELECT COUNT(*) FROM tasks
+WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+  AND (
+    (status = 'completed'
+       AND updated_at >= date_trunc('week', NOW())
+       AND updated_at < date_trunc('week', NOW()) + interval '1 week')
+    OR (status IN ('pending','in_progress')
+       AND ((due_date >= date_trunc('week', NOW())
+             AND due_date < date_trunc('week', NOW()) + interval '1 week')
+         OR created_at >= date_trunc('week', NOW())))
+  );
+
 -- name: DeleteTask :exec
 -- The Go-side store wraps this in a transaction together with cleanup of
 -- work_session_tasks + work_sessions.current_task_id (the cascade behaviour
