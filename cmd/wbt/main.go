@@ -2,8 +2,12 @@
 //
 // Usage:
 //
-//	wbt init       — interactive wizard that writes .env and .mcp.json
-//	wbt serve      — loads .env and starts the wayneblacktea-server binary
+//	wbt setup      — one-command install: SQLite + port reclaim + bg server + claude mcp
+//	wbt status     — show server PID, port, /health (use --format json)
+//	wbt stop       — stop the background server (idempotent)
+//	wbt restart    — stop + setup
+//	wbt init       — DEPRECATED alias for `wbt setup`
+//	wbt serve      — loads .env and starts the wayneblacktea-server binary (foreground)
 //	wbt mcp        — serve MCP stdio (wired into .mcp.json by `wbt init`)
 //	wbt context    — Claude Code SessionStart hook (subcommand: session-start)
 //	wbt hook       — Claude Code PostToolUse hook (reads JSON from stdin)
@@ -36,8 +40,12 @@ var (
 const usage = `wbt — wayneblacktea one-click installer
 
 Commands:
-  wbt init       Run interactive setup wizard (writes .env and .mcp.json)
-  wbt serve      Load .env and start the wayneblacktea-server (HTTP API)
+  wbt setup      One-command install: SQLite dir + port reclaim + bg server + claude mcp
+  wbt status     Show server PID, port, /health (use --format json for machine-readable)
+  wbt stop       Stop the background server (idempotent)
+  wbt restart    Stop, then re-run setup
+  wbt init       DEPRECATED alias for ` + "`wbt setup`" + `
+  wbt serve      Load config and start the wayneblacktea-server in the foreground
   wbt mcp        Serve MCP stdio (wired into .mcp.json by ` + "`wbt init`" + `;
                  open Claude Code from the directory containing .mcp.json)
   wbt context    Claude Code SessionStart hook
@@ -60,32 +68,49 @@ func main() {
 		printVersion()
 		return
 	}
-	var err error
-	switch os.Args[1] {
-	case "init":
-		err = cli.RunInit()
-	case "serve":
-		err = cli.RunServe(os.Args[2:])
-	case "mcp":
-		err = cli.RunMCP()
-	case "context":
-		err = runHookSubcmd(os.Args[2:], cli.RunContext)
-	case "hook":
-		err = runHookSubcmd(os.Args[2:], cli.RunHook)
-	case "doctor":
-		err = runHookSubcmd(os.Args[2:], cli.RunDoctor)
-	case "guard":
-		err = cli.RunGuard(os.Args[2:])
-	case "reconcile":
-		err = cli.RunReconcile(os.Args[2:])
-	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n%s", os.Args[1], usage)
-		os.Exit(1)
-	}
-	if err != nil {
+	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// subcommands maps subcommand names to their handlers. Keeping this as a
+// table (instead of an inline switch) lets main's cyclomatic complexity
+// stay constant as more commands are added.
+var subcommands = map[string]func([]string) error{
+	// Phase 2 lifecycle commands.
+	"setup":   cli.RunSetup,
+	"status":  cli.RunStatus,
+	"stop":    cli.RunStop,
+	"restart": cli.RunRestart,
+	"init": func(rest []string) error {
+		fmt.Fprintln(os.Stderr, "wbt: 'init' is deprecated; use 'wbt setup'")
+		return cli.RunSetup(rest)
+	},
+	// Long-running / interactive commands.
+	"serve": cli.RunServe,
+	"mcp":   func([]string) error { return cli.RunMCP() },
+	// Claude Code hook commands (Phase 2.3).
+	"context": func(rest []string) error { return runHookSubcmd(rest, cli.RunContext) },
+	"hook":    func(rest []string) error { return runHookSubcmd(rest, cli.RunHook) },
+	"doctor":  func(rest []string) error { return runHookSubcmd(rest, cli.RunDoctor) },
+	// Utility commands.
+	"guard":     cli.RunGuard,
+	"reconcile": cli.RunReconcile,
+}
+
+// dispatch routes the subcommand to its handler.
+func dispatch(name string, rest []string) error {
+	fn, ok := subcommands[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n%s", name, usage)
+		os.Exit(1)
+		return nil // unreachable
+	}
+	if err := fn(rest); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
 }
 
 // isVersionArg returns true for any of the conventional version flag forms.
