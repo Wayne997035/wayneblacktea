@@ -30,6 +30,10 @@ import (
 // implementation is still pending. Test for it with errors.Is.
 var ErrNotImplemented = errors.New("sqlite store: not yet implemented in this build")
 
+// jsonNullLiteral is the JSON text produced by encoding a nil/null value.
+// SQLite JSON columns may store this when a Go nil slice was persisted.
+const jsonNullLiteral = "null"
+
 //go:embed schema.sql
 var schemaSQL string
 

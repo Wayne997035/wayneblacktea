@@ -22,6 +22,7 @@ import (
 	wbtruntime "github.com/Wayne997035/wayneblacktea/internal/runtime"
 	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
@@ -146,6 +147,7 @@ type postgresServerStores struct {
 	proceduralStore *procedural.Store
 	atomStore       *atom.Store
 	outcomeStore    *outcome.Store
+	skillStore      *skill.Store
 	disciplineStore *discipline.PgStore
 }
 
@@ -196,6 +198,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 		proceduralStore: procedural.New(pool, wsID),
 		atomStore:       atom.New(pool, wsID),
 		outcomeStore:    outcome.NewStore(pool, wsID),
+		skillStore:      skill.New(pool, wsID),
 		disciplineStore: discipline.NewPgStore(pool, wsID),
 	}, nil
 }
@@ -222,6 +225,7 @@ func (p *postgresServerStores) Playbook() playbook.StoreIface            { retur
 func (p *postgresServerStores) Procedural() procedural.StoreIface        { return p.proceduralStore }
 func (p *postgresServerStores) Atom() atom.StoreIface                    { return p.atomStore }
 func (p *postgresServerStores) Outcome() outcome.StoreIface              { return p.outcomeStore }
+func (p *postgresServerStores) Skill() skill.StoreIface                  { return p.skillStore }
 func (p *postgresServerStores) Discipline() discipline.Store             { return p.disciplineStore }
 func (p *postgresServerStores) WorkspaceID() *uuid.UUID                  { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { return p.pool }
@@ -297,6 +301,7 @@ type sqliteServerStores struct {
 	proceduralStore *wbtsqlite.ProceduralStore
 	atomStore       *wbtsqlite.AtomStore
 	outcomeStore    *wbtsqlite.OutcomeStore
+	skillStore      *wbtsqlite.SkillStore
 	disciplineStore *wbtsqlite.DisciplineStore
 }
 
@@ -335,6 +340,7 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		proceduralStore: wbtsqlite.NewProceduralStore(sdb),
 		atomStore:       wbtsqlite.NewAtomStore(sdb),
 		outcomeStore:    wbtsqlite.NewOutcomeStore(sdb),
+		skillStore:      wbtsqlite.NewSkillStore(sdb),
 		disciplineStore: wbtsqlite.NewDisciplineStore(sdb),
 	}, nil
 }
@@ -363,6 +369,7 @@ func (s *sqliteServerStores) Playbook() playbook.StoreIface            { return 
 func (s *sqliteServerStores) Procedural() procedural.StoreIface        { return s.proceduralStore }
 func (s *sqliteServerStores) Atom() atom.StoreIface                    { return s.atomStore }
 func (s *sqliteServerStores) Outcome() outcome.StoreIface              { return s.outcomeStore }
+func (s *sqliteServerStores) Skill() skill.StoreIface                  { return s.skillStore }
 func (s *sqliteServerStores) Discipline() discipline.Store             { return s.disciplineStore }
 func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                  { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return nil }

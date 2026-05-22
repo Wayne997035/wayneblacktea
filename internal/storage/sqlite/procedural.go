@@ -97,7 +97,7 @@ func parseProceduralRow(r proceduralRawRow) procedural.ProceduralMemory {
 }
 
 func parseStringSliceSQLite(s string) []string {
-	if s == "" || s == "[]" || s == "null" {
+	if s == "" || s == "[]" || s == jsonNullLiteral {
 		return []string{}
 	}
 	var out []string
