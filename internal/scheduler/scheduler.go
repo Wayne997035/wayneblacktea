@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
@@ -101,17 +102,18 @@ const aiReviewMinReviewCount = 5
 
 // Scheduler wraps gocron and coordinates scheduled background jobs.
 type Scheduler struct {
-	s              gocron.Scheduler
-	learning       learning.StoreIface
-	discord        DiscordSender
-	notion         *notion.Client
-	briefingStores notion.BriefingStores
-	reviewer       ai.ConceptReviewerIface
-	reflectionDeps *reflectionDeps
-	consolidDeps   *consolidationDeps
-	statusDeps     *statusSnapshotDeps
-	pruner         *decay.Pruner
-	playbookDeps   *playbookDeps
+	s                     gocron.Scheduler
+	learning              learning.StoreIface
+	discord               DiscordSender
+	notion                *notion.Client
+	briefingStores        notion.BriefingStores
+	reviewer              ai.ConceptReviewerIface
+	reflectionDeps        *reflectionDeps
+	consolidDeps          *consolidationDeps
+	knowledgeConsolidDeps *knowledgeConsolidationDeps
+	statusDeps            *statusSnapshotDeps
+	pruner                *decay.Pruner
+	playbookDeps          *playbookDeps
 	// disciplinePool is the pgxpool used by the daily discipline_events
 	// prune job. nil when running under SQLite (or when no pool is wired
 	// in by the caller) — the prune job is skipped in that case because
@@ -182,6 +184,24 @@ type statusSnapshotDeps struct {
 	workspaceID *uuid.UUID
 }
 
+// buildKnowledgeConsolidDeps initialises the knowledge consolidation dep bundle.
+// Extracted from buildSchedulerDeps to keep its cyclomatic complexity below
+// the gocyclo threshold of 15.
+func buildKnowledgeConsolidDeps(
+	reflector ai.ReflectorIface,
+	propStore proposal.StoreIface,
+	knowledgeStore knowledge.StoreIface,
+) *knowledgeConsolidationDeps {
+	if reflector == nil || propStore == nil || knowledgeStore == nil {
+		return nil
+	}
+	return &knowledgeConsolidationDeps{
+		knowledge: knowledgeStore,
+		proposal:  propStore,
+		reflector: reflector,
+	}
+}
+
 // buildSchedulerDeps initialises all optional dep bundles from the flat
 // parameter list passed to New. Extracted to keep New's cyclomatic complexity
 // below the gocyclo threshold of 15.
@@ -193,8 +213,9 @@ func buildSchedulerDeps(
 	pbStore playbook.StoreIface,
 	snapStore snapshot.StoreIface,
 	snapGen snapshot.GeneratorIface,
+	knowledgeStore knowledge.StoreIface,
 	workspaceID *uuid.UUID,
-) (rDeps *reflectionDeps, cDeps *consolidationDeps, pbDeps *playbookDeps, sDeps *statusSnapshotDeps) {
+) (rDeps *reflectionDeps, cDeps *consolidationDeps, kcDeps *knowledgeConsolidationDeps, pbDeps *playbookDeps, sDeps *statusSnapshotDeps) {
 	if reflector != nil && gtdStore != nil && decStore != nil && propStore != nil {
 		rDeps = &reflectionDeps{
 			gtd:       gtdStore,
@@ -208,6 +229,7 @@ func buildSchedulerDeps(
 			reflector: reflector,
 		}
 	}
+	kcDeps = buildKnowledgeConsolidDeps(reflector, propStore, knowledgeStore)
 	if reflector != nil && decStore != nil && propStore != nil && pbStore != nil {
 		pbDeps = &playbookDeps{
 			decision:  decStore,
@@ -225,7 +247,7 @@ func buildSchedulerDeps(
 			workspaceID: workspaceID,
 		}
 	}
-	return rDeps, cDeps, pbDeps, sDeps
+	return rDeps, cDeps, kcDeps, pbDeps, sDeps
 }
 
 // New creates and configures the Scheduler with all registered jobs.
@@ -249,6 +271,9 @@ func buildSchedulerDeps(
 //
 // pbStore is optional: when nil (or when reflector/decStore/propStore is also
 // nil) the Sunday playbook promoter job is skipped.
+//
+// knowledgeStore is optional: when nil (or when reflector/propStore is nil)
+// the Sunday knowledge consolidation job is skipped.
 func New(
 	ls learning.StoreIface,
 	dc DiscordSender,
@@ -265,6 +290,7 @@ func New(
 	pruner *decay.Pruner,
 	pbStore playbook.StoreIface,
 	disciplinePool *pgxpool.Pool,
+	knowledgeStore knowledge.StoreIface,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -276,24 +302,25 @@ func New(
 		return nil, fmt.Errorf("creating gocron scheduler: %w", err)
 	}
 
-	rDeps, cDeps, pbDeps, sDeps := buildSchedulerDeps(
+	rDeps, cDeps, kcDeps, pbDeps, sDeps := buildSchedulerDeps(
 		reflector, gtdStore, decStore, propStore, pbStore,
-		snapStore, snapGen, workspaceID,
+		snapStore, snapGen, knowledgeStore, workspaceID,
 	)
 
 	sc := &Scheduler{
-		s:              s,
-		learning:       ls,
-		discord:        dc,
-		notion:         notionClient,
-		briefingStores: briefingStores,
-		reviewer:       reviewer,
-		reflectionDeps: rDeps,
-		consolidDeps:   cDeps,
-		statusDeps:     sDeps,
-		pruner:         pruner,
-		playbookDeps:   pbDeps,
-		disciplinePool: disciplinePool,
+		s:                     s,
+		learning:              ls,
+		discord:               dc,
+		notion:                notionClient,
+		briefingStores:        briefingStores,
+		reviewer:              reviewer,
+		reflectionDeps:        rDeps,
+		consolidDeps:          cDeps,
+		knowledgeConsolidDeps: kcDeps,
+		statusDeps:            sDeps,
+		pruner:                pruner,
+		playbookDeps:          pbDeps,
+		disciplinePool:        disciplinePool,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -429,6 +456,9 @@ func (sc *Scheduler) registerWeeklyJobs(s gocron.Scheduler) error {
 	if err := sc.registerSundayPlaybookPromoter(s); err != nil {
 		return err
 	}
+	if err := sc.registerSundayKnowledgeConsolidation(s); err != nil {
+		return err
+	}
 
 	if sc.reflectionDeps == nil {
 		slog.Info("scheduler: SaturdayReflection + SaturdayConsolidation + SaturdayStatusSnapshot skipped (reflector or stores not configured)")
@@ -512,6 +542,34 @@ func (s *Scheduler) sundayPlaybookPromoter() {
 		return
 	}
 	runPlaybookPromoter(*s.playbookDeps)
+}
+
+// registerSundayKnowledgeConsolidation adds the Sunday 01:00 knowledge consolidation job.
+func (sc *Scheduler) registerSundayKnowledgeConsolidation(s gocron.Scheduler) error {
+	if sc.knowledgeConsolidDeps == nil {
+		slog.Info("scheduler: SundayKnowledgeConsolidation skipped (reflector, proposal or knowledge store not configured)")
+		return nil
+	}
+	_, err := s.NewJob(
+		gocron.WeeklyJob(1, gocron.NewWeekdays(time.Sunday), gocron.NewAtTimes(gocron.NewAtTime(1, 0, 0))),
+		gocron.NewTask(sc.sundayKnowledgeConsolidation),
+		gocron.WithName("sunday-knowledge-consolidation"),
+		// LimitModeReschedule: drop a run if the previous one is still executing.
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering Sunday knowledge consolidation job: %w", err)
+	}
+	slog.Info("scheduler: SundayKnowledgeConsolidation scheduled at Sunday 01:00 Asia/Taipei")
+	return nil
+}
+
+// sundayKnowledgeConsolidation wraps runKnowledgeConsolidation for the scheduler method signature.
+func (s *Scheduler) sundayKnowledgeConsolidation() {
+	if s.knowledgeConsolidDeps == nil {
+		return
+	}
+	runKnowledgeConsolidation(*s.knowledgeConsolidDeps)
 }
 
 // Start begins executing scheduled jobs (non-blocking).

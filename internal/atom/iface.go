@@ -34,6 +34,15 @@ type StoreIface interface {
 	// PruneAtoms hard-deletes memory_atoms rows older than cutoff.
 	// Called daily by the decay.Pruner to enforce the 90-day TTL.
 	PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
+
+	// SetDigestStatus updates the digest_status and error_msg for the given atom.
+	// status must be one of "pending", "done", "failed".
+	// errMsg is stored only when status="failed"; pass "" otherwise.
+	SetDigestStatus(ctx context.Context, atomID uuid.UUID, status string, errMsg string) error
+
+	// CountByDigestStatus returns the number of atoms with the given digest_status
+	// in the given workspace (nil = all workspaces).
+	CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string) (int64, error)
 }
 
 // Compile-time assertion: Postgres Store satisfies StoreIface.

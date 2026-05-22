@@ -442,3 +442,140 @@ func TestSQLiteAtomStore_ErrNotFound(t *testing.T) {
 		t.Error("ErrNotFound sentinel broken")
 	}
 }
+
+func TestSQLiteAtomStore_SetDigestStatus(t *testing.T) {
+	db := openAtomDB(t)
+	store := wbtsqlite.NewAtomStore(db)
+	ctx := context.Background()
+
+	parentID := uuid.New()
+	a, err := store.AddAtom(ctx, atom.AddAtomParams{
+		ParentTable: "knowledge_items",
+		ParentID:    parentID,
+		Content:     "digest status test atom",
+	})
+	if err != nil {
+		t.Fatalf("AddAtom: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		atomID  uuid.UUID
+		status  string
+		errMsg  string
+		wantErr bool
+	}{
+		{
+			name:   "set to done clears error_msg",
+			atomID: a.ID,
+			status: "done",
+			errMsg: "",
+		},
+		{
+			name:   "set to failed with error message",
+			atomID: a.ID,
+			status: "failed",
+			errMsg: "rate limit exceeded",
+		},
+		{
+			name:   "set back to pending",
+			atomID: a.ID,
+			status: "pending",
+			errMsg: "",
+		},
+		{
+			name:   "non-existent atom is a no-op (0 rows affected, no error)",
+			atomID: uuid.New(),
+			status: "done",
+			errMsg: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := store.SetDigestStatus(ctx, tc.atomID, tc.status, tc.errMsg)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SetDigestStatus: %v", err)
+			}
+		})
+	}
+}
+
+func TestSQLiteAtomStore_CountByDigestStatus(t *testing.T) {
+	db := openAtomDB(t)
+	store := wbtsqlite.NewAtomStore(db)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+	otherWsID := uuid.New()
+	parentID := uuid.New()
+
+	// Insert 2 atoms in wsID, 1 in otherWsID.
+	for i := 0; i < 2; i++ {
+		_, err := store.AddAtom(ctx, atom.AddAtomParams{
+			WorkspaceID: &wsID,
+			ParentTable: "knowledge_items",
+			ParentID:    parentID,
+			Content:     "pending atom",
+		})
+		if err != nil {
+			t.Fatalf("seed atom %d: %v", i, err)
+		}
+	}
+	// The third atom is in a different workspace.
+	_, err := store.AddAtom(ctx, atom.AddAtomParams{
+		WorkspaceID: &otherWsID,
+		ParentTable: "knowledge_items",
+		ParentID:    parentID,
+		Content:     "other workspace pending atom",
+	})
+	if err != nil {
+		t.Fatalf("seed other workspace atom: %v", err)
+	}
+
+	t.Run("nil workspace counts all atoms with given status", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, nil, "pending")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus nil ws: %v", err)
+		}
+		if n < 3 {
+			t.Errorf("expected at least 3 pending atoms globally, got %d", n)
+		}
+	})
+
+	t.Run("workspace-scoped count excludes other workspaces", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, &wsID, "pending")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("expected 2 pending atoms for wsID, got %d", n)
+		}
+	})
+
+	t.Run("done count is zero when nothing has been marked done", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, &wsID, "done")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus done: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("expected 0 done atoms, got %d", n)
+		}
+	})
+
+	t.Run("unknown status returns zero without error", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, &wsID, "nosuchstatus")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus unknown: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("expected 0 for unknown status, got %d", n)
+		}
+	})
+}

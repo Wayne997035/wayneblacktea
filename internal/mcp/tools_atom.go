@@ -141,6 +141,9 @@ func atomizeAndPersist(
 			slog.Warn("atomize: persist atom failed", "err", err)
 			continue
 		}
+		if sErr := store.SetDigestStatus(ctx, a.ID, "done", ""); sErr != nil {
+			slog.Warn("atomize: set digest status done failed", "atom_id", a.ID, "err", sErr)
+		}
 		atomIDs = append(atomIDs, a.ID)
 	}
 

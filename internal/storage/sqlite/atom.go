@@ -258,6 +258,30 @@ func (s *AtomStore) Search(ctx context.Context, workspaceID *uuid.UUID, query st
 	return out, errWrap("AtomStore.Search iter", rows.Err())
 }
 
+// SetDigestStatus updates the digest_status and optional error_msg for a single atom.
+func (s *AtomStore) SetDigestStatus(ctx context.Context, id uuid.UUID, status string, errMsg string) error {
+	const q = `UPDATE memory_atoms SET digest_status = ?, error_msg = ? WHERE id = ?`
+	_, err := s.db.conn.ExecContext(ctx, q, status, errMsg, id.String())
+	if err != nil {
+		return errWrap("AtomStore.SetDigestStatus", err)
+	}
+	return nil
+}
+
+// CountByDigestStatus counts atoms with the given digest_status, optionally scoped to a workspace.
+func (s *AtomStore) CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string) (int64, error) {
+	var wsArg any
+	if workspaceID != nil {
+		wsArg = workspaceID.String()
+	}
+	const q = `SELECT COUNT(*) FROM memory_atoms WHERE (?1 IS NULL OR workspace_id = ?1) AND digest_status = ?2`
+	var n int64
+	if err := s.db.conn.QueryRowContext(ctx, q, wsArg, status).Scan(&n); err != nil {
+		return 0, errWrap("AtomStore.CountByDigestStatus", err)
+	}
+	return n, nil
+}
+
 func (s *AtomStore) getByID(ctx context.Context, id uuid.UUID) (*atom.Atom, error) {
 	// M3: workspace predicate prevents cross-tenant atom access in future multi-tenant mode.
 	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms

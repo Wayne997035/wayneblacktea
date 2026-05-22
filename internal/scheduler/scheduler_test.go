@@ -82,7 +82,7 @@ func (r *stubReviewer) ReviewConcepts(_ context.Context, _ []ai.ReviewInput) []a
 
 func makeScheduler(t *testing.T, store learning.StoreIface, reviewer ai.ConceptReviewerIface) *Scheduler {
 	t.Helper()
-	sc, err := New(store, nil, nil, nil, reviewer, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, reviewer, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -94,7 +94,7 @@ func makeScheduler(t *testing.T, store learning.StoreIface, reviewer ai.ConceptR
 func TestWeeklyAIConceptReview_NilReviewer_JobNotRegistered(t *testing.T) {
 	store := &stubLearningStore{}
 	// nil reviewer → New must succeed and NOT register the weekly AI job.
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() with nil reviewer error: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestSendDailyReviewReminder_SendsCorrectCount(t *testing.T) {
 	store := &stubLearningStore{dueCount: 7}
 	dc := &stubDiscordSender{}
 
-	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestSendDailyReviewReminder_SendsCorrectCount(t *testing.T) {
 func TestSendDailyReviewReminder_NilDiscord(t *testing.T) {
 	store := &stubLearningStore{dueCount: 3}
 	// Pass nil discord client — must not panic.
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestSendDailyReviewReminder_CountError(t *testing.T) {
 	store := &stubLearningStore{dueCountErr: errStoreFailure}
 	dc := &stubDiscordSender{}
 
-	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestSendDailyReviewReminder_ZeroDue(t *testing.T) {
 	store := &stubLearningStore{dueCount: 0}
 	dc := &stubDiscordSender{}
 
-	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, dc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestSendDailyReviewReminder_ZeroDue(t *testing.T) {
 // guard.
 func TestRunDailyDisciplinePrune_NilPool_NoPanic(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestRunDailyDisciplinePrune_NilPool_NoPanic(t *testing.T) {
 // absence.
 func TestRegisterDailyDisciplinePrune_NilPool_JobNotRegistered(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestRegisterDailyDisciplinePrune_NilPool_JobNotRegistered(t *testing.T) {
 // dev-local single-tenant).
 func TestRunDailyPendingProposalsPrune_NilPool_NoPanic(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestRunDailyPendingProposalsPrune_NilPool_NoPanic(t *testing.T) {
 // decay prune jobs.
 func TestRegisterDailyPendingProposalsPrune_NilPool_JobNotRegistered(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -415,7 +415,7 @@ func (s *stubCandidatePruner) PruneResolved(_ context.Context, _ time.Duration) 
 // called), mirroring the nil-guard pattern used by runDailyDisciplinePrune.
 func TestRunDailyCandidatePrune_NilPruner_NoPanic(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestRunDailyCandidatePrune_NilPruner_NoPanic(t *testing.T) {
 // that runDailyCandidatePrune delegates to the store's PruneResolved.
 func TestWithCandidatePruner_RegistersJob_And_Delegates(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -478,7 +478,7 @@ func (s *stubMergedPRsPruner) PruneOlderThan(_ context.Context, d time.Duration)
 // short-circuits cleanly when no mergedPRsPruner is wired.
 func TestRunDailyMergedPRsObservedPrune_NilPruner_NoPanic(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestRunDailyMergedPRsObservedPrune_NilPruner_NoPanic(t *testing.T) {
 // retention duration.
 func TestWithMergedPRsPruner_RegistersJob_And_Delegates(t *testing.T) {
 	store := &stubLearningStore{}
-	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

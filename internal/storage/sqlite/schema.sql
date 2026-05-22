@@ -436,10 +436,13 @@ CREATE TABLE IF NOT EXISTS memory_atoms (
     content      TEXT        NOT NULL,
     keywords     TEXT        NOT NULL DEFAULT '[]',
     tags         TEXT        NOT NULL DEFAULT '[]',
-    created_at   DATETIME    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at   DATETIME    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    digest_status TEXT       NOT NULL DEFAULT 'pending', -- parity with migrations/sqlite/000053
+    error_msg     TEXT                                   -- set on digest_status='failed'
 );
-CREATE INDEX IF NOT EXISTS idx_memory_atoms_parent    ON memory_atoms(parent_table, parent_id);
-CREATE INDEX IF NOT EXISTS idx_memory_atoms_workspace ON memory_atoms(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_memory_atoms_parent        ON memory_atoms(parent_table, parent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_atoms_workspace      ON memory_atoms(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_memory_atoms_digest_status ON memory_atoms(digest_status, workspace_id);
 
 -- Mirrored from migrations/sqlite/000034_memory_links. Directed edges between atoms.
 -- No FK constraints (CLAUDE.md #9).

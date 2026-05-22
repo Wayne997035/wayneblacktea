@@ -406,7 +406,8 @@ func run() error {
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
 		snapStore, snapGen, stores.WorkspaceID(), pruner, stores.Playbook(),
-		stores.PgxPool(), // nil under SQLite → daily-discipline-prune skipped gracefully
+		stores.PgxPool(),   // nil under SQLite → daily-discipline-prune skipped gracefully
+		stores.Knowledge(), // nil-safe: knowledge consolidation skipped when reflector absent
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)

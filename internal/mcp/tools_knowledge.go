@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/google/uuid"
@@ -37,11 +38,13 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 				"Searches by full-text and vector similarity. "+
 				"mode='coarse' searches only root-level documents (ignores section children) "+
 				"for a quick overview; mode='fine' (default) searches all rows including "+
-				"sections and returns heading_path in results.",
+				"sections and returns heading_path in results. "+
+				"include_atoms=true also returns related memory atoms in a separate 'atoms' array.",
 		),
 		mcp.WithString("query", mcp.Description("Search query"), mcp.Required()),
 		mcp.WithNumber("limit", mcp.Description("Maximum results to return (default 10)")),
 		mcp.WithString("mode", mcp.Description("Search mode: 'fine' (default, all rows) or 'coarse' (root docs only)")),
+		mcp.WithBoolean("include_atoms", mcp.Description("When true, also search memory atoms and return them in a separate 'atoms' array")),
 	), s.handleSearchKnowledge)
 
 	ms.AddTool(mcp.NewTool("list_knowledge",
@@ -142,6 +145,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("adding knowledge item: %v", err)), nil
 	}
 
+	atomsQueued := s.atomizer != nil && s.atom != nil
 	s.launchAtomize("knowledge_items", item.ID, item.Content)
 
 	// Auto-propose a concept card for review-eligible item types so the spaced
@@ -155,14 +159,26 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	if prop != nil {
 		resp.ConceptProposalID = prop.ID.String()
 	}
+	if atomsQueued {
+		resp.AtomsStatus = "queued"
+	}
 	return jsonText(resp)
 }
 
 // addKnowledgeResult wraps the freshly-created knowledge item with the optional
-// concept proposal ID so MCP clients can immediately call confirm_proposal.
+// concept proposal ID and atoms_status so MCP clients can track background atomization.
 type addKnowledgeResult struct {
 	Item              any    `json:"item"`
 	ConceptProposalID string `json:"concept_proposal_id,omitempty"`
+	AtomsStatus       string `json:"atoms_status,omitempty"`
+}
+
+// searchKnowledgeResult is returned by search_knowledge when include_atoms=true.
+// Items and Atoms are separate arrays; when include_atoms=false the handler
+// returns the items array directly (no wrapping) for backward compatibility.
+type searchKnowledgeResult struct {
+	Items []db.KnowledgeItem `json:"items"`
+	Atoms []atom.Atom        `json:"atoms"`
 }
 
 func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -186,6 +202,8 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError("mode must be 'fine' or 'coarse'"), nil
 	}
 
+	includeAtoms := boolArg(args, "include_atoms")
+
 	var (
 		items []db.KnowledgeItem
 		err   error
@@ -198,7 +216,28 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("searching knowledge: %v", err)), nil
 	}
-	return jsonText(items)
+
+	if !includeAtoms {
+		return jsonText(items)
+	}
+
+	// include_atoms=true: also search atoms and return separate arrays.
+	var atoms []atom.Atom
+	if s.atom != nil {
+		wsID := s.workspaceUUID()
+		atoms, err = s.atom.Search(ctx, wsID, query, limit)
+		if err != nil {
+			slog.Warn("search_knowledge: atom search failed", "err", err)
+			atoms = []atom.Atom{}
+		}
+	}
+	if atoms == nil {
+		atoms = []atom.Atom{}
+	}
+	if items == nil {
+		items = []db.KnowledgeItem{}
+	}
+	return jsonText(searchKnowledgeResult{Items: items, Atoms: atoms})
 }
 
 func (s *Server) handleListKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

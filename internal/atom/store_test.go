@@ -396,6 +396,140 @@ func TestStore_Traverse(t *testing.T) {
 	})
 }
 
+// TestStore_SetDigestStatus verifies happy path and edge cases of SetDigestStatus.
+func TestStore_SetDigestStatus(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := atom.New(pool, &wsID)
+	ctx := context.Background()
+
+	parentID := uuid.New()
+	a, err := store.AddAtom(ctx, atom.AddAtomParams{
+		WorkspaceID: &wsID,
+		ParentTable: "knowledge_items",
+		ParentID:    parentID,
+		Content:     "digest status test atom",
+	})
+	if err != nil {
+		t.Fatalf("AddAtom: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		atomID uuid.UUID
+		status string
+		errMsg string
+	}{
+		{
+			name:   "set to done clears error_msg",
+			atomID: a.ID,
+			status: "done",
+			errMsg: "",
+		},
+		{
+			name:   "set to failed with error message",
+			atomID: a.ID,
+			status: "failed",
+			errMsg: "rate limit exceeded",
+		},
+		{
+			name:   "set back to pending",
+			atomID: a.ID,
+			status: "pending",
+			errMsg: "",
+		},
+		{
+			name:   "non-existent atom is a no-op",
+			atomID: uuid.New(),
+			status: "done",
+			errMsg: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SetDigestStatus(ctx, tc.atomID, tc.status, tc.errMsg); err != nil {
+				t.Fatalf("SetDigestStatus: %v", err)
+			}
+		})
+	}
+}
+
+// TestStore_CountByDigestStatus verifies workspace-scoped counting by digest status.
+func TestStore_CountByDigestStatus(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	otherWsID := uuid.New()
+	store := atom.New(pool, &wsID)
+	ctx := context.Background()
+
+	parentID := uuid.New()
+
+	// Insert 2 atoms in wsID (default status = 'pending').
+	for i := 0; i < 2; i++ {
+		_, err := store.AddAtom(ctx, atom.AddAtomParams{
+			WorkspaceID: &wsID,
+			ParentTable: "knowledge_items",
+			ParentID:    parentID,
+			Content:     fmt.Sprintf("pending atom %d", i),
+		})
+		if err != nil {
+			t.Fatalf("seed atom %d: %v", i, err)
+		}
+	}
+	// Insert 1 atom in a different workspace.
+	otherStore := atom.New(pool, &otherWsID)
+	_, err := otherStore.AddAtom(ctx, atom.AddAtomParams{
+		WorkspaceID: &otherWsID,
+		ParentTable: "knowledge_items",
+		ParentID:    parentID,
+		Content:     "other workspace pending atom",
+	})
+	if err != nil {
+		t.Fatalf("seed other workspace atom: %v", err)
+	}
+
+	t.Run("workspace-scoped pending count", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, &wsID, "pending")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("expected 2 pending atoms for wsID, got %d", n)
+		}
+	})
+
+	t.Run("nil workspace counts all pending atoms globally", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, nil, "pending")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus nil ws: %v", err)
+		}
+		if n < 3 {
+			t.Errorf("expected at least 3 pending atoms globally, got %d", n)
+		}
+	})
+
+	t.Run("done count is zero before any atom is marked done", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, &wsID, "done")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus done: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("expected 0 done atoms, got %d", n)
+		}
+	})
+
+	t.Run("unknown status returns zero without error", func(t *testing.T) {
+		n, err := store.CountByDigestStatus(ctx, &wsID, "nosuchstatus")
+		if err != nil {
+			t.Fatalf("CountByDigestStatus unknown: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("expected 0 for unknown status, got %d", n)
+		}
+	})
+}
+
 // TestStore_Search verifies ILIKE search across content, keywords, tags.
 func TestStore_Search(t *testing.T) {
 	pool := openTestPgPool(t)
