@@ -234,6 +234,18 @@ func (p *postgresServerStores) SqliteDB() *wbtsqlite.DB                  { retur
 // buildPgxPool centralises the pgxpool config we use across cmd/server and
 // cmd/mcp so the TLS / pgvector wiring lives in one place.
 func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxpool.Pool, error) {
+	// pgxpool.ParseConfig honours libpq-style PGSSLROOTCERT env var and
+	// unconditionally calls os.ReadFile on it. When the env holds inline PEM
+	// content (cloud deploys without file mounting), this fails before
+	// BuildTLSConfig is reached. Shadow the env var for the parse — the
+	// inline PEM is already captured in pgsslrootcert.
+	if strings.HasPrefix(strings.TrimSpace(pgsslrootcert), pemCertPrefix) {
+		if orig, present := os.LookupEnv("PGSSLROOTCERT"); present {
+			if err := os.Unsetenv("PGSSLROOTCERT"); err == nil {
+				defer func() { _ = os.Setenv("PGSSLROOTCERT", orig) }()
+			}
+		}
+	}
 	pgcfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parsing database URL: %w", err)
