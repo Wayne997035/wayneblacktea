@@ -193,6 +193,8 @@ func TestBuildTLSConfig_InsecureSkipVerifyNeverSet(t *testing.T) {
 		{"", pemPath},
 		{"staging", ""},
 		{"", ""},
+		{"production", string(validPEM)},
+		{"staging", string(validPEM)},
 	}
 
 	for _, in := range inputs {
