@@ -116,6 +116,20 @@ func TestBuildTLSConfig(t *testing.T) {
 			pgsslrootcert: writeTempPEM(t, []byte("not a certificate")),
 			wantAnyErr:    true,
 		},
+		{
+			name:          "inline PEM content in production returns custom CA pool",
+			appEnv:        "production",
+			pgsslrootcert: string(validPEM),
+			wantNil:       false,
+			checkTLSPool:  true,
+		},
+		{
+			name:          "inline PEM content with leading whitespace returns custom CA pool",
+			appEnv:        "production",
+			pgsslrootcert: "\n\t" + string(validPEM),
+			wantNil:       false,
+			checkTLSPool:  true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -179,6 +193,8 @@ func TestBuildTLSConfig_InsecureSkipVerifyNeverSet(t *testing.T) {
 		{"", pemPath},
 		{"staging", ""},
 		{"", ""},
+		{"production", string(validPEM)},
+		{"staging", string(validPEM)},
 	}
 
 	for _, in := range inputs {
