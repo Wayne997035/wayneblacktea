@@ -35,6 +35,16 @@ func RunMigrations(ctx context.Context, dsn string) error {
 		}
 	}
 
+	// golang-migrate's pgconn driver reads PGSSLROOTCERT from the environment and
+	// unconditionally calls os.ReadFile on it. When the variable holds inline PEM
+	// content (cloud deploys without file mounting), ReadFile fails with "file name
+	// too long". Write the PEM to a temp file for the duration of the migration.
+	cleanup, err := materializePGSSLROOTCERT()
+	if err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	defer cleanup()
+
 	src, err := iofs.New(migrationfs.FS, ".")
 	if err != nil {
 		return fmt.Errorf("migrate: load embedded source: %w", err)
@@ -76,6 +86,39 @@ func RunMigrations(ctx context.Context, dsn string) error {
 		"to_version", after,
 	)
 	return nil
+}
+
+// materializePGSSLROOTCERT writes inline PEM in PGSSLROOTCERT to a temp file
+// and redirects the env var to that path. Returns a no-op cleanup when
+// PGSSLROOTCERT is already a file path or unset. The caller MUST call cleanup()
+// (via defer) to restore the original value and remove the temp file.
+//
+// This is needed because pgconn (used by both pgxpool and golang-migrate's pgx/v5
+// driver) unconditionally calls os.ReadFile(PGSSLROOTCERT); cloud platforms like
+// Railway have no file-mounting and store the CA cert as an env var with inline PEM.
+func materializePGSSLROOTCERT() (cleanup func(), err error) {
+	pgsslrootcert := os.Getenv("PGSSLROOTCERT")
+	if !strings.HasPrefix(strings.TrimSpace(pgsslrootcert), pemCertPrefix) {
+		return func() {}, nil
+	}
+	tmp, err := os.CreateTemp("", "pgsslrootcert*.pem")
+	if err != nil {
+		return nil, fmt.Errorf("write temp CA cert: %w", err)
+	}
+	if _, err := tmp.WriteString(strings.TrimSpace(pgsslrootcert)); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return nil, fmt.Errorf("write temp CA cert: %w", err)
+	}
+	_ = tmp.Close()
+	if err := os.Setenv("PGSSLROOTCERT", tmp.Name()); err != nil {
+		_ = os.Remove(tmp.Name())
+		return nil, fmt.Errorf("set PGSSLROOTCERT temp path: %w", err)
+	}
+	return func() {
+		_ = os.Setenv("PGSSLROOTCERT", pgsslrootcert)
+		_ = os.Remove(tmp.Name())
+	}, nil
 }
 
 // toPgx5DSN converts a postgres:// or postgresql:// DSN to the pgx5:// scheme
