@@ -1,5 +1,16 @@
 # wayneblacktea install guide
 
+## System requirements
+
+| Item | Minimum |
+|------|---------|
+| macOS | 13+ (lsof + setsid compatibility) |
+| Linux | kernel 4.18+, glibc 2.28+ (for ss fallback and nohup) |
+| Windows | Not supported in Phase 2 — the lifecycle package returns `ErrUnsupported`; use `wbt mcp` (stdio) manually |
+| Go | 1.26+ (for `go install` path) |
+| Node.js | 22+ (build-from-source only) |
+| Task | latest (build-from-source only — `go install github.com/go-task/task/v3/cmd/task@latest`) |
+
 ## Quick start
 
 ```bash
@@ -17,20 +28,34 @@ wbt setup
 6. Polls `/health` until the new server reports ready (15 s deadline).
 7. Calls `claude mcp add wayneblacktea --transport http http://127.0.0.1:<port>/mcp` so any Claude Code session can find it.
 
-Expected output:
+### First-run walkthrough
+
+Successful `wbt setup` output looks like this (step names are from the source; pid and port will differ):
 
 ```
 $ wbt setup
-==> Reading or creating config…          [ok] Config ready
-==> Ensuring SQLite directory…           [ok] SQLite directory ready
-==> Resolving port…                      [ok] Port resolved: 8080
+==> Reading or creating config…
+  [ok] Config ready
+==> Ensuring SQLite directory…
+  [ok] SQLite directory ready
+==> Resolving port…
+  [ok] Port resolved: 8080
 ==> Checking for an existing healthy server…
-==> Reclaiming TCP port if occupied…     [ok] Port is free
+==> Reclaiming TCP port if occupied…
+  [ok] Port is free
 ==> Spawning wayneblacktea-server in the background…
-                                         [ok] Server spawned (pid 12345, logs ~/.local/state/wayneblacktea/server.log)
-==> Waiting for /health…                 [ok] Server is healthy
-==> Registering MCP with Claude Code…    [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
+  [ok] Server spawned (pid 12345, logs ~/.local/state/wayneblacktea/server.log)
+==> Waiting for /health…
+  [ok] Server is healthy
+==> Registering MCP with Claude Code…
+  [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
+
 All set. wayneblacktea is running at http://127.0.0.1:8080
+
+Next commands:
+  wbt status        - show server state
+  wbt stop          - stop the background server
+  wbt restart       - stop + setup
 ```
 
 Open Claude Code anywhere, approve the MCP server when prompted, then verify with `> get_today_context`.
@@ -55,9 +80,104 @@ Open Claude Code anywhere, approve the MCP server when prompted, then verify wit
 | `wbt mcp` | Run the MCP server over stdio in the foreground. Useful for legacy stdio MCP integrations or for `.mcp.json`-managed project servers. |
 | `wbt init` | Deprecated alias for `wbt setup`; prints a deprecation notice on stderr but still runs. |
 
+## Anthropic API key
+
+**Not required for core MCP features**: GTD (goals, tasks, projects), decisions, knowledge search, session handoff, vision items, and proposals all work with no Anthropic key.
+
+**Required for**: weekly reflection summarizer, AI knowledge atomization, and embedding generation (semantic search over knowledge).
+
+Set the key via `~/.config/wayneblacktea/.env` or the `ANTHROPIC_API_KEY` environment variable. After updating, reload the server with `wbt restart`.
+
+## MCP client compatibility
+
+| Client | Transport | Setup |
+|--------|-----------|-------|
+| Claude Code | HTTP (auto-registered by `wbt setup`) | Run `wbt setup`; no further config needed |
+| Claude Code (legacy stdio) | stdio | Use `wbt setup --no-mcp`, then add manually: `wbt mcp` as the command in `.mcp.json` |
+| Claude Desktop | HTTP via DXT (Phase 3) | Not yet available; wait for Phase 3 |
+| Cursor | HTTP | Manual config — point at `http://localhost:8080/mcp` |
+| Other MCP clients | varies | Run `wbt status --format json` to discover the current URL |
+
+`wbt setup`'s remove-then-add only touches the `wayneblacktea` entry in Claude Code. All other registered MCP servers are untouched. Verify with `claude mcp list` after setup.
+
+## Upgrading
+
+```bash
+go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+wbt setup
+```
+
+`wbt setup` is idempotent: it re-registers the MCP entry with the current binary path and restarts the server if the PID file points to an exited process. To force a fresh server immediately: `wbt restart`.
+
+Schema migrations run automatically when the server starts — there is no manual migration step for `go install` users.
+
+For build-from-source upgrades:
+
+```bash
+git pull
+cd build && task build-server build-mcp && cd ..
+wbt restart
+```
+
+Migrations are idempotent — applying already-applied migrations is safe.
+
 ### Migration from earlier wbt
 
-Earlier versions documented `wbt init` as the install entry point. `wbt init` now redirects to `wbt setup` (with a stderr deprecation notice) and there is no on-disk migration to perform — existing `.env` / `.mcp.json` files keep working. If you have an older stdio-only setup, run `wbt setup` once and it will register the HTTP MCP transport alongside any existing stdio entry; remove the stdio entry afterwards with `claude mcp remove <old-name>` if you no longer need it.
+Earlier versions documented `wbt init` as the install entry point. `wbt init` now redirects to `wbt setup` (with a stderr deprecation notice) and there is no on-disk migration to perform — existing `.env` / `.mcp.json` files keep working. If you have an older stdio-only setup, run `wbt setup` once and it will register the HTTP MCP transport; remove the stdio entry afterwards with `claude mcp remove <old-name>` if you no longer need it.
+
+## Privacy and architecture
+
+- All data lives on your machine: SQLite file at `~/.local/share/wayneblacktea/wbt.db` (unless you configure Postgres).
+- The server listens on `127.0.0.1` only — not `0.0.0.0`. No LAN or internet exposure.
+- Anthropic API calls are made only when `ANTHROPIC_API_KEY` is set and an AI feature (reflection, atomization, embedding) is triggered.
+- No telemetry, no analytics, no auto-update phone-home.
+- `~/.local/state/wayneblacktea/server.log` is mode 0600 and may contain task titles and decision text from your sessions.
+
+## Troubleshooting
+
+**`wbt setup` exits "Port reclaim failed"**
+Another process is holding the port and could not be killed (e.g. a system service). Find it with `lsof -i :8080` (replace 8080 with your port), kill the process manually, then re-run `wbt setup`. Alternatively, use a different port: `wbt setup --port 9090`.
+
+**`claude CLI not found` during MCP registration**
+`wbt setup` could not find the `claude` binary. Install Claude Code from https://claude.ai/download, then re-run `wbt setup`. If you prefer to register manually, copy the printed `claude mcp add` command from the setup output and run it yourself, or add the entry directly to `~/.claude/mcp_settings.json`.
+
+**`/health` timeout during setup**
+The server did not become healthy within 15 seconds. Check the log for a crash:
+
+```bash
+tail -50 ~/.local/state/wayneblacktea/server.log
+```
+
+Common causes: missing binary (`wayneblacktea-server` not in PATH), port conflict that was not reclaimed, or SQLite permission error.
+
+**`wbt status` shows running but Claude Code does not see the MCP server**
+The MCP URL registered with Claude Code may not match the running server. Compare:
+
+```bash
+wbt status --format json    # shows the URL the server is actually using
+claude mcp list             # shows what Claude Code has registered
+```
+
+If they differ, re-run `wbt setup` to re-register with the current URL.
+
+**Aiven Postgres SSL handshake failure**
+Confirm `PGSSLROOTCERT` is set to the path of your `ca.pem` file and that the file has mode 0600:
+
+```bash
+chmod 0600 /path/to/ca.pem
+export PGSSLROOTCERT=/path/to/ca.pem
+```
+
+`sslmode=no-verify` and an empty `PGSSLROOTCERT` do not work with this psql version — the certificate must be provided.
+
+**Hook binary not found in PATH**
+`wbt-doctor` (Stop hook) and `wbt-context` (SessionStart hook) must be on your PATH. The `go install` path puts binaries in `$(go env GOPATH)/bin` (typically `~/.local/bin` or `~/go/bin`). Check that directory is in your shell's PATH:
+
+```bash
+echo $PATH | tr : '\n' | grep -E 'local/bin|go/bin'
+```
+
+If missing, add the appropriate directory to your shell profile and restart your shell.
 
 ### Phase 3 — coming next
 
@@ -194,16 +314,6 @@ Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) 
 - **API keys in production** must be set as environment variables, never hardcoded.
 
 See [`docs/ci-secrets.md`](./ci-secrets.md) for CI/CD secret management.
-
-## Upgrading
-
-```bash
-git pull
-for f in migrations/0000*.up.sql; do psql "$DATABASE_URL" -f "$f"; done
-cd build && task build-server build-mcp && cd ..
-```
-
-Migrations are idempotent — running already-applied migrations is safe.
 
 ## Uninstall
 

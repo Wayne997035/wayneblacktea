@@ -58,7 +58,7 @@ Sister commands:
 | `wbt setup --no-mcp` | Skip the `claude mcp add` step |
 | `wbt init` | Deprecated alias for `wbt setup` |
 
-> **Phase 3 — coming next**: Homebrew tap (`brew install wayne997035/tap/wayneblacktea`) and a DXT package for Claude Desktop one-click install. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and pre-built release binary options today.
+> **Phase 3 — coming next**: Homebrew tap (`brew install wayne997035/tap/wayneblacktea`) and a DXT package for Claude Desktop one-click install. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, pre-built release binary options, and [Troubleshooting](./docs/install.md#troubleshooting).
 
 Full tool reference: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
 
