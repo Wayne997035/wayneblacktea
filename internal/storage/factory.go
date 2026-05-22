@@ -99,8 +99,9 @@ func SQLitePathFromEnv() string {
 
 // BuildServerStores is the single env-reading entry point for cmd binaries.
 // It reads DATABASE_URL / SQLITE_PATH / PGSSLROOTCERT / APP_ENV from the
-// environment and calls NewServerStores so both cmd/server and cmd/mcp always
-// use the same env variables and defaults without duplicating the switch.
+// environment and calls NewServerStores so both cmd/server and `wbt mcp`
+// (via internal/mcprunner) always use the same env variables and defaults
+// without duplicating the switch.
 func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, error) {
 	cfg := FactoryConfig{
 		Backend: backend,

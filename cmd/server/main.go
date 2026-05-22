@@ -97,8 +97,16 @@ func run() error {
 	// stall every subsequent boot. Migration runs here so the long-lived
 	// server owns lock acquisition + release. Set WBT_AUTO_MIGRATE=false to
 	// disable (e.g. CI). SQLite skips migrations (schema.sql handles it).
+	//
+	// 2-minute ceiling on lock acquisition: if Aiven is unreachable or another
+	// process holds the migration lock, fail-closed at startup instead of
+	// hanging indefinitely. golang-migrate's pgx/v5 driver honours context
+	// cancellation on the advisory_lock query.
 	if backend == storage.BackendPostgres {
-		if err := storage.RunMigrations(context.Background(), os.Getenv("DATABASE_URL")); err != nil {
+		migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := storage.RunMigrations(migrateCtx, os.Getenv("DATABASE_URL"))
+		migrateCancel()
+		if err != nil {
 			return fmt.Errorf("auto-migrate: %w", err)
 		}
 	}
