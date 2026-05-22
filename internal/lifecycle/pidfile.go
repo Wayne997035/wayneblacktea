@@ -38,8 +38,10 @@ func PIDPath(workspace string) string {
 	return filepath.Join(dir, "server."+clean+".pid")
 }
 
-// stateDir returns the XDG state home, with a $HOME/.local/state fallback.
-func stateDir() string {
+// StateDir returns the XDG state home, with a $HOME/.local/state fallback.
+// It is exported so callers outside this package (e.g. setup.go) can resolve
+// the canonical state directory without duplicating the XDG logic.
+func StateDir() string {
 	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" {
 		return v
 	}
@@ -48,6 +50,9 @@ func stateDir() string {
 	}
 	return filepath.Join(".", ".local", "state")
 }
+
+// stateDir is the package-internal alias for StateDir.
+func stateDir() string { return StateDir() }
 
 // sanitizeWorkspace strips path separators / dots / control chars so a
 // caller-supplied workspace label cannot escape the lifecycle directory.
