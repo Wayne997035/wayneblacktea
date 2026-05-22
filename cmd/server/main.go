@@ -421,6 +421,13 @@ func run() error {
 			return fmt.Errorf("wiring merged_prs_observed pruner: %w", err)
 		}
 	}
+	// Wire outcome pruner — Postgres only (outcomes table requires pgx pool;
+	// SQLite local dev has no growth concern requiring scheduled TTL).
+	if stores.PgxPool() != nil {
+		if err := sched.WithOutcomePruner(stores.Outcome()); err != nil {
+			return fmt.Errorf("wiring outcome pruner: %w", err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 

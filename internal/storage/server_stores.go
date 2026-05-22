@@ -19,6 +19,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -64,6 +65,7 @@ type ServerStores interface {
 	Playbook() playbook.StoreIface
 	Procedural() procedural.StoreIface
 	Atom() atom.StoreIface
+	Outcome() outcome.StoreIface
 	Discipline() discipline.Store
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil

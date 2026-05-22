@@ -18,6 +18,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -58,6 +59,7 @@ type Server struct {
 	playbook    playbook.StoreIface
 	procedural  procedural.StoreIface
 	atom        atom.StoreIface
+	outcome     outcome.StoreIface
 	atomizer    *ai.Atomizer
 	// atomizeSem limits concurrent background atomize goroutines to prevent
 	// API budget exhaustion from rapid add_* bursts. (security M4)
@@ -185,6 +187,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		playbook:       stores.Playbook(),
 		procedural:     stores.Procedural(),
 		atom:           stores.Atom(),
+		outcome:        stores.Outcome(),
 		atomizer:       ai.NewAtomizer(),
 		atomizeSem:     make(chan struct{}, 5),
 		autologSem:     make(chan struct{}, 50),
@@ -385,6 +388,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerPlaybookTools(ms)
 	s.registerProceduralTools(ms)
 	s.registerAtomTools(ms)
+	s.registerOutcomeTools(ms)
 	s.registerDashboardTools(ms)
 	s.registerReconcileTools(ms)
 	s.registerCloseoutTools(ms)

@@ -536,3 +536,39 @@ CREATE INDEX IF NOT EXISTS idx_session_handoffs_workspace_repo_created
     ON session_handoffs(workspace_id, repo_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_log_workspace_project_created
     ON activity_log(workspace_id, project_id, created_at DESC);
+
+-- Mirrored from migrations/sqlite/000054_outcomes.up.sql.
+-- Records execution results for tasks, decisions, sprints, and projects.
+-- 90-day TTL enforced by the scheduler daily 03:30 prune job.
+-- No FOREIGN KEY per CLAUDE.md §9.
+CREATE TABLE IF NOT EXISTS outcomes (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    entity_type  TEXT NOT NULL,
+    entity_id    TEXT NOT NULL,
+    result       TEXT NOT NULL CHECK (result IN ('success','failure','partial','unknown','regressed')),
+    metrics      TEXT,
+    notes        TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_workspace_entity ON outcomes(workspace_id, entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_entity_id ON outcomes(entity_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_result ON outcomes(result);
+CREATE INDEX IF NOT EXISTS idx_outcomes_created_at ON outcomes(created_at DESC);
+
+-- Mirrored from migrations/sqlite/000055_evaluations.up.sql.
+-- Structured analysis attached to an outcome (root cause + lessons + suggestions).
+-- 90-day TTL co-enforced with outcomes by the prune job.
+-- No FOREIGN KEY per CLAUDE.md §9.
+CREATE TABLE IF NOT EXISTS evaluations (
+    id                      TEXT PRIMARY KEY,
+    workspace_id            TEXT,
+    outcome_id              TEXT NOT NULL,
+    analysis                TEXT NOT NULL,
+    lessons                 TEXT NOT NULL DEFAULT '[]',
+    improvement_suggestions TEXT NOT NULL DEFAULT '[]',
+    created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evaluations_outcome_id ON evaluations(outcome_id);
+CREATE INDEX IF NOT EXISTS idx_evaluations_workspace_id ON evaluations(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_evaluations_created_at ON evaluations(created_at DESC);

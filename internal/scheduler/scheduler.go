@@ -123,6 +123,9 @@ type Scheduler struct {
 	// mergedPRsPruner deletes merged_prs_observed rows older than 30d.
 	// Set via WithMergedPRsPruner after New(); nil skips the prune job.
 	mergedPRsPruner mergedPRsRetentionStore
+	// outcomePruner deletes outcomes + evaluations rows older than 90d.
+	// Set via WithOutcomePruner after New(); nil skips the prune job.
+	outcomePruner outcomePruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -154,6 +157,20 @@ const mergedPRsObservedRetention = 30 * 24 * time.Hour
 // the discipline / guard prune jobs — well under a second on personal-OS
 // scale, the ceiling leaves room for a momentarily slow Aiven Postgres.
 const mergedPRsObservedPruneTimeout = 60 * time.Second
+
+// outcomePruneStore is the narrow prune interface used by the daily
+// outcomes + evaluations cleanup job. outcome.Store satisfies it.
+// 90-day retention per backend-security-design.md §1.3.
+type outcomePruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// outcomePruneRetention is the outcomes/evaluations TTL (90 days).
+const outcomePruneRetention = 90 * 24 * time.Hour
+
+// outcomePruneTimeout caps the daily outcomes DELETE. 60 s budget leaves
+// room for a momentarily slow Aiven Postgres without wedging the scheduler.
+const outcomePruneTimeout = 60 * time.Second
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -583,6 +600,47 @@ func (s *Scheduler) runDailyMergedPRsObservedPrune() {
 	slog.Info("daily merged_prs_observed prune: completed",
 		"rows_deleted", n,
 		"retention", mergedPRsObservedRetention.String(),
+	)
+}
+
+// WithOutcomePruner wires the outcomes retention store and registers the daily
+// 03:30 prune job. Must be called before Start().
+// 90-day TTL per backend-security-design.md §1.3 (observability tables).
+// 03:30 avoids overlap with the 03:00 pending_proposals + merged_prs cluster.
+func (sc *Scheduler) WithOutcomePruner(p outcomePruneStore) error {
+	sc.outcomePruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 30, 0))),
+		gocron.NewTask(sc.runDailyOutcomePrune),
+		gocron.WithName("daily-outcome-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily outcome prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyOutcomePrune scheduled at 03:30 Asia/Taipei")
+	return nil
+}
+
+// runDailyOutcomePrune deletes outcomes + evaluations rows older than 90 days.
+// Evaluations are deleted first in the same transaction (no FK cascade per
+// red-line §9). Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyOutcomePrune() {
+	if s.outcomePruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), outcomePruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-outcomePruneRetention)
+	n, err := s.outcomePruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily outcome prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily outcome prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(outcomePruneRetention.Hours()/24),
 	)
 }
 
