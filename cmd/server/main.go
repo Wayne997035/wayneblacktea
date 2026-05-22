@@ -20,7 +20,6 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
-	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -31,6 +30,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
+	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -89,6 +89,26 @@ func run() error {
 	allowedOrigins, err := resolveAllowedOrigins(port)
 	if err != nil {
 		return err
+	}
+
+	// Auto-migrate is the server's responsibility, not the MCP stdio client's.
+	// MCP stdio (`wbt mcp`) intentionally skips migration: short-lived stdio
+	// processes that die mid-`pg_advisory_lock` leak the migration lock and
+	// stall every subsequent boot. Migration runs here so the long-lived
+	// server owns lock acquisition + release. Set WBT_AUTO_MIGRATE=false to
+	// disable (e.g. CI). SQLite skips migrations (schema.sql handles it).
+	//
+	// 2-minute ceiling on lock acquisition: if Aiven is unreachable or another
+	// process holds the migration lock, fail-closed at startup instead of
+	// hanging indefinitely. golang-migrate's pgx/v5 driver honours context
+	// cancellation on the advisory_lock query.
+	if backend == storage.BackendPostgres {
+		migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := storage.RunMigrations(migrateCtx, os.Getenv("DATABASE_URL"))
+		migrateCancel()
+		if err != nil {
+			return fmt.Errorf("auto-migrate: %w", err)
+		}
 	}
 
 	stores, err := buildStores(backend)

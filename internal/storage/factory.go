@@ -99,8 +99,9 @@ func SQLitePathFromEnv() string {
 
 // BuildServerStores is the single env-reading entry point for cmd binaries.
 // It reads DATABASE_URL / SQLITE_PATH / PGSSLROOTCERT / APP_ENV from the
-// environment and calls NewServerStores so both cmd/server and cmd/mcp always
-// use the same env variables and defaults without duplicating the switch.
+// environment and calls NewServerStores so both cmd/server and `wbt mcp`
+// (via internal/mcprunner) always use the same env variables and defaults
+// without duplicating the switch.
 func BuildServerStores(ctx context.Context, backend Backend) (ServerStores, error) {
 	cfg := FactoryConfig{
 		Backend: backend,
@@ -151,13 +152,6 @@ var _ ServerStores = (*postgresServerStores)(nil)
 func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresServerStores, error) {
 	if cfg.PostgresDSN == "" {
 		return nil, ErrMissingPostgresDSN
-	}
-
-	// Auto-migrate: apply pending migrations before opening the store pool.
-	// Fail-fast: if migration fails, abort startup to prevent running against
-	// a stale schema. Set WBT_AUTO_MIGRATE=false to disable (e.g. in CI).
-	if err := RunMigrations(ctx, cfg.PostgresDSN); err != nil {
-		return nil, fmt.Errorf("auto-migrate: %w", err)
 	}
 
 	pool, err := buildPgxPool(ctx, cfg.PostgresDSN, cfg.AppEnv, cfg.PGSSLRootCert)
