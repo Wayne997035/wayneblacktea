@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -47,24 +48,25 @@ import (
 // transaction across multiple stores). On SQLite they are nil and the flow
 // falls back to a sequential best-effort path.
 type Server struct {
-	pool        *pgxpool.Pool
-	gtd         gtd.StoreIface
-	workspace   workspace.StoreIface
-	decision    decision.StoreIface
-	session     session.StoreIface
-	knowledge   knowledge.StoreIface
-	learning    learning.StoreIface
-	proposal    proposal.StoreIface
-	arch        arch.StoreIface
-	workSession worksession.StoreIface
-	vision      vision.StoreIface
-	playbook    playbook.StoreIface
-	procedural  procedural.StoreIface
-	atom        atom.StoreIface
-	outcome     outcome.StoreIface
-	skill       skill.StoreIface
-	reflection  reflection.StoreIface
-	atomizer    *ai.Atomizer
+	pool         *pgxpool.Pool
+	gtd          gtd.StoreIface
+	workspace    workspace.StoreIface
+	decision     decision.StoreIface
+	session      session.StoreIface
+	knowledge    knowledge.StoreIface
+	learning     learning.StoreIface
+	proposal     proposal.StoreIface
+	arch         arch.StoreIface
+	workSession  worksession.StoreIface
+	vision       vision.StoreIface
+	playbook     playbook.StoreIface
+	procedural   procedural.StoreIface
+	atom         atom.StoreIface
+	outcome      outcome.StoreIface
+	skill        skill.StoreIface
+	reflection   reflection.StoreIface
+	behaviorRule behaviorrule.StoreIface
+	atomizer     *ai.Atomizer
 	// atomizeSem limits concurrent background atomize goroutines to prevent
 	// API budget exhaustion from rapid add_* bursts. (security M4)
 	atomizeSem chan struct{}
@@ -194,6 +196,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		outcome:        stores.Outcome(),
 		skill:          stores.Skill(),
 		reflection:     stores.Reflection(),
+		behaviorRule:   stores.BehaviorRule(),
 		atomizer:       ai.NewAtomizer(),
 		atomizeSem:     make(chan struct{}, 5),
 		autologSem:     make(chan struct{}, 50),
@@ -397,6 +400,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerAtomTools(ms)
 	s.registerOutcomeTools(ms)
 	s.registerSkillTools(ms)
+	s.registerBehaviorRuleTools(ms)
 	s.registerDashboardTools(ms)
 	s.registerReconcileTools(ms)
 	s.registerCloseoutTools(ms)

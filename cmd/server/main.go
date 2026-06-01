@@ -436,6 +436,13 @@ func run() error {
 			return fmt.Errorf("wiring reflection pruner: %w", err)
 		}
 	}
+	// Wire behavior rule pruner (both backends; 365-day TTL for rejected/deprecated
+	// rows per backend-security-design.md §1.3; active/proposed rows never auto-pruned).
+	if stores.BehaviorRule() != nil {
+		if err := sched.WithBehaviorRulePruner(stores.BehaviorRule()); err != nil {
+			return fmt.Errorf("wiring behavior rule pruner: %w", err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 

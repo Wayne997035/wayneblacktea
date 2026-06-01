@@ -131,6 +131,9 @@ type Scheduler struct {
 	// reflectionPruner deletes reflections rows older than 180d.
 	// Set via WithReflectionPruner after New(); nil skips the prune job.
 	reflectionPruner reflectionPruneStore
+	// behaviorRulePruner deletes behavior_rules rows (status rejected/deprecated) older than 365d.
+	// Set via WithBehaviorRulePruner after New(); nil skips the prune job.
+	behaviorRulePruner behaviorRulePruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -189,6 +192,22 @@ const reflectionPruneRetention = 180 * 24 * time.Hour
 
 // reflectionPruneTimeout caps the daily reflections DELETE. 60 s budget.
 const reflectionPruneTimeout = 60 * time.Second
+
+// behaviorRulePruneStore is the narrow prune interface used by the daily
+// behavior_rules cleanup job. behaviorrule.Store (PG) and
+// sqlite.BehaviorRuleStore both satisfy it. 365-day retention for
+// rejected/deprecated rows per backend-security-design.md §1.3.
+// Active and proposed rows are NEVER auto-pruned.
+type behaviorRulePruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// behaviorRulePruneRetention is the behavior_rules TTL (365 days) for
+// rejected/deprecated rows.
+const behaviorRulePruneRetention = 365 * 24 * time.Hour
+
+// behaviorRulePruneTimeout caps the daily behavior_rules DELETE. 60 s budget.
+const behaviorRulePruneTimeout = 60 * time.Second
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -755,6 +774,50 @@ func (s *Scheduler) runDailyReflectionPrune() {
 	slog.Info("daily reflection prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(reflectionPruneRetention.Hours()/24),
+	)
+}
+
+// WithBehaviorRulePruner wires the behavior_rules retention store and
+// registers the daily 04:00 prune job. Must be called before Start().
+// 365-day TTL for rejected/deprecated rows per backend-security-design.md §1.3.
+// Active and proposed rows are NEVER auto-pruned.
+// 04:00 is distinct from the 03:00/03:30/03:45 cluster to avoid gocron
+// singleton-mode reschedule interference under slow DB conditions.
+func (sc *Scheduler) WithBehaviorRulePruner(p behaviorRulePruneStore) error {
+	sc.behaviorRulePruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 0, 0))),
+		gocron.NewTask(sc.runDailyBehaviorRulePrune),
+		gocron.WithName("daily-behavior-rule-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily behavior_rule prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyBehaviorRulePrune scheduled at 04:00 Asia/Taipei")
+	return nil
+}
+
+// runDailyBehaviorRulePrune deletes behavior_rules rows with
+// status IN ('rejected','deprecated') older than 365 days.
+// Active and proposed rows are NEVER deleted regardless of age.
+// Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyBehaviorRulePrune() {
+	if s.behaviorRulePruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), behaviorRulePruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-behaviorRulePruneRetention)
+	n, err := s.behaviorRulePruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily behavior_rule prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily behavior_rule prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(behaviorRulePruneRetention.Hours()/24),
 	)
 }
 
