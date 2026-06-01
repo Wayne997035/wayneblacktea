@@ -187,7 +187,9 @@ func run() error {
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
 		// Summarizer and reflector still bind to Claude directly until
 		// Phase 5 of the spec. They are independent of the provider chain.
-		sum = ai.New(claudeKey)
+		// Per-workspace model preference: the summarizer consults the workspace
+		// DB setting first, falling back to CLAUDE_SUMMARY_MODEL env / default.
+		sum = ai.NewWithPreference(claudeKey, stores.Workspace())
 		reflector = ai.NewReflector(claudeKey)
 	}
 	// auto-capture proposal wiring (sprint feature/gtd-enforce-server-side TASK 2)
@@ -297,6 +299,8 @@ func run() error {
 	api.GET("/workspace/repos", wsH.ListRepos)
 	api.POST("/workspace/repos", wsH.UpsertRepo, mutationRL)
 	api.GET("/workspace/repos/:id/overview", wsOverviewH.GetRepoOverview)
+	api.GET("/workspace/settings", wsH.GetSettings)
+	api.PATCH("/workspace/settings", wsH.PatchSettings, mutationRL)
 
 	// handoffRL caps POST /session/handoff at 5 req/min — each request may
 	// spawn a Gemini embedding call; keep well below Gemini free-tier quota.

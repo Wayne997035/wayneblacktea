@@ -75,10 +75,18 @@ type SummaryResult struct {
 	Tasks     []string `json:"tasks"` // pending tasks discovered in transcript not yet in GTD
 }
 
+// ModelPreferenceReader supplies a per-workspace model override. Implemented by
+// workspace.Store (GetModelPreference). A nil reader disables the DB lookup so
+// the summarizer uses the CLAUDE_SUMMARY_MODEL env var / default only.
+type ModelPreferenceReader interface {
+	GetModelPreference(ctx context.Context) (string, error)
+}
+
 // Summarizer calls the Claude API to generate session summaries.
 type Summarizer struct {
 	client *anthropic.Client
 	model  string
+	pref   ModelPreferenceReader // optional; nil = env/default only
 }
 
 // resolveModel reads the CLAUDE_SUMMARY_MODEL env var and falls back to the
@@ -96,6 +104,30 @@ func resolveModel() string {
 func New(apiKey string) *Summarizer {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return NewWithClient(&client, resolveModel())
+}
+
+// NewWithPreference creates a Summarizer that consults the per-workspace model
+// preference first (via pref), falling back to CLAUDE_SUMMARY_MODEL env, then
+// the default. A nil pref behaves exactly like New.
+func NewWithPreference(apiKey string, pref ModelPreferenceReader) *Summarizer {
+	s := New(apiKey)
+	s.pref = pref
+	return s
+}
+
+// modelForCall resolves the model for a single API call. Priority:
+// per-workspace DB preference → CLAUDE_SUMMARY_MODEL env → default. A DB error
+// never blocks summarization; it falls through to the env/default model.
+func (s *Summarizer) modelForCall(ctx context.Context) string {
+	if s.pref != nil {
+		m, err := s.pref.GetModelPreference(ctx)
+		if err != nil {
+			slog.Warn("summarizer: workspace model preference lookup failed; using fallback", "error", err)
+		} else if m != "" {
+			return m
+		}
+	}
+	return s.model
 }
 
 // NewWithClient creates a Summarizer with a pre-configured client and explicit
@@ -118,7 +150,7 @@ func (s *Summarizer) Summarize(ctx context.Context, transcript []Message) Summar
 	promptText := buildPromptText(transcript)
 
 	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(s.model),
+		Model:     anthropic.Model(s.modelForCall(ctx)),
 		MaxTokens: 1024,
 		System: []anthropic.TextBlockParam{
 			{Text: summarizerSystemPrompt},
@@ -161,7 +193,7 @@ func (s *Summarizer) SummarizeSession(ctx context.Context, transcript []Message)
 	promptText := buildPromptText(transcript)
 
 	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(s.model),
+		Model:     anthropic.Model(s.modelForCall(ctx)),
 		MaxTokens: 256,
 		System: []anthropic.TextBlockParam{
 			{Text: sessionSummarySystemPrompt},
