@@ -104,6 +104,13 @@
     "noRepos": "沒有儲存庫",
     "issues": "{{count}} 個問題",
     "knownIssues": "已知問題",
+    "settings": {
+      "title": "AI 設定",
+      "modelLabel": "Session 摘要模型",
+      "modelHint": "此工作區自動摘要 Claude Code 工作階段時使用的模型。",
+      "saved": "已儲存",
+      "saveFailed": "儲存失敗"
+    },
     "repoDetail": {
       "back": "返回工作區",
       "branch": "分支",

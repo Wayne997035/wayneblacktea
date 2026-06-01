@@ -165,9 +165,12 @@ func (f *fakeSessionStore) UpdateEmbeddingByID(_ context.Context, _ uuid.UUID, _
 }
 
 type fakeWorkspaceStore struct {
-	repos []db.Repo
-	repo  *db.Repo
-	err   error
+	repos     []db.Repo
+	repo      *db.Repo
+	err       error
+	model     string
+	upsertErr error
+	gotModel  string
 }
 
 func (f *fakeWorkspaceStore) ActiveRepos(_ context.Context) ([]db.Repo, error) {
@@ -176,6 +179,18 @@ func (f *fakeWorkspaceStore) ActiveRepos(_ context.Context) ([]db.Repo, error) {
 
 func (f *fakeWorkspaceStore) UpsertRepo(_ context.Context, _ workspace.UpsertRepoParams) (*db.Repo, error) {
 	return f.repo, f.err
+}
+
+func (f *fakeWorkspaceStore) GetModelPreference(_ context.Context) (string, error) {
+	return f.model, f.err
+}
+
+func (f *fakeWorkspaceStore) UpsertModelPreference(_ context.Context, model string) error {
+	if f.upsertErr != nil {
+		return f.upsertErr
+	}
+	f.gotModel = model
+	return nil
 }
 
 type fakeDecisionStore struct {
@@ -1245,6 +1260,103 @@ func TestWorkspaceHandler_UpsertRepo(t *testing.T) {
 			rec := performRequest(e, http.MethodPost, "/api/workspace/repos", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestWorkspaceHandler_GetSettings(t *testing.T) {
+	cases := []struct {
+		name     string
+		store    *fakeWorkspaceStore
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "returns model",
+			store:    &fakeWorkspaceStore{model: "claude-opus-4-8"},
+			wantCode: http.StatusOK,
+			wantBody: "claude-opus-4-8",
+		},
+		{
+			name:     "store error → 500",
+			store:    &fakeWorkspaceStore{err: errors.New("db error")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewWorkspaceHandler(tc.store)
+			e.GET("/api/workspace/settings", h.GetSettings)
+			rec := performRequest(e, http.MethodGet, "/api/workspace/settings", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d", rec.Code, tc.wantCode)
+			}
+			if tc.wantBody != "" && !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Errorf("body %q missing %q", rec.Body.String(), tc.wantBody)
+			}
+		})
+	}
+}
+
+func TestWorkspaceHandler_PatchSettings(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		store     *fakeWorkspaceStore
+		wantCode  int
+		wantModel string
+	}{
+		{
+			name:      "valid model → 200 + persisted",
+			body:      `{"model_preference":"claude-haiku-4-5"}`,
+			store:     &fakeWorkspaceStore{},
+			wantCode:  http.StatusOK,
+			wantModel: "claude-haiku-4-5",
+		},
+		{
+			name:     "model not in allowlist → 400",
+			body:     `{"model_preference":"gpt-4"}`,
+			store:    &fakeWorkspaceStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "shell-injection attempt → 400 (whitelist rejects)",
+			body:     `{"model_preference":"$(rm -rf /)"}`,
+			store:    &fakeWorkspaceStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "missing model → 400",
+			body:     `{}`,
+			store:    &fakeWorkspaceStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "invalid JSON → 400",
+			body:     `{bad`,
+			store:    &fakeWorkspaceStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "store error → 500",
+			body:     `{"model_preference":"claude-sonnet-4-6"}`,
+			store:    &fakeWorkspaceStore{upsertErr: errors.New("write fail")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewWorkspaceHandler(tc.store)
+			e.PATCH("/api/workspace/settings", h.PatchSettings)
+			rec := performRequest(e, http.MethodPatch, "/api/workspace/settings", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.wantModel != "" && tc.store.gotModel != tc.wantModel {
+				t.Errorf("persisted model = %q, want %q", tc.store.gotModel, tc.wantModel)
 			}
 		})
 	}

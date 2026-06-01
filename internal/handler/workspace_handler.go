@@ -66,3 +66,38 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, repo)
 }
+
+// workspaceSettings is the GET/PATCH /api/workspace/settings response/request body.
+type workspaceSettings struct {
+	ModelPreference string `json:"model_preference"`
+}
+
+// GetSettings returns the workspace's AI model preference.
+func (h *WorkspaceHandler) GetSettings(c echo.Context) error {
+	model, err := h.store.GetModelPreference(c.Request().Context())
+	if err != nil {
+		c.Logger().Errorf("GetSettings: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, workspaceSettings{ModelPreference: model})
+}
+
+// PatchSettings updates the workspace's AI model preference. The model MUST be
+// in workspace.AllowedModels (explicit whitelist — arbitrary strings rejected).
+func (h *WorkspaceHandler) PatchSettings(c echo.Context) error {
+	var req workspaceSettings
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
+	}
+	if req.ModelPreference == "" {
+		return c.JSON(http.StatusBadRequest, errResp("model_preference is required"))
+	}
+	if !workspace.IsAllowedModel(req.ModelPreference) {
+		return c.JSON(http.StatusBadRequest, errResp("model not in allowed list"))
+	}
+	if err := h.store.UpsertModelPreference(c.Request().Context(), req.ModelPreference); err != nil {
+		c.Logger().Errorf("PatchSettings: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	return c.JSON(http.StatusOK, workspaceSettings{ModelPreference: req.ModelPreference})
+}

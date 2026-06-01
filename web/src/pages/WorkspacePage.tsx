@@ -1,14 +1,50 @@
+import { useState } from 'react'
+import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RefreshCw } from 'lucide-react'
 import { useRepos, useRefreshRepos } from '../hooks/useRepos'
+import { useWorkspaceSettings, useUpdateWorkspaceSettings } from '../hooks/useWorkspaceSettings'
+import { ALLOWED_MODELS, type AllowedModel } from '../types/api'
 import { RepoCard } from '../components/workspace/RepoCard'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
+
+// Record<AllowedModel, ...> makes this exhaustive: adding a model to
+// ALLOWED_MODELS without a label here is a compile error.
+const MODEL_LABELS: Record<AllowedModel, string> = {
+  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-opus-4-8': 'Opus 4.8',
+}
+
+const DEFAULT_MODEL: AllowedModel = 'claude-sonnet-4-6'
+
+function isAllowedModel(v: string): v is AllowedModel {
+  return (ALLOWED_MODELS as readonly string[]).includes(v)
+}
 
 export function WorkspacePage() {
   const { t } = useTranslation()
   const { data: repos, isLoading, isError, isFetching } = useRepos()
   const refreshRepos = useRefreshRepos()
+  const { data: settings } = useWorkspaceSettings()
+  const updateSettings = useUpdateWorkspaceSettings()
+  const [saveState, setSaveState] = useState<'ok' | 'err' | null>(null)
+
+  const onModelChange = (e: ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value
+    if (!isAllowedModel(value)) return // options come from ALLOWED_MODELS; guard anyway
+    setSaveState(null)
+    updateSettings.mutate(
+      { model_preference: value },
+      { onSuccess: () => setSaveState('ok'), onError: () => setSaveState('err') },
+    )
+  }
+
+  // Fall back to the default when the server returns a model the frontend
+  // doesn't know yet (FE lagging a backend allowlist addition).
+  const selectedModel =
+    settings && isAllowedModel(settings.model_preference) ? settings.model_preference : DEFAULT_MODEL
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto">
@@ -37,6 +73,53 @@ export function WorkspacePage() {
           {t('workspace.syncRepos')}
         </button>
       </div>
+
+      <section
+        className="rounded-md p-4 mb-6"
+        style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}
+        aria-label={t('workspace.settings.title')}
+      >
+        <h2 className="text-body-sm mb-2" style={{ color: 'var(--color-text-primary)' }}>
+          {t('workspace.settings.title')}
+        </h2>
+        <div className="flex items-center gap-3 flex-wrap">
+          <label htmlFor="model-pref" className="text-body-sm" style={{ color: 'var(--color-text-muted)' }}>
+            {t('workspace.settings.modelLabel')}
+          </label>
+          <select
+            id="model-pref"
+            value={selectedModel}
+            onChange={onModelChange}
+            disabled={updateSettings.isPending}
+            className="px-3 py-2 rounded-md text-body-sm"
+            style={{
+              background: 'var(--color-bg-input)',
+              color: 'var(--color-text-primary)',
+              border: '1px solid var(--color-border)',
+              cursor: updateSettings.isPending ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {ALLOWED_MODELS.map((m) => (
+              <option key={m} value={m}>
+                {MODEL_LABELS[m] ?? m}
+              </option>
+            ))}
+          </select>
+          {saveState === 'ok' && (
+            <span className="text-body-sm" style={{ color: 'var(--color-success)' }}>
+              {t('workspace.settings.saved')}
+            </span>
+          )}
+          {saveState === 'err' && (
+            <span className="text-body-sm" style={{ color: 'var(--color-error)' }}>
+              {t('workspace.settings.saveFailed')}
+            </span>
+          )}
+        </div>
+        <p className="text-body-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>
+          {t('workspace.settings.modelHint')}
+        </p>
+      </section>
 
       {isError && (
         <div

@@ -58,10 +58,12 @@ type gtdStore interface {
 }
 
 // workspaceStore covers the subset of workspace.Store used by the basic
-// workspace endpoints (list / upsert).
+// workspace endpoints (list / upsert / settings).
 type workspaceStore interface {
 	ActiveRepos(ctx context.Context) ([]db.Repo, error)
 	UpsertRepo(ctx context.Context, p workspace.UpsertRepoParams) (*db.Repo, error)
+	GetModelPreference(ctx context.Context) (string, error)
+	UpsertModelPreference(ctx context.Context, model string) error
 }
 
 // repoOverviewWorkspaceStore covers the workspace.StoreIface methods needed

@@ -442,3 +442,20 @@ export interface RepoOverview {
   recent_activity: RepoOverviewActivity[]
   recent_handoffs: RepoOverviewHandoff[]
 }
+
+/** Per-workspace AI model preference (GET/PATCH /api/workspace/settings). */
+export interface WorkspaceSettings {
+  model_preference: AllowedModel
+}
+
+/**
+ * Selectable AI models. Mirrors the server's workspace.AllowedModels
+ * (internal/workspace/preference.go) — keep the two lists in sync.
+ */
+export const ALLOWED_MODELS = [
+  'claude-haiku-4-5',
+  'claude-sonnet-4-6',
+  'claude-opus-4-8',
+] as const
+
+export type AllowedModel = (typeof ALLOWED_MODELS)[number]
