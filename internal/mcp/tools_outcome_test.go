@@ -11,6 +11,12 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
+// entityTypeTask is the repeated "task" string used across outcome test cases.
+const entityTypeTask = "task"
+
+// nullStr is the "null" literal used in nil-safe JSON response assertions.
+const nullStr = "null"
+
 // --- stub store ---
 
 // stubOutcomeStore is an in-memory stub that satisfies outcome.StoreIface.
@@ -129,7 +135,7 @@ func TestHandleRecordOutcome_HappyPath(t *testing.T) {
 	store := &stubOutcomeStore{
 		returnOutcome: outcome.Outcome{
 			ID:         id,
-			EntityType: "task",
+			EntityType: entityTypeTask,
 			EntityID:   entityID,
 			Result:     "success",
 		},
@@ -137,7 +143,7 @@ func TestHandleRecordOutcome_HappyPath(t *testing.T) {
 	s := newOutcomeServer(store)
 
 	r := callRecordOutcome(t, s, map[string]any{
-		"entity_type": "task",
+		"entity_type": entityTypeTask,
 		"entity_id":   entityID.String(),
 		"result":      "success",
 		"notes":       "all good",
@@ -146,8 +152,8 @@ func TestHandleRecordOutcome_HappyPath(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("unexpected error: %s", resultText(r))
 	}
-	if store.lastCreateParams.EntityType != "task" {
-		t.Errorf("EntityType = %q, want %q", store.lastCreateParams.EntityType, "task")
+	if store.lastCreateParams.EntityType != entityTypeTask {
+		t.Errorf("EntityType = %q, want %q", store.lastCreateParams.EntityType, entityTypeTask)
 	}
 	if store.lastCreateParams.Result != "success" {
 		t.Errorf("Result = %q, want %q", store.lastCreateParams.Result, "success")
@@ -169,7 +175,7 @@ func TestHandleRecordOutcome_InvalidEntityType(t *testing.T) {
 func TestHandleRecordOutcome_InvalidEntityIDUUID(t *testing.T) {
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callRecordOutcome(t, s, map[string]any{
-		"entity_type": "task",
+		"entity_type": entityTypeTask,
 		"entity_id":   "not-a-uuid",
 		"result":      "success",
 	})
@@ -181,7 +187,7 @@ func TestHandleRecordOutcome_InvalidEntityIDUUID(t *testing.T) {
 func TestHandleRecordOutcome_InvalidResult(t *testing.T) {
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callRecordOutcome(t, s, map[string]any{
-		"entity_type": "task",
+		"entity_type": entityTypeTask,
 		"entity_id":   uuid.New().String(),
 		"result":      "awesome", // not in AllowedResults
 	})
@@ -217,7 +223,7 @@ func TestHandleRecordOutcome_StoreError(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_AllEntityTypes(t *testing.T) {
-	for _, et := range []string{"task", "decision", "sprint", "project"} {
+	for _, et := range []string{entityTypeTask, "decision", "sprint", "project"} {
 		t.Run(et, func(t *testing.T) {
 			store := &stubOutcomeStore{returnOutcome: outcome.Outcome{EntityType: et, Result: "success"}}
 			s := newOutcomeServer(store)
@@ -326,15 +332,15 @@ func TestHandleListRecentOutcomes_HappyPath(t *testing.T) {
 	s := newOutcomeServer(store)
 
 	r := callListRecentOutcomes(t, s, map[string]any{
-		"entity_type": "task",
+		"entity_type": entityTypeTask,
 		"limit":       float64(5),
 	})
 
 	if r.IsError {
 		t.Fatalf("unexpected error: %s", resultText(r))
 	}
-	if store.lastListEntityType != "task" {
-		t.Errorf("lastListEntityType = %q, want %q", store.lastListEntityType, "task")
+	if store.lastListEntityType != entityTypeTask {
+		t.Errorf("lastListEntityType = %q, want %q", store.lastListEntityType, entityTypeTask)
 	}
 	if store.lastListLimit != 5 {
 		t.Errorf("lastListLimit = %d, want 5", store.lastListLimit)
@@ -390,7 +396,7 @@ func TestHandleListRecentOutcomes_EmptyResultNilSafe(t *testing.T) {
 	}
 	txt := resultText(r)
 	// Must be valid JSON array, not "null".
-	if txt == "null" {
+	if txt == nullStr {
 		t.Error("response must be [] not null when store returns nil slice")
 	}
 }
