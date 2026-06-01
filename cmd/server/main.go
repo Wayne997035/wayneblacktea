@@ -443,6 +443,17 @@ func run() error {
 			return fmt.Errorf("wiring behavior rule pruner: %w", err)
 		}
 	}
+	// Wire Memory-7 cognitive jobs. All 7 jobs are nil-safe: if the pool or
+	// stores are absent (SQLite dev path, missing CLAUDE_API_KEY, etc.) each
+	// job logs an info-level skip and returns without error.
+	if err := sched.WithCognitiveDeps(scheduler.NewCognitiveDeps(
+		stores.Reflection(),
+		stores.GTD(),
+		stores.Proposal(),
+		stores.WorkspaceID(),
+	)); err != nil {
+		return fmt.Errorf("wiring cognitive deps: %w", err)
+	}
 	sched.Start()
 	defer sched.Stop()
 

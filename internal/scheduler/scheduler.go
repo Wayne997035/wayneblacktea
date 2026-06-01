@@ -134,6 +134,9 @@ type Scheduler struct {
 	// behaviorRulePruner deletes behavior_rules rows (status rejected/deprecated) older than 365d.
 	// Set via WithBehaviorRulePruner after New(); nil skips the prune job.
 	behaviorRulePruner behaviorRulePruneStore
+	// cognitiveDeps bundles the 7 Memory-7 cognitive job dependencies.
+	// Set via WithCognitiveDeps after New(); nil skips all 7 cognitive jobs.
+	cognitiveDeps *cognitiveDeps
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
