@@ -164,13 +164,21 @@ func (s *Store) List(ctx context.Context, p ListParams) ([]*Reflection, error) {
 		typeArg = *p.Type
 	}
 
+	// Honor an explicit per-call WorkspaceID override, falling back to the
+	// store's scope. Mirrors the SQLite ReflectionStore.List behavior so both
+	// backends filter identically (dual-backend parity).
+	wsArg := s.workspaceID
+	if p.WorkspaceID != nil {
+		wsArg = toUUID(p.WorkspaceID)
+	}
+
 	const q = `SELECT ` + selectCols + ` FROM reflections
 		WHERE ($1::uuid IS NULL OR workspace_id = $1)
 		  AND ($2::text IS NULL OR type = $2)
 		ORDER BY created_at DESC
 		LIMIT $3`
 
-	rows, err := s.pool.Query(ctx, q, s.workspaceID, typeArg, limit)
+	rows, err := s.pool.Query(ctx, q, wsArg, typeArg, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing reflections: %w", err)
 	}
