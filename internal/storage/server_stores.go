@@ -29,6 +29,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
+	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
@@ -73,6 +74,7 @@ type ServerStores interface {
 	Discipline() discipline.Store
 	Reflection() reflection.StoreIface
 	BehaviorRule() behaviorrule.StoreIface
+	DisciplineEventStore() watchdog.DisciplineEventStoreIface
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil
 	// when operating in legacy single-workspace mode. Used by MCP tools that

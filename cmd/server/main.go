@@ -454,6 +454,12 @@ func run() error {
 	)); err != nil {
 		return fmt.Errorf("wiring cognitive deps: %w", err)
 	}
+	// Wire discipline_events_m8 pruner — both backends, 90-day TTL per §1.3.
+	if des := stores.DisciplineEventStore(); des != nil {
+		if err := sched.WithDisciplineEventPruner(des); err != nil {
+			return fmt.Errorf("wiring discipline event m8 pruner: %w", err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 
