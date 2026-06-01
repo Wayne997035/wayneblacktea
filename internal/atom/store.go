@@ -59,17 +59,18 @@ func parseStringSlice(raw []byte) []string {
 	return out
 }
 
-const atomSelectCols = `id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at`
+const atomSelectCols = `id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at, digest_status`
 
 // scanAtomRow reads a full memory_atoms row into an Atom.
 func scanAtomRow(rows pgx.Rows) (*Atom, error) {
 	var (
-		a           Atom
-		wsID        pgtype.UUID
-		parentID    pgtype.UUID
-		keywordsRaw []byte
-		tagsRaw     []byte
-		createdAt   pgtype.Timestamptz
+		a              Atom
+		wsID           pgtype.UUID
+		parentID       pgtype.UUID
+		keywordsRaw    []byte
+		tagsRaw        []byte
+		createdAt      pgtype.Timestamptz
+		digestStatusNS pgtype.Text
 	)
 	err := rows.Scan(
 		&a.ID,
@@ -80,6 +81,7 @@ func scanAtomRow(rows pgx.Rows) (*Atom, error) {
 		&keywordsRaw,
 		&tagsRaw,
 		&createdAt,
+		&digestStatusNS,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scanning atom: %w", err)
@@ -93,6 +95,10 @@ func scanAtomRow(rows pgx.Rows) (*Atom, error) {
 	}
 	if createdAt.Valid {
 		a.CreatedAt = createdAt.Time
+	}
+	if digestStatusNS.Valid {
+		s := digestStatusNS.String
+		a.DigestStatus = &s
 	}
 	a.Keywords = parseStringSlice(keywordsRaw)
 	a.Tags = parseStringSlice(tagsRaw)

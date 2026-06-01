@@ -24,7 +24,7 @@ func NewAtomStore(d *DB) *AtomStore {
 // Compile-time guarantee against drift from atom.StoreIface.
 var _ atom.StoreIface = (*AtomStore)(nil)
 
-const atomSelectCols = `id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at`
+const atomSelectCols = `id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at, digest_status`
 
 const (
 	maxTraverseDepth = 5
@@ -32,14 +32,15 @@ const (
 )
 
 type atomRawRow struct {
-	idStr       string
-	wsIDNS      sql.NullString
-	parentTable string
-	parentIDStr string
-	content     string
-	keywordsStr string
-	tagsStr     string
-	createdNS   sql.NullString
+	idStr          string
+	wsIDNS         sql.NullString
+	parentTable    string
+	parentIDStr    string
+	content        string
+	keywordsStr    string
+	tagsStr        string
+	createdNS      sql.NullString
+	digestStatusNS sql.NullString
 }
 
 func scanAtomRow(scan func(...any) error) (atom.Atom, error) {
@@ -53,6 +54,7 @@ func scanAtomRow(scan func(...any) error) (atom.Atom, error) {
 		&r.keywordsStr,
 		&r.tagsStr,
 		&r.createdNS,
+		&r.digestStatusNS,
 	)
 	if err != nil {
 		return atom.Atom{}, err
@@ -78,6 +80,10 @@ func parseAtomRow(r atomRawRow) atom.Atom {
 	}
 	if t := parseTimestamptz(r.createdNS); t.Valid {
 		a.CreatedAt = t.Time
+	}
+	if r.digestStatusNS.Valid && r.digestStatusNS.String != "" {
+		s := r.digestStatusNS.String
+		a.DigestStatus = &s
 	}
 	a.Keywords = parseStringSliceSQLite(r.keywordsStr)
 	a.Tags = parseStringSliceSQLite(r.tagsStr)

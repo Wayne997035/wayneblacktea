@@ -293,3 +293,106 @@ func TestWeeklyGoalReview_PayloadShape(t *testing.T) {
 		t.Errorf("expected type='knowledge', got %q", propStore.created[0].Type)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: Job 4 — decision_outcome_review (nil pool and nil cognitive deps)
+// ---------------------------------------------------------------------------
+
+// TestDecisionOutcomeReview_SkipsNilCognitiveDeps verifies that
+// runDecisionOutcomeReview skips gracefully when cognitiveDeps is nil.
+func TestDecisionOutcomeReview_SkipsNilCognitiveDeps(t *testing.T) {
+	if testPgPool == nil {
+		t.Skip("requires testPgPool")
+	}
+	sc := &Scheduler{
+		disciplinePool: testPgPool,
+		cognitiveDeps:  nil,
+	}
+	// Must not panic.
+	sc.runDecisionOutcomeReview()
+}
+
+// TestDecisionOutcomeReview_SkipsNilPool verifies that runDecisionOutcomeReview
+// exits gracefully when disciplinePool is nil (SQLite dev path).
+func TestDecisionOutcomeReview_SkipsNilPool(t *testing.T) {
+	propStore := &stubProposalStore{}
+	wsID := uuid.New()
+	sc := &Scheduler{
+		disciplinePool: nil,
+		cognitiveDeps: &cognitiveDeps{
+			proposal:    propStore,
+			workspaceID: &wsID,
+		},
+	}
+	// Must not panic and must not create any proposals.
+	sc.runDecisionOutcomeReview()
+	if len(propStore.created) != 0 {
+		t.Errorf("expected 0 proposals when pool is nil, got %d", len(propStore.created))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Job 5 — knowledge_to_skill_candidate (nil pool skip)
+// ---------------------------------------------------------------------------
+
+// TestKnowledgeToSkillCandidate_SkipsNilCognitiveDeps verifies that
+// runKnowledgeToSkillCandidate skips gracefully when cognitiveDeps is nil.
+func TestKnowledgeToSkillCandidate_SkipsNilCognitiveDeps(t *testing.T) {
+	if testPgPool == nil {
+		t.Skip("requires testPgPool")
+	}
+	sc := &Scheduler{
+		disciplinePool: testPgPool,
+		cognitiveDeps:  nil,
+	}
+	// Must not panic.
+	sc.runKnowledgeToSkillCandidate()
+}
+
+// TestKnowledgeToSkillCandidate_SkipsNilPool verifies that the job exits
+// gracefully when disciplinePool is nil.
+func TestKnowledgeToSkillCandidate_SkipsNilPool(t *testing.T) {
+	propStore := &stubProposalStore{}
+	wsID := uuid.New()
+	sc := &Scheduler{
+		disciplinePool: nil,
+		cognitiveDeps: &cognitiveDeps{
+			proposal:    propStore,
+			workspaceID: &wsID,
+		},
+	}
+	sc.runKnowledgeToSkillCandidate()
+	if len(propStore.created) != 0 {
+		t.Errorf("expected 0 proposals when pool is nil, got %d", len(propStore.created))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Job 7 — behavior_rule_candidate (nil cognitive deps)
+// ---------------------------------------------------------------------------
+
+// TestBehaviorRuleCandidate_SkipsNilCognitiveDeps verifies that
+// runBehaviorRuleCandidate skips gracefully when cognitiveDeps is nil.
+func TestBehaviorRuleCandidate_SkipsNilCognitiveDeps(t *testing.T) {
+	sc := &Scheduler{cognitiveDeps: nil}
+	// Must not panic.
+	sc.runBehaviorRuleCandidate()
+}
+
+// TestBehaviorRuleCandidate_SkipsNilReflectionStore verifies that the job
+// exits gracefully when cognitiveDeps.reflection is nil.
+func TestBehaviorRuleCandidate_SkipsNilReflectionStore(t *testing.T) {
+	propStore := &stubProposalStore{}
+	wsID := uuid.New()
+	sc := &Scheduler{
+		cognitiveDeps: &cognitiveDeps{
+			reflection:  nil, // <-- nil: job must skip
+			proposal:    propStore,
+			workspaceID: &wsID,
+		},
+	}
+	sc.runBehaviorRuleCandidate()
+	if len(propStore.created) != 0 {
+		t.Errorf("expected 0 proposals when reflection store is nil, got %d", len(propStore.created))
+	}
+}

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS discipline_events_m8 (
 );
 
 CREATE INDEX IF NOT EXISTS idx_discipline_events_m8_open
-    ON discipline_events_m8 (workspace_id, created_at)
+    ON discipline_events_m8 (workspace_id, created_at DESC)
     WHERE resolved_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_discipline_events_m8_created_at

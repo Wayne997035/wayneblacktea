@@ -443,6 +443,14 @@ func run() error {
 			return fmt.Errorf("wiring behavior rule pruner: %w", err)
 		}
 	}
+	// Wire Memory-9 atom consolidation (daily 04:30 Asia/Taipei). Skipped when
+	// CLAUDE_API_KEY is absent (atomizer nil) or atom store unavailable. Both
+	// conditions are nil-safe inside WithAtomConsolidator.
+	if atomizer := ai.NewAtomizer(); atomizer != nil {
+		if err := sched.WithAtomConsolidator(scheduler.NewAtomConsolidDeps(stores.Atom(), atomizer, stores.WorkspaceID())); err != nil {
+			return fmt.Errorf("wiring atom consolidator: %w", err)
+		}
+	}
 	// Wire Memory-7 cognitive jobs. All 7 jobs are nil-safe: if the pool or
 	// stores are absent (SQLite dev path, missing CLAUDE_API_KEY, etc.) each
 	// job logs an info-level skip and returns without error.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
 	"github.com/google/uuid"
@@ -74,16 +75,28 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 
 // handleProposeBehaviorRule creates a new behavior rule with status='proposed'.
 func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.behaviorRule == nil {
+		return mcp.NewToolResultError("behavior_rule store not configured"), nil
+	}
 	args := req.GetArguments()
 
 	condition := stringArg(args, "condition")
 	if condition == "" {
 		return mcp.NewToolResultError("condition is required"), nil
 	}
+	var err error
+	condition, err = sanitizeRuleText(condition, 2000)
+	if err != nil {
+		return mcp.NewToolResultError("condition: " + err.Error()), nil
+	}
 
 	action := stringArg(args, "action")
 	if action == "" {
 		return mcp.NewToolResultError("action is required"), nil
+	}
+	action, err = sanitizeRuleText(action, 2000)
+	if err != nil {
+		return mcp.NewToolResultError("action: " + err.Error()), nil
 	}
 
 	sourceType := stringArg(args, "source_type")
@@ -93,7 +106,10 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 		)), nil
 	}
 
-	confidence := float64(numberArg(args, "confidence"))
+	confidence := floatArg(args, "confidence")
+	if math.IsNaN(confidence) || math.IsInf(confidence, 0) {
+		return mcp.NewToolResultError("confidence must be a finite number"), nil
+	}
 	if confidence <= 0 || confidence > 1.0 {
 		confidence = 0.50
 	}
@@ -124,6 +140,9 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 
 // handleListBehaviorRules returns behavior rules, optionally filtered by status.
 func (s *Server) handleListBehaviorRules(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.behaviorRule == nil {
+		return mcp.NewToolResultError("behavior_rule store not configured"), nil
+	}
 	args := req.GetArguments()
 
 	params := behaviorrule.ListParams{
@@ -160,6 +179,9 @@ func (s *Server) handleListBehaviorRules(ctx context.Context, req mcp.CallToolRe
 
 // handleApplyBehaviorRules applies an outcome to a behavior rule.
 func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.behaviorRule == nil {
+		return mcp.NewToolResultError("behavior_rule store not configured"), nil
+	}
 	args := req.GetArguments()
 
 	ruleIDStr := stringArg(args, "rule_id")
@@ -186,8 +208,27 @@ func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolR
 	return jsonText(r)
 }
 
+// sanitizeRuleText validates and truncates rule text fields (condition, action).
+// It rejects strings containing null bytes or ASCII control characters (other
+// than tab), and enforces a maximum rune length per backend-security-design.md §5.4.
+func sanitizeRuleText(s string, maxRunes int) (string, error) {
+	for _, r := range s {
+		if r == '\x00' || (r < 0x20 && r != '\t') {
+			return "", fmt.Errorf("text contains forbidden control character")
+		}
+	}
+	runes := []rune(s)
+	if len(runes) > maxRunes {
+		return "", fmt.Errorf("text exceeds %d characters", maxRunes)
+	}
+	return s, nil
+}
+
 // handleDeprecateBehaviorRule sets a behavior rule's status to 'deprecated'.
 func (s *Server) handleDeprecateBehaviorRule(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.behaviorRule == nil {
+		return mcp.NewToolResultError("behavior_rule store not configured"), nil
+	}
 	args := req.GetArguments()
 
 	ruleIDStr := stringArg(args, "rule_id")

@@ -45,6 +45,13 @@ type atomConsolidDeps struct {
 	workspaceID *uuid.UUID
 }
 
+// NewAtomConsolidDeps constructs an atomConsolidDeps bundle for use by main.go
+// when wiring WithAtomConsolidator. Any nil argument is accepted — the cron job
+// nil-checks each field and skips gracefully when a dep is absent.
+func NewAtomConsolidDeps(store atom.StoreIface, atomizer *ai.Atomizer, workspaceID *uuid.UUID) *atomConsolidDeps {
+	return &atomConsolidDeps{store: store, atomizer: atomizer, workspaceID: workspaceID}
+}
+
 // atomCluster holds a group of atoms sharing a common keyword, eligible for
 // consolidation when len(atoms) > atomConsolidMinClusterSize.
 type atomCluster struct {
@@ -157,7 +164,7 @@ func runAtomConsolidation(deps atomConsolidDeps) {
 // collectDistinctKeywords fetches a sample of recent active atoms and extracts
 // distinct keywords to use as cluster seeds. Capped at atomConsolidMaxKeywords.
 func collectDistinctKeywords(ctx context.Context, deps atomConsolidDeps) ([]string, error) {
-	// Use a broad single-char search to get a representative sample of recent
+	// Use empty query (ILIKE '%%') to get a representative sample of recent
 	// atoms. We then de-duplicate their keywords.
 	sample, err := deps.store.Search(ctx, deps.workspaceID, "", atomConsolidSearchLimit*atomConsolidMaxKeywords)
 	if err != nil {
@@ -205,9 +212,13 @@ func buildAtomClusters(ctx context.Context, deps atomConsolidDeps, keywords []st
 		// have not already been consolidated (digest_status != 'consolidated').
 		var eligible []atom.Atom
 		for _, a := range atoms {
-			if !usedAtomIDs[a.ID] {
-				eligible = append(eligible, a)
+			if usedAtomIDs[a.ID] {
+				continue
 			}
+			if a.DigestStatus != nil && *a.DigestStatus == "consolidated" {
+				continue
+			}
+			eligible = append(eligible, a)
 		}
 
 		if len(eligible) <= atomConsolidMinClusterSize-1 {
@@ -279,14 +290,22 @@ func consolidateCluster(ctx context.Context, deps atomConsolidDeps, cl atomClust
 }
 
 // buildConsolidationPrompt renders cluster atoms into a prompt for the Haiku
-// consolidation call. Content is included but credential-scrubbed before
+// consolidation call. Content, keywords, and tags are credential-scrubbed before
 // sending (backend-security-design.md §3.1).
 func buildConsolidationPrompt(cl atomCluster) string {
 	summary := ""
 	for _, a := range cl.atoms {
-		// Scrub credentials from atom content before sending to LLM.
+		// Scrub credentials from atom content, keywords, and tags before sending to LLM.
 		safe := redact.ForLLM(a.Content)
-		summary += fmt.Sprintf("- %s (keywords: %v, tags: %v)\n", safe, a.Keywords, a.Tags)
+		redactedKeywords := make([]string, len(a.Keywords))
+		for i, kw := range a.Keywords {
+			redactedKeywords[i] = redact.ForLLM(kw)
+		}
+		redactedTags := make([]string, len(a.Tags))
+		for i, tag := range a.Tags {
+			redactedTags[i] = redact.ForLLM(tag)
+		}
+		summary += fmt.Sprintf("- %s (keywords: %v, tags: %v)\n", safe, redactedKeywords, redactedTags)
 	}
 	return fmt.Sprintf(
 		"These %d memory atoms all relate to the keyword '%s'. "+

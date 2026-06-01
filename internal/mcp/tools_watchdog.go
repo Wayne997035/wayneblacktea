@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -82,6 +83,9 @@ func (s *Server) handleAnalyzeAgentBehavior(ctx context.Context, req mcp.CallToo
 	stuckHours := int(numberArg(args, "stuck_threshold_hours"))
 	if stuckHours <= 0 {
 		stuckHours = 4
+	}
+	if stuckHours > 168 {
+		stuckHours = 168
 	}
 
 	wsID := s.workspaceID
@@ -492,7 +496,7 @@ func (s *Server) handleMarkLoopResolved(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("invalid event_id UUID: %v", err)), nil
 	}
 	if err := s.disciplineEventStore.MarkResolved(ctx, eventID); err != nil {
-		if err == watchdog.ErrEventNotFound {
+		if errors.Is(err, watchdog.ErrEventNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("event %s not found", eventIDStr)), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("marking event resolved: %v", err)), nil
