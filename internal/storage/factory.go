@@ -221,23 +221,23 @@ func (p *postgresServerStores) Close() error {
 }
 
 func (p *postgresServerStores) GTD() gtd.StoreIface                   { return p.gtd }
-func (p *postgresServerStores) Workspace() workspace.StoreIface        { return p.workspace }
-func (p *postgresServerStores) Decision() decision.StoreIface          { return p.decision }
-func (p *postgresServerStores) Session() session.StoreIface            { return p.session }
-func (p *postgresServerStores) Knowledge() knowledge.StoreIface        { return p.knowledge }
-func (p *postgresServerStores) Learning() learning.StoreIface          { return p.learning }
-func (p *postgresServerStores) Proposal() proposal.StoreIface          { return p.proposal }
-func (p *postgresServerStores) Arch() arch.StoreIface                  { return p.archStore }
-func (p *postgresServerStores) WorkSession() worksession.StoreIface    { return p.workSession }
-func (p *postgresServerStores) Vision() vision.StoreIface              { return p.visionStore }
-func (p *postgresServerStores) Playbook() playbook.StoreIface          { return p.playbookStore }
-func (p *postgresServerStores) Procedural() procedural.StoreIface      { return p.proceduralStore }
-func (p *postgresServerStores) Atom() atom.StoreIface                  { return p.atomStore }
-func (p *postgresServerStores) Outcome() outcome.StoreIface            { return p.outcomeStore }
-func (p *postgresServerStores) Skill() skill.StoreIface                { return p.skillStore }
-func (p *postgresServerStores) Discipline() discipline.Store           { return p.disciplineStore }
-func (p *postgresServerStores) Reflection() reflection.StoreIface      { return p.reflectionStore }
-func (p *postgresServerStores) BehaviorRule() behaviorrule.StoreIface  { return p.behaviorRuleStore }
+func (p *postgresServerStores) Workspace() workspace.StoreIface       { return p.workspace }
+func (p *postgresServerStores) Decision() decision.StoreIface         { return p.decision }
+func (p *postgresServerStores) Session() session.StoreIface           { return p.session }
+func (p *postgresServerStores) Knowledge() knowledge.StoreIface       { return p.knowledge }
+func (p *postgresServerStores) Learning() learning.StoreIface         { return p.learning }
+func (p *postgresServerStores) Proposal() proposal.StoreIface         { return p.proposal }
+func (p *postgresServerStores) Arch() arch.StoreIface                 { return p.archStore }
+func (p *postgresServerStores) WorkSession() worksession.StoreIface   { return p.workSession }
+func (p *postgresServerStores) Vision() vision.StoreIface             { return p.visionStore }
+func (p *postgresServerStores) Playbook() playbook.StoreIface         { return p.playbookStore }
+func (p *postgresServerStores) Procedural() procedural.StoreIface     { return p.proceduralStore }
+func (p *postgresServerStores) Atom() atom.StoreIface                 { return p.atomStore }
+func (p *postgresServerStores) Outcome() outcome.StoreIface           { return p.outcomeStore }
+func (p *postgresServerStores) Skill() skill.StoreIface               { return p.skillStore }
+func (p *postgresServerStores) Discipline() discipline.Store          { return p.disciplineStore }
+func (p *postgresServerStores) Reflection() reflection.StoreIface     { return p.reflectionStore }
+func (p *postgresServerStores) BehaviorRule() behaviorrule.StoreIface { return p.behaviorRuleStore }
 func (p *postgresServerStores) DisciplineEventStore() watchdog.DisciplineEventStoreIface {
 	return p.disciplineEventM8Store
 }
@@ -376,23 +376,23 @@ func (s *sqliteServerStores) Close() error {
 }
 
 func (s *sqliteServerStores) GTD() gtd.StoreIface                   { return s.gtd }
-func (s *sqliteServerStores) Workspace() workspace.StoreIface        { return s.workspace }
-func (s *sqliteServerStores) Decision() decision.StoreIface          { return s.decision }
-func (s *sqliteServerStores) Session() session.StoreIface            { return s.session }
-func (s *sqliteServerStores) Knowledge() knowledge.StoreIface        { return s.knowledge }
-func (s *sqliteServerStores) Learning() learning.StoreIface          { return s.learning }
-func (s *sqliteServerStores) Proposal() proposal.StoreIface          { return s.proposal }
-func (s *sqliteServerStores) Arch() arch.StoreIface                  { return s.archStore }
-func (s *sqliteServerStores) WorkSession() worksession.StoreIface    { return s.workSession }
-func (s *sqliteServerStores) Vision() vision.StoreIface              { return s.visionStore }
-func (s *sqliteServerStores) Playbook() playbook.StoreIface          { return s.playbookStore }
-func (s *sqliteServerStores) Procedural() procedural.StoreIface      { return s.proceduralStore }
-func (s *sqliteServerStores) Atom() atom.StoreIface                  { return s.atomStore }
-func (s *sqliteServerStores) Outcome() outcome.StoreIface            { return s.outcomeStore }
-func (s *sqliteServerStores) Skill() skill.StoreIface                { return s.skillStore }
-func (s *sqliteServerStores) Discipline() discipline.Store           { return s.disciplineStore }
-func (s *sqliteServerStores) Reflection() reflection.StoreIface      { return s.reflectionStore }
-func (s *sqliteServerStores) BehaviorRule() behaviorrule.StoreIface  { return s.behaviorRuleStore }
+func (s *sqliteServerStores) Workspace() workspace.StoreIface       { return s.workspace }
+func (s *sqliteServerStores) Decision() decision.StoreIface         { return s.decision }
+func (s *sqliteServerStores) Session() session.StoreIface           { return s.session }
+func (s *sqliteServerStores) Knowledge() knowledge.StoreIface       { return s.knowledge }
+func (s *sqliteServerStores) Learning() learning.StoreIface         { return s.learning }
+func (s *sqliteServerStores) Proposal() proposal.StoreIface         { return s.proposal }
+func (s *sqliteServerStores) Arch() arch.StoreIface                 { return s.archStore }
+func (s *sqliteServerStores) WorkSession() worksession.StoreIface   { return s.workSession }
+func (s *sqliteServerStores) Vision() vision.StoreIface             { return s.visionStore }
+func (s *sqliteServerStores) Playbook() playbook.StoreIface         { return s.playbookStore }
+func (s *sqliteServerStores) Procedural() procedural.StoreIface     { return s.proceduralStore }
+func (s *sqliteServerStores) Atom() atom.StoreIface                 { return s.atomStore }
+func (s *sqliteServerStores) Outcome() outcome.StoreIface           { return s.outcomeStore }
+func (s *sqliteServerStores) Skill() skill.StoreIface               { return s.skillStore }
+func (s *sqliteServerStores) Discipline() discipline.Store          { return s.disciplineStore }
+func (s *sqliteServerStores) Reflection() reflection.StoreIface     { return s.reflectionStore }
+func (s *sqliteServerStores) BehaviorRule() behaviorrule.StoreIface { return s.behaviorRuleStore }
 func (s *sqliteServerStores) DisciplineEventStore() watchdog.DisciplineEventStoreIface {
 	return s.disciplineEventM8Store
 }
