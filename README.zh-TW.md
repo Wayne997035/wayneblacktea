@@ -54,7 +54,7 @@ All set. wayneblacktea is running at http://127.0.0.1:8080
 | `wbt setup --no-mcp` | 跳過 `claude mcp add` 步驟 |
 | `wbt init` | `wbt setup` 的 deprecated alias |
 
-核心 MCP 記憶功能不需要 Anthropic API key。Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)。
+核心 MCP 記憶功能不需要 Anthropic API key。Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)，常見問題見 [Troubleshooting](./docs/install.md#troubleshooting)。
 
 > **Phase 3 — 即將推出**：Homebrew tap（`brew install wayne997035/tap/wayneblacktea`）以及 DXT package（Claude Desktop one-click install）。
 

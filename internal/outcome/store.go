@@ -1,0 +1,346 @@
+package outcome
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Store is the Postgres-backed implementation of StoreIface.
+type Store struct {
+	pool        *pgxpool.Pool
+	workspaceID pgtype.UUID // zero = unscoped (single-tenant legacy mode)
+}
+
+// NewStore returns a Store backed by the given pool, scoped to the optional
+// workspaceID. nil workspaceID = legacy unscoped mode.
+func NewStore(pool *pgxpool.Pool, workspaceID *uuid.UUID) *Store {
+	return &Store{pool: pool, workspaceID: toPgtypeUUID(workspaceID)}
+}
+
+func toPgtypeUUID(id *uuid.UUID) pgtype.UUID {
+	if id == nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
+}
+
+func uuidFromPgtype(v pgtype.UUID) *uuid.UUID {
+	if !v.Valid {
+		return nil
+	}
+	id := uuid.UUID(v.Bytes)
+	return &id
+}
+
+// outcomeSelectCols is the canonical column list for outcome SELECT queries.
+const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, created_at`
+
+// evaluationSelectCols is the canonical column list for evaluation SELECT queries.
+const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
+
+// scanOutcomeRow reads a full outcomes row from pgx.Rows into an Outcome.
+func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
+	var (
+		o         Outcome
+		wsID      pgtype.UUID
+		entityID  pgtype.UUID
+		createdAt pgtype.Timestamptz
+		notesText pgtype.Text
+	)
+	err := rows.Scan(
+		&o.ID,
+		&wsID,
+		&o.EntityType,
+		&entityID,
+		&o.Result,
+		&o.Metrics,
+		&notesText,
+		&createdAt,
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("scanning outcome: %w", err)
+	}
+	o.WorkspaceID = uuidFromPgtype(wsID)
+	if entityID.Valid {
+		o.EntityID = uuid.UUID(entityID.Bytes)
+	}
+	if createdAt.Valid {
+		o.CreatedAt = createdAt.Time
+	}
+	if notesText.Valid {
+		o.Notes = notesText.String
+	}
+	return o, nil
+}
+
+// scanEvaluationRow reads a full evaluations row from pgx.Rows into an Evaluation.
+func scanEvaluationRow(rows pgx.Rows) (Evaluation, error) {
+	var (
+		e         Evaluation
+		wsID      pgtype.UUID
+		outcomeID pgtype.UUID
+		createdAt pgtype.Timestamptz
+	)
+	err := rows.Scan(
+		&e.ID,
+		&wsID,
+		&outcomeID,
+		&e.Analysis,
+		&e.Lessons,
+		&e.ImprovementSuggestions,
+		&createdAt,
+	)
+	if err != nil {
+		return Evaluation{}, fmt.Errorf("scanning evaluation: %w", err)
+	}
+	e.WorkspaceID = uuidFromPgtype(wsID)
+	if outcomeID.Valid {
+		e.OutcomeID = uuid.UUID(outcomeID.Bytes)
+	}
+	if createdAt.Valid {
+		e.CreatedAt = createdAt.Time
+	}
+	return e, nil
+}
+
+// CreateOutcome inserts a new outcome row and returns the persisted record.
+func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (Outcome, error) {
+	const q = `
+		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+		RETURNING ` + outcomeSelectCols
+
+	var notesArg pgtype.Text
+	if params.Notes != "" {
+		notesArg = pgtype.Text{String: params.Notes, Valid: true}
+	}
+	var metricsArg any
+	if len(params.Metrics) > 0 {
+		metricsArg = string(params.Metrics)
+	}
+
+	rows, err := s.pool.Query(ctx, q,
+		toPgtypeUUID(params.WorkspaceID),
+		params.EntityType,
+		params.EntityID,
+		params.Result,
+		metricsArg,
+		notesArg,
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("creating outcome: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return Outcome{}, fmt.Errorf("creating outcome: no row returned")
+	}
+	o, err := scanOutcomeRow(rows)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("creating outcome scan: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return Outcome{}, fmt.Errorf("creating outcome rows.Err: %w", err)
+	}
+	return o, nil
+}
+
+// GetOutcomeByID fetches a single outcome by primary key, workspace-scoped.
+func (s *Store) GetOutcomeByID(ctx context.Context, id uuid.UUID, workspaceID *uuid.UUID) (Outcome, error) {
+	const q = `SELECT ` + outcomeSelectCols + ` FROM outcomes
+		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		LIMIT 1`
+
+	rows, err := s.pool.Query(ctx, q, id, toPgtypeUUID(workspaceID))
+	if err != nil {
+		return Outcome{}, fmt.Errorf("getting outcome %s: %w", id, err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Outcome{}, fmt.Errorf("getting outcome rows.Err: %w", err)
+		}
+		return Outcome{}, ErrNotFound
+	}
+	o, err := scanOutcomeRow(rows)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("getting outcome scan: %w", err)
+	}
+	return o, nil
+}
+
+// ListRecentOutcomes returns outcomes ordered by created_at DESC, with optional
+// workspace and entity_type filters.
+func (s *Store) ListRecentOutcomes(ctx context.Context, workspaceID *uuid.UUID, entityType string, limit int) ([]Outcome, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var entityTypeArg pgtype.Text
+	if entityType != "" {
+		entityTypeArg = pgtype.Text{String: entityType, Valid: true}
+	}
+
+	const q = `SELECT ` + outcomeSelectCols + ` FROM outcomes
+		WHERE ($1::uuid IS NULL OR workspace_id = $1)
+		  AND ($2::text IS NULL OR entity_type = $2)
+		ORDER BY created_at DESC
+		LIMIT $3`
+
+	rows, err := s.pool.Query(ctx, q, toPgtypeUUID(workspaceID), entityTypeArg, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent outcomes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Outcome
+	for rows.Next() {
+		o, err := scanOutcomeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("listing recent outcomes scan: %w", err)
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing recent outcomes rows.Err: %w", err)
+	}
+	return out, nil
+}
+
+// CreateEvaluation inserts a new evaluation row and returns the persisted record.
+func (s *Store) CreateEvaluation(ctx context.Context, params CreateEvaluationParams) (Evaluation, error) {
+	const q = `
+		INSERT INTO evaluations (workspace_id, outcome_id, analysis, lessons, improvement_suggestions)
+		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+		RETURNING ` + evaluationSelectCols
+
+	lessons := params.Lessons
+	if len(lessons) == 0 {
+		lessons = []byte("[]")
+	}
+	suggestions := params.ImprovementSuggestions
+	if len(suggestions) == 0 {
+		suggestions = []byte("[]")
+	}
+
+	rows, err := s.pool.Query(ctx, q,
+		toPgtypeUUID(params.WorkspaceID),
+		params.OutcomeID,
+		params.Analysis,
+		string(lessons),
+		string(suggestions),
+	)
+	if err != nil {
+		return Evaluation{}, fmt.Errorf("creating evaluation: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return Evaluation{}, fmt.Errorf("creating evaluation: no row returned")
+	}
+	e, err := scanEvaluationRow(rows)
+	if err != nil {
+		return Evaluation{}, fmt.Errorf("creating evaluation scan: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return Evaluation{}, fmt.Errorf("creating evaluation rows.Err: %w", err)
+	}
+	return e, nil
+}
+
+// ListEvaluationsByOutcomeID returns all evaluations for an outcome, ordered
+// by created_at ASC.
+func (s *Store) ListEvaluationsByOutcomeID(ctx context.Context, outcomeID uuid.UUID, workspaceID *uuid.UUID) ([]Evaluation, error) {
+	const q = `SELECT ` + evaluationSelectCols + ` FROM evaluations
+		WHERE outcome_id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY created_at ASC`
+
+	rows, err := s.pool.Query(ctx, q, outcomeID, toPgtypeUUID(workspaceID))
+	if err != nil {
+		return nil, fmt.Errorf("listing evaluations for outcome %s: %w", outcomeID, err)
+	}
+	defer rows.Close()
+
+	var out []Evaluation
+	for rows.Next() {
+		e, err := scanEvaluationRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("listing evaluations scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing evaluations rows.Err: %w", err)
+	}
+	return out, nil
+}
+
+// ListFailedOutcomes returns outcomes with result='failure' or
+// result='regressed', ordered by created_at DESC.
+func (s *Store) ListFailedOutcomes(ctx context.Context, workspaceID *uuid.UUID, limit int) ([]Outcome, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	const q = `SELECT ` + outcomeSelectCols + ` FROM outcomes
+		WHERE result IN ('failure', 'regressed')
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		ORDER BY created_at DESC
+		LIMIT $2`
+
+	rows, err := s.pool.Query(ctx, q, toPgtypeUUID(workspaceID), limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing failed outcomes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Outcome
+	for rows.Next() {
+		o, err := scanOutcomeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("listing failed outcomes scan: %w", err)
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing failed outcomes rows.Err: %w", err)
+	}
+	return out, nil
+}
+
+// PruneOlderThan hard-deletes outcomes and their evaluations older than cutoff.
+// Evaluations are deleted first (no FK cascade per red-line §9; referential
+// integrity enforced in code).
+func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("pruning outcomes begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const deleteEvals = `
+		DELETE FROM evaluations
+		WHERE outcome_id IN (SELECT id FROM outcomes WHERE created_at < $1)`
+	if _, err := tx.Exec(ctx, deleteEvals, cutoff); err != nil {
+		return 0, fmt.Errorf("pruning evaluations: %w", err)
+	}
+
+	const deleteOutcomes = `DELETE FROM outcomes WHERE created_at < $1`
+	tag, err := tx.Exec(ctx, deleteOutcomes, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning outcomes: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("pruning outcomes commit: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

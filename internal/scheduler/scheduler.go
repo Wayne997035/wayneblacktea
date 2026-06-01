@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
@@ -101,17 +102,18 @@ const aiReviewMinReviewCount = 5
 
 // Scheduler wraps gocron and coordinates scheduled background jobs.
 type Scheduler struct {
-	s              gocron.Scheduler
-	learning       learning.StoreIface
-	discord        DiscordSender
-	notion         *notion.Client
-	briefingStores notion.BriefingStores
-	reviewer       ai.ConceptReviewerIface
-	reflectionDeps *reflectionDeps
-	consolidDeps   *consolidationDeps
-	statusDeps     *statusSnapshotDeps
-	pruner         *decay.Pruner
-	playbookDeps   *playbookDeps
+	s                     gocron.Scheduler
+	learning              learning.StoreIface
+	discord               DiscordSender
+	notion                *notion.Client
+	briefingStores        notion.BriefingStores
+	reviewer              ai.ConceptReviewerIface
+	reflectionDeps        *reflectionDeps
+	consolidDeps          *consolidationDeps
+	knowledgeConsolidDeps *knowledgeConsolidationDeps
+	statusDeps            *statusSnapshotDeps
+	pruner                *decay.Pruner
+	playbookDeps          *playbookDeps
 	// disciplinePool is the pgxpool used by the daily discipline_events
 	// prune job. nil when running under SQLite (or when no pool is wired
 	// in by the caller) — the prune job is skipped in that case because
@@ -123,6 +125,12 @@ type Scheduler struct {
 	// mergedPRsPruner deletes merged_prs_observed rows older than 30d.
 	// Set via WithMergedPRsPruner after New(); nil skips the prune job.
 	mergedPRsPruner mergedPRsRetentionStore
+	// outcomePruner deletes outcomes + evaluations rows older than 90d.
+	// Set via WithOutcomePruner after New(); nil skips the prune job.
+	outcomePruner outcomePruneStore
+	// reflectionPruner deletes reflections rows older than 180d.
+	// Set via WithReflectionPruner after New(); nil skips the prune job.
+	reflectionPruner reflectionPruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -155,6 +163,33 @@ const mergedPRsObservedRetention = 30 * 24 * time.Hour
 // scale, the ceiling leaves room for a momentarily slow Aiven Postgres.
 const mergedPRsObservedPruneTimeout = 60 * time.Second
 
+// outcomePruneStore is the narrow prune interface used by the daily
+// outcomes + evaluations cleanup job. outcome.Store satisfies it.
+// 90-day retention per backend-security-design.md §1.3.
+type outcomePruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// outcomePruneRetention is the outcomes/evaluations TTL (90 days).
+const outcomePruneRetention = 90 * 24 * time.Hour
+
+// outcomePruneTimeout caps the daily outcomes DELETE. 60 s budget leaves
+// room for a momentarily slow Aiven Postgres without wedging the scheduler.
+const outcomePruneTimeout = 60 * time.Second
+
+// reflectionPruneStore is the narrow prune interface used by the daily
+// reflections cleanup job. reflection.Store (PG) and sqlite.ReflectionStore
+// both satisfy it. 180-day retention per backend-security-design.md §1.3.
+type reflectionPruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// reflectionPruneRetention is the reflections TTL (180 days).
+const reflectionPruneRetention = 180 * 24 * time.Hour
+
+// reflectionPruneTimeout caps the daily reflections DELETE. 60 s budget.
+const reflectionPruneTimeout = 60 * time.Second
+
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
 type statusSnapshotDeps struct {
@@ -163,6 +198,24 @@ type statusSnapshotDeps struct {
 	store       snapshot.StoreIface
 	generator   snapshot.GeneratorIface
 	workspaceID *uuid.UUID
+}
+
+// buildKnowledgeConsolidDeps initialises the knowledge consolidation dep bundle.
+// Extracted from buildSchedulerDeps to keep its cyclomatic complexity below
+// the gocyclo threshold of 15.
+func buildKnowledgeConsolidDeps(
+	reflector ai.ReflectorIface,
+	propStore proposal.StoreIface,
+	knowledgeStore knowledge.StoreIface,
+) *knowledgeConsolidationDeps {
+	if reflector == nil || propStore == nil || knowledgeStore == nil {
+		return nil
+	}
+	return &knowledgeConsolidationDeps{
+		knowledge: knowledgeStore,
+		proposal:  propStore,
+		reflector: reflector,
+	}
 }
 
 // buildSchedulerDeps initialises all optional dep bundles from the flat
@@ -176,8 +229,9 @@ func buildSchedulerDeps(
 	pbStore playbook.StoreIface,
 	snapStore snapshot.StoreIface,
 	snapGen snapshot.GeneratorIface,
+	knowledgeStore knowledge.StoreIface,
 	workspaceID *uuid.UUID,
-) (rDeps *reflectionDeps, cDeps *consolidationDeps, pbDeps *playbookDeps, sDeps *statusSnapshotDeps) {
+) (rDeps *reflectionDeps, cDeps *consolidationDeps, kcDeps *knowledgeConsolidationDeps, pbDeps *playbookDeps, sDeps *statusSnapshotDeps) {
 	if reflector != nil && gtdStore != nil && decStore != nil && propStore != nil {
 		rDeps = &reflectionDeps{
 			gtd:       gtdStore,
@@ -191,6 +245,7 @@ func buildSchedulerDeps(
 			reflector: reflector,
 		}
 	}
+	kcDeps = buildKnowledgeConsolidDeps(reflector, propStore, knowledgeStore)
 	if reflector != nil && decStore != nil && propStore != nil && pbStore != nil {
 		pbDeps = &playbookDeps{
 			decision:  decStore,
@@ -208,7 +263,7 @@ func buildSchedulerDeps(
 			workspaceID: workspaceID,
 		}
 	}
-	return rDeps, cDeps, pbDeps, sDeps
+	return rDeps, cDeps, kcDeps, pbDeps, sDeps
 }
 
 // New creates and configures the Scheduler with all registered jobs.
@@ -232,6 +287,9 @@ func buildSchedulerDeps(
 //
 // pbStore is optional: when nil (or when reflector/decStore/propStore is also
 // nil) the Sunday playbook promoter job is skipped.
+//
+// knowledgeStore is optional: when nil (or when reflector/propStore is nil)
+// the Sunday knowledge consolidation job is skipped.
 func New(
 	ls learning.StoreIface,
 	dc DiscordSender,
@@ -248,6 +306,7 @@ func New(
 	pruner *decay.Pruner,
 	pbStore playbook.StoreIface,
 	disciplinePool *pgxpool.Pool,
+	knowledgeStore knowledge.StoreIface,
 ) (*Scheduler, error) {
 	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
@@ -259,24 +318,25 @@ func New(
 		return nil, fmt.Errorf("creating gocron scheduler: %w", err)
 	}
 
-	rDeps, cDeps, pbDeps, sDeps := buildSchedulerDeps(
+	rDeps, cDeps, kcDeps, pbDeps, sDeps := buildSchedulerDeps(
 		reflector, gtdStore, decStore, propStore, pbStore,
-		snapStore, snapGen, workspaceID,
+		snapStore, snapGen, knowledgeStore, workspaceID,
 	)
 
 	sc := &Scheduler{
-		s:              s,
-		learning:       ls,
-		discord:        dc,
-		notion:         notionClient,
-		briefingStores: briefingStores,
-		reviewer:       reviewer,
-		reflectionDeps: rDeps,
-		consolidDeps:   cDeps,
-		statusDeps:     sDeps,
-		pruner:         pruner,
-		playbookDeps:   pbDeps,
-		disciplinePool: disciplinePool,
+		s:                     s,
+		learning:              ls,
+		discord:               dc,
+		notion:                notionClient,
+		briefingStores:        briefingStores,
+		reviewer:              reviewer,
+		reflectionDeps:        rDeps,
+		consolidDeps:          cDeps,
+		knowledgeConsolidDeps: kcDeps,
+		statusDeps:            sDeps,
+		pruner:                pruner,
+		playbookDeps:          pbDeps,
+		disciplinePool:        disciplinePool,
 	}
 
 	if err := sc.registerDailyJobs(s); err != nil {
@@ -412,6 +472,9 @@ func (sc *Scheduler) registerWeeklyJobs(s gocron.Scheduler) error {
 	if err := sc.registerSundayPlaybookPromoter(s); err != nil {
 		return err
 	}
+	if err := sc.registerSundayKnowledgeConsolidation(s); err != nil {
+		return err
+	}
 
 	if sc.reflectionDeps == nil {
 		slog.Info("scheduler: SaturdayReflection + SaturdayConsolidation + SaturdayStatusSnapshot skipped (reflector or stores not configured)")
@@ -495,6 +558,34 @@ func (s *Scheduler) sundayPlaybookPromoter() {
 		return
 	}
 	runPlaybookPromoter(*s.playbookDeps)
+}
+
+// registerSundayKnowledgeConsolidation adds the Sunday 01:00 knowledge consolidation job.
+func (sc *Scheduler) registerSundayKnowledgeConsolidation(s gocron.Scheduler) error {
+	if sc.knowledgeConsolidDeps == nil {
+		slog.Info("scheduler: SundayKnowledgeConsolidation skipped (reflector, proposal or knowledge store not configured)")
+		return nil
+	}
+	_, err := s.NewJob(
+		gocron.WeeklyJob(1, gocron.NewWeekdays(time.Sunday), gocron.NewAtTimes(gocron.NewAtTime(1, 0, 0))),
+		gocron.NewTask(sc.sundayKnowledgeConsolidation),
+		gocron.WithName("sunday-knowledge-consolidation"),
+		// LimitModeReschedule: drop a run if the previous one is still executing.
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering Sunday knowledge consolidation job: %w", err)
+	}
+	slog.Info("scheduler: SundayKnowledgeConsolidation scheduled at Sunday 01:00 Asia/Taipei")
+	return nil
+}
+
+// sundayKnowledgeConsolidation wraps runKnowledgeConsolidation for the scheduler method signature.
+func (s *Scheduler) sundayKnowledgeConsolidation() {
+	if s.knowledgeConsolidDeps == nil {
+		return
+	}
+	runKnowledgeConsolidation(*s.knowledgeConsolidDeps)
 }
 
 // Start begins executing scheduled jobs (non-blocking).
@@ -583,6 +674,87 @@ func (s *Scheduler) runDailyMergedPRsObservedPrune() {
 	slog.Info("daily merged_prs_observed prune: completed",
 		"rows_deleted", n,
 		"retention", mergedPRsObservedRetention.String(),
+	)
+}
+
+// WithOutcomePruner wires the outcomes retention store and registers the daily
+// 03:30 prune job. Must be called before Start().
+// 90-day TTL per backend-security-design.md §1.3 (observability tables).
+// 03:30 avoids overlap with the 03:00 pending_proposals + merged_prs cluster.
+func (sc *Scheduler) WithOutcomePruner(p outcomePruneStore) error {
+	sc.outcomePruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 30, 0))),
+		gocron.NewTask(sc.runDailyOutcomePrune),
+		gocron.WithName("daily-outcome-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily outcome prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyOutcomePrune scheduled at 03:30 Asia/Taipei")
+	return nil
+}
+
+// runDailyOutcomePrune deletes outcomes + evaluations rows older than 90 days.
+// Evaluations are deleted first in the same transaction (no FK cascade per
+// red-line §9). Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyOutcomePrune() {
+	if s.outcomePruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), outcomePruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-outcomePruneRetention)
+	n, err := s.outcomePruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily outcome prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily outcome prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(outcomePruneRetention.Hours()/24),
+	)
+}
+
+// WithReflectionPruner wires the reflections retention store and registers the
+// daily 03:45 prune job. Must be called before Start().
+// 180-day TTL per backend-security-design.md §1.3 (observability tables).
+// 03:45 avoids overlap with the 03:00/03:30 pending_proposals/outcome cluster.
+func (sc *Scheduler) WithReflectionPruner(p reflectionPruneStore) error {
+	sc.reflectionPruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 45, 0))),
+		gocron.NewTask(sc.runDailyReflectionPrune),
+		gocron.WithName("daily-reflection-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily reflection prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyReflectionPrune scheduled at 03:45 Asia/Taipei")
+	return nil
+}
+
+// runDailyReflectionPrune deletes reflections rows older than 180 days.
+// Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyReflectionPrune() {
+	if s.reflectionPruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reflectionPruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-reflectionPruneRetention)
+	n, err := s.reflectionPruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily reflection prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily reflection prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(reflectionPruneRetention.Hours()/24),
 	)
 }
 

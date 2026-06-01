@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -117,6 +118,9 @@ func atomizeAndPersist(
 	parentID uuid.UUID,
 	text string,
 ) {
+	// Scrub credentials from skill text before sending to the Haiku API
+	// (backend-security-design.md §3.1 — raw LLM tool input redaction).
+	text = redact.ForLLM(text)
 	result, err := atomizer.Atomize(ctx, text)
 	if errors.Is(err, ai.ErrEmptyAtomizeResponse) {
 		// Empty response is not unusual (e.g. very short text); log at debug and return.
@@ -140,6 +144,9 @@ func atomizeAndPersist(
 		if err != nil {
 			slog.Warn("atomize: persist atom failed", "err", err)
 			continue
+		}
+		if sErr := store.SetDigestStatus(ctx, a.ID, "done", ""); sErr != nil {
+			slog.Warn("atomize: set digest status done failed", "atom_id", a.ID, "err", sErr)
 		}
 		atomIDs = append(atomIDs, a.ID)
 	}

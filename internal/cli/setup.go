@@ -59,6 +59,14 @@ func RunSetup(args []string) error {
 	}
 	check("Config ready")
 
+	// Acquire an exclusive setup lock so that two concurrent `wbt setup`
+	// invocations do not race on port-kill + PID-file write.
+	release, err := acquireSetupLock()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	step("Ensuring SQLite directory…")
 	if err := ensureSQLite(cfg); err != nil {
 		return err
@@ -414,6 +422,28 @@ func printNextSteps(port int) {
 	fmt.Fprintln(os.Stdout, "  wbt status        - show server state")
 	fmt.Fprintln(os.Stdout, "  wbt stop          - stop the background server")
 	fmt.Fprintln(os.Stdout, "  wbt restart       - stop + setup")
+}
+
+// acquireSetupLock wraps lifecycle.AcquireSetupLock with the user-facing
+// "already running" message and the Windows ErrUnsupported pass-through.
+// It is extracted from RunSetup to keep that function's cyclomatic complexity
+// within the gocyclo limit.
+func acquireSetupLock() (func(), error) {
+	release, err := lifecycle.AcquireSetupLock(lifecycle.StateDir())
+	if err != nil {
+		if errors.Is(err, lifecycle.ErrLockHeld) {
+			fmt.Fprintln(os.Stderr, "another wbt setup is already running")
+			os.Exit(1)
+		}
+		// errors.ErrUnsupported on Windows: proceed without a lock and
+		// document the assumption that concurrent setup invocations on
+		// Windows are the user's responsibility.
+		if errors.Is(err, errors.ErrUnsupported) {
+			return func() {}, nil
+		}
+		return func() {}, fmt.Errorf("setup lock: %w", err)
+	}
+	return release, nil
 }
 
 // step prints a step prefix line. Kept very small so the surrounding

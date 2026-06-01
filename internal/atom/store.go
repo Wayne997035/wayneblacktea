@@ -395,6 +395,29 @@ func (s *Store) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
 	return tag.RowsAffected(), nil
 }
 
+// SetDigestStatus updates the digest_status and optional error_msg for a single atom.
+func (s *Store) SetDigestStatus(ctx context.Context, atomID uuid.UUID, status string, errMsg string) error {
+	const q = `UPDATE memory_atoms SET digest_status = $1, error_msg = $2 WHERE id = $3`
+	_, err := s.pool.Exec(ctx, q, status, errMsg, atomID)
+	if err != nil {
+		return fmt.Errorf("setting atom digest status: %w", err)
+	}
+	return nil
+}
+
+// CountByDigestStatus counts atoms with the given digest_status, optionally scoped to a workspace.
+func (s *Store) CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string) (int64, error) {
+	const q = `SELECT COUNT(*) FROM memory_atoms
+		WHERE ($1::uuid IS NULL OR workspace_id = $1)
+		  AND digest_status = $2`
+	var n int64
+	err := s.pool.QueryRow(ctx, q, toUUID(workspaceID), status).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting atoms by digest status: %w", err)
+	}
+	return n, nil
+}
+
 // escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied
 // query strings are treated as literals. Pair with ESCAPE '\' in the SQL clause.
 func escapeLikePostgres(s string) string {

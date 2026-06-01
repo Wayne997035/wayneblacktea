@@ -89,7 +89,7 @@ func parsePlaybookRow(r playbookRawRow) *playbook.Playbook {
 
 // parseUUIDSlice decodes a JSON array of UUID strings stored in a TEXT column.
 func parseUUIDSlice(s string) []uuid.UUID {
-	if s == "" || s == "[]" || s == "null" {
+	if s == "" || s == "[]" || s == jsonNullLiteral {
 		return []uuid.UUID{}
 	}
 	var raw []string

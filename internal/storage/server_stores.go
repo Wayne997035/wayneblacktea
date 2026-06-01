@@ -19,10 +19,13 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/reflection"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
@@ -64,7 +67,10 @@ type ServerStores interface {
 	Playbook() playbook.StoreIface
 	Procedural() procedural.StoreIface
 	Atom() atom.StoreIface
+	Outcome() outcome.StoreIface
+	Skill() skill.StoreIface
 	Discipline() discipline.Store
+	Reflection() reflection.StoreIface
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil
 	// when operating in legacy single-workspace mode. Used by MCP tools that

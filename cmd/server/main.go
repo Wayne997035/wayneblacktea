@@ -406,7 +406,8 @@ func run() error {
 		stores.Learning(), discordClient, notionClient, briefingStores, conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), reflector,
 		snapStore, snapGen, stores.WorkspaceID(), pruner, stores.Playbook(),
-		stores.PgxPool(), // nil under SQLite → daily-discipline-prune skipped gracefully
+		stores.PgxPool(),   // nil under SQLite → daily-discipline-prune skipped gracefully
+		stores.Knowledge(), // nil-safe: knowledge consolidation skipped when reflector absent
 	)
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
@@ -419,6 +420,20 @@ func run() error {
 	if mps := buildMergedPRsStore(stores); mps != nil {
 		if err := sched.WithMergedPRsPruner(mps); err != nil {
 			return fmt.Errorf("wiring merged_prs_observed pruner: %w", err)
+		}
+	}
+	// Wire outcome pruner — Postgres only (outcomes table requires pgx pool;
+	// SQLite local dev has no growth concern requiring scheduled TTL).
+	if stores.PgxPool() != nil {
+		if err := sched.WithOutcomePruner(stores.Outcome()); err != nil {
+			return fmt.Errorf("wiring outcome pruner: %w", err)
+		}
+	}
+	// Wire reflection pruner (both backends; reflections accumulate on weekly
+	// Saturday cron + per-cycle generate_reflection; 180-day TTL per §1.3).
+	if stores.Reflection() != nil {
+		if err := sched.WithReflectionPruner(stores.Reflection()); err != nil {
+			return fmt.Errorf("wiring reflection pruner: %w", err)
 		}
 	}
 	sched.Start()

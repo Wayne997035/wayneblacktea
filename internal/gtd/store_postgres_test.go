@@ -919,12 +919,18 @@ func assertNotContainsTask(t *testing.T, got []db.Task, taskID uuid.UUID, label 
 	}
 }
 
-// pgTimelineRange is a shared May 2026 date range used by all
-// TestStore_TasksForTimeline* subtests.
-var pgTimelineRange = [2]time.Time{
-	time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-	time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC),
-}
+// pgTimelineRange is a now-relative window [now-30d, now+1d] used by all
+// TestStore_TasksForTimeline* subtests. It must be relative (not a fixed
+// month) so tasks stamped with time.Now() by CreateTask/CompleteTask always
+// fall inside the range regardless of wall-clock date; the april2026 back-date
+// stays before the window start.
+var pgTimelineRange = func() [2]time.Time {
+	now := time.Now().UTC()
+	return [2]time.Time{
+		now.AddDate(0, 0, -30),
+		now.AddDate(0, 0, 1),
+	}
+}()
 
 // april2026 is a back-date outside the May range used by AC §2 and §4.
 var april2026 = time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)

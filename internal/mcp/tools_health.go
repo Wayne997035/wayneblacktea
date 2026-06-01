@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -44,18 +45,27 @@ func (s *Server) registerHealthTools(ms *server.MCPServer) {
 
 // healthSnapshot is the JSON shape returned by system_health.
 type healthSnapshot struct {
-	GeneratedAt           time.Time           `json:"generated_at"`
-	Workspace             string              `json:"workspace,omitempty"`
-	Tasks                 taskHealth          `json:"tasks"`
-	PendingProposals      proposalHealth      `json:"pending_proposals"`
-	DueReviews            reviewHealth        `json:"due_reviews"`
-	ToolCallSummary       map[string]int      `json:"tool_call_counts"`
-	RecentCalls           []watchdog.ToolCall `json:"recent_calls"`
-	ForgottenSignals      []string            `json:"forgotten_signals,omitempty"`
-	CompletionDrift       []DriftCandidate    `json:"completion_drift_candidates,omitempty"`
-	Discipline            disciplineHealth    `json:"discipline,omitempty"`
-	VaguePendingTaskCount int                 `json:"vague_pending_task_count"`
-	VagueSampleIDs        []string            `json:"vague_sample_ids,omitempty"`
+	GeneratedAt           time.Time             `json:"generated_at"`
+	Workspace             string                `json:"workspace,omitempty"`
+	Tasks                 taskHealth            `json:"tasks"`
+	PendingProposals      proposalHealth        `json:"pending_proposals"`
+	DueReviews            reviewHealth          `json:"due_reviews"`
+	ToolCallSummary       map[string]int        `json:"tool_call_counts"`
+	RecentCalls           []watchdog.ToolCall   `json:"recent_calls"`
+	ForgottenSignals      []string              `json:"forgotten_signals,omitempty"`
+	CompletionDrift       []DriftCandidate      `json:"completion_drift_candidates,omitempty"`
+	Discipline            disciplineHealth      `json:"discipline,omitempty"`
+	VaguePendingTaskCount int                   `json:"vague_pending_task_count"`
+	VagueSampleIDs        []string              `json:"vague_sample_ids,omitempty"`
+	KnowledgeDigest       knowledgeDigestHealth `json:"knowledge_digest"`
+}
+
+// knowledgeDigestHealth reports atom digestion pipeline status and pending knowledge proposals.
+type knowledgeDigestHealth struct {
+	PendingAtoms     int `json:"pending_atoms"`
+	DoneAtoms        int `json:"done_atoms"`
+	FailedAtoms      int `json:"failed_atoms"`
+	PendingProposals int `json:"pending_proposals"`
 }
 
 // maxVagueSampleIDs caps how many vague-task IDs are surfaced per snapshot.
@@ -169,6 +179,7 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	snap.Discipline = s.collectDisciplineHealth(ctx)
+	snap.KnowledgeDigest = s.collectKnowledgeDigestHealth(ctx)
 
 	signals := detectForgottenSignals(snap, s.watchdog)
 	if len(snap.CompletionDrift) > 0 {
@@ -264,6 +275,45 @@ func (s *Server) collectDisciplineHealth(ctx context.Context) disciplineHealth {
 		}
 	}
 	return health
+}
+
+// collectKnowledgeDigestHealth queries the atom store for digest status counts and
+// the proposal store for pending knowledge proposals. Errors are logged and swallowed
+// so a missing atom store does not break system_health.
+func (s *Server) collectKnowledgeDigestHealth(ctx context.Context) knowledgeDigestHealth {
+	var h knowledgeDigestHealth
+	if s.atom != nil {
+		wsID := s.workspaceUUID()
+		for _, status := range []string{"pending", "done", "failed"} {
+			n, err := s.atom.CountByDigestStatus(ctx, wsID, status)
+			if err != nil {
+				slog.Warn("collectKnowledgeDigestHealth: CountByDigestStatus failed",
+					"status", status, "error", err)
+				continue
+			}
+			switch status {
+			case "pending":
+				h.PendingAtoms = int(n)
+			case "done":
+				h.DoneAtoms = int(n)
+			case "failed":
+				h.FailedAtoms = int(n)
+			}
+		}
+	}
+	if s.proposal != nil {
+		proposals, err := s.proposal.ListPending(ctx)
+		if err != nil {
+			slog.Warn("collectKnowledgeDigestHealth: ListPending failed", "error", err)
+		} else {
+			for _, p := range proposals {
+				if p.Type == string(proposal.TypeKnowledge) {
+					h.PendingProposals++
+				}
+			}
+		}
+	}
+	return h
 }
 
 // hasDecisionInWindow returns true when at least one decision timestamp falls

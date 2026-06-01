@@ -1174,12 +1174,18 @@ func mustQueryTimeline(t *testing.T, s *sqlite.GTDStore, from, to time.Time) []d
 	return got
 }
 
-// sqliteTimelineRange is the May 2026 date range used by all
-// TestGTDStore_TasksForTimeline* subtests.
-var sqliteTimelineRange = [2]time.Time{
-	time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-	time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC),
-}
+// sqliteTimelineRange is a now-relative window [now-30d, now+1d] used by all
+// TestGTDStore_TasksForTimeline* subtests. It must be relative (not a fixed
+// month) so that tasks stamped with time.Now() by CreateTask/CompleteTask
+// always fall inside the range regardless of wall-clock date; the April-2026
+// back-dates in the AC2/AC4 subtests stay before the window start.
+var sqliteTimelineRange = func() [2]time.Time {
+	now := time.Now().UTC()
+	return [2]time.Time{
+		now.AddDate(0, 0, -30),
+		now.AddDate(0, 0, 1),
+	}
+}()
 
 // TestGTDStore_TasksForTimeline_AC1_CreatedAndCompletedInRange verifies
 // acceptance criterion §1: task created AND completed inside [from,to] →
