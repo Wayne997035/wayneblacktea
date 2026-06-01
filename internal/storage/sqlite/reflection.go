@@ -298,6 +298,23 @@ func (s *ReflectionStore) RecentWithPatterns(
 	return out, errWrap("ReflectionStore.RecentWithPatterns iter", rows.Err())
 }
 
+// PruneOlderThan hard-deletes reflection rows with created_at < cutoff.
+// Called daily by the scheduler to enforce the 180-day TTL per
+// backend-security-design.md §1.3.
+func (s *ReflectionStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	cutoffStr := cutoff.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	const q = `DELETE FROM reflections WHERE created_at < ?`
+	result, err := s.db.conn.ExecContext(ctx, q, cutoffStr)
+	if err != nil {
+		return 0, errWrap("ReflectionStore.PruneOlderThan", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, errWrap("ReflectionStore.PruneOlderThan rows affected", err)
+	}
+	return n, nil
+}
+
 func (s *ReflectionStore) getByID(ctx context.Context, id uuid.UUID) (*reflection.Reflection, error) {
 	const q = `SELECT ` + reflectionSelectCols + ` FROM reflections
 		WHERE id = ?1

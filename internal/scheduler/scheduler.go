@@ -128,6 +128,9 @@ type Scheduler struct {
 	// outcomePruner deletes outcomes + evaluations rows older than 90d.
 	// Set via WithOutcomePruner after New(); nil skips the prune job.
 	outcomePruner outcomePruneStore
+	// reflectionPruner deletes reflections rows older than 180d.
+	// Set via WithReflectionPruner after New(); nil skips the prune job.
+	reflectionPruner reflectionPruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -173,6 +176,19 @@ const outcomePruneRetention = 90 * 24 * time.Hour
 // outcomePruneTimeout caps the daily outcomes DELETE. 60 s budget leaves
 // room for a momentarily slow Aiven Postgres without wedging the scheduler.
 const outcomePruneTimeout = 60 * time.Second
+
+// reflectionPruneStore is the narrow prune interface used by the daily
+// reflections cleanup job. reflection.Store (PG) and sqlite.ReflectionStore
+// both satisfy it. 180-day retention per backend-security-design.md §1.3.
+type reflectionPruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// reflectionPruneRetention is the reflections TTL (180 days).
+const reflectionPruneRetention = 180 * 24 * time.Hour
+
+// reflectionPruneTimeout caps the daily reflections DELETE. 60 s budget.
+const reflectionPruneTimeout = 60 * time.Second
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -699,6 +715,46 @@ func (s *Scheduler) runDailyOutcomePrune() {
 	slog.Info("daily outcome prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(outcomePruneRetention.Hours()/24),
+	)
+}
+
+// WithReflectionPruner wires the reflections retention store and registers the
+// daily 03:45 prune job. Must be called before Start().
+// 180-day TTL per backend-security-design.md §1.3 (observability tables).
+// 03:45 avoids overlap with the 03:00/03:30 pending_proposals/outcome cluster.
+func (sc *Scheduler) WithReflectionPruner(p reflectionPruneStore) error {
+	sc.reflectionPruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 45, 0))),
+		gocron.NewTask(sc.runDailyReflectionPrune),
+		gocron.WithName("daily-reflection-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily reflection prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyReflectionPrune scheduled at 03:45 Asia/Taipei")
+	return nil
+}
+
+// runDailyReflectionPrune deletes reflections rows older than 180 days.
+// Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyReflectionPrune() {
+	if s.reflectionPruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reflectionPruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-reflectionPruneRetention)
+	n, err := s.reflectionPruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily reflection prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily reflection prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(reflectionPruneRetention.Hours()/24),
 	)
 }
 

@@ -165,6 +165,9 @@ func (s *Store) GetOutcomeByID(ctx context.Context, id uuid.UUID, workspaceID *u
 	defer rows.Close()
 
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Outcome{}, fmt.Errorf("getting outcome rows.Err: %w", err)
+		}
 		return Outcome{}, ErrNotFound
 	}
 	o, err := scanOutcomeRow(rows)

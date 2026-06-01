@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_outcomes_workspace_entity ON outcomes(workspace_id, entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_workspace_entity ON outcomes(workspace_id, entity_type, entity_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_outcomes_entity_id ON outcomes(entity_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_result ON outcomes(result);
 CREATE INDEX IF NOT EXISTS idx_outcomes_created_at ON outcomes(created_at DESC);

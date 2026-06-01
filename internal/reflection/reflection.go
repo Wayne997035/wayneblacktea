@@ -27,17 +27,17 @@ var AllowedTypes = map[string]bool{
 
 // Reflection is the domain model for a persisted AI reflection record.
 type Reflection struct {
-	ID                uuid.UUID
-	WorkspaceID       *uuid.UUID
-	Type              string
-	RelatedEntityType *string
-	RelatedEntityID   *uuid.UUID
-	Summary           string
-	Insights          json.RawMessage
-	PatternsDetected  json.RawMessage
-	SuggestedActions  json.RawMessage
-	Confidence        float64
-	CreatedAt         time.Time
+	ID                uuid.UUID       `json:"id"`
+	WorkspaceID       *uuid.UUID      `json:"workspace_id,omitempty"`
+	Type              string          `json:"type"`
+	RelatedEntityType *string         `json:"related_entity_type,omitempty"`
+	RelatedEntityID   *uuid.UUID      `json:"related_entity_id,omitempty"`
+	Summary           string          `json:"summary"`
+	Insights          json.RawMessage `json:"insights,omitempty"`
+	PatternsDetected  json.RawMessage `json:"patterns_detected,omitempty"`
+	SuggestedActions  json.RawMessage `json:"suggested_actions,omitempty"`
+	Confidence        float64         `json:"confidence"`
+	CreatedAt         time.Time       `json:"created_at"`
 }
 
 // CreateParams holds the fields required to record a new reflection.

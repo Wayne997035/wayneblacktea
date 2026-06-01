@@ -111,6 +111,18 @@ func validateSkillDescription(description string) string {
 	if len([]rune(description)) > 5000 {
 		return "description exceeds 5000 character limit"
 	}
+	if strings.ContainsAny(description, "\x00\r\n") {
+		return "description must not contain null bytes or newlines"
+	}
+	return ""
+}
+
+// validateSkillCSVField returns an error message if a CSV-derived field string
+// contains null bytes or newlines (validated before splitting).
+func validateSkillCSVField(field, name string) string {
+	if strings.ContainsAny(field, "\x00\r\n") {
+		return name + " must not contain null bytes or newlines"
+	}
 	return ""
 }
 
@@ -135,13 +147,30 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcpgo.CallToolReque
 		return mcpgo.NewToolResultError(msg), nil
 	}
 
+	rawTriggers := stringArg(args, "triggers")
+	if msg := validateSkillCSVField(rawTriggers, "triggers"); msg != "" {
+		return mcpgo.NewToolResultError(msg), nil
+	}
+	rawSteps := stringArg(args, "steps")
+	if msg := validateSkillCSVField(rawSteps, "steps"); msg != "" {
+		return mcpgo.NewToolResultError(msg), nil
+	}
+	rawFailureModes := stringArg(args, "failure_modes")
+	if msg := validateSkillCSVField(rawFailureModes, "failure_modes"); msg != "" {
+		return mcpgo.NewToolResultError(msg), nil
+	}
+	rawVerification := stringArg(args, "verification_checklist")
+	if msg := validateSkillCSVField(rawVerification, "verification_checklist"); msg != "" {
+		return mcpgo.NewToolResultError(msg), nil
+	}
+
 	p := skill.AddParams{
 		Name:                  name,
 		Description:           description,
-		Triggers:              splitCSV(stringArg(args, "triggers")),
-		Steps:                 splitCSV(stringArg(args, "steps")),
-		FailureModes:          splitCSV(stringArg(args, "failure_modes")),
-		VerificationChecklist: splitCSV(stringArg(args, "verification_checklist")),
+		Triggers:              splitCSV(rawTriggers),
+		Steps:                 splitCSV(rawSteps),
+		FailureModes:          splitCSV(rawFailureModes),
+		VerificationChecklist: splitCSV(rawVerification),
 		SourceAtomIDs:         splitCSV(stringArg(args, "source_atom_ids")),
 		Examples:              []any{},
 	}

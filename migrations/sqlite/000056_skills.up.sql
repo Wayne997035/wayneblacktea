@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at             TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at             TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-CREATE INDEX IF NOT EXISTS idx_skills_workspace  ON skills(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_skills_workspace  ON skills(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_skills_name       ON skills(name);
-CREATE INDEX IF NOT EXISTS idx_skills_success    ON skills(workspace_id, success_count DESC);
+CREATE INDEX IF NOT EXISTS idx_skills_success    ON skills(workspace_id, success_count DESC) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_skills_last_used  ON skills(last_used_at DESC);
+-- Curated skill library — intentionally no TTL; rows accumulate by design
+-- (explicit extract_skill only, not an event log). No pruner added per
+-- backend-security-design.md §1.3 review: curated tables are exempt.

@@ -103,7 +103,7 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 		), nil
 	}
 
-	notes := stringArg(args, "notes")
+	notes := sanitize.Notes(stringArg(args, "notes"))
 	if err := sanitize.ValidateNoTagNoise(notes); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("invalid notes: %v", err)), nil
 	}
@@ -142,7 +142,7 @@ func (s *Server) handleEvaluateOutcome(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError("invalid outcome_id UUID"), nil
 	}
 
-	analysis := stringArg(args, "analysis")
+	analysis := sanitize.Notes(stringArg(args, "analysis"))
 	if analysis == "" {
 		return mcp.NewToolResultError("analysis is required"), nil
 	}

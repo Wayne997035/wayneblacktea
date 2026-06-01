@@ -321,6 +321,56 @@ func TestStore_GetLatest(t *testing.T) {
 	})
 }
 
+// TestStore_PruneOlderThan verifies that PruneOlderThan removes old reflections
+// but leaves newer rows untouched.
+func TestStore_PruneOlderThan(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := reflection.New(pool, &wsID)
+	ctx := context.Background()
+
+	// Seed a recent reflection.
+	_, err := store.Create(ctx, reflection.CreateParams{
+		WorkspaceID: &wsID,
+		Type:        "daily",
+		Summary:     "recent reflection for prune test",
+		Confidence:  0.5,
+	})
+	if err != nil {
+		t.Fatalf("Create (recent): %v", err)
+	}
+
+	// Prune with a cutoff in the past (nothing should be deleted).
+	oldCutoff := time.Now().Add(-365 * 24 * time.Hour)
+	n, err := store.PruneOlderThan(ctx, oldCutoff)
+	if err != nil {
+		t.Fatalf("PruneOlderThan (old cutoff): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 pruned rows with old cutoff, got %d", n)
+	}
+
+	// Prune with a future cutoff (recent row should be pruned).
+	futureCutoff := time.Now().Add(1 * time.Minute)
+	n, err = store.PruneOlderThan(ctx, futureCutoff)
+	if err != nil {
+		t.Fatalf("PruneOlderThan (future cutoff): %v", err)
+	}
+	if n == 0 {
+		t.Error("expected at least 1 pruned row, got 0")
+	}
+
+	// Workspace should now have no daily reflections.
+	daily := "daily"
+	results, err := store.List(ctx, reflection.ListParams{WorkspaceID: &wsID, Type: &daily})
+	if err != nil {
+		t.Fatalf("List after prune: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results after prune, got %d", len(results))
+	}
+}
+
 // TestStore_RecentWithPatterns verifies empty result when no patterns exist.
 func TestStore_RecentWithPatterns(t *testing.T) {
 	pool := openTestPgPool(t)

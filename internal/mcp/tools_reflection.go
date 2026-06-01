@@ -103,8 +103,8 @@ func buildReflectionCreateParams(
 	}
 
 	summary := stringArg(args, "summary")
-	if strings.ContainsRune(summary, '\x00') {
-		return nil, mcp.NewToolResultError("summary must not contain null bytes")
+	if strings.ContainsAny(summary, "\x00\r\n") {
+		return nil, mcp.NewToolResultError("summary must not contain null bytes or newlines")
 	}
 	const maxSummary = 5000
 	if len([]rune(summary)) > maxSummary {
@@ -149,8 +149,8 @@ func buildReflectionCreateParams(
 // applyRelatedEntity validates and sets optional RelatedEntityType and RelatedEntityID.
 func applyRelatedEntity(params *reflection.CreateParams, args map[string]any) *mcp.CallToolResult {
 	relEntityType := stringArg(args, "related_entity_type")
-	if strings.ContainsRune(relEntityType, '\x00') {
-		return mcp.NewToolResultError("related_entity_type must not contain null bytes")
+	if strings.ContainsAny(relEntityType, "\x00\r\n") {
+		return mcp.NewToolResultError("related_entity_type must not contain null bytes or newlines")
 	}
 	if relEntityType != "" {
 		params.RelatedEntityType = &relEntityType

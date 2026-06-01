@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_skills_workspace  ON skills(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_skills_workspace  ON skills(workspace_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_skills_name       ON skills(name);
-CREATE INDEX IF NOT EXISTS idx_skills_success    ON skills(workspace_id, success_count DESC);
+CREATE INDEX IF NOT EXISTS idx_skills_success    ON skills(workspace_id, success_count DESC) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_skills_last_used  ON skills(last_used_at DESC NULLS LAST);
-COMMENT ON TABLE skills IS 'Reusable skill definitions extracted from successful Claude Code sessions';
+COMMENT ON TABLE skills IS 'Curated skill library — intentionally no TTL; rows accumulate by design (explicit extract_skill only).';
 COMMENT ON COLUMN skills.source_atom_ids IS 'Code-layer refs to memory_atoms.id; no FK per project red-line #9';

@@ -7,9 +7,9 @@ CREATE TABLE reflections (
     related_entity_type  TEXT,
     related_entity_id    UUID,
     summary              TEXT        NOT NULL DEFAULT '',
-    insights             JSONB,
-    patterns_detected    JSONB,
-    suggested_actions    JSONB,
+    insights             JSONB       DEFAULT 'null'::jsonb,
+    patterns_detected    JSONB       DEFAULT 'null'::jsonb,
+    suggested_actions    JSONB       DEFAULT 'null'::jsonb,
     confidence           FLOAT8      NOT NULL DEFAULT 0.0
                             CHECK (confidence BETWEEN 0.0 AND 1.0),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -20,4 +20,4 @@ CREATE INDEX idx_reflections_type_created_at  ON reflections(type, created_at DE
 CREATE INDEX idx_reflections_related_entity   ON reflections(related_entity_type, related_entity_id) WHERE related_entity_id IS NOT NULL;
 CREATE INDEX idx_reflections_created_at       ON reflections(created_at DESC);
 
-COMMENT ON TABLE reflections IS 'Persisted AI reflection records; no automatic TTL.';
+COMMENT ON TABLE reflections IS 'Persisted AI reflection records; 180-day retention via the scheduled daily-reflection-prune job (DELETE WHERE created_at < NOW() - INTERVAL ''180 days'') per backend-security-design.md §1.3.';

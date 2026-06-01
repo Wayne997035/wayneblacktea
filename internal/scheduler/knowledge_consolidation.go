@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
@@ -203,15 +204,14 @@ func clusterKnowledgeByTags(items []db.KnowledgeItem) []knowledgeCluster {
 }
 
 // canonicalClusterKey builds a deterministic string key for a cluster to
-// enable deduplication.
+// enable deduplication. IDs are sorted so the same set of items produces the
+// same key regardless of the seed item that initiated the cluster.
 func canonicalClusterKey(idxs []int, items []db.KnowledgeItem) string {
-	// Use item IDs as the canonical identity.
 	ids := make([]string, 0, len(idxs))
 	for _, i := range idxs {
 		ids = append(ids, items[i].ID.String())
 	}
-	// Simple deterministic join (sort not needed for dedup at this scale;
-	// seed-first ordering ensures canonical key per seed).
+	sort.Strings(ids)
 	b, _ := json.Marshal(ids)
 	return string(b)
 }
@@ -247,7 +247,8 @@ func buildKnowledgeClusterPrompt(cl knowledgeCluster) string {
 	return fmt.Sprintf(
 		"These %d knowledge items all share the tags %v. "+
 			"Merge into 1 consolidated knowledge entry capturing the key takeaway. "+
-			"Output a JSON array with exactly 1 object: {\"title\": ..., \"content\": ..., \"tags\": [...]}.\n\n%s",
+			"Output a JSON array with exactly 1 object: {\"title\": ..., \"content\": ..., \"tags\": [...]}.\n\n"+
+			"[BEGIN ACTIVITIES]\n%s[END ACTIVITIES]",
 		len(cl.items), cl.sharedTags,
 		buildKnowledgeSummary(cl.items),
 	)

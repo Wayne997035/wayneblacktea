@@ -262,6 +262,18 @@ func (s *Store) ByRelatedEntity(
 	return out, nil
 }
 
+// PruneOlderThan hard-deletes reflection rows with created_at < cutoff.
+// Called daily by the scheduler to enforce the 180-day TTL per
+// backend-security-design.md §1.3.
+func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM reflections WHERE created_at < $1`
+	tag, err := s.pool.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning reflections: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // RecentWithPatterns returns reflections that have a non-NULL patterns_detected
 // column and were created on or after since, ordered by created_at DESC.
 func (s *Store) RecentWithPatterns(ctx context.Context, workspaceID *uuid.UUID, since time.Time, limit int) ([]*Reflection, error) {

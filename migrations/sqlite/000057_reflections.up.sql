@@ -18,3 +18,6 @@ CREATE INDEX IF NOT EXISTS idx_reflections_workspace_id    ON reflections(worksp
 CREATE INDEX IF NOT EXISTS idx_reflections_type_created_at ON reflections(type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reflections_related_entity  ON reflections(related_entity_type, related_entity_id) WHERE related_entity_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_reflections_created_at      ON reflections(created_at DESC);
+-- 180-day retention enforced by the scheduler's daily-reflection-prune job per
+-- backend-security-design.md §1.3. SQLite: ReflectionStore.PruneOlderThan deletes
+-- rows where created_at < cutoff (RFC3339 TEXT comparison).

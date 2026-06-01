@@ -429,6 +429,13 @@ func run() error {
 			return fmt.Errorf("wiring outcome pruner: %w", err)
 		}
 	}
+	// Wire reflection pruner (both backends; reflections accumulate on weekly
+	// Saturday cron + per-cycle generate_reflection; 180-day TTL per §1.3).
+	if stores.Reflection() != nil {
+		if err := sched.WithReflectionPruner(stores.Reflection()); err != nil {
+			return fmt.Errorf("wiring reflection pruner: %w", err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 
