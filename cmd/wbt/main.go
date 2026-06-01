@@ -14,6 +14,8 @@
 //	wbt doctor     — Claude Code Stop hook + personal-OS health snapshot
 //	wbt guard      — manage guard bypass rules
 //	wbt reconcile  — drain merged-PR backlog into GTD tasks (Phase 2 fuzzy)
+//	wbt install-git-hook — install a global git post-merge hook that auto-closes GTD tasks on PR merge
+//	wbt post-merge-local — (hook-invoked) close the GTD task for the just-merged PR
 //	wbt version    — print version info (also accepts --version)
 package main
 
@@ -54,6 +56,8 @@ Commands:
   wbt doctor     Claude Code Stop hook + personal-OS health snapshot
   wbt guard      Manage guard bypass rules (see: wbt guard --help)
   wbt reconcile  Drain merged-PR backlog into GTD tasks (see: wbt reconcile --help)
+  wbt install-git-hook  Install a global git post-merge hook that auto-closes
+                 GTD tasks on PR merge (see: wbt install-git-hook --help)
   wbt version    Print version info (also accepts --version)
 `
 
@@ -95,8 +99,10 @@ var subcommands = map[string]func([]string) error{
 	"hook":    func(rest []string) error { return runHookSubcmd(rest, cli.RunHook) },
 	"doctor":  func(rest []string) error { return runHookSubcmd(rest, cli.RunDoctor) },
 	// Utility commands.
-	"guard":     cli.RunGuard,
-	"reconcile": cli.RunReconcile,
+	"guard":            cli.RunGuard,
+	"reconcile":        cli.RunReconcile,
+	"post-merge-local": cli.RunPostMergeLocal,
+	"install-git-hook": cli.RunInstallGitHook,
 }
 
 // dispatch routes the subcommand to its handler.
