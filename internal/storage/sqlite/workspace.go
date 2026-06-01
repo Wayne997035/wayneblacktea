@@ -142,6 +142,42 @@ func (s *WorkspaceStore) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, 
 	return &r, nil
 }
 
+// GetModelPreference returns the stored model_preference, or
+// workspace.DefaultModelPreference when no row exists.
+func (s *WorkspaceStore) GetModelPreference(ctx context.Context) (string, error) {
+	const q = `SELECT model_preference FROM workspace_preferences WHERE workspace_id = ?1`
+	var model string
+	err := s.db.conn.QueryRowContext(ctx, q, s.db.workspaceArg()).Scan(&model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workspace.DefaultModelPreference, nil
+	}
+	if err != nil {
+		return "", errWrap("GetModelPreference", err)
+	}
+	return model, nil
+}
+
+// UpsertModelPreference stores the workspace's model_preference. Returns
+// workspace.ErrInvalidModel when model is not allowed.
+func (s *WorkspaceStore) UpsertModelPreference(ctx context.Context, model string) error {
+	if !workspace.IsAllowedModel(model) {
+		return workspace.ErrInvalidModel
+	}
+	if s.db.workspaceID == "" {
+		return fmt.Errorf("UpsertModelPreference requires a workspace_id")
+	}
+	now := sqliteNowMillis()
+	const q = `INSERT INTO workspace_preferences (workspace_id, model_preference, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?3)
+		ON CONFLICT(workspace_id) DO UPDATE SET
+			model_preference = excluded.model_preference,
+			updated_at = excluded.updated_at`
+	if _, err := s.db.conn.ExecContext(ctx, q, s.db.workspaceID, model, now); err != nil {
+		return errWrap("UpsertModelPreference", err)
+	}
+	return nil
+}
+
 // UpsertRepo creates or updates a repo entry.
 func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoParams) (*db.Repo, error) {
 	id := uuid.New()

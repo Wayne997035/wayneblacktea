@@ -90,6 +90,44 @@ func (s *Store) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error) {
 	return &r, nil
 }
 
+// GetModelPreference returns the workspace's stored model_preference, or
+// DefaultModelPreference when no row exists (or in legacy unscoped mode).
+func (s *Store) GetModelPreference(ctx context.Context) (string, error) {
+	if !s.workspaceID.Valid {
+		return DefaultModelPreference, nil
+	}
+	const q = `SELECT model_preference FROM workspace_preferences WHERE workspace_id = $1`
+	var model string
+	err := s.dbtx.QueryRow(ctx, q, s.workspaceID).Scan(&model)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DefaultModelPreference, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("querying model preference: %w", err)
+	}
+	return model, nil
+}
+
+// UpsertModelPreference stores the workspace's model_preference. Returns
+// ErrInvalidModel when model is not allowed.
+func (s *Store) UpsertModelPreference(ctx context.Context, model string) error {
+	if !IsAllowedModel(model) {
+		return ErrInvalidModel
+	}
+	if !s.workspaceID.Valid {
+		return fmt.Errorf("UpsertModelPreference requires a non-nil workspaceID")
+	}
+	const q = `INSERT INTO workspace_preferences (workspace_id, model_preference)
+		VALUES ($1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			model_preference = EXCLUDED.model_preference,
+			updated_at = NOW()`
+	if _, err := s.dbtx.Exec(ctx, q, s.workspaceID, model); err != nil {
+		return fmt.Errorf("upserting model preference: %w", err)
+	}
+	return nil
+}
+
 // UpsertRepo creates or updates a repo entry.
 // workspaceID must be non-nil: after migration 000028 the unique constraint is
 // (workspace_id, name), so ON CONFLICT does not fire for NULL workspace_id.
