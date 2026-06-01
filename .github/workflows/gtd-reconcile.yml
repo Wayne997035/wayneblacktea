@@ -1,0 +1,85 @@
+# Auto-close the GTD task(s) tied to a PR the moment that PR merges.
+#
+# Why this exists: closing tasks used to rely on a human / agent remembering to
+# call complete_task after a merge. That discipline failed (2026-05-18: 5 tasks
+# sat pending for days after PR #118 merged, and auto-dev-loop re-dispatched
+# already-done work). The merge event itself is the only reliable trigger, so we
+# fire server-side reconcile from CI instead of relying on anyone's memory.
+#
+# Flow: PR merged -> this workflow -> POST /api/tasks/reconcile-merged-prs on the
+# deployed wayneblacktea server -> server fuzzy-matches the PR against pending
+# tasks (branch / pr_url / title) and auto-completes the matches.
+#
+# Required repository configuration (Settings -> Secrets and variables -> Actions):
+#   - secret  WBT_API_KEY : the same API_KEY the deployed server validates (>=32 chars)
+#   - variable WBT_API_URL: base URL of the deployed server, e.g. https://wayneblacktea.up.railway.app
+# When either is missing the job logs a warning and exits 0 (never blocks a merge).
+name: GTD reconcile on PR merge
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gtd-reconcile-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile merged PR against pending GTD tasks
+        env:
+          WBT_API_URL: ${{ vars.WBT_API_URL }}
+          WBT_API_KEY: ${{ secrets.WBT_API_KEY }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${WBT_API_URL:-}" ] || [ -z "${WBT_API_KEY:-}" ]; then
+            echo "::warning::WBT_API_URL (variable) or WBT_API_KEY (secret) not configured; skipping GTD reconcile."
+            exit 0
+          fi
+
+          # Build the request body straight from the event payload file with jq.
+          # Reading $GITHUB_EVENT_PATH (never shell-interpolating PR title/body)
+          # keeps attacker-influenced text out of the shell. The server enforces
+          # DisallowUnknownFields, so emit exactly the six accepted fields.
+          payload=$(jq -n \
+            --slurpfile ev "$GITHUB_EVENT_PATH" \
+            --arg repo "$REPO_NAME" \
+            '{merged_prs: [{
+              url:       ($ev[0].pull_request.html_url   // ""),
+              head_ref:  ($ev[0].pull_request.head.ref    // ""),
+              merged_at: ($ev[0].pull_request.merged_at    // ""),
+              title:     ($ev[0].pull_request.title        // ""),
+              body:      ($ev[0].pull_request.body         // ""),
+              repo:      $repo
+            }]}')
+
+          # Log only non-sensitive routing fields (no title/body).
+          echo "Reconciling PR #${PR_NUMBER} (${REPO_NAME}):"
+          echo "$payload" | jq '{merged_prs: [.merged_prs[] | {url, head_ref, merged_at, repo}]}'
+
+          http_code=$(curl -sS --max-time 30 \
+            -o /tmp/reconcile-resp.json -w '%{http_code}' \
+            -X POST "${WBT_API_URL%/}/api/tasks/reconcile-merged-prs" \
+            -H "X-API-Key: ${WBT_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "$payload")
+
+          echo "Server responded HTTP ${http_code}"
+          jq . /tmp/reconcile-resp.json 2>/dev/null || cat /tmp/reconcile-resp.json
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::reconcile endpoint returned HTTP ${http_code}"
+            exit 1
+          fi
+
+          applied=$(jq -r '.applied // 0' /tmp/reconcile-resp.json)
+          echo "::notice::GTD reconcile complete — ${applied} task(s) auto-closed for PR #${PR_NUMBER}."
