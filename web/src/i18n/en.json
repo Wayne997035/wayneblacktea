@@ -104,6 +104,13 @@
     "noRepos": "No repositories",
     "issues": "{{count}} issues",
     "knownIssues": "Known Issues",
+    "settings": {
+      "title": "AI Settings",
+      "modelLabel": "Session summary model",
+      "modelHint": "Model used to auto-summarize Claude Code sessions for this workspace.",
+      "saved": "Saved",
+      "saveFailed": "Failed to save"
+    },
     "repoDetail": {
       "back": "Back to workspace",
       "branch": "Branch",
