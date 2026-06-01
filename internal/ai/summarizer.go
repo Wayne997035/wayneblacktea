@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
@@ -121,10 +122,15 @@ func NewWithPreference(apiKey string, pref ModelPreferenceReader) *Summarizer {
 func (s *Summarizer) modelForCall(ctx context.Context) string {
 	if s.pref != nil {
 		m, err := s.pref.GetModelPreference(ctx)
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Warn("summarizer: workspace model preference lookup failed; using fallback", "error", err)
-		} else if m != "" {
+		case m != "" && workspace.IsAllowedModel(m):
 			return m
+		case m != "":
+			// Defence-in-depth: the write path validates against the allowlist,
+			// but a tampered DB row must never reach anthropic.Model() unchecked.
+			slog.Warn("summarizer: workspace model preference not in allowlist; using fallback", "model", m)
 		}
 	}
 	return s.model

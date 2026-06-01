@@ -46,6 +46,15 @@ jobs:
             exit 0
           fi
 
+          # SSRF guard: WBT_API_URL is a repository variable (writable by repo
+          # collaborators), so refuse anything that is not a plain https:// URL
+          # before sending the API key. Combined with curl --no-location below
+          # this prevents key exfiltration via a redirected or downgraded URL.
+          case "$WBT_API_URL" in
+            https://*) : ;;
+            *) echo "::warning::WBT_API_URL must be an https:// URL; skipping reconcile."; exit 0 ;;
+          esac
+
           # Build the request body straight from the event payload file with jq.
           # Reading $GITHUB_EVENT_PATH (never shell-interpolating PR title/body)
           # keeps attacker-influenced text out of the shell. The server enforces
@@ -66,7 +75,8 @@ jobs:
           echo "Reconciling PR #${PR_NUMBER} (${REPO_NAME}):"
           echo "$payload" | jq '{merged_prs: [.merged_prs[] | {url, head_ref, merged_at, repo}]}'
 
-          http_code=$(curl -sS --max-time 30 \
+          # --no-location: never follow a redirect while carrying the API key.
+          http_code=$(curl -sS --max-time 30 --no-location \
             -o /tmp/reconcile-resp.json -w '%{http_code}' \
             -X POST "${WBT_API_URL%/}/api/tasks/reconcile-merged-prs" \
             -H "X-API-Key: ${WBT_API_KEY}" \
@@ -76,9 +86,12 @@ jobs:
           echo "Server responded HTTP ${http_code}"
           jq . /tmp/reconcile-resp.json 2>/dev/null || cat /tmp/reconcile-resp.json
 
+          # Fail-open: this runs AFTER the merge has already happened, so a red
+          # job cannot block anything — it would only create confusing noise.
+          # A server-side failure is surfaced as a warning, not a job failure.
           if [ "$http_code" != "200" ]; then
-            echo "::error::reconcile endpoint returned HTTP ${http_code}"
-            exit 1
+            echo "::warning::reconcile endpoint returned HTTP ${http_code}; task not auto-closed."
+            exit 0
           fi
 
           applied=$(jq -r '.applied // 0' /tmp/reconcile-resp.json)

@@ -4,15 +4,23 @@ import { useTranslation } from 'react-i18next'
 import { RefreshCw } from 'lucide-react'
 import { useRepos, useRefreshRepos } from '../hooks/useRepos'
 import { useWorkspaceSettings, useUpdateWorkspaceSettings } from '../hooks/useWorkspaceSettings'
-import { ALLOWED_MODELS } from '../types/api'
+import { ALLOWED_MODELS, type AllowedModel } from '../types/api'
 import { RepoCard } from '../components/workspace/RepoCard'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
 
-const MODEL_LABELS: Record<string, string> = {
+// Record<AllowedModel, ...> makes this exhaustive: adding a model to
+// ALLOWED_MODELS without a label here is a compile error.
+const MODEL_LABELS: Record<AllowedModel, string> = {
   'claude-haiku-4-5': 'Haiku 4.5',
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'claude-opus-4-8': 'Opus 4.8',
+}
+
+const DEFAULT_MODEL: AllowedModel = 'claude-sonnet-4-6'
+
+function isAllowedModel(v: string): v is AllowedModel {
+  return (ALLOWED_MODELS as readonly string[]).includes(v)
 }
 
 export function WorkspacePage() {
@@ -24,12 +32,19 @@ export function WorkspacePage() {
   const [saveState, setSaveState] = useState<'ok' | 'err' | null>(null)
 
   const onModelChange = (e: ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value
+    if (!isAllowedModel(value)) return // options come from ALLOWED_MODELS; guard anyway
     setSaveState(null)
     updateSettings.mutate(
-      { model_preference: e.target.value },
+      { model_preference: value },
       { onSuccess: () => setSaveState('ok'), onError: () => setSaveState('err') },
     )
   }
+
+  // Fall back to the default when the server returns a model the frontend
+  // doesn't know yet (FE lagging a backend allowlist addition).
+  const selectedModel =
+    settings && isAllowedModel(settings.model_preference) ? settings.model_preference : DEFAULT_MODEL
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto">
@@ -73,7 +88,7 @@ export function WorkspacePage() {
           </label>
           <select
             id="model-pref"
-            value={settings?.model_preference ?? ALLOWED_MODELS[1]}
+            value={selectedModel}
             onChange={onModelChange}
             disabled={updateSettings.isPending}
             className="px-3 py-2 rounded-md text-body-sm"

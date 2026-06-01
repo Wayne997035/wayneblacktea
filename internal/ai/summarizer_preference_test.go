@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const fallbackModel = "fallback-model"
+
 type fakePref struct {
 	model string
 	err   error
@@ -23,16 +25,25 @@ func TestModelForCall_DBWins(t *testing.T) {
 }
 
 func TestModelForCall_DBErrorFallsToConstructorModel(t *testing.T) {
-	s := &Summarizer{model: "fallback-model", pref: fakePref{err: errors.New("db down")}}
-	if got := s.modelForCall(context.Background()); got != "fallback-model" {
+	s := &Summarizer{model: fallbackModel, pref: fakePref{err: errors.New("db down")}}
+	if got := s.modelForCall(context.Background()); got != fallbackModel {
 		t.Errorf("got %q, want fallback-model (DB error must fall through)", got)
 	}
 }
 
 func TestModelForCall_DBEmptyFallsToConstructorModel(t *testing.T) {
-	s := &Summarizer{model: "fallback-model", pref: fakePref{model: ""}}
-	if got := s.modelForCall(context.Background()); got != "fallback-model" {
+	s := &Summarizer{model: fallbackModel, pref: fakePref{model: ""}}
+	if got := s.modelForCall(context.Background()); got != fallbackModel {
 		t.Errorf("got %q, want fallback-model (empty DB value → fallback)", got)
+	}
+}
+
+func TestModelForCall_DBNotAllowlisted_FallsBack(t *testing.T) {
+	// Defence-in-depth (M-2): a tampered DB value not in the allowlist must
+	// never reach the API call — fall back to the constructor model.
+	s := &Summarizer{model: fallbackModel, pref: fakePref{model: "gpt-4-tampered"}}
+	if got := s.modelForCall(context.Background()); got != fallbackModel {
+		t.Errorf("got %q, want fallback-model (non-allowlisted DB value must fall back)", got)
 	}
 }
 

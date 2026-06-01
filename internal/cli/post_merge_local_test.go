@@ -146,6 +146,27 @@ func TestRunPostMergeLocal_NoPRNumber_SkipsPOST(t *testing.T) {
 	}
 }
 
+func TestRunPostMergeLocal_NonGitHubRemote_SkipsPOST(t *testing.T) {
+	dir := newTestRepo(t, "feat: thing (#42)", "https://gitlab.com/owner/repo.git")
+	t.Chdir(dir)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("API_KEY", "test-key-1234567890")
+
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+
+	if err := RunPostMergeLocal([]string{"--server", srv.URL}); err != nil {
+		t.Fatalf("expected nil (fail-open), got %v", err)
+	}
+	if called {
+		t.Errorf("non-GitHub remote must not POST (no API_KEY exfil to a derived host)")
+	}
+}
+
 func TestRunPostMergeLocal_DryRun_NoPOST(t *testing.T) {
 	dir := newTestRepo(t, "feat: x (#5)", "https://github.com/owner/repo.git")
 	t.Chdir(dir)

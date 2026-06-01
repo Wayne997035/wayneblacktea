@@ -72,6 +72,8 @@ func RunInstallGitHook(args []string) error {
 	}
 	if existing != "" && existing != hooksDir && force {
 		fmt.Fprintf(os.Stdout, "wbt: previous core.hooksPath was %q\n", existing)
+		fmt.Fprintf(os.Stderr,
+			"WARNING: git hooks in %q will no longer run automatically after this change.\n", existing)
 	}
 
 	if err := os.MkdirAll(hooksDir, 0o700); err != nil {

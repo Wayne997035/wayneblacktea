@@ -445,7 +445,7 @@ export interface RepoOverview {
 
 /** Per-workspace AI model preference (GET/PATCH /api/workspace/settings). */
 export interface WorkspaceSettings {
-  model_preference: string
+  model_preference: AllowedModel
 }
 
 /**

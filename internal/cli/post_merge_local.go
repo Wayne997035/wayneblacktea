@@ -64,17 +64,19 @@ func RunPostMergeLocal(args []string) error {
 		_, _ = fmt.Fprint(os.Stdout, postMergeLocalUsage)
 		return nil
 	}
+
+	// A post-merge hook MUST NOT print to stderr (git surfaces it mid-merge),
+	// so redirect slog to a tmp file BEFORE any parsing. (backend-security-design.md §5.1)
+	InitHookSlog("wbt-post-merge")
+
 	fs := flag.NewFlagSet("post-merge-local", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(io.Discard) // flag errors go nowhere — fully fail-open, never to stderr
 	serverFlag := fs.String("server", "", "wayneblacktea-server base URL")
 	dryRun := fs.Bool("dry-run", false, "print payload without POSTing")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("post-merge-local: %w", err)
+		slog.Warn("post-merge-local: flag parse failed; skipping", "error", err)
+		return nil
 	}
-
-	// A post-merge hook MUST NOT print to stderr (git surfaces it mid-merge),
-	// so redirect slog to a tmp file. (backend-security-design.md §5.1)
-	InitHookSlog("wbt-post-merge")
 
 	// Resolve config best-effort: global config first
 	// (~/.config/wayneblacktea/config.yaml), then any .env in CWD.
