@@ -50,7 +50,7 @@ func (s *Server) registerReflectionTools(ms *server.MCPServer) {
 	), s.handleListReflections)
 
 	ms.AddTool(mcp.NewTool("get_latest_reflection",
-		mcp.WithDescription("Returns the most recently created reflection of a given type."),
+		mcp.WithDescription("Returns the most recently created reflection of a given type, or null when none exists yet."),
 		mcp.WithString("type",
 			mcp.Required(),
 			mcp.Description("Reflection type. One of: daily, weekly, task, decision, proposal, knowledge, system.")),
@@ -215,8 +215,11 @@ func (s *Server) handleGetLatestReflection(ctx context.Context, req mcp.CallTool
 
 	r, err := s.reflection.GetLatest(ctx, s.workspaceUUID(), reflType)
 	if err != nil {
+		// No reflection yet is a valid empty state, not an operation failure:
+		// return null content (isError=false) so callers distinguish "no data"
+		// from a genuine error. Mirrors analyze_recent_patterns returning [].
 		if errors.Is(err, reflection.ErrNotFound) {
-			return mcp.NewToolResultError("no reflection found"), nil
+			return jsonText(nil)
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("getting latest reflection: %v", err)), nil
 	}

@@ -359,8 +359,11 @@ func TestHandleGetLatestReflection_NotFound(t *testing.T) {
 		"type": "daily",
 	})
 
-	if !r.IsError {
-		t.Fatalf("expected IsError=true when reflection not found")
+	if r.IsError {
+		t.Fatalf("expected IsError=false when no reflection exists (empty state, not failure), got error: %s", resultText(r))
+	}
+	if got := strings.TrimSpace(resultText(r)); got != nullStr {
+		t.Errorf("expected null content for no-data state, got %q", got)
 	}
 }
 
