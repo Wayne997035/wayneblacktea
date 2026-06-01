@@ -79,6 +79,10 @@ func (s *Server) handleGenerateReflection(ctx context.Context, req mcp.CallToolR
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating reflection: %v", err)), nil
 	}
+	// M9: atomize the reflection summary in the background when non-empty.
+	if r.Summary != "" {
+		s.launchAtomize("reflections", r.ID, r.Summary)
+	}
 	return jsonText(r)
 }
 

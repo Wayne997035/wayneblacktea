@@ -73,6 +73,11 @@ var MutatingTools = map[string]bool{
 	"sync_repo":             true,
 	"upsert_project_arch":   true,
 	"update_project_status": true,
+
+	// Watchdog meta-cognition (Memory-8) — these tools mutate
+	// discipline_events_m8 and are themselves observability writes.
+	"analyze_agent_behavior": true,
+	"mark_loop_resolved":     true,
 }
 
 // IsMutating returns true when toolName is in the canonical MutatingTools set.

@@ -17,6 +17,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
+	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/go-co-op/gocron/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -111,6 +112,7 @@ type Scheduler struct {
 	reflectionDeps        *reflectionDeps
 	consolidDeps          *consolidationDeps
 	knowledgeConsolidDeps *knowledgeConsolidationDeps
+	atomConsolidDeps      *atomConsolidDeps
 	statusDeps            *statusSnapshotDeps
 	pruner                *decay.Pruner
 	playbookDeps          *playbookDeps
@@ -131,6 +133,15 @@ type Scheduler struct {
 	// reflectionPruner deletes reflections rows older than 180d.
 	// Set via WithReflectionPruner after New(); nil skips the prune job.
 	reflectionPruner reflectionPruneStore
+	// behaviorRulePruner deletes behavior_rules rows (status rejected/deprecated) older than 365d.
+	// Set via WithBehaviorRulePruner after New(); nil skips the prune job.
+	behaviorRulePruner behaviorRulePruneStore
+	// cognitiveDeps bundles the 7 Memory-7 cognitive job dependencies.
+	// Set via WithCognitiveDeps after New(); nil skips all 7 cognitive jobs.
+	cognitiveDeps *cognitiveDeps
+	// disciplineEventM8Pruner deletes discipline_events_m8 rows older than
+	// 90d. Set via WithDisciplineEventPruner after New(); nil skips the job.
+	disciplineEventM8Pruner watchdog.DisciplineEventStoreIface
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -189,6 +200,22 @@ const reflectionPruneRetention = 180 * 24 * time.Hour
 
 // reflectionPruneTimeout caps the daily reflections DELETE. 60 s budget.
 const reflectionPruneTimeout = 60 * time.Second
+
+// behaviorRulePruneStore is the narrow prune interface used by the daily
+// behavior_rules cleanup job. behaviorrule.Store (PG) and
+// sqlite.BehaviorRuleStore both satisfy it. 365-day retention for
+// rejected/deprecated rows per backend-security-design.md §1.3.
+// Active and proposed rows are NEVER auto-pruned.
+type behaviorRulePruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// behaviorRulePruneRetention is the behavior_rules TTL (365 days) for
+// rejected/deprecated rows.
+const behaviorRulePruneRetention = 365 * 24 * time.Hour
+
+// behaviorRulePruneTimeout caps the daily behavior_rules DELETE. 60 s budget.
+const behaviorRulePruneTimeout = 60 * time.Second
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -758,6 +785,50 @@ func (s *Scheduler) runDailyReflectionPrune() {
 	)
 }
 
+// WithBehaviorRulePruner wires the behavior_rules retention store and
+// registers the daily 04:00 prune job. Must be called before Start().
+// 365-day TTL for rejected/deprecated rows per backend-security-design.md §1.3.
+// Active and proposed rows are NEVER auto-pruned.
+// 04:00 is distinct from the 03:00/03:30/03:45 cluster to avoid gocron
+// singleton-mode reschedule interference under slow DB conditions.
+func (sc *Scheduler) WithBehaviorRulePruner(p behaviorRulePruneStore) error {
+	sc.behaviorRulePruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 0, 0))),
+		gocron.NewTask(sc.runDailyBehaviorRulePrune),
+		gocron.WithName("daily-behavior-rule-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily behavior_rule prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyBehaviorRulePrune scheduled at 04:00 Asia/Taipei")
+	return nil
+}
+
+// runDailyBehaviorRulePrune deletes behavior_rules rows with
+// status IN ('rejected','deprecated') older than 365 days.
+// Active and proposed rows are NEVER deleted regardless of age.
+// Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyBehaviorRulePrune() {
+	if s.behaviorRulePruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), behaviorRulePruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-behaviorRulePruneRetention)
+	n, err := s.behaviorRulePruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily behavior_rule prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily behavior_rule prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(behaviorRulePruneRetention.Hours()/24),
+	)
+}
+
 func (s *Scheduler) sendDailyReviewReminder() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1066,5 +1137,54 @@ func (s *Scheduler) weeklyAIConceptReview() {
 		"eligible_concepts", len(concepts),
 		"ai_results", len(results),
 		"updated", updated,
+	)
+}
+
+// disciplineEventM8PruneTimeout caps the daily discipline_events_m8 DELETE.
+const disciplineEventM8PruneTimeout = 60 * time.Second
+
+// disciplineEventM8PruneRetention is the TTL for discipline_events_m8 rows
+// (90 days per backend-security-design.md §1.3).
+const disciplineEventM8PruneRetention = 90 * 24 * time.Hour
+
+// WithDisciplineEventPruner wires the discipline_events_m8 store and registers
+// a daily 03:30 prune job. Must be called before Start().
+// 90-day TTL per backend-security-design.md §1.3 (observability tables).
+// 03:30 avoids overlap with the 03:00 pending_proposals cluster. Note: if
+// WithOutcomePruner is also registered at 03:30 on the same scheduler, use
+// a separate scheduler instance or offset to 03:50 to avoid slot collision.
+func (sc *Scheduler) WithDisciplineEventPruner(store watchdog.DisciplineEventStoreIface) error {
+	sc.disciplineEventM8Pruner = store
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 50, 0))),
+		gocron.NewTask(sc.runDailyDisciplineEventM8Prune),
+		gocron.WithName("daily-discipline-event-m8-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily discipline-event-m8 prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyDisciplineEventM8Prune scheduled at 03:50 Asia/Taipei")
+	return nil
+}
+
+// runDailyDisciplineEventM8Prune deletes discipline_events_m8 rows older than
+// 90 days. Errors are logged at warn level — the scheduler keeps running.
+func (sc *Scheduler) runDailyDisciplineEventM8Prune() {
+	if sc.disciplineEventM8Pruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), disciplineEventM8PruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-disciplineEventM8PruneRetention)
+	n, err := sc.disciplineEventM8Pruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily discipline-event-m8 prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info("daily discipline-event-m8 prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(disciplineEventM8PruneRetention.Hours()/24),
 	)
 }

@@ -158,6 +158,8 @@ func (s *ReflectionStore) Create(ctx context.Context, p reflection.CreateParams)
 }
 
 // List returns reflections matching the filter, ordered by created_at DESC.
+//
+//nolint:dupl // Structural pattern mirrors BehaviorRuleStore.List; domain types differ, extraction would reduce type safety.
 func (s *ReflectionStore) List(ctx context.Context, p reflection.ListParams) ([]*reflection.Reflection, error) {
 	limit := p.Limit
 	if limit <= 0 {

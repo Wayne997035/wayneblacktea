@@ -624,3 +624,59 @@ CREATE INDEX IF NOT EXISTS idx_reflections_workspace_id    ON reflections(worksp
 CREATE INDEX IF NOT EXISTS idx_reflections_type_created_at ON reflections(type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reflections_related_entity  ON reflections(related_entity_type, related_entity_id) WHERE related_entity_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_reflections_created_at      ON reflections(created_at DESC);
+
+-- Mirrored from migrations/sqlite/000058_behavior_rules.up.sql
+-- Behavior rules derived from reflections/outcomes or manually authored.
+-- 365-day retention for rejected/deprecated rows per backend-security-design.md §1.3.
+-- Active and proposed rows are never auto-pruned. No FK constraints (CLAUDE.md #9).
+CREATE TABLE IF NOT EXISTS behavior_rules (
+    id            TEXT PRIMARY KEY,
+    workspace_id  TEXT,
+    condition     TEXT NOT NULL,
+    action        TEXT NOT NULL,
+    source_type   TEXT NOT NULL
+                    CHECK (source_type IN ('reflection','outcome','manual')),
+    source_id     TEXT,
+    confidence    REAL NOT NULL DEFAULT 0.50
+                    CHECK (confidence BETWEEN 0.00 AND 1.00),
+    status        TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK (status IN ('proposed','active','rejected','deprecated')),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_behavior_rules_workspace_id
+    ON behavior_rules(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_behavior_rules_status
+    ON behavior_rules(status);
+CREATE INDEX IF NOT EXISTS idx_behavior_rules_status_created_at
+    ON behavior_rules(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_behavior_rules_source
+    ON behavior_rules(source_type, source_id) WHERE source_id IS NOT NULL;
+
+-- Mirrored from migrations/sqlite/000059_discipline_events_m8.up.sql.
+-- Persistent watchdog meta-cognition events. No FK constraints (CLAUDE.md #9).
+CREATE TABLE IF NOT EXISTS discipline_events_m8 (
+    id           TEXT    PRIMARY KEY,
+    workspace_id TEXT,
+    event_type   TEXT    NOT NULL
+                    CHECK (event_type IN (
+                        'stuck_task',
+                        'unlogged_decision',
+                        'plan_no_task',
+                        'proposal_fail',
+                        'stale_handoff',
+                        'repeated_correction',
+                        'task_no_outcome',
+                        'decision_no_reflection'
+                    )),
+    severity     TEXT    NOT NULL DEFAULT 'warn'
+                    CHECK (severity IN ('info', 'warn', 'error')),
+    detail       TEXT    NOT NULL DEFAULT 'null',
+    resolved_at  TEXT,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_discipline_events_m8_open
+    ON discipline_events_m8 (workspace_id, created_at)
+    WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_discipline_events_m8_created_at
+    ON discipline_events_m8 (created_at);

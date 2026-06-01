@@ -24,7 +24,7 @@ func NewAtomStore(d *DB) *AtomStore {
 // Compile-time guarantee against drift from atom.StoreIface.
 var _ atom.StoreIface = (*AtomStore)(nil)
 
-const atomSelectCols = `id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at`
+const atomSelectCols = `id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at, digest_status`
 
 const (
 	maxTraverseDepth = 5
@@ -32,14 +32,15 @@ const (
 )
 
 type atomRawRow struct {
-	idStr       string
-	wsIDNS      sql.NullString
-	parentTable string
-	parentIDStr string
-	content     string
-	keywordsStr string
-	tagsStr     string
-	createdNS   sql.NullString
+	idStr          string
+	wsIDNS         sql.NullString
+	parentTable    string
+	parentIDStr    string
+	content        string
+	keywordsStr    string
+	tagsStr        string
+	createdNS      sql.NullString
+	digestStatusNS sql.NullString
 }
 
 func scanAtomRow(scan func(...any) error) (atom.Atom, error) {
@@ -53,6 +54,7 @@ func scanAtomRow(scan func(...any) error) (atom.Atom, error) {
 		&r.keywordsStr,
 		&r.tagsStr,
 		&r.createdNS,
+		&r.digestStatusNS,
 	)
 	if err != nil {
 		return atom.Atom{}, err
@@ -78,6 +80,10 @@ func parseAtomRow(r atomRawRow) atom.Atom {
 	}
 	if t := parseTimestamptz(r.createdNS); t.Valid {
 		a.CreatedAt = t.Time
+	}
+	if r.digestStatusNS.Valid && r.digestStatusNS.String != "" {
+		s := r.digestStatusNS.String
+		a.DigestStatus = &s
 	}
 	a.Keywords = parseStringSliceSQLite(r.keywordsStr)
 	a.Tags = parseStringSliceSQLite(r.tagsStr)
@@ -278,6 +284,20 @@ func (s *AtomStore) CountByDigestStatus(ctx context.Context, workspaceID *uuid.U
 	var n int64
 	if err := s.db.conn.QueryRowContext(ctx, q, wsArg, status).Scan(&n); err != nil {
 		return 0, errWrap("AtomStore.CountByDigestStatus", err)
+	}
+	return n, nil
+}
+
+// CountTotal returns the total number of atoms scoped to the given workspace.
+func (s *AtomStore) CountTotal(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
+	var wsArg any
+	if workspaceID != nil {
+		wsArg = workspaceID.String()
+	}
+	const q = `SELECT COUNT(*) FROM memory_atoms WHERE (?1 IS NULL OR workspace_id = ?1)`
+	var n int64
+	if err := s.db.conn.QueryRowContext(ctx, q, wsArg).Scan(&n); err != nil {
+		return 0, errWrap("AtomStore.CountTotal", err)
 	}
 	return n, nil
 }

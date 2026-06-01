@@ -30,17 +30,18 @@ var _ proposal.StoreIface = (*ProposalStore)(nil)
 func (s *ProposalStore) DB() *DB { return s.db }
 
 const pendingProposalsSelectCols = `id, workspace_id, type, payload, status,
-	proposed_by, created_at, resolved_at`
+	proposed_by, created_at, resolved_at, reason`
 
 func scanPendingProposal(scan func(...any) error) (db.PendingProposal, error) {
 	var (
 		p                         db.PendingProposal
 		idStr                     string
 		workspaceNS, proposedByNS sql.NullString
+		reasonNS                  sql.NullString
 		createdNS, resolvedNS     sql.NullString
 	)
 	err := scan(&idStr, &workspaceNS, &p.Type, &p.Payload, &p.Status,
-		&proposedByNS, &createdNS, &resolvedNS)
+		&proposedByNS, &createdNS, &resolvedNS, &reasonNS)
 	if err != nil {
 		return db.PendingProposal{}, err
 	}
@@ -51,6 +52,7 @@ func scanPendingProposal(scan func(...any) error) (db.PendingProposal, error) {
 	p.ProposedBy = pgtypeText(proposedByNS.String, proposedByNS.Valid)
 	p.CreatedAt = parseTimestamptz(createdNS)
 	p.ResolvedAt = parseTimestamptz(resolvedNS)
+	p.Reason = pgtypeText(reasonNS.String, reasonNS.Valid)
 	return p, nil
 }
 

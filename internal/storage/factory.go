@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -26,6 +27,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
+	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
@@ -134,23 +136,25 @@ type postgresServerStores struct {
 	pool        *pgxpool.Pool
 	workspaceID *uuid.UUID
 
-	gtd             *gtd.Store
-	workspace       *workspace.Store
-	decision        *decision.Store
-	session         *session.Store
-	knowledge       *knowledge.Store
-	learning        *learning.Store
-	proposal        *proposal.Store
-	archStore       *arch.Store
-	workSession     *worksession.Store
-	visionStore     *vision.Store
-	playbookStore   *playbook.Store
-	proceduralStore *procedural.Store
-	atomStore       *atom.Store
-	outcomeStore    *outcome.Store
-	skillStore      *skill.Store
-	disciplineStore *discipline.PgStore
-	reflectionStore *reflection.Store
+	gtd                    *gtd.Store
+	workspace              *workspace.Store
+	decision               *decision.Store
+	session                *session.Store
+	knowledge              *knowledge.Store
+	learning               *learning.Store
+	proposal               *proposal.Store
+	archStore              *arch.Store
+	workSession            *worksession.Store
+	visionStore            *vision.Store
+	playbookStore          *playbook.Store
+	proceduralStore        *procedural.Store
+	atomStore              *atom.Store
+	outcomeStore           *outcome.Store
+	skillStore             *skill.Store
+	disciplineStore        *discipline.PgStore
+	reflectionStore        *reflection.Store
+	behaviorRuleStore      *behaviorrule.Store
+	disciplineEventM8Store *watchdog.PgDisciplineEventStore
 }
 
 var _ ServerStores = (*postgresServerStores)(nil)
@@ -184,25 +188,27 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	}
 	embedClient := search.NewEmbeddingClientFromEnv()
 	return &postgresServerStores{
-		pool:            pool,
-		workspaceID:     wsID,
-		gtd:             gtd.NewStore(pool, wsID),
-		workspace:       workspace.NewStore(pool, wsID),
-		decision:        decision.NewStore(pool, wsID),
-		session:         session.NewStore(pool, wsID),
-		knowledge:       knowledge.NewStore(pool, embedClient, wsID),
-		learning:        learning.NewStore(pool, wsID),
-		proposal:        proposal.NewStore(pool, wsID),
-		archStore:       arch.NewStore(pool),
-		workSession:     worksession.NewStore(pool, wsID),
-		visionStore:     vision.NewStore(pool, wsID),
-		playbookStore:   playbook.NewStore(pool, wsID),
-		proceduralStore: procedural.New(pool, wsID),
-		atomStore:       atom.New(pool, wsID),
-		outcomeStore:    outcome.NewStore(pool, wsID),
-		skillStore:      skill.New(pool, wsID),
-		disciplineStore: discipline.NewPgStore(pool, wsID),
-		reflectionStore: reflection.New(pool, wsID),
+		pool:                   pool,
+		workspaceID:            wsID,
+		gtd:                    gtd.NewStore(pool, wsID),
+		workspace:              workspace.NewStore(pool, wsID),
+		decision:               decision.NewStore(pool, wsID),
+		session:                session.NewStore(pool, wsID),
+		knowledge:              knowledge.NewStore(pool, embedClient, wsID),
+		learning:               learning.NewStore(pool, wsID),
+		proposal:               proposal.NewStore(pool, wsID),
+		archStore:              arch.NewStore(pool),
+		workSession:            worksession.NewStore(pool, wsID),
+		visionStore:            vision.NewStore(pool, wsID),
+		playbookStore:          playbook.NewStore(pool, wsID),
+		proceduralStore:        procedural.New(pool, wsID),
+		atomStore:              atom.New(pool, wsID),
+		outcomeStore:           outcome.NewStore(pool, wsID),
+		skillStore:             skill.New(pool, wsID),
+		disciplineStore:        discipline.NewPgStore(pool, wsID),
+		reflectionStore:        reflection.New(pool, wsID),
+		behaviorRuleStore:      behaviorrule.New(pool, wsID),
+		disciplineEventM8Store: watchdog.NewPgDisciplineEventStore(pool, wsID),
 	}, nil
 }
 
@@ -214,23 +220,27 @@ func (p *postgresServerStores) Close() error {
 	return nil
 }
 
-func (p *postgresServerStores) GTD() gtd.StoreIface                      { return p.gtd }
-func (p *postgresServerStores) Workspace() workspace.StoreIface          { return p.workspace }
-func (p *postgresServerStores) Decision() decision.StoreIface            { return p.decision }
-func (p *postgresServerStores) Session() session.StoreIface              { return p.session }
-func (p *postgresServerStores) Knowledge() knowledge.StoreIface          { return p.knowledge }
-func (p *postgresServerStores) Learning() learning.StoreIface            { return p.learning }
-func (p *postgresServerStores) Proposal() proposal.StoreIface            { return p.proposal }
-func (p *postgresServerStores) Arch() arch.StoreIface                    { return p.archStore }
-func (p *postgresServerStores) WorkSession() worksession.StoreIface      { return p.workSession }
-func (p *postgresServerStores) Vision() vision.StoreIface                { return p.visionStore }
-func (p *postgresServerStores) Playbook() playbook.StoreIface            { return p.playbookStore }
-func (p *postgresServerStores) Procedural() procedural.StoreIface        { return p.proceduralStore }
-func (p *postgresServerStores) Atom() atom.StoreIface                    { return p.atomStore }
-func (p *postgresServerStores) Outcome() outcome.StoreIface              { return p.outcomeStore }
-func (p *postgresServerStores) Skill() skill.StoreIface                  { return p.skillStore }
-func (p *postgresServerStores) Discipline() discipline.Store             { return p.disciplineStore }
-func (p *postgresServerStores) Reflection() reflection.StoreIface        { return p.reflectionStore }
+func (p *postgresServerStores) GTD() gtd.StoreIface                   { return p.gtd }
+func (p *postgresServerStores) Workspace() workspace.StoreIface       { return p.workspace }
+func (p *postgresServerStores) Decision() decision.StoreIface         { return p.decision }
+func (p *postgresServerStores) Session() session.StoreIface           { return p.session }
+func (p *postgresServerStores) Knowledge() knowledge.StoreIface       { return p.knowledge }
+func (p *postgresServerStores) Learning() learning.StoreIface         { return p.learning }
+func (p *postgresServerStores) Proposal() proposal.StoreIface         { return p.proposal }
+func (p *postgresServerStores) Arch() arch.StoreIface                 { return p.archStore }
+func (p *postgresServerStores) WorkSession() worksession.StoreIface   { return p.workSession }
+func (p *postgresServerStores) Vision() vision.StoreIface             { return p.visionStore }
+func (p *postgresServerStores) Playbook() playbook.StoreIface         { return p.playbookStore }
+func (p *postgresServerStores) Procedural() procedural.StoreIface     { return p.proceduralStore }
+func (p *postgresServerStores) Atom() atom.StoreIface                 { return p.atomStore }
+func (p *postgresServerStores) Outcome() outcome.StoreIface           { return p.outcomeStore }
+func (p *postgresServerStores) Skill() skill.StoreIface               { return p.skillStore }
+func (p *postgresServerStores) Discipline() discipline.Store          { return p.disciplineStore }
+func (p *postgresServerStores) Reflection() reflection.StoreIface     { return p.reflectionStore }
+func (p *postgresServerStores) BehaviorRule() behaviorrule.StoreIface { return p.behaviorRuleStore }
+func (p *postgresServerStores) DisciplineEventStore() watchdog.DisciplineEventStoreIface {
+	return p.disciplineEventM8Store
+}
 func (p *postgresServerStores) WorkspaceID() *uuid.UUID                  { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { return p.pool }
 func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
@@ -291,23 +301,25 @@ type sqliteServerStores struct {
 	db          *wbtsqlite.DB
 	workspaceID *uuid.UUID
 
-	gtd             *wbtsqlite.GTDStore
-	workspace       *wbtsqlite.WorkspaceStore
-	decision        *wbtsqlite.DecisionStore
-	session         *wbtsqlite.SessionStore
-	knowledge       *wbtsqlite.KnowledgeStore
-	learning        *wbtsqlite.LearningStore
-	proposal        *wbtsqlite.ProposalStore
-	archStore       *wbtsqlite.ArchStore
-	workSession     *wbtsqlite.WorkSessionStore
-	visionStore     *wbtsqlite.VisionStore
-	playbookStore   *wbtsqlite.PlaybookStore
-	proceduralStore *wbtsqlite.ProceduralStore
-	atomStore       *wbtsqlite.AtomStore
-	outcomeStore    *wbtsqlite.OutcomeStore
-	skillStore      *wbtsqlite.SkillStore
-	disciplineStore *wbtsqlite.DisciplineStore
-	reflectionStore *wbtsqlite.ReflectionStore
+	gtd                    *wbtsqlite.GTDStore
+	workspace              *wbtsqlite.WorkspaceStore
+	decision               *wbtsqlite.DecisionStore
+	session                *wbtsqlite.SessionStore
+	knowledge              *wbtsqlite.KnowledgeStore
+	learning               *wbtsqlite.LearningStore
+	proposal               *wbtsqlite.ProposalStore
+	archStore              *wbtsqlite.ArchStore
+	workSession            *wbtsqlite.WorkSessionStore
+	visionStore            *wbtsqlite.VisionStore
+	playbookStore          *wbtsqlite.PlaybookStore
+	proceduralStore        *wbtsqlite.ProceduralStore
+	atomStore              *wbtsqlite.AtomStore
+	outcomeStore           *wbtsqlite.OutcomeStore
+	skillStore             *wbtsqlite.SkillStore
+	disciplineStore        *wbtsqlite.DisciplineStore
+	reflectionStore        *wbtsqlite.ReflectionStore
+	behaviorRuleStore      *wbtsqlite.BehaviorRuleStore
+	disciplineEventM8Store *wbtsqlite.DisciplineEventM8Store
 }
 
 var _ ServerStores = (*sqliteServerStores)(nil)
@@ -329,25 +341,27 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 		return nil, fmt.Errorf("opening sqlite at %q: %w", cfg.SQLitePath, err)
 	}
 	return &sqliteServerStores{
-		db:              sdb,
-		workspaceID:     wsID,
-		gtd:             wbtsqlite.NewGTDStore(sdb),
-		workspace:       wbtsqlite.NewWorkspaceStore(sdb),
-		decision:        wbtsqlite.NewDecisionStore(sdb),
-		session:         wbtsqlite.NewSessionStore(sdb),
-		knowledge:       wbtsqlite.NewKnowledgeStore(sdb),
-		learning:        wbtsqlite.NewLearningStore(sdb),
-		proposal:        wbtsqlite.NewProposalStore(sdb),
-		archStore:       wbtsqlite.NewArchStore(sdb),
-		workSession:     wbtsqlite.NewWorkSessionStore(sdb),
-		visionStore:     wbtsqlite.NewVisionStore(sdb),
-		playbookStore:   wbtsqlite.NewPlaybookStore(sdb),
-		proceduralStore: wbtsqlite.NewProceduralStore(sdb),
-		atomStore:       wbtsqlite.NewAtomStore(sdb),
-		outcomeStore:    wbtsqlite.NewOutcomeStore(sdb),
-		skillStore:      wbtsqlite.NewSkillStore(sdb),
-		disciplineStore: wbtsqlite.NewDisciplineStore(sdb),
-		reflectionStore: wbtsqlite.NewReflectionStore(sdb),
+		db:                     sdb,
+		workspaceID:            wsID,
+		gtd:                    wbtsqlite.NewGTDStore(sdb),
+		workspace:              wbtsqlite.NewWorkspaceStore(sdb),
+		decision:               wbtsqlite.NewDecisionStore(sdb),
+		session:                wbtsqlite.NewSessionStore(sdb),
+		knowledge:              wbtsqlite.NewKnowledgeStore(sdb),
+		learning:               wbtsqlite.NewLearningStore(sdb),
+		proposal:               wbtsqlite.NewProposalStore(sdb),
+		archStore:              wbtsqlite.NewArchStore(sdb),
+		workSession:            wbtsqlite.NewWorkSessionStore(sdb),
+		visionStore:            wbtsqlite.NewVisionStore(sdb),
+		playbookStore:          wbtsqlite.NewPlaybookStore(sdb),
+		proceduralStore:        wbtsqlite.NewProceduralStore(sdb),
+		atomStore:              wbtsqlite.NewAtomStore(sdb),
+		outcomeStore:           wbtsqlite.NewOutcomeStore(sdb),
+		skillStore:             wbtsqlite.NewSkillStore(sdb),
+		disciplineStore:        wbtsqlite.NewDisciplineStore(sdb),
+		reflectionStore:        wbtsqlite.NewReflectionStore(sdb),
+		behaviorRuleStore:      wbtsqlite.NewBehaviorRuleStore(sdb),
+		disciplineEventM8Store: wbtsqlite.NewDisciplineEventM8Store(sdb),
 	}, nil
 }
 
@@ -361,23 +375,27 @@ func (s *sqliteServerStores) Close() error {
 	return nil
 }
 
-func (s *sqliteServerStores) GTD() gtd.StoreIface                      { return s.gtd }
-func (s *sqliteServerStores) Workspace() workspace.StoreIface          { return s.workspace }
-func (s *sqliteServerStores) Decision() decision.StoreIface            { return s.decision }
-func (s *sqliteServerStores) Session() session.StoreIface              { return s.session }
-func (s *sqliteServerStores) Knowledge() knowledge.StoreIface          { return s.knowledge }
-func (s *sqliteServerStores) Learning() learning.StoreIface            { return s.learning }
-func (s *sqliteServerStores) Proposal() proposal.StoreIface            { return s.proposal }
-func (s *sqliteServerStores) Arch() arch.StoreIface                    { return s.archStore }
-func (s *sqliteServerStores) WorkSession() worksession.StoreIface      { return s.workSession }
-func (s *sqliteServerStores) Vision() vision.StoreIface                { return s.visionStore }
-func (s *sqliteServerStores) Playbook() playbook.StoreIface            { return s.playbookStore }
-func (s *sqliteServerStores) Procedural() procedural.StoreIface        { return s.proceduralStore }
-func (s *sqliteServerStores) Atom() atom.StoreIface                    { return s.atomStore }
-func (s *sqliteServerStores) Outcome() outcome.StoreIface              { return s.outcomeStore }
-func (s *sqliteServerStores) Skill() skill.StoreIface                  { return s.skillStore }
-func (s *sqliteServerStores) Discipline() discipline.Store             { return s.disciplineStore }
-func (s *sqliteServerStores) Reflection() reflection.StoreIface        { return s.reflectionStore }
+func (s *sqliteServerStores) GTD() gtd.StoreIface                   { return s.gtd }
+func (s *sqliteServerStores) Workspace() workspace.StoreIface       { return s.workspace }
+func (s *sqliteServerStores) Decision() decision.StoreIface         { return s.decision }
+func (s *sqliteServerStores) Session() session.StoreIface           { return s.session }
+func (s *sqliteServerStores) Knowledge() knowledge.StoreIface       { return s.knowledge }
+func (s *sqliteServerStores) Learning() learning.StoreIface         { return s.learning }
+func (s *sqliteServerStores) Proposal() proposal.StoreIface         { return s.proposal }
+func (s *sqliteServerStores) Arch() arch.StoreIface                 { return s.archStore }
+func (s *sqliteServerStores) WorkSession() worksession.StoreIface   { return s.workSession }
+func (s *sqliteServerStores) Vision() vision.StoreIface             { return s.visionStore }
+func (s *sqliteServerStores) Playbook() playbook.StoreIface         { return s.playbookStore }
+func (s *sqliteServerStores) Procedural() procedural.StoreIface     { return s.proceduralStore }
+func (s *sqliteServerStores) Atom() atom.StoreIface                 { return s.atomStore }
+func (s *sqliteServerStores) Outcome() outcome.StoreIface           { return s.outcomeStore }
+func (s *sqliteServerStores) Skill() skill.StoreIface               { return s.skillStore }
+func (s *sqliteServerStores) Discipline() discipline.Store          { return s.disciplineStore }
+func (s *sqliteServerStores) Reflection() reflection.StoreIface     { return s.reflectionStore }
+func (s *sqliteServerStores) BehaviorRule() behaviorrule.StoreIface { return s.behaviorRuleStore }
+func (s *sqliteServerStores) DisciplineEventStore() watchdog.DisciplineEventStoreIface {
+	return s.disciplineEventM8Store
+}
 func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                  { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return nil }
 func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }

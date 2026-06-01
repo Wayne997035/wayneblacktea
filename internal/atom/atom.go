@@ -15,14 +15,15 @@ var ErrNotFound = errors.New("atom: not found")
 
 // Atom is the domain model for an atomic fact unit.
 type Atom struct {
-	ID          uuid.UUID  `json:"id"`
-	WorkspaceID *uuid.UUID `json:"workspace_id,omitempty"`
-	ParentTable string     `json:"parent_table"`
-	ParentID    uuid.UUID  `json:"parent_id"`
-	Content     string     `json:"content"`
-	Keywords    []string   `json:"keywords"`
-	Tags        []string   `json:"tags"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID           uuid.UUID  `json:"id"`
+	WorkspaceID  *uuid.UUID `json:"workspace_id,omitempty"`
+	ParentTable  string     `json:"parent_table"`
+	ParentID     uuid.UUID  `json:"parent_id"`
+	Content      string     `json:"content"`
+	Keywords     []string   `json:"keywords"`
+	Tags         []string   `json:"tags"`
+	CreatedAt    time.Time  `json:"created_at"`
+	DigestStatus *string    `json:"digest_status,omitempty"`
 }
 
 // Link is a directed edge between two atoms.

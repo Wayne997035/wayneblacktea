@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -47,24 +48,25 @@ import (
 // transaction across multiple stores). On SQLite they are nil and the flow
 // falls back to a sequential best-effort path.
 type Server struct {
-	pool        *pgxpool.Pool
-	gtd         gtd.StoreIface
-	workspace   workspace.StoreIface
-	decision    decision.StoreIface
-	session     session.StoreIface
-	knowledge   knowledge.StoreIface
-	learning    learning.StoreIface
-	proposal    proposal.StoreIface
-	arch        arch.StoreIface
-	workSession worksession.StoreIface
-	vision      vision.StoreIface
-	playbook    playbook.StoreIface
-	procedural  procedural.StoreIface
-	atom        atom.StoreIface
-	outcome     outcome.StoreIface
-	skill       skill.StoreIface
-	reflection  reflection.StoreIface
-	atomizer    *ai.Atomizer
+	pool         *pgxpool.Pool
+	gtd          gtd.StoreIface
+	workspace    workspace.StoreIface
+	decision     decision.StoreIface
+	session      session.StoreIface
+	knowledge    knowledge.StoreIface
+	learning     learning.StoreIface
+	proposal     proposal.StoreIface
+	arch         arch.StoreIface
+	workSession  worksession.StoreIface
+	vision       vision.StoreIface
+	playbook     playbook.StoreIface
+	procedural   procedural.StoreIface
+	atom         atom.StoreIface
+	outcome      outcome.StoreIface
+	skill        skill.StoreIface
+	reflection   reflection.StoreIface
+	behaviorRule behaviorrule.StoreIface
+	atomizer     *ai.Atomizer
 	// atomizeSem limits concurrent background atomize goroutines to prevent
 	// API budget exhaustion from rapid add_* bursts. (security M4)
 	atomizeSem chan struct{}
@@ -99,6 +101,11 @@ type Server struct {
 	notion     *notion.Client
 	watchdog   *watchdog.Watchdog
 	classifier *ai.ActivityClassifier
+
+	// disciplineEventStore persists watchdog meta-cognition findings
+	// (Memory-8). nil when the store is not wired (e.g. in unit tests that
+	// do not exercise watchdog tools).
+	disciplineEventStore watchdog.DisciplineEventStoreIface
 
 	// snapshotStore / snapshotGen are optional; nil = feature disabled.
 	// Populated via WithSnapshot when CLAUDE_API_KEY is set.
@@ -177,40 +184,42 @@ const errMsgInvalidProjectIDUUID = "invalid project_id UUID"
 func New(stores storage.ServerStores) (*Server, error) {
 	wsID := stores.WorkspaceID()
 	return &Server{
-		pool:           stores.PgxPool(),
-		gtd:            stores.GTD(),
-		workspace:      stores.Workspace(),
-		decision:       stores.Decision(),
-		session:        stores.Session(),
-		knowledge:      stores.Knowledge(),
-		learning:       stores.Learning(),
-		proposal:       stores.Proposal(),
-		arch:           stores.Arch(),
-		workSession:    stores.WorkSession(),
-		vision:         stores.Vision(),
-		playbook:       stores.Playbook(),
-		procedural:     stores.Procedural(),
-		atom:           stores.Atom(),
-		outcome:        stores.Outcome(),
-		skill:          stores.Skill(),
-		reflection:     stores.Reflection(),
-		atomizer:       ai.NewAtomizer(),
-		atomizeSem:     make(chan struct{}, 5),
-		autologSem:     make(chan struct{}, 50),
-		pgGTD:          stores.PgGTD(),
-		pgProposal:     stores.PgProposal(),
-		pgLearning:     stores.PgLearning(),
-		pgDecision:     stores.PgDecision(),
-		sqliteGTD:      stores.SqliteGTD(),
-		sqliteProposal: stores.SqliteProposal(),
-		sqliteLearning: stores.SqliteLearning(),
-		sqliteDecision: stores.SqliteDecision(),
-		notion:         notion.NewClient(),
-		watchdog:       watchdog.New(200),
-		discipline:     stores.Discipline(),
-		sessionID:      newSessionID(),
-		workspaceID:    wsID,
-		nowFn:          time.Now,
+		pool:                 stores.PgxPool(),
+		gtd:                  stores.GTD(),
+		workspace:            stores.Workspace(),
+		decision:             stores.Decision(),
+		session:              stores.Session(),
+		knowledge:            stores.Knowledge(),
+		learning:             stores.Learning(),
+		proposal:             stores.Proposal(),
+		arch:                 stores.Arch(),
+		workSession:          stores.WorkSession(),
+		vision:               stores.Vision(),
+		playbook:             stores.Playbook(),
+		procedural:           stores.Procedural(),
+		atom:                 stores.Atom(),
+		outcome:              stores.Outcome(),
+		skill:                stores.Skill(),
+		reflection:           stores.Reflection(),
+		behaviorRule:         stores.BehaviorRule(),
+		atomizer:             ai.NewAtomizer(),
+		atomizeSem:           make(chan struct{}, 5),
+		autologSem:           make(chan struct{}, 50),
+		pgGTD:                stores.PgGTD(),
+		pgProposal:           stores.PgProposal(),
+		pgLearning:           stores.PgLearning(),
+		pgDecision:           stores.PgDecision(),
+		sqliteGTD:            stores.SqliteGTD(),
+		sqliteProposal:       stores.SqliteProposal(),
+		sqliteLearning:       stores.SqliteLearning(),
+		sqliteDecision:       stores.SqliteDecision(),
+		notion:               notion.NewClient(),
+		watchdog:             watchdog.New(200),
+		discipline:           stores.Discipline(),
+		disciplineEventStore: stores.DisciplineEventStore(),
+		sessionID:            newSessionID(),
+		workspaceID:          wsID,
+		nowFn:                time.Now,
 	}, nil
 }
 
@@ -397,9 +406,11 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerAtomTools(ms)
 	s.registerOutcomeTools(ms)
 	s.registerSkillTools(ms)
+	s.registerBehaviorRuleTools(ms)
 	s.registerDashboardTools(ms)
 	s.registerReconcileTools(ms)
 	s.registerCloseoutTools(ms)
+	s.registerWatchdogTools(ms)
 	s.registerResources(ms)
 	s.registerPrompts(ms)
 	return ms

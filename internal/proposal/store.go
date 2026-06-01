@@ -107,7 +107,7 @@ func (s *Store) ListPending(ctx context.Context) ([]db.PendingProposal, error) {
 // Using parameterized query prevents SQL injection — proposalType and limit are
 // bound as query parameters, never interpolated into the SQL string.
 func (s *Store) ListAll(ctx context.Context, proposalType string, limit int32) ([]db.PendingProposal, error) {
-	const listAllQ = `SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at
+	const listAllQ = `SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason
 		FROM pending_proposals
 		WHERE type = $1
 		  AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -123,7 +123,7 @@ func (s *Store) ListAll(ctx context.Context, proposalType string, limit int32) (
 		var i db.PendingProposal
 		if err := rawRows.Scan(
 			&i.ID, &i.WorkspaceID, &i.Type, &i.Payload, &i.Status,
-			&i.ProposedBy, &i.CreatedAt, &i.ResolvedAt,
+			&i.ProposedBy, &i.CreatedAt, &i.ResolvedAt, &i.Reason,
 		); err != nil {
 			return nil, fmt.Errorf("scanning proposal row: %w", err)
 		}

@@ -55,6 +55,7 @@ type healthSnapshot struct {
 	ForgottenSignals      []string              `json:"forgotten_signals,omitempty"`
 	CompletionDrift       []DriftCandidate      `json:"completion_drift_candidates,omitempty"`
 	Discipline            disciplineHealth      `json:"discipline,omitempty"`
+	WatchdogMeta          watchdogMetaHealth    `json:"watchdog_meta,omitempty"`
 	VaguePendingTaskCount int                   `json:"vague_pending_task_count"`
 	VagueSampleIDs        []string              `json:"vague_sample_ids,omitempty"`
 	KnowledgeDigest       knowledgeDigestHealth `json:"knowledge_digest"`
@@ -179,6 +180,7 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	snap.Discipline = s.collectDisciplineHealth(ctx)
+	snap.WatchdogMeta = s.collectWatchdogMetaHealth(ctx)
 	snap.KnowledgeDigest = s.collectKnowledgeDigestHealth(ctx)
 
 	signals := detectForgottenSignals(snap, s.watchdog)
@@ -198,6 +200,12 @@ func (s *Server) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest
 		signals = append(signals, fmt.Sprintf(
 			"%d pending/in_progress task(s) flagged by validator.CheckVagueness — descriptions are placeholders or too vague.",
 			snap.VaguePendingTaskCount,
+		))
+	}
+	if snap.WatchdogMeta.UnresolvedCount > 0 {
+		signals = append(signals, fmt.Sprintf(
+			"%d unresolved watchdog event(s) detected — call detect_unclosed_loops to review and mark_loop_resolved to acknowledge.",
+			snap.WatchdogMeta.UnresolvedCount,
 		))
 	}
 	snap.ForgottenSignals = signals

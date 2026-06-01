@@ -436,6 +436,38 @@ func run() error {
 			return fmt.Errorf("wiring reflection pruner: %w", err)
 		}
 	}
+	// Wire behavior rule pruner (both backends; 365-day TTL for rejected/deprecated
+	// rows per backend-security-design.md §1.3; active/proposed rows never auto-pruned).
+	if stores.BehaviorRule() != nil {
+		if err := sched.WithBehaviorRulePruner(stores.BehaviorRule()); err != nil {
+			return fmt.Errorf("wiring behavior rule pruner: %w", err)
+		}
+	}
+	// Wire Memory-9 atom consolidation (daily 04:30 Asia/Taipei). Skipped when
+	// CLAUDE_API_KEY is absent (atomizer nil) or atom store unavailable. Both
+	// conditions are nil-safe inside WithAtomConsolidator.
+	if atomizer := ai.NewAtomizer(); atomizer != nil {
+		if err := sched.WithAtomConsolidator(scheduler.NewAtomConsolidDeps(stores.Atom(), atomizer, stores.WorkspaceID())); err != nil {
+			return fmt.Errorf("wiring atom consolidator: %w", err)
+		}
+	}
+	// Wire Memory-7 cognitive jobs. All 7 jobs are nil-safe: if the pool or
+	// stores are absent (SQLite dev path, missing CLAUDE_API_KEY, etc.) each
+	// job logs an info-level skip and returns without error.
+	if err := sched.WithCognitiveDeps(scheduler.NewCognitiveDeps(
+		stores.Reflection(),
+		stores.GTD(),
+		stores.Proposal(),
+		stores.WorkspaceID(),
+	)); err != nil {
+		return fmt.Errorf("wiring cognitive deps: %w", err)
+	}
+	// Wire discipline_events_m8 pruner — both backends, 90-day TTL per §1.3.
+	if des := stores.DisciplineEventStore(); des != nil {
+		if err := sched.WithDisciplineEventPruner(des); err != nil {
+			return fmt.Errorf("wiring discipline event m8 pruner: %w", err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 

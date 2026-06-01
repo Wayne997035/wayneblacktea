@@ -43,6 +43,11 @@ type StoreIface interface {
 	// CountByDigestStatus returns the number of atoms with the given digest_status
 	// in the given workspace (nil = all workspaces).
 	CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string) (int64, error)
+
+	// CountTotal returns the total number of atoms scoped to the given workspace
+	// (nil = all workspaces). Used by the M9 consolidation cron to compare
+	// against the configured capacity threshold.
+	CountTotal(ctx context.Context, workspaceID *uuid.UUID) (int64, error)
 }
 
 // Compile-time assertion: Postgres Store satisfies StoreIface.
