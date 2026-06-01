@@ -418,6 +418,18 @@ func (s *Store) CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID,
 	return n, nil
 }
 
+// CountTotal returns the total number of atoms scoped to the given workspace.
+func (s *Store) CountTotal(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
+	const q = `SELECT COUNT(*) FROM memory_atoms
+		WHERE ($1::uuid IS NULL OR workspace_id = $1)`
+	var n int64
+	err := s.pool.QueryRow(ctx, q, toUUID(workspaceID)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting total atoms: %w", err)
+	}
+	return n, nil
+}
+
 // escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied
 // query strings are treated as literals. Pair with ESCAPE '\' in the SQL clause.
 func escapeLikePostgres(s string) string {

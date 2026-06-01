@@ -112,6 +112,7 @@ type Scheduler struct {
 	reflectionDeps        *reflectionDeps
 	consolidDeps          *consolidationDeps
 	knowledgeConsolidDeps *knowledgeConsolidationDeps
+	atomConsolidDeps      *atomConsolidDeps
 	statusDeps            *statusSnapshotDeps
 	pruner                *decay.Pruner
 	playbookDeps          *playbookDeps

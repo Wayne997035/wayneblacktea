@@ -282,6 +282,20 @@ func (s *AtomStore) CountByDigestStatus(ctx context.Context, workspaceID *uuid.U
 	return n, nil
 }
 
+// CountTotal returns the total number of atoms scoped to the given workspace.
+func (s *AtomStore) CountTotal(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
+	var wsArg any
+	if workspaceID != nil {
+		wsArg = workspaceID.String()
+	}
+	const q = `SELECT COUNT(*) FROM memory_atoms WHERE (?1 IS NULL OR workspace_id = ?1)`
+	var n int64
+	if err := s.db.conn.QueryRowContext(ctx, q, wsArg).Scan(&n); err != nil {
+		return 0, errWrap("AtomStore.CountTotal", err)
+	}
+	return n, nil
+}
+
 func (s *AtomStore) getByID(ctx context.Context, id uuid.UUID) (*atom.Atom, error) {
 	// M3: workspace predicate prevents cross-tenant atom access in future multi-tenant mode.
 	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms

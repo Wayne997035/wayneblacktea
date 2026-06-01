@@ -128,6 +128,10 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recording outcome: %v", err)), nil
 	}
+	// M9: atomize the outcome notes in the background when non-empty.
+	if o.Notes != "" {
+		s.launchAtomize("outcomes", o.ID, o.Notes)
+	}
 	return jsonText(o)
 }
 
