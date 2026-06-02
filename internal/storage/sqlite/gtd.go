@@ -445,7 +445,8 @@ func (s *GTDStore) TasksForTimeline(ctx context.Context, from, to time.Time) ([]
 // UpcomingTasks returns pending/in_progress tasks relevant to the upcoming
 // window rooted at refDate. The window includes:
 //   - tasks with a due_date <= windowEnd (refDate + days, end-of-day UTC)
-//   - tasks with importance=1 and no due_date (unscheduled_important bucket)
+//   - tasks with no due_date, regardless of importance (unscheduled bucket;
+//     priority-ordered so high-importance surfaces first)
 //
 // SQLite stores timestamps as RFC3339 TEXT; lexicographic comparison works
 // because CreateTask enforces .UTC().Format(time.RFC3339Nano) on due_date.
@@ -461,7 +462,7 @@ func (s *GTDStore) UpcomingTasks(ctx context.Context, refDate time.Time, days, l
 		  AND (?1 IS NULL OR workspace_id = ?1)
 		  AND (
 		      (due_date IS NOT NULL AND due_date <= ?2)
-		      OR (due_date IS NULL AND importance = 1)
+		      OR (due_date IS NULL)
 		  )
 		ORDER BY due_date ASC NULLS LAST, priority ASC, created_at ASC
 		LIMIT ?3`

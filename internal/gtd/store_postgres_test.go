@@ -3,6 +3,7 @@ package gtd_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1227,8 +1228,8 @@ func pgUpcomingCreateTask(
 }
 
 // TestGTDStore_UpcomingTasks_WithinWindow verifies that pending tasks inside
-// the window and importance=1 unscheduled tasks are returned, while
-// beyond-window, low-importance unscheduled, and completed tasks are excluded.
+// the window and all no-due-date pending tasks are returned, while
+// beyond-window and completed tasks are excluded.
 func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 	pool := openTestPgPool(t)
 	ctx := context.Background()
@@ -1248,8 +1249,8 @@ func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 	pgUpcomingCreateTask(t, ctx, storeA, "today-task", &todayDue, nil, "")
 	pgUpcomingCreateTask(t, ctx, storeA, "future-task", &futureDue, nil, "")
 	pgUpcomingCreateTask(t, ctx, storeA, "beyond-window-task", &beyondDue, nil, "")                 // >7d → excluded
-	pgUpcomingCreateTask(t, ctx, storeA, "unscheduled-imp1", nil, &imp1, "")                        // importance=1 → included
-	pgUpcomingCreateTask(t, ctx, storeA, "unscheduled-imp2", nil, &imp2, "")                        // importance=2 → excluded
+	pgUpcomingCreateTask(t, ctx, storeA, "unscheduled-imp1", nil, &imp1, "")                        // importance=1, no due → included
+	pgUpcomingCreateTask(t, ctx, storeA, "unscheduled-imp2", nil, &imp2, "")                        // importance=2, no due → NOW included
 	pgUpcomingCreateTask(t, ctx, storeA, "completed-task", &todayDue, nil, gtd.TaskStatusCompleted) // excluded
 	pgUpcomingCreateTask(t, ctx, storeB, "ws-b-task", &todayDue, nil, "")                           // other workspace → excluded
 
@@ -1262,14 +1263,47 @@ func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 	for _, tk := range tasks {
 		titleSet[tk.Title] = true
 	}
-	for _, want := range []string{"today-task", "future-task", "unscheduled-imp1"} {
+	// All no-due-date active tasks are now included regardless of importance.
+	for _, want := range []string{"today-task", "future-task", "unscheduled-imp1", "unscheduled-imp2"} {
 		if !titleSet[want] {
 			t.Errorf("missing expected task %q; got titles: %v", want, titleSet)
 		}
 	}
-	for _, notWant := range []string{"beyond-window-task", "unscheduled-imp2", "completed-task", "ws-b-task"} {
+	for _, notWant := range []string{"beyond-window-task", "completed-task", "ws-b-task"} {
 		if titleSet[notWant] {
 			t.Errorf("unexpected task %q in results", notWant)
+		}
+	}
+}
+
+// TestGTDStore_UpcomingTasks_NoDueDateAllImportances verifies that active tasks
+// with NULL due_date are included in UpcomingTasks regardless of their importance
+// value (the fix for the divergence between /dashboard upcoming and /gtd list).
+func TestGTDStore_UpcomingTasks_NoDueDateAllImportances(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ws := uuid.New()
+	store := newPgGTDStore(pool, &ws)
+
+	for _, imp := range []int16{1, 2, 3} {
+		v := imp
+		pgUpcomingCreateTask(t, ctx, store, fmt.Sprintf("no-due-imp%d", imp), nil, &v, "")
+	}
+
+	tasks, err := store.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+
+	titleSet := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		titleSet[tk.Title] = true
+	}
+	for _, want := range []string{"no-due-imp1", "no-due-imp2", "no-due-imp3"} {
+		if !titleSet[want] {
+			t.Errorf("missing expected no-due task %q; got: %v", want, titleSet)
 		}
 	}
 }

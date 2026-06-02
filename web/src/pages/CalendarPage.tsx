@@ -6,7 +6,7 @@ import { MonthGrid } from '../components/calendar/MonthGrid'
 import { WeekList } from '../components/calendar/WeekList'
 import { YearHeatmap } from '../components/calendar/YearHeatmap'
 import { DayDrawer } from '../components/calendar/DayDrawer'
-import { ALL_KINDS } from '../components/calendar/eventStyles'
+import { DEFAULT_KINDS } from '../components/calendar/eventStyles'
 import { buildMonthMatrix, mondayOf } from '../components/calendar/dateUtils'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import type { TimelineEvent, TimelineKind } from '../types/api'
@@ -20,7 +20,7 @@ export function CalendarPage() {
   const { t } = useTranslation()
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date())
   const [view, setView] = useState<CalendarView>('month')
-  const [kindFilter, setKindFilter] = useState<Set<TimelineKind>>(() => new Set(ALL_KINDS))
+  const [kindFilter, setKindFilter] = useState<Set<TimelineKind>>(() => new Set(DEFAULT_KINDS))
   const [drawerDate, setDrawerDate] = useState<Date | null>(null)
   const [repoFilter, setRepoFilter] = useState<string | null>(null)
 

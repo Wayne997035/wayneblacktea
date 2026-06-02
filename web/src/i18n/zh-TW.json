@@ -32,7 +32,7 @@
       "tomorrow": "明天",
       "dayAfter": "後天",
       "upcoming": "即將到來",
-      "unscheduledImportant": "高優先 / 無日期"
+      "unscheduledImportant": "待辦 / 無截止日"
     },
     "noUpcomingTasks": "沒有即將到來的任務",
     "noProjects": "目前沒有進行中的專案",

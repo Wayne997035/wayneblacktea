@@ -98,7 +98,7 @@ export function UpcomingTasksCard({ days = 7 }: UpcomingTasksCardProps) {
     { key: 'upcoming', label: t('dashboard.upcoming.upcoming', 'Upcoming'), tasks: groups?.upcoming ?? [] },
     {
       key: 'unscheduled_important',
-      label: t('dashboard.upcoming.unscheduledImportant', 'High Priority / No Date'),
+      label: t('dashboard.upcoming.unscheduledImportant', 'Active / No Due Date'),
       tasks: groups?.unscheduled_important ?? [],
     },
   ]

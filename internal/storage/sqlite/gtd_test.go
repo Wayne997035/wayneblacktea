@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1557,8 +1558,8 @@ func TestGTDStore_UpdateTask_NotFound(t *testing.T) {
 }
 
 // TestGTDStore_UpcomingTasks_WithinWindow verifies that pending tasks within
-// the window and importance=1 unscheduled tasks are returned, while
-// beyond-window, low-importance unscheduled, and completed tasks are excluded.
+// the window and all no-due-date pending tasks are returned, while
+// beyond-window and completed tasks are excluded.
 func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -1583,7 +1584,7 @@ func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 	createTask("future-task", &futureDue, nil)
 	createTask("beyond-window-task", &beyondDue, nil) // >7d → excluded
 	createTask("unscheduled-imp1", nil, &imp1)        // importance=1, no due → included
-	createTask("unscheduled-imp2", nil, &imp2)        // importance=2, no due → excluded
+	createTask("unscheduled-imp2", nil, &imp2)        // importance=2, no due → NOW included
 
 	completedTask := createTask("completed-task", &todayDue, nil)
 	_, err := s.CompleteTask(ctx, completedTask.ID, nil)
@@ -1600,14 +1601,52 @@ func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 	for _, tk := range tasks {
 		titleSet[tk.Title] = true
 	}
-	for _, want := range []string{"today-task", "future-task", "unscheduled-imp1"} {
+	// All no-due-date active tasks are included regardless of importance.
+	for _, want := range []string{"today-task", "future-task", "unscheduled-imp1", "unscheduled-imp2"} {
 		if !titleSet[want] {
 			t.Errorf("missing expected task %q; got: %v", want, titleSet)
 		}
 	}
-	for _, notWant := range []string{"beyond-window-task", "unscheduled-imp2", "completed-task"} {
+	for _, notWant := range []string{"beyond-window-task", "completed-task"} {
 		if titleSet[notWant] {
 			t.Errorf("unexpected task %q in results", notWant)
+		}
+	}
+}
+
+// TestGTDStore_UpcomingTasks_NoDueDateAllImportances verifies that active tasks
+// with no due_date appear in UpcomingTasks regardless of their importance value.
+// This guards against a regression where only importance=1 no-date tasks were returned.
+func TestGTDStore_UpcomingTasks_NoDueDateAllImportances(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	s := openMem(t, uuid.New().String())
+
+	for _, imp := range []int16{1, 2, 3} {
+		v := imp
+		_, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+			Title:      fmt.Sprintf("no-due-imp%d", imp),
+			Priority:   2,
+			Importance: &v,
+		})
+		if err != nil {
+			t.Fatalf("CreateTask(imp=%d): %v", imp, err)
+		}
+	}
+
+	tasks, err := s.UpcomingTasks(ctx, now, 7, 50)
+	if err != nil {
+		t.Fatalf("UpcomingTasks: %v", err)
+	}
+
+	titleSet := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		titleSet[tk.Title] = true
+	}
+	for _, want := range []string{"no-due-imp1", "no-due-imp2", "no-due-imp3"} {
+		if !titleSet[want] {
+			t.Errorf("missing expected no-due task %q; got: %v", want, titleSet)
 		}
 	}
 }

@@ -74,6 +74,14 @@ export const ALL_KINDS: TimelineKind[] = [
 ]
 
 /**
+ * DEFAULT_KINDS is the set of event kinds shown by default on the calendar.
+ * 'activity' is excluded from the default because the backend can emit up to
+ * 10 000 activity events per month, flooding the per-cell chip view with
+ * "+N more" overflow. Users can still re-enable it via CalendarControls.
+ */
+export const DEFAULT_KINDS: TimelineKind[] = ALL_KINDS.filter((k) => k !== 'activity')
+
+/**
  * isPlanned reports whether an event represents a future-scheduled item that
  * has not happened yet. Used to render outlined / dashed chips so the user
  * can distinguish "what's coming up" from "what has occurred".
