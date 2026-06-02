@@ -40,6 +40,7 @@
     "aiCost": {
       "title": "AI COST (30d)",
       "total": "Total",
+      "period": "Last 30 days",
       "empty": "No AI usage recorded in the last 30 days"
     },
     "noHandoff": "No pending handoff",

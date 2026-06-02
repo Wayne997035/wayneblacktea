@@ -6,7 +6,7 @@ export function useAiCost() {
   return useQuery<AiCostResponse>({
     queryKey: ['dashboard', 'ai-cost'],
     queryFn: () => apiFetch<AiCostResponse>('/api/dashboard/ai-cost'),
-    staleTime: 5 * 60_000, // 5 min: cost data changes slowly
+    staleTime: 4 * 60_000, // 4 min: slightly under the 5 min refetch interval
     refetchInterval: 5 * 60_000,
   })
 }

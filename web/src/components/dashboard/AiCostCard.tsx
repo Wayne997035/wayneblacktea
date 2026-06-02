@@ -41,6 +41,7 @@ function ModelRow({ row }: ModelRowProps) {
       <span
         className="text-body-sm font-mono shrink-0"
         style={{ color: 'var(--color-accent-blue)' }}
+        aria-label={`${row.model} cost: ${formatCost(row.total_cost_usd)}`}
       >
         {formatCost(row.total_cost_usd)}
       </span>
@@ -95,7 +96,6 @@ export function AiCostCard() {
 
   const rows = data?.by_model ?? []
   const total = data?.total_cost_usd ?? 0
-  const period = data?.period ?? '30d'
 
   return (
     <div
@@ -110,7 +110,7 @@ export function AiCostCard() {
           {t('dashboard.aiCost.title')}
         </span>
         <span className="text-caption" style={{ color: 'var(--color-text-muted)' }}>
-          {period}
+          {t('dashboard.aiCost.period')}
         </span>
       </div>
 
@@ -133,6 +133,7 @@ export function AiCostCard() {
             <span
               className="text-body-sm font-mono font-semibold"
               style={{ color: 'var(--color-accent-blue)' }}
+              aria-label={`Total AI cost: ${formatCost(total)}`}
             >
               {formatCost(total)}
             </span>
