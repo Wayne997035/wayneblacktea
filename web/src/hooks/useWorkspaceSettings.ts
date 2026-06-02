@@ -11,7 +11,7 @@ export function useWorkspaceSettings() {
 
 export function useUpdateWorkspaceSettings() {
   const queryClient = useQueryClient()
-  return useMutation<WorkspaceSettings, Error, WorkspaceSettings>({
+  return useMutation<WorkspaceSettings, Error, Partial<WorkspaceSettings>>({
     mutationFn: (data) =>
       apiFetch<WorkspaceSettings>('/api/workspace/settings', {
         method: 'PATCH',

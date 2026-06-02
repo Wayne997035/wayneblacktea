@@ -50,6 +50,12 @@ jobs:
           # collaborators), so refuse anything that is not a plain https:// URL
           # before sending the API key. Combined with curl --no-location below
           # this prevents key exfiltration via a redirected or downgraded URL.
+          #
+          # Per-deployment host allowlist (e.g. restricting WBT_API_URL to a
+          # fixed domain) was considered and deferred: this is a single-tenant
+          # repo with collaborator-only variable access, so the existing https://
+          # scheme guard + --no-location already provide adequate SSRF mitigation
+          # without adding operational friction for the maintainer.
           case "$WBT_API_URL" in
             https://*) : ;;
             *) echo "::warning::WBT_API_URL must be an https:// URL; skipping reconcile."; exit 0 ;;

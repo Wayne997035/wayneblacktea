@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RefreshCw } from 'lucide-react'
@@ -30,6 +30,14 @@ export function WorkspacePage() {
   const { data: settings } = useWorkspaceSettings()
   const updateSettings = useUpdateWorkspaceSettings()
   const [saveState, setSaveState] = useState<'ok' | 'err' | null>(null)
+
+  // Auto-dismiss the save badge after 4 s so it doesn't linger indefinitely.
+  // clearTimeout cleanup ensures a fresh mutation resets the timer correctly.
+  useEffect(() => {
+    if (saveState === null) return
+    const id = setTimeout(() => setSaveState(null), 4000)
+    return () => clearTimeout(id)
+  }, [saveState])
 
   const onModelChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value
@@ -125,7 +133,7 @@ export function WorkspacePage() {
         <div
           className="rounded-md p-3 mb-6 text-body-sm"
           style={{
-            background: '#2e0a0a',
+            background: 'var(--color-error-bg)',
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}
