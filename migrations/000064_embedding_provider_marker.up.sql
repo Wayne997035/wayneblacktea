@@ -21,18 +21,19 @@
 
 ALTER TABLE session_handoffs      ADD COLUMN IF NOT EXISTS embedding_provider TEXT;
 ALTER TABLE session_handoffs      ADD COLUMN IF NOT EXISTS embedding_model     TEXT;
-ALTER TABLE session_handoffs      ADD COLUMN IF NOT EXISTS embedding_dim       INT;
+ALTER TABLE session_handoffs      ADD COLUMN IF NOT EXISTS embedding_dim       INTEGER;
 
 ALTER TABLE decisions             ADD COLUMN IF NOT EXISTS embedding_provider TEXT;
 ALTER TABLE decisions             ADD COLUMN IF NOT EXISTS embedding_model     TEXT;
-ALTER TABLE decisions             ADD COLUMN IF NOT EXISTS embedding_dim       INT;
+ALTER TABLE decisions             ADD COLUMN IF NOT EXISTS embedding_dim       INTEGER;
 
 ALTER TABLE project_status_snapshots ADD COLUMN IF NOT EXISTS embedding_provider TEXT;
 ALTER TABLE project_status_snapshots ADD COLUMN IF NOT EXISTS embedding_model     TEXT;
-ALTER TABLE project_status_snapshots ADD COLUMN IF NOT EXISTS embedding_dim       INT;
+ALTER TABLE project_status_snapshots ADD COLUMN IF NOT EXISTS embedding_dim       INTEGER;
 
 -- Tag all existing non-null-embedding rows as written by the hashed provider
 -- (the only writer before this sprint was HashedEmbeddingProvider, 32-dim).
+-- embedding_model is intentionally left NULL for hashed rows (no named model).
 UPDATE session_handoffs
    SET embedding_provider = 'hashed',
        embedding_dim      = 32

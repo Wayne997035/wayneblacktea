@@ -242,12 +242,12 @@ func writeDoctorHandoffEmbedding(ctx context.Context, pool *pgxpool.Pool, wsID *
 		return
 	}
 
-	// Dimension guard: validate the vector's length before serialising.
-	// ValidateEmbedding checks for empty vec and confirms len==wantDim.
-	// Here wantDim == len(vec) (the provider determines the dim); the guard
-	// catches the edge case of a corrupted/zero-length vector slipping through.
-	if err := localai.ValidateEmbedding(vec, len(vec)); err != nil {
-		slog.Warn("doctor: embedding dimension guard failed; skipping write", "err", err)
+	// Dimension guard: the vector length must be a known provider dimension
+	// (Gemini 768 or hashed-fallback 32). Any other length signals a corrupted or
+	// misconfigured provider output — skip the write rather than store a row whose
+	// provider tag would be 'unknown' and never match an active provider on recall.
+	if len(vec) != localai.GeminiEmbeddingDims && len(vec) != localai.HashedEmbeddingDims {
+		slog.Warn("doctor: embedding has unknown dimension; skipping write", "dim", len(vec))
 		return
 	}
 

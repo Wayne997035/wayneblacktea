@@ -96,32 +96,46 @@ func (h *SessionHandler) SetHandoff(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
-	if h.embedder != nil {
-		text := req.Intent
-		if req.ContextSummary != "" {
-			text += "\n" + req.ContextSummary
-		}
-		handoffID := handoff.ID
-		store := h.store
-		embedder := h.embedder
-		go func(id uuid.UUID) {
-			// Bounded context: goroutine must not outlive server shutdown drain.
-			// request ctx is cancelled on response — use independent timeout.
-			ctx, cancel := context.WithTimeout(context.Background(), embedTimeout)
-			defer cancel()
-			vec, err := embedder.Embed(ctx, text)
-			if err != nil || len(vec) == 0 {
-				if err != nil {
-					slog.Warn("session embed: embedding failed", "err", err)
-				}
-				return
-			}
-			providerTag := localai.ProviderTagFromDim(len(vec))
-			if err := store.UpdateEmbeddingByID(ctx, id, localai.SerializeEmbedding(vec), providerTag, len(vec)); err != nil {
-				slog.Warn("session embed: UpdateEmbeddingByID failed", "err", err)
-			}
-		}(handoffID)
-	}
+	h.embedHandoffAsync(handoff.ID, req.Intent, req.ContextSummary)
 
 	return c.JSON(http.StatusCreated, handoff)
+}
+
+// embedHandoffAsync embeds the handoff text in a bounded background goroutine and
+// writes the embedding + provider metadata. No-op when no embedder is configured
+// (GEMINI_API_KEY unset). Extracted from SetHandoff to keep that handler's
+// cyclomatic complexity within budget.
+func (h *SessionHandler) embedHandoffAsync(handoffID uuid.UUID, intent, contextSummary string) {
+	if h.embedder == nil {
+		return
+	}
+	text := intent
+	if contextSummary != "" {
+		text += "\n" + contextSummary
+	}
+	store := h.store
+	embedder := h.embedder
+	go func(id uuid.UUID) {
+		// Bounded context: goroutine must not outlive server shutdown drain.
+		// request ctx is cancelled on response — use independent timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), embedTimeout)
+		defer cancel()
+		vec, err := embedder.Embed(ctx, text)
+		if err != nil || len(vec) == 0 {
+			if err != nil {
+				slog.Warn("session embed: embedding failed", "err", err)
+			}
+			return
+		}
+		// Dimension guard before serialising: reject any non-provider dimension
+		// (Gemini 768 / hashed 32) so a corrupted embedding can't poison recall.
+		if len(vec) != localai.GeminiEmbeddingDims && len(vec) != localai.HashedEmbeddingDims {
+			slog.Warn("session embed: embedding has unknown dimension; skipping write", "dim", len(vec))
+			return
+		}
+		providerTag := localai.ProviderTagFromDim(len(vec))
+		if err := store.UpdateEmbeddingByID(ctx, id, localai.SerializeEmbedding(vec), providerTag, len(vec)); err != nil {
+			slog.Warn("session embed: UpdateEmbeddingByID failed", "err", err)
+		}
+	}(handoffID)
 }

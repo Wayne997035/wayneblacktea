@@ -179,7 +179,9 @@ func openReembedPool() (*pgxpool.Pool, error) {
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("reembed: invalid DATABASE_URL: %w", err)
+		// Do NOT wrap the raw pgx error: ParseConfig can echo the DSN (incl. password)
+		// into the message, which then lands in stderr / terminal history.
+		return nil, fmt.Errorf("reembed: invalid DATABASE_URL (check format; credentials redacted)")
 	}
 	cfg.MaxConns = 2
 	cfg.MinConns = 0
@@ -202,23 +204,27 @@ func openReembedPool() (*pgxpool.Pool, error) {
 func reembedTable(pool *pgxpool.Pool, table string, cfg *reembedConfig) error {
 	slog.Info("reembed: starting table", "table", table, "target_provider", cfg.targetProvider)
 	total := 0
+	totalFailed := 0
 	for {
 		// Each batch gets its own context so one slow batch does not starve the next.
 		// context.Background() is intentional — no parent deadline for backfill loops.
 		ctx, cancel := context.WithTimeout(context.Background(), reembedDBTimeout)
-		n, err := reembedBatch(ctx, pool, table, cfg)
+		n, failed, err := reembedBatch(ctx, pool, table, cfg)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("batch error: %w", err)
 		}
 		total += n
-		slog.Info("reembed: batch done", "table", table, "rows", n, "total", total)
-		if n < cfg.batchSize {
+		totalFailed += failed
+		slog.Info("reembed: batch done", "table", table, "rows", n, "failed", failed, "total", total)
+		// Break on the SELECTED count (processed+failed): a batch of failed rows must
+		// not be mistaken for "no more rows" or the loop would silently skip them.
+		if n+failed < cfg.batchSize {
 			break // last batch — done
 		}
 		time.Sleep(reembedBatchSleep)
 	}
-	slog.Info("reembed: table complete", "table", table, "total", total)
+	slog.Info("reembed: table complete", "table", table, "total", total, "failed", totalFailed)
 	return nil
 }
 
@@ -227,18 +233,18 @@ func reembedTable(pool *pgxpool.Pool, table string, cfg *reembedConfig) error {
 // Returns the number of rows processed.
 func reembedBatch(
 	ctx context.Context, pool *pgxpool.Pool, table string, cfg *reembedConfig,
-) (int, error) {
+) (processed int, failed int, err error) {
 	// Build a query that retrieves the text and ID for rows that need reembedding.
 	// session_handoffs: embed intent + summary_text
 	// decisions: embed title + decision
 	q, err := reembedSelectQuery(table)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	rows, err := pool.Query(ctx, q, cfg.targetProvider, cfg.batchSize)
 	if err != nil {
-		return 0, fmt.Errorf("select batch: %w", err)
+		return 0, 0, fmt.Errorf("select batch: %w", err)
 	}
 	defer rows.Close()
 
@@ -252,7 +258,7 @@ func reembedBatch(
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate rows: %w", err)
+		return 0, 0, fmt.Errorf("iterate rows: %w", err)
 	}
 
 	return reembedRows(ctx, pool, table, items, cfg)
@@ -307,13 +313,12 @@ type reembedRow struct {
 func reembedRows(
 	ctx context.Context, pool *pgxpool.Pool, table string,
 	items []reembedRow, cfg *reembedConfig,
-) (int, error) {
+) (processed int, failed int, err error) {
 	updateQ, err := reembedUpdateQuery(table)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	processed := 0
 	for _, it := range items {
 		if strings.TrimSpace(it.text) == "" {
 			slog.Warn("reembed: empty text; skipping row", "table", table, "id", it.id)
@@ -322,18 +327,21 @@ func reembedRows(
 		vec, embErr := cfg.embedder.Embed(it.text)
 		if embErr != nil || len(vec) == 0 {
 			slog.Warn("reembed: embed failed; skipping row", "table", table, "id", it.id, "err", embErr)
+			failed++
 			continue
 		}
 		if valErr := localai.ValidateEmbedding(vec, cfg.targetDim); valErr != nil {
 			slog.Warn("reembed: dimension mismatch; skipping row", "table", table, "id", it.id, "err", valErr)
+			failed++
 			continue
 		}
 		embBytes := localai.SerializeEmbedding(vec)
 		if _, updateErr := pool.Exec(ctx, updateQ, embBytes, cfg.targetProvider, cfg.targetDim, it.id); updateErr != nil {
 			slog.Warn("reembed: update failed; skipping row", "table", table, "id", it.id, "err", updateErr)
+			failed++
 			continue
 		}
 		processed++
 	}
-	return processed, nil
+	return processed, failed, nil
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 )
 
 const (
@@ -162,7 +163,7 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 	}
 
 	// Determine the active provider tag so recall queries can filter to same-provider rows.
-	activeProvider := providerTagFromVec(queryVec)
+	activeProvider := localai.ProviderTagFromDim(len(queryVec))
 
 	var lines []string
 	total := 0
@@ -194,9 +195,10 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		total += len(line)
 	}
 
-	// Top-K similar knowledge items (provider-filtered; knowledge_items uses real Gemini
-	// 768-dim via factory.go:189 so cosine recall works when GEMINI_API_KEY is set).
-	for _, k := range fetchCosineSimilarKnowledge(ctx, pool, wsID, queryVec, activeProvider, contextRecallTopK) {
+	// Top-K similar knowledge items via pgvector native cosine. knowledge_items.embedding is
+	// vector(768) written by the real Gemini provider (factory.go:189). No provider filter:
+	// every knowledge row is real Gemini 768-dim, so there is no mixed-space hazard.
+	for _, k := range fetchCosineSimilarKnowledge(ctx, pool, wsID, queryVec, contextRecallTopK) {
 		line := "- [knowledge] " + k.title + ": " + truncate(k.content, 100)
 		if total+len(line) > contextWindowChars {
 			break
@@ -348,42 +350,40 @@ type knowledgeRecallRow struct {
 	content string
 }
 
-// fetchCosineSimilarKnowledge fetches knowledge items sorted by cosine similarity
-// to queryVec, filtered to rows with matching embedding_provider.
-// knowledge_items.embedding is written by the real Gemini 768-dim provider via
-// factory.go:189 so cosine recall works when GEMINI_API_KEY is set.
+// fetchCosineSimilarKnowledge fetches knowledge items most similar to queryVec using
+// pgvector's native <=> operator (DB-side cosine + ORDER BY). knowledge_items.embedding is
+// vector(768) written by the real Gemini provider (factory.go:189), so recall works when
+// GEMINI_API_KEY is set. Unlike handoffs/decisions (BYTEA brute-force via
+// queryCosineCandidates), this table is native pgvector and has NO embedding_provider column
+// — every row is real Gemini 768-dim, so no provider filter and no mixed-space hazard.
 //
-// SECURITY: filtered by workspace_id via queryCosineCandidates.
+// SECURITY: filtered by workspace_id in the query.
 func fetchCosineSimilarKnowledge(
 	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID,
-	queryVec []float32, activeProvider string, limit int,
+	queryVec []float32, limit int,
 ) []knowledgeRecallRow {
-	const q = `SELECT title, content, embedding
+	const q = `SELECT title, content
 		FROM knowledge_items
 		WHERE embedding IS NOT NULL
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'gemini')
-		ORDER BY created_at DESC
-		LIMIT 200`
-	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: knowledge cosine query failed", uuidArg(wsID), activeProvider)
-	result := make([]knowledgeRecallRow, 0, len(items))
-	for _, it := range items {
-		result = append(result, knowledgeRecallRow{title: it.col1, content: it.col2})
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
+		  AND (1 - (embedding <=> $1::vector)) >= $4
+		ORDER BY embedding <=> $1::vector
+		LIMIT $3`
+	rows, err := pool.Query(ctx, q, pgvector.NewVector(queryVec), uuidArg(wsID), limit, contextCosineSimilarityThreshold)
+	if err != nil {
+		slog.Warn("wbt-context: knowledge cosine query failed", "err", err)
+		return nil
+	}
+	defer rows.Close()
+	result := make([]knowledgeRecallRow, 0, limit)
+	for rows.Next() {
+		var r knowledgeRecallRow
+		if err := rows.Scan(&r.title, &r.content); err != nil {
+			continue
+		}
+		result = append(result, r)
 	}
 	return result
-}
-
-// providerTagFromVec returns the provider string tag matching the vector's length.
-// Used to filter same-provider rows from DB queries.
-func providerTagFromVec(vec []float32) string {
-	switch len(vec) {
-	case localai.HashedEmbeddingDims:
-		return "hashed"
-	case localai.GeminiEmbeddingDims:
-		return "gemini"
-	default:
-		return "unknown"
-	}
 }
 
 // SortBySimDesc sorts a slice of any type by descending similarity score.
