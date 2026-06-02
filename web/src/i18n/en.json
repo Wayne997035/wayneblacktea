@@ -36,6 +36,12 @@
     },
     "noProjects": "No active projects",
     "noTasksThisWeek": "No tasks this week",
+    "noMcpActions": "No recent automation actions",
+    "aiCost": {
+      "title": "AI COST (30d)",
+      "total": "Total",
+      "empty": "No AI usage recorded in the last 30 days"
+    },
     "noHandoff": "No pending handoff",
     "noNextTask": "No pending tasks",
     "noNearTermTasks": "No tasks due in the next 7 days",

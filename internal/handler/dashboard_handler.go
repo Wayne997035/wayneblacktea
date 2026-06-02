@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -55,6 +56,17 @@ type dashboardProposalStore interface {
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
 }
 
+// dashboardAICostStore is the narrow interface for ai_cost_ledger queries.
+// aicost.PgStore satisfies this interface.
+type dashboardAICostStore interface {
+	// AICostLast30d returns per-model aggregated cost and grand total for the
+	// last 30 days in the configured workspace.
+	AICostLast30d(ctx context.Context) ([]aicost.CostRow, int64, error)
+}
+
+// DashboardAICostStoreIface is the exported alias for cmd/server wiring.
+type DashboardAICostStoreIface = dashboardAICostStore
+
 // DashboardHandler handles the /api/dashboard/* endpoints.
 type DashboardHandler struct {
 	gtd      dashboardGTDStore
@@ -66,6 +78,8 @@ type DashboardHandler struct {
 	handoff automationHandoffStore
 	// activity is optional; nil = last_updated_at / automation-feed skipped.
 	activity dashboardActivityStore
+	// aiCost is optional; nil = ai-cost endpoint returns empty response.
+	aiCost dashboardAICostStore
 }
 
 // NewDashboardHandler creates a DashboardHandler.
@@ -76,6 +90,11 @@ func NewDashboardHandler(g dashboardGTDStore, d dashboardDecisionStore, p dashbo
 // SetActivityStore wires the activity store into the dashboard handler.
 func (h *DashboardHandler) SetActivityStore(s dashboardActivityStore) {
 	h.activity = s
+}
+
+// SetAICostStore wires the AI cost store into the dashboard handler.
+func (h *DashboardHandler) SetAICostStore(s dashboardAICostStore) {
+	h.aiCost = s
 }
 
 // statsResponse is the JSON shape for GET /api/dashboard/stats.
@@ -589,6 +608,43 @@ func countVagueTasks(tasks []db.Task, sampleCap int) (int, []string) {
 		}
 	}
 	return count, sampleIDs
+}
+
+// aiCostResponse is the JSON shape for GET /api/dashboard/ai-cost.
+type aiCostResponse struct {
+	// ByModel holds one entry per distinct model active in the last 30 days.
+	ByModel []aicost.CostRow `json:"by_model"`
+	// TotalCostUSD is the sum of all model costs over 30 days.
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	// Period describes the aggregation window.
+	Period string `json:"period"`
+}
+
+// GetAICost handles GET /api/dashboard/ai-cost.
+// Returns per-model token totals and computed USD costs for the last 30 days.
+// When the PG pool is unavailable (SQLite dev) the aiCost store is nil and
+// the endpoint returns an empty response (graceful degrade).
+func (h *DashboardHandler) GetAICost(c echo.Context) error {
+	if h.aiCost == nil {
+		return c.JSON(http.StatusOK, aiCostResponse{
+			ByModel: []aicost.CostRow{},
+			Period:  "30d",
+		})
+	}
+	ctx := c.Request().Context()
+	rows, grandTotal, err := h.aiCost.AICostLast30d(ctx)
+	if err != nil {
+		c.Logger().Errorf("GetAICost AICostLast30d: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if rows == nil {
+		rows = []aicost.CostRow{}
+	}
+	return c.JSON(http.StatusOK, aiCostResponse{
+		ByModel:      rows,
+		TotalCostUSD: float64(grandTotal) / 1_000_000,
+		Period:       "30d",
+	})
 }
 
 // GetVagueTasks handles GET /api/dashboard/vague-tasks.

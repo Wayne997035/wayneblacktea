@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/google/uuid"
 )
 
 const (
@@ -62,8 +64,25 @@ type AtomizeResult struct {
 
 // Atomizer extracts atomic facts from text using claude-haiku.
 type Atomizer struct {
-	client *anthropic.Client
-	model  string
+	client      *anthropic.Client
+	model       string
+	recorder    aicost.Recorder
+	workspaceID *uuid.UUID
+}
+
+// WithCostRecorder sets the cost recorder and workspace ID on the Atomizer.
+func (a *Atomizer) WithCostRecorder(r aicost.Recorder, workspaceID *uuid.UUID) *Atomizer {
+	a.recorder = r
+	a.workspaceID = workspaceID
+	return a
+}
+
+// costRecorder returns the configured recorder or a NopRecorder when unset.
+func (a *Atomizer) costRecorder() aicost.Recorder {
+	if a.recorder != nil {
+		return a.recorder
+	}
+	return aicost.NopRecorder{}
 }
 
 // NewAtomizer creates an Atomizer. Returns nil if CLAUDE_API_KEY env is empty
@@ -106,6 +125,14 @@ func (a *Atomizer) Atomize(ctx context.Context, text string) (*AtomizeResult, er
 	if err != nil {
 		return nil, fmt.Errorf("atomizer: API call failed: %w", err)
 	}
+	a.costRecorder().Record(ctx, a.workspaceID, aicost.RecordParams{
+		Caller:           "atomizer.Atomize",
+		Model:            a.model,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 
 	if len(resp.Content) == 0 {
 		return nil, ErrEmptyAtomizeResponse
@@ -169,6 +196,14 @@ func (a *Atomizer) Consolidate(ctx context.Context, text string) (*ConsolidatedA
 	if err != nil {
 		return nil, fmt.Errorf("consolidator: API call failed: %w", err)
 	}
+	a.costRecorder().Record(ctx, a.workspaceID, aicost.RecordParams{
+		Caller:           "atomizer.Consolidate",
+		Model:            a.model,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 
 	if len(resp.Content) == 0 {
 		return nil, ErrEmptyAtomizeResponse

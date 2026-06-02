@@ -522,6 +522,16 @@ WHERE workspace_id = $1
 		"high_recall_items", len(items),
 		"proposals_created", created,
 	)
+	// Direction-D instrumentation: log activity so atom/outcome growth is visible
+	// in the dashboard automation feed. Best-effort: failures do not abort the job.
+	if deps.gtd != nil {
+		if logErr := deps.gtd.LogActivity(ctx, "scheduler", "knowledge_to_skill_candidate",
+			nil,
+			fmt.Sprintf("high_recall_items=%d proposals_created=%d", len(items), created),
+		); logErr != nil {
+			slog.Warn("cognitive: knowledge_to_skill_candidate: LogActivity failed", "err", logErr)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -635,4 +645,13 @@ func (sc *Scheduler) runBehaviorRuleCandidate() {
 		"reflections_with_patterns", len(reflections),
 		"proposals_created", created,
 	)
+	// Direction-D instrumentation: best-effort activity log for dashboard feed.
+	if deps.gtd != nil {
+		if logErr := deps.gtd.LogActivity(ctx, "scheduler", "behavior_rule_candidate",
+			nil,
+			fmt.Sprintf("reflections_with_patterns=%d proposals_created=%d", len(reflections), created),
+		); logErr != nil {
+			slog.Warn("cognitive: behavior_rule_candidate: LogActivity failed", "err", logErr)
+		}
+	}
 }

@@ -90,6 +90,18 @@ func (s *Scheduler) runAtomConsolidation() {
 		return
 	}
 	runAtomConsolidation(*s.atomConsolidDeps)
+	// Direction-D instrumentation: best-effort activity log so atom growth is
+	// visible in the dashboard automation feed. Uses cognitiveDeps.gtd when
+	// available; skips silently when not configured.
+	if s.cognitiveDeps != nil && s.cognitiveDeps.gtd != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if logErr := s.cognitiveDeps.gtd.LogActivity(ctx, "scheduler", "atom_consolidation",
+			nil, "completed",
+		); logErr != nil {
+			slog.Warn("atom_consolidation: LogActivity failed", "err", logErr)
+		}
+	}
 }
 
 // runAtomConsolidation is the core logic for the M9 atom consolidation cron.
