@@ -20,6 +20,10 @@ dist/
 /tmp/
 *.log
 
+# DXT package build output (staged by the goreleaser before-hook, outside ./dist
+# so goreleaser's "ensuring distribution directory" empty-check still passes).
+build/dxt/staging/
+
 # DB credentials
 local.yaml
 application-local.yml

@@ -12,6 +12,21 @@ before:
     - sh -c 'cd web && npm ci --ignore-scripts'
     - sh -c 'cd web && npm run build'
     - sh -c 'mkdir -p cmd/server/web && rm -rf cmd/server/web/dist && cp -r web/dist cmd/server/web/dist'
+    # Build the DXT package AFTER `release --clean` wiped ./dist, so it survives.
+    # The version placeholder in manifest.json is replaced with the real tag, then
+    # manifest.json + icon.png are zipped into build/dxt/staging/wayneblacktea.dxt
+    # (referenced by release.extra_files below). Writing OUTSIDE ./dist is required:
+    # goreleaser's "ensuring distribution directory" step (which runs AFTER before
+    # hooks) rejects a non-empty ./dist, so the .dxt cannot live in ./dist itself —
+    # extra_files copies it into the release upload from this staging path.
+    - >-
+      sh -c '
+      rm -rf build/dxt/staging && mkdir -p build/dxt/staging/pkg &&
+      sed "s/\"version\": \"0.0.0\"/\"version\": \"{{ .Version }}\"/" build/dxt/manifest.json > build/dxt/staging/pkg/manifest.json &&
+      cp build/dxt/icon.png build/dxt/staging/pkg/icon.png &&
+      (cd build/dxt/staging/pkg && zip -X -q ../wayneblacktea.dxt manifest.json icon.png) &&
+      rm -rf build/dxt/staging/pkg
+      '
 
 builds:
   - id: server
@@ -189,9 +204,68 @@ archives:
       - LICENSE
       - README.md
 
+homebrew_casks:
+  # CLI bundle — wbt + the four sidecar binaries, all placed on PATH.
+  - name: wayneblacktea-cli
+    description: "wayneblacktea CLI — wbt installer + SessionStart/PostToolUse/Stop hook + guard binaries"
+    homepage: "https://github.com/Wayne997035/wayneblacktea"
+    ids:
+      - cli
+    binaries:
+      - wbt
+      - wbt-context
+      - wbt-hook
+      - wbt-guard
+      - wbt-doctor
+    repository:
+      owner: Wayne997035
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    caveats: |
+      Finish setup by running:
+        wbt setup
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            ["wbt", "wbt-context", "wbt-hook", "wbt-guard", "wbt-doctor"].each do |bin|
+              system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/#{bin}"]
+            end
+          end
+
+  # HTTP + MCP server binary.
+  - name: wayneblacktea-server
+    description: "wayneblacktea server — HTTP API + MCP transport for the Personal OS / GTD store"
+    homepage: "https://github.com/Wayne997035/wayneblacktea"
+    ids:
+      - server
+    binaries:
+      - wayneblacktea-server
+    repository:
+      owner: Wayne997035
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    caveats: |
+      Finish setup by running:
+        wbt setup
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/wayneblacktea-server"]
+          end
+
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
+  # Include the before-hook-built .dxt in checksums.txt. goreleaser v2 excludes
+  # release.extra_files from the checksum manifest, and cosign only signs
+  # checksums.txt — so without this the .dxt would ship with no integrity
+  # coverage. Glob MUST match the before-hook output path and release.extra_files.
+  extra_files:
+    - glob: ./build/dxt/staging/wayneblacktea.dxt
 
 signs:
   - cmd: cosign
@@ -236,3 +310,8 @@ release:
   prerelease: auto
   mode: replace
   name_template: "v{{ .Version }}"
+  # Built by the before-hook (after `release --clean` wiped ./dist) into a staging
+  # path OUTSIDE ./dist, so it survives goreleaser's dist empty-check and is uploaded
+  # as a release asset for Claude Desktop one-click install.
+  extra_files:
+    - glob: ./build/dxt/staging/wayneblacktea.dxt
