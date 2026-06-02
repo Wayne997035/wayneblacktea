@@ -121,6 +121,7 @@ type Scheduler struct {
 	consolidDeps          *consolidationDeps
 	knowledgeConsolidDeps *knowledgeConsolidationDeps
 	atomConsolidDeps      *atomConsolidDeps
+	atomBridgeDeps        *atomBridgeDeps
 	statusDeps            *statusSnapshotDeps
 	pruner                *decay.Pruner
 	playbookDeps          *playbookDeps
@@ -144,6 +145,9 @@ type Scheduler struct {
 	// behaviorRulePruner deletes behavior_rules rows (status rejected/deprecated) older than 365d.
 	// Set via WithBehaviorRulePruner after New(); nil skips the prune job.
 	behaviorRulePruner behaviorRulePruneStore
+	// governanceDeps bundles the behavior governance weekly job dependencies.
+	// Set via WithBehaviorGovernance after New(); nil skips the job.
+	governanceDeps *governanceDeps
 	// cognitiveDeps bundles the 7 Memory-7 cognitive job dependencies.
 	// Set via WithCognitiveDeps after New(); nil skips all 7 cognitive jobs.
 	cognitiveDeps *cognitiveDeps

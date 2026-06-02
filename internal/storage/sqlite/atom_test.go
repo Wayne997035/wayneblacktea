@@ -579,3 +579,109 @@ func TestSQLiteAtomStore_CountByDigestStatus(t *testing.T) {
 		}
 	})
 }
+
+func setupListByDigestStatusFixture(t *testing.T) (store *wbtsqlite.AtomStore, wsID, otherWsID uuid.UUID) {
+	t.Helper()
+	db := openAtomDB(t)
+	store = wbtsqlite.NewAtomStore(db)
+	ctx := context.Background()
+	wsID = uuid.New()
+	otherWsID = uuid.New()
+	parentID := uuid.New()
+
+	for i := 0; i < 3; i++ {
+		a, err := store.AddAtom(ctx, atom.AddAtomParams{
+			WorkspaceID: &wsID,
+			ParentTable: "decisions",
+			ParentID:    parentID,
+			Content:     "consolidated knowledge item about integration testing practices",
+			Tags:        []string{"testing", "integration"},
+		})
+		if err != nil {
+			t.Fatalf("seed atom %d: %v", i, err)
+		}
+		if err := store.SetDigestStatus(ctx, a.ID, "consolidated", ""); err != nil {
+			t.Fatalf("set consolidated %d: %v", i, err)
+		}
+	}
+	other, err := store.AddAtom(ctx, atom.AddAtomParams{
+		WorkspaceID: &otherWsID,
+		ParentTable: "decisions",
+		ParentID:    parentID,
+		Content:     "other workspace consolidated",
+	})
+	if err != nil {
+		t.Fatalf("seed other ws atom: %v", err)
+	}
+	if err := store.SetDigestStatus(ctx, other.ID, "consolidated", ""); err != nil {
+		t.Fatalf("set other ws consolidated: %v", err)
+	}
+	return store, wsID, otherWsID
+}
+
+func TestSQLiteAtomStore_ListByDigestStatus_HappyPath(t *testing.T) {
+	store, wsID, _ := setupListByDigestStatusFixture(t)
+	ctx := context.Background()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 10)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results, got %d", len(results))
+	}
+	for _, a := range results {
+		if a.DigestStatus == nil || *a.DigestStatus != "consolidated" {
+			t.Errorf("expected digest_status='consolidated', got %v", a.DigestStatus)
+		}
+	}
+}
+
+func TestSQLiteAtomStore_ListByDigestStatus_Limit(t *testing.T) {
+	store, wsID, _ := setupListByDigestStatusFixture(t)
+	ctx := context.Background()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 1)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus limit: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result with limit=1, got %d", len(results))
+	}
+}
+
+func TestSQLiteAtomStore_ListByDigestStatus_WorkspaceIsolation(t *testing.T) {
+	store, wsID, otherWsID := setupListByDigestStatusFixture(t)
+	ctx := context.Background()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 100)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus isolation: %v", err)
+	}
+	for _, a := range results {
+		if a.WorkspaceID != nil && *a.WorkspaceID == otherWsID {
+			t.Errorf("other workspace atom leaked: %s", a.ID)
+		}
+	}
+}
+
+func TestSQLiteAtomStore_ListByDigestStatus_UnknownStatus(t *testing.T) {
+	store, wsID, _ := setupListByDigestStatusFixture(t)
+	ctx := context.Background()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "nosuchstatus", 10)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus unknown: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestSQLiteAtomStore_ListByDigestStatus_NilWorkspace(t *testing.T) {
+	store, _, _ := setupListByDigestStatusFixture(t)
+	ctx := context.Background()
+	results, err := store.ListByDigestStatus(ctx, nil, "consolidated", 100)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus nil ws: %v", err)
+	}
+	if len(results) < 4 {
+		t.Errorf("expected at least 4 consolidated atoms globally, got %d", len(results))
+	}
+}

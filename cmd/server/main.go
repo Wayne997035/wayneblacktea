@@ -468,6 +468,12 @@ func run() error {
 			return fmt.Errorf("wiring behavior rule pruner: %w", err)
 		}
 	}
+	// Wire behavior governance weekly job (Wednesday 04:15 Asia/Taipei). Applies
+	// outcome→rule confidence updates and auto-deprecates stale low-confidence rules.
+	// Startup-fatal if it errors (registering a gocron job should not fail in practice).
+	if err := sched.WithBehaviorGovernance(stores.Outcome(), stores.BehaviorRule(), stores.WorkspaceID()); err != nil {
+		return fmt.Errorf("wiring behavior governance: %w", err)
+	}
 	// Wire Memory-9 atom consolidation (daily 04:30 Asia/Taipei). Skipped when
 	// CLAUDE_API_KEY is absent (atomizer nil) or atom store unavailable. Both
 	// conditions are nil-safe inside WithAtomConsolidator.
@@ -475,6 +481,14 @@ func run() error {
 		atomizer.WithCostRecorder(costRecorder, stores.WorkspaceID())
 		if err := sched.WithAtomConsolidator(scheduler.NewAtomConsolidDeps(stores.Atom(), atomizer, stores.WorkspaceID())); err != nil {
 			return fmt.Errorf("wiring atom consolidator: %w", err)
+		}
+	}
+	// Wire atom-bridge weekly job (Saturday 04:15 Asia/Taipei). Promotes
+	// consolidated atoms into pending knowledge proposals. Skipped when atom
+	// or proposal store is unavailable; nil-safe inside WithAtomBridge.
+	if stores.Atom() != nil && stores.Proposal() != nil {
+		if err := sched.WithAtomBridge(scheduler.NewAtomBridgeDeps(stores.Atom(), stores.Proposal(), stores.WorkspaceID())); err != nil {
+			return fmt.Errorf("wiring atom bridge: %w", err)
 		}
 	}
 	// Wire Memory-7 cognitive jobs. All 7 jobs are nil-safe: if the pool or

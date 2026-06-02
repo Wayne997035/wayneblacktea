@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,6 +19,49 @@ func openOutcomeDB(t *testing.T) *wbtsqlite.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// TestApplyColumnUpgrades_Idempotent verifies MAJOR-4: calling Open() on an
+// existing SQLite database (which already has related_rule_ids from schema.sql)
+// succeeds without "duplicate column name" errors. This is the key invariant of
+// applyColumnUpgrades — it must be safe on both fresh and pre-existing DBs.
+func TestApplyColumnUpgrades_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "upgrade-test.db")
+	ctx := context.Background()
+
+	// First open: creates DB with schema.sql (includes related_rule_ids).
+	db1, err := wbtsqlite.Open(ctx, "file:"+dbPath, "")
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	_ = db1.Close()
+
+	// Second open: applyColumnUpgrades runs again — must not fail with
+	// "duplicate column name: related_rule_ids".
+	db2, err := wbtsqlite.Open(ctx, "file:"+dbPath, "")
+	if err != nil {
+		t.Fatalf("second Open (idempotent upgrade): %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	// Confirm the column exists and is usable (insert + select round-trip).
+	store := wbtsqlite.NewOutcomeStore(db2)
+	wsID := uuid.New()
+	rule1 := uuid.New()
+	o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       uuid.New(),
+		Result:         "success",
+		RelatedRuleIDs: []uuid.UUID{rule1},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome after idempotent open: %v", err)
+	}
+	if len(o.RelatedRuleIDs) != 1 || o.RelatedRuleIDs[0] != rule1 {
+		t.Errorf("RelatedRuleIDs round-trip failed: got %v, want [%s]", o.RelatedRuleIDs, rule1)
+	}
 }
 
 // TestSQLiteOutcomeStore_CreateOutcome verifies CreateOutcome happy paths and
@@ -299,4 +343,78 @@ func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
 	if err == nil {
 		t.Error("expected ErrNotFound after prune, got nil")
 	}
+}
+
+// TestSQLiteOutcomeStore_RelatedRuleIDs verifies JSON round-trip for
+// related_rule_ids (empty and populated cases — migration 000063).
+func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	t.Run("empty related_rule_ids round-trips as empty slice", func(t *testing.T) {
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "task",
+			EntityID:       entityID,
+			Result:         "success",
+			RelatedRuleIDs: []uuid.UUID{},
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome: %v", err)
+		}
+		if o.RelatedRuleIDs == nil {
+			t.Error("RelatedRuleIDs should not be nil (empty slice expected)")
+		}
+		if len(o.RelatedRuleIDs) != 0 {
+			t.Errorf("expected 0 related rule IDs, got %d", len(o.RelatedRuleIDs))
+		}
+	})
+
+	t.Run("populated related_rule_ids round-trips correctly", func(t *testing.T) {
+		rule1, rule2 := uuid.New(), uuid.New()
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "decision",
+			EntityID:       entityID,
+			Result:         "failure",
+			RelatedRuleIDs: []uuid.UUID{rule1, rule2},
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome with rule IDs: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 2 {
+			t.Fatalf("expected 2 related rule IDs, got %d", len(o.RelatedRuleIDs))
+		}
+		// Verify both IDs are preserved (order-independent).
+		got := make(map[uuid.UUID]bool, len(o.RelatedRuleIDs))
+		for _, id := range o.RelatedRuleIDs {
+			got[id] = true
+		}
+		if !got[rule1] {
+			t.Errorf("rule1 %v not found in RelatedRuleIDs", rule1)
+		}
+		if !got[rule2] {
+			t.Errorf("rule2 %v not found in RelatedRuleIDs", rule2)
+		}
+	})
+
+	t.Run("nil related_rule_ids treated as empty", func(t *testing.T) {
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "sprint",
+			EntityID:       entityID,
+			Result:         "partial",
+			RelatedRuleIDs: nil,
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome nil rule IDs: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 0 {
+			t.Errorf("expected 0 related rule IDs for nil input, got %d", len(o.RelatedRuleIDs))
+		}
+	})
 }

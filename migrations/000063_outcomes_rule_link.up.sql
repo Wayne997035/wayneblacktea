@@ -1,0 +1,15 @@
+-- 000063_outcomes_rule_link.up.sql
+-- Adds an optional array column to outcomes so an outcome can explicitly link
+-- to one or more behavior rules. The behavior governance scheduler job
+-- (internal/scheduler/behavior_governance.go) uses this link to call
+-- ApplyOutcome per referenced rule.
+--
+-- Design notes:
+--   * UUID[] is nullable with no DEFAULT so existing rows keep NULL
+--     (back-compatible — record_outcome still works without this field).
+--   * No index in Phase 1: the governance job does a full ListRecentOutcomes
+--     scan and filters in Go; an index will be added if query latency warrants.
+--   * NO FOREIGN KEY per CLAUDE.md red-line #9. Referential integrity is
+--     enforced application-side: ApplyOutcome tolerates ErrNotFound for
+--     stale rule IDs.
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS related_rule_ids UUID[];

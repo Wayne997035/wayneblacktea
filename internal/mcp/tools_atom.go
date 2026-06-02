@@ -2,13 +2,16 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/redact"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -16,6 +19,19 @@ import (
 )
 
 func (s *Server) registerAtomTools(ms *server.MCPServer) {
+	ms.AddTool(mcp.NewTool("promote_atom_to_knowledge",
+		mcp.WithDescription(
+			"Manually promote a consolidated memory atom into a pending knowledge proposal. "+
+				"The atom must have content >= 80 chars and at least 2 tags. "+
+				"The proposal is created with proposed_by='atom_bridge' and requires user "+
+				"confirmation via confirm_proposal before becoming a real knowledge item. "+
+				"Deduplication happens at confirm time (similarity threshold 0.88).",
+		),
+		mcp.WithString("atom_id",
+			mcp.Description("UUID of the atom to promote"),
+			mcp.Required()),
+	), s.handlePromoteAtomToKnowledge)
+
 	ms.AddTool(mcp.NewTool("traverse_atoms",
 		mcp.WithDescription(
 			"Traverse the memory atom graph from a starting atom, following links up to depth hops. "+
@@ -227,4 +243,116 @@ func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text stri
 		defer cancel()
 		fn(ctx, s.atomizer, s.atom, s.workspaceUUID(), parentTable, pid, t)
 	}(parentID, text)
+}
+
+// handlePromoteAtomToKnowledge manually promotes a single consolidated atom
+// to a pending knowledge proposal with proposed_by='atom_bridge'.
+// The tool applies the same quality gate as the weekly atom-bridge cron job:
+// content length >= 80 chars AND len(tags) >= 2.
+// Deduplication is delegated to AddItem's similarity check at confirm_proposal time.
+func (s *Server) handlePromoteAtomToKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawID := stringArg(args, "atom_id")
+	if rawID == "" {
+		return mcp.NewToolResultError("atom_id is required"), nil
+	}
+	atomID, err := uuid.Parse(rawID)
+	if err != nil {
+		return mcp.NewToolResultError("invalid atom_id UUID"), nil
+	}
+	if s.atom == nil {
+		return mcp.NewToolResultError("atom store not available"), nil
+	}
+	if s.proposal == nil {
+		return mcp.NewToolResultError("proposal store not available"), nil
+	}
+	a, errMsg := s.fetchAtomForPromotion(ctx, atomID)
+	if errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
+	}
+	return s.promoteSingleAtom(ctx, atomID, a)
+}
+
+// digestStatusConsolidated is the only digest_status value eligible for
+// promotion. Mirrors the scheduler package constant (scheduler.digestStatusConsolidated)
+// to avoid an awkward cross-package import in this tool file.
+const digestStatusConsolidated = "consolidated"
+
+// fetchAtomForPromotion retrieves an atom by ID using Traverse (depth=1)
+// and verifies that its digest_status is "consolidated" before returning it.
+// Only consolidated atoms may be promoted — atoms in any other status (pending,
+// done, failed, promoted) are rejected with a clear error message.
+// Returns the atom and an error message (non-empty = failure).
+func (s *Server) fetchAtomForPromotion(ctx context.Context, atomID uuid.UUID) (atom.Atom, string) {
+	result, err := s.atom.Traverse(ctx, atomID, 1)
+	if err != nil {
+		return atom.Atom{}, fmt.Sprintf("looking up atom: %v", err)
+	}
+	if result == nil || len(result.Atoms) == 0 {
+		return atom.Atom{}, fmt.Sprintf("atom %s not found", atomID)
+	}
+	a := result.Atoms[0]
+	// Guard: nil DigestStatus or any status other than "consolidated" is rejected.
+	// The scheduler's atom-bridge job only promotes consolidated atoms; this MCP
+	// tool must apply the same vetting (security — prevents promoting unreviewed atoms).
+	if a.DigestStatus == nil || *a.DigestStatus != digestStatusConsolidated {
+		var statusStr string
+		if a.DigestStatus == nil {
+			statusStr = "<nil>"
+		} else {
+			statusStr = *a.DigestStatus
+		}
+		return atom.Atom{}, fmt.Sprintf(
+			"atom %s has digest_status=%q; only %q atoms may be promoted to knowledge",
+			atomID, statusStr, digestStatusConsolidated,
+		)
+	}
+	return a, ""
+}
+
+// promoteSingleAtom validates quality gate and creates a knowledge proposal.
+func (s *Server) promoteSingleAtom(ctx context.Context, atomID uuid.UUID, a atom.Atom) (*mcp.CallToolResult, error) {
+	// Use rune count (not byte length) so CJK/emoji content is measured correctly.
+	if utf8.RuneCountInString(a.Content) < 80 {
+		return mcp.NewToolResultError(
+			fmt.Sprintf("atom content too short (%d runes); minimum is 80 runes for promotion", utf8.RuneCountInString(a.Content)),
+		), nil
+	}
+	if len(a.Tags) < 2 {
+		return mcp.NewToolResultError(
+			fmt.Sprintf("atom has %d tag(s); minimum is 2 tags for promotion", len(a.Tags)),
+		), nil
+	}
+	// Rune-aware title truncation prevents panic and invalid UTF-8 on CJK/emoji.
+	title := a.Content
+	if runes := []rune(title); len(runes) > 80 {
+		title = string(runes[:80])
+	}
+	payload, marshalErr := json.Marshal(proposal.KnowledgePayload{
+		Title:   title,
+		Content: a.Content,
+		Tags:    a.Tags,
+	})
+	if marshalErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("building proposal payload: %v", marshalErr)), nil
+	}
+	prop, createErr := s.proposal.Create(ctx, proposal.CreateParams{
+		WorkspaceID: s.workspaceUUID(),
+		Type:        proposal.TypeKnowledge,
+		Payload:     payload,
+		ProposedBy:  "atom_bridge",
+	})
+	if createErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("creating knowledge proposal: %v", createErr)), nil
+	}
+	if setErr := s.atom.SetDigestStatus(ctx, atomID, "promoted", ""); setErr != nil {
+		slog.Warn("promote_atom_to_knowledge: setting promoted status failed",
+			"atom_id", atomID, "err", setErr)
+	}
+	return jsonText(map[string]any{
+		"proposal_id": prop.ID,
+		"atom_id":     atomID,
+		"status":      "pending",
+		"message":     "atom promoted to pending knowledge proposal; confirm via confirm_proposal",
+	})
 }

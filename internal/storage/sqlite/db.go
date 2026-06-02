@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers "sqlite"
 )
@@ -55,6 +56,15 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	if _, err := conn.ExecContext(ctx, schemaSQL); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite apply schema: %w", err)
+	}
+	// applyColumnUpgrades adds columns introduced after an existing DB was created.
+	// schema.sql uses CREATE TABLE IF NOT EXISTS — new columns in the definition
+	// are silently skipped on existing tables. Each ALTER here is idempotent:
+	// "duplicate column name" errors are ignored so the call is safe on both
+	// fresh and pre-existing databases.
+	if err := applyColumnUpgrades(ctx, conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sqlite apply column upgrades: %w", err)
 	}
 	// Rebuilds the FTS5 inverted index unconditionally from knowledge_items; at personal scale completes in <1 ms.
 	if _, err := conn.ExecContext(ctx, `INSERT INTO knowledge_items_fts(knowledge_items_fts) VALUES('rebuild')`); err != nil {
@@ -128,4 +138,41 @@ func (d *DB) SqlConn() *sql.DB {
 // in legacy unscoped mode.
 func (d *DB) WorkspaceID() string {
 	return d.workspaceID
+}
+
+// columnUpgrade describes a single idempotent ALTER TABLE ADD COLUMN operation.
+type columnUpgrade struct {
+	table      string
+	column     string
+	definition string // column type + constraints, e.g. "TEXT NOT NULL DEFAULT '[]'"
+}
+
+// columnUpgrades lists columns added to existing tables after the initial
+// schema.sql was shipped. Each entry mirrors a migrations/sqlite/000NNN_*.up.sql
+// file that performs the same ALTER TABLE. ORDER MATTERS: apply in ascending
+// migration number order so dependencies are satisfied.
+var columnUpgrades = []columnUpgrade{
+	// migration 000063: related_rule_ids on outcomes (TEXT JSON array, default empty).
+	// Fresh DBs already have this via schema.sql CREATE TABLE IF NOT EXISTS; this
+	// ALTER is needed only for DBs created before 000063 was merged.
+	{table: "outcomes", column: "related_rule_ids", definition: "TEXT NOT NULL DEFAULT '[]'"},
+}
+
+// applyColumnUpgrades idempotently adds columns to existing tables.
+// SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS, so we detect
+// "duplicate column name" errors by string-matching the error message and treat
+// them as success. All other errors are returned as failures.
+func applyColumnUpgrades(ctx context.Context, conn *sql.DB) error {
+	for _, u := range columnUpgrades {
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", u.table, u.column, u.definition)
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			// SQLite returns "duplicate column name: <col>" when the column exists.
+			// Treat this as idempotent success — the column is already present.
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("adding column %s.%s: %w", u.table, u.column, err)
+		}
+	}
+	return nil
 }

@@ -545,14 +545,18 @@ CREATE INDEX IF NOT EXISTS idx_activity_log_workspace_project_created
 -- 90-day TTL enforced by the scheduler daily 03:30 prune job.
 -- No FOREIGN KEY per CLAUDE.md §9.
 CREATE TABLE IF NOT EXISTS outcomes (
-    id           TEXT PRIMARY KEY,
-    workspace_id TEXT,
-    entity_type  TEXT NOT NULL,
-    entity_id    TEXT NOT NULL,
-    result       TEXT NOT NULL CHECK (result IN ('success','failure','partial','unknown','regressed')),
-    metrics      TEXT,
-    notes        TEXT,
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT,
+    entity_type      TEXT NOT NULL,
+    entity_id        TEXT NOT NULL,
+    result           TEXT NOT NULL CHECK (result IN ('success','failure','partial','unknown','regressed')),
+    metrics          TEXT,
+    notes            TEXT,
+    -- related_rule_ids: JSON array of behavior_rule UUIDs linked to this outcome.
+    -- Added in migration 000063. NO FK per CLAUDE.md #9; integrity enforced app-side.
+    -- Mirrors playbooks.source_decision_ids pattern (schema.sql:398).
+    related_rule_ids TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_outcomes_workspace_entity ON outcomes(workspace_id, entity_type, entity_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_outcomes_entity_id ON outcomes(entity_id);

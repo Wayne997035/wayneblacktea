@@ -39,7 +39,8 @@ func uuidFromPgtype(v pgtype.UUID) *uuid.UUID {
 }
 
 // outcomeSelectCols is the canonical column list for outcome SELECT queries.
-const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, created_at`
+// related_rule_ids was added in migration 000063.
+const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, created_at`
 
 // evaluationSelectCols is the canonical column list for evaluation SELECT queries.
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
@@ -47,11 +48,12 @@ const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, i
 // scanOutcomeRow reads a full outcomes row from pgx.Rows into an Outcome.
 func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 	var (
-		o         Outcome
-		wsID      pgtype.UUID
-		entityID  pgtype.UUID
-		createdAt pgtype.Timestamptz
-		notesText pgtype.Text
+		o              Outcome
+		wsID           pgtype.UUID
+		entityID       pgtype.UUID
+		createdAt      pgtype.Timestamptz
+		notesText      pgtype.Text
+		relatedRuleIDs []uuid.UUID
 	)
 	err := rows.Scan(
 		&o.ID,
@@ -61,6 +63,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		&o.Result,
 		&o.Metrics,
 		&notesText,
+		&relatedRuleIDs,
 		&createdAt,
 	)
 	if err != nil {
@@ -76,6 +79,10 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 	if notesText.Valid {
 		o.Notes = notesText.String
 	}
+	if relatedRuleIDs == nil {
+		relatedRuleIDs = []uuid.UUID{}
+	}
+	o.RelatedRuleIDs = relatedRuleIDs
 	return o, nil
 }
 
@@ -112,8 +119,8 @@ func scanEvaluationRow(rows pgx.Rows) (Evaluation, error) {
 // CreateOutcome inserts a new outcome row and returns the persisted record.
 func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
-		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
 		RETURNING ` + outcomeSelectCols
 
 	var notesArg pgtype.Text
@@ -124,6 +131,14 @@ func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (
 	if len(params.Metrics) > 0 {
 		metricsArg = string(params.Metrics)
 	}
+	// pgx handles []uuid.UUID natively for UUID[]. Use empty slice, not nil,
+	// so the column receives '{}' rather than NULL (consistent with the nil check
+	// in migration 000063 which makes the column nullable — both are valid,
+	// but empty array is more explicit).
+	relatedRuleIDs := params.RelatedRuleIDs
+	if relatedRuleIDs == nil {
+		relatedRuleIDs = []uuid.UUID{}
+	}
 
 	rows, err := s.pool.Query(ctx, q,
 		toPgtypeUUID(params.WorkspaceID),
@@ -132,6 +147,7 @@ func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (
 		params.Result,
 		metricsArg,
 		notesArg,
+		relatedRuleIDs,
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("creating outcome: %w", err)

@@ -170,8 +170,9 @@ func (s *stubDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int
 
 // stubProposalStore implements the subset of proposal.StoreIface used by reflection.
 type stubProposalStore struct {
-	created   []*db.PendingProposal
-	createErr error
+	created     []*db.PendingProposal
+	proposedBys []string // captures ProposedBy from each Create call
+	createErr   error
 }
 
 func (s *stubProposalStore) Create(_ context.Context, p proposal.CreateParams) (*db.PendingProposal, error) {
@@ -185,6 +186,7 @@ func (s *stubProposalStore) Create(_ context.Context, p proposal.CreateParams) (
 		Status:  "pending",
 	}
 	s.created = append(s.created, row)
+	s.proposedBys = append(s.proposedBys, p.ProposedBy)
 	return row, nil
 }
 

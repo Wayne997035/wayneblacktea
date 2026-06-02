@@ -43,7 +43,12 @@ type Outcome struct {
 	Result      string     `json:"result"`
 	Metrics     []byte     `json:"metrics,omitempty"` // raw JSONB / JSON TEXT
 	Notes       string     `json:"notes,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// RelatedRuleIDs optionally links this outcome to one or more behavior rules.
+	// The behavior governance scheduler job uses this to call ApplyOutcome per
+	// referenced rule, closing the outcome→rule confidence feedback loop.
+	// NO FK per CLAUDE.md #9; stale rule IDs are tolerated application-side.
+	RelatedRuleIDs []uuid.UUID `json:"related_rule_ids,omitempty"`
+	CreatedAt      time.Time   `json:"created_at"`
 }
 
 // Evaluation is a structured analysis record attached to an Outcome.
@@ -65,6 +70,10 @@ type CreateOutcomeParams struct {
 	Result      string
 	Metrics     []byte // JSON object or nil
 	Notes       string
+	// RelatedRuleIDs optionally links this outcome to one or more behavior rules.
+	// When provided, the behavior governance scheduler job will call ApplyOutcome
+	// for each rule. Pass empty slice (not nil) for clarity; nil is also accepted.
+	RelatedRuleIDs []uuid.UUID
 }
 
 // CreateEvaluationParams holds parameters for evaluating an outcome.
