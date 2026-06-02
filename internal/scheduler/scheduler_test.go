@@ -10,6 +10,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // --- learning.StoreIface stub ---
@@ -521,5 +522,81 @@ func TestWithMergedPRsPruner_RegistersJob_And_Delegates(t *testing.T) {
 	}
 	if pruner.gotDuration != 30*24*time.Hour {
 		t.Errorf("PruneOlderThan got %v, want 30 days", pruner.gotDuration)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX 4: WithAICostLedgerPruner / runDailyAICostLedgerPrune tests
+// ---------------------------------------------------------------------------
+
+// TestRunDailyAICostLedgerPrune_NilPool_NoPanic verifies that
+// runDailyAICostLedgerPrune short-circuits cleanly when no Postgres pool is
+// wired (aiCostLedgerPool is nil — SQLite dev mode). Mirrors the nil-pool
+// guard pattern used by runDailyDisciplinePrune and other prune jobs.
+func TestRunDailyAICostLedgerPrune_NilPool_NoPanic(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	// aiCostLedgerPool is nil → must short-circuit without panicking.
+	sc.runDailyAICostLedgerPrune()
+}
+
+// TestWithAICostLedgerPruner_RegistersJob verifies that WithAICostLedgerPruner
+// registers the daily-ai-cost-ledger-prune gocron job. The test uses a nil
+// pool intentionally: WithAICostLedgerPruner only sets the pool and registers
+// the job — it does NOT validate the pool at registration time (nil pool
+// causes the runner to no-op, tested separately above).
+//
+// We cannot call WithAICostLedgerPruner with a real pool in a unit test
+// because the prune job needs a running Postgres; the integration version is
+// covered by the scheduler's pending_proposals_prune_pg_test.go pattern.
+// Here we verify only the job registration side effect using a real
+// *pgxpool.Pool value constructed from config (not actually connected) — but
+// gocron.NewJob succeeds regardless of pool connectivity at registration.
+//
+// Approach: pass a non-nil dummy pool pointer (constructed from an already-
+// existing testAICostPool or a lazy-init nil-deref-safe pointer). Since we
+// only want to verify the job is in the gocron job list, we can pass any
+// non-nil *pgxpool.Pool, including one created from an empty config
+// (pgxpool.New is not called here — we create the struct directly).
+//
+// Simplest safe approach: call WithAICostLedgerPruner with a non-nil pool
+// from an already-established connection (not needed for job registration).
+// Instead, we verify the job name via a sentinel that WithAICostLedgerPruner
+// sets aiCostLedgerPool and the gocron job is registered, using the internal
+// field path (same-package access).
+func TestWithAICostLedgerPruner_RegistersJob(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	// Use a sentinel non-nil *pgxpool.Pool. pgxpool.Pool is a struct; we take
+	// address of a zero-value instance. The pool is never actually used in
+	// this test because we do not call runDailyAICostLedgerPrune (which would
+	// attempt a real DB Exec).
+	sentinelPool := new(pgxpool.Pool)
+	if regErr := sc.WithAICostLedgerPruner(sentinelPool); regErr != nil {
+		t.Fatalf("WithAICostLedgerPruner() error: %v", regErr)
+	}
+
+	// Job must be registered with gocron.
+	found := false
+	for _, j := range sc.s.Jobs() {
+		if j.Name() == "daily-ai-cost-ledger-prune" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("daily-ai-cost-ledger-prune job not found after WithAICostLedgerPruner")
+	}
+
+	// Internal field must be set to the pool we passed.
+	if sc.aiCostLedgerPool != sentinelPool {
+		t.Error("aiCostLedgerPool not set by WithAICostLedgerPruner")
 	}
 }

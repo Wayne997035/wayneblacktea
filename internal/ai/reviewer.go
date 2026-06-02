@@ -6,11 +6,11 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
-
-	"github.com/Wayne997035/wayneblacktea/internal/llm"
 )
 
 const (
@@ -62,7 +62,24 @@ type ConceptReviewer struct {
 	client *anthropic.Client
 	model  string
 
-	llm llm.JSONClient
+	llm         llm.JSONClient
+	recorder    aicost.Recorder
+	workspaceID *uuid.UUID
+}
+
+// WithCostRecorder sets the cost recorder and workspace ID on the ConceptReviewer.
+func (r *ConceptReviewer) WithCostRecorder(rec aicost.Recorder, workspaceID *uuid.UUID) *ConceptReviewer {
+	r.recorder = rec
+	r.workspaceID = workspaceID
+	return r
+}
+
+// costRecorder returns the configured recorder or a NopRecorder when unset.
+func (r *ConceptReviewer) costRecorder() aicost.Recorder {
+	if r.recorder != nil {
+		return r.recorder
+	}
+	return aicost.NopRecorder{}
 }
 
 // NewConceptReviewer creates a ConceptReviewer with the given API key.
@@ -149,6 +166,14 @@ func (r *ConceptReviewer) reviewViaSDK(ctx context.Context, payload []byte) []Re
 		slog.Warn("concept reviewer: API call failed", "error", err)
 		return nil
 	}
+	r.costRecorder().Record(ctx, r.workspaceID, aicost.RecordParams{
+		Caller:           "reviewer.ReviewConcepts",
+		Model:            r.model,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 	if len(resp.Content) == 0 {
 		slog.Warn("concept reviewer: empty response from API")
 		return nil

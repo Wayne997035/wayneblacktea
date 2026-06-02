@@ -17,6 +17,7 @@ import { PendingProposalsCard } from '../components/dashboard/PendingProposalsCa
 import { DueReviewsCard } from '../components/dashboard/DueReviewsCard'
 import { RecentKnowledgeCard } from '../components/dashboard/RecentKnowledgeCard'
 import { RecentAutomationFeedCard } from '../components/dashboard/RecentAutomationFeedCard'
+import { AiCostCard } from '../components/dashboard/AiCostCard'
 import { StaleBadge } from '../components/ui/StaleBadge'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -184,6 +185,11 @@ export function DashboardPage() {
           {/* D6: Recent MCP Automation Feed */}
           <section>
             <RecentAutomationFeedCard />
+          </section>
+
+          {/* AI Cost Ledger (1.5-C) */}
+          <section>
+            <AiCostCard />
           </section>
 
           {/* D5: Recent Knowledge */}

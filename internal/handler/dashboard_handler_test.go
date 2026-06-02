@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
@@ -1209,5 +1210,150 @@ func TestDashboardHandler_GetVagueTasks_SampleCappedAt5(t *testing.T) {
 	}
 	if len(resp.SampleIDs) != 5 {
 		t.Errorf("SampleIDs len = %d, want 5 (cap)", len(resp.SampleIDs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX 3: GetAICost handler tests
+// ---------------------------------------------------------------------------
+
+// fakeAICostStoreRows satisfies handler.DashboardAICostStoreIface.
+// It returns aicost.CostRow values via the real interface contract.
+type fakeAICostStoreRows struct {
+	rows       []aicost.CostRow
+	grandTotal int64
+	err        error
+}
+
+func (f *fakeAICostStoreRows) AICostLast30d(_ context.Context) ([]aicost.CostRow, int64, error) {
+	return f.rows, f.grandTotal, f.err
+}
+
+// checkAICostEmptyBody asserts the graceful-degrade shape: by_model is an
+// empty JSON array and period is "30d".
+func checkAICostEmptyBody(t *testing.T, body []byte) {
+	t.Helper()
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	byModel, ok := resp["by_model"]
+	if !ok {
+		t.Fatal("missing key 'by_model'")
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(byModel, &arr); err != nil {
+		t.Fatalf("by_model not a JSON array: %v", err)
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected empty by_model, got %d items", len(arr))
+	}
+	var period string
+	if err := json.Unmarshal(resp["period"], &period); err != nil || period != "30d" {
+		t.Errorf("period = %q; want %q", period, "30d")
+	}
+}
+
+// checkAICostRowsBody asserts the JSON shape when rows are present:
+// two entries in by_model, correct first model name, correct total_cost_usd.
+func checkAICostRowsBody(t *testing.T, body []byte) {
+	t.Helper()
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, key := range []string{"by_model", "total_cost_usd", "period"} {
+		if _, ok := resp[key]; !ok {
+			t.Errorf("missing key %q", key)
+		}
+	}
+	var byModel []map[string]json.RawMessage
+	if err := json.Unmarshal(resp["by_model"], &byModel); err != nil {
+		t.Fatalf("by_model not an array: %v", err)
+	}
+	if len(byModel) != 2 {
+		t.Errorf("by_model len = %d; want 2", len(byModel))
+	}
+	for _, key := range []string{"model", "total_cost_usd", "input_tokens", "output_tokens"} {
+		if _, ok := byModel[0][key]; !ok {
+			t.Errorf("by_model[0] missing key %q", key)
+		}
+	}
+	var firstModel string
+	if err := json.Unmarshal(byModel[0]["model"], &firstModel); err != nil || firstModel != "claude-haiku-4-5" {
+		t.Errorf("by_model[0].model = %q; want claude-haiku-4-5", firstModel)
+	}
+	var total float64
+	if err := json.Unmarshal(resp["total_cost_usd"], &total); err != nil {
+		t.Fatalf("total_cost_usd not a number: %v", err)
+	}
+	wantTotal := float64(1_950_000) / 1_000_000
+	if total != wantTotal {
+		t.Errorf("total_cost_usd = %v; want %v", total, wantTotal)
+	}
+}
+
+// TestDashboardHandler_GetAICost tests the GET /api/dashboard/ai-cost endpoint.
+//
+// Cases:
+//   - nil aiCost store → 200 with empty by_model (graceful degrade for SQLite dev)
+//   - non-nil stub returning rows → 200 with correct JSON shape
+//   - stub returning error → 500
+func TestDashboardHandler_GetAICost(t *testing.T) {
+	cases := []struct {
+		name      string
+		setupFn   func(h *handler.DashboardHandler)
+		wantCode  int
+		checkBody func(t *testing.T, body []byte)
+	}{
+		{
+			name:      "nil aiCost store → 200 with empty by_model",
+			setupFn:   nil,
+			wantCode:  http.StatusOK,
+			checkBody: checkAICostEmptyBody,
+		},
+		{
+			name: "non-nil stub returning rows → 200 with correct JSON shape",
+			setupFn: func(h *handler.DashboardHandler) {
+				h.SetAICostStore(&fakeAICostStoreRows{
+					rows: []aicost.CostRow{
+						{Model: "claude-haiku-4-5", TotalCostUSD: 1.5, InputTokens: 1_000_000, OutputTokens: 1_000_000},
+						{Model: "claude-sonnet-4-6", TotalCostUSD: 0.45, InputTokens: 100_000, OutputTokens: 10_000},
+					},
+					grandTotal: 1_950_000,
+				})
+			},
+			wantCode:  http.StatusOK,
+			checkBody: checkAICostRowsBody,
+		},
+		{
+			name: "stub returning error → 500",
+			setupFn: func(h *handler.DashboardHandler) {
+				h.SetAICostStore(&fakeAICostStoreRows{err: errors.New("db down")})
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewDashboardHandler(
+				&fakeDashboardGTDStore{},
+				&fakeDashboardDecisionStore{},
+				&fakeDashboardProposalStore{},
+			)
+			if tc.setupFn != nil {
+				tc.setupFn(h)
+			}
+			e.GET("/api/dashboard/ai-cost", h.GetAICost)
+			rec := performRequest(e, http.MethodGet, "/api/dashboard/ai-cost", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("status: got %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.checkBody != nil && rec.Code == http.StatusOK {
+				tc.checkBody(t, rec.Body.Bytes())
+			}
+		})
 	}
 }

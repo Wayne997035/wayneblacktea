@@ -283,6 +283,21 @@ export interface AutomationFeedResponse {
   fetched_at: string
 }
 
+// --- AI Cost Ledger ---
+
+export interface AiCostRow {
+  model: string
+  total_cost_usd: number
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface AiCostResponse {
+  by_model: AiCostRow[]
+  total_cost_usd: number
+  period: string
+}
+
 // --- Automation Health (extended) ---
 
 export interface AutomationHealth {

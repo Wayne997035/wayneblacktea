@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-
-	"github.com/Wayne997035/wayneblacktea/internal/llm"
+	"github.com/google/uuid"
 )
 
 const (
@@ -124,7 +125,24 @@ type ActivityClassifier struct {
 	client *anthropic.Client
 	model  string
 
-	llm llm.JSONClient
+	llm         llm.JSONClient
+	recorder    aicost.Recorder
+	workspaceID *uuid.UUID
+}
+
+// WithCostRecorder sets the cost recorder and workspace ID on the ActivityClassifier.
+func (c *ActivityClassifier) WithCostRecorder(r aicost.Recorder, workspaceID *uuid.UUID) *ActivityClassifier {
+	c.recorder = r
+	c.workspaceID = workspaceID
+	return c
+}
+
+// costRecorder returns the configured recorder or a NopRecorder when unset.
+func (c *ActivityClassifier) costRecorder() aicost.Recorder {
+	if c.recorder != nil {
+		return c.recorder
+	}
+	return aicost.NopRecorder{}
 }
 
 // NewActivityClassifier creates an ActivityClassifier with the given API key.
@@ -219,6 +237,14 @@ func (c *ActivityClassifier) classifyViaSDK(ctx context.Context, prompt string) 
 		slog.Warn("activity_classifier: API call failed", "error", err)
 		return ClassifyResult{}
 	}
+	c.costRecorder().Record(ctx, c.workspaceID, aicost.RecordParams{
+		Caller:           "classifier.Classify",
+		Model:            c.model,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 	if len(resp.Content) == 0 {
 		slog.Warn("activity_classifier: empty response from API")
 		return ClassifyResult{}

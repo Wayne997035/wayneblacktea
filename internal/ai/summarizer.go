@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/google/uuid"
 )
 
 const (
@@ -85,9 +87,11 @@ type ModelPreferenceReader interface {
 
 // Summarizer calls the Claude API to generate session summaries.
 type Summarizer struct {
-	client *anthropic.Client
-	model  string
-	pref   ModelPreferenceReader // optional; nil = env/default only
+	client      *anthropic.Client
+	model       string
+	pref        ModelPreferenceReader // optional; nil = env/default only
+	recorder    aicost.Recorder       // optional; nil = NopRecorder
+	workspaceID *uuid.UUID            // optional; for cost ledger workspace scoping
 }
 
 // resolveModel reads the CLAUDE_SUMMARY_MODEL env var and falls back to the
@@ -140,9 +144,26 @@ func (s *Summarizer) modelForCall(ctx context.Context) string {
 // model name. Intended for testing with a mock HTTP server via option.WithBaseURL.
 func NewWithClient(client *anthropic.Client, model string) *Summarizer {
 	return &Summarizer{
-		client: client,
-		model:  model,
+		client:   client,
+		model:    model,
+		recorder: aicost.NopRecorder{},
 	}
+}
+
+// WithCostRecorder sets the cost recorder and workspace ID on the Summarizer.
+// When not called the recorder defaults to NopRecorder (no-op).
+func (s *Summarizer) WithCostRecorder(r aicost.Recorder, workspaceID *uuid.UUID) *Summarizer {
+	s.recorder = r
+	s.workspaceID = workspaceID
+	return s
+}
+
+// recorder returns the configured recorder or a NopRecorder when unset.
+func (s *Summarizer) costRecorder() aicost.Recorder {
+	if s.recorder != nil {
+		return s.recorder
+	}
+	return aicost.NopRecorder{}
 }
 
 // Summarize calls the configured Claude model with the transcript and returns a structured summary.
@@ -155,8 +176,9 @@ func (s *Summarizer) Summarize(ctx context.Context, transcript []Message) Summar
 	// Build prompt text from transcript, capping at maxTranscriptLen bytes.
 	promptText := buildPromptText(transcript)
 
+	callModel := s.modelForCall(ctx)
 	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(s.modelForCall(ctx)),
+		Model:     anthropic.Model(callModel),
 		MaxTokens: 1024,
 		System: []anthropic.TextBlockParam{
 			{Text: summarizerSystemPrompt},
@@ -169,6 +191,14 @@ func (s *Summarizer) Summarize(ctx context.Context, transcript []Message) Summar
 		slog.Warn("summarizer: API call failed", "error", err)
 		return SummaryResult{}
 	}
+	s.costRecorder().Record(ctx, s.workspaceID, aicost.RecordParams{
+		Caller:           "summarizer.Summarize",
+		Model:            callModel,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 
 	if len(resp.Content) == 0 {
 		slog.Warn("summarizer: empty response from API")
@@ -198,8 +228,9 @@ func (s *Summarizer) SummarizeSession(ctx context.Context, transcript []Message)
 
 	promptText := buildPromptText(transcript)
 
+	sessionModel := s.modelForCall(ctx)
 	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(s.modelForCall(ctx)),
+		Model:     anthropic.Model(sessionModel),
 		MaxTokens: 256,
 		System: []anthropic.TextBlockParam{
 			{Text: sessionSummarySystemPrompt},
@@ -212,6 +243,14 @@ func (s *Summarizer) SummarizeSession(ctx context.Context, transcript []Message)
 		slog.Warn("summarizer: SummarizeSession API call failed", "error", err)
 		return "", fmt.Errorf("session summary API call: %w", err)
 	}
+	s.costRecorder().Record(ctx, s.workspaceID, aicost.RecordParams{
+		Caller:           "summarizer.SummarizeSession",
+		Model:            sessionModel,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 
 	if len(resp.Content) == 0 {
 		slog.Warn("summarizer: SummarizeSession empty response")

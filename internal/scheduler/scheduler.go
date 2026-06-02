@@ -23,6 +23,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// aiCostPruneTimeout caps the daily ai_cost_ledger DELETE. 60 s budget
+// consistent with other prune jobs.
+const aiCostPruneTimeout = 60 * time.Second
+
+// aiCostPruneAge is the retention window for ai_cost_ledger rows.
+// 30 days per backend-security-design.md §1.3 (observability tables MUST have TTL).
+const aiCostPruneAge = "30 days"
+
 // disciplinePruneTimeout caps the daily discipline_events DELETE. The query
 // is index-supported (idx_discipline_events_observed_at) and finishes well
 // under 5 s on personal-OS scale; the 60 s ceiling leaves room for a
@@ -142,6 +150,10 @@ type Scheduler struct {
 	// disciplineEventM8Pruner deletes discipline_events_m8 rows older than
 	// 90d. Set via WithDisciplineEventPruner after New(); nil skips the job.
 	disciplineEventM8Pruner watchdog.DisciplineEventStoreIface
+	// aiCostLedgerPool is the pgxpool used by the daily ai_cost_ledger prune job.
+	// nil when running under SQLite (or when no pool is wired in by the caller)
+	// — the prune job is skipped in that case.
+	aiCostLedgerPool *pgxpool.Pool
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -1186,5 +1198,45 @@ func (sc *Scheduler) runDailyDisciplineEventM8Prune() {
 	slog.Info("daily discipline-event-m8 prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(disciplineEventM8PruneRetention.Hours()/24),
+	)
+}
+
+// WithAICostLedgerPruner wires the Postgres pool for ai_cost_ledger pruning
+// and registers the daily 04:15 prune job. Must be called before Start().
+// 30-day TTL per backend-security-design.md §1.3 (observability tables).
+// 04:15 avoids overlap with the 03:00-04:00 prune cluster.
+func (sc *Scheduler) WithAICostLedgerPruner(pool *pgxpool.Pool) error {
+	sc.aiCostLedgerPool = pool
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 15, 0))),
+		gocron.NewTask(sc.runDailyAICostLedgerPrune),
+		gocron.WithName("daily-ai-cost-ledger-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily ai_cost_ledger prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyAICostLedgerPrune scheduled at 04:15 Asia/Taipei")
+	return nil
+}
+
+// runDailyAICostLedgerPrune deletes ai_cost_ledger rows older than 30 days.
+// Errors are logged at warn level — the scheduler keeps running.
+func (sc *Scheduler) runDailyAICostLedgerPrune() {
+	if sc.aiCostLedgerPool == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), aiCostPruneTimeout)
+	defer cancel()
+
+	const q = `DELETE FROM ai_cost_ledger WHERE created_at < NOW() - INTERVAL '` + aiCostPruneAge + `'`
+	tag, err := sc.aiCostLedgerPool.Exec(ctx, q)
+	if err != nil {
+		slog.Warn("daily ai_cost_ledger prune: DELETE failed", "err", err)
+		return
+	}
+	slog.Info("daily ai_cost_ledger prune: completed",
+		"rows_deleted", tag.RowsAffected(),
+		"retention", aiCostPruneAge,
 	)
 }

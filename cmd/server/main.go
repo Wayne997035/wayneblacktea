@@ -19,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
@@ -152,6 +153,9 @@ func run() error {
 	if as := buildActivityStore(stores); as != nil {
 		dashH.SetActivityStore(as)
 	}
+	if pool := stores.PgxPool(); pool != nil {
+		dashH.SetAICostStore(aicost.NewPgStore(pool, stores.WorkspaceID()))
+	}
 	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
@@ -176,21 +180,33 @@ func run() error {
 	} else {
 		log.Printf("llm: provider chain = %v", llmChain.Names())
 	}
+	// costRecorder: PG-only (ai_cost_ledger table lives in Postgres).
+	// When SQLite is the backend the NopRecorder is used so AI calls are
+	// never blocked by a missing table.
+	var costRecorder aicost.Recorder = aicost.NopRecorder{}
+	if pool := stores.PgxPool(); pool != nil {
+		costRecorder = aicost.NewPgRecorder(pool)
+	}
+
 	var sum *ai.Summarizer
 	var conceptReviewer ai.ConceptReviewerIface
 	var clf *ai.ActivityClassifier
 	var reflector ai.ReflectorIface
 	if llmChain.Len() > 0 {
-		clf = ai.NewActivityClassifierFromLLM(llmChain)
-		conceptReviewer = ai.NewConceptReviewerFromLLM(llmChain)
+		clf = ai.NewActivityClassifierFromLLM(llmChain).
+			WithCostRecorder(costRecorder, stores.WorkspaceID())
+		conceptReviewer = ai.NewConceptReviewerFromLLM(llmChain).
+			WithCostRecorder(costRecorder, stores.WorkspaceID())
 	}
 	if claudeKey := os.Getenv("CLAUDE_API_KEY"); claudeKey != "" {
 		// Summarizer and reflector still bind to Claude directly until
 		// Phase 5 of the spec. They are independent of the provider chain.
 		// Per-workspace model preference: the summarizer consults the workspace
 		// DB setting first, falling back to CLAUDE_SUMMARY_MODEL env / default.
-		sum = ai.NewWithPreference(claudeKey, stores.Workspace())
-		reflector = ai.NewReflector(claudeKey)
+		sum = ai.NewWithPreference(claudeKey, stores.Workspace()).
+			WithCostRecorder(costRecorder, stores.WorkspaceID())
+		reflector = ai.NewReflector(claudeKey).
+			WithCostRecorder(costRecorder, stores.WorkspaceID())
 	}
 	// auto-capture proposal wiring (sprint feature/gtd-enforce-server-side TASK 2)
 	// Routes IsTask=true classifier verdicts through the TypeTask proposal queue
@@ -350,6 +366,8 @@ func run() error {
 	api.GET("/dashboard/automation-feed", dashH.GetAutomationFeed, dashboardRL)
 	// vague-tasks dashboard endpoint (sprint feature/gtd-enforce-server-side TASK 5)
 	api.GET("/dashboard/vague-tasks", dashH.GetVagueTasks, dashboardRL)
+	// ai-cost ledger (1.5-C): per-model token + cost aggregation, last 30d.
+	api.GET("/dashboard/ai-cost", dashH.GetAICost, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", timelineH.GetTimeline, timelineRL)
@@ -451,6 +469,7 @@ func run() error {
 	// CLAUDE_API_KEY is absent (atomizer nil) or atom store unavailable. Both
 	// conditions are nil-safe inside WithAtomConsolidator.
 	if atomizer := ai.NewAtomizer(); atomizer != nil {
+		atomizer.WithCostRecorder(costRecorder, stores.WorkspaceID())
 		if err := sched.WithAtomConsolidator(scheduler.NewAtomConsolidDeps(stores.Atom(), atomizer, stores.WorkspaceID())); err != nil {
 			return fmt.Errorf("wiring atom consolidator: %w", err)
 		}
@@ -470,6 +489,12 @@ func run() error {
 	if des := stores.DisciplineEventStore(); des != nil {
 		if err := sched.WithDisciplineEventPruner(des); err != nil {
 			return fmt.Errorf("wiring discipline event m8 pruner: %w", err)
+		}
+	}
+	// Wire ai_cost_ledger pruner — PG-only, 30-day TTL per §1.3.
+	if pool := stores.PgxPool(); pool != nil {
+		if err := sched.WithAICostLedgerPruner(pool); err != nil {
+			return fmt.Errorf("wiring ai_cost_ledger pruner: %w", err)
 		}
 	}
 	sched.Start()

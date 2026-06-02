@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/google/uuid"
 )
 
 const (
@@ -37,8 +39,25 @@ type ReflectorIface interface {
 
 // Reflector calls the Haiku model to derive retrospective knowledge entries.
 type Reflector struct {
-	client *anthropic.Client
-	model  string
+	client      *anthropic.Client
+	model       string
+	recorder    aicost.Recorder
+	workspaceID *uuid.UUID
+}
+
+// WithCostRecorder sets the cost recorder and workspace ID on the Reflector.
+func (r *Reflector) WithCostRecorder(rec aicost.Recorder, workspaceID *uuid.UUID) *Reflector {
+	r.recorder = rec
+	r.workspaceID = workspaceID
+	return r
+}
+
+// costRecorder returns the configured recorder or a NopRecorder when unset.
+func (r *Reflector) costRecorder() aicost.Recorder {
+	if r.recorder != nil {
+		return r.recorder
+	}
+	return aicost.NopRecorder{}
 }
 
 // NewReflector creates a Reflector using the given Claude API key.
@@ -91,6 +110,14 @@ func (r *Reflector) Propose(ctx context.Context, prompt string) ([]KnowledgeProp
 	if err != nil {
 		return nil, fmt.Errorf("reflection API call: %w", err)
 	}
+	r.costRecorder().Record(ctx, r.workspaceID, aicost.RecordParams{
+		Caller:           "reflector.Propose",
+		Model:            r.model,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+	})
 
 	if len(resp.Content) == 0 {
 		slog.Warn("reflection: empty response from API")

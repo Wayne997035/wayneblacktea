@@ -680,3 +680,22 @@ CREATE INDEX IF NOT EXISTS idx_discipline_events_m8_open
     WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_discipline_events_m8_created_at
     ON discipline_events_m8 (created_at);
+
+-- Mirrored from migrations/000061_ai_cost_ledger.up.sql.
+-- SQLite dev path uses NopRecorder so this table is present for schema
+-- completeness but is never written to in local dev.
+-- No FK constraints (CLAUDE.md #9). 30-day retention in PG only.
+CREATE TABLE IF NOT EXISTS ai_cost_ledger (
+    id                 TEXT    PRIMARY KEY,
+    workspace_id       TEXT,
+    caller             TEXT    NOT NULL,
+    model              TEXT    NOT NULL,
+    input_tokens       INTEGER NOT NULL DEFAULT 0,
+    output_tokens      INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd_micro     INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_cost_ledger_workspace_time
+    ON ai_cost_ledger (workspace_id, created_at DESC);
