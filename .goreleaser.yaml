@@ -260,6 +260,12 @@ homebrew_casks:
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
+  # Include the before-hook-built .dxt in checksums.txt. goreleaser v2 excludes
+  # release.extra_files from the checksum manifest, and cosign only signs
+  # checksums.txt — so without this the .dxt would ship with no integrity
+  # coverage. Glob MUST match the before-hook output path and release.extra_files.
+  extra_files:
+    - glob: ./build/dxt/staging/wayneblacktea.dxt
 
 signs:
   - cmd: cosign
