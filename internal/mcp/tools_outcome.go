@@ -13,9 +13,16 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// maxRelatedRuleIDs caps the number of behavior rule IDs that may be supplied
+// per outcome. The Wednesday governance job does O(N*M) ApplyOutcome calls
+// where N=outcomes and M=related_rule_ids; an unbounded array turns this into
+// a quadratic CPU/DB amplification attack vector.
+const maxRelatedRuleIDs = 20
+
 // parseRelatedRuleIDs parses an optional JSON array of UUID strings from the
 // MCP tool arguments. Returns an empty slice when the argument is absent or
-// empty; returns an error when any element is not a valid UUID.
+// empty; returns an error when any element is not a valid UUID or when the
+// array exceeds maxRelatedRuleIDs (20).
 func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 	if raw == "" || raw == "[]" {
 		return []uuid.UUID{}, nil
@@ -23,6 +30,12 @@ func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 	var strs []string
 	if err := json.Unmarshal([]byte(raw), &strs); err != nil {
 		return nil, fmt.Errorf("related_rule_ids must be a JSON array of UUID strings: %v", err)
+	}
+	if len(strs) > maxRelatedRuleIDs {
+		return nil, fmt.Errorf(
+			"related_rule_ids has %d entries; maximum is %d",
+			len(strs), maxRelatedRuleIDs,
+		)
 	}
 	out := make([]uuid.UUID, 0, len(strs))
 	for _, s := range strs {

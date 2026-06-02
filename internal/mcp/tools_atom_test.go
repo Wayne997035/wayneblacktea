@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,7 +12,9 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
+	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
 // newAtomizeServer builds a minimal *Server for launchAtomize tests.
@@ -200,5 +203,146 @@ func TestLaunchAtomize_SemDrop(t *testing.T) {
 
 	if n := called.Load(); n != 0 {
 		t.Errorf("atomizeFn called %d times; want 0 (semaphore was full)", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// promote_atom_to_knowledge: MAJOR-1 (consolidated guard) + MAJOR-3 (rune-aware)
+// ---------------------------------------------------------------------------
+
+// newPromoteServer builds a minimal *Server backed by a real SQLite DB for
+// promote_atom_to_knowledge tests. atom + proposal stores are wired; atomizer
+// is nil (not needed for promote path).
+func newPromoteServer(t *testing.T) (*Server, *wbtsqlite.DB) {
+	t.Helper()
+	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	atomStore := wbtsqlite.NewAtomStore(db)
+	proposalStore := wbtsqlite.NewProposalStore(db)
+
+	srv := &Server{
+		atom:       atomStore,
+		proposal:   proposalStore,
+		atomizeSem: make(chan struct{}, 5),
+	}
+	return srv, db
+}
+
+// insertAtomFixture inserts a memory_atoms row directly so promote tests can
+// control digest_status precisely without going through the full atomize path.
+func insertAtomFixture(t *testing.T, db *wbtsqlite.DB, content string, tags []string, digestStatus string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	parentID := uuid.New()
+	// Encode tags as JSON array.
+	tagsJSON := `["` + strings.Join(tags, `","`) + `"]`
+	err := db.ExecContext(context.Background(),
+		`INSERT INTO memory_atoms (id, parent_table, parent_id, content, keywords, tags, digest_status, created_at)
+		 VALUES (?, 'test', ?, ?, '[]', ?, ?, datetime('now'))`,
+		id.String(), parentID.String(), content, tagsJSON, digestStatus,
+	)
+	if err != nil {
+		t.Fatalf("insertAtomFixture: %v", err)
+	}
+	return id
+}
+
+func callPromoteAtom(t *testing.T, s *Server, atomID string) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"atom_id": atomID}
+	r, err := s.handlePromoteAtomToKnowledge(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePromoteAtomToKnowledge Go error: %v", err)
+	}
+	return r
+}
+
+// TestPromoteAtom_RejectsNonConsolidated verifies that MAJOR-1 fix works:
+// atoms with digest_status != "consolidated" are rejected with a clear error.
+func TestPromoteAtom_RejectsNonConsolidated(t *testing.T) {
+	s, db := newPromoteServer(t)
+
+	cases := []struct {
+		status string
+	}{
+		{"pending"},
+		{"done"},
+		{"failed"},
+		{"promoted"},
+	}
+	// Long content + 2 tags to pass quality gate; only status should block.
+	content := strings.Repeat("x", 100)
+	tags := []string{"tag1", "tag2"}
+
+	for _, tc := range cases {
+		t.Run("status_"+tc.status, func(t *testing.T) {
+			id := insertAtomFixture(t, db, content, tags, tc.status)
+			r := callPromoteAtom(t, s, id.String())
+			if !r.IsError {
+				t.Errorf("status=%q: expected IsError=true, got false", tc.status)
+			}
+			text := resultText(r)
+			if !strings.Contains(text, "consolidated") {
+				t.Errorf("status=%q: error should mention 'consolidated', got: %s", tc.status, text)
+			}
+		})
+	}
+}
+
+// TestPromoteAtom_AcceptsConsolidated verifies that a consolidated atom with
+// sufficient content and tags is promoted successfully (MAJOR-1 happy path).
+func TestPromoteAtom_AcceptsConsolidated(t *testing.T) {
+	s, db := newPromoteServer(t)
+	content := strings.Repeat("knowledge content for promotion ", 3)
+	id := insertAtomFixture(t, db, content, []string{"go", "testing"}, "consolidated")
+
+	r := callPromoteAtom(t, s, id.String())
+	if r.IsError {
+		t.Fatalf("expected success for consolidated atom, got error: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "pending") {
+		t.Errorf("response should indicate proposal status=pending, got: %s", text)
+	}
+}
+
+// TestPromoteAtom_RuneAwareContentLength verifies MAJOR-3: a CJK atom whose
+// byte length >= 80 but rune count < 80 is correctly rejected by the quality gate.
+func TestPromoteAtom_RuneAwareContentLength(t *testing.T) {
+	s, db := newPromoteServer(t)
+	// Each CJK character is 3 UTF-8 bytes but 1 rune.
+	// 27 runes × 3 bytes = 81 bytes but only 27 runes → must be rejected.
+	cjkContent := strings.Repeat("測", 27)
+	if len(cjkContent) < 80 {
+		t.Fatalf("test setup: expected byte length >= 80, got %d", len(cjkContent))
+	}
+	id := insertAtomFixture(t, db, cjkContent, []string{"tag1", "tag2"}, "consolidated")
+
+	r := callPromoteAtom(t, s, id.String())
+	if !r.IsError {
+		t.Fatalf("expected content-too-short error for 27 CJK runes, got success")
+	}
+	if !strings.Contains(resultText(r), "runes") {
+		t.Errorf("error should mention runes, got: %s", resultText(r))
+	}
+}
+
+// TestPromoteAtom_RuneAwareTitleTruncation verifies MAJOR-3: a CJK atom with
+// sufficient rune count has its title truncated at rune boundary (no panic,
+// valid UTF-8).
+func TestPromoteAtom_RuneAwareTitleTruncation(t *testing.T) {
+	s, db := newPromoteServer(t)
+	// 100 CJK runes — well above the 80-rune minimum; title must be 80 runes.
+	content := strings.Repeat("漢", 100)
+	id := insertAtomFixture(t, db, content, []string{"cjk", "test"}, "consolidated")
+
+	r := callPromoteAtom(t, s, id.String())
+	if r.IsError {
+		t.Fatalf("expected success for 100-rune CJK atom, got error: %s", resultText(r))
 	}
 }

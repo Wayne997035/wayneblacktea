@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -550,5 +551,99 @@ func TestValidateJSONArrayArg_ObjectRejected(t *testing.T) {
 	_, err := validateJSONArrayArg(map[string]any{"k": `{"a":1}`}, "k")
 	if err == nil {
 		t.Fatal("expected error for JSON object, got nil")
+	}
+}
+
+// --- parseRelatedRuleIDs unit tests (MAJOR-2: upper bound guard) ---
+
+func TestParseRelatedRuleIDs_Empty(t *testing.T) {
+	ids, err := parseRelatedRuleIDs("")
+	if err != nil {
+		t.Fatalf("unexpected error for empty input: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 IDs, got %d", len(ids))
+	}
+}
+
+func TestParseRelatedRuleIDs_EmptyArray(t *testing.T) {
+	ids, err := parseRelatedRuleIDs("[]")
+	if err != nil {
+		t.Fatalf("unexpected error for empty array: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 IDs, got %d", len(ids))
+	}
+}
+
+func TestParseRelatedRuleIDs_ValidUUIDs(t *testing.T) {
+	id1, id2 := uuid.New(), uuid.New()
+	raw := `["` + id1.String() + `","` + id2.String() + `"]`
+	ids, err := parseRelatedRuleIDs(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 IDs, got %d", len(ids))
+	}
+}
+
+func TestParseRelatedRuleIDs_InvalidUUID(t *testing.T) {
+	_, err := parseRelatedRuleIDs(`["not-a-uuid"]`)
+	if err == nil {
+		t.Fatal("expected error for invalid UUID, got nil")
+	}
+}
+
+func TestParseRelatedRuleIDs_ExceedsMax(t *testing.T) {
+	// Build an array with maxRelatedRuleIDs+1 UUIDs.
+	ids := make([]string, maxRelatedRuleIDs+1)
+	for i := range ids {
+		ids[i] = `"` + uuid.New().String() + `"`
+	}
+	raw := "[" + strings.Join(ids, ",") + "]"
+	_, err := parseRelatedRuleIDs(raw)
+	if err == nil {
+		t.Fatalf("expected error when exceeding maxRelatedRuleIDs=%d, got nil", maxRelatedRuleIDs)
+	}
+	if !strings.Contains(err.Error(), "maximum is") {
+		t.Errorf("error should mention maximum, got: %v", err)
+	}
+}
+
+func TestParseRelatedRuleIDs_ExactlyMax(t *testing.T) {
+	// Exactly maxRelatedRuleIDs should be accepted.
+	ids := make([]string, maxRelatedRuleIDs)
+	for i := range ids {
+		ids[i] = `"` + uuid.New().String() + `"`
+	}
+	raw := "[" + strings.Join(ids, ",") + "]"
+	parsed, err := parseRelatedRuleIDs(raw)
+	if err != nil {
+		t.Fatalf("unexpected error at exactly max (%d): %v", maxRelatedRuleIDs, err)
+	}
+	if len(parsed) != maxRelatedRuleIDs {
+		t.Errorf("expected %d IDs, got %d", maxRelatedRuleIDs, len(parsed))
+	}
+}
+
+func TestHandleRecordOutcome_RelatedRuleIDsExceedsMax(t *testing.T) {
+	// Ensure the MCP handler rejects related_rule_ids arrays > maxRelatedRuleIDs.
+	s := newOutcomeServer(&stubOutcomeStore{})
+	ids := make([]string, maxRelatedRuleIDs+1)
+	for i := range ids {
+		ids[i] = `"` + uuid.New().String() + `"`
+	}
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        uuid.New().String(),
+		"result":           "success",
+		"related_rule_ids": "[" + strings.Join(ids, ",") + "]",
+	})
+	if !r.IsError {
+		t.Fatal("expected IsError=true when related_rule_ids exceeds max, got false")
+	}
+	if !strings.Contains(resultText(r), "maximum is") {
+		t.Errorf("error should mention maximum, got: %s", resultText(r))
 	}
 }

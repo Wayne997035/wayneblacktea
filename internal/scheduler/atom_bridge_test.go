@@ -157,7 +157,11 @@ func TestRunAtomBridge_HappyPath(t *testing.T) {
 		t.Errorf("expected type='knowledge', got %q", created.Type)
 	}
 
-	// Verify ProposedBy was preserved via the payload (stubProposalStore does not store ProposedBy).
+	// Verify ProposedBy='atom_bridge' (captured via stubProposalStore.proposedBys).
+	if len(propStore.proposedBys) != 1 || propStore.proposedBys[0] != "atom_bridge" {
+		t.Errorf("expected ProposedBy='atom_bridge', got %v", propStore.proposedBys)
+	}
+
 	var kp proposal.KnowledgePayload
 	if err := json.Unmarshal(created.Payload, &kp); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
@@ -196,6 +200,38 @@ func TestRunAtomBridge_NilDepGracefulSkip(t *testing.T) {
 			// Must not panic.
 			runAtomBridge(tc.deps)
 		})
+	}
+}
+
+// TestRunAtomBridge_CJKRuneAware verifies MAJOR-3: CJK atoms whose byte length
+// is >= 80 but rune count < 80 are correctly rejected by the quality gate.
+// Also verifies that a 100-rune CJK atom's title is truncated without panic.
+func TestRunAtomBridge_CJKRuneAware(t *testing.T) {
+	// 27 CJK runes × 3 bytes each = 81 bytes but only 27 runes → reject.
+	cjkShort := strings.Repeat("測", 27) // 81 bytes, 27 runes
+	// 100 CJK runes → title should be truncated to 80 runes without panic.
+	cjkLong := strings.Repeat("漢", 100)
+
+	shortAtom := makeConsolidatedAtom(cjkShort, []string{"tag1", "tag2"})
+	longAtom := makeConsolidatedAtom(cjkLong, []string{"tag1", "tag2"})
+
+	atomStore := &bridgeAtomStore{
+		countByStatus: 10,
+		listByStatus:  []atom.Atom{shortAtom, longAtom},
+	}
+	propStore := &stubProposalStore{}
+	wsID := uuid.New()
+
+	deps := atomBridgeDeps{store: atomStore, proposal: propStore, workspaceID: &wsID}
+	// Must not panic (title[:80] on CJK would panic without rune-aware fix).
+	runAtomBridge(deps)
+
+	// Only the long atom (100 runes) should be promoted; short (27 runes) is rejected.
+	if len(propStore.created) != 1 {
+		t.Fatalf("expected 1 proposal (long CJK atom only), got %d", len(propStore.created))
+	}
+	if len(atomStore.setStatusCalls) != 1 || atomStore.setStatusCalls[0].atomID != longAtom.ID {
+		t.Errorf("expected SetDigestStatus for long CJK atom only, got %+v", atomStore.setStatusCalls)
 	}
 }
 

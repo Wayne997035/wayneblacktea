@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -32,9 +33,10 @@ const atomBridgeLimit = 50
 // Defined as a package-level constant to satisfy the goconst linter rule.
 const digestStatusConsolidated = "consolidated"
 
-// atomBridgeMinContentLen is the minimum content length (in bytes) an atom
+// atomBridgeMinContentLen is the minimum content length (in runes) an atom
 // must have to be eligible for knowledge promotion. Short atoms rarely carry
-// enough context for a standalone knowledge item.
+// enough context for a standalone knowledge item. Rune-based to handle CJK/emoji
+// correctly — see MAJOR-3 fix (utf8.RuneCountInString in quality gate below).
 // Note: atom.Atom has no confidence field (confirmed against atom/atom.go:17-27),
 // so quality gating is based on content length and tag count only.
 const atomBridgeMinContentLen = 80
@@ -134,7 +136,8 @@ func runAtomBridge(deps atomBridgeDeps) {
 	skipped := 0
 	for _, a := range atoms {
 		// Step 3: quality gate (no confidence field on atom.Atom).
-		if len(a.Content) < atomBridgeMinContentLen {
+		// Use rune count (not byte length) so CJK/emoji content is measured correctly.
+		if utf8.RuneCountInString(a.Content) < atomBridgeMinContentLen {
 			skipped++
 			continue
 		}
@@ -143,10 +146,11 @@ func runAtomBridge(deps atomBridgeDeps) {
 			continue
 		}
 
-		// Step 4: derive a title from content (first 80 chars or full content).
+		// Step 4: derive a title from content (first 80 runes or full content).
+		// Rune-aware slice prevents panic and invalid UTF-8 on CJK/emoji content.
 		title := a.Content
-		if len(title) > 80 {
-			title = title[:80]
+		if runes := []rune(title); len(runes) > 80 {
+			title = string(runes[:80])
 		}
 
 		payload, marshalErr := json.Marshal(proposal.KnowledgePayload{

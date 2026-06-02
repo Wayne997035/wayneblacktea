@@ -1,5 +1,13 @@
 -- 000063_outcomes_rule_link.up.sql (SQLite twin)
--- SQLite schema is managed by internal/storage/sqlite/schema.sql.
--- The related_rule_ids column is added there as a TEXT DEFAULT '[]' column.
--- This file is a no-op for the golang-migrate SQLite runner.
-SELECT 1;
+-- Adds related_rule_ids to outcomes for existing SQLite databases.
+--
+-- Fresh databases: schema.sql already includes this column via CREATE TABLE IF NOT EXISTS,
+-- so this file is a documented no-op for golang-migrate tooling.
+-- Existing databases (before this migration): db.go Open() calls applyColumnUpgrades()
+-- which issues the same ALTER TABLE idempotently, ignoring "duplicate column name".
+--
+-- SQLite 3.35+ supports ALTER TABLE ... ADD COLUMN; the parity migration file records
+-- the intent for reviewers following the §6.3 dual-backend parity rule.
+--
+-- No FOREIGN KEY per CLAUDE.md red-line #9. Referential integrity enforced app-side.
+ALTER TABLE outcomes ADD COLUMN related_rule_ids TEXT NOT NULL DEFAULT '[]';

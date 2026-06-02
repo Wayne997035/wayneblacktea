@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,6 +19,49 @@ func openOutcomeDB(t *testing.T) *wbtsqlite.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// TestApplyColumnUpgrades_Idempotent verifies MAJOR-4: calling Open() on an
+// existing SQLite database (which already has related_rule_ids from schema.sql)
+// succeeds without "duplicate column name" errors. This is the key invariant of
+// applyColumnUpgrades — it must be safe on both fresh and pre-existing DBs.
+func TestApplyColumnUpgrades_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "upgrade-test.db")
+	ctx := context.Background()
+
+	// First open: creates DB with schema.sql (includes related_rule_ids).
+	db1, err := wbtsqlite.Open(ctx, "file:"+dbPath, "")
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	_ = db1.Close()
+
+	// Second open: applyColumnUpgrades runs again — must not fail with
+	// "duplicate column name: related_rule_ids".
+	db2, err := wbtsqlite.Open(ctx, "file:"+dbPath, "")
+	if err != nil {
+		t.Fatalf("second Open (idempotent upgrade): %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	// Confirm the column exists and is usable (insert + select round-trip).
+	store := wbtsqlite.NewOutcomeStore(db2)
+	wsID := uuid.New()
+	rule1 := uuid.New()
+	o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       uuid.New(),
+		Result:         "success",
+		RelatedRuleIDs: []uuid.UUID{rule1},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome after idempotent open: %v", err)
+	}
+	if len(o.RelatedRuleIDs) != 1 || o.RelatedRuleIDs[0] != rule1 {
+		t.Errorf("RelatedRuleIDs round-trip failed: got %v, want [%s]", o.RelatedRuleIDs, rule1)
+	}
 }
 
 // TestSQLiteOutcomeStore_CreateOutcome verifies CreateOutcome happy paths and
