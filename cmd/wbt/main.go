@@ -56,6 +56,7 @@ Commands:
   wbt doctor     Claude Code Stop hook + personal-OS health snapshot
   wbt guard      Manage guard bypass rules (see: wbt guard --help)
   wbt reconcile  Drain merged-PR backlog into GTD tasks (see: wbt reconcile --help)
+  wbt reembed    Backfill real-provider embeddings for historical rows (see: wbt reembed --help)
   wbt install-git-hook  Install a global git post-merge hook that auto-closes
                  GTD tasks on PR merge (see: wbt install-git-hook --help)
   wbt version    Print version info (also accepts --version)
@@ -101,6 +102,7 @@ var subcommands = map[string]func([]string) error{
 	// Utility commands.
 	"guard":            cli.RunGuard,
 	"reconcile":        cli.RunReconcile,
+	"reembed":          cli.RunReembed,
 	"post-merge-local": cli.RunPostMergeLocal,
 	"install-git-hook": cli.RunInstallGitHook,
 }

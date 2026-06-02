@@ -82,8 +82,11 @@ CREATE TABLE IF NOT EXISTS session_handoffs (
     context_summary TEXT,
     resolved_at     TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    summary_text    TEXT,
-    embedding       BLOB,
+    summary_text       TEXT,
+    embedding          BLOB,
+    embedding_provider TEXT,       -- provider tag: 'gemini', 'hashed', 'unknown' (migration 000064)
+    embedding_model    TEXT,       -- e.g. 'gemini-embedding-001' (migration 000064)
+    embedding_dim      INTEGER,    -- vector length, 32 for hashed / 768 for Gemini (migration 000064)
     next_actions    TEXT NOT NULL DEFAULT '[]' -- JSON array of NextAction; parity with Postgres jsonb next_actions column (migration 000046)
 );
 
@@ -118,17 +121,20 @@ CREATE TABLE IF NOT EXISTS repos (
 );
 
 CREATE TABLE IF NOT EXISTS decisions (
-    id           TEXT PRIMARY KEY,
-    workspace_id TEXT,
-    project_id   TEXT, -- referential integrity in code (red line #9); if a DeleteProject handler is added it MUST cleanup downstream tables
-    repo_name    TEXT,
-    title        TEXT NOT NULL,
-    context      TEXT NOT NULL,
-    decision     TEXT NOT NULL,
-    rationale    TEXT NOT NULL,
-    alternatives TEXT,
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    task_id      TEXT          -- cross-domain ref (migration 000048); referential integrity in code (red line #9)
+    id                 TEXT PRIMARY KEY,
+    workspace_id       TEXT,
+    project_id         TEXT, -- referential integrity in code (red line #9); if a DeleteProject handler is added it MUST cleanup downstream tables
+    repo_name          TEXT,
+    title              TEXT NOT NULL,
+    context            TEXT NOT NULL,
+    decision           TEXT NOT NULL,
+    rationale          TEXT NOT NULL,
+    alternatives       TEXT,
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    task_id            TEXT,         -- cross-domain ref (migration 000048); referential integrity in code (red line #9)
+    embedding_provider TEXT,         -- provider tag: 'gemini', 'hashed', 'unknown' (migration 000064)
+    embedding_model    TEXT,         -- e.g. 'gemini-embedding-001' (migration 000064)
+    embedding_dim      INTEGER       -- vector length (migration 000064)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_items (
@@ -302,6 +308,9 @@ CREATE TABLE IF NOT EXISTS project_status_snapshots (
     pending_summary      TEXT,
     source_decision_ids  TEXT NOT NULL DEFAULT '[]',
     embedding            BLOB,
+    embedding_provider   TEXT,       -- provider tag: 'gemini', 'hashed', 'unknown' (migration 000064)
+    embedding_model      TEXT,       -- e.g. 'gemini-embedding-001' (migration 000064)
+    embedding_dim        INTEGER,    -- vector length (migration 000064)
     source               TEXT NOT NULL DEFAULT 'auto-status-snapshot'
 );
 

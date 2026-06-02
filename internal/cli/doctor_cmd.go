@@ -213,8 +213,10 @@ func parseDoctorTranscript(raw []byte) []localai.Message {
 // in the most recent unresolved session_handoffs.embedding column
 // (best-effort).
 //
-// V1 PLACEHOLDER: uses HashedEmbeddingProvider (deterministic SHA-256 hash,
-// not semantically meaningful).  Swap to a real provider in 5/5 sprint.
+// Uses the provider selected by EMBEDDING_PROVIDER (default: Gemini 768-dim).
+// Falls back to hashed 32-dim when GEMINI_API_KEY is absent (NewEmbeddingProvider
+// fail-soft). Applies a dimension guard before serialising to prevent wrong-dim
+// rows from being stored.
 // Input is capped at doctorEmbeddingSummaryCap chars to match the summary length.
 func writeDoctorHandoffEmbedding(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, summary string) {
 	if summary == "" {
@@ -227,6 +229,8 @@ func writeDoctorHandoffEmbedding(ctx context.Context, pool *pgxpool.Pool, wsID *
 		summary = string(runes[:doctorEmbeddingSummaryCap])
 	}
 
+	// NewEmbeddingProvider selects Gemini 768-dim by default; falls back to
+	// hashed 32-dim when GEMINI_API_KEY is absent with a slog.Warn.
 	embedder, err := localai.NewEmbeddingProvider()
 	if err != nil {
 		slog.Warn("doctor: unknown embedding provider", "err", err)
@@ -238,25 +242,37 @@ func writeDoctorHandoffEmbedding(ctx context.Context, pool *pgxpool.Pool, wsID *
 		return
 	}
 
+	// Dimension guard: the vector length must be a known provider dimension
+	// (Gemini 768 or hashed-fallback 32). Any other length signals a corrupted or
+	// misconfigured provider output — skip the write rather than store a row whose
+	// provider tag would be 'unknown' and never match an active provider on recall.
+	if len(vec) != localai.GeminiEmbeddingDims && len(vec) != localai.HashedEmbeddingDims {
+		slog.Warn("doctor: embedding has unknown dimension; skipping write", "dim", len(vec))
+		return
+	}
+
 	embBytes := localai.SerializeEmbedding(vec)
 	if embBytes == nil {
 		return
 	}
+
+	// Derive provider tag from vector length so rows can be filtered in recall.
+	providerTag := localai.ProviderTagFromDim(len(vec))
 
 	var wsArg any
 	if wsID != nil {
 		wsArg = wsID
 	}
 	const q = `UPDATE session_handoffs
-		SET embedding = $1
+		SET embedding = $1, embedding_provider = $2, embedding_dim = $3
 		WHERE id = (
 			SELECT id FROM session_handoffs
 			WHERE resolved_at IS NULL
-			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			  AND ($4::uuid IS NULL OR workspace_id = $4)
 			ORDER BY created_at DESC
 			LIMIT 1
 		)`
-	if _, err := pool.Exec(ctx, q, embBytes, wsArg); err != nil {
+	if _, err := pool.Exec(ctx, q, embBytes, providerTag, len(vec), wsArg); err != nil {
 		slog.Warn("doctor: failed to write handoff embedding", "err", err)
 	}
 }

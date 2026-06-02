@@ -108,8 +108,15 @@ func (s *Store) All(ctx context.Context, limit int32) ([]db.Decision, error) {
 }
 
 // SearchByCosine returns the top-limit decisions whose embeddings are most
-// similar to queryEmbedding, filtered by workspace_id.  Brute-force Go-side
-// cosine scan (decisions.embedding is BYTEA, not a pgvector column).
+// similar to queryEmbedding, filtered by workspace_id and embedding_provider.
+// Provider filtering prevents cross-provider dimension mismatches
+// (CosineSimilarity returns 0 when dims differ). Brute-force Go-side cosine
+// scan (decisions.embedding is BYTEA, not a pgvector column).
+//
+// NOTE: decisions.embedding has no active writer in the current sprint.
+// When no rows match the provider filter this function returns nil, nil —
+// the caller falls back to recency order (intended). The writer is a follow-up
+// task; the provider filter ensures this is ready when it ships.
 //
 // SECURITY: filtered by workspace_id — no cross-workspace data is returned.
 func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.Decision, error) {
@@ -117,15 +124,18 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 		return nil, nil
 	}
 
+	// Filter by provider so legacy 'hashed' rows are excluded when real provider is active.
+	activeProvider := localai.ProviderTagFromDim(len(queryEmbedding))
 	const q = `SELECT id, project_id, repo_name, title, context, decision, rationale,
 		alternatives, created_at, workspace_id, task_id, embedding
 		FROM decisions
 		WHERE embedding IS NOT NULL
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'hashed')
 		ORDER BY created_at DESC
 		LIMIT 200`
 
-	rows, err := s.dbtx.Query(ctx, q, s.workspaceID)
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID, activeProvider)
 	if err != nil {
 		return nil, fmt.Errorf("decision cosine query: %w", err)
 	}

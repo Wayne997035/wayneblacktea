@@ -111,6 +111,8 @@ var credentialRe = regexp.MustCompile(
 		`|xoxb-[A-Za-z0-9-]+` +
 		`|Bearer\s+ey[A-Za-z0-9._-]+` +
 		`|AKIA[0-9A-Z]{16}` +
+		`|AIza[A-Za-z0-9_-]{35,}` + // Google API keys (Gemini, Maps, etc.)
+		`|ya29\.[A-Za-z0-9_-]{20,}` + // Google OAuth tokens
 		`|postgres://[^:\s]+:[^@\s]+@` +
 		`|mongodb://[^:\s]+:[^@\s]+@` +
 		`|password[=:]\s*['"]?[^\s'"]{3,}` +
@@ -146,7 +148,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("calling gemini embed API: %w", err)
+		return nil, fmt.Errorf("calling gemini embed API: %w", sanitizeURLError(err))
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -161,7 +163,11 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float32, er
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini embed API returned %d: %s", resp.StatusCode, string(respBytes))
+		// Sanitise the response body before it propagates to logs: Gemini error JSON
+		// can echo account/project metadata. Redact credential patterns and cap length
+		// (matches the OpenAI-compatible client's error-body handling).
+		sanitized := credentialRe.ReplaceAllString(truncateBytes(respBytes, 256), "[REDACTED]")
+		return nil, fmt.Errorf("gemini embed API returned %d: %s", resp.StatusCode, sanitized)
 	}
 
 	var result embedResponse

@@ -156,6 +156,18 @@ var columnUpgrades = []columnUpgrade{
 	// Fresh DBs already have this via schema.sql CREATE TABLE IF NOT EXISTS; this
 	// ALTER is needed only for DBs created before 000063 was merged.
 	{table: "outcomes", column: "related_rule_ids", definition: "TEXT NOT NULL DEFAULT '[]'"},
+	// migration 000064: embedding provider metadata on session_handoffs, decisions,
+	// project_status_snapshots. Nullable columns; existing rows keep NULL and are
+	// treated as 'hashed' by SearchByCosine provider-filter logic.
+	{table: "session_handoffs", column: "embedding_provider", definition: "TEXT"},
+	{table: "session_handoffs", column: "embedding_model", definition: "TEXT"},
+	{table: "session_handoffs", column: "embedding_dim", definition: "INTEGER"},
+	{table: "decisions", column: "embedding_provider", definition: "TEXT"},
+	{table: "decisions", column: "embedding_model", definition: "TEXT"},
+	{table: "decisions", column: "embedding_dim", definition: "INTEGER"},
+	{table: "project_status_snapshots", column: "embedding_provider", definition: "TEXT"},
+	{table: "project_status_snapshots", column: "embedding_model", definition: "TEXT"},
+	{table: "project_status_snapshots", column: "embedding_dim", definition: "INTEGER"},
 }
 
 // applyColumnUpgrades idempotently adds columns to existing tables.
