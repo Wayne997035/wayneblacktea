@@ -92,8 +92,9 @@ func buildPendingHandoffHTTPView(h *db.SessionHandoff) *pendingHandoffHTTPView {
 // "resume where you left off" note; once it is days old and was never resolved
 // it is stale context, not next work, and showing it misleads. The DB row is
 // left untouched (MCP get_today_context / SessionStart still see it so it can be
-// resolved) — only the human-facing dashboard hides it. Mirrors the 24h
-// freshness window already used for status snapshots in this handler.
+// resolved) — only the human-facing dashboard hides it. 72h spans a typical
+// long-weekend gap so a handoff you genuinely paused on survives, while one
+// abandoned for weeks does not.
 const dashboardHandoffFreshness = 72 * time.Hour
 
 // freshDashboardHandoff returns h only when it is recent enough to show on the

@@ -28,6 +28,7 @@ func TestFreshDashboardHandoff(t *testing.T) {
 		{"no created_at hidden", &db.SessionHandoff{CreatedAt: pgtype.Timestamptz{Valid: false}}, false},
 		{"1h old shown", withAge(1 * time.Hour), true},
 		{"71h old (within window) shown", withAge(71 * time.Hour), true},
+		{"exactly 72h old (boundary, strict >) shown", withAge(dashboardHandoffFreshness), true},
 		{"73h old (past window) hidden", withAge(73 * time.Hour), false},
 		{"3-week-old reported bug hidden", withAge(21 * 24 * time.Hour), false},
 	}
