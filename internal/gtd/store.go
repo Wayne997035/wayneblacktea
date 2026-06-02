@@ -323,8 +323,8 @@ func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.
 //
 // The query fetches:
 //   - All pending/in_progress tasks with a due_date up to refDate+days (in UTC)
-//   - All pending/in_progress tasks with importance=1 and no due_date
-//     (for the unscheduled_important bucket)
+//   - All pending/in_progress tasks with no due_date, regardless of importance
+//     (for the unscheduled bucket; priority-ordered so high-importance surfaces first)
 //
 // Hand-rolled (not sqlc) to keep this feature self-contained.
 func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error) {
@@ -344,7 +344,7 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
 		  AND (
 		      (due_date IS NOT NULL AND due_date <= $2)
-		      OR (due_date IS NULL AND importance = 1)
+		      OR (due_date IS NULL)
 		  )
 		ORDER BY due_date ASC NULLS LAST, priority ASC, created_at ASC
 		LIMIT $3`

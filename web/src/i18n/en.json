@@ -32,7 +32,7 @@
       "tomorrow": "Tomorrow",
       "dayAfter": "Day After",
       "upcoming": "Upcoming",
-      "unscheduledImportant": "High Priority / No Date"
+      "unscheduledImportant": "Active / No Due Date"
     },
     "noProjects": "No active projects",
     "noTasksThisWeek": "No tasks this week",

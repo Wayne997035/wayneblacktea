@@ -811,6 +811,7 @@ func TestGTDHandler_ListProjectTasks(t *testing.T) {
 		wantAllCalls     int
 		wantActiveCalls  int
 		wantBodyContains string // optional substring assertion against rec.Body
+		wantExactBody    string // optional exact body assertion (after TrimSpace)
 	}{
 		{
 			name:            "no status param → active-only path (existing contract)",
@@ -863,6 +864,24 @@ func TestGTDHandler_ListProjectTasks(t *testing.T) {
 			wantCode:     http.StatusInternalServerError,
 			wantAllCalls: 1,
 		},
+		{
+			name:            "nil tasks → [] (active path)",
+			paramID:         projID.String(),
+			query:           "",
+			store:           &fakeGTDStore{},
+			wantCode:        http.StatusOK,
+			wantActiveCalls: 1,
+			wantExactBody:   "[]",
+		},
+		{
+			name:          "nil tasks → [] (status=all path)",
+			paramID:       projID.String(),
+			query:         "?status=all",
+			store:         &fakeGTDStore{},
+			wantCode:      http.StatusOK,
+			wantAllCalls:  1,
+			wantExactBody: "[]",
+		},
 	}
 
 	for _, tc := range cases {
@@ -882,6 +901,70 @@ func TestGTDHandler_ListProjectTasks(t *testing.T) {
 			}
 			if tc.wantBodyContains != "" && !strings.Contains(rec.Body.String(), tc.wantBodyContains) {
 				t.Errorf("body missing %q: %s", tc.wantBodyContains, rec.Body.String())
+			}
+			if tc.wantExactBody != "" {
+				if got := strings.TrimSpace(rec.Body.String()); got != tc.wantExactBody {
+					t.Errorf("body: got %q, want %q", got, tc.wantExactBody)
+				}
+			}
+		})
+	}
+}
+
+// TestGTDHandler_ListTasks verifies that ListTasks returns [] (not null) when
+// the store returns a nil slice, handles branch filtering, and propagates store
+// errors as 500.
+func TestGTDHandler_ListTasks(t *testing.T) {
+	task1 := db.Task{ID: uuid.New(), Title: "first task", Status: "pending"}
+
+	cases := []struct {
+		name          string
+		query         string
+		store         *fakeGTDStore
+		wantCode      int
+		wantExactBody string
+	}{
+		{
+			name:          "nil tasks → []",
+			query:         "",
+			store:         &fakeGTDStore{},
+			wantCode:      http.StatusOK,
+			wantExactBody: "[]",
+		},
+		{
+			name:          "nil tasks + branch filter → []",
+			query:         "?branch=feature/x",
+			store:         &fakeGTDStore{},
+			wantCode:      http.StatusOK,
+			wantExactBody: "[]",
+		},
+		{
+			name:     "store error → 500",
+			query:    "",
+			store:    &fakeGTDStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:     "tasks present → 200 with data",
+			query:    "",
+			store:    &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.GET("/api/tasks", h.ListTasks)
+			rec := performRequest(e, http.MethodGet, "/api/tasks"+tc.query, "")
+			if rec.Code != tc.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.wantExactBody != "" {
+				if got := strings.TrimSpace(rec.Body.String()); got != tc.wantExactBody {
+					t.Errorf("body: got %q, want %q", got, tc.wantExactBody)
+				}
 			}
 		})
 	}

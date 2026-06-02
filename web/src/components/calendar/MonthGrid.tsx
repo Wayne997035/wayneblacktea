@@ -159,9 +159,10 @@ export function MonthGrid({ anchor, events, kindFilter, onDayClick }: MonthGridP
                 {moreCount > 0 && (
                   <span
                     className="text-caption px-1"
-                    style={{ color: 'var(--color-text-muted)' }}
+                    style={{ color: 'var(--color-text-muted)', cursor: 'pointer' }}
                     aria-label={t('calendar.moreButtonAriaLabel', { count: moreCount })}
                     data-testid="calendar-more-button"
+                    title={t('calendar.moreButtonAriaLabel', { count: moreCount })}
                   >
                     {t('calendar.moreEvents', { count: moreCount })}
                   </span>

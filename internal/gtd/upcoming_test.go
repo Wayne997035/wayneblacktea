@@ -86,13 +86,13 @@ func TestGroupUpcomingTasks_Bucketing(t *testing.T) {
 			wantUnscheduled: 0,
 		},
 		{
-			name: "importance=2 task without due_date NOT in unscheduled_important",
+			name: "importance=2 task without due_date → unscheduled_important (all no-date go in)",
 			tasks: []db.Task{
 				makeTaskWithDue("imp2-no-due", nil, &imp2),
 			},
 			days:            7,
 			limit:           50,
-			wantUnscheduled: 0,
+			wantUnscheduled: 1,
 		},
 		{
 			name: "importance=1 task WITHOUT due_date → unscheduled_important",

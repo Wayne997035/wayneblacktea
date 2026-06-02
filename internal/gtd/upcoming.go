@@ -48,12 +48,13 @@ func GroupUpcomingTasks(tasks []db.Task, refDate time.Time, tz *time.Location, d
 		}
 		t := tasks[i]
 
-		// Unscheduled important: importance=1 and no due_date.
+		// Unscheduled: all active tasks with no due_date go into the unscheduled
+		// bucket so the dashboard upcoming widget matches the full /gtd list.
+		// The store returns them priority-ordered (ASC), so higher-priority tasks
+		// surface first within this bucket.
 		if !t.DueDate.Valid {
-			if t.Importance.Valid && t.Importance.Int16 == 1 {
-				g.UnscheduledImportant = append(g.UnscheduledImportant, t)
-				total++
-			}
+			g.UnscheduledImportant = append(g.UnscheduledImportant, t)
+			total++
 			continue
 		}
 
