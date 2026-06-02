@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
@@ -288,6 +289,23 @@ func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxp
 		}
 	}
 	pgcfg.AfterConnect = pgvectorpgx.RegisterTypes
+	// Personal-OS scale: cap the pool so a single server (× Railway redeploys +
+	// short-lived hook processes + DBeaver) cannot exhaust Aiven's connection
+	// limit. pgx defaults MaxConns to max(4, NumCPU) — 8-16 on a multi-core host,
+	// far too many for one tenant. Respect explicit pool_* in the DSN; otherwise
+	// apply conservative caps and let idle connections cycle back to the server.
+	if !strings.Contains(dsn, "pool_max_conns") {
+		pgcfg.MaxConns = 4
+	}
+	if !strings.Contains(dsn, "pool_min_conns") {
+		pgcfg.MinConns = 0
+	}
+	if !strings.Contains(dsn, "pool_max_conn_idle_time") {
+		pgcfg.MaxConnIdleTime = 5 * time.Minute
+	}
+	if !strings.Contains(dsn, "pool_max_conn_lifetime") {
+		pgcfg.MaxConnLifetime = 30 * time.Minute
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, pgcfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
