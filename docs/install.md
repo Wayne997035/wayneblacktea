@@ -94,7 +94,7 @@ Set the key via `~/.config/wayneblacktea/.env` or the `ANTHROPIC_API_KEY` enviro
 |--------|-----------|-------|
 | Claude Code | HTTP (auto-registered by `wbt setup`) | Run `wbt setup`; no further config needed |
 | Claude Code (legacy stdio) | stdio | Use `wbt setup --no-mcp`, then add manually: `wbt mcp` as the command in `.mcp.json` |
-| Claude Desktop | HTTP via DXT (Phase 3) | Not yet available; wait for Phase 3 |
+| Claude Desktop | stdio via DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it; requires `wbt` already on PATH |
 | Cursor | HTTP | Manual config — point at `http://localhost:8080/mcp` |
 | Other MCP clients | varies | Run `wbt status --format json` to discover the current URL |
 
@@ -179,11 +179,16 @@ echo $PATH | tr : '\n' | grep -E 'local/bin|go/bin'
 
 If missing, add the appropriate directory to your shell profile and restart your shell.
 
-### Phase 3 — coming next
+### Install channels
 
-- **Homebrew tap**: `brew install wayne997035/tap/wayneblacktea`
-- **DXT package** for Claude Desktop one-click install
-- **`scripts/install.sh` trimming** now that `wbt setup` carries the orchestration burden
+Four ways to install, depending on your platform and preferences:
+
+| Channel | Command | Best for |
+|---------|---------|----------|
+| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS users who want `wbt` + the four sidecar binaries on PATH with auto-upgrades. A separate `wayneblacktea-server` cask ships the standalone HTTP/MCP server binary. |
+| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it in Claude Desktop | Claude Desktop one-click install. The package registers `wbt mcp` as a stdio MCP server, so `wbt` must already be on PATH (install it first via Homebrew, `curl \| bash`, or `go install`). |
+| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | cosign-verified binaries without Homebrew or Go. See [Scripted install](#scripted-install-curl--bash--irm--iex) for the empty-`API_KEY` foot-gun. |
+| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go developers building from source. |
 
 ## Postgres (advanced)
 
@@ -303,7 +308,7 @@ Environment overrides:
 | `WBT_NO_PROMPT` | Force non-interactive (placeholders, empty API_KEY) |
 | `WBT_INSECURE_SKIP_VERIFY` | Skip cosign verification (NOT RECOMMENDED — default is fail-closed) |
 
-Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). The installer prints a "run `wbt setup` to finish" hint at the end so users get the same end-to-end UX as `go install` + `wbt setup`; Phase 3 will trim the installer further as Homebrew / DXT distribution channels come online.
+Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). The installer prints a "run `wbt setup` to finish" hint at the end so users get the same end-to-end UX as `go install` + `wbt setup`. Homebrew and DXT channels are now also available — see [Install channels](#install-channels).
 
 ## Security notes
 

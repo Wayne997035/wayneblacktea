@@ -56,7 +56,16 @@ All set. wayneblacktea is running at http://127.0.0.1:8080
 
 核心 MCP 記憶功能不需要 Anthropic API key。Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)，常見問題見 [Troubleshooting](./docs/install.md#troubleshooting)。
 
-> **Phase 3 — 即將推出**：Homebrew tap（`brew install wayne997035/tap/wayneblacktea`）以及 DXT package（Claude Desktop one-click install）。
+### 安裝管道
+
+| 管道 | 指令 | 適合 |
+|------|------|------|
+| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS 使用者，要 `wbt` 進 PATH 並自動升級 |
+| DXT | 從 [release](https://github.com/Wayne997035/wayneblacktea/releases) 下載 `wayneblacktea.dxt`，在 Claude Desktop 開啟（需 `wbt` 已在 PATH） | Claude Desktop 一鍵安裝 |
+| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | 不用 Homebrew / Go，要 cosign 驗證的 binary |
+| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go 開發者，從原始碼安裝 |
+
+Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)，常見問題見 [Troubleshooting](./docs/install.md#troubleshooting)。
 
 ## 5 分鐘 onboarding
 

@@ -1,0 +1,41 @@
+{
+  "manifest_version": "0.3",
+  "name": "wayneblacktea",
+  "display_name": "wayneblacktea Personal OS",
+  "version": "0.0.0",
+  "description": "Personal OS / GTD MCP server — goals, tasks, decisions, knowledge search, and session handoff for Claude Desktop.",
+  "long_description": "wayneblacktea exposes GTD (goals, tasks, projects), decision logging, knowledge semantic search, and session handoff as MCP tools. The wbt CLI must already be on PATH (installed via Homebrew, the install script, or go install). This package registers the bundled wbt binary as a stdio MCP server for Claude Desktop.",
+  "author": {
+    "name": "Wayne997035",
+    "url": "https://github.com/Wayne997035/wayneblacktea"
+  },
+  "homepage": "https://github.com/Wayne997035/wayneblacktea",
+  "documentation": "https://github.com/Wayne997035/wayneblacktea/blob/master/docs/install.md",
+  "support": "https://github.com/Wayne997035/wayneblacktea/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": [
+    "gtd",
+    "personal-os",
+    "mcp",
+    "knowledge",
+    "tasks"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "wbt",
+    "mcp_config": {
+      "command": "wbt",
+      "args": [
+        "mcp"
+      ]
+    }
+  },
+  "tools_generated": true,
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "linux"
+    ]
+  }
+}

@@ -47,3 +47,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Push-access token for the public Wayne997035/homebrew-tap repo so
+          # goreleaser can write the generated Homebrew casks. The .dxt is built
+          # by the goreleaser before-hook (after `release --clean`), so no extra
+          # workflow step writes into ./dist.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

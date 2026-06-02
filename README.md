@@ -58,7 +58,16 @@ Sister commands:
 | `wbt setup --no-mcp` | Skip the `claude mcp add` step |
 | `wbt init` | Deprecated alias for `wbt setup` |
 
-> **Phase 3 — coming next**: Homebrew tap (`brew install wayne997035/tap/wayneblacktea`) and a DXT package for Claude Desktop one-click install. See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, pre-built release binary options, and [Troubleshooting](./docs/install.md#troubleshooting).
+### Install channels
+
+| Channel | Command | Best for |
+|---------|---------|----------|
+| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS users who want `wbt` on PATH with auto-upgrades |
+| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it in Claude Desktop (requires `wbt` already on PATH) | Claude Desktop one-click install |
+| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | cosign-verified binaries without Homebrew or Go |
+| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go developers building from source |
+
+See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, pre-built release binary options, and [Troubleshooting](./docs/install.md#troubleshooting).
 
 Full tool reference: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
 
