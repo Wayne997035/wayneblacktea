@@ -1781,6 +1781,10 @@ func TestContextHandler_PendingHandoffNextActionsDecodedAsArray(t *testing.T) {
 		ID:          uuid.New(),
 		Intent:      "test",
 		NextActions: nextActionsJSON,
+		// Fresh created_at so the dashboard freshness guard surfaces it; this
+		// test verifies next_actions decoding, not staleness (see
+		// TestFreshDashboardHandoff for the staleness window).
+		CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
 	}
 
 	e := newEcho()
