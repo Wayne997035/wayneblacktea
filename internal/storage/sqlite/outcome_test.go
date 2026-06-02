@@ -300,3 +300,77 @@ func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
 		t.Error("expected ErrNotFound after prune, got nil")
 	}
 }
+
+// TestSQLiteOutcomeStore_RelatedRuleIDs verifies JSON round-trip for
+// related_rule_ids (empty and populated cases — migration 000063).
+func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	t.Run("empty related_rule_ids round-trips as empty slice", func(t *testing.T) {
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "task",
+			EntityID:       entityID,
+			Result:         "success",
+			RelatedRuleIDs: []uuid.UUID{},
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome: %v", err)
+		}
+		if o.RelatedRuleIDs == nil {
+			t.Error("RelatedRuleIDs should not be nil (empty slice expected)")
+		}
+		if len(o.RelatedRuleIDs) != 0 {
+			t.Errorf("expected 0 related rule IDs, got %d", len(o.RelatedRuleIDs))
+		}
+	})
+
+	t.Run("populated related_rule_ids round-trips correctly", func(t *testing.T) {
+		rule1, rule2 := uuid.New(), uuid.New()
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "decision",
+			EntityID:       entityID,
+			Result:         "failure",
+			RelatedRuleIDs: []uuid.UUID{rule1, rule2},
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome with rule IDs: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 2 {
+			t.Fatalf("expected 2 related rule IDs, got %d", len(o.RelatedRuleIDs))
+		}
+		// Verify both IDs are preserved (order-independent).
+		got := make(map[uuid.UUID]bool, len(o.RelatedRuleIDs))
+		for _, id := range o.RelatedRuleIDs {
+			got[id] = true
+		}
+		if !got[rule1] {
+			t.Errorf("rule1 %v not found in RelatedRuleIDs", rule1)
+		}
+		if !got[rule2] {
+			t.Errorf("rule2 %v not found in RelatedRuleIDs", rule2)
+		}
+	})
+
+	t.Run("nil related_rule_ids treated as empty", func(t *testing.T) {
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "sprint",
+			EntityID:       entityID,
+			Result:         "partial",
+			RelatedRuleIDs: nil,
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome nil rule IDs: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 0 {
+			t.Errorf("expected 0 related rule IDs for nil input, got %d", len(o.RelatedRuleIDs))
+		}
+	})
+}

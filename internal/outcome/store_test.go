@@ -379,3 +379,73 @@ func TestStore_PruneOlderThan(t *testing.T) {
 		t.Error("expected ErrNotFound after prune, got nil")
 	}
 }
+
+// TestStore_RelatedRuleIDs verifies that the related_rule_ids UUID[] column
+// introduced in migration 000063 round-trips correctly through the PG store.
+func TestStore_RelatedRuleIDs(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+
+	t.Run("empty related_rule_ids round-trips as empty slice", func(t *testing.T) {
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "task",
+			EntityID:       entityID,
+			Result:         "success",
+			RelatedRuleIDs: []uuid.UUID{},
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 0 {
+			t.Errorf("expected 0 related rule IDs, got %d", len(o.RelatedRuleIDs))
+		}
+	})
+
+	t.Run("populated related_rule_ids round-trips correctly", func(t *testing.T) {
+		rule1, rule2 := uuid.New(), uuid.New()
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "decision",
+			EntityID:       entityID,
+			Result:         "failure",
+			RelatedRuleIDs: []uuid.UUID{rule1, rule2},
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome with rule IDs: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 2 {
+			t.Fatalf("expected 2 related rule IDs, got %d", len(o.RelatedRuleIDs))
+		}
+		got := make(map[uuid.UUID]bool, len(o.RelatedRuleIDs))
+		for _, id := range o.RelatedRuleIDs {
+			got[id] = true
+		}
+		if !got[rule1] {
+			t.Errorf("rule1 %v not found in RelatedRuleIDs", rule1)
+		}
+		if !got[rule2] {
+			t.Errorf("rule2 %v not found in RelatedRuleIDs", rule2)
+		}
+	})
+
+	t.Run("nil related_rule_ids treated as empty", func(t *testing.T) {
+		o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID:    &wsID,
+			EntityType:     "sprint",
+			EntityID:       entityID,
+			Result:         "partial",
+			RelatedRuleIDs: nil,
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome nil rule IDs: %v", err)
+		}
+		if len(o.RelatedRuleIDs) != 0 {
+			t.Errorf("expected 0 related rule IDs for nil input, got %d", len(o.RelatedRuleIDs))
+		}
+	})
+}

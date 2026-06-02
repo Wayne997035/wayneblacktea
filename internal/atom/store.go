@@ -424,6 +424,34 @@ func (s *Store) CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID,
 	return n, nil
 }
 
+// ListByDigestStatus returns up to limit atoms with the given digest_status,
+// ordered by created_at ASC. Mirrors the CountByDigestStatus query shape.
+func (s *Store) ListByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string, limit int) ([]Atom, error) {
+	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms
+		WHERE ($1::uuid IS NULL OR workspace_id = $1)
+		  AND digest_status = $2
+		ORDER BY created_at ASC
+		LIMIT $3`
+	rows, err := s.pool.Query(ctx, q, toUUID(workspaceID), status, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing atoms by digest status: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Atom
+	for rows.Next() {
+		a, err := scanAtomRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("listing atoms by digest status scan: %w", err)
+		}
+		out = append(out, *a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing atoms by digest status rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // CountTotal returns the total number of atoms scoped to the given workspace.
 func (s *Store) CountTotal(ctx context.Context, workspaceID *uuid.UUID) (int64, error) {
 	const q = `SELECT COUNT(*) FROM memory_atoms

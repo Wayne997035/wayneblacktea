@@ -13,6 +13,28 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// parseRelatedRuleIDs parses an optional JSON array of UUID strings from the
+// MCP tool arguments. Returns an empty slice when the argument is absent or
+// empty; returns an error when any element is not a valid UUID.
+func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
+	if raw == "" || raw == "[]" {
+		return []uuid.UUID{}, nil
+	}
+	var strs []string
+	if err := json.Unmarshal([]byte(raw), &strs); err != nil {
+		return nil, fmt.Errorf("related_rule_ids must be a JSON array of UUID strings: %v", err)
+	}
+	out := make([]uuid.UUID, 0, len(strs))
+	for _, s := range strs {
+		id, err := uuid.Parse(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid UUID in related_rule_ids %q: %v", s, err)
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 const maxOutcomeLimit = 100
 
 // registerOutcomeTools registers the 4 outcome/evaluation MCP tools.
@@ -22,7 +44,9 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			"Record the result of an executed task, decision, sprint, or project. "+
 				"Closes the Action→Result loop by capturing what actually happened. "+
 				"entity_type must be one of: task, decision, sprint, project. "+
-				"result must be one of: success, failure, partial, unknown, regressed.",
+				"result must be one of: success, failure, partial, unknown, regressed. "+
+				"Optionally link to behavior rules via related_rule_ids so the behavior "+
+				"governance scheduler can update their confidence scores.",
 		),
 		mcp.WithString("entity_type",
 			mcp.Description("Type of entity: task | decision | sprint | project"),
@@ -37,6 +61,8 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			mcp.Description("Free-text notes about the outcome (max 500 runes)")),
 		mcp.WithString("metrics_json",
 			mcp.Description("Optional JSON object with numeric metrics, e.g. {\"duration_ms\": 1200}")),
+		mcp.WithString("related_rule_ids",
+			mcp.Description("Optional JSON array of behavior rule UUIDs to link, e.g. [\"uuid1\",\"uuid2\"]. Absent or empty = no linked rules.")),
 	), s.handleRecordOutcome)
 
 	ms.AddTool(mcp.NewTool("evaluate_outcome",
@@ -116,14 +142,20 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 		metricsJSON = []byte(raw)
 	}
 
+	relatedRuleIDs, rridErr := parseRelatedRuleIDs(stringArg(args, "related_rule_ids"))
+	if rridErr != nil {
+		return mcp.NewToolResultError(rridErr.Error()), nil
+	}
+
 	wsID := s.workspaceUUID()
 	o, err := s.outcome.CreateOutcome(ctx, outcome.CreateOutcomeParams{
-		WorkspaceID: wsID,
-		EntityType:  entityType,
-		EntityID:    entityID,
-		Result:      result,
-		Notes:       notes,
-		Metrics:     metricsJSON,
+		WorkspaceID:    wsID,
+		EntityType:     entityType,
+		EntityID:       entityID,
+		Result:         result,
+		Notes:          notes,
+		Metrics:        metricsJSON,
+		RelatedRuleIDs: relatedRuleIDs,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recording outcome: %v", err)), nil

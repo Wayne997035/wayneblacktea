@@ -70,6 +70,10 @@ func (s *stubAtomStore) CountByDigestStatus(_ context.Context, _ *uuid.UUID, _ s
 	return 0, nil
 }
 
+func (s *stubAtomStore) ListByDigestStatus(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]atom.Atom, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

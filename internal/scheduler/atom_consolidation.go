@@ -227,7 +227,7 @@ func buildAtomClusters(ctx context.Context, deps atomConsolidDeps, keywords []st
 			if usedAtomIDs[a.ID] {
 				continue
 			}
-			if a.DigestStatus != nil && *a.DigestStatus == "consolidated" {
+			if a.DigestStatus != nil && *a.DigestStatus == digestStatusConsolidated {
 				continue
 			}
 			eligible = append(eligible, a)
@@ -287,7 +287,7 @@ func consolidateCluster(ctx context.Context, deps atomConsolidDeps, cl atomClust
 	// Mark all original cluster atoms as 'consolidated' (criterion 10).
 	// atom IDs are already workspace-scoped via Search (criterion 10 safety note).
 	for _, a := range cl.atoms {
-		if err := deps.store.SetDigestStatus(ctx, a.ID, "consolidated", ""); err != nil {
+		if err := deps.store.SetDigestStatus(ctx, a.ID, digestStatusConsolidated, ""); err != nil {
 			slog.Warn("atom consolidation: marking original atom consolidated failed",
 				"atom_id", a.ID, "err", err)
 		}

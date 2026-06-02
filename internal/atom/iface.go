@@ -44,6 +44,12 @@ type StoreIface interface {
 	// in the given workspace (nil = all workspaces).
 	CountByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string) (int64, error)
 
+	// ListByDigestStatus returns up to limit atoms with the given digest_status,
+	// scoped to workspaceID (nil = all workspaces), ordered by created_at ASC.
+	// Used by the atom-bridge weekly scheduler job to collect consolidated atoms
+	// eligible for promotion to knowledge proposals.
+	ListByDigestStatus(ctx context.Context, workspaceID *uuid.UUID, status string, limit int) ([]Atom, error)
+
 	// CountTotal returns the total number of atoms scoped to the given workspace
 	// (nil = all workspaces). Used by the M9 consolidation cron to compare
 	// against the configured capacity threshold.
