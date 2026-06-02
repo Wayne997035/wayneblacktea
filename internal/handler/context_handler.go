@@ -87,6 +87,29 @@ func buildPendingHandoffHTTPView(h *db.SessionHandoff) *pendingHandoffHTTPView {
 	return v
 }
 
+// dashboardHandoffFreshness bounds how old an unresolved session handoff may be
+// before the dashboard "下次工作" card stops surfacing it. A handoff is a
+// "resume where you left off" note; once it is days old and was never resolved
+// it is stale context, not next work, and showing it misleads. The DB row is
+// left untouched (MCP get_today_context / SessionStart still see it so it can be
+// resolved) — only the human-facing dashboard hides it. Mirrors the 24h
+// freshness window already used for status snapshots in this handler.
+const dashboardHandoffFreshness = 72 * time.Hour
+
+// freshDashboardHandoff returns h only when it is recent enough to show on the
+// dashboard. A nil handoff, a handoff with no valid created_at, or one older
+// than dashboardHandoffFreshness all yield nil so the card renders its empty
+// state instead of stale context.
+func freshDashboardHandoff(h *db.SessionHandoff, now time.Time) *db.SessionHandoff {
+	if h == nil || !h.CreatedAt.Valid {
+		return nil
+	}
+	if now.Sub(h.CreatedAt.Time) > dashboardHandoffFreshness {
+		return nil
+	}
+	return h
+}
+
 type todayContextResponse struct {
 	Goals                []db.Goal                     `json:"goals"`
 	Projects             []db.Project                  `json:"projects"`
@@ -146,7 +169,7 @@ func (h *ContextHandler) GetTodayContext(c echo.Context) error {
 			Completed: completed,
 			Total:     total,
 		},
-		PendingHandoff:       buildPendingHandoffHTTPView(handoff),
+		PendingHandoff:       buildPendingHandoffHTTPView(freshDashboardHandoff(handoff, time.Now())),
 		LatestStatusSnapshot: latestSnap,
 	})
 }
