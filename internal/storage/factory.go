@@ -254,9 +254,10 @@ func (p *postgresServerStores) SqliteLearning() *wbtsqlite.LearningStore { retur
 func (p *postgresServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return nil }
 func (p *postgresServerStores) SqliteDB() *wbtsqlite.DB                  { return nil }
 
-// buildPgxPool centralises the pgxpool config we use across cmd/server and
-// cmd/mcp so the TLS / pgvector wiring lives in one place.
-func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxpool.Pool, error) {
+// buildPgxPoolConfig parses the DSN and applies our TLS / pgvector wiring plus
+// the personal-OS pool caps. It opens no connection, so the cap policy is
+// unit-testable without a live Postgres server (see factory_test.go).
+func buildPgxPoolConfig(dsn, appEnv, pgsslrootcert string) (*pgxpool.Config, error) {
 	// pgxpool.ParseConfig honours libpq-style PGSSLROOTCERT env var and
 	// unconditionally calls os.ReadFile on it. When the env holds inline PEM
 	// content (cloud deploys without file mounting), this fails before
@@ -294,17 +295,30 @@ func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxp
 	// limit. pgx defaults MaxConns to max(4, NumCPU) — 8-16 on a multi-core host,
 	// far too many for one tenant. Respect explicit pool_* in the DSN; otherwise
 	// apply conservative caps and let idle connections cycle back to the server.
-	if !strings.Contains(dsn, "pool_max_conns") {
+	// Guards match the param name with a trailing "=" so a longer param that
+	// shares the prefix (e.g. pool_max_conn_lifetime_jitter) does not suppress
+	// our cap.
+	if !strings.Contains(dsn, "pool_max_conns=") {
 		pgcfg.MaxConns = 4
 	}
-	if !strings.Contains(dsn, "pool_min_conns") {
+	if !strings.Contains(dsn, "pool_min_conns=") {
 		pgcfg.MinConns = 0
 	}
-	if !strings.Contains(dsn, "pool_max_conn_idle_time") {
+	if !strings.Contains(dsn, "pool_max_conn_idle_time=") {
 		pgcfg.MaxConnIdleTime = 5 * time.Minute
 	}
-	if !strings.Contains(dsn, "pool_max_conn_lifetime") {
+	if !strings.Contains(dsn, "pool_max_conn_lifetime=") {
 		pgcfg.MaxConnLifetime = 30 * time.Minute
+	}
+	return pgcfg, nil
+}
+
+// buildPgxPool centralises the pgxpool config we use across cmd/server and
+// cmd/mcp so the TLS / pgvector wiring lives in one place.
+func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxpool.Pool, error) {
+	pgcfg, err := buildPgxPoolConfig(dsn, appEnv, pgsslrootcert)
+	if err != nil {
+		return nil, err
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, pgcfg)
 	if err != nil {
