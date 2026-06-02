@@ -190,6 +190,12 @@ func (c *ActivityClassifier) Classify(ctx context.Context, actor, action, notes 
 
 // classifyViaLLM uses the provider-neutral abstraction. It applies its own
 // timeout via the JSONClient layer.
+//
+// NOTE: this path does NOT record aicost. llm.JSONClient.CompleteJSON returns
+// only (string, error) — no token usage is surfaced — so the ai_cost_ledger
+// undercounts when the OpenRouter/provider-chain path handles the call instead
+// of the direct Anthropic SDK path (classifyViaSDK). A future provider-interface
+// extension to return token metadata would close this gap.
 func (c *ActivityClassifier) classifyViaLLM(ctx context.Context, prompt string) ClassifyResult {
 	ctx, cancel := context.WithTimeout(ctx, classifierTimeout)
 	defer cancel()

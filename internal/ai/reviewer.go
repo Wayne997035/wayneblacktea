@@ -127,6 +127,12 @@ func (r *ConceptReviewer) ReviewConcepts(ctx context.Context, concepts []ReviewI
 }
 
 // reviewViaLLM uses the provider-neutral abstraction.
+//
+// NOTE: this path does NOT record aicost. llm.JSONClient.CompleteJSON returns
+// only (string, error) — no token usage is surfaced — so the ai_cost_ledger
+// undercounts when the OpenRouter/provider-chain path handles the call instead
+// of the direct Anthropic SDK path (reviewViaSDK). A future provider-interface
+// extension to return token metadata would close this gap.
 func (r *ConceptReviewer) reviewViaLLM(ctx context.Context, payload []byte) []ReviewResult {
 	out, err := r.llm.CompleteJSON(ctx, llm.JSONRequest{
 		Task:        "review",

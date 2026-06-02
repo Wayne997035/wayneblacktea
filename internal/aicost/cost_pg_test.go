@@ -426,3 +426,98 @@ func TestPgStore_AICostLast30d_OutsideWindowExcluded(t *testing.T) {
 		t.Errorf("expected grandTotal=0, got %d", grandTotal)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ITEM 2: async-path and semaphore-full tests
+// ---------------------------------------------------------------------------
+
+// TestPgRecorder_Record_AsyncPath verifies that Record (the fire-and-forget
+// goroutine path) eventually writes a ledger row. Because Record is
+// asynchronous we poll until the row appears or a short deadline expires.
+func TestPgRecorder_Record_AsyncPath(t *testing.T) {
+	pool := openAICostTestPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	// Use the public constructor so the production semaphore is wired.
+	rec := NewPgRecorder(pool)
+	p := RecordParams{
+		Caller:       "test.async-path",
+		Model:        "claude-sonnet-4-6",
+		InputTokens:  50_000,
+		OutputTokens: 5_000,
+	}
+	// Record is fire-and-forget: it returns before the row is visible.
+	rec.Record(ctx, &wsID, p)
+
+	// Poll for eventual consistency (goroutine writes within recordWriteTimeout).
+	// 2 s is well inside the 5 s write timeout and avoids flaky test on slow CI.
+	deadline := time.Now().Add(2 * time.Second)
+	var count int
+	for time.Now().Before(deadline) {
+		err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM ai_cost_ledger
+			  WHERE workspace_id = $1 AND caller = 'test.async-path'`,
+			wsID,
+		).Scan(&count)
+		if err != nil {
+			t.Fatalf("count query: %v", err)
+		}
+		if count > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if count == 0 {
+		t.Error("async Record did not write a row within 2 s")
+	}
+}
+
+// TestPgRecorder_Record_SemaphoreFull verifies that when the semaphore is
+// exhausted, Record drops the write (no row written, no panic).
+func TestPgRecorder_Record_SemaphoreFull(t *testing.T) {
+	pool := openAICostTestPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	// Build a recorder and pre-fill the semaphore so every subsequent Record
+	// hits the 'default' branch and is dropped.
+	rec := newTestRecorder(pool)
+
+	// Pre-fill the semaphore to capacity.
+	for i := 0; i < recordSemCap; i++ {
+		rec.sem <- struct{}{}
+	}
+	// Restore the semaphore after the test so deferred cleanup works.
+	defer func() {
+		for i := 0; i < recordSemCap; i++ {
+			<-rec.sem
+		}
+	}()
+
+	p := RecordParams{
+		Caller:       "test.sem-full",
+		Model:        "claude-haiku-4-5",
+		InputTokens:  1_000,
+		OutputTokens: 500,
+	}
+	// This call should silently drop (sem full → default branch) without panic.
+	rec.Record(ctx, &wsID, p)
+
+	// Give any erroneously-spawned goroutine a moment to write — there should
+	// be none because the semaphore is full.
+	time.Sleep(200 * time.Millisecond)
+
+	var count int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ai_cost_ledger
+		  WHERE workspace_id = $1 AND caller = 'test.sem-full'`,
+		wsID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("sem-full drop: expected 0 rows written, got %d", count)
+	}
+}

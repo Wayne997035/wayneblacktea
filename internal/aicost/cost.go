@@ -71,6 +71,12 @@ func costMicroUSD(model string, inputTokens, outputTokens int64) int64 {
 }
 
 // RecordParams carries the parameters for a single API call recording.
+//
+// NOTE: a typed CallerID constant (instead of a plain string for Caller) was
+// considered and deferred to avoid a 7-site breaking change across existing
+// callers (summarizer, reflector, reviewer, classifier, drafter, atomizer,
+// MCP atomizer).  Introduce a typed CallerID in a dedicated refactor PR once
+// all callers can be updated atomically.
 type RecordParams struct {
 	Caller           string // e.g. "summarizer.Summarize"
 	Model            string // e.g. "claude-haiku-4-5"
@@ -100,8 +106,6 @@ type pgRecorder struct {
 	pool *pgxpool.Pool
 	// sem is a buffered channel used as a counting semaphore that caps the
 	// number of concurrent background goroutines at recordSemCap.
-	// nil → no cap (only possible if constructed directly in tests without
-	// NewPgRecorder; existing tests are unaffected).
 	sem chan struct{}
 }
 
@@ -165,13 +169,6 @@ func (r *pgRecorder) Record(_ context.Context, workspaceID *uuid.UUID, p RecordP
 	// context that may already be cancelled when the goroutine runs.
 
 	launch := func(fn func()) {
-		if r.sem == nil {
-			// Constructed directly without NewPgRecorder (only in tests that do
-			// not call NewPgRecorder). Fall back to unbounded goroutine so
-			// existing tests are not broken.
-			go fn()
-			return
-		}
 		select {
 		case r.sem <- struct{}{}:
 			go func() {

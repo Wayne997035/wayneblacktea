@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
@@ -183,6 +184,19 @@ const errMsgInvalidProjectIDUUID = "invalid project_id UUID"
 // call returns.
 func New(stores storage.ServerStores) (*Server, error) {
 	wsID := stores.WorkspaceID()
+
+	// Wire cost recorder on the MCP atomizer (mirrors cmd/server/main.go:471-472).
+	// NewAtomizer() returns nil when CLAUDE_API_KEY is absent; nil-guard before
+	// calling WithCostRecorder to avoid a nil-deref (do NOT chain directly).
+	atomizer := ai.NewAtomizer()
+	var costRecorder aicost.Recorder = aicost.NopRecorder{}
+	if pool := stores.PgxPool(); pool != nil {
+		costRecorder = aicost.NewPgRecorder(pool)
+	}
+	if atomizer != nil {
+		atomizer.WithCostRecorder(costRecorder, wsID)
+	}
+
 	return &Server{
 		pool:                 stores.PgxPool(),
 		gtd:                  stores.GTD(),
@@ -202,7 +216,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		skill:                stores.Skill(),
 		reflection:           stores.Reflection(),
 		behaviorRule:         stores.BehaviorRule(),
-		atomizer:             ai.NewAtomizer(),
+		atomizer:             atomizer,
 		atomizeSem:           make(chan struct{}, 5),
 		autologSem:           make(chan struct{}, 50),
 		pgGTD:                stores.PgGTD(),
