@@ -261,10 +261,8 @@ func postMergeReconcile(serverURL, apiKey string, pr reconcilePR) error {
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), postMergeLocalTimeout)
-	defer cancel()
 	u := serverURL + "/api/tasks/reconcile-merged-prs"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

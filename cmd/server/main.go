@@ -315,6 +315,9 @@ func run() error {
 	api.GET("/workspace/repos", wsH.ListRepos)
 	api.POST("/workspace/repos", wsH.UpsertRepo, mutationRL)
 	api.GET("/workspace/repos/:id/overview", wsOverviewH.GetRepoOverview)
+	// GET /workspace/settings is intentionally un-rate-limited: reads are cheap
+	// and rate-limiting only mutations (mutationRL) is the convention for all
+	// other GET endpoints in this file.
 	api.GET("/workspace/settings", wsH.GetSettings)
 	api.PATCH("/workspace/settings", wsH.PatchSettings, mutationRL)
 
