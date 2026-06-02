@@ -171,14 +171,14 @@ func (s *Store) UpdateSummary(ctx context.Context, summary string) error {
 	return nil
 }
 
-// UpdateEmbeddingByID writes the serialized embedding bytes to the session
-// handoff with the given ID, scoped to workspace_id to prevent cross-workspace
-// overwrites.  Best-effort: 0 rows updated is not an error.
-func (s *Store) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error {
-	const q = `UPDATE session_handoffs SET embedding = $1
-		WHERE id = $2
-		  AND ($3::uuid IS NULL OR workspace_id = $3)`
-	if _, err := s.dbtx.Exec(ctx, q, embedding, id, s.workspaceID); err != nil {
+// UpdateEmbeddingByID writes the serialized embedding bytes plus provider metadata
+// to the session handoff with the given ID, scoped to workspace_id to prevent
+// cross-workspace overwrites. Best-effort: 0 rows updated is not an error.
+func (s *Store) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte, providerTag string, dim int) error {
+	const q = `UPDATE session_handoffs SET embedding = $1, embedding_provider = $2, embedding_dim = $3
+		WHERE id = $4
+		  AND ($5::uuid IS NULL OR workspace_id = $5)`
+	if _, err := s.dbtx.Exec(ctx, q, embedding, providerTag, dim, id, s.workspaceID); err != nil {
 		return fmt.Errorf("updating session embedding by id: %w", err)
 	}
 	return nil
@@ -213,9 +213,11 @@ type handoffEmbedRow struct {
 
 // SearchByCosine returns the top-limit session handoffs whose embeddings are
 // most similar to queryEmbedding, filtered by workspace_id.  Only handoffs
-// with non-null embeddings are considered.  Similarity is computed on the Go
-// side (brute-force scan) because session_handoffs.embedding is BYTEA and
-// not yet a pgvector column.
+// with non-null embeddings whose embedding_provider matches the query vector's
+// provider are considered — this prevents cross-provider dimension mismatches
+// (CosineSimilarity returns 0 when dimensions differ). Similarity is computed
+// on the Go side (brute-force scan) because session_handoffs.embedding is BYTEA
+// and not yet a pgvector column.
 //
 // SECURITY: filtered by workspace_id — no cross-workspace data is returned.
 func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.SessionHandoff, error) {
@@ -223,14 +225,18 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 		return nil, nil
 	}
 
+	// Filter by embedding_provider matching the query vector's dimension.
+	// Legacy rows with NULL embedding_provider are treated as 'hashed' (32-dim).
+	activeProvider := localai.ProviderTagFromDim(len(queryEmbedding))
 	const q = `SELECT id, intent, summary_text, embedding
 		FROM session_handoffs
 		WHERE embedding IS NOT NULL
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'hashed')
 		ORDER BY created_at DESC
 		LIMIT 200` // scan at most 200 recent handoffs (personal-OS scale)
 
-	rows, err := s.dbtx.Query(ctx, q, s.workspaceID)
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID, activeProvider)
 	if err != nil {
 		return nil, fmt.Errorf("session cosine query: %w", err)
 	}

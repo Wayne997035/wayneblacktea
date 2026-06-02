@@ -116,7 +116,8 @@ func (h *SessionHandler) SetHandoff(c echo.Context) error {
 				}
 				return
 			}
-			if err := store.UpdateEmbeddingByID(ctx, id, localai.SerializeEmbedding(vec)); err != nil {
+			providerTag := localai.ProviderTagFromDim(len(vec))
+			if err := store.UpdateEmbeddingByID(ctx, id, localai.SerializeEmbedding(vec), providerTag, len(vec)); err != nil {
 				slog.Warn("session embed: UpdateEmbeddingByID failed", "err", err)
 			}
 		}(handoffID)

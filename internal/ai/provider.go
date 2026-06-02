@@ -6,10 +6,12 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/search"
 )
 
-// compile-time assertions: both embedding clients must satisfy ContextEmbeddingProvider.
+// compile-time assertions: embedding clients and adapters satisfy their interfaces.
 var (
 	_ ContextEmbeddingProvider = (*search.EmbeddingClient)(nil)
 	_ ContextEmbeddingProvider = (*search.OpenAICompatibleEmbeddingClient)(nil)
+	// GeminiEmbeddingAdapter wraps ContextEmbedder behind the no-ctx EmbeddingProvider.
+	_ EmbeddingProvider = GeminiEmbeddingAdapter{}
 )
 
 // ContextEmbeddingProvider computes dense vector embeddings for a text string.

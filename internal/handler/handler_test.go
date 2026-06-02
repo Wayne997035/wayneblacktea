@@ -160,7 +160,7 @@ func (f *fakeSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams
 	return f.setResult, f.err
 }
 
-func (f *fakeSessionStore) UpdateEmbeddingByID(_ context.Context, _ uuid.UUID, _ []byte) error {
+func (f *fakeSessionStore) UpdateEmbeddingByID(_ context.Context, _ uuid.UUID, _ []byte, _ string, _ int) error {
 	return nil
 }
 

@@ -145,13 +145,14 @@ func (s *SessionStore) UpdateSummary(ctx context.Context, summary string) error 
 	return nil
 }
 
-// UpdateEmbeddingByID writes the embedding bytes to the session handoff with
-// the given ID (SQLite version), scoped to workspace_id.  Best-effort.
-func (s *SessionStore) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error {
-	const q = `UPDATE session_handoffs SET embedding = ?1
-		WHERE id = ?2
-		  AND (?3 IS NULL OR workspace_id = ?3)`
-	_, err := s.db.conn.ExecContext(ctx, q, embedding, id.String(), s.db.workspaceArg())
+// UpdateEmbeddingByID writes the embedding bytes plus provider metadata to the
+// session handoff with the given ID (SQLite version), scoped to workspace_id.
+// providerTag is "gemini", "hashed", or "unknown"; dim is len(embedding)/4.
+func (s *SessionStore) UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte, providerTag string, dim int) error {
+	const q = `UPDATE session_handoffs SET embedding = ?1, embedding_provider = ?2, embedding_dim = ?3
+		WHERE id = ?4
+		  AND (?5 IS NULL OR workspace_id = ?5)`
+	_, err := s.db.conn.ExecContext(ctx, q, embedding, providerTag, dim, id.String(), s.db.workspaceArg())
 	if err != nil {
 		return errWrap("UpdateEmbeddingByID", err)
 	}
@@ -178,20 +179,26 @@ func (s *SessionStore) UpdateEmbedding(ctx context.Context, embedding []byte) er
 }
 
 // SearchByCosine returns the top-limit session handoffs most similar to
-// queryEmbedding.  SQLite has no pgvector — brute-force Go-side cosine scan.
+// queryEmbedding. Only rows whose embedding_provider matches the query vector's
+// provider are considered — this prevents cross-provider dimension mismatches
+// (CosineSimilarity returns 0 when dimensions differ). SQLite has no pgvector —
+// brute-force Go-side cosine scan.
 //
 // SECURITY: filtered by workspace_id — no cross-workspace data returned.
 func (s *SessionStore) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.SessionHandoff, error) {
 	if len(queryEmbedding) == 0 || limit <= 0 {
 		return nil, nil
 	}
-	// Fetch up to 200 recent handoffs that have an embedding.
+	// Filter by provider tag to exclude legacy 'hashed' rows when real provider is active.
+	// Rows with NULL embedding_provider are treated as 'hashed'.
+	activeProvider := localai.ProviderTagFromDim(len(queryEmbedding))
 	const q = `SELECT id, intent, summary_text, embedding FROM session_handoffs
 		WHERE embedding IS NOT NULL
 		  AND (?1 IS NULL OR workspace_id = ?1)
+		  AND (embedding_provider = ?2 OR embedding_provider IS NULL AND ?2 = 'hashed')
 		ORDER BY created_at DESC
 		LIMIT 200`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), activeProvider)
 	if err != nil {
 		return nil, errWrap("SearchByCosine", err)
 	}

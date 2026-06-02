@@ -138,6 +138,10 @@ func buildContextMessage(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 // fetchSemanticRecall builds a query embedding from the latest handoff summary
 // and returns the top-K similar handoffs, decisions, and knowledge items.
 // Returns "" when no embeddings exist or on any error (best-effort).
+// Uses the real Gemini 768-dim provider (default); falls back to hashed 32-dim
+// when GEMINI_API_KEY is absent (fail-soft from NewEmbeddingProvider).
+// Only rows whose embedding_provider matches the current provider are searched,
+// preventing cross-provider dimension mismatches (CosineSimilarity returns 0).
 func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
 	// Build query embedding from the latest unresolved handoff's summary_text.
 	queryText := fetchLatestHandoffSummaryText(ctx, pool, wsID)
@@ -145,6 +149,7 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		return "" // nothing to embed → skip recall
 	}
 
+	// NewEmbeddingProvider defaults to Gemini 768-dim; falls back to hashed with Warn.
 	embedder, err := localai.NewEmbeddingProvider()
 	if err != nil {
 		slog.Warn("wbt-context: unknown embedding provider", "err", err)
@@ -156,11 +161,14 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		return ""
 	}
 
+	// Determine the active provider tag so recall queries can filter to same-provider rows.
+	activeProvider := providerTagFromVec(queryVec)
+
 	var lines []string
 	total := 0
 
-	// Top-1 similar handoff (other than the latest one, which is already shown).
-	for _, h := range fetchCosineSimilarHandoffs(ctx, pool, wsID, queryVec, contextRecallTopK+1) {
+	// Top-K similar handoffs (filtered to same provider to prevent dim-mismatch zero scores).
+	for _, h := range fetchCosineSimilarHandoffs(ctx, pool, wsID, queryVec, activeProvider, contextRecallTopK+1) {
 		text := h.intent
 		if h.summaryText != "" {
 			text += ": " + truncate(h.summaryText, 100)
@@ -173,8 +181,11 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		total += len(line)
 	}
 
-	// Top-1 similar decision.
-	for _, d := range fetchCosineSimilarDecisions(ctx, pool, wsID, queryVec, contextRecallTopK) {
+	// Top-K similar decisions.
+	// NOTE: decisions.embedding has no active writer in this sprint (the writer is a follow-up
+	// task). The SearchByCosine path falls back to recency order when no embeddings exist.
+	// Provider filter is still applied so this is ready when the writer ships.
+	for _, d := range fetchCosineSimilarDecisions(ctx, pool, wsID, queryVec, activeProvider, contextRecallTopK) {
 		line := "- [decision] " + d.title + ": " + truncate(d.decision, 100)
 		if total+len(line) > contextWindowChars {
 			break
@@ -183,8 +194,9 @@ func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUI
 		total += len(line)
 	}
 
-	// Top-1 similar knowledge item.
-	for _, k := range fetchCosineSimilarKnowledge(ctx, pool, wsID, queryVec, contextRecallTopK) {
+	// Top-K similar knowledge items (provider-filtered; knowledge_items uses real Gemini
+	// 768-dim via factory.go:189 so cosine recall works when GEMINI_API_KEY is set).
+	for _, k := range fetchCosineSimilarKnowledge(ctx, pool, wsID, queryVec, activeProvider, contextRecallTopK) {
 		line := "- [knowledge] " + k.title + ": " + truncate(k.content, 100)
 		if total+len(line) > contextWindowChars {
 			break
@@ -276,19 +288,23 @@ func queryCosineCandidates(
 // fetchCosineSimilarHandoffs fetches up to limit resolved handoffs with non-null
 // embeddings sorted by cosine similarity to queryVec.
 // The most recent unresolved handoff is excluded (already shown above).
+// Only rows with embedding_provider matching activeProvider are searched to prevent
+// cross-provider dimension mismatches that return zero cosine scores.
 //
 // SECURITY: filtered by workspace_id via queryCosineCandidates.
 func fetchCosineSimilarHandoffs(
-	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, limit int,
+	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, activeProvider string, limit int,
 ) []handoffRecallRow {
+	// Filter by embedding_provider to exclude legacy 'hashed' rows when real provider is active.
 	const q = `SELECT intent, COALESCE(summary_text, ''), embedding
 		FROM session_handoffs
 		WHERE embedding IS NOT NULL
 		  AND resolved_at IS NOT NULL
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'hashed')
 		ORDER BY created_at DESC
 		LIMIT 200`
-	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: handoff cosine query failed", uuidArg(wsID))
+	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: handoff cosine query failed", uuidArg(wsID), activeProvider)
 	result := make([]handoffRecallRow, 0, len(items))
 	for _, it := range items {
 		result = append(result, handoffRecallRow{intent: it.col1, summaryText: it.col2})
@@ -302,18 +318,24 @@ type decisionRecallRow struct {
 }
 
 // fetchCosineSimilarDecisions fetches decisions sorted by cosine similarity.
+// Provider-filtered to exclude legacy 'hashed' rows when real provider is active.
+//
+// NOTE: decisions.embedding has no active writer yet (follow-up task). When no
+// embedding rows exist this function returns an empty slice and the caller silently
+// skips decisions from semantic recall (recency-only behaviour is preserved).
 //
 // SECURITY: filtered by workspace_id via queryCosineCandidates.
 func fetchCosineSimilarDecisions(
-	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, limit int,
+	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, activeProvider string, limit int,
 ) []decisionRecallRow {
 	const q = `SELECT title, decision, embedding
 		FROM decisions
 		WHERE embedding IS NOT NULL
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'hashed')
 		ORDER BY created_at DESC
 		LIMIT 200`
-	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: decision cosine query failed", uuidArg(wsID))
+	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: decision cosine query failed", uuidArg(wsID), activeProvider)
 	result := make([]decisionRecallRow, 0, len(items))
 	for _, it := range items {
 		result = append(result, decisionRecallRow{title: it.col1, decision: it.col2})
@@ -326,39 +348,42 @@ type knowledgeRecallRow struct {
 	content string
 }
 
-// fetchCosineSimilarKnowledge fetches the most recent knowledge items.
+// fetchCosineSimilarKnowledge fetches knowledge items sorted by cosine similarity
+// to queryVec, filtered to rows with matching embedding_provider.
+// knowledge_items.embedding is written by the real Gemini 768-dim provider via
+// factory.go:189 so cosine recall works when GEMINI_API_KEY is set.
 //
-// V1 NOTE: knowledge_items.embedding uses Gemini 768-dim vectors while the new
-// hashed EmbeddingProvider produces 32-dim vectors.  Cosine similarity across
-// different-dim vectors is always 0 (CosineSimilarity returns 0 on dim mismatch).
-// For v1 we fall back to recency-order for knowledge recall.
-// TODO(5/5): switch to a unified embedding provider (same dims across all stores)
-// and enable true cosine recall for knowledge items too.
-//
-// SECURITY: filtered by workspace_id.
-func fetchCosineSimilarKnowledge(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, _ []float32, limit int) []knowledgeRecallRow {
-	// V1: recency-based fallback — dims differ between knowledge (768) and hashed (32).
-	const q = `SELECT title, content
+// SECURITY: filtered by workspace_id via queryCosineCandidates.
+func fetchCosineSimilarKnowledge(
+	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID,
+	queryVec []float32, activeProvider string, limit int,
+) []knowledgeRecallRow {
+	const q = `SELECT title, content, embedding
 		FROM knowledge_items
-		WHERE ($1::uuid IS NULL OR workspace_id = $1)
+		WHERE embedding IS NOT NULL
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'gemini')
 		ORDER BY created_at DESC
-		LIMIT $2`
-	rows, err := pool.Query(ctx, q, uuidArg(wsID), limit)
-	if err != nil {
-		slog.Warn("wbt-context: knowledge recall query failed", "err", err)
-		return nil
-	}
-	defer rows.Close()
-
-	var result []knowledgeRecallRow
-	for rows.Next() {
-		var title, content string
-		if err := rows.Scan(&title, &content); err != nil {
-			continue
-		}
-		result = append(result, knowledgeRecallRow{title: title, content: content})
+		LIMIT 200`
+	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: knowledge cosine query failed", uuidArg(wsID), activeProvider)
+	result := make([]knowledgeRecallRow, 0, len(items))
+	for _, it := range items {
+		result = append(result, knowledgeRecallRow{title: it.col1, content: it.col2})
 	}
 	return result
+}
+
+// providerTagFromVec returns the provider string tag matching the vector's length.
+// Used to filter same-provider rows from DB queries.
+func providerTagFromVec(vec []float32) string {
+	switch len(vec) {
+	case localai.HashedEmbeddingDims:
+		return "hashed"
+	case localai.GeminiEmbeddingDims:
+		return "gemini"
+	default:
+		return "unknown"
+	}
 }
 
 // SortBySimDesc sorts a slice of any type by descending similarity score.

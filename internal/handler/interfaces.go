@@ -110,7 +110,7 @@ type decisionStore interface {
 type sessionStore interface {
 	LatestHandoff(ctx context.Context) (*db.SessionHandoff, error)
 	SetHandoff(ctx context.Context, p session.HandoffParams) (*db.SessionHandoff, error)
-	UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte) error
+	UpdateEmbeddingByID(ctx context.Context, id uuid.UUID, embedding []byte, providerTag string, dim int) error
 }
 
 // knowledgeStore covers the subset of knowledge.Store used by handlers.
