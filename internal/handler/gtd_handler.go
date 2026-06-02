@@ -248,6 +248,9 @@ func (h *GTDHandler) ListProjectTasks(c echo.Context) error {
 		c.Logger().Errorf("ListProjectTasks: %v", queryErr)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
+	if tasks == nil {
+		tasks = []db.Task{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
+	}
 	return c.JSON(http.StatusOK, tasks)
 }
 
@@ -596,6 +599,9 @@ func (h *GTDHandler) ListTasks(c echo.Context) error {
 	if err != nil {
 		c.Logger().Errorf("ListTasks: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if tasks == nil {
+		tasks = []db.Task{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
 	}
 
 	branchFilter := c.QueryParam("branch")

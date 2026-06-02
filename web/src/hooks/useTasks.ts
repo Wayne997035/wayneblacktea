@@ -23,6 +23,8 @@ export function useTasksByProject(projectId: string, statusFilter: TaskStatusFil
     queryKey: ['projects', projectId, 'tasks', statusFilter],
     queryFn: () => apiFetch<Task[]>(`/api/projects/${projectId}/tasks${suffix}`),
     enabled: Boolean(projectId),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 
@@ -31,6 +33,8 @@ export function useAllTasks(statusFilter: TaskStatusFilter = 'active') {
   return useQuery<Task[]>({
     queryKey: ['tasks', statusFilter],
     queryFn: () => apiFetch<Task[]>(`/api/tasks${suffix}`),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 
