@@ -383,6 +383,9 @@ func fetchCosineSimilarKnowledge(
 		}
 		result = append(result, r)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("wbt-context: knowledge cosine rows iteration failed", "err", err)
+	}
 	return result
 }
 
