@@ -87,6 +87,39 @@ claude mcp get wayneblacktea    # should show ✔ Connected
 | `wbt mcp` | Run the MCP server over stdio in the foreground. Useful for legacy stdio MCP integrations or for `.mcp.json`-managed project servers. |
 | `wbt init` | Deprecated alias for `wbt setup`; prints a deprecation notice on stderr but still runs. |
 
+## Using it: dashboard, GTD setup, and auto-capture
+
+### The local dashboard (SQLite, in your browser)
+
+A local install uses **SQLite** — no database server — at `~/.local/share/wayneblacktea/wbt.db` (override with `WBT_DB_PATH`). The server embeds the React dashboard and serves it at the root path, so once `wbt setup` reports healthy, open:
+
+```
+http://localhost:8420/
+```
+
+(Use whatever port `wbt status` reports — `8420` is the local default.) The dashboard shows your GTD board, the **calendar** (tasks plotted by `due_date`), goals, projects, and weekly progress — all read from the same SQLite DB the MCP tools write to.
+
+### First-run: getting your work into the GTD
+
+The GTD/calendar starts empty — you populate it through the MCP tools from a Claude Code session (or the HTTP API):
+
+1. **Register a project / repo** so tasks have a home:
+   - `create_project` — create a GTD project (the unit tasks attach to via `project_id`).
+   - `sync_repo` — record a git repository entry (`name`, `path`, `language`, `current_branch`, `next_planned_step`). Note: `sync_repo` stores the values you pass — it does **not** auto-scan the filesystem; you supply the metadata.
+2. **Add tasks** — `add_task` (a `due_date` is **required**) → each task plots on the dashboard calendar by its due date.
+3. **Log decisions / confirm plans** — `log_decision` or `confirm_plan` records the rationale next to the work.
+4. **Open `http://localhost:8420/`** to see it on the board + calendar. Inside Claude Code, `get_today_context` (auto-called at session start) returns the same snapshot.
+
+### When does it store things automatically?
+
+Beyond what you explicitly create, the server persists work for you — all server-side, so it survives a misbehaving client:
+
+- **Activity audit log** — these high-signal tools write an `activity_log` entry on success, regardless of client: `add_task` / `update_task` / `begin_task` / `complete_task`, `log_decision`, `confirm_plan`, `set_session_handoff`, `start_work` / `finish_work` / `checkpoint_work`, `reconcile_dashboard`. (Read-only tools such as `get_active_work` are not logged.)
+- **Implicit decision drafting** — when you invoke a *significant* tool (`complete_task`, `confirm_proposal`, `upsert_project_arch`, `update_project_status`, `resolve_handoff`, `sync_repo`), a classifier observes the call and **drafts a pending decision proposal** (plus follow-up tasks) for you to confirm or reject later — so a decision isn't lost just because you forgot to call `log_decision`. On by default; set `WBT_DISABLE_AUTO_DECISIONS=1` to turn it off. It is rate-limited (60 classify calls/minute) and needs `ANTHROPIC_API_KEY` for the classifier.
+- **Session handoff on stop** — the Stop hook auto-fires `set_session_handoff` at session end, capturing where you left off.
+
+A *decision* itself is committed when you call `log_decision` / `confirm_plan`, or when you confirm an auto-drafted proposal — the middleware drafts and audits, it does not silently commit decisions without a confirm step.
+
 ## API keys
 
 ### Shared secret (auto-generated — required for all requests)
