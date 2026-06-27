@@ -522,6 +522,31 @@ type taskSummary struct {
 	UpdatedAt  string `json:"updated_at,omitempty"`
 }
 
+// toTaskSummary converts a db.Task to the compact taskSummary wire format.
+func toTaskSummary(t db.Task) taskSummary {
+	ts := taskSummary{
+		ID:       t.ID.String(),
+		Title:    t.Title,
+		Status:   t.Status,
+		Priority: t.Priority,
+		Kind:     t.Kind,
+	}
+	if t.Importance.Valid {
+		v := t.Importance.Int16
+		ts.Importance = &v
+	}
+	if t.DueDate.Valid {
+		ts.DueDate = t.DueDate.Time.UTC().Format(time.RFC3339)
+	}
+	if t.Assignee.Valid && t.Assignee.String != "" {
+		ts.Assignee = t.Assignee.String
+	}
+	if t.UpdatedAt.Valid {
+		ts.UpdatedAt = t.UpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	return ts
+}
+
 func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
@@ -531,7 +556,7 @@ func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (
 		rawStatus = "active"
 	}
 	switch rawStatus {
-	case "active", "all", "pending", "in_progress", "completed", "cancelled":
+	case "active", "all", taskStatusPending, taskStatusInProgress, taskStatusCompleted, "cancelled":
 	default:
 		return mcp.NewToolResultError(
 			"status must be one of: active, all, pending, in_progress, completed, cancelled",
@@ -590,27 +615,7 @@ func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (
 	if summaryMode {
 		summaries := make([]taskSummary, 0, len(rows))
 		for _, t := range rows {
-			ts := taskSummary{
-				ID:       t.ID.String(),
-				Title:    t.Title,
-				Status:   t.Status,
-				Priority: t.Priority,
-				Kind:     t.Kind,
-			}
-			if t.Importance.Valid {
-				v := t.Importance.Int16
-				ts.Importance = &v
-			}
-			if t.DueDate.Valid {
-				ts.DueDate = t.DueDate.Time.UTC().Format(time.RFC3339)
-			}
-			if t.Assignee.Valid && t.Assignee.String != "" {
-				ts.Assignee = t.Assignee.String
-			}
-			if t.UpdatedAt.Valid {
-				ts.UpdatedAt = t.UpdatedAt.Time.UTC().Format(time.RFC3339)
-			}
-			summaries = append(summaries, ts)
+			summaries = append(summaries, toTaskSummary(t))
 		}
 		tasks = summaries
 	} else {
@@ -678,7 +683,7 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, req mcp.CallToolReques
 
 	rawStatus := stringArg(args, "status")
 	switch rawStatus {
-	case "pending", "in_progress", "completed", "cancelled":
+	case taskStatusPending, taskStatusInProgress, taskStatusCompleted, "cancelled":
 	default:
 		return mcp.NewToolResultError(
 			"status must be one of: pending, in_progress, completed, cancelled",
@@ -725,6 +730,21 @@ func allowedTargets(fromStatus string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// parseRequiredDueDate extracts and validates the RFC3339 due_date argument.
+// Returns the parsed time and nil error result on success; returns nil time and
+// a non-nil CallToolResult (error) when validation fails.
+func parseRequiredDueDate(args map[string]any) (*time.Time, *mcp.CallToolResult) {
+	rawDue := stringArg(args, "due_date")
+	if rawDue == "" {
+		return nil, mcp.NewToolResultError("due_date is required (RFC3339, e.g. 2026-12-31T00:00:00Z)")
+	}
+	dueTime, parseErr := time.Parse(time.RFC3339, rawDue)
+	if parseErr != nil {
+		return nil, mcp.NewToolResultError("invalid due_date: must be RFC3339 (e.g. 2026-12-31T00:00:00Z)")
+	}
+	return &dueTime, nil
 }
 
 func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -782,15 +802,11 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 	// due_date is required in add_task (OVERRIDE 1: hard-require at tool layer only).
 	// Other CreateTask callers (promote_vision_to_task, reconcile, HTTP, CLI, Discord)
 	// call the store directly and are NOT affected by this check.
-	rawDue := stringArg(args, "due_date")
-	if rawDue == "" {
-		return mcp.NewToolResultError("due_date is required (RFC3339, e.g. 2026-12-31T00:00:00Z)"), nil
+	dueTime, dueErr := parseRequiredDueDate(args)
+	if dueErr != nil {
+		return dueErr, nil
 	}
-	dueTime, parseErr := time.Parse(time.RFC3339, rawDue)
-	if parseErr != nil {
-		return mcp.NewToolResultError("invalid due_date: must be RFC3339 (e.g. 2026-12-31T00:00:00Z)"), nil
-	}
-	p.DueDate = &dueTime
+	p.DueDate = dueTime
 
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {

@@ -104,7 +104,7 @@ func TestGTDStore_CompleteTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}
-	if completed.Status != "completed" || !completed.Artifact.Valid || completed.Artifact.String != url {
+	if completed.Status != taskStatusCompleted || !completed.Artifact.Valid || completed.Artifact.String != url {
 		t.Errorf("unexpected completed task: %+v", completed)
 	}
 }
@@ -329,7 +329,8 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 	// on the GTD cascade behaviour without coupling to worksession internals.
 	sessionID := uuid.New().String()
 	wsID := uuid.New().String()
-	if err := d.ExecContext(ctx,
+	if err := d.ExecContext(
+		ctx,
 		`INSERT INTO work_sessions
 			(id, workspace_id, repo_name, project_id, title, goal, status, source,
 			 confirmed_plan_id, current_task_id, started_at, created_at, updated_at)
@@ -341,7 +342,8 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 	}
 
 	// Insert a join row.
-	if err := d.ExecContext(ctx,
+	if err := d.ExecContext(
+		ctx,
 		`INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
 		 VALUES (?1,?2,'primary','2026-05-03T00:00:00.000Z')`,
 		sessionID, task.ID.String(),
@@ -351,7 +353,8 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 
 	// Sanity check: the link row exists, current_task_id is set.
 	var preLinks int
-	if err := d.QueryRowContext(ctx,
+	if err := d.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = ?1`, task.ID.String(),
 	).Scan(&preLinks); err != nil {
 		t.Fatalf("pre-count: %v", err)
@@ -367,7 +370,8 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 
 	// Assertion 1: link row is gone (was ON DELETE CASCADE).
 	var postLinks int
-	if err := d.QueryRowContext(ctx,
+	if err := d.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = ?1`, task.ID.String(),
 	).Scan(&postLinks); err != nil {
 		t.Fatalf("post-count links: %v", err)
@@ -378,7 +382,8 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 
 	// Assertion 2: current_task_id is now NULL (was ON DELETE SET NULL).
 	var currentTaskID *string
-	if err := d.QueryRowContext(ctx,
+	if err := d.QueryRowContext(
+		ctx,
 		`SELECT current_task_id FROM work_sessions WHERE id = ?1`, sessionID,
 	).Scan(&currentTaskID); err != nil {
 		t.Fatalf("post-count session: %v", err)
@@ -426,7 +431,8 @@ func TestGTDStore_DeleteTask_NoLinkedRows(t *testing.T) {
 func insertWSAFixture(t *testing.T, d *sqlite.DB, ctx context.Context, wsA, taskID string) string {
 	t.Helper()
 	sessionID := uuid.New().String()
-	if err := d.ExecContext(ctx,
+	if err := d.ExecContext(
+		ctx,
 		`INSERT INTO work_sessions
 			(id, workspace_id, repo_name, project_id, title, goal, status, source,
 			 confirmed_plan_id, current_task_id, started_at, created_at, updated_at)
@@ -436,7 +442,8 @@ func insertWSAFixture(t *testing.T, d *sqlite.DB, ctx context.Context, wsA, task
 	); err != nil {
 		t.Fatalf("insert work_session: %v", err)
 	}
-	if err := d.ExecContext(ctx,
+	if err := d.ExecContext(
+		ctx,
 		`INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
 		 VALUES (?1,?2,'primary','2026-05-03T00:00:00.000Z')`,
 		sessionID, taskID,
@@ -452,7 +459,8 @@ func insertWSAFixture(t *testing.T, d *sqlite.DB, ctx context.Context, wsA, task
 func assertJoinRowsSurvived(t *testing.T, d *sqlite.DB, ctx context.Context, taskID string, want int) {
 	t.Helper()
 	var got int
-	if err := d.QueryRowContext(ctx,
+	if err := d.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = ?1`, taskID,
 	).Scan(&got); err != nil {
 		t.Fatalf("count surviving join rows: %v", err)
@@ -468,7 +476,8 @@ func assertJoinRowsSurvived(t *testing.T, d *sqlite.DB, ctx context.Context, tas
 func assertCurrentTaskIDPreserved(t *testing.T, d *sqlite.DB, ctx context.Context, sessionID, wantTaskID string) {
 	t.Helper()
 	var currentTaskID *string
-	if err := d.QueryRowContext(ctx,
+	if err := d.QueryRowContext(
+		ctx,
 		`SELECT current_task_id FROM work_sessions WHERE id = ?1`, sessionID,
 	).Scan(&currentTaskID); err != nil {
 		t.Fatalf("read current_task_id: %v", err)
@@ -963,7 +972,7 @@ func TestGTDStore_UpdateGoal(t *testing.T) {
 		if updated.Title != "new title" {
 			t.Errorf("title: got %q, want %q", updated.Title, "new title")
 		}
-		if updated.Status != "completed" {
+		if updated.Status != taskStatusCompleted {
 			t.Errorf("status: got %q, want completed", updated.Status)
 		}
 		if !updated.Area.Valid || updated.Area.String != "personal" {
@@ -1226,7 +1235,8 @@ func TestGTDStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside(t *testing.T
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if err := d.ExecContext(ctx,
+	if err := d.ExecContext(
+		ctx,
 		`UPDATE tasks SET created_at = ?1 WHERE id = ?2`,
 		"2026-04-01T00:00:00Z", task.ID.String(),
 	); err != nil {
@@ -1256,7 +1266,7 @@ func TestGTDStore_TasksForTimeline_AC3_PendingCreatedInside(t *testing.T) {
 	if len(got) != 1 || got[0].ID != task.ID {
 		t.Errorf("want 1 row (ac3-pending), got %d: %+v", len(got), got)
 	}
-	if got[0].Status != "pending" {
+	if got[0].Status != taskStatusPending {
 		t.Errorf("expected pending status, got %q", got[0].Status)
 	}
 }
@@ -1277,7 +1287,8 @@ func TestGTDStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if err := d.ExecContext(ctx,
+	if err := d.ExecContext(
+		ctx,
 		`UPDATE tasks SET created_at = ?1, updated_at = ?1 WHERE id = ?2`,
 		"2026-04-01T00:00:00Z", task.ID.String(),
 	); err != nil {

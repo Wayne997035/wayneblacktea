@@ -116,6 +116,9 @@ linters:
       - path: "internal/storage/sqlite/db.go"
         linters:
           - unqueryvet # ExecContext/QueryRowContext are generic wrappers; schemaSQL is embedded constant; all call sites use parameterized args (no interpolation)
+      - path: "internal/gtd/store\\.go"
+        linters:
+          - unqueryvet # queryFilteredTasks concatenates compile-time const selectCols only; all dynamic values use bound params ($1..$5); no user input reaches the query structure
 
 issues:
   max-issues-per-linter: 0

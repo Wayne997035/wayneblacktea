@@ -11,7 +11,10 @@ import (
 // SQLite parity for the reconcile flow (backend-security-design §6.3 dual-backend).
 // Mirrors the PG tests in internal/gtd/reconcile_test.go.
 
-const taskStatusCompleted = "completed"
+const (
+	taskStatusCompleted = "completed"
+	taskStatusPending   = "pending"
+)
 
 // TestSQLiteReconcileExactMatch covers the basic happy path.
 func TestSQLiteReconcileExactMatch(t *testing.T) {
@@ -185,7 +188,7 @@ func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID older: %v", err)
 	}
-	if gotOld.Status != "pending" {
+	if gotOld.Status != taskStatusPending {
 		t.Errorf("older.status = %q, want pending (ambiguous → unchanged)", gotOld.Status)
 	}
 }

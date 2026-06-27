@@ -17,6 +17,8 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
+const eventTaskMissingDueDate = "task_missing_due_date"
+
 // ---------------------------------------------------------------------------
 // stub watchdog.DisciplineEventStoreIface
 // ---------------------------------------------------------------------------
@@ -301,7 +303,7 @@ func TestDetectTasksMissingDueDate_MissingDueDate(t *testing.T) {
 		if strings.Contains(string(f.Detail), task.ID.String()) {
 			found = true
 		}
-		if f.EventType != "task_missing_due_date" {
+		if f.EventType != eventTaskMissingDueDate {
 			t.Errorf("EventType = %q, want task_missing_due_date", f.EventType)
 		}
 		if f.Severity != "info" {
@@ -365,7 +367,7 @@ func TestAnalyzeAgentBehavior_LiveFindings_PopulatedInResult(t *testing.T) {
 		t.Error("live_findings should contain at least one task_missing_due_date entry")
 	}
 	for _, f := range out.LiveFindings {
-		if f.EventType != "task_missing_due_date" {
+		if f.EventType != eventTaskMissingDueDate {
 			t.Errorf("unexpected live_finding EventType: %s", f.EventType)
 		}
 	}
@@ -389,7 +391,7 @@ func TestAnalyzeAgentBehavior_LiveFindings_EmptyWhenAllHaveDueDate(t *testing.T)
 		t.Fatalf("unmarshal result: %v", err)
 	}
 	for _, f := range out.LiveFindings {
-		if f.EventType == "task_missing_due_date" {
+		if f.EventType == eventTaskMissingDueDate {
 			t.Errorf("task with due_date should NOT appear as missing_due_date finding")
 		}
 	}

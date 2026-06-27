@@ -16,7 +16,7 @@ func makeTaskWithDue(title string, due *time.Time, importance *int16) db.Task {
 	task := db.Task{
 		ID:     uuid.New(),
 		Title:  title,
-		Status: "pending",
+		Status: statusPending,
 	}
 	if due != nil {
 		task.DueDate = pgtype.Timestamptz{Time: *due, Valid: true}
@@ -178,7 +178,7 @@ func TestGroupUpcomingTasks_CompletedTasksExcluded(t *testing.T) {
 	completed := db.Task{
 		ID:      uuid.New(),
 		Title:   "completed-task",
-		Status:  "completed",
+		Status:  statusCompleted,
 		DueDate: pgtype.Timestamptz{Time: due, Valid: true},
 	}
 

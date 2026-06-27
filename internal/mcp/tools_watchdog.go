@@ -231,7 +231,7 @@ func (s *Server) detectPlanNoTask(ctx context.Context, wsID *uuid.UUID) []agentB
 	cutoff48h := time.Now().Add(-48 * time.Hour)
 	var out []agentBehaviorFinding
 	for _, p := range proposals {
-		if p.Status != "pending" {
+		if p.Status != taskStatusPending {
 			continue
 		}
 		if !p.CreatedAt.Valid || !p.CreatedAt.Time.Before(cutoff48h) {

@@ -99,7 +99,7 @@ func seedTaskWithDueDate(t *testing.T, s *Server, status string) uuid.UUID {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if status != "" && status != "pending" {
+	if status != "" && status != taskStatusPending {
 		_, err = s.gtd.UpdateTaskStatus(context.Background(), task.ID, gtd.TaskStatus(status))
 		if err != nil {
 			t.Fatalf("UpdateTaskStatus to %q: %v", status, err)
@@ -430,7 +430,7 @@ func TestSetTaskStatus_PendingToInProgress(t *testing.T) {
 		t.Fatalf("pending→in_progress must succeed, got: %s", resultText(r))
 	}
 	task, _ := s.gtd.GetTaskByID(context.Background(), id)
-	if task.Status != "in_progress" {
+	if task.Status != statusInProgress {
 		t.Errorf("status = %q, want in_progress", task.Status)
 	}
 }

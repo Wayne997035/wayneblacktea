@@ -123,7 +123,7 @@ func TestMCPReconcileMergedPRs_ExactMatch_AutoApplies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID: %v", err)
 	}
-	if got.Status != "completed" {
+	if got.Status != taskStatusCompleted {
 		t.Errorf("status = %q, want completed", got.Status)
 	}
 }

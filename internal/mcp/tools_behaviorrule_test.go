@@ -293,7 +293,7 @@ func TestHandleListBehaviorRules_HappyPath(t *testing.T) {
 	id := uuid.New()
 	store := &stubBehaviorRuleStore{
 		listReturn: []*behaviorrule.BehaviorRule{
-			{ID: id, Condition: "cond", Action: "act", Status: "active"},
+			{ID: id, Condition: "cond", Action: "act", Status: ruleStatusActive},
 		},
 	}
 	s := newBehaviorRuleServer(store)
@@ -309,11 +309,11 @@ func TestHandleListBehaviorRules_HappyPath(t *testing.T) {
 func TestHandleListBehaviorRules_StatusFilter(t *testing.T) {
 	store := &stubBehaviorRuleStore{listReturn: []*behaviorrule.BehaviorRule{}}
 	s := newBehaviorRuleServer(store)
-	r := callListBehaviorRules(t, s, map[string]any{"status": "active"})
+	r := callListBehaviorRules(t, s, map[string]any{"status": ruleStatusActive})
 	if r.IsError {
 		t.Fatalf("unexpected error: %s", resultText(r))
 	}
-	if store.lastListParams.Status == nil || *store.lastListParams.Status != "active" {
+	if store.lastListParams.Status == nil || *store.lastListParams.Status != ruleStatusActive {
 		t.Errorf("Status filter not propagated, got %v", store.lastListParams.Status)
 	}
 }

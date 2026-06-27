@@ -252,7 +252,7 @@ func TestDetectCompletionDrift_StatusFiltering(t *testing.T) {
 		},
 		{
 			name:   "in_progress status included",
-			status: "in_progress",
+			status: statusInProgress,
 			want:   1,
 		},
 		{
@@ -408,7 +408,7 @@ func TestDetectCompletionDrift_InProgressIncluded(t *testing.T) {
 		{
 			ID:     uuid.New(),
 			Title:  "WIP handler",
-			Status: "in_progress",
+			Status: statusInProgress,
 			Description: pgtype.Text{
 				String: "Implement internal/handler/wip.go for new endpoint",
 				Valid:  true,

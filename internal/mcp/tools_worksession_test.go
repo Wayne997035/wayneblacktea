@@ -425,7 +425,7 @@ func TestHandleFinishWork_Success(t *testing.T) {
 	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if result["status"] != "completed" {
+	if result["status"] != taskStatusCompleted {
 		t.Errorf("expected status=completed, got %v", result["status"])
 	}
 }

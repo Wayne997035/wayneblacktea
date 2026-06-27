@@ -22,7 +22,7 @@ func seedPGTask(t *testing.T, store *gtd.Store, due *time.Time, status string) *
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if status != "" && status != "pending" {
+	if status != "" && status != statusPending {
 		if _, err := store.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatus(status)); err != nil {
 			t.Fatalf("UpdateTaskStatus %q: %v", status, err)
 		}
@@ -41,7 +41,7 @@ func seedPGTaskAndReturn(t *testing.T, store *gtd.Store, due *time.Time, status 
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if status != "" && status != "pending" {
+	if status != "" && status != statusPending {
 		if _, err := store.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatus(status)); err != nil {
 			t.Fatalf("UpdateTaskStatus %q: %v", status, err)
 		}
@@ -71,7 +71,7 @@ func TestPGStore_TasksFiltered_StatusActive_Default(t *testing.T) {
 	found := make(map[uuid.UUID]bool)
 	for _, tk := range tasks {
 		found[tk.ID] = true
-		if tk.Status != "pending" && tk.Status != "in_progress" {
+		if tk.Status != statusPending && tk.Status != "in_progress" {
 			t.Errorf("default active filter returned task with status %q", tk.Status)
 		}
 	}
@@ -105,7 +105,7 @@ func TestPGStore_TasksFiltered_StatusActive_Explicit(t *testing.T) {
 		if tk.ID == pendingID {
 			found = true
 		}
-		if tk.Status == "completed" {
+		if tk.Status == statusCompleted {
 			t.Errorf("status=active filter returned completed task")
 		}
 	}
@@ -132,7 +132,7 @@ func TestPGStore_TasksFiltered_StatusCompleted(t *testing.T) {
 
 	found := false
 	for _, tk := range tasks {
-		if tk.Status != "completed" {
+		if tk.Status != statusCompleted {
 			t.Errorf("filter=completed returned task with status %q", tk.Status)
 		}
 		if tk.ID == completedID {

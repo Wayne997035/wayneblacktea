@@ -8,6 +8,11 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
+const (
+	statusCompleted = "completed"
+	statusPending   = "pending"
+)
+
 // TestReconcileMergedPRs_ExactMatch_PG_AutoApplies covers the happy path on
 // the Postgres backend: seed a task with branch_name="feature/x", call match
 // with HeadRef="feature/x" → match returned + BatchCompleteTasksByPRMatch
@@ -64,7 +69,7 @@ func TestReconcileMergedPRs_ExactMatch_PG_AutoApplies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID: %v", err)
 	}
-	if got.Status != "completed" {
+	if got.Status != statusCompleted {
 		t.Errorf("status = %q, want completed", got.Status)
 	}
 	if !got.PRUrl.Valid || got.PRUrl.String != prURL {
@@ -156,7 +161,7 @@ func TestReconcileMergedPRs_PG_NoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID: %v", err)
 	}
-	if got.Status != "pending" {
+	if got.Status != statusPending {
 		t.Errorf("status changed despite no match: got %q", got.Status)
 	}
 }
@@ -249,7 +254,7 @@ func TestReconcileMergedPRs_PG_PRURLMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskByID: %v", err)
 	}
-	if got.Status != "completed" {
+	if got.Status != statusCompleted {
 		t.Errorf("status = %q, want completed", got.Status)
 	}
 }

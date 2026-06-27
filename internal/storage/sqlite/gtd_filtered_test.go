@@ -22,7 +22,7 @@ func seedSQLiteTask(t *testing.T, s *sqlite.GTDStore, due *time.Time, status str
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if status != "" && status != "pending" {
+	if status != "" && status != taskStatusPending {
 		if _, err := s.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatus(status)); err != nil {
 			t.Fatalf("UpdateTaskStatus %q: %v", status, err)
 		}
@@ -43,7 +43,6 @@ func TestSQLiteStore_TasksFiltered_ActiveDefault(t *testing.T) {
 	_ = seedSQLiteTask(t, s, &due, "cancelled")
 
 	for _, status := range []string{"", "active"} {
-		status := status // capture
 		t.Run("status="+status, func(t *testing.T) {
 			tasks, err := s.TasksFiltered(ctx, gtd.TaskFilter{Status: status, Limit: 50})
 			if err != nil {
@@ -52,7 +51,7 @@ func TestSQLiteStore_TasksFiltered_ActiveDefault(t *testing.T) {
 			found := make(map[uuid.UUID]bool)
 			for _, tk := range tasks {
 				found[tk.ID] = true
-				if tk.Status != "pending" && tk.Status != "in_progress" {
+				if tk.Status != taskStatusPending && tk.Status != "in_progress" {
 					t.Errorf("active filter returned task with status %q", tk.Status)
 				}
 			}
@@ -81,7 +80,7 @@ func TestSQLiteStore_TasksFiltered_StatusCompleted(t *testing.T) {
 	}
 	found := false
 	for _, tk := range tasks {
-		if tk.Status != "completed" {
+		if tk.Status != taskStatusCompleted {
 			t.Errorf("status=completed returned task with status %q", tk.Status)
 		}
 		if tk.ID == completedID {
