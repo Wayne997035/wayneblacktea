@@ -13,7 +13,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-WBT_URL="${WBT_API_URL:-http://localhost:8080}"
+WBT_URL="${WBT_API_URL:-http://localhost:8420}"
 
 # Claude project directory where session JSONL files live.
 # Set CLAUDE_PROJECTS_DIR to your own path, e.g.:

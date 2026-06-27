@@ -36,7 +36,7 @@ npm run build             # builds web/dist (embedded in the Go binary)
 go run ./cmd/server -env .env
 ```
 
-The server listens on port 8080 by default. Open `http://localhost:8080` in your browser.
+The server listens on port 8420 by default. Open `http://localhost:8420` in your browser.
 
 ## 3. Run the seed command
 
@@ -79,7 +79,7 @@ All demo records are created idempotently: re-running `--demo` skips records tha
 ## 4. Connect Claude Code (MCP)
 
 ```bash
-claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+claude mcp add --transport http wayneblacktea http://localhost:8420/mcp
 ```
 
 Add `X-API-Key: <your API_KEY>` as a request header in the Claude Code MCP client config.

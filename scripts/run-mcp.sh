@@ -6,7 +6,7 @@
 # (e.g. via `wbt serve` or `go run ./cmd/server`), Claude Code can also
 # connect via the HTTP MCP endpoint without this script:
 #
-#   claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+#   claude mcp add --transport http wayneblacktea http://localhost:8420/mcp
 #
 # This stdio script remains the recommended approach for offline / no-server use.
 set -euo pipefail

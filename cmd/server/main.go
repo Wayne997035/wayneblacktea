@@ -85,7 +85,7 @@ func run() error {
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "8420"
 	}
 	allowedOrigins, err := resolveAllowedOrigins(port)
 	if err != nil {
@@ -393,7 +393,7 @@ func run() error {
 	api.POST("/auto-handoff", autologH.AutoHandoff, handoffRL)
 
 	// HTTP MCP transport: mount the MCP server at /mcp so Claude Code can connect via:
-	//   claude mcp add --transport http wayneblacktea http://localhost:8080/mcp
+	//   claude mcp add --transport http wayneblacktea http://localhost:8420/mcp
 	// The same stores used by HTTP handlers are reused — no separate DB connections needed.
 	mcpServer, err := mcpsrv.New(stores)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -108,11 +109,13 @@ func applyBranchAndPRUpdate(args map[string]any, p *gtd.UpdateTaskParams) string
 const maxPendingDeletions = 256
 
 func (s *Server) registerGTDTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("list_projects",
+	ms.AddTool(mcp.NewTool(
+		"list_projects",
 		mcp.WithDescription("Returns all active projects."),
 	), s.handleListProjects)
 
-	ms.AddTool(mcp.NewTool("create_project",
+	ms.AddTool(mcp.NewTool(
+		"create_project",
 		mcp.WithDescription("Creates a new project."),
 		mcp.WithString("name", mcp.Description("Short slug identifier"), mcp.Required()),
 		mcp.WithString("title", mcp.Description("Display title"), mcp.Required()),
@@ -123,7 +126,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("repo_name", mcp.Description("VCS repository slug to link this project (e.g. wayneblacktea)")),
 	), s.handleCreateProject)
 
-	ms.AddTool(mcp.NewTool("update_project",
+	ms.AddTool(mcp.NewTool(
+		"update_project",
 		mcp.WithDescription("Updates mutable fields of a project. All params except project_id are optional. "+
 			"Omitted params preserve the existing value. Use update_project_status to change status only."),
 		mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
@@ -138,12 +142,22 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("repo_name", mcp.Description("VCS repository slug (empty string clears the link)")),
 	), s.handleUpdateProject)
 
-	ms.AddTool(mcp.NewTool("list_tasks",
-		mcp.WithDescription("Lists tasks, optionally filtered by project."),
+	ms.AddTool(mcp.NewTool(
+		"list_tasks",
+		mcp.WithDescription("Lists tasks, optionally filtered by project and status. "+
+			"Supports pagination via limit and offset. "+
+			"Set summary=false to receive full task objects instead of compact summaries."),
 		mcp.WithString("project_id", mcp.Description("Filter by project UUID")),
+		mcp.WithBoolean("summary", mcp.Description("Return compact task summaries (default true); false → full task objects")),
+		mcp.WithString("status",
+			mcp.Description("Filter by status (default: active = pending + in_progress; all = every status)"),
+			mcp.Enum("active", "all", "pending", "in_progress", "completed", "cancelled")),
+		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), s.handleListTasks)
 
-	ms.AddTool(mcp.NewTool("add_task",
+	ms.AddTool(mcp.NewTool(
+		"add_task",
 		mcp.WithDescription(
 			"CALL immediately when follow-up work is identified during discussion. "+
 				"Creates a task optionally under a project.",
@@ -160,9 +174,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
 		mcp.WithString("branch_name", mcp.Description("Git branch name associated with this task (e.g. feature/my-feature)")),
 		mcp.WithString("pr_url", mcp.Description("GitHub PR URL for this task (e.g. https://github.com/org/repo/pull/123)")),
+		mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (required, e.g. 2026-12-31T00:00:00Z)")),
 	), s.handleAddTask)
 
-	ms.AddTool(mcp.NewTool("complete_task",
+	ms.AddTool(mcp.NewTool(
+		"complete_task",
 		mcp.WithDescription(
 			"CALL after task is verified done (build pass, tests pass). Marks task completed and records artifact. "+
 				"If artifact is a GitHub PR URL (https://github.com/.../pull/N) it is also stored as pr_url. "+
@@ -172,11 +188,13 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("artifact", mcp.Description("Link or note for the output (PR URL or commit SHA auto-detected)")),
 	), s.handleCompleteTask)
 
-	ms.AddTool(mcp.NewTool("list_goals",
+	ms.AddTool(mcp.NewTool(
+		"list_goals",
 		mcp.WithDescription("Returns all active goals ordered by due date."),
 	), s.handleListGoals)
 
-	ms.AddTool(mcp.NewTool("create_goal",
+	ms.AddTool(mcp.NewTool(
+		"create_goal",
 		mcp.WithDescription("Creates a new goal."),
 		mcp.WithString("title", mcp.Description("Goal title"), mcp.Required()),
 		mcp.WithString("area", mcp.Description("Life area (e.g. career, health, personal)"), mcp.Required()),
@@ -184,7 +202,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("due_date", mcp.Description("Target date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
 	), s.handleCreateGoal)
 
-	ms.AddTool(mcp.NewTool("update_task",
+	ms.AddTool(mcp.NewTool(
+		"update_task",
 		mcp.WithDescription("Updates one or more mutable fields of a task. All params except task_id are optional. "+
 			"Use complete_task to mark a task completed."),
 		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
@@ -202,18 +221,21 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("pr_url", mcp.Description("GitHub PR URL (empty string clears the field)")),
 	), s.handleUpdateTask)
 
-	ms.AddTool(mcp.NewTool("update_project_status",
+	ms.AddTool(mcp.NewTool(
+		"update_project_status",
 		mcp.WithDescription("Updates the status of a project."),
 		mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 		mcp.WithString("status", mcp.Description("New status: active, completed, archived, or on_hold"), mcp.Required()),
 	), s.handleUpdateProjectStatus)
 
-	ms.AddTool(mcp.NewTool("get_project",
+	ms.AddTool(mcp.NewTool(
+		"get_project",
 		mcp.WithDescription("Returns a project by name with its recent decisions."),
 		mcp.WithString("name", mcp.Description("Project slug name"), mcp.Required()),
 	), s.handleGetProject)
 
-	ms.AddTool(mcp.NewTool("log_activity",
+	ms.AddTool(mcp.NewTool(
+		"log_activity",
 		mcp.WithDescription("Records an activity log entry for a project."),
 		mcp.WithString("actor", mcp.Description("Who did the action (e.g. claude-code, human)"), mcp.Required()),
 		mcp.WithString("action", mcp.Description("What was done"), mcp.Required()),
@@ -221,7 +243,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("notes", mcp.Description("Additional notes")),
 	), s.handleLogActivity)
 
-	ms.AddTool(mcp.NewTool("get_upcoming_work",
+	ms.AddTool(mcp.NewTool(
+		"get_upcoming_work",
 		mcp.WithDescription(
 			"Returns pending/in-progress tasks grouped into today, tomorrow, day_after, "+
 				"upcoming, and unscheduled_important buckets. Use to plan the next work "+
@@ -230,7 +253,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithNumber("days", mcp.Description("How many days ahead to include (1-14, default 7)")),
 	), s.handleGetUpcomingWork)
 
-	ms.AddTool(mcp.NewTool("delete_task",
+	ms.AddTool(mcp.NewTool(
+		"delete_task",
 		mcp.WithDescription(
 			"Permanently deletes a task. TWO-STEP: first call with only task_id "+
 				"returns {deletion_token, expires_at}; second call MUST include "+
@@ -242,7 +266,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
 	), s.handleDeleteTask)
 
-	ms.AddTool(mcp.NewTool("task_checklist_add_item",
+	ms.AddTool(mcp.NewTool(
+		"task_checklist_add_item",
 		mcp.WithDescription(
 			"Appends a new checklist item to a task. Returns the full updated checklist. "+
 				"Use to track sub-steps or acceptance criteria for a task.",
@@ -253,7 +278,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("notes", mcp.Description("Optional notes (max 2000 chars)"), mcp.MaxLength(2000)),
 	), s.handleChecklistAddItem)
 
-	ms.AddTool(mcp.NewTool("task_checklist_toggle",
+	ms.AddTool(mcp.NewTool(
+		"task_checklist_toggle",
 		mcp.WithDescription(
 			"Partially updates a checklist item (done flag, title, notes, evidence_url). "+
 				"Returns the full updated checklist.",
@@ -264,7 +290,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("evidence_url", mcp.Description("Optional URL or note proving the item is done"), mcp.MaxLength(2000)),
 	), s.handleChecklistToggle)
 
-	ms.AddTool(mcp.NewTool("task_checklist_complete",
+	ms.AddTool(mcp.NewTool(
+		"task_checklist_complete",
 		mcp.WithDescription(
 			"Shorthand for marking a checklist item done=true and recording completed_at=now. "+
 				"Returns the full updated checklist.",
@@ -273,7 +300,35 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
 	), s.handleChecklistComplete)
 
-	ms.AddTool(mcp.NewTool("begin_task",
+	ms.AddTool(mcp.NewTool(
+		"get_task",
+		mcp.WithDescription(
+			"Returns a single task by UUID. Status-agnostic — retrieves pending, "+
+				"in_progress, completed, and cancelled tasks. Use list_tasks for "+
+				"filtered bulk retrieval.",
+		),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+	), s.handleGetTask)
+
+	ms.AddTool(mcp.NewTool(
+		"set_task_status",
+		mcp.WithDescription(
+			"Transitions a task to a new status, including reopen (completed/cancelled → pending/in_progress). "+
+				"Same-to-same status is an idempotent no-op. Allowed transitions: "+
+				"pending↔in_progress, pending→completed/cancelled, in_progress→completed/cancelled, "+
+				"completed/cancelled→pending/in_progress/completed/cancelled. "+
+				"IMPORTANT: This tool MUST NOT call record_outcome or evaluate_outcome — "+
+				"outcome recording stays exclusively in those tools. Reopen→re-complete records no outcome.",
+		),
+		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("status",
+			mcp.Description("New status"),
+			mcp.Required(),
+			mcp.Enum("pending", "in_progress", "completed", "cancelled")),
+	), s.handleSetTaskStatus)
+
+	ms.AddTool(mcp.NewTool(
+		"begin_task",
 		mcp.WithDescription(
 			"Atomically marks a task in_progress, logs a work_session_started activity, "+
 				"and returns the task with a branch_name_suggestion and work_session_id. "+
@@ -453,8 +508,57 @@ func resolveGoalID(args map[string]any, existing *db.Project, p *gtd.UpdateProje
 	return ""
 }
 
+// taskSummary is the compact representation returned by list_tasks when
+// summary=true (the default). Exactly 9 fields match the spec.
+type taskSummary struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	Priority   int32  `json:"priority"`
+	Importance *int16 `json:"importance,omitempty"`
+	DueDate    string `json:"due_date,omitempty"`
+	Assignee   string `json:"assignee,omitempty"`
+	Kind       string `json:"kind"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
 func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
+
+	// status: validate against allowed enum; default "active"
+	rawStatus := stringArg(args, "status")
+	if rawStatus == "" {
+		rawStatus = "active"
+	}
+	switch rawStatus {
+	case "active", "all", "pending", "in_progress", "completed", "cancelled":
+	default:
+		return mcp.NewToolResultError(
+			"status must be one of: active, all, pending, in_progress, completed, cancelled",
+		), nil
+	}
+
+	// limit: <=0 → 50; clamp to 200
+	limit := int(numberArg(args, "limit"))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	// offset: <0 → 0
+	offset := int(numberArg(args, "offset"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	// summary: absent → true (default)
+	summaryMode := true
+	if _, ok := args["summary"]; ok {
+		summaryMode = boolArg(args, "summary")
+	}
+
 	var projectID *uuid.UUID
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -463,11 +567,164 @@ func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (
 		}
 		projectID = &id
 	}
-	tasks, err := s.gtd.Tasks(ctx, projectID)
+
+	// Fetch limit+1 rows to detect has_more without a COUNT query.
+	effLimit := limit + 1
+	f := gtd.TaskFilter{
+		ProjectID: projectID,
+		Status:    rawStatus,
+		Limit:     effLimit,
+		Offset:    offset,
+	}
+	rows, err := s.gtd.TasksFiltered(ctx, f)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading tasks: %v", err)), nil
 	}
-	return jsonText(tasks)
+
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+
+	var tasks any
+	if summaryMode {
+		summaries := make([]taskSummary, 0, len(rows))
+		for _, t := range rows {
+			ts := taskSummary{
+				ID:       t.ID.String(),
+				Title:    t.Title,
+				Status:   t.Status,
+				Priority: t.Priority,
+				Kind:     t.Kind,
+			}
+			if t.Importance.Valid {
+				v := t.Importance.Int16
+				ts.Importance = &v
+			}
+			if t.DueDate.Valid {
+				ts.DueDate = t.DueDate.Time.UTC().Format(time.RFC3339)
+			}
+			if t.Assignee.Valid && t.Assignee.String != "" {
+				ts.Assignee = t.Assignee.String
+			}
+			if t.UpdatedAt.Valid {
+				ts.UpdatedAt = t.UpdatedAt.Time.UTC().Format(time.RFC3339)
+			}
+			summaries = append(summaries, ts)
+		}
+		tasks = summaries
+	} else {
+		tasks = rows
+	}
+
+	return jsonText(map[string]any{
+		"tasks":    tasks,
+		"returned": len(rows),
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": hasMore,
+		"status":   rawStatus,
+		"summary":  summaryMode,
+	})
+}
+
+// handleGetTask returns a single task by UUID. Status-agnostic — retrieves
+// pending, in_progress, completed, and cancelled tasks alike.
+func (s *Server) handleGetTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	raw := stringArg(args, "task_id")
+	if raw == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	}
+	task, err := s.gtd.GetTaskByID(ctx, id)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
+	}
+	return jsonText(task)
+}
+
+// allowedTransitions maps each source status to the set of valid target statuses.
+// Same-to-same is handled separately as an idempotent no-op.
+//
+// IMPORTANT: set_task_status MUST NOT call any outcome path. record_outcome and
+// evaluate_outcome are the only outcome writers. Reopen→re-complete records no
+// outcome — do NOT add an outcome side-effect here in the future.
+var allowedTransitions = map[string]map[string]bool{
+	"pending":     {"in_progress": true, "completed": true, "cancelled": true},
+	"in_progress": {"pending": true, "completed": true, "cancelled": true},
+	"completed":   {"pending": true, "in_progress": true, "cancelled": true},
+	"cancelled":   {"pending": true, "in_progress": true, "completed": true},
+}
+
+// handleSetTaskStatus transitions a task to a new status. Idempotent for
+// same-to-same. Covers reopen (completed/cancelled → pending/in_progress).
+func (s *Server) handleSetTaskStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawID := stringArg(args, "task_id")
+	if rawID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	}
+
+	rawStatus := stringArg(args, "status")
+	switch rawStatus {
+	case "pending", "in_progress", "completed", "cancelled":
+	default:
+		return mcp.NewToolResultError(
+			"status must be one of: pending, in_progress, completed, cancelled",
+		), nil
+	}
+
+	cur, err := s.gtd.GetTaskByID(ctx, id)
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
+	}
+
+	// Idempotent no-op: same → same, no write.
+	if cur.Status == rawStatus {
+		return jsonText(cur)
+	}
+
+	// Guard invalid transitions.
+	if !allowedTransitions[cur.Status][rawStatus] {
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"invalid transition %s → %s: allowed targets are %v",
+			cur.Status, rawStatus, allowedTargets(cur.Status),
+		)), nil
+	}
+
+	updated, err := s.gtd.UpdateTaskStatus(ctx, id, gtd.TaskStatus(rawStatus))
+	if errors.Is(err, gtd.ErrNotFound) {
+		return mcp.NewToolResultError("task not found"), nil
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("updating task status: %v", err)), nil
+	}
+	return jsonText(updated)
+}
+
+// allowedTargets returns a sorted list of allowed target statuses for errMsg.
+func allowedTargets(fromStatus string) []string {
+	targets := allowedTransitions[fromStatus]
+	out := make([]string, 0, len(targets))
+	for t := range targets {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -521,6 +778,19 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 	if msg := applyBranchAndPR(args, &p); msg != "" {
 		return mcp.NewToolResultError(msg), nil
 	}
+
+	// due_date is required in add_task (OVERRIDE 1: hard-require at tool layer only).
+	// Other CreateTask callers (promote_vision_to_task, reconcile, HTTP, CLI, Discord)
+	// call the store directly and are NOT affected by this check.
+	rawDue := stringArg(args, "due_date")
+	if rawDue == "" {
+		return mcp.NewToolResultError("due_date is required (RFC3339, e.g. 2026-12-31T00:00:00Z)"), nil
+	}
+	dueTime, parseErr := time.Parse(time.RFC3339, rawDue)
+	if parseErr != nil {
+		return mcp.NewToolResultError("invalid due_date: must be RFC3339 (e.g. 2026-12-31T00:00:00Z)"), nil
+	}
+	p.DueDate = &dueTime
 
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {
@@ -1048,7 +1318,8 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 	}
 	if prURL != "" && !githubPRURLRe.MatchString(prURL) {
 		return mcp.NewToolResultError(
-			"pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"), nil
+			"pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)",
+		), nil
 	}
 
 	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
@@ -1073,7 +1344,8 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 		updated, uerr := s.gtd.UpdateTask(ctx, id, up)
 		if uerr != nil {
 			return mcp.NewToolResultError(
-				fmt.Sprintf("beginning task linkage persist: %v", uerr)), nil
+				fmt.Sprintf("beginning task linkage persist: %v", uerr),
+			), nil
 		}
 		task = updated
 	}

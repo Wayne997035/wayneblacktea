@@ -389,6 +389,52 @@ func (s *GTDStore) scanTaskRows(rows *sql.Rows, label string) ([]db.Task, error)
 	return out, errWrap(label+" iter", rows.Err())
 }
 
+// TasksFiltered returns tasks matching the given gtd.TaskFilter with pagination.
+// It is the SQLite backend for the list_tasks MCP tool. The existing Tasks
+// method is left untouched so its non-test callers keep active-only semantics.
+//
+// Status "" or "active" → pending+in_progress; "all" → every task status; any
+// other value → exact match. Callers pass Limit+1 to detect has_more without a
+// COUNT query.
+func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Task, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	switch f.Status {
+	case "", "active":
+		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+			WHERE status IN ('pending','in_progress')
+			  AND (?1 IS NULL OR project_id = ?1)
+			  AND (?2 IS NULL OR workspace_id = ?2)
+			ORDER BY priority ASC, created_at ASC
+			LIMIT ?3 OFFSET ?4`
+		rows, err = s.db.conn.QueryContext(ctx, q,
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset)
+	case "all":
+		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+			WHERE (?1 IS NULL OR project_id = ?1)
+			  AND (?2 IS NULL OR workspace_id = ?2)
+			ORDER BY priority ASC, created_at ASC
+			LIMIT ?3 OFFSET ?4`
+		rows, err = s.db.conn.QueryContext(ctx, q,
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset)
+	default:
+		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+			WHERE status = ?1
+			  AND (?2 IS NULL OR project_id = ?2)
+			  AND (?3 IS NULL OR workspace_id = ?3)
+			ORDER BY priority ASC, created_at ASC
+			LIMIT ?4 OFFSET ?5`
+		rows, err = s.db.conn.QueryContext(ctx, q,
+			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset)
+	}
+	if err != nil {
+		return nil, errWrap("TasksFiltered", err)
+	}
+	return s.scanTaskRows(rows, "TasksFiltered")
+}
+
 // TasksByDueDateRange returns pending / in_progress tasks whose due_date
 // falls inside [from, to] (inclusive on both ends), scoped to the
 // configured workspace. The status filter intentionally excludes
@@ -649,7 +695,8 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 		}
 		const ins = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
 			VALUES (?1, ?2, 'system', NULL, 'pr_auto_close', ?3)`
-		if _, ierr := tx.ExecContext(ctx, ins,
+		if _, ierr := tx.ExecContext(
+			ctx, ins,
 			uuid.New().String(), s.db.workspaceArg(), sanitize.Notes(notes),
 		); ierr != nil {
 			return 0, errWrap("BatchCompleteTasksByPRMatch activity_log", ierr)
@@ -841,7 +888,8 @@ func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid
 	now := nowRFC3339()
 	// UPDATE only when status != in_progress to guard against a TOCTOU race
 	// between the idempotency check above and the transaction write.
-	res, err := tx.ExecContext(ctx,
+	res, err := tx.ExecContext(
+		ctx,
 		`UPDATE tasks
 		    SET status = 'in_progress', updated_at = ?2
 		  WHERE id = ?1
@@ -869,7 +917,8 @@ func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid
 		return nil, gtd.ErrNotFound
 	}
 
-	_, err = tx.ExecContext(ctx,
+	_, err = tx.ExecContext(
+		ctx,
 		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
 		 VALUES (?1, ?2, 'system', NULL, 'work_session_started', ?3)`,
 		uuid.New().String(), s.db.workspaceArg(), sanitize.Notes("task: "+existing.Title),
@@ -1020,7 +1069,8 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		WHERE id = ?1
 		  AND (?14 IS NULL OR workspace_id = ?14)`
 	now := nowRFC3339()
-	res, err := s.db.conn.ExecContext(ctx, q,
+	res, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status,
 		m.branchName, m.prURL, m.commitSHAsJSON,
 		now, s.db.workspaceArg(),
@@ -1046,7 +1096,8 @@ func (s *GTDStore) UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoa
 		WHERE id = ?1
 		  AND (?8 IS NULL OR workspace_id = ?8)`
 	now := nowRFC3339()
-	res, err := s.db.conn.ExecContext(ctx, q,
+	res, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		p.Title,
 		nullStringIfEmpty(p.Description),
@@ -1090,7 +1141,8 @@ func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.Update
 			    goal_id = ?7, repo_name = ?8, updated_at = ?9
 			WHERE id = ?1
 			  AND (?10 IS NULL OR workspace_id = ?10)`
-		res, err = s.db.conn.ExecContext(ctx, q,
+		res, err = s.db.conn.ExecContext(
+			ctx, q,
 			id.String(),
 			p.Title,
 			nullStringIfEmpty(p.Description),
@@ -1107,7 +1159,8 @@ func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.Update
 			SET title = ?2, description = ?3, area = ?4, priority = ?5, status = ?6, goal_id = ?7, updated_at = ?8
 			WHERE id = ?1
 			  AND (?9 IS NULL OR workspace_id = ?9)`
-		res, err = s.db.conn.ExecContext(ctx, q,
+		res, err = s.db.conn.ExecContext(
+			ctx, q,
 			id.String(),
 			p.Title,
 			nullStringIfEmpty(p.Description),
@@ -1187,7 +1240,8 @@ func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	// pointer (the parent DELETE's workspace filter would 0-row but the
 	// damage to neighbouring tables would already be done).
 	var exists int
-	row := tx.QueryRowContext(ctx,
+	row := tx.QueryRowContext(
+		ctx,
 		`SELECT EXISTS(
 		    SELECT 1 FROM tasks
 		     WHERE id = ?1
@@ -1210,14 +1264,16 @@ func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	}
 
 	// 1. Remove join-table rows (was ON DELETE CASCADE on work_session_tasks.task_id).
-	if _, err = tx.ExecContext(ctx,
+	if _, err = tx.ExecContext(
+		ctx,
 		`DELETE FROM work_session_tasks WHERE task_id = ?1`, idStr,
 	); err != nil {
 		return errWrap("DeleteTask cleanup work_session_tasks", err)
 	}
 
 	// 2. NULL out work_sessions.current_task_id (was ON DELETE SET NULL).
-	if _, err = tx.ExecContext(ctx,
+	if _, err = tx.ExecContext(
+		ctx,
 		`UPDATE work_sessions
 		    SET current_task_id = NULL,
 		        updated_at      = ?2
@@ -1228,14 +1284,16 @@ func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	}
 
 	// 3. Remove completion_candidates rows referencing this task.
-	if _, err = tx.ExecContext(ctx,
+	if _, err = tx.ExecContext(
+		ctx,
 		`DELETE FROM completion_candidates WHERE task_id = ?1`, idStr,
 	); err != nil {
 		return errWrap("DeleteTask cleanup completion_candidates", err)
 	}
 
 	// 4. Reset vision_items that were promoted from this task.
-	if _, err = tx.ExecContext(ctx,
+	if _, err = tx.ExecContext(
+		ctx,
 		`UPDATE vision_items
 		    SET promoted_task_id = NULL,
 		        status           = 'open'
@@ -1246,7 +1304,8 @@ func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	}
 
 	// 5. Delete the task itself, scoped to the configured workspace.
-	if _, err = tx.ExecContext(ctx,
+	if _, err = tx.ExecContext(
+		ctx,
 		`DELETE FROM tasks
 		   WHERE id = ?1
 		     AND (?2 IS NULL OR workspace_id = ?2)`,

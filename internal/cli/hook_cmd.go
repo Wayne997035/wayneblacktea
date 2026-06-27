@@ -52,7 +52,7 @@ const hookHTTPTimeout = 200 * time.Millisecond
 const hookRawNotesMaxLen = 500
 
 // hookDefaultPort is the fallback server port when PORT env is not set.
-const hookDefaultPort = "8080"
+const hookDefaultPort = "8420"
 
 // hookPayload is the subset of the Claude Code PostToolUse JSON we need.
 type hookPayload struct {

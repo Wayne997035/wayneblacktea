@@ -89,7 +89,7 @@ func collectStatus() (StatusReport, error) {
 	return report, nil
 }
 
-// readPortFromEnvOrConfig picks PORT > config.Port > 8080 for status output.
+// readPortFromEnvOrConfig picks PORT > config.Port > 8420 for status output.
 // (No CLI flag override on status — what matters is the running server's
 // port, which is opaque to us; we report the one we'd try if the user
 // re-ran setup.)
@@ -107,7 +107,7 @@ func readPortFromEnvOrConfig() int {
 			}
 		}
 	}
-	return 8080
+	return 8420
 }
 
 // emitJSON marshals report as indented JSON.

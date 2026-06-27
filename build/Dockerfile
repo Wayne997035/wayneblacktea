@@ -30,9 +30,9 @@ WORKDIR /app
 COPY --from=builder /app/server .
 
 USER appuser
-EXPOSE 8080
+EXPOSE 8420
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -qO- http://localhost:8080/health || exit 1
+    CMD wget -qO- http://localhost:8420/health || exit 1
 
 ENTRYPOINT ["/app/server"]

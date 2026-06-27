@@ -22,7 +22,7 @@ wbt setup
 
 1. Reads or creates global config (`~/.config/wayneblacktea/config.yaml`, mode 0600).
 2. Ensures the SQLite directory exists (default backend, zero infra).
-3. Resolves the HTTP port (CLI `--port` flag > `WBT_PORT` env > config > 8080).
+3. Resolves the HTTP port (CLI `--port` flag > `WBT_PORT` env > config > 8420).
 4. Probes `/health` on the resolved port; if a healthy wayneblacktea server is already there, reuses it.
 5. Otherwise, reclaims the TCP port (kills the occupier if needed) and spawns `wayneblacktea-server` in the background via `nohup`, writing the PID file to `$XDG_STATE_HOME/wayneblacktea/server.pid` (default `~/.local/state/wayneblacktea/`).
 6. Polls `/health` until the new server reports ready (15 s deadline).
@@ -39,7 +39,7 @@ $ wbt setup
 ==> Ensuring SQLite directory…
   [ok] SQLite directory ready
 ==> Resolving port…
-  [ok] Port resolved: 8080
+  [ok] Port resolved: 8420
 ==> Checking for an existing healthy server…
 ==> Reclaiming TCP port if occupied…
   [ok] Port is free
@@ -48,9 +48,9 @@ $ wbt setup
 ==> Waiting for /health…
   [ok] Server is healthy
 ==> Registering MCP with Claude Code…
-  [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
+  [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8420/mcp
 
-All set. wayneblacktea is running at http://127.0.0.1:8080
+All set. wayneblacktea is running at http://127.0.0.1:8420
 
 Next commands:
   wbt status        - show server state
@@ -64,7 +64,7 @@ Open Claude Code anywhere, approve the MCP server when prompted, then verify wit
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--port=<n>` | `WBT_PORT` env or `8080` from config | Override the HTTP port (the resolved value is persisted to config so `wbt status` reports correctly). |
+| `--port=<n>` | `WBT_PORT` env or `8420` from config | Override the HTTP port (the resolved value is persisted to config so `wbt status` reports correctly). |
 | `--no-mcp` | off | Skip the `claude mcp add` step (useful if you manage MCP registrations manually). |
 | `--mcp-name=<n>` | `wayneblacktea` | Override the name `claude mcp add` registers (useful if you run multiple wayneblacktea instances). |
 | `--server-bin=<path>` | `exec.LookPath("wayneblacktea-server")` | Override the server binary location (intended for tests / non-standard installs). |
@@ -95,7 +95,7 @@ Set the key via `~/.config/wayneblacktea/.env` or the `ANTHROPIC_API_KEY` enviro
 | Claude Code | HTTP (auto-registered by `wbt setup`) | Run `wbt setup`; no further config needed |
 | Claude Code (legacy stdio) | stdio | Use `wbt setup --no-mcp`, then add manually: `wbt mcp` as the command in `.mcp.json` |
 | Claude Desktop | stdio via DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it; requires `wbt` already on PATH |
-| Cursor | HTTP | Manual config — point at `http://localhost:8080/mcp` |
+| Cursor | HTTP | Manual config — point at `http://localhost:8420/mcp` |
 | Other MCP clients | varies | Run `wbt status --format json` to discover the current URL |
 
 `wbt setup`'s remove-then-add only touches the `wayneblacktea` entry in Claude Code. All other registered MCP servers are untouched. Verify with `claude mcp list` after setup.
@@ -136,7 +136,7 @@ Earlier versions documented `wbt init` as the install entry point. `wbt init` no
 ## Troubleshooting
 
 **`wbt setup` exits "Port reclaim failed"**
-Another process is holding the port and could not be killed (e.g. a system service). Find it with `lsof -i :8080` (replace 8080 with your port), kill the process manually, then re-run `wbt setup`. Alternatively, use a different port: `wbt setup --port 9090`.
+Another process is holding the port and could not be killed (e.g. a system service). Find it with `lsof -i :8420` (replace 8420 with your port), kill the process manually, then re-run `wbt setup`. Alternatively, use a different port: `wbt setup --port 9090`.
 
 **`claude CLI not found` during MCP registration**
 `wbt setup` could not find the `claude` binary. Install Claude Code from https://claude.ai/download, then re-run `wbt setup`. If you prefer to register manually, copy the printed `claude mcp add` command from the setup output and run it yourself, or add the entry directly to `~/.claude/mcp_settings.json`.
@@ -220,7 +220,7 @@ Required environment variables (server / PG mode):
 | `API_KEY` | Bearer token for every `/api/*` route. Generate with `openssl rand -hex 32` |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins; must be explicit in production (`*` panics at startup) |
 
-Optional: `STORAGE_BACKEND` (`sqlite`/`postgres`, default `sqlite`), `WORKSPACE_ID` (UUID scoping reads/writes), `USER_ID` (`proposed_by` attribution), `PORT` (default `8080`), `PGSSLROOTCERT` (CA cert path for Aiven / non-system trust store).
+Optional: `STORAGE_BACKEND` (`sqlite`/`postgres`, default `sqlite`), `WORKSPACE_ID` (UUID scoping reads/writes), `USER_ID` (`proposed_by` attribution), `PORT` (default `8420`), `PGSSLROOTCERT` (CA cert path for Aiven / non-system trust store).
 
 Optional integrations (each degrades gracefully when unset): `GEMINI_API_KEY` (vector embeddings), `GROQ_API_KEY` (Discord `/analyze`), `DISCORD_BOT_TOKEN` + `DISCORD_GUILD_ID` (Discord bot), `NOTION_INTEGRATION_SECRET` + `NOTION_DATABASE_ID` (`sync_to_notion`).
 
@@ -235,7 +235,7 @@ cp .env.example .env             # set API_KEY, DATABASE_URL, ALLOWED_ORIGINS
 
 API_KEY=$(grep ^API_KEY .env | cut -d= -f2)
 docker build --build-arg VITE_API_KEY="${API_KEY}" -f build/Dockerfile -t wayneblacktea .
-docker run --rm -p 8080:8080 --env-file .env wayneblacktea
+docker run --rm -p 8420:8420 --env-file .env wayneblacktea
 ```
 
 Three-stage build: Node 22-alpine builds the React dashboard → golang:1.26-alpine builds the Go binary with the dashboard embedded → alpine:3.21 runtime (non-root, `ca-certificates` only). Healthcheck: `GET /health` returns `200 OK`.

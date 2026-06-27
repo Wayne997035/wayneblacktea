@@ -345,6 +345,7 @@ func TestAddTask_ValidBranchAndPR(t *testing.T) {
 		"title":       "test task",
 		"branch_name": "feature/my-feature",
 		"pr_url":      "https://github.com/owner/repo/pull/42",
+		"due_date":    "2026-12-31T00:00:00Z", // required since OVERRIDE 1
 	})
 	if r.IsError {
 		t.Fatalf("add_task with valid branch+pr must succeed, got: %s", resultText(r))

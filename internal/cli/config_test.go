@@ -248,7 +248,7 @@ func TestReadEnvPort(t *testing.T) {
 		want    string
 	}{
 		{name: "env set", portEnv: "3000", want: "3000"},
-		{name: "env empty defaults to 8080", portEnv: "", want: "8080"},
+		{name: "env empty defaults to 8420", portEnv: "", want: "8420"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

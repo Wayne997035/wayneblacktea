@@ -38,13 +38,13 @@ const healthPollDeadline = 15 * time.Second
 //
 // Supported flags:
 //
-//	--port=<n>      override port (default: WBT_PORT env or 8080 from config)
+//	--port=<n>      override port (default: WBT_PORT env or 8420 from config)
 //	--server-bin=<path>  override wayneblacktea-server path (for tests)
 //	--mcp-name=<n>  override MCP server name (default: wayneblacktea)
 //	--no-mcp        skip claude mcp registration entirely
 func RunSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	portFlag := fs.Int("port", 0, "TCP port for the wayneblacktea HTTP server (default: WBT_PORT or 8080)")
+	portFlag := fs.Int("port", 0, "TCP port for the wayneblacktea HTTP server (default: WBT_PORT or 8420)")
 	serverBin := fs.String("server-bin", "", "absolute path to wayneblacktea-server (default: exec.LookPath)")
 	mcpName := fs.String("mcp-name", "wayneblacktea", "MCP server name registered with claude CLI")
 	noMCP := fs.Bool("no-mcp", false, "skip automatic `claude mcp add` registration")
@@ -151,7 +151,7 @@ func readOrCreateConfig() (string, WbtConfig, error) {
 		cfg.APIKey = key
 	}
 	if cfg.Port == "" {
-		cfg.Port = "8080"
+		cfg.Port = "8420"
 	}
 	if cfg.StorageBackend == sqliteBackend && cfg.SQLitePath == "" {
 		cfg.SQLitePath = defaultSQLitePath()
@@ -227,7 +227,7 @@ func defaultSQLitePath() string {
 	return filepath.Join(base, "wayneblacktea", "wbt.db")
 }
 
-// resolvePort picks WBT_PORT > --port flag > cfg.Port > 8080.
+// resolvePort picks WBT_PORT > --port flag > cfg.Port > 8420.
 // The order favours explicit env override so CI scripts win.
 func resolvePort(flagPort int, cfg WbtConfig) (int, error) {
 	if v := strings.TrimSpace(os.Getenv("WBT_PORT")); v != "" {
@@ -247,7 +247,7 @@ func resolvePort(flagPort int, cfg WbtConfig) (int, error) {
 		}
 		return validatePort(p)
 	}
-	return 8080, nil
+	return 8420, nil
 }
 
 // validatePort enforces 1-65535.

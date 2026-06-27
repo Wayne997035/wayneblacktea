@@ -52,7 +52,7 @@ func run() error {
 	}
 	apiURL := os.Getenv("WAYNEBLACKTEA_API_URL")
 	if apiURL == "" {
-		apiURL = "http://localhost:8080"
+		apiURL = "http://localhost:8420"
 	}
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {

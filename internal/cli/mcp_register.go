@@ -34,7 +34,7 @@ const (
 // user's Claude Code installation at user-global scope (default; no
 // --scope project).
 //
-// transport=http URL is the http endpoint (e.g. http://localhost:8080/mcp).
+// transport=http URL is the http endpoint (e.g. http://localhost:8420/mcp).
 // transport=stdio invokes `wbt mcp`.
 //
 // If the `claude` binary is not in PATH the function prints copy-paste

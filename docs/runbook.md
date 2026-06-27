@@ -202,7 +202,7 @@ Add to `~/.claude/settings.json` (or `.claude/settings.json` in the project):
 The hook reads `API_KEY` from `.env` / `.env.local` and `WBT_API_URL` from the environment (defaults to the production Railway URL). For local dev:
 
 ```bash
-export WBT_API_URL="http://localhost:8080"
+export WBT_API_URL="http://localhost:8420"
 ```
 
 The hook exits silently on any failure — it will not block Claude Code from closing.
@@ -242,7 +242,7 @@ The next session's `get_today_context` will surface the pending handoff automati
 | `NOTION_INTEGRATION_SECRET` | No | `sync_to_notion` MCP tool |
 | `NOTION_DATABASE_ID` | No | Target Notion database |
 | `PGSSLROOTCERT` | No | Path to Postgres CA cert bundle. Required when `APP_ENV=production` and your provider uses a custom CA (Aiven). Railway standard Postgres uses system CAs — leave unset. |
-| `PORT` | No | Server port (default `8080`) |
+| `PORT` | No | Server port (default `8420`) |
 
 Check Railway vars: `railway variables`
 

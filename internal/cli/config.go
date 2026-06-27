@@ -153,10 +153,10 @@ func WriteMCPJSON(db DBConfig) ([]byte, error) {
 	return b, nil
 }
 
-// ReadEnvPort reads the PORT env var and returns "8080" as the default.
+// ReadEnvPort reads the PORT env var and returns "8420" as the default.
 func ReadEnvPort() string {
 	if p := os.Getenv("PORT"); p != "" {
 		return p
 	}
-	return "8080"
+	return "8420"
 }

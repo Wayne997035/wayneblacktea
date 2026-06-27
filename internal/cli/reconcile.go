@@ -26,7 +26,7 @@ Usage:
 Flags:
   --since   include PRs merged on/after this date (default: 90 days ago)
   --server  base URL of wayneblacktea-server (default: http://localhost:PORT
-            from PORT env, or http://localhost:8080)
+            from PORT env, or http://localhost:8420)
   --help    show this help
 
 This subcommand iterates over every active repo registered via
@@ -209,14 +209,14 @@ func resolveSince(s string) (time.Time, error) {
 }
 
 // resolveServerURL returns the explicit --server flag, or builds the URL
-// from PORT env (the same env var wbt serve sets), defaulting to :8080.
+// from PORT env (the same env var wbt serve sets), defaulting to :8420.
 func resolveServerURL(flag string) string {
 	if strings.TrimSpace(flag) != "" {
 		return strings.TrimRight(strings.TrimSpace(flag), "/")
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "8420"
 	}
 	return "http://localhost:" + port
 }

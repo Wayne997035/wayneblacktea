@@ -24,7 +24,7 @@ ALLOWED_ORIGINS=https://your-domain.example.com
 
 **Port already in use**
 
-The server defaults to port `8080`. Override with `PORT=<number>` in `.env`.
+The server defaults to port `8420`. Override with `PORT=<number>` in `.env`.
 
 ---
 
@@ -101,7 +101,7 @@ Open Claude Code from the directory containing `.mcp.json`.
 The server also exposes an HTTP MCP endpoint at `/mcp`. Claude Code must be configured with transport `http` (not `sse`) and must send `X-API-Key` on every request. Verify connectivity:
 
 ```bash
-curl -H "X-API-Key: $API_KEY" http://localhost:8080/health
+curl -H "X-API-Key: $API_KEY" http://localhost:8420/health
 ```
 
 ---

@@ -18,7 +18,7 @@ func RunInit() error {
 		return err
 	}
 
-	port, err := PromptWithDefault(r, "Server port [default: 8080]: ", "8080")
+	port, err := PromptWithDefault(r, "Server port [default: 8420]: ", "8420")
 	if err != nil {
 		return fmt.Errorf("reading server port: %w", err)
 	}

@@ -22,16 +22,20 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// taskStatusPending and taskStatusInProgress are the literal status string
-// values used by `db.Task.Status`. Hoisted to package-level constants so the
-// same literal isn't repeated across multiple files (goconst).
+// taskStatusPending, taskStatusInProgress, taskStatusCompleted and
+// taskStatusCancelled are the literal status string values used by
+// `db.Task.Status`. Hoisted to package-level constants so the same literal
+// isn't repeated across multiple files (goconst).
 const (
 	taskStatusPending    = "pending"
 	taskStatusInProgress = "in_progress"
+	taskStatusCompleted  = "completed"
+	taskStatusCancelled  = "cancelled"
 )
 
 func (s *Server) registerHealthTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("system_health",
+	ms.AddTool(mcp.NewTool(
+		"system_health",
 		mcp.WithDescription(
 			"Returns a snapshot of the personal-OS state: in-progress task "+
 				"count, stuck tasks (in_progress > 4h), pending proposals, "+
@@ -257,7 +261,8 @@ func (s *Server) collectDisciplineHealth(ctx context.Context) disciplineHealth {
 		// window.
 		ts, qErr := s.discipline.RecentDecisionTimes(ctx, sessionID, since.Add(-driftWindow))
 		if qErr != nil {
-			slog.Warn("collectDisciplineHealth: RecentDecisionTimes failed",
+			slog.Warn(
+				"collectDisciplineHealth: RecentDecisionTimes failed",
 				"session_id", sessionID,
 				"error", qErr,
 			)

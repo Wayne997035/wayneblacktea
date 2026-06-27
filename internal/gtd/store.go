@@ -167,7 +167,8 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 		VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
 		RETURNING id, goal_id, name, title, description, status, area, priority,
 		          created_at, updated_at, workspace_id`
-	rows, err := s.dbtx.Query(ctx, q,
+	rows, err := s.dbtx.Query(
+		ctx, q,
 		toUUID(p.GoalID), p.Name, p.Title, toText(p.Description),
 		area, priority, toText(p.RepoName), s.workspaceID,
 	)
@@ -268,6 +269,77 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating tasks by due date: %w", err)
+	}
+	return out, nil
+}
+
+// TasksFiltered returns tasks matching the given TaskFilter with pagination.
+// It is the query backing the list_tasks MCP tool. The existing Tasks method
+// is left untouched so its non-test callers keep active-only semantics.
+//
+// Status "" or "active" → pending+in_progress; "all" → every task status; any
+// other value → exact match. Callers pass Limit+1 to detect has_more without a
+// COUNT query.
+//
+// Hand-rolled (not sqlc) to keep this feature self-contained without
+// churning the queries.sql codegen surface.
+func (s *Store) TasksFiltered(ctx context.Context, f TaskFilter) ([]db.Task, error) {
+	const selectCols = `id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
+		branch_name, pr_url, commit_shas`
+	return s.queryFilteredTasks(ctx, selectCols, f)
+}
+
+// queryFilteredTasks executes the status-conditional query and scans the results.
+func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f TaskFilter) ([]db.Task, error) {
+	var rows pgx.Rows
+	var err error
+	switch f.Status {
+	case "", "active":
+		q := `SELECT ` + selectCols + `
+			FROM tasks
+			WHERE status IN ('pending','in_progress')
+			  AND ($1::uuid IS NULL OR project_id = $1)
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY priority ASC, created_at ASC
+			LIMIT $3 OFFSET $4`
+		rows, err = s.dbtx.Query(ctx, q, toUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+	case "all":
+		q := `SELECT ` + selectCols + `
+			FROM tasks
+			WHERE ($1::uuid IS NULL OR project_id = $1)
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY priority ASC, created_at ASC
+			LIMIT $3 OFFSET $4`
+		rows, err = s.dbtx.Query(ctx, q, toUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+	default:
+		q := `SELECT ` + selectCols + `
+			FROM tasks
+			WHERE status = $1
+			  AND ($2::uuid IS NULL OR project_id = $2)
+			  AND ($3::uuid IS NULL OR workspace_id = $3)
+			ORDER BY priority ASC, created_at ASC
+			LIMIT $4 OFFSET $5`
+		rows, err = s.dbtx.Query(ctx, q, f.Status, toUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing filtered tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []db.Task
+	for rows.Next() {
+		var t db.Task
+		if err := rows.Scan(
+			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+		); err != nil {
+			return nil, fmt.Errorf("scanning filtered task: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating filtered tasks: %w", err)
 	}
 	return out, nil
 }
@@ -391,7 +463,8 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
 		          branch_name, pr_url, commit_shas, vision_item_id`
-	rows, err := s.dbtx.Query(ctx, q,
+	rows, err := s.dbtx.Query(
+		ctx, q,
 		toUUID(p.ProjectID), p.Title, toText(p.Description), priority, toText(p.Assignee),
 		toTimestamptz(p.DueDate), toInt2(p.Importance), toText(p.Context), kind,
 		toText(coalesceStringPtr(p.BranchName)), toText(coalesceStringPtr(p.PRUrl)),
@@ -832,7 +905,8 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
 		          branch_name, pr_url, commit_shas`
-	rows, err := s.dbtx.Query(ctx, q,
+	rows, err := s.dbtx.Query(
+		ctx, q,
 		title, description, priority, importance, assignee, dueDate, taskContext, status,
 		branchName, prURL, commitSHAs,
 		id, s.workspaceID,
@@ -914,7 +988,8 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 			  AND ($9::uuid IS NULL OR workspace_id = $9)
 			RETURNING id, goal_id, name, title, description, status, area, priority,
 			          created_at, updated_at, workspace_id`
-		rows, err = s.dbtx.Query(ctx, q,
+		rows, err = s.dbtx.Query(
+			ctx, q,
 			p.Title, toText(p.Description), area, priority, string(p.Status), toUUID(p.GoalID),
 			toText(*p.RepoName),
 			id, s.workspaceID,
@@ -932,7 +1007,8 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 			  AND ($8::uuid IS NULL OR workspace_id = $8)
 			RETURNING id, goal_id, name, title, description, status, area, priority,
 			          created_at, updated_at, workspace_id`
-		rows, err = s.dbtx.Query(ctx, q,
+		rows, err = s.dbtx.Query(
+			ctx, q,
 			p.Title, toText(p.Description), area, priority, string(p.Status), toUUID(p.GoalID),
 			id, s.workspaceID,
 		)
@@ -1023,7 +1099,8 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	// pointer (the parent DELETE's workspace filter would 0-row but the
 	// damage to neighbouring tables would already be done).
 	var exists bool
-	if err = tx.QueryRow(ctx,
+	if err = tx.QueryRow(
+		ctx,
 		`SELECT EXISTS(
 		    SELECT 1 FROM tasks
 		     WHERE id = $1
@@ -1044,14 +1121,16 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	}
 
 	// 1. Remove join-table rows (was ON DELETE CASCADE on work_session_tasks.task_id).
-	if _, err = tx.Exec(ctx,
+	if _, err = tx.Exec(
+		ctx,
 		`DELETE FROM work_session_tasks WHERE task_id = $1`, id,
 	); err != nil {
 		return fmt.Errorf("deleting task %s: cleanup work_session_tasks: %w", id, err)
 	}
 
 	// 2. NULL out work_sessions.current_task_id (was ON DELETE SET NULL).
-	if _, err = tx.Exec(ctx,
+	if _, err = tx.Exec(
+		ctx,
 		`UPDATE work_sessions
 		   SET current_task_id = NULL,
 		       updated_at      = NOW()
@@ -1061,14 +1140,16 @@ func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	}
 
 	// 3a. Remove completion_candidates rows referencing this task.
-	if _, err = tx.Exec(ctx,
+	if _, err = tx.Exec(
+		ctx,
 		`DELETE FROM completion_candidates WHERE task_id = $1`, id,
 	); err != nil {
 		return fmt.Errorf("deleting task %s: cleanup completion_candidates: %w", id, err)
 	}
 
 	// 3b. Reset vision_items that were promoted from this task.
-	if _, err = tx.Exec(ctx,
+	if _, err = tx.Exec(
+		ctx,
 		`UPDATE vision_items
 		    SET promoted_task_id = NULL,
 		        status           = 'open'

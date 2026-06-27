@@ -31,14 +31,14 @@ That's it. `wbt setup` does end-to-end: creates the SQLite store, reclaims the T
 $ wbt setup
 ==> Reading or creating config…          [ok] Config ready
 ==> Ensuring SQLite directory…           [ok] SQLite directory ready
-==> Resolving port…                      [ok] Port resolved: 8080
+==> Resolving port…                      [ok] Port resolved: 8420
 ==> Checking for an existing healthy server…
 ==> Reclaiming TCP port if occupied…     [ok] Port is free
 ==> Spawning wayneblacktea-server in the background…
                                          [ok] Server spawned (pid 12345, logs ~/.local/state/wayneblacktea/server.log)
 ==> Waiting for /health…                 [ok] Server is healthy
-==> Registering MCP with Claude Code…    [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8080/mcp
-All set. wayneblacktea is running at http://127.0.0.1:8080
+==> Registering MCP with Claude Code…    [ok] claude mcp add wayneblacktea --transport http http://127.0.0.1:8420/mcp
+All set. wayneblacktea is running at http://127.0.0.1:8420
 ```
 
 Open Claude Code anywhere and verify:

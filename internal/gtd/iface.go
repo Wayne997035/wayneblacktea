@@ -28,6 +28,13 @@ type StoreIface interface {
 	ProjectsByRepoName(ctx context.Context, repoName string) ([]db.Project, error)
 	CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	// TasksFiltered returns tasks matching f, with pagination. This is the
+	// query backing the list_tasks MCP tool. The existing Tasks method is
+	// left unchanged so its 16 non-test callers keep active-only semantics.
+	// Status "" or "active" → pending+in_progress; "all" → every task status;
+	// any other value → exact match. Callers pass Limit+1 to detect has_more
+	// without a COUNT query.
+	TasksFiltered(ctx context.Context, f TaskFilter) ([]db.Task, error)
 	// TasksByProjectAllStatuses returns ALL tasks for the project regardless
 	// of status (pending / in_progress / completed / cancelled), ordered by
 	// COALESCE(updated_at, created_at) DESC. Used by the project-detail UI

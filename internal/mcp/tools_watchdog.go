@@ -23,22 +23,24 @@ type watchdogMetaHealth struct {
 }
 
 // registerWatchdogTools registers the three watchdog meta-cognition tools:
-//   - analyze_agent_behavior  – runs all 8 detections and inserts findings
+//   - analyze_agent_behavior  – runs 8 persisted + 1 live detection and inserts persisted findings
 //   - detect_unclosed_loops   – lists open (unresolved) discipline events
 //   - mark_loop_resolved      – resolves a specific event by ID
 func (s *Server) registerWatchdogTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("analyze_agent_behavior",
+	ms.AddTool(mcp.NewTool(
+		"analyze_agent_behavior",
 		mcp.WithDescription(
-			"Runs 8 self-monitoring detections against live store data "+
-				"(stuck tasks, unlogged decisions, stale handoffs, etc.). "+
-				"Inserts findings into the discipline_events_m8 table and "+
-				"returns a JSON summary of inserted events.",
+			"Runs 8 persisted + 1 live self-monitoring detections against live store data "+
+				"(stuck tasks, unlogged decisions, stale handoffs, task_missing_due_date, etc.). "+
+				"Inserts persisted findings into the discipline_events_m8 table and "+
+				"returns a JSON summary with findings and live_findings.",
 		),
 		mcp.WithNumber("stuck_threshold_hours",
 			mcp.Description("Tasks in_progress longer than this are flagged stuck (default 4)")),
 	), s.handleAnalyzeAgentBehavior)
 
-	ms.AddTool(mcp.NewTool("detect_unclosed_loops",
+	ms.AddTool(mcp.NewTool(
+		"detect_unclosed_loops",
 		mcp.WithDescription(
 			"Returns all open discipline_events_m8 rows (resolved_at IS NULL) "+
 				"scoped to the current workspace. Each entry is a self-monitoring "+
@@ -46,7 +48,8 @@ func (s *Server) registerWatchdogTools(ms *server.MCPServer) {
 		),
 	), s.handleDetectUnclosedLoops)
 
-	ms.AddTool(mcp.NewTool("mark_loop_resolved",
+	ms.AddTool(mcp.NewTool(
+		"mark_loop_resolved",
 		mcp.WithDescription(
 			"Marks a discipline event as resolved by its UUID. "+
 				"Call this after you have addressed the underlying issue "+
@@ -62,10 +65,13 @@ func (s *Server) registerWatchdogTools(ms *server.MCPServer) {
 
 // analyzeAgentBehaviorResult is the JSON shape returned by
 // analyze_agent_behavior.
+// TotalInserted counts only persisted events; live_findings are non-persisted
+// detections (e.g. task_missing_due_date) returned in the response only.
 type analyzeAgentBehaviorResult struct {
 	RunAt         time.Time              `json:"run_at"`
 	TotalInserted int                    `json:"total_inserted"`
 	Findings      []agentBehaviorFinding `json:"findings"`
+	LiveFindings  []agentBehaviorFinding `json:"live_findings"`
 }
 
 type agentBehaviorFinding struct {
@@ -100,13 +106,21 @@ func (s *Server) handleAnalyzeAgentBehavior(ctx context.Context, req mcp.CallToo
 	findings = append(findings, s.detectTaskNoOutcome(ctx, wsID)...)
 	findings = append(findings, s.detectDecisionNoReflection(ctx, wsID)...)
 
+	// Detection #9 (live, non-persisted): task_missing_due_date.
+	// TotalInserted counts only persisted (DB-inserted) findings above.
+	liveFindings := s.detectTasksMissingDueDate(ctx, wsID)
+
 	result := analyzeAgentBehaviorResult{
 		RunAt:         time.Now().UTC(),
 		TotalInserted: len(findings),
 		Findings:      findings,
+		LiveFindings:  liveFindings,
 	}
 	if result.Findings == nil {
 		result.Findings = []agentBehaviorFinding{}
+	}
+	if result.LiveFindings == nil {
+		result.LiveFindings = []agentBehaviorFinding{}
 	}
 	return jsonText(result)
 }
@@ -460,6 +474,50 @@ func (s *Server) detectDecisionNoReflection(ctx context.Context, wsID *uuid.UUID
 				Detail:    detail,
 			})
 		}
+	}
+	return out
+}
+
+// Detection #9 (live, non-persisted): task_missing_due_date — active tasks
+// that lack a due_date. This detection is intentionally NOT persisted to
+// discipline_events_m8 (no EventType const, no insertWatchdogEvent call) so
+// that the watchdog/store.go EventType enum and its "8 categories" comment
+// remain unchanged.
+//
+// NOTE: detectTaskNoOutcome (above) has a pre-existing bug: it filters on
+// t.Status != "done" but the terminal status string is "completed" — this
+// means the detection is currently dead. This is a known issue flagged for
+// a follow-up fix; the new detection below uses t.DueDate.Valid which is the
+// correct field and must NOT copy the "done" string bug.
+func (s *Server) detectTasksMissingDueDate(ctx context.Context, wsID *uuid.UUID) []agentBehaviorFinding {
+	if s.gtd == nil {
+		return nil
+	}
+	// Tasks(nil) returns pending + in_progress — correct scope for open tasks.
+	tasks, err := s.gtd.Tasks(ctx, nil)
+	if err != nil {
+		slog.Warn("analyze_agent_behavior: gtd.Tasks (task_missing_due_date) failed", "error", err)
+		return nil
+	}
+	var out []agentBehaviorFinding
+	for _, t := range tasks {
+		if t.DueDate.Valid {
+			continue
+		}
+		createdAt := ""
+		if t.CreatedAt.Valid {
+			createdAt = t.CreatedAt.Time.Format(time.RFC3339)
+		}
+		detail, _ := json.Marshal(map[string]any{
+			"task_id":    t.ID.String(),
+			"title":      t.Title,
+			"created_at": createdAt,
+		})
+		out = append(out, agentBehaviorFinding{
+			EventType: "task_missing_due_date",
+			Severity:  "info",
+			Detail:    detail,
+		})
 	}
 	return out
 }

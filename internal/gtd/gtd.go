@@ -147,6 +147,18 @@ type ChecklistItem struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
+// TaskFilter holds the parameters for the filtered task list query used by
+// TasksFiltered. Status "" or "active" means pending + in_progress; "all"
+// means every task status; any other exact status value is matched literally.
+// Limit and Offset drive pagination; callers should pass Limit+1 to detect
+// has_more without a COUNT query.
+type TaskFilter struct {
+	ProjectID *uuid.UUID
+	Status    string
+	Limit     int
+	Offset    int
+}
+
 // UpdateChecklistItemParams holds the optional fields for patching a checklist item.
 // nil pointer = "don't change this field".
 type UpdateChecklistItemParams struct {
