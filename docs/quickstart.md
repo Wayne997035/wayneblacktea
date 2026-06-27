@@ -44,7 +44,7 @@ cd build && task build-frontend
 go run ./cmd/server -env .env
 ```
 
-The server listens on port 8420 by default. Open `http://localhost:8420` in your browser.
+The server listens on port `8420` by default (set `PORT=<n>` in `.env` to override). Open `http://localhost:8420` in your browser.
 
 ## 3. Run the seed command
 

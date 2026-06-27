@@ -41,10 +41,11 @@ $ wbt setup
 All set. wayneblacktea is running at http://127.0.0.1:8420
 ```
 
-Open Claude Code anywhere and verify:
+Verify the install:
 
-```
-> get_today_context
+```bash
+wbt status                      # shows pid / port / health
+claude mcp get wayneblacktea    # should show ✔ Connected
 ```
 
 Sister commands:
@@ -64,7 +65,6 @@ Sister commands:
 |---------|---------|----------|
 | go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go 1.26+ installed — recommended |
 | Build from source | `git clone ... && cd build && task build-wbt && wbt setup` | Developers; see [`docs/install.md`](./docs/install.md) |
-| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS — **requires a published release** (no release tags exist yet; tap is not populated) |
 | DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open in Claude Desktop | Claude Desktop — **requires a published release** |
 | curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | **Requires a published release** (no release binaries yet) |
 

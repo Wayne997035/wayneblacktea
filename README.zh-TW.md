@@ -41,6 +41,13 @@ $ wbt setup
 All set. wayneblacktea is running at http://127.0.0.1:8420
 ```
 
+安裝完成後驗證：
+
+```bash
+wbt status                      # 顯示 pid / port / 健康狀態
+claude mcp get wayneblacktea    # 應顯示 ✔ Connected
+```
+
 從任何目錄開 Claude Code 即可使用，不用 `.mcp.json`。
 
 姊妹指令：
@@ -62,7 +69,6 @@ All set. wayneblacktea is running at http://127.0.0.1:8420
 |------|------|------|
 | go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | 已裝 Go 1.26+ — 建議方式 |
 | 從原始碼建置 | `git clone ... && cd build && task build-wbt && wbt setup` | 開發者；詳見 [`docs/install.md`](./docs/install.md) |
-| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS — **需要已發布的 release**（目前尚無 release tag，tap 未填充） |
 | DXT | 從 [release](https://github.com/Wayne997035/wayneblacktea/releases) 下載 `wayneblacktea.dxt`，在 Claude Desktop 開啟 | Claude Desktop — **需要已發布的 release** |
 | curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | **需要已發布的 release**（目前尚無 release binary） |
 

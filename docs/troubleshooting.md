@@ -8,7 +8,9 @@ Common setup failures for new instances.
 
 **`API_KEY not set`**
 
-The server exits at startup if `API_KEY` is empty. `wbt setup` generates a random key and writes it to `~/.config/wayneblacktea/config.yaml` automatically. If running the server binary directly, set `API_KEY` in your `.env` file or environment.
+The server exits at startup if `API_KEY` is empty. `wbt setup` auto-generates a 64-char hex key and writes it to `config.yaml` (macOS: `~/Library/Application Support/wayneblacktea/config.yaml`; Linux: `~/.config/wayneblacktea/config.yaml`) automatically — you should never need to set it manually. If running the server binary directly without `wbt setup`, set `API_KEY` in your `.env` file or environment.
+
+> **Note**: a `Claude API key not configured` line in `server.log` refers to the OPTIONAL `ANTHROPIC_API_KEY` (for AI summarization features), not this `API_KEY`. MCP connectivity is unaffected if `ANTHROPIC_API_KEY` is absent.
 
 **`ALLOWED_ORIGINS` panic**
 
@@ -24,7 +26,7 @@ ALLOWED_ORIGINS=https://your-domain.example.com
 
 **Port already in use**
 
-The server defaults to port `8420`. Override with `PORT=<number>` in `.env`.
+The server defaults to port `8420`. `wbt setup` uses `WBT_PORT` env > `--port` flag > config file > `8420`. To use a different port: `wbt setup --port 9090`. For direct server invocation, set `PORT=<number>` in `.env`.
 
 ---
 

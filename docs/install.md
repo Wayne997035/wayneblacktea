@@ -20,9 +20,9 @@ wbt setup
 
 `wbt setup` is the one-command install (shipped in Phase 2). It does end-to-end:
 
-1. Reads or creates global config (`~/.config/wayneblacktea/config.yaml`, mode 0600).
+1. Reads or creates global config (macOS: `~/Library/Application Support/wayneblacktea/config.yaml`; Linux: `~/.config/wayneblacktea/config.yaml`; mode 0600).
 2. Ensures the SQLite directory exists (default backend, zero infra).
-3. Resolves the HTTP port (`WBT_PORT` env > `--port` flag > config file > default `8420`).
+3. Resolves the HTTP port (`WBT_PORT` env > `--port` flag > config file > default `8420`). When deploying to a PaaS like Railway, the platform injects `$PORT` which overrides this default.
 4. Probes `/health` on the resolved port; if a healthy wayneblacktea server is already there, reuses it.
 5. Otherwise, reclaims the TCP port (kills the occupier if needed) and spawns `wayneblacktea-server` in the background via `nohup`, writing the PID file to `$XDG_STATE_HOME/wayneblacktea/server.pid` (default `~/.local/state/wayneblacktea/`).
 6. Polls `/health` until the new server reports ready (15 s deadline).
@@ -58,13 +58,20 @@ Next commands:
   wbt restart       - stop + setup
 ```
 
-Open Claude Code anywhere, approve the MCP server when prompted, then verify with `> get_today_context`.
+Run `wbt status` at any time to confirm the port the server is actually using.
+
+Verify the install:
+
+```bash
+wbt status                      # shows pid / port / health
+claude mcp get wayneblacktea    # should show ✔ Connected
+```
 
 ### `wbt setup` flags
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--port=<n>` | `WBT_PORT` env or `8420` from config | Override the HTTP port (the resolved value is persisted to config so `wbt status` reports correctly). |
+| `--port=<n>` | `WBT_PORT` env or `8420` | Override the HTTP port (the resolved value is persisted to config so `wbt status` reports correctly). |
 | `--no-mcp` | off | Skip the `claude mcp add` step (useful if you manage MCP registrations manually). |
 | `--mcp-name=<n>` | `wayneblacktea` | Override the name `claude mcp add` registers (useful if you run multiple wayneblacktea instances). |
 | `--server-bin=<path>` | `exec.LookPath("wayneblacktea-server")` | Override the server binary location (intended for tests / non-standard installs). |
@@ -80,13 +87,36 @@ Open Claude Code anywhere, approve the MCP server when prompted, then verify wit
 | `wbt mcp` | Run the MCP server over stdio in the foreground. Useful for legacy stdio MCP integrations or for `.mcp.json`-managed project servers. |
 | `wbt init` | Deprecated alias for `wbt setup`; prints a deprecation notice on stderr but still runs. |
 
-## Anthropic API key
+## API keys
 
-**Not required for core MCP features**: GTD (goals, tasks, projects), decisions, knowledge search, session handoff, vision items, and proposals all work with no Anthropic key.
+### Shared secret (auto-generated — required for all requests)
 
-**Required for**: weekly reflection summarizer, AI knowledge atomization, and embedding generation (semantic search over knowledge).
+`wbt setup` auto-generates a 64-character hex shared secret (32 random bytes) and writes it to **both**:
 
-Set the key via `~/.config/wayneblacktea/.env` or the `ANTHROPIC_API_KEY` environment variable. After updating, reload the server with `wbt restart`.
+- **Server config** (`api_key:` field in `config.yaml`, mode 0600) — the server reads this at startup and uses it as the expected value for every inbound `X-API-Key` header.
+- **Claude Code MCP config** — registered automatically so Claude Code sends the correct header with each MCP request.
+
+You never set this key manually. To verify it is wired correctly:
+
+```bash
+claude mcp get wayneblacktea    # should show ✔ Connected
+```
+
+**This key is a local-only access gate**: the server binds to `127.0.0.1` only, so no external traffic reaches it, but any local process could reach the port. The key prevents local tools from reading your personal-OS GTD/knowledge data without your consent.
+
+**To rotate the key**: edit `api_key:` in `config.yaml` (macOS: `~/Library/Application Support/wayneblacktea/config.yaml`; Linux: `~/.config/wayneblacktea/config.yaml`), then run `wbt restart`. Claude Code's MCP registration must also be updated — re-run `wbt setup` after editing the config (it will re-register with the new key).
+
+**Do not** paste, commit, or screenshot `config.yaml` — the key is plaintext.
+
+**A `Claude API key not configured` line in `server.log` refers to the OPTIONAL Anthropic key below**, not this shared secret. MCP connectivity is not affected.
+
+### Anthropic API key (optional — for AI features only)
+
+**Not required for core MCP features**: GTD, decisions, knowledge search, session handoff, vision items, and proposals all work without it.
+
+**Required for**: weekly reflection summarizer, AI knowledge atomization, and embedding generation (semantic vector search over knowledge).
+
+Set via `ANTHROPIC_API_KEY` in your shell environment or in `config.yaml`. After updating, run `wbt restart`.
 
 ## MCP client compatibility
 
@@ -95,7 +125,7 @@ Set the key via `~/.config/wayneblacktea/.env` or the `ANTHROPIC_API_KEY` enviro
 | Claude Code | HTTP (auto-registered by `wbt setup`) | Run `wbt setup`; no further config needed |
 | Claude Code (legacy stdio) | stdio | Use `wbt setup --no-mcp`, then add manually: `wbt mcp` as the command in `.mcp.json` |
 | Claude Desktop | stdio via DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it; requires `wbt` already on PATH |
-| Cursor | HTTP | Manual config — point at `http://localhost:8420/mcp` |
+| Cursor | HTTP | Manual config — run `wbt status --format json` to get the current URL, then point Cursor at `http://localhost:<port>/mcp` |
 | Other MCP clients | varies | Run `wbt status --format json` to discover the current URL |
 
 `wbt setup`'s remove-then-add only touches the `wayneblacktea` entry in Claude Code. All other registered MCP servers are untouched. Verify with `claude mcp list` after setup.
@@ -136,7 +166,7 @@ Earlier versions documented `wbt init` as the install entry point. `wbt init` no
 ## Troubleshooting
 
 **`wbt setup` exits "Port reclaim failed"**
-Another process is holding the port and could not be killed (e.g. a system service). Find it with `lsof -i :8420` (replace 8420 with your port), kill the process manually, then re-run `wbt setup`. Alternatively, use a different port: `wbt setup --port 9090`.
+Another process is holding the port and could not be killed (e.g. a system service). Find the port with `wbt status` then check it with `lsof -i :<port>`, kill the process manually, then re-run `wbt setup`. Alternatively, use a different port: `wbt setup --port 9090`.
 
 **`claude CLI not found` during MCP registration**
 `wbt setup` could not find the `claude` binary. Install Claude Code from https://claude.ai/download, then re-run `wbt setup`. If you prefer to register manually, copy the printed `claude mcp add` command from the setup output and run it yourself, or add the entry directly to `~/.claude/mcp_settings.json`.
@@ -185,7 +215,6 @@ If missing, add the appropriate directory to your shell profile and restart your
 |---------|---------|-------|
 | **go install** (recommended) | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Requires Go 1.26+. Works today. |
 | **Build from source** | See [Build from source](#build-from-source) below | Requires Go 1.26+, Node.js 22+, Task. |
-| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | **Not yet available** — the tap (`Wayne997035/homebrew-tap`) is populated only when a tagged release is pushed via goreleaser. No release tags exist yet. |
 | DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open in Claude Desktop | **Not yet available** — requires a published GitHub Release. |
 | curl \| bash | `curl -fsSL .../scripts/install.sh \| bash` | **Not yet available** — requires release binaries to be published. See [Scripted install](#scripted-install-curl--bash--irm--iex) for the script's empty-`API_KEY` foot-gun. |
 
@@ -221,7 +250,7 @@ Required environment variables (server / PG mode):
 | `API_KEY` | Bearer token for every `/api/*` route. Generate with `openssl rand -hex 32` |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins; must be explicit in production (`*` panics at startup) |
 
-Optional: `STORAGE_BACKEND` (`sqlite`/`postgres`, default `sqlite`), `WORKSPACE_ID` (UUID scoping reads/writes), `USER_ID` (`proposed_by` attribution), `PORT` (default `8420`), `PGSSLROOTCERT` (CA cert path for Aiven / non-system trust store).
+Optional: `STORAGE_BACKEND` (`sqlite`/`postgres`, default `sqlite`), `WORKSPACE_ID` (UUID scoping reads/writes), `USER_ID` (`proposed_by` attribution), `PORT` (default `8420` locally; PaaS platforms such as Railway inject this automatically), `PGSSLROOTCERT` (CA cert path for Aiven / non-system trust store).
 
 Optional integrations (each degrades gracefully when unset): `GEMINI_API_KEY` (vector embeddings), `GROQ_API_KEY` (Discord `/analyze`), `DISCORD_BOT_TOKEN` + `DISCORD_GUILD_ID` (Discord bot), `NOTION_INTEGRATION_SECRET` + `NOTION_DATABASE_ID` (`sync_to_notion`).
 
@@ -236,7 +265,7 @@ cp .env.example .env             # set API_KEY, DATABASE_URL, ALLOWED_ORIGINS
 
 API_KEY=$(grep ^API_KEY .env | cut -d= -f2)
 docker build --build-arg VITE_API_KEY="${API_KEY}" -f build/Dockerfile -t wayneblacktea .
-docker run --rm -p 8420:8420 --env-file .env wayneblacktea
+docker run --rm -p "${PORT:-8420}:${PORT:-8420}" --env-file .env wayneblacktea
 ```
 
 Three-stage build: Node 22-alpine builds the React dashboard → golang:1.26-alpine builds the Go binary with the dashboard embedded → alpine:3.21 runtime (non-root, `ca-certificates` only). Healthcheck: `GET /health` returns `200 OK`.
