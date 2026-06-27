@@ -22,7 +22,7 @@ wbt setup
 
 1. Reads or creates global config (`~/.config/wayneblacktea/config.yaml`, mode 0600).
 2. Ensures the SQLite directory exists (default backend, zero infra).
-3. Resolves the HTTP port (CLI `--port` flag > `WBT_PORT` env > config > 8420).
+3. Resolves the HTTP port (`WBT_PORT` env > `--port` flag > config file > default `8420`).
 4. Probes `/health` on the resolved port; if a healthy wayneblacktea server is already there, reuses it.
 5. Otherwise, reclaims the TCP port (kills the occupier if needed) and spawns `wayneblacktea-server` in the background via `nohup`, writing the PID file to `$XDG_STATE_HOME/wayneblacktea/server.pid` (default `~/.local/state/wayneblacktea/`).
 6. Polls `/health` until the new server reports ready (15 s deadline).
@@ -115,7 +115,7 @@ For build-from-source upgrades:
 
 ```bash
 git pull
-cd build && task build-server build-mcp && cd ..
+cd build && task build-server build-wbt && cd ..
 wbt restart
 ```
 
@@ -181,14 +181,13 @@ If missing, add the appropriate directory to your shell profile and restart your
 
 ### Install channels
 
-Four ways to install, depending on your platform and preferences:
-
-| Channel | Command | Best for |
-|---------|---------|----------|
-| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS users who want `wbt` + the four sidecar binaries on PATH with auto-upgrades. A separate `wayneblacktea-server` cask ships the standalone HTTP/MCP server binary. |
-| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it in Claude Desktop | Claude Desktop one-click install. The package registers `wbt mcp` as a stdio MCP server, so `wbt` must already be on PATH (install it first via Homebrew, `curl \| bash`, or `go install`). |
-| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | cosign-verified binaries without Homebrew or Go. See [Scripted install](#scripted-install-curl--bash--irm--iex) for the empty-`API_KEY` foot-gun. |
-| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go developers building from source. |
+| Channel | Command | Notes |
+|---------|---------|-------|
+| **go install** (recommended) | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Requires Go 1.26+. Works today. |
+| **Build from source** | See [Build from source](#build-from-source) below | Requires Go 1.26+, Node.js 22+, Task. |
+| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | **Not yet available** — the tap (`Wayne997035/homebrew-tap`) is populated only when a tagged release is pushed via goreleaser. No release tags exist yet. |
+| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open in Claude Desktop | **Not yet available** — requires a published GitHub Release. |
+| curl \| bash | `curl -fsSL .../scripts/install.sh \| bash` | **Not yet available** — requires release binaries to be published. See [Scripted install](#scripted-install-curl--bash--irm--iex) for the script's empty-`API_KEY` foot-gun. |
 
 ## Postgres (advanced)
 
@@ -206,10 +205,12 @@ Managed providers (Railway, Aiven, Supabase) have pgvector available — enable 
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
 go build -o bin/wbt ./cmd/wbt
-./bin/wbt setup                    # writes config; for Postgres, set DATABASE_URL in ~/.config/wayneblacktea/.env first
-for f in migrations/0000*.up.sql; do psql "$DATABASE_URL" -f "$f"; done
-cd build && task build-server build-mcp && cd ..
-./bin/wbt serve
+# Set DATABASE_URL in ~/.config/wayneblacktea/config.yaml or export it before running setup.
+# wbt setup will use the DATABASE_URL env var and auto-detect the Postgres backend.
+export DATABASE_URL="postgres://user:pass@host/db?sslmode=require"
+cd build && task migrate-up && cd ..   # apply Postgres migrations
+cd build && task build-server build-wbt && cd ..
+./bin/wbt setup                        # spawns server in background, registers MCP
 ```
 
 Required environment variables (server / PG mode):
@@ -258,13 +259,17 @@ Prerequisites: Go 1.26+, Node.js 22+, [Task](https://taskfile.dev/) (`go install
 ```bash
 cd build
 task check                 # lint + tests + build (~30 s) — the gate
-task build-server          # HTTP API + Discord bot + scheduler
-task build-mcp             # MCP stdio server
+task build-server          # HTTP API + Discord bot + scheduler (bin/wayneblacktea-server)
+task build-wbt             # wbt CLI including `wbt mcp` stdio server (bin/wbt)
 task build-doctor          # wbt-doctor (Stop hook, writes /tmp/wbt-health.json)
 go run ../cmd/seed         # first-time canonical goals + repos
 ```
 
+Note: there is no standalone `build-mcp` target — MCP stdio is served by `wbt mcp` (part of `build-wbt`).
+
 ## Pre-built release binaries + cosign verification
+
+> **No release tags exist yet.** Pre-built binaries, Homebrew casks, and DXT packages are generated by goreleaser on a semver tag push. Once the first tagged release is published, this section applies.
 
 Release binaries are signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signing via GitHub OIDC. To verify a downloaded binary:
 
@@ -283,7 +288,9 @@ The `.sig` and `.pem` files are attached to each GitHub Release alongside the bi
 
 ### Scripted install (curl | bash / irm | iex)
 
-Installer scripts download, cosign-verify, and place binaries + a starter `.env` / `.mcp.json`. See the foot-gun warning below before piping to a shell.
+> **Not yet available.** The install scripts download release binaries from GitHub Releases. No tagged release exists yet; this section documents the expected flow once a release is published.
+
+Installer scripts download, cosign-verify, and place binaries + a starter `.env`. See the foot-gun warning below before piping to a shell.
 
 ```bash
 # macOS / Linux
@@ -308,7 +315,7 @@ Environment overrides:
 | `WBT_NO_PROMPT` | Force non-interactive (placeholders, empty API_KEY) |
 | `WBT_INSECURE_SKIP_VERIFY` | Skip cosign verification (NOT RECOMMENDED — default is fail-closed) |
 
-Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). The installer prints a "run `wbt setup` to finish" hint at the end so users get the same end-to-end UX as `go install` + `wbt setup`. Homebrew and DXT channels are now also available — see [Install channels](#install-channels).
+Server-side runtime flag: `WBT_DISABLE_AUTO_DECISIONS=1` (or `true`/`yes`/`on`) opts out of the MCP middleware that drafts pending decision proposals from observed tool calls (default on). The installer prints a "run `wbt setup` to finish" hint at the end so users get the same end-to-end UX as `go install` + `wbt setup`.
 
 ## Security notes
 

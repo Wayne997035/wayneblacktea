@@ -62,10 +62,11 @@ Sister commands:
 
 | Channel | Command | Best for |
 |---------|---------|----------|
-| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS users who want `wbt` on PATH with auto-upgrades |
-| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open it in Claude Desktop (requires `wbt` already on PATH) | Claude Desktop one-click install |
-| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | cosign-verified binaries without Homebrew or Go |
-| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go developers building from source |
+| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go 1.26+ installed — recommended |
+| Build from source | `git clone ... && cd build && task build-wbt && wbt setup` | Developers; see [`docs/install.md`](./docs/install.md) |
+| Homebrew | `brew install --cask Wayne997035/tap/wayneblacktea-cli && wbt setup` | macOS — **requires a published release** (no release tags exist yet; tap is not populated) |
+| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open in Claude Desktop | Claude Desktop — **requires a published release** |
+| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | **Requires a published release** (no release binaries yet) |
 
 See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, pre-built release binary options, and [Troubleshooting](./docs/install.md#troubleshooting).
 
@@ -146,7 +147,7 @@ The agent doesn't need to remember to save things. The server captures them auto
 
 ## Verifying release binaries
 
-Release binaries are signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signing via GitHub OIDC. To verify a downloaded binary:
+Release binaries will be signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signing via GitHub OIDC once the first tagged release is published. To verify a future downloaded binary:
 
 ```bash
 # Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/

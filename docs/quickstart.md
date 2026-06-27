@@ -9,7 +9,7 @@ Get wayneblacktea running locally in under 10 minutes.
 ## Prerequisites
 
 - Go 1.26+ (`go version`)
-- Node.js 20+ (for the web UI build step)
+- Node.js 22+ (for the web UI build step — matches the `node:22-alpine` Docker build stage)
 - A running PostgreSQL instance **or** set `STORAGE_BACKEND=sqlite` to skip Postgres entirely
 
 ## 1. Clone and configure
@@ -32,7 +32,15 @@ Open `.env` and fill in at minimum:
 ## 2. Build and start the server
 
 ```bash
-npm run build             # builds web/dist (embedded in the Go binary)
+cd build && task build-frontend && cd ..   # builds web/dist and copies it for go:embed
+go run ./cmd/server -env .env
+```
+
+Or, using the Taskfile shorthand:
+
+```bash
+cd build && task build-frontend
+# in another terminal from the repo root:
 go run ./cmd/server -env .env
 ```
 

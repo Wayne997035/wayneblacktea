@@ -8,7 +8,7 @@ Common setup failures for new instances.
 
 **`API_KEY not set`**
 
-The server exits at startup if `API_KEY` is empty. Set it in `.env` or export it before running. If you used `wbt init`, the key was written to `.env` automatically.
+The server exits at startup if `API_KEY` is empty. `wbt setup` generates a random key and writes it to `~/.config/wayneblacktea/config.yaml` automatically. If running the server binary directly, set `API_KEY` in your `.env` file or environment.
 
 **`ALLOWED_ORIGINS` panic**
 
@@ -32,7 +32,7 @@ The server defaults to port `8420`. Override with `PORT=<number>` in `.env`.
 
 **Where the file is created**
 
-When `SQLITE_PATH` is unset, the server creates `./wayneblacktea.db` in the current working directory. Set `SQLITE_PATH` to an absolute path to pin the location.
+`wbt setup` defaults the SQLite path to `~/.local/share/wayneblacktea/wbt.db` (via `$XDG_DATA_HOME`), which is persisted in `~/.config/wayneblacktea/config.yaml`. When running the server binary directly without a config or `SQLITE_PATH` env var, it falls back to `./wayneblacktea.db` in the current working directory. Set `SQLITE_PATH` (or `WBT_DB_PATH`) to an absolute path to pin the location.
 
 **Permission errors**
 
@@ -78,27 +78,37 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ## Claude Code MCP not connecting
 
-**`.mcp.json` location and format**
+**Standard setup — HTTP transport (recommended)**
 
-Run `wbt init` to generate `.mcp.json` in the current directory. The generated file uses `wbt mcp` as the command (stdio transport):
+`wbt setup` registers the MCP server automatically via:
 
-```json
-{
-  "mcpServers": {
-    "wayneblacktea": {
-      "command": "wbt",
-      "args": ["mcp"],
-      "env": { "STORAGE_BACKEND": "sqlite" }
-    }
-  }
-}
+```bash
+claude mcp add wayneblacktea --transport http http://127.0.0.1:8420/mcp
 ```
 
-Open Claude Code from the directory containing `.mcp.json`.
+If this step failed (e.g. `claude` was not in PATH during setup), re-run `wbt setup` after installing Claude Code, or register manually:
 
-**HTTP MCP transport**
+```bash
+claude mcp add wayneblacktea --transport http http://127.0.0.1:8420/mcp
+```
 
-The server also exposes an HTTP MCP endpoint at `/mcp`. Claude Code must be configured with transport `http` (not `sse`) and must send `X-API-Key` on every request. Verify connectivity:
+Verify the server is healthy and the MCP URL matches:
+
+```bash
+wbt status --format json   # shows the port the server is using
+claude mcp list            # shows what Claude Code has registered
+```
+
+**Legacy stdio transport**
+
+If you previously set up via `wbt init` and have a `.mcp.json` in your project directory, Claude Code will use stdio (`wbt mcp`). To migrate to the HTTP transport (which works from any directory without a `.mcp.json`), run `wbt setup` once, then remove the old stdio entry:
+
+```bash
+wbt setup
+claude mcp remove wayneblacktea-stdio   # or whatever name the old entry had
+```
+
+To check HTTP connectivity directly:
 
 ```bash
 curl -H "X-API-Key: $API_KEY" http://localhost:8420/health
