@@ -20,6 +20,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
+	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	mcpsrv "github.com/mark3labs/mcp-go/server"
 )
@@ -33,22 +34,36 @@ const reconcileMCPMaxStringField = 4 * 1024
 
 // registerReconcileTools wires reconcile_merged_prs into the MCP server.
 func (s *Server) registerReconcileTools(ms *mcpsrv.MCPServer) {
-	ms.AddTool(mcpmsg.NewTool("reconcile_merged_prs",
+	ms.AddTool(mcpmsg.NewTool(
+		"reconcile_merged_prs",
 		mcpmsg.WithDescription(
-			"Accepts a Claude-supplied list of recently-merged PRs and auto-closes "+
-				"every pending/in_progress task whose pr_url or branch_name matches. "+
-				"Idempotent: a second call with the same payload returns 0 changes. "+
-				"Ambiguous branch_name matches (>1 task on same branch) auto-apply the "+
-				"most-recent task and surface siblings as completion_candidates "+
-				"(status='pending') for manual resolution. "+
+			"Accepts a Claude-supplied list of recently-merged PRs and matches them "+
+				"against pending/in_progress tasks by pr_url or branch_name. TWO-STEP: "+
+				"the first call (confirm absent/false) only PREVIEWS matches — returns "+
+				"{matches, ambiguous, no_match, reconcile_token, expires_at} — and does "+
+				"NOT complete any tasks. The second call MUST include confirm=true and "+
+				"the reconcile_token from the first call to actually apply the "+
+				"completions computed during preview; on the second call any resent "+
+				"payload is ignored entirely — only the exact match-set computed during "+
+				"preview is applied. Tokens expire after 60s. Idempotent: a preview for "+
+				"an already-applied batch shows those tasks in no_match. Ambiguous "+
+				"branch_name matches (>1 task on same branch) auto-apply the "+
+				"most-recent task; siblings are surfaced ONLY in this call's own "+
+				"'ambiguous' response field for manual resolution — they are NOT "+
+				"persisted as completion_candidates rows, so a client that needs to "+
+				"act on them later must capture this response. "+
 				"Payload: {\"merged_prs\":[{\"url\":\"...\",\"head_ref\":\"...\","+
 				"\"merged_at\":\"RFC3339\",\"title\":\"...\",\"body\":\"...\","+
 				"\"repo\":\"owner/repo\"}, ...]}",
 		),
 		mcpmsg.WithString("payload",
-			mcpmsg.Description("JSON string of {\"merged_prs\":[...]}. Required. "+
-				"Same shape as POST /api/tasks/reconcile-merged-prs."),
-			mcpmsg.Required()),
+			mcpmsg.Description("JSON string of {\"merged_prs\":[...]}. Required on the "+
+				"preview call (confirm absent/false); ignored entirely when confirm=true. "+
+				"Same shape as POST /api/tasks/reconcile-merged-prs.")),
+		mcpmsg.WithBoolean("confirm",
+			mcpmsg.Description("Set true on the second call to apply the completions computed during preview")),
+		mcpmsg.WithString("reconcile_token",
+			mcpmsg.Description("Token returned by the preview call; required when confirm=true")),
 	), s.handleReconcileMergedPRs)
 }
 
@@ -68,15 +83,6 @@ type reconcileMCPMergedPR struct {
 	Repo     string `json:"repo"`
 }
 
-// reconcileMCPResponse is the MCP response body (JSON text-result).
-type reconcileMCPResponse struct {
-	Matches         []reconcileMCPMatch     `json:"matches"`
-	Ambiguous       []reconcileMCPAmbiguous `json:"ambiguous"`
-	Applied         int                     `json:"applied"`
-	NoMatch         int                     `json:"no_match"`
-	CandidateWrites int                     `json:"candidate_writes"`
-}
-
 type reconcileMCPMatch struct {
 	TaskID    string `json:"task_id"`
 	Reason    string `json:"reason"`
@@ -91,12 +97,60 @@ type reconcileMCPAmbiguous struct {
 	PRHeadRef string `json:"pr_head_ref"`
 }
 
-// handleReconcileMergedPRs implements reconcile_merged_prs.
+// reconcileMatchesOut converts gtd.Match values into the MCP-JSON shape.
+// Shared by the preview response (matches computed just now) and the confirm
+// response (matches echoed back from the stored reconcileConfirmation).
+func reconcileMatchesOut(matches []gtd.Match) []reconcileMCPMatch {
+	out := make([]reconcileMCPMatch, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, reconcileMCPMatch{
+			TaskID: m.TaskID.String(), Reason: string(m.Reason),
+			PRUrl: m.PRUrl, PRHeadRef: m.PRHeadRef,
+		})
+	}
+	return out
+}
+
+// reconcileAmbiguousOut converts gtd.Ambiguous values into the MCP-JSON shape.
+func reconcileAmbiguousOut(ambig []gtd.Ambiguous) []reconcileMCPAmbiguous {
+	out := make([]reconcileMCPAmbiguous, 0, len(ambig))
+	for _, a := range ambig {
+		out = append(out, reconcileMCPAmbiguous{
+			TaskID: a.TaskID.String(), Reason: string(a.Reason),
+			PRUrl: a.PRUrl, PRHeadRef: a.PRHeadRef,
+		})
+	}
+	return out
+}
+
+// handleReconcileMergedPRs implements the reconcile_merged_prs 2-step confirm
+// flow (mirrors handleDeleteTask, tools_gtd.go:1097-1181). confirm
+// absent/false dispatches to the preview branch (read-only match computation,
+// no completion); confirm=true dispatches to the confirm branch (applies the
+// EXACT match-set computed during a prior preview call, identified by a
+// server-issued reconcile_token — never a resent payload).
+//
+// This closes a Least-Agency gap: a prompt-injected/fabricated "PR merged"
+// claim can no longer silently complete real tasks in a single tool call.
 func (s *Server) handleReconcileMergedPRs(
 	ctx context.Context,
 	req mcpmsg.CallToolRequest,
 ) (*mcpmsg.CallToolResult, error) {
 	args := req.GetArguments()
+	if boolArg(args, "confirm") {
+		return s.handleReconcileMergedPRsConfirm(ctx, args)
+	}
+	return s.handleReconcileMergedPRsPreview(ctx, args)
+}
+
+// handleReconcileMergedPRsPreview implements step 1: validate + persist
+// observed PRs + compute matches/ambiguous/fuzzy-candidates, but NEVER call
+// BatchCompleteTasksByPRMatch or WriteAutoApplied. Issues a one-time
+// reconcile_token bound to the exact result computed here.
+func (s *Server) handleReconcileMergedPRsPreview(
+	ctx context.Context,
+	args map[string]any,
+) (*mcpmsg.CallToolResult, error) {
 	raw := stringArg(args, "payload")
 	if raw == "" {
 		return mcpmsg.NewToolResultError("payload is required"), nil
@@ -106,15 +160,21 @@ func (s *Server) handleReconcileMergedPRs(
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		return mcpmsg.NewToolResultError("invalid payload JSON: " + err.Error()), nil
 	}
+	// Short-circuit BEFORE the prune+cap+token-issuance block below. Without
+	// this check, a completely empty merged_prs:[] payload still ran the full
+	// preview flow and unconditionally issued a reconcile_token — an
+	// attacker/prompt-injected agent could call this maxPendingReconciles
+	// (256) times at zero real cost to fill s.reconcileTokens, causing every
+	// legitimate preview call to fail with "too many pending reconciliations
+	// in flight" (a rolling, near-zero-cost functional DoS). Rejecting empty
+	// payloads here means they never consume token-cap budget.
 	if len(p.MergedPRs) == 0 {
-		return jsonText(reconcileMCPResponse{
-			Matches:   []reconcileMCPMatch{},
-			Ambiguous: []reconcileMCPAmbiguous{},
-		})
+		return mcpmsg.NewToolResultError("merged_prs must contain at least 1 entry"), nil
 	}
 	if len(p.MergedPRs) > reconcileMCPMaxEntries {
 		return mcpmsg.NewToolResultError(
-			fmt.Sprintf("merged_prs exceeds %d entries per call", reconcileMCPMaxEntries)), nil
+			fmt.Sprintf("merged_prs exceeds %d entries per call", reconcileMCPMaxEntries),
+		), nil
 	}
 
 	prs, msg := reconcileMCPValidate(p.MergedPRs)
@@ -133,48 +193,176 @@ func (s *Server) handleReconcileMergedPRs(
 		return mcpmsg.NewToolResultError(fmt.Sprintf("match: %v", err)), nil
 	}
 
-	applied, err := s.gtd.BatchCompleteTasksByPRMatch(ctx, result.Matches)
+	// BatchCompleteTasksByPRMatch and WriteAutoApplied are deliberately NOT
+	// called here — that is the entire point of the split. They only run in
+	// handleReconcileMergedPRsConfirm, against the token-bound result stored
+	// below.
+	candidateWrites := 0
+	if cs := s.reconcileCandidateStore(); cs != nil {
+		// Clarification 3: exclude every task that was just exactly matched
+		// (result.Matches) from fuzzy-candidate consideration for this call.
+		// Under the old (single-call) flow, BatchCompleteTasksByPRMatch ran
+		// BEFORE the fuzzy scan, so an exactly-matched task was already
+		// completed (and had pr_url set) by the time isFuzzyEligible ran,
+		// naturally excluding it. Under this split, the fuzzy write now runs
+		// BEFORE completion (during preview), so without this explicit
+		// exclusion an exactly-matched task that also happens to be
+		// fuzzy-eligible would spuriously get a completion_candidates row it
+		// never would have gotten before. This keeps the observable
+		// fuzzy-candidate behavior for exactly-matched tasks identical to
+		// today regardless of the new call ordering.
+		excludeExactMatches := make(map[uuid.UUID]bool, len(result.Matches))
+		for _, m := range result.Matches {
+			excludeExactMatches[m.TaskID] = true
+		}
+		candidateWrites = reconcileMCPWriteFuzzyCandidates(ctx, s.gtd, cs, prs, excludeExactMatches)
+	}
+
+	// Round-3 Finding 1: gate token issuance on the MATCH RESULT, not merely
+	// on payload non-emptiness. The len(p.MergedPRs)==0 short-circuit above
+	// only rejects a trivially-empty payload; it does nothing against a
+	// syntactically-valid, non-empty, but semantically-bogus payload (e.g. a
+	// well-formed GitHub PR URL / branch name that matches ZERO real tasks).
+	// Such a payload previously still fell through to the prune+cap+token
+	// block below and unconditionally consumed one of the maxPendingReconciles
+	// (256) cap slots — looping 257 such minimal-cost, zero-real-knowledge
+	// payloads filled the entire cap and denied every legitimate caller.
+	// Crafting a payload that instead produces a real Match or Ambiguous hit
+	// requires knowing an actual branch name / PR URL already linked to a
+	// real task in this workspace — a materially higher bar than the
+	// zero-knowledge bypass this closes. "Nothing to confirm" calls are
+	// answered directly here (no reconcile_token, no cap-slot consumption,
+	// no error — this is a normal, successful outcome) instead of falling
+	// through to token issuance.
+	if len(result.Matches) == 0 && len(result.Ambiguous) == 0 {
+		return jsonText(map[string]any{
+			"status":           "no_match",
+			"matches":          []reconcileMCPMatch{},
+			"ambiguous":        []reconcileMCPAmbiguous{},
+			"applied":          0,
+			"no_match":         result.NoMatch,
+			"candidate_writes": candidateWrites,
+			"message": "No merged_prs entry matched a pending/in_progress task; nothing to " +
+				"confirm. No reconcile_token issued.",
+		})
+	}
+
+	// Prune expired tokens and cap concurrent pending reconciliations (mirrors
+	// tools_gtd.go:1128-1141's delete_task prune+cap logic). Reached only when
+	// there is at least one Match or Ambiguous entry — see the gate above.
+	var count int
+	s.reconcileTokens.Range(func(k, v any) bool {
+		rec, ok := v.(reconcileConfirmation)
+		if !ok || s.now().After(rec.expiresAt) {
+			s.reconcileTokens.Delete(k)
+		} else {
+			count++
+		}
+		return true
+	})
+	if count >= maxPendingReconciles {
+		return mcpmsg.NewToolResultError("too many pending reconciliations in flight; retry later"), nil
+	}
+
+	token := uuid.NewString()
+	expires := s.now().Add(reconcileTokenTTL)
+	s.reconcileTokens.Store(token, reconcileConfirmation{
+		matches:   result.Matches,
+		ambiguous: result.Ambiguous,
+		noMatch:   result.NoMatch,
+		expiresAt: expires,
+	})
+
+	return jsonText(map[string]any{
+		"status":           "confirmation_required",
+		"matches":          reconcileMatchesOut(result.Matches),
+		"ambiguous":        reconcileAmbiguousOut(result.Ambiguous),
+		"applied":          0,
+		"no_match":         result.NoMatch,
+		"candidate_writes": candidateWrites,
+		"reconcile_token":  token,
+		"expires_at":       expires.UTC().Format(time.RFC3339),
+		"message": "Call reconcile_merged_prs again with confirm=true and reconcile_token " +
+			"to apply these completions. Token expires in 60s.",
+	})
+}
+
+// handleReconcileMergedPRsConfirm implements step 2: apply the EXACT
+// match-set computed and stored during a prior preview call. Any payload
+// argument resent alongside confirm=true is never parsed, validated, or read
+// — this forecloses a bait-and-switch where a token obtained from a small
+// legitimate preview is replayed against a confirm call carrying a
+// different/larger fabricated payload.
+func (s *Server) handleReconcileMergedPRsConfirm(
+	ctx context.Context,
+	args map[string]any,
+) (*mcpmsg.CallToolResult, error) {
+	token := stringArg(args, "reconcile_token")
+	if token == "" {
+		return mcpmsg.NewToolResultError("reconcile_token is required when confirm=true"), nil
+	}
+	stored, ok := s.reconcileTokens.LoadAndDelete(token)
+	if !ok {
+		return mcpmsg.NewToolResultError(
+			"no pending reconciliation for this reconcile_token; call without confirm first to obtain matches and a token",
+		), nil
+	}
+	rec, ok := stored.(reconcileConfirmation)
+	if !ok {
+		return mcpmsg.NewToolResultError("internal: reconcile token state corrupted"), nil
+	}
+	if s.now().After(rec.expiresAt) {
+		return mcpmsg.NewToolResultError("reconcile_token expired; call without confirm to obtain a new token"), nil
+	}
+
+	// appliedIDs is keyed by TaskID for exactly the matches whose guarded
+	// UPDATE (status IN ('pending','in_progress') at apply time) actually
+	// flipped a row this call — see gtd.StoreIface.BatchCompleteTasksByPRMatch
+	// for the contract. A match whose task drifted away from
+	// pending/in_progress in the preview->confirm window (e.g. cancelled) is
+	// absent from this map even though it is still present in rec.matches.
+	appliedIDs, err := s.gtd.BatchCompleteTasksByPRMatch(ctx, rec.matches)
 	if err != nil {
 		return mcpmsg.NewToolResultError(fmt.Sprintf("batch complete: %v", err)), nil
 	}
 
+	// Round-3 Finding 2: only write a completion_candidates 'auto_applied'
+	// audit row for a match that appliedIDs confirms was GENUINELY applied
+	// this call. Before this fix, the loop below ran unconditionally over
+	// every rec.matches entry regardless of whether that task's guarded
+	// UPDATE affected a row — so a task correctly protected by the TOCTOU
+	// guard (e.g. cancelled between preview and confirm, tasks.status stays
+	// 'cancelled') still got a persisted, FALSE completion_candidates row
+	// claiming status='auto_applied'. That corrupts any dashboard/operator/
+	// future-automation trusting completion_candidates as ground truth, and
+	// the ON CONFLICT (task_id, reason) upsert would overwrite/close any
+	// prior pending candidate state for that task. Filtering on appliedIDs
+	// here closes that audit-trail integrity gap.
 	candidateWrites := 0
 	if cs := s.reconcileCandidateStore(); cs != nil {
-		for _, m := range result.Matches {
+		for _, m := range rec.matches {
+			if !appliedIDs[m.TaskID] {
+				continue
+			}
 			if werr := cs.WriteAutoApplied(ctx, m.TaskID,
 				[]string{m.PRUrl}, m.PRUrl); werr != nil {
-				// Same policy as HTTP path — log via tool error trail only on
-				// the final result; mid-loop failures are surfaced via
-				// candidate_writes < applied so callers can detect drift.
+				// Same policy as the original single-call path — log via tool
+				// error trail only on the final result; mid-loop failures are
+				// surfaced via candidate_writes < applied so callers can
+				// detect drift.
 				continue
 			}
 			candidateWrites++
 		}
-		// Phase 2 fuzzy candidates (medium confidence, never auto-applied).
-		candidateWrites += reconcileMCPWriteFuzzyCandidates(ctx, s.gtd, cs, prs)
 	}
 
-	matchOut := make([]reconcileMCPMatch, 0, len(result.Matches))
-	for _, m := range result.Matches {
-		matchOut = append(matchOut, reconcileMCPMatch{
-			TaskID: m.TaskID.String(), Reason: string(m.Reason),
-			PRUrl: m.PRUrl, PRHeadRef: m.PRHeadRef,
-		})
-	}
-	ambigOut := make([]reconcileMCPAmbiguous, 0, len(result.Ambiguous))
-	for _, a := range result.Ambiguous {
-		ambigOut = append(ambigOut, reconcileMCPAmbiguous{
-			TaskID: a.TaskID.String(), Reason: string(a.Reason),
-			PRUrl: a.PRUrl, PRHeadRef: a.PRHeadRef,
-		})
-	}
-
-	return jsonText(reconcileMCPResponse{
-		Matches:         matchOut,
-		Ambiguous:       ambigOut,
-		Applied:         applied,
-		NoMatch:         result.NoMatch,
-		CandidateWrites: candidateWrites,
+	return jsonText(map[string]any{
+		"status":           "applied",
+		"applied":          len(appliedIDs),
+		"matches":          reconcileMatchesOut(rec.matches),
+		"ambiguous":        reconcileAmbiguousOut(rec.ambiguous),
+		"no_match":         rec.noMatch,
+		"candidate_writes": candidateWrites,
 	})
 }
 
@@ -313,11 +501,22 @@ func reconcileMCPPersistObserved(
 // each hit as a 'medium'-confidence completion_candidate (reason=
 // pr_merged_fuzzy). Returns the number of candidates persisted. Mirrors the
 // HTTP handler's writeFuzzyCandidates.
+//
+// excludeTaskIDs (Clarification 3, see call site in
+// handleReconcileMergedPRsPreview) is the set of task IDs that were just
+// exactly matched by gtd.MatchMergedPRs in this same call — any fuzzy hit for
+// one of these tasks is skipped. isFuzzyEligible already excludes tasks with
+// branch_name or pr_url set (which is how an exact match occurs in the first
+// place), so this exclusion is normally redundant with that filter; it is
+// kept as an explicit belt-and-braces guard so the observable fuzzy-candidate
+// behavior for exactly-matched tasks stays identical to today regardless of
+// future isFuzzyEligible changes or new exact-match mechanisms.
 func reconcileMCPWriteFuzzyCandidates(
 	ctx context.Context,
 	gtdStore gtd.StoreIface,
 	candStore completioncandidate.Store,
 	prs []gtd.MergedPR,
+	excludeTaskIDs map[uuid.UUID]bool,
 ) int {
 	if candStore == nil || len(prs) == 0 {
 		return 0
@@ -333,7 +532,11 @@ func reconcileMCPWriteFuzzyCandidates(
 	}
 	wrote := 0
 	for _, m := range matches {
-		slog.Info("reconcile_mcp fuzzy match",
+		if excludeTaskIDs[m.TaskID] {
+			continue
+		}
+		slog.Info(
+			"reconcile_mcp fuzzy match",
 			"task_id", m.TaskID,
 			"pr_url", m.PRURL,
 			"score", m.Score,

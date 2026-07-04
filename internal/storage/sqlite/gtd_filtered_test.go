@@ -283,6 +283,100 @@ func TestSQLiteStore_TasksFiltered_WorkspaceScoping(t *testing.T) {
 	}
 }
 
+// TestSQLiteStore_TasksFiltered_WorkspaceScoping_StatusAll verifies the
+// "all" branch of TasksFiltered (gtd.go's own separate workspace_id
+// predicate for Status: "all") also enforces workspace isolation. This
+// exercises a different SQL branch than
+// TestSQLiteStore_TasksFiltered_WorkspaceScoping, which only queries with the
+// zero-value filter (Status: "") and therefore only proves the ""/"active"
+// branch's predicate — a mutation to the "all" branch's predicate would not
+// be caught by that test alone.
+func TestSQLiteStore_TasksFiltered_WorkspaceScoping_StatusAll(t *testing.T) {
+	wsA := uuid.NewString()
+	wsB := uuid.NewString()
+	sharedPath := filepath.Join(t.TempDir(), "shared-all.db")
+	storeA := openFileStore(t, sharedPath, wsA)
+	storeB := openFileStore(t, sharedPath, wsB)
+	ctx := context.Background()
+
+	due := time.Now().Add(24 * time.Hour)
+	wsBTaskID := seedSQLiteTask(t, storeB, &due, taskStatusCompleted)
+
+	tasks, err := storeA.TasksFiltered(ctx, gtd.TaskFilter{Status: "all", Limit: 100})
+	if err != nil {
+		t.Fatalf("TasksFiltered(all, wsA): %v", err)
+	}
+	for _, tk := range tasks {
+		if tk.ID == wsBTaskID {
+			t.Errorf("workspace-A store with status=all returned workspace-B task %s", wsBTaskID)
+		}
+	}
+
+	// Own-workspace visibility regression guard: a task seeded via storeA on
+	// the same shared physical file MUST still be returned for status=all —
+	// proves the predicate filters by workspace, not by hiding everything.
+	wsATaskID := seedSQLiteTask(t, storeA, &due, "")
+	tasksA, err := storeA.TasksFiltered(ctx, gtd.TaskFilter{Status: "all", Limit: 100})
+	if err != nil {
+		t.Fatalf("TasksFiltered(all, wsA, own task): %v", err)
+	}
+	found := false
+	for _, tk := range tasksA {
+		if tk.ID == wsATaskID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("workspace-A store with status=all did not return its own task %s", wsATaskID)
+	}
+}
+
+// TestSQLiteStore_TasksFiltered_WorkspaceScoping_CustomStatus verifies the
+// default/exact-match branch of TasksFiltered (any Status value other than
+// ""/"active"/"all", e.g. "completed") also enforces workspace isolation.
+// This exercises the third SQL branch in gtd.go's TasksFiltered, which has
+// its own separate workspace_id predicate not covered by the other two
+// workspace-scoping tests.
+func TestSQLiteStore_TasksFiltered_WorkspaceScoping_CustomStatus(t *testing.T) {
+	wsA := uuid.NewString()
+	wsB := uuid.NewString()
+	sharedPath := filepath.Join(t.TempDir(), "shared-custom.db")
+	storeA := openFileStore(t, sharedPath, wsA)
+	storeB := openFileStore(t, sharedPath, wsB)
+	ctx := context.Background()
+
+	due := time.Now().Add(24 * time.Hour)
+	const customStatus = taskStatusCompleted
+	wsBTaskID := seedSQLiteTask(t, storeB, &due, customStatus)
+
+	tasks, err := storeA.TasksFiltered(ctx, gtd.TaskFilter{Status: customStatus, Limit: 100})
+	if err != nil {
+		t.Fatalf("TasksFiltered(%s, wsA): %v", customStatus, err)
+	}
+	for _, tk := range tasks {
+		if tk.ID == wsBTaskID {
+			t.Errorf("workspace-A store with status=%s returned workspace-B task %s", customStatus, wsBTaskID)
+		}
+	}
+
+	// Own-workspace visibility regression guard: a task seeded via storeA
+	// with the same custom status on the shared file MUST still be returned.
+	wsATaskID := seedSQLiteTask(t, storeA, &due, customStatus)
+	tasksA, err := storeA.TasksFiltered(ctx, gtd.TaskFilter{Status: customStatus, Limit: 100})
+	if err != nil {
+		t.Fatalf("TasksFiltered(%s, wsA, own task): %v", customStatus, err)
+	}
+	found := false
+	for _, tk := range tasksA {
+		if tk.ID == wsATaskID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("workspace-A store with status=%s did not return its own task %s", customStatus, wsATaskID)
+	}
+}
+
 // TestSQLiteStore_TasksFiltered_EmptyDB_NoError verifies that querying an empty
 // database returns an empty result (not nil error, not panic).
 func TestSQLiteStore_TasksFiltered_EmptyDB_NoError(t *testing.T) {

@@ -61,8 +61,11 @@ func TestReconcileMergedPRs_ExactMatch_PG_AutoApplies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BatchComplete: %v", err)
 	}
-	if applied != 1 {
-		t.Errorf("applied = %d, want 1", applied)
+	if len(applied) != 1 {
+		t.Errorf("applied = %d, want 1", len(applied))
+	}
+	if !applied[task.ID] {
+		t.Errorf("applied map missing task %s", task.ID)
 	}
 
 	got, err := store.GetTaskByID(ctx, task.ID)
@@ -104,8 +107,8 @@ func TestReconcileMergedPRs_PG_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first batch: %v", err)
 	}
-	if applied1 != 1 {
-		t.Fatalf("first applied = %d, want 1", applied1)
+	if len(applied1) != 1 {
+		t.Fatalf("first applied = %d, want 1", len(applied1))
 	}
 
 	// Second call with same payload — task already 'completed', matcher should
@@ -121,8 +124,8 @@ func TestReconcileMergedPRs_PG_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second batch: %v", err)
 	}
-	if applied2 != 0 {
-		t.Errorf("second applied = %d, want 0", applied2)
+	if len(applied2) != 0 {
+		t.Errorf("second applied = %d, want 0", len(applied2))
 	}
 }
 

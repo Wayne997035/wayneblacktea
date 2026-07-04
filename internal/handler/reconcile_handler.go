@@ -21,12 +21,18 @@
 //
 //	200 OK:
 //	{
-//	  "matches":     [{"task_id":"...", "reason":"...", "pr_url":"..."}],
+//	  "matches":     [{"task_id":"...", "reason":"...", "pr_url":"...", "applied": true}],
 //	  "ambiguous":   [{"task_id":"...", "reason":"...", "pr_url":"..."}],
 //	  "applied":    N,
 //	  "no_match":   N,
 //	  "candidate_writes": N
 //	}
+//
+// Each entry in "matches" carries its own "applied" bool: a match can be
+// present here (the exact-match matcher found it) yet "applied":false if the
+// guarded UPDATE in BatchCompleteTasksByPRMatch skipped it (e.g. the task
+// drifted away from pending/in_progress — TOCTOU guard) — see
+// gtd.StoreIface.BatchCompleteTasksByPRMatch.
 package handler
 
 import (
@@ -122,6 +128,13 @@ type matchSummary struct {
 	Reason    string `json:"reason"`
 	PRUrl     string `json:"pr_url"`
 	PRHeadRef string `json:"pr_head_ref"`
+	// Applied reflects whether appliedIDs (the genuinely-affected-rows map
+	// returned by BatchCompleteTasksByPRMatch) confirms this task was
+	// actually completed this call, vs merely matched then skipped by the
+	// TOCTOU guard (e.g. cancelled between the match-read and the apply).
+	// Lets callers (wbt reconcile CLI, future dashboards) distinguish
+	// "matched and applied" from "matched but skipped as stale".
+	Applied bool `json:"applied"`
 }
 
 type ambiguousSummary struct {
@@ -178,17 +191,38 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
-	applied, err := h.gtd.BatchCompleteTasksByPRMatch(c.Request().Context(), result.Matches)
+	// appliedIDs is keyed by TaskID for matches whose guarded UPDATE actually
+	// affected a row this call; see gtd.StoreIface.BatchCompleteTasksByPRMatch.
+	appliedIDs, err := h.gtd.BatchCompleteTasksByPRMatch(c.Request().Context(), result.Matches)
 	if err != nil {
 		c.Logger().Errorf("Reconcile batch complete: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
+	applied := len(appliedIDs)
 
 	// Audit-log the auto-close into completion_candidates (status=auto_applied).
 	// nil candidate store → graceful skip (activity_log still carries audit).
+	//
+	// Only write a completion_candidates 'auto_applied' audit row for a match
+	// that appliedIDs confirms was GENUINELY applied this call. Before this
+	// fix, the loop ran unconditionally over every result.Matches entry
+	// regardless of whether that task's guarded UPDATE inside
+	// BatchCompleteTasksByPRMatch actually affected a row — so a task
+	// protected by the TOCTOU guard (e.g. cancelled between the match-read
+	// above and the apply call, tasks.status stays 'cancelled') still got a
+	// persisted, FALSE completion_candidates row claiming
+	// status='auto_applied'. That corrupts any dashboard/operator/future-
+	// automation trusting completion_candidates as ground truth, and the
+	// ON CONFLICT (task_id, reason) upsert would overwrite/close any prior
+	// pending candidate state for that task. Mirrors the fix already applied
+	// to the sibling MCP tool (tools_reconcile.go's
+	// handleReconcileMergedPRsConfirm).
 	candidateWrites := 0
 	if h.candidate != nil {
 		for _, m := range result.Matches {
+			if !appliedIDs[m.TaskID] {
+				continue
+			}
 			if err := h.candidate.WriteAutoApplied(
 				c.Request().Context(), m.TaskID,
 				[]string{m.PRUrl}, m.PRUrl,
@@ -215,6 +249,7 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 			Reason:    string(m.Reason),
 			PRUrl:     m.PRUrl,
 			PRHeadRef: m.PRHeadRef,
+			Applied:   appliedIDs[m.TaskID],
 		})
 	}
 	ambigOut := make([]ambiguousSummary, 0, len(result.Ambiguous))
@@ -401,7 +436,8 @@ func (h *ReconcileHandler) writeFuzzyCandidates(
 	}
 	wrote := 0
 	for _, m := range matches {
-		slog.Info("reconcile fuzzy match",
+		slog.Info(
+			"reconcile fuzzy match",
 			"task_id", m.TaskID,
 			"pr_url", m.PRURL,
 			"score", m.Score,

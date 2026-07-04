@@ -1,6 +1,6 @@
 module github.com/Wayne997035/wayneblacktea
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.38.0

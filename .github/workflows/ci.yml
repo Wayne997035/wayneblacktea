@@ -156,6 +156,33 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
 
+  discipline-classification-signoff:
+    name: discipline classification sign-off check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 2
+
+      # A structural test (TestMCPServer_AllRegisteredToolsClassified) can
+      # only prove every registered tool is classified SOMEWHERE (either
+      # discipline.MutatingTools or discipline.DeliberatelyExcludedTools),
+      # not that it is classified in the CORRECT map. Mislabeling a
+      # genuinely-mutating tool as a cache/candidate write would silently
+      # slip past that test. Flag any diff touching
+      # DeliberatelyExcludedTools so it gets manual security sign-off
+      # before merge, instead of relying on the structural test alone.
+      - name: Warn if DeliberatelyExcludedTools changed (manual security sign-off required)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="HEAD~1"
+          fi
+          if git diff "$BASE" HEAD -- internal/discipline/discipline.go | grep -q 'DeliberatelyExcludedTools'; then
+            echo "::warning file=internal/discipline/discipline.go::This diff touches discipline.DeliberatelyExcludedTools. A structural test only proves every registered tool is classified SOMEWHERE, not that it is classified in the CORRECT map — manual security sign-off is required before merge to confirm no genuinely-mutating tool was mislabeled as a read-only/cache-write exclusion."
+          fi
+
   integration:
     name: integration tests
     runs-on: ubuntu-latest

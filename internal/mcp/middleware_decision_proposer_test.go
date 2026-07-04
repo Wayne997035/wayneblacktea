@@ -273,6 +273,43 @@ func TestDecisionProposer_LogDecisionTrigger_NoInsert(t *testing.T) {
 	}
 }
 
+func TestDecisionProposer_ConfirmProposalsTrigger_NoInsert(t *testing.T) {
+	// confirm_proposals (plural, bulk accept/reject) is in MutatingTools but
+	// MUST be skipped for the same reason as its singular counterpart
+	// confirm_proposal: emitting a decision proposal in response to a
+	// proposal confirmation is redundant recursion.
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
+		out: `{"title":"x"}`,
+	})
+	srv := newProposerServer(disc, prop, drafter)
+
+	got := fireProposer(t, srv, "confirm_proposals")
+
+	if len(got) != 0 {
+		t.Errorf("expected 0 proposals (confirm_proposals self-trigger), got %d", len(got))
+	}
+}
+
+func TestDecisionProposer_ConfirmProposalTrigger_NoInsert(t *testing.T) {
+	// confirm_proposal (singular) MUST also be skipped — pre-existing
+	// behavior, tested here alongside its plural counterpart above so the
+	// full skip-list condition has direct coverage for every listed tool.
+	disc := &stubProposerDisciplineStore{}
+	prop := &stubProposalStore{}
+	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
+		out: `{"title":"x"}`,
+	})
+	srv := newProposerServer(disc, prop, drafter)
+
+	got := fireProposer(t, srv, "confirm_proposal")
+
+	if len(got) != 0 {
+		t.Errorf("expected 0 proposals (confirm_proposal self-trigger), got %d", len(got))
+	}
+}
+
 func TestDecisionProposer_DisciplineError_NoInsert_NoCrash(t *testing.T) {
 	disc := &stubProposerDisciplineStore{err: errors.New("db down")}
 	prop := &stubProposalStore{}

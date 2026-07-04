@@ -50,8 +50,11 @@ func TestSQLiteReconcileExactMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BatchComplete: %v", err)
 	}
-	if applied != 1 {
-		t.Errorf("applied = %d, want 1", applied)
+	if len(applied) != 1 {
+		t.Errorf("applied = %d, want 1", len(applied))
+	}
+	if !applied[task.ID] {
+		t.Errorf("applied map missing task %s", task.ID)
 	}
 
 	got, err := store.GetTaskByID(ctx, task.ID)
@@ -91,8 +94,8 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first batch: %v", err)
 	}
-	if a1 != 1 {
-		t.Fatalf("first applied = %d, want 1", a1)
+	if len(a1) != 1 {
+		t.Fatalf("first applied = %d, want 1", len(a1))
 	}
 
 	r2, err := gtd.MatchMergedPRs(ctx, store, prs)
@@ -106,8 +109,8 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second batch: %v", err)
 	}
-	if a2 != 0 {
-		t.Errorf("second applied = %d, want 0", a2)
+	if len(a2) != 0 {
+		t.Errorf("second applied = %d, want 0", len(a2))
 	}
 }
 

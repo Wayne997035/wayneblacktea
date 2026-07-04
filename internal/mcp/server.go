@@ -150,6 +150,20 @@ type Server struct {
 	// tokens expire after the TTL even if no second call arrives.
 	deleteTokens sync.Map
 
+	// reconcileTokens holds one-time confirmation tokens issued by the first
+	// (preview) invocation of reconcile_merged_prs. Unlike delete_task, this
+	// tool has no natural resource-id to key by, so the token ITSELF is the
+	// sync.Map key. Values are reconcileConfirmation records holding the
+	// EXACT match/ambiguous/no-match set computed during preview. The confirm
+	// call never re-parses or re-trusts a resent payload argument — it can
+	// only apply what was computed and stored here. This forecloses a
+	// bait-and-switch attack: a token obtained from a small legitimate
+	// preview cannot be replayed against a confirm call carrying a
+	// different/larger fabricated payload. Same accepted risk model as
+	// deleteTokens above (lost on process restart within the 60s window;
+	// not a new risk class).
+	reconcileTokens sync.Map
+
 	// nowFn is overridable in tests so deletion-token expiry can be tested
 	// deterministically without time.Sleep. Defaults to time.Now.
 	nowFn func() time.Time
@@ -167,6 +181,27 @@ type deletionToken struct {
 // valid. 60 seconds is enough for an LLM to inspect the response and call
 // back, short enough that a leaked token isn't useful long.
 const deleteTokenTTL = 60 * time.Second
+
+// reconcileConfirmation records a pending reconcile_merged_prs confirmation.
+// Stored keyed by the token (not by a resource-id, since a reconcile call has
+// no single natural resource-id) at preview time and consumed exactly once by
+// the confirm call — see reconcileTokens field doc for the anti-tamper
+// rationale.
+type reconcileConfirmation struct {
+	matches   []gtd.Match
+	ambiguous []gtd.Ambiguous
+	noMatch   int
+	expiresAt time.Time
+}
+
+// reconcileTokenTTL is the window during which an issued reconcile token
+// remains valid. Mirrors deleteTokenTTL.
+const reconcileTokenTTL = 60 * time.Second
+
+// maxPendingReconciles caps the number of valid (non-expired) reconcile
+// tokens that can be outstanding at once. Mirrors maxPendingDeletions
+// (tools_gtd.go) for consistency.
+const maxPendingReconciles = 256
 
 // errMsgInvalidTaskIDUUID is the canonical error message returned to the MCP
 // caller when a task_id argument cannot be parsed as a UUID. Centralised here

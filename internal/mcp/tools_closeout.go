@@ -37,7 +37,8 @@ const stuckTaskThreshold = 7 * 24 * time.Hour
 
 // registerCloseoutTools registers the closeout_session_check MCP tool.
 func (s *Server) registerCloseoutTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("closeout_session_check",
+	ms.AddTool(mcp.NewTool(
+		"closeout_session_check",
 		mcp.WithDescription(
 			"Aggregates session-end checks into one actionable closeout report: open in_progress tasks, "+
 				"stuck tasks (in_progress > 7 days), pending proposals awaiting user resolution, latest "+
@@ -67,6 +68,15 @@ func (s *Server) handleCloseoutSessionCheck(ctx context.Context, _ mcp.CallToolR
 		report.OpenTaskCount, len(report.StuckTasks), report.PendingProposals,
 		report.HandoffSet, report.CompletionCandidates, report.Clean,
 	)
+	// This LogActivity call uses the same Store method that makes the
+	// standalone log_activity tool mutating, but closeout_session_check
+	// itself is intentionally NOT in discipline.MutatingTools — it's listed
+	// under discipline.DeliberatelyExcludedTools' "System-generated
+	// cache/candidate writes" category (internal/discipline/discipline.go):
+	// the actor is hardcoded to "system", the summary is entirely
+	// server-computed from prior read-only aggregation above, and there is
+	// no caller-controlled field, so flagging this write as drift would be
+	// noise rather than signal.
 	_ = s.gtd.LogActivity(ctx, "system", "closeout_session_check", nil, summary)
 
 	return jsonText(report)
@@ -140,13 +150,15 @@ func buildCloseoutActions(report closeoutReport) []string {
 		for _, st := range report.StuckTasks {
 			titles = append(titles, st.Title)
 		}
-		actions = append(actions,
+		actions = append(
+			actions,
 			fmt.Sprintf("Complete or cancel %d stuck task(s): %s",
 				len(report.StuckTasks), strings.Join(titles, ", ")),
 		)
 	}
 	if report.PendingProposals > 0 {
-		actions = append(actions,
+		actions = append(
+			actions,
 			fmt.Sprintf("Resolve %d pending proposal(s) via confirm_proposals", report.PendingProposals),
 		)
 	}
@@ -154,7 +166,8 @@ func buildCloseoutActions(report closeoutReport) []string {
 		actions = append(actions, "Call set_session_handoff before ending session")
 	}
 	if report.CompletionCandidates > 0 {
-		actions = append(actions,
+		actions = append(
+			actions,
 			fmt.Sprintf("Review %d completion candidate(s) via detect_completion_candidates", report.CompletionCandidates),
 		)
 	}

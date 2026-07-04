@@ -650,13 +650,13 @@ func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, err
 // BatchCompleteTasksByPRMatch implements gtd.StoreIface.BatchCompleteTasksByPRMatch
 // for the SQLite backend. Runs inside a single *sql.Tx so a partial auto-close
 // cannot leave half the matches done. See internal/gtd/iface.go for contract.
-func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gtd.Match) (int, error) {
+func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gtd.Match) (map[uuid.UUID]bool, error) {
 	if len(matches) == 0 {
-		return 0, nil
+		return map[uuid.UUID]bool{}, nil
 	}
 	tx, err := s.db.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, errWrap("BatchCompleteTasksByPRMatch begin", err)
+		return nil, errWrap("BatchCompleteTasksByPRMatch begin", err)
 	}
 	committed := false
 	defer func() {
@@ -665,10 +665,19 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 		}
 	}()
 
-	applied := 0
+	applied := make(map[uuid.UUID]bool, len(matches))
 	now := nowRFC3339()
 	for _, m := range matches {
-		// Guarded UPDATE: skip rows already completed → idempotent across repeats.
+		// Guarded UPDATE: only flip tasks that are STILL pending/in_progress
+		// at apply time — mirrors the Postgres guard in
+		// internal/gtd/store.go's applyOnePRMatch. status IN
+		// ('pending','in_progress') matches the exact precondition
+		// gtd.MatchMergedPRs used to select this task as a candidate during
+		// preview (see reconcile.go), closing a CWE-367 TOCTOU gap: the old
+		// "status != 'completed'" guard let a still-valid reconcile_token
+		// silently re-complete a task the user cancelled between preview and
+		// confirm. This also keeps the pre-existing idempotency for
+		// already-completed tasks (RowsAffected=0 either way).
 		const upd = `UPDATE tasks
 			SET status     = 'completed',
 			    artifact   = ?2,
@@ -676,16 +685,16 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 			    updated_at = ?3
 			WHERE id = ?1
 			  AND (?4 IS NULL OR workspace_id = ?4)
-			  AND status != 'completed'`
+			  AND status IN ('pending', 'in_progress')`
 		res, uerr := tx.ExecContext(ctx, upd, m.TaskID.String(), m.PRUrl, now, s.db.workspaceArg())
 		if uerr != nil {
-			return 0, errWrap("BatchCompleteTasksByPRMatch update", uerr)
+			return nil, errWrap("BatchCompleteTasksByPRMatch update", uerr)
 		}
 		affected, _ := res.RowsAffected()
 		if affected == 0 {
 			continue
 		}
-		applied++
+		applied[m.TaskID] = true
 
 		// audit: same notes shape as the PG path so reads are uniform.
 		notes := "auto-closed by reconcile_merged_prs reason=" + string(m.Reason) +
@@ -699,11 +708,11 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 			ctx, ins,
 			uuid.New().String(), s.db.workspaceArg(), sanitize.Notes(notes),
 		); ierr != nil {
-			return 0, errWrap("BatchCompleteTasksByPRMatch activity_log", ierr)
+			return nil, errWrap("BatchCompleteTasksByPRMatch activity_log", ierr)
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		return 0, errWrap("BatchCompleteTasksByPRMatch commit", err)
+		return nil, errWrap("BatchCompleteTasksByPRMatch commit", err)
 	}
 	committed = true
 	return applied, nil

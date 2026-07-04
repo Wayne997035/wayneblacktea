@@ -114,7 +114,8 @@ var logDecisionProposerStartupOnce sync.Once
 func logDecisionProposerStartup() {
 	logDecisionProposerStartupOnce.Do(func() {
 		raw := strings.TrimSpace(os.Getenv(disableAutoDecisionsEnvVar))
-		slog.Info("decisionProposer: startup state observed",
+		slog.Info(
+			"decisionProposer: startup state observed",
 			"enabled", decisionProposerEnabled(),
 			disableAutoDecisionsEnvVar, raw,
 		)
@@ -133,8 +134,12 @@ func (s *Server) shouldRunDecisionProposer(res *mcpmsg.CallToolResult, err error
 		return false
 	}
 	// Skip the very tools we're trying to nudge — emitting a decision
-	// proposal in response to a log_decision is silly recursion.
-	if tool == "log_decision" || tool == "confirm_plan" || tool == "confirm_proposal" {
+	// proposal in response to a log_decision is silly recursion. This
+	// includes confirm_proposals (plural, bulk accept/reject) alongside its
+	// singular counterpart: both are in discipline.MutatingTools, and both
+	// would otherwise trigger a redundant auto-decision draft in response
+	// to a proposal confirmation.
+	if tool == "log_decision" || tool == "confirm_plan" || tool == "confirm_proposal" || tool == "confirm_proposals" {
 		return false
 	}
 	if !decisionProposerEnabled() {
@@ -157,7 +162,8 @@ type decisionProposerPayload = proposal.DecisionProposerPayload
 func (s *Server) runDecisionProposer(tool, argSummary, resultSummary, sessionID string, workspaceID *uuid.UUID) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Warn("decisionProposerMiddleware: panic in background goroutine",
+			slog.Warn(
+				"decisionProposerMiddleware: panic in background goroutine",
 				"tool", tool,
 				"panic", fmt.Sprintf("%v", r),
 			)
@@ -228,7 +234,8 @@ func (s *Server) runDecisionProposer(tool, argSummary, resultSummary, sessionID 
 			"err", cErr, "tool", tool, "session", sessionID)
 		return
 	}
-	slog.Info("decisionProposerMiddleware: proposal inserted",
+	slog.Info(
+		"decisionProposerMiddleware: proposal inserted",
 		"tool", tool,
 		"session", sessionID,
 		"title_len", len(draft.Title),

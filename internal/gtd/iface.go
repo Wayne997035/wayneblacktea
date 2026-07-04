@@ -67,12 +67,27 @@ type StoreIface interface {
 	// HTTP handler (sprint feature/gtd-enforce-server-side GTD-fix 9/12).
 	//
 	// Idempotent: a task already in 'completed' status is left untouched and not
-	// re-logged. Implementations MUST ignore matches whose task is already
-	// completed so a repeated reconcile call returns 0 changes.
+	// re-logged. The guarded UPDATE also requires status IN
+	// ('pending','in_progress') at apply time, not merely "not completed" — a
+	// task cancelled between preview and confirm is likewise skipped (CWE-367
+	// TOCTOU guard).
 	//
-	// Returns the count of tasks actually transitioned (excluding already-done
-	// no-ops). Returns nil + count 0 on an empty input.
-	BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match) (int, error)
+	// Returns a map keyed by every Match's TaskID whose guarded UPDATE actually
+	// affected a row this call (i.e. genuinely transitioned to completed).
+	// Task IDs skipped by the guard (already completed, or drifted away from
+	// pending/in_progress since preview) are simply ABSENT from the map — they
+	// are never present with a false value, so callers can use the plain index
+	// expression `applied[id]` (zero-value false for an absent key) or the
+	// comma-ok form interchangeably.
+	//
+	// Callers MUST consult this map (not just its length) before treating a
+	// match as "really applied" — e.g. before writing an audit-trail row via
+	// completioncandidate.WriteAutoApplied, so a match the guard skipped never
+	// produces a false "auto_applied" record (round-3 Finding 2). len(applied)
+	// gives the aggregate applied count previously returned as a bare int.
+	//
+	// Returns an empty (non-nil) map + nil error on empty input.
+	BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match) (map[uuid.UUID]bool, error)
 	// BeginTask atomically sets task status to in_progress and records a
 	// work_session_started activity log entry. Returns ErrNotFound when no task
 	// matches id + workspaceID.

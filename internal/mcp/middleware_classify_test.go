@@ -294,8 +294,8 @@ func (m *mockClassifyGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.
 	return nil, errMockNotImpl
 }
 
-func (m *mockClassifyGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (int, error) {
-	return 0, errMockNotImpl
+func (m *mockClassifyGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (map[uuid.UUID]bool, error) {
+	return nil, errMockNotImpl
 }
 
 func (m *mockClassifyGTDStore) GetTaskByID(_ context.Context, _ uuid.UUID) (*db.Task, error) {

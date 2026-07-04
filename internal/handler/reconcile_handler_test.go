@@ -346,6 +346,197 @@ func TestReconcileMergedPRs_PRURLMatch(t *testing.T) {
 	}
 }
 
+// toctouCancelStore wraps a gtd.StoreIface and, when
+// BatchCompleteTasksByPRMatch is invoked, first flips cancelTaskID to
+// 'cancelled' before delegating to the real store's guarded UPDATE. This
+// simulates the TOCTOU race the HTTP handler is exposed to: unlike the MCP
+// tool's two-step preview/confirm flow (where the race is a real gap between
+// two separate calls, see tools_reconcile_test.go's
+// TestMCPReconcileMergedPRs_ConfirmDoesNotWriteFalseAutoAppliedCandidate),
+// the HTTP handler computes matches and applies them in a single call — the
+// only way to reproduce "task cancelled between the match-read and the
+// apply" here is to inject the state change inside the store method the
+// handler calls for the apply step.
+type toctouCancelStore struct {
+	gtd.StoreIface
+	t            *testing.T
+	cancelTaskID uuid.UUID
+}
+
+func (w *toctouCancelStore) BatchCompleteTasksByPRMatch(
+	ctx context.Context, matches []gtd.Match,
+) (map[uuid.UUID]bool, error) {
+	w.t.Helper()
+	if _, err := w.UpdateTaskStatus(ctx, w.cancelTaskID, gtd.TaskStatusCancelled); err != nil {
+		w.t.Fatalf("toctouCancelStore: cancel task mid-window: %v", err)
+	}
+	// Explicit .StoreIface qualifier is required here (unlike the
+	// UpdateTaskStatus call above): BatchCompleteTasksByPRMatch IS shadowed
+	// on *toctouCancelStore, so calling w.BatchCompleteTasksByPRMatch would
+	// recurse into this method infinitely instead of delegating to the real
+	// store's guarded UPDATE.
+	return w.StoreIface.BatchCompleteTasksByPRMatch(ctx, matches)
+}
+
+// countAutoAppliedCandidatesSQL queries completion_candidates directly for
+// the number of rows with status='auto_applied' for the given task —
+// independent of the completioncandidate.Store interface (which exposes no
+// "get by task_id" method) and independent of the handler's own JSON
+// response (which could misreport under the very bug this test guards
+// against).
+func countAutoAppliedCandidatesSQL(t *testing.T, d *sqlite.DB, taskID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := d.SqlConn().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM completion_candidates WHERE task_id = ? AND status = 'auto_applied'`,
+		taskID.String(),
+	).Scan(&n); err != nil {
+		t.Fatalf("countAutoAppliedCandidatesSQL: %v", err)
+	}
+	return n
+}
+
+// TestReconcileMergedPRs_TOCTOUCancelSkipsFalseAutoAppliedCandidate is the
+// HTTP-handler regression test mirroring
+// TestMCPReconcileMergedPRs_ConfirmDoesNotWriteFalseAutoAppliedCandidate
+// (internal/mcp/tools_reconcile_test.go). Before this fix, the
+// WriteAutoApplied loop in reconcile_handler.go's Reconcile ran
+// unconditionally over every result.Matches entry regardless of whether
+// appliedIDs (the genuinely-affected-rows map from
+// BatchCompleteTasksByPRMatch) actually confirmed the task was applied — so
+// a task cancelled between the match-read (gtd.MatchMergedPRs) and the apply
+// call still got a persisted, FALSE completion_candidates row with
+// status='auto_applied'.
+//
+// toctouCancelStore injects the cancellation exactly in that window: it
+// wraps the real store and cancels the target task the instant
+// BatchCompleteTasksByPRMatch is called (i.e. after MatchMergedPRs has
+// already read the task as pending/matched, but before the guarded UPDATE
+// runs) — so the real store's guard (`WHERE status IN
+// ('pending','in_progress')`) correctly no-ops for this task, and
+// appliedIDs is absent/false for it.
+func TestReconcileMergedPRs_TOCTOUCancelSkipsFalseAutoAppliedCandidate(t *testing.T) {
+	store, candStore, _, d := openMemForReconcileWithMergedPRs(t)
+	ctx := context.Background()
+
+	branch := "feature/toctou-http-cancel"
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "toctou-http-candidate-task", Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{BranchName: &branch}); err != nil {
+		t.Fatalf("seed branch: %v", err)
+	}
+
+	wrapped := &toctouCancelStore{StoreIface: store, t: t, cancelTaskID: task.ID}
+	h := handler.NewReconcileHandler(wrapped, candStore)
+
+	body := mustJSON(t, map[string]any{
+		"merged_prs": []map[string]any{{
+			"url": "https://github.com/owner/repo/pull/909", "head_ref": branch,
+			"repo": "owner/repo",
+		}},
+	})
+	rec := runReconcileRequest(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Matches []struct {
+			TaskID  string `json:"task_id"`
+			Applied bool   `json:"applied"`
+		} `json:"matches"`
+		Applied         int `json:"applied"`
+		CandidateWrites int `json:"candidate_writes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, rec.Body.String())
+	}
+	if resp.Applied != 0 {
+		t.Fatalf("applied = %d, want 0 — a task cancelled mid-window must not be silently completed", resp.Applied)
+	}
+	if len(resp.Matches) != 1 || resp.Matches[0].TaskID != task.ID.String() {
+		t.Fatalf("matches = %+v, want exactly one match for task %s", resp.Matches, task.ID)
+	}
+	if resp.Matches[0].Applied {
+		t.Errorf("matches[0].applied = true, want false — this match was skipped by the TOCTOU guard")
+	}
+	if resp.CandidateWrites != 0 {
+		t.Errorf("candidate_writes = %d, want 0 — no audit row should be written for a task the guard skipped",
+			resp.CandidateWrites)
+	}
+
+	// Hard requirement (independent of the JSON response, which could
+	// under-report drift under the very bug this test guards against): no
+	// completion_candidates row with status='auto_applied' exists for this
+	// task.
+	if n := countAutoAppliedCandidatesSQL(t, d, task.ID); n != 0 {
+		t.Errorf("completion_candidates has %d auto_applied row(s) for task %s cancelled mid-window, want 0",
+			n, task.ID)
+	}
+
+	// Parity check: task status is still cancelled, never flipped to
+	// completed by the stale apply.
+	got, err := store.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != string(gtd.TaskStatusCancelled) {
+		t.Errorf("task status = %q, want %q", got.Status, gtd.TaskStatusCancelled)
+	}
+}
+
+// TestReconcileMergedPRs_AppliedFieldTrueForGenuineApply confirms the new
+// per-match "applied" response field is true for a task that genuinely
+// completed this call (no TOCTOU interference) — the positive-path
+// complement to the TOCTOU test above, which only proves the false-negative
+// case (skipped match → applied:false).
+func TestReconcileMergedPRs_AppliedFieldTrueForGenuineApply(t *testing.T) {
+	store, candStore := openMemForReconcile(t)
+	h := handler.NewReconcileHandler(store, candStore)
+
+	task, err := store.CreateTask(context.Background(),
+		gtd.CreateTaskParams{Title: "genuine-apply", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	branch := "feature/genuine-apply"
+	if _, err := store.UpdateTask(context.Background(), task.ID,
+		gtd.UpdateTaskParams{BranchName: &branch}); err != nil {
+		t.Fatalf("seed branch: %v", err)
+	}
+
+	body := mustJSON(t, map[string]any{
+		"merged_prs": []map[string]any{{
+			"url": "https://github.com/owner/repo/pull/910", "head_ref": branch,
+			"repo": "owner/repo",
+		}},
+	})
+	rec := runReconcileRequest(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Matches []struct {
+			TaskID  string `json:"task_id"`
+			Applied bool   `json:"applied"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, rec.Body.String())
+	}
+	if len(resp.Matches) != 1 || resp.Matches[0].TaskID != task.ID.String() {
+		t.Fatalf("matches = %+v, want exactly one match for task %s", resp.Matches, task.ID)
+	}
+	if !resp.Matches[0].Applied {
+		t.Errorf("matches[0].applied = false, want true for a genuinely-applied match")
+	}
+}
+
 // TestReconcileMergedPRs_DoSGuards covers input limits.
 func TestReconcileMergedPRs_DoSGuards(t *testing.T) {
 	store, candStore := openMemForReconcile(t)

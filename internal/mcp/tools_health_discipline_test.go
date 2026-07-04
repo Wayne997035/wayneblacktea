@@ -317,7 +317,7 @@ func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
 		"mark_procedural_used", "sync_repo",
 		"upsert_project_arch", "update_project_status",
 		// Round-2 review remediation (Finding 1, Critical + Finding 2, Major):
-		// 15 additional mutating tools that were previously invisible to
+		// 18 additional mutating tools that were previously invisible to
 		// drift detection.
 		"reconcile_merged_prs",
 		"update_project", "log_activity", "begin_task",

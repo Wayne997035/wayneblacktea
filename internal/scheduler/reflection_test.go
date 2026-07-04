@@ -135,8 +135,8 @@ func (s *stubGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*
 	return nil, nil
 }
 
-func (s *stubGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (int, error) {
-	return 0, nil
+func (s *stubGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (map[uuid.UUID]bool, error) {
+	return nil, nil
 }
 
 func (s *stubGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter) ([]db.Task, error) {
