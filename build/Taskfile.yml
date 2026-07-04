@@ -12,7 +12,7 @@ tasks:
       - task: check
 
   check:
-    desc: "Full quality gate — lint + unit tests + integration tests + frontend + vuln, all in parallel after mod-tidy"
+    desc: "Full quality gate — lint + unit tests + integration tests + frontend, all in parallel after mod-tidy (govulncheck is standalone `task vuln`, not a dependency — see vuln task doc)"
     cmds:
       - task: mod-tidy
       - task: _check-parallel
@@ -20,7 +20,7 @@ tasks:
     silent: false
 
   check-go:
-    desc: "Go-only quality gate — lint + unit tests + vuln in parallel, no frontend/integration"
+    desc: "Go-only quality gate — lint + unit tests in parallel, no frontend/integration (govulncheck is standalone `task vuln`, not a dependency — see vuln task doc)"
     cmds:
       - task: mod-tidy
       - task: _check-go-parallel
@@ -38,7 +38,6 @@ tasks:
     internal: true
     deps:
       - frontend-check
-      - vuln
       - lint
       - test
       - test-integration
@@ -46,7 +45,6 @@ tasks:
   _check-go-parallel:
     internal: true
     deps:
-      - vuln
       - lint
       - test
 
@@ -74,9 +72,14 @@ tasks:
     dir: ..
 
   vuln:
-    desc: "Run govulncheck to detect known vulnerabilities (informational, does not block check)"
+    desc: "Run govulncheck to detect known vulnerabilities. Standalone only — NOT a dependency of check/check-go, so a real finding (exit 3) never silently blocks the quality gate; run explicitly to see current CVE status."
     cmds:
-      - govulncheck ./internal/... ./cmd/...
+      # Pinned to v1.3.0 (matches CI: .github/workflows/ci.yml) via `go run` —
+      # the unpinned local govulncheck binary panics under Go 1.26 (GTD
+      # 31b3f4a4, historical context). v1.3.0 does not hit that panic and
+      # correctly surfaces real findings (see GTD 682b9285 for the Go
+      # stdlib CVE fix tracked separately).
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./internal/... ./cmd/...
     dir: ..
 
   frontend-check:

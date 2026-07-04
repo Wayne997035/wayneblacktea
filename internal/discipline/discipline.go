@@ -33,10 +33,20 @@ var ErrNotFound = errors.New("discipline: event not found")
 // PR that introduces them so drift detection stays accurate.
 var MutatingTools = map[string]bool{
 	// GTD task lifecycle
-	"add_task":      true,
-	"update_task":   true,
-	"complete_task": true,
-	"delete_task":   true,
+	"add_task":        true,
+	"update_task":     true,
+	"complete_task":   true,
+	"delete_task":     true,
+	"set_task_status": true,
+	"update_project":  true, // internal/mcp/tools_gtd.go:130/395/420 — UpdateProject
+	"log_activity":    true, // tools_gtd.go:238/1074/1091 — LogActivity
+	"begin_task":      true, // tools_gtd.go:330/1314/1342+1360 — BeginTask + UpdateTask
+
+	// Task checklist sub-items (tools_gtd.go) — all call AddChecklistItem /
+	// UpdateChecklistItem, which are Store writes on the task's checklist column.
+	"task_checklist_add_item": true, // tools_gtd.go:270/1211/1251
+	"task_checklist_toggle":   true, // tools_gtd.go:282/1261/1283
+	"task_checklist_complete": true, // tools_gtd.go:294/1293/1304
 
 	// Plan / proposal confirmation
 	"confirm_plan":      true,
@@ -54,8 +64,9 @@ var MutatingTools = map[string]bool{
 	"submit_review":          true,
 
 	// Session / handoff
-	"set_session_handoff": true,
-	"resolve_handoff":     true,
+	"set_session_handoff":   true,
+	"resolve_handoff":       true,
+	"mark_next_action_done": true, // internal/mcp/tools_session.go:32/101/118 — MarkNextActionDone
 
 	// Work session lifecycle
 	"start_work":      true,
@@ -78,6 +89,102 @@ var MutatingTools = map[string]bool{
 	// discipline_events_m8 and are themselves observability writes.
 	"analyze_agent_behavior": true,
 	"mark_loop_resolved":     true,
+
+	// PR reconciliation — batch-completes pending/in_progress tasks from
+	// caller-supplied merged-PR data (up to 200 per call). Must be visible to
+	// drift detection: this is a batch mutation with no server-side
+	// verification the PR actually merged (round-1 review Finding 1, Critical).
+	"reconcile_merged_prs": true, // internal/mcp/tools_reconcile.go:36/95/136 — BatchCompleteTasksByPRMatch
+
+	// Memory atom bridge — promotes a consolidated atom into a pending
+	// knowledge proposal and flips the atom's digest_status.
+	"promote_atom_to_knowledge": true, // internal/mcp/tools_atom.go:22/253/339+348
+
+	// Behavior rule governance lifecycle.
+	"propose_behavior_rule":   true, // tools_behaviorrule.go:16/77/134 — Propose
+	"apply_behavior_rules":    true, // tools_behaviorrule.go:49/181/201 — ApplyOutcome
+	"deprecate_behavior_rule": true, // tools_behaviorrule.go:64/228/243 — Deprecate
+
+	// Outcome / reflection loop.
+	"record_outcome":      true, // tools_outcome.go:55/122/164 — CreateOutcome
+	"evaluate_outcome":    true, // tools_outcome.go:81/185/222 — CreateEvaluation
+	"generate_reflection": true, // tools_reflection.go:18/70/78 — Create
+
+	// Skill extraction / usage tracking.
+	"extract_skill":             true, // tools_skill.go:16/138/183 — Add
+	"use_skill":                 true, // tools_skill.go:52/225/238 — IncrementSuccess
+	"update_skill_from_outcome": true, // tools_skill.go:62/249/276 — UpdateFromOutcome
+}
+
+// DeliberatelyExcludedTools is the explicit, documented allowlist of MCP tool
+// names that are registered on the server but intentionally NOT classified as
+// mutating for drift-detection purposes, even though some of them do write to
+// the database. This is the single source of truth referenced by both this
+// package's doc comment and the structural parity test
+// (internal/mcp.TestMCPServer_AllRegisteredToolsClassified) — do NOT maintain
+// a second copy of this list elsewhere.
+//
+// Categories:
+//   - System-generated cache/candidate writes: these tools persist derived,
+//     re-computable observations (fuzzy match candidates, dashboard snapshots,
+//     project status snapshots, closeout heuristic checks) rather than
+//     authoritative user/agent decisions. A human/agent did not directly
+//     "decide" to mutate state — the write is a caching side effect of a read
+//     operation, so flagging it as drift would generate noise, not signal.
+//   - External-only side effects: tools whose only side effect is calling an
+//     external service (Notion) with no local Store row of authoritative
+//     record; nothing here for local drift-detection to protect.
+//   - Read-only tools: everything else registered on the server that never
+//     calls a Store write method.
+var DeliberatelyExcludedTools = map[string]bool{
+	// System-generated cache/candidate writes.
+	"detect_completion_candidates": true,
+	"reconcile_dashboard":          true,
+	"generate_project_status":      true,
+	"closeout_session_check":       true,
+
+	// External-only side effects (no local Store row of record).
+	"sync_to_notion": true,
+
+	// Read-only tools — verified (round-2 review remediation) to call only
+	// List/Get/Search/Query-style Store methods, never a write. Kept as an
+	// explicit allowlist (not just "absent from MutatingTools") so the
+	// structural parity test forces a deliberate classification decision for
+	// any newly-registered tool instead of silently passing it through.
+	"analyze_recent_patterns": true,
+	"detect_unclosed_loops":   true,
+	"find_failed_patterns":    true,
+	"get_active_work":         true,
+	"get_due_reviews":         true,
+	"get_latest_reflection":   true,
+	"get_project":             true,
+	"get_project_arch":        true,
+	"get_task":                true,
+	"get_today_context":       true,
+	"get_upcoming_work":       true,
+	"initial_instructions":    true,
+	"list_active_repos":       true,
+	"list_behavior_rules":     true,
+	"list_decisions":          true,
+	"list_goals":              true,
+	"list_knowledge":          true,
+	"list_pending_proposals":  true,
+	"list_playbooks":          true,
+	"list_projects":           true,
+	"list_recent_outcomes":    true,
+	"list_reflections":        true,
+	"list_relevant_skills":    true,
+	"list_tasks":              true,
+	"list_vision_items":       true,
+	"navigate_knowledge":      true,
+	"outline_knowledge":       true,
+	"query_procedural":        true,
+	"recall":                  true,
+	"search_atoms":            true,
+	"search_knowledge":        true,
+	"search_skills":           true,
+	"system_health":           true,
+	"traverse_atoms":          true,
 }
 
 // IsMutating returns true when toolName is in the canonical MutatingTools set.

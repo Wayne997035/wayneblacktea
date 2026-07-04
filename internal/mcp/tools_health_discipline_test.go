@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
+	"github.com/Wayne997035/wayneblacktea/internal/storage"
 )
 
 // stubDisciplineStore is an in-memory test double for discipline.Store. It
@@ -303,7 +305,7 @@ func TestHasDecisionInWindow(t *testing.T) {
 // allowlist matches the spec (Lead-frozen list).
 func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
 	mustBeMutating := []string{
-		"add_task", "update_task", "complete_task", "delete_task",
+		"add_task", "update_task", "complete_task", "delete_task", "set_task_status",
 		"confirm_plan", "confirm_proposal", "confirm_proposals",
 		"log_decision",
 		"add_knowledge", "add_procedural", "add_vision_item",
@@ -314,6 +316,18 @@ func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
 		"propose_goal", "propose_project", "create_goal", "create_project",
 		"mark_procedural_used", "sync_repo",
 		"upsert_project_arch", "update_project_status",
+		// Round-2 review remediation (Finding 1, Critical + Finding 2, Major):
+		// 15 additional mutating tools that were previously invisible to
+		// drift detection.
+		"reconcile_merged_prs",
+		"update_project", "log_activity", "begin_task",
+		"task_checklist_add_item", "task_checklist_toggle", "task_checklist_complete",
+		"promote_atom_to_knowledge",
+		"propose_behavior_rule", "apply_behavior_rules", "deprecate_behavior_rule",
+		"record_outcome", "evaluate_outcome",
+		"generate_reflection",
+		"mark_next_action_done",
+		"extract_skill", "use_skill", "update_skill_from_outcome",
 	}
 	for _, tool := range mustBeMutating {
 		if !discipline.IsMutating(tool) {
@@ -327,5 +341,60 @@ func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
 		if discipline.IsMutating(tool) {
 			t.Errorf("expected %q to be read-only", tool)
 		}
+	}
+}
+
+// TestMCPServer_AllRegisteredToolsClassified is the structural parity test
+// (round-2 review remediation, Finding 3, Major). Unlike
+// TestMutatingTools_ContainsExpectedSet above — a hardcoded literal list that
+// re-asserts itself and would not have caught the Finding 1/2 gaps — this
+// test enumerates the tools ACTUALLY registered on a real MCP server (via
+// mcp-go's *server.MCPServer.ListTools(), the same object server.go's
+// register*Tools calls build against) and asserts every single one is
+// present in EITHER discipline.MutatingTools OR
+// discipline.DeliberatelyExcludedTools.
+//
+// This makes a FUTURE new mutating tool that forgets to classify itself
+// fail this test immediately, instead of silently becoming invisible to
+// drift detection like the 15 tools this remediation round just fixed.
+func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mcp-parity.db")
+	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
+		Backend:    storage.BackendSQLite,
+		SQLitePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("NewServerStores: %v", err)
+	}
+	t.Cleanup(func() { _ = stores.Close() })
+
+	srv, err := New(stores)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ms := srv.MCPServer()
+	tools := ms.ListTools()
+	if len(tools) == 0 {
+		t.Fatal("ListTools() returned no registered tools — registration broken?")
+	}
+
+	var unclassified []string
+	for name := range tools {
+		if discipline.MutatingTools[name] {
+			continue
+		}
+		if discipline.DeliberatelyExcludedTools[name] {
+			continue
+		}
+		unclassified = append(unclassified, name)
+	}
+	if len(unclassified) > 0 {
+		t.Errorf(
+			"tool(s) registered on the MCP server but not classified in either "+
+				"discipline.MutatingTools or discipline.DeliberatelyExcludedTools "+
+				"(add an explicit entry to one of them): %v",
+			unclassified,
+		)
 	}
 }

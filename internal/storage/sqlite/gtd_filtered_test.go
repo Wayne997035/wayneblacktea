@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -9,6 +10,23 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
 )
+
+// openFileStore opens a GTDStore backed by an on-disk SQLite file (as opposed
+// to openMem's isolated :memory: instance) so multiple workspace-scoped
+// stores can share one physical database. This is required to prove the
+// workspace_id predicate in gtd.go's TasksFiltered actually filters rows —
+// two separate :memory: DBs would still appear isolated even if the
+// predicate were deleted, since the physical separation alone would mask a
+// missing/broken workspace filter.
+func openFileStore(t *testing.T, path, workspaceID string) *sqlite.GTDStore {
+	t.Helper()
+	d, err := sqlite.Open(context.Background(), path, workspaceID)
+	if err != nil {
+		t.Fatalf("sqlite.Open(%s): %v", path, err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return sqlite.NewGTDStore(d)
+}
 
 // seedSQLiteTask creates a task in the GTDStore with an optional due_date and
 // status. status "" is treated as "pending" (the default).
@@ -217,12 +235,19 @@ func TestSQLiteStore_TasksFiltered_ProjectIDFilter(t *testing.T) {
 }
 
 // TestSQLiteStore_TasksFiltered_WorkspaceScoping verifies that tasks from a
-// different workspace (separate in-memory DB) are not returned.
+// different workspace are not returned, using ONE shared on-disk SQLite file
+// opened by two workspace-scoped stores. This is a real regression guard: if
+// the workspace_id predicate in gtd.go's TasksFiltered were deleted, both
+// stores would read from the same physical rows and this test would start
+// failing (unlike a two-separate-:memory:-DBs setup, which would still pass
+// vacuously because the DBs never share any rows regardless of the
+// predicate).
 func TestSQLiteStore_TasksFiltered_WorkspaceScoping(t *testing.T) {
 	wsA := uuid.NewString()
 	wsB := uuid.NewString()
-	storeA := openMem(t, wsA)
-	storeB := openMem(t, wsB)
+	sharedPath := filepath.Join(t.TempDir(), "shared.db")
+	storeA := openFileStore(t, sharedPath, wsA)
+	storeB := openFileStore(t, sharedPath, wsB)
 	ctx := context.Background()
 
 	due := time.Now().Add(24 * time.Hour)
@@ -236,6 +261,25 @@ func TestSQLiteStore_TasksFiltered_WorkspaceScoping(t *testing.T) {
 		if tk.ID == wsBTaskID {
 			t.Errorf("workspace-A store returned workspace-B task %s", wsBTaskID)
 		}
+	}
+
+	// Own-workspace visibility regression guard: a task seeded via storeA on
+	// the same shared physical file MUST still be returned when queried via
+	// storeA — proves the predicate is a real "not other workspace" filter,
+	// not an over-broad exclusion that hides everything.
+	wsATaskID := seedSQLiteTask(t, storeA, &due, "")
+	tasksA, err := storeA.TasksFiltered(ctx, gtd.TaskFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("TasksFiltered (wsA, own task): %v", err)
+	}
+	found := false
+	for _, tk := range tasksA {
+		if tk.ID == wsATaskID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("workspace-A store did not return its own task %s", wsATaskID)
 	}
 }
 

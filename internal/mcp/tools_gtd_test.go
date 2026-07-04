@@ -8,9 +8,57 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
+
+// spyOutcomeStore is a test-local spy implementing all 7 methods of
+// outcome.StoreIface. It counts total calls across every method so a test can
+// assert "the outcome layer was never touched" with a single check. Values
+// returned are minimal fixtures — callers of this spy only exercise control
+// flow, not outcome data itself.
+type spyOutcomeStore struct {
+	calls int
+}
+
+func (sp *spyOutcomeStore) CreateOutcome(_ context.Context, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	sp.calls++
+	return outcome.Outcome{ID: uuid.New()}, nil
+}
+
+func (sp *spyOutcomeStore) GetOutcomeByID(_ context.Context, id uuid.UUID, _ *uuid.UUID) (outcome.Outcome, error) {
+	sp.calls++
+	return outcome.Outcome{ID: id}, nil
+}
+
+func (sp *spyOutcomeStore) ListRecentOutcomes(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]outcome.Outcome, error) {
+	sp.calls++
+	return nil, nil
+}
+
+func (sp *spyOutcomeStore) CreateEvaluation(_ context.Context, _ outcome.CreateEvaluationParams) (outcome.Evaluation, error) {
+	sp.calls++
+	return outcome.Evaluation{ID: uuid.New()}, nil
+}
+
+func (sp *spyOutcomeStore) ListEvaluationsByOutcomeID(_ context.Context, _ uuid.UUID, _ *uuid.UUID) ([]outcome.Evaluation, error) {
+	sp.calls++
+	return nil, nil
+}
+
+func (sp *spyOutcomeStore) ListFailedOutcomes(_ context.Context, _ *uuid.UUID, _ int) ([]outcome.Outcome, error) {
+	sp.calls++
+	return nil, nil
+}
+
+func (sp *spyOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	sp.calls++
+	return 0, nil
+}
+
+// Compile-time guarantee that the spy satisfies the full interface.
+var _ outcome.StoreIface = (*spyOutcomeStore)(nil)
 
 // TestStrictVagueness_ParseBool verifies that (*Server).strictVagueness reads
 // WBT_STRICT_VAGUENESS through strconv.ParseBool, accepting the canonical
@@ -333,6 +381,104 @@ func TestListTasks_ProjectIDAndStatusCombo(t *testing.T) {
 	}
 }
 
+// assertKeyPresence checks each key in keys against task and reports an error
+// through t when its presence doesn't match wantPresent.
+func assertKeyPresence(t *testing.T, task map[string]any, keys []string, wantPresent bool, label string) {
+	t.Helper()
+	for _, key := range keys {
+		_, present := task[key]
+		if present == wantPresent {
+			continue
+		}
+		if wantPresent {
+			t.Errorf("%s: must contain key %q, got: %+v", label, key, task)
+		} else {
+			t.Errorf("%s: must NOT contain key %q, got value: %v", label, key, task[key])
+		}
+	}
+}
+
+// firstListedTask unmarshals a list_tasks CallToolResult and returns the
+// first task as a generic map (for presence/absence field assertions).
+func firstListedTask(t *testing.T, r *mcpmsg.CallToolResult, label string) map[string]any {
+	t.Helper()
+	if r.IsError {
+		t.Fatalf("%s: list_tasks should succeed, got: %s", label, resultText(r))
+	}
+	var out struct {
+		Tasks []map[string]any `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("%s: unmarshal: %v", label, err)
+	}
+	if len(out.Tasks) == 0 {
+		t.Fatalf("%s: expected at least one task in response", label)
+	}
+	return out.Tasks[0]
+}
+
+// TestListTasks_DefaultSummary_OmitsHeavyFields pins the compact default shape
+// of handleListTasks: with no "summary" key present, heavy fields (description,
+// context, checklist, commit_shas, pr_url, artifact) MUST be entirely absent
+// from the wire object (not present-but-null), while compact fields remain.
+// A companion "summary": false call on the SAME task proves the fields were
+// genuinely populated (i.e. the default-path assertion isn't a false negative
+// caused by a seeding bug).
+func TestListTasks_DefaultSummary_OmitsHeavyFields(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	due := time.Now().Add(24 * time.Hour)
+	prURL := "https://github.com/example/repo/pull/42"
+
+	task, err := s.gtd.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:       "heavy-field-task",
+		Description: "a full description",
+		Context:     "some background context",
+		PRUrl:       &prURL,
+		DueDate:     &due,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := s.gtd.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{
+		CommitSHAs: []string{"abc1234"},
+	}); err != nil {
+		t.Fatalf("UpdateTask (commit_shas): %v", err)
+	}
+
+	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
+	checklistItem := gtd.ChecklistItem{
+		ID:        uuid.New(),
+		Title:     "step one",
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.gtd.AddChecklistItem(ctx, task.ID, wsID, checklistItem); err != nil {
+		t.Fatalf("AddChecklistItem: %v", err)
+	}
+
+	artifact := prURL
+	if _, err := s.gtd.CompleteTask(ctx, task.ID, &artifact); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	heavyFieldKeys := []string{"description", "context", "checklist", "commit_shas", "pr_url", "artifact"}
+	compactFieldKeys := []string{"id", "title", "status", "priority", "kind"}
+
+	// Default path: no "summary" key at all. status=all so the now-completed
+	// task is still returned (default status filter is active-only).
+	r := callListTasks(t, s, map[string]any{"status": "all"})
+	defaultTask := firstListedTask(t, r, "default")
+	assertKeyPresence(t, defaultTask, heavyFieldKeys, false, "default (summary)")
+	assertKeyPresence(t, defaultTask, compactFieldKeys, true, "default (summary)")
+
+	// Companion call: "summary": false on the SAME task must include the heavy
+	// fields — proves the absence above reflects real data, not a seeding bug.
+	r2 := callListTasks(t, s, map[string]any{"status": "all", "summary": false})
+	fullTask := firstListedTask(t, r2, "summary=false")
+	assertKeyPresence(t, fullTask, heavyFieldKeys, true, "summary=false")
+}
+
 func TestListTasks_InvalidProjectIDUUID(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"project_id": "not-a-uuid"})
@@ -453,11 +599,17 @@ func TestSetTaskStatus_CancelledToCompleted(t *testing.T) {
 	}
 }
 
+// TestSetTaskStatus_ReopenAndRedo_NoOutcomeWritten verifies reopen→re-complete
+// via set_task_status does NOT touch the outcome store at all — a spy wired
+// onto s.outcome must have a zero call count after both transitions. A
+// companion control assertion calls the real record_outcome handler with the
+// same spy wired, proving the spy actually detects calls when they occur
+// (otherwise a spy that never fires isn't a meaningful assertion).
 func TestSetTaskStatus_ReopenAndRedo_NoOutcomeWritten(t *testing.T) {
-	// Verify reopen→re-complete path does NOT call any outcome tool.
-	// Since outcome tool is not wired in unit-test server, a panic or error
-	// would surface immediately. This is a structural guard.
 	s := newTestWorkSessionServer(t)
+	spy := &spyOutcomeStore{}
+	s.outcome = spy
+
 	id := seedTaskWithDueDate(t, s, "completed")
 	// Reopen.
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "pending"})
@@ -469,7 +621,30 @@ func TestSetTaskStatus_ReopenAndRedo_NoOutcomeWritten(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("re-complete must succeed, got: %s", resultText(r))
 	}
-	// No outcome error expected — the test passing is the assertion.
+	if spy.calls != 0 {
+		t.Errorf("set_task_status reopen+re-complete must not touch the outcome store, got %d call(s)", spy.calls)
+	}
+
+	// Control assertion: record_outcome IS a genuine outcome writer. Calling
+	// it directly with the same spy wired must increment the counter — this
+	// proves the zero-count assertion above is meaningful, not a spy that
+	// silently never fires regardless of what's called.
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"entity_type": "task",
+		"entity_id":   id.String(),
+		"result":      "success",
+	}
+	recRes, err := s.handleRecordOutcome(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleRecordOutcome error: %v", err)
+	}
+	if recRes.IsError {
+		t.Fatalf("record_outcome control call must succeed, got: %s", resultText(recRes))
+	}
+	if spy.calls == 0 {
+		t.Fatal("control assertion failed: spy did not detect record_outcome's CreateOutcome call — spy is not meaningful")
+	}
 }
 
 func TestSetTaskStatus_NotFound(t *testing.T) {
