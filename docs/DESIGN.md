@@ -240,8 +240,13 @@ On desktop (≥ 1024px): full sidebar (240px) always visible.
 | `ListTodo` | GTD | GTD | `/gtd` | 1 |
 | `FolderGit2` | 工作區 | Workspace | `/workspace` | 1 |
 | `BookMarked` | 決策紀錄 | Decisions | `/decisions` | 1 |
-| `Library` | 知識庫 | Knowledge | `/knowledge` | 3 — show with lock icon + "coming soon" badge |
-| `GraduationCap` | 學習回顧 | Reviews | `/reviews` | 3 — show with lock icon + "coming soon" badge |
+| `Library` | 知識庫 | Knowledge | `/knowledge` | 1 |
+| `GraduationCap` | 學習回顧 | Reviews | `/reviews` | 1 |
+| `History` | 學習歷史 | Learning History | `/learning/history` | 1 |
+| `Calendar` | 行事曆 | Calendar | `/calendar` | 1 |
+| `ClipboardList` | 提案 | Proposals | `/proposals` | 1 |
+| `Sparkles` | 完成候選 | Completion candidates | `/automation/candidates` | 1 |
+| `Eye` | 願景 | Vision | `/vision` | 1 |
 
 **Nav item anatomy (desktop full):**
 ```
@@ -260,7 +265,7 @@ interface NavItemProps {
   icon: LucideIcon;
   labelKey: string;        // i18n key
   to: string;
-  phase?: 1 | 3;          // default 1; 3 = coming soon
+  phase?: 1 | 3;          // default 1; all current nav items are phase 1 — 3 reserved for future not-yet-built pages
 }
 ```
 
@@ -469,14 +474,26 @@ Tab bar:
 
 ---
 
-### 3.5 Phase 3 Nav Stubs: Knowledge & Reviews
+### 3.5 Page 5: Knowledge (`/knowledge`) & Page 6: Reviews (`/reviews`)
 
-Both nav items:
-- Rendered in sidebar with icon + label
-- `opacity-50`, `cursor-default`, no active/hover state change
-- On desktop: show `SOON` badge (`text-label text-warning bg-[#2e1f00] rounded-full px-2 py-0.5`)
-- Clicking does nothing (no `<Link>`, just `<span role="button" aria-disabled="true">`)
-- No page component needed; if URL is typed directly, redirect to `/`
+Both routes are implemented (phase 1), routed directly by `App.tsx` (`KnowledgePage` / `ReviewsPage`, no redirect), and both nav items render fully interactive (no lock icon, no `SOON` badge, no `aria-disabled`).
+
+**Knowledge (`web/src/pages/KnowledgePage.tsx`, 338 lines):**
+
+- **Data source:** `GET /api/knowledge?limit=20` (TanStack Query key `['knowledge']`) for the default list; `GET /api/knowledge/search?q=...&limit=10` (debounced 350ms) once the search input is non-empty — search results replace the list view rather than filtering it client-side.
+- **Header:** page title + "Add Entry" button (`Plus` icon) that opens an inline add form.
+- **Search bar:** icon-prefixed text input, max-width 320px.
+- **Add form (collapsible):** `type` select (`article` / `til` / `bookmark` / `zettelkasten`), `title`, `content` (textarea), optional `url`. Submits via `POST /api/knowledge` (`useCreateKnowledge`); disabled until title + content are non-empty; shows `error.loadFailed` on mutation error.
+- **`PendingProposalsSection`:** renders below the form — surfaces AI-generated knowledge proposals pending review (`web/src/components/knowledge/PendingProposalsSection.tsx`).
+- **List/empty/loading/error states:** `LoadingSkeleton` × 4 while loading, `EmptyState` with "Add Entry" CTA when zero items, `KnowledgeCard` grid otherwise, error banner on fetch failure.
+
+**Reviews (`web/src/pages/ReviewsPage.tsx`, 450 lines) — spaced-repetition review queue:**
+
+- **Data source:** `GET /api/learning/reviews?limit=50` (`useReviews`, key `['reviews']`) for due review cards; `GET /api/learning/suggestions` (`useLearningSuggestions`) for the AI-recommendation panel.
+- **Header:** page title + due-count subtitle (`reviews.dueCount`) + "Add Concept" toggle button.
+- **Add Concept form (collapsible):** `title`, `content` (textarea), comma-separated `tags`. Submits via `POST /api/learning/concepts` (`useCreateConcept`).
+- **`SuggestionsPanel`:** shows up to `MAX_SUGGESTIONS_SHOWN = 5` AI-recommended items (tagged `Knowledge` or `Decision`, sourced from `suggestions.knowledge_items` / `suggestions.decisions`), each with an "加入學習" (add) button — knowledge items call `POST /api/learning/from-knowledge` (`useCreateConceptFromKnowledge`), decision items call `POST /api/learning/concepts` directly. "顯示全部 N 項" expands beyond the first 5.
+- **List/empty/loading/error states:** `LoadingSkeleton` × 3 while loading, `EmptyState` (`GraduationCap` icon) with "Add Concept" CTA when `dueCount === 0`, `ReviewCard` list (keyed by `review.schedule_id`) otherwise, error banner on fetch failure.
 
 ---
 
@@ -1213,8 +1230,18 @@ web/
         ├── DashboardPage.tsx
         ├── GtdPage.tsx
         ├── WorkspacePage.tsx
+        ├── ProjectDetailPage.tsx
+        ├── RepoDetailPage.tsx
         ├── DecisionsPage.tsx
-        └── NotFoundPage.tsx     # redirects Phase-3 stubs to /
+        ├── KnowledgePage.tsx
+        ├── ReviewsPage.tsx
+        ├── LearningHistoryPage.tsx
+        ├── CalendarPage.tsx
+        ├── ProposalsPage.tsx
+        ├── AutomationCandidatesPage.tsx
+        ├── VisionPage.tsx
+        ├── LoginPage.tsx
+        └── ComingSoon.tsx        # generic placeholder component, not route-mapped in App.tsx
 ```
 
 ### TypeScript Types (`src/types/api.ts`)
