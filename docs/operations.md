@@ -10,35 +10,47 @@ day-to-day "how do I bring the server up" lives in
 
 ---
 
-## Backfill `workspace_id` (one-time, per environment)
+## Backfill `workspace_id` — legacy migration 000011 (historical)
 
-**When to run:** the first time you switch from "no workspace
-scoping" to "scoped to a personal workspace UUID". After this point
-every previously-NULL row is bound to that workspace and becomes
-visible to a server started with `WORKSPACE_ID=<that-uuid>`.
+**Status:** `000011_backfill_workspace_id` was never a working golang-migrate
+migration. The original `.up.sql`/`.down.sql` used psql `\set` metacommands,
+which golang-migrate cannot parse — fresh-DB spinup, DR replay, and `task
+migrate-up` would either fail outright or silently no-op against the broken
+files (the test suite carried a `skipMigrations` map to work around it). The
+originals have been moved out of the embedded `migrations/` tree entirely to
+[`scripts/manual/000011_backfill_workspace_id.psql`](../scripts/manual/000011_backfill_workspace_id.psql),
+which is run manually with `psql`. A no-op marker
+([`migrations/000036_legacy_011_marker.up.sql`](../migrations/000036_legacy_011_marker.up.sql))
+keeps the historical `schema_migrations` row 000011 consistent for databases
+that already applied the original, and must remain a no-op forever.
 
-**What it touches:** all 11 domain tables that carry a
-`workspace_id` column (`goals`, `projects`, `tasks`, `activity_log`,
-`repos`, `decisions`, `session_handoffs`, `knowledge_items`,
-`concepts`, `review_schedule`, `pending_proposals`).
+**Recommended path for new installs:** use "WORKSPACE_ID Backfill (migration
+000015)" below instead. 000015 covers the same 11 tables with plain SQL (no
+psql metacommands) and ships a proper `.down.sql`. Only follow the procedure
+below if you specifically need to replay the legacy 000011 script — e.g.
+reconciling a database that already has schema_migrations row 000011
+applied, or investigating pre-000015 history.
 
-**Reversibility:** the down migration only flips rows whose
-`workspace_id` matches the sentinel UUID you picked, so it does not
-nuke other workspaces' data if you ran the backfill twice with
-different sentinels.
+**What it touches:** all 11 domain tables that carry a `workspace_id`
+column (`goals`, `projects`, `tasks`, `activity_log`, `repos`, `decisions`,
+`session_handoffs`, `knowledge_items`, `concepts`, `review_schedule`,
+`pending_proposals`).
+
+**Reversibility:** unlike 000015, the legacy script ships no `.down.sql`.
+Undoing it means writing the inverse `UPDATE` by hand — see Rollback below.
 
 ### Step 1 — pick a personal workspace UUID
 
 > ⚠️ **DO NOT use the sentinel value `00000000-0000-0000-0000-000000000000`
 > as your real `WORKSPACE_ID`.** The sentinel is a placeholder that the
-> migration files ship with so `sed` can substitute it for your real
+> manual backfill script ships with so `sed` can substitute it for your real
 > UUID. It is itself a syntactically valid UUID, so the database will
 > happily accept it — but on any shared / forked / template DB every
 > backfill will land on the same nil-UUID workspace and you will see
 > cross-tenant data co-mingling. Always generate a fresh UUID below.
 
 Generate one and save it. This is the value you will paste into both
-the SQL file and the `WORKSPACE_ID` environment variable.
+the SQL script and the `WORKSPACE_ID` environment variable.
 
 ```bash
 WORKSPACE_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -61,38 +73,44 @@ if [ "$WORKSPACE_UUID" = "00000000-0000-0000-0000-000000000000" ]; then
 fi
 ```
 
-### Step 2 — substitute the sentinel and apply the migration
+### Step 2 — substitute the sentinel and apply the script
 
-Both `migrations/000011_backfill_workspace_id.up.sql` and
-`migrations/000011_backfill_workspace_id.down.sql` ship with the
-sentinel literal `00000000-0000-0000-0000-000000000000`. **Copy them
-to `/tmp/` and run `sed` on the copies** — never edit the files in
-the repo. Editing in place would (a) leave the substituted UUID in
-your worktree where a careless `git add` could leak it, and (b)
-break the sentinel-match safety guarantee on the next run, because a
-re-substitution would no longer find the literal `0000…` pattern.
+`scripts/manual/000011_backfill_workspace_id.psql` binds the target UUID
+through a psql `\set` variable baked into the file itself:
+
+```sql
+-- BACKFILL_WORKSPACE_ID is a sentinel — replace before applying.
+\set BACKFILL_WORKSPACE_ID '''00000000-0000-0000-0000-000000000000'''
+```
+
+Because that `\set` line lives inside the script, a bare `psql -v
+BACKFILL_WORKSPACE_ID=... -f scripts/manual/000011_backfill_workspace_id.psql`
+invocation does **not** work — the script's own `\set` line runs after your
+`-v` binding and silently overwrites it back to the nil sentinel. You have
+to substitute the sentinel value itself. As before, do this on a `/tmp`
+copy — never edit the file in the repo, since that leaves your UUID in the
+worktree for a careless `git add` to leak:
 
 ```bash
-# Copy migration files to /tmp so the repo copies stay pristine.
-cp migrations/000011_backfill_workspace_id.up.sql   /tmp/applied-000011.up.sql
-cp migrations/000011_backfill_workspace_id.down.sql /tmp/applied-000011.down.sql
+cp scripts/manual/000011_backfill_workspace_id.psql /tmp/applied-000011.psql
 
-# Substitute the sentinel for your real UUID on the /tmp copies only.
 sed -i \
   "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
-  /tmp/applied-000011.up.sql \
-  /tmp/applied-000011.down.sql
+  /tmp/applied-000011.psql
 
 # Apply against the target Postgres.
-psql "$DATABASE_URL" -f /tmp/applied-000011.up.sql
+psql "$DATABASE_URL" -f /tmp/applied-000011.psql
 ```
 
 > Note: BSD `sed` (macOS) requires `sed -i ''` instead of `sed -i`.
-> Substitute accordingly if you are running on macOS.
 
-Keep `/tmp/applied-000011.down.sql` until you have verified the
-backfill (Step 4) — Rollback below reuses it. After verification you
-can `rm /tmp/applied-000011.up.sql /tmp/applied-000011.down.sql`.
+There is no `.down.sql` to keep around this time — see Rollback below if you
+need to undo the backfill. Clean up once you're happy with Step 4
+verification:
+
+```bash
+rm /tmp/applied-000011.psql
+```
 
 **Verify** the row count was non-zero:
 
@@ -141,56 +159,38 @@ curl -H "Authorization: Bearer $API_KEY" \
 
 ### Rollback
 
-If you need to undo the backfill (e.g. you picked the wrong UUID):
+The legacy script ships no down migration. If you need to undo it (e.g. you
+picked the wrong UUID), run the inverse `UPDATE` by hand, scoped to the UUID
+you applied so other workspaces are untouched:
 
 ```bash
-# Reuses the substituted /tmp/applied-000011.down.sql from Step 2.
-psql "$DATABASE_URL" -f /tmp/applied-000011.down.sql
+psql "$DATABASE_URL" -c "
+  UPDATE goals             SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE projects          SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE tasks             SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE activity_log      SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE repos             SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE decisions         SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE session_handoffs  SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE knowledge_items   SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE concepts          SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE review_schedule   SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+  UPDATE pending_proposals SET workspace_id = NULL WHERE workspace_id = '$WORKSPACE_UUID';
+"
 ```
 
-This sets `workspace_id = NULL` only on rows that match the UUID you
-applied (it was substituted into the `.down.sql` in Step 2), so
-other workspaces are untouched. Then unset `WORKSPACE_ID` (Railway:
-delete the variable; local: remove the line from `.env`) and
-redeploy.
-
-If `/tmp/applied-000011.down.sql` has been deleted, regenerate it by
-re-running the `cp` + `sed` block from Step 2 with the same
-`WORKSPACE_UUID` value before applying.
+Then unset `WORKSPACE_ID` (Railway: delete the variable; local: remove the
+line from `.env`) and redeploy.
 
 ### SQLite self-hosters
 
-The SQLite backend has no incremental migration tool — `schema.sql`
-is applied idempotently at boot. Use the parallel script
-[`migrations/sqlite/000011_backfill_workspace_id.up.sql`](../migrations/sqlite/000011_backfill_workspace_id.up.sql)
-instead of the Postgres one. Same `/tmp` discipline applies — copy
-out, substitute on the copy, do not edit the repo files in place:
-
-```bash
-cp migrations/sqlite/000011_backfill_workspace_id.up.sql   /tmp/applied-sqlite-000011.up.sql
-cp migrations/sqlite/000011_backfill_workspace_id.down.sql /tmp/applied-sqlite-000011.down.sql
-
-sed -i \
-  "s/00000000-0000-0000-0000-000000000000/$WORKSPACE_UUID/g" \
-  /tmp/applied-sqlite-000011.up.sql \
-  /tmp/applied-sqlite-000011.down.sql
-
-sqlite3 ./wayneblacktea.db < /tmp/applied-sqlite-000011.up.sql
-```
-
-Rollback (only after you verified the backfill went wrong):
-
-```bash
-sqlite3 ./wayneblacktea.db < /tmp/applied-sqlite-000011.down.sql
-```
-
-Cleanup once you are happy with Step 4 verification:
-
-```bash
-rm /tmp/applied-sqlite-000011.up.sql /tmp/applied-sqlite-000011.down.sql
-```
-
-Steps 3 and 4 are identical to the Postgres workflow.
+The SQLite equivalent (the old `000011_backfill_workspace_id.up.sql` /
+`.down.sql` pair that used to live under `migrations/sqlite/`) no longer
+exists — it was deleted outright (not relocated to `scripts/manual/`) in the
+same change that moved the Postgres script out of `migrations/`. There is no
+legacy SQLite 000011 script to replay; use the SQLite procedure in
+"WORKSPACE_ID Backfill (migration 000015)" below instead — it covers the
+same 11 tables.
 
 ---
 
