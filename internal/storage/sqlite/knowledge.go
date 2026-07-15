@@ -279,16 +279,13 @@ type knowledgeWithStrength struct {
 	strength float64
 }
 
-// Search performs FTS5 full-text search over title and content.
-// Results are sorted app-side by Ebbinghaus strength so fresh high-importance
-// items appear first. On each hit, recall_count is incremented atomically.
-//
-// FTS5 provides BM25-ranked inverted-index search with porter stemming and
-// prefix matching (toFTS5Query appends * to each term). Falls back to nil
-// when the query produces no usable FTS5 terms (all-special-char input).
-//
-//nolint:dupl // intentionally similar to SearchCoarse; SQL WHERE differs in root-level filter; extraction would complicate the query
-func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+// searchCore performs the FTS5 + Ebbinghaus-ranked search shared by Search
+// and SearchReadOnly: BM25-ranked inverted-index lookup (toFTS5Query appends
+// * to each term for prefix matching), then an app-side re-sort by strength
+// so fresh high-importance items appear first. It performs no writes. Falls
+// back to nil when the query produces no usable FTS5 terms (all-special-char
+// input).
+func (s *KnowledgeStore) searchCore(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
 	ftsQuery := toFTS5Query(query)
 	if ftsQuery == "" {
 		return nil, nil
@@ -345,21 +342,40 @@ func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([
 		ranked = ranked[:limit]
 	}
 
-	// Bump recall atomically for returned items.
 	out := make([]db.KnowledgeItem, 0, len(ranked))
-	ids := make([]string, 0, len(ranked))
 	for _, r := range ranked {
 		out = append(out, r.item)
-		ids = append(ids, r.item.ID.String())
+	}
+	return out, nil
+}
+
+// Search performs FTS5 full-text search over title and content, sorted
+// app-side by Ebbinghaus strength. On each hit, recall_count is incremented
+// atomically.
+func (s *KnowledgeStore) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	items, err := s.searchCore(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID.String())
 	}
 	s.bumpRecall(ctx, ids)
-	return out, nil
+	return items, nil
+}
+
+// SearchReadOnly performs the identical FTS5+Ebbinghaus search as Search but
+// never mutates knowledge_items — no recall_count/last_recalled_at bump.
+// PG+SQLite parity: mirrors internal/knowledge/store.go SearchReadOnly. Used
+// by contextpack.Assembler.retrieveKnowledge so assemble_context stays
+// genuinely read-only.
+func (s *KnowledgeStore) SearchReadOnly(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	return s.searchCore(ctx, query, limit)
 }
 
 // SearchCoarse searches only root-level rows (parent_id IS NULL,
 // COALESCE(heading_level, 0) = 0) using FTS5. Used by search_knowledge mode="coarse".
-//
-//nolint:dupl // mirrors Search but adds root-level filter (parent_id IS NULL); extracting shared body would complicate callers
 func (s *KnowledgeStore) SearchCoarse(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
 	ftsQuery := toFTS5Query(query)
 	if ftsQuery == "" {

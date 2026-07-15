@@ -326,3 +326,73 @@ func TestKnowledgeStore_UpdateLearningValue(t *testing.T) {
 		t.Errorf("expected ErrNotFound for unknown ID, got %v", err)
 	}
 }
+
+// TestKnowledgeStore_SearchReadOnlyDoesNotBumpRecall verifies the P1 review
+// finding A fix on the SQLite backend: SearchReadOnly returns the same rows
+// Search would, but never writes recall_count/last_recalled_at —
+// assemble_context (internal/contextpack) must stay genuinely read-only.
+// Search, the mutating counterpart, is exercised in the same test as a
+// contrast: it DOES bump recall, proving the assertions below aren't
+// vacuously true. Mirrors
+// internal/knowledge/store_search_readonly_pg_test.go (PG+SQLite parity,
+// backend-security-design.md §6.5).
+func TestKnowledgeStore_SearchReadOnlyDoesNotBumpRecall(t *testing.T) {
+	ctx := context.Background()
+	s := openKnowledgeStore(t, ":memory:", "")
+
+	item, err := s.AddItem(ctx, knowledge.AddItemParams{
+		Type: "til", Title: "readonly search fixture", Content: "search read only recall content",
+	})
+	if err != nil {
+		t.Fatalf("AddItem: %v", err)
+	}
+
+	before, err := s.GetByID(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetByID before search: %v", err)
+	}
+
+	results, err := s.SearchReadOnly(ctx, "readonly", 10)
+	if err != nil {
+		t.Fatalf("SearchReadOnly: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.ID == item.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected item %s in SearchReadOnly results, got %+v", item.ID, results)
+	}
+
+	afterReadOnly, err := s.GetByID(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetByID after SearchReadOnly: %v", err)
+	}
+	if afterReadOnly.RecallCount != before.RecallCount {
+		t.Errorf("RecallCount changed after SearchReadOnly: before=%d after=%d, want unchanged (no write)",
+			before.RecallCount, afterReadOnly.RecallCount)
+	}
+	if afterReadOnly.LastRecalledAt.Valid != before.LastRecalledAt.Valid {
+		t.Errorf("LastRecalledAt.Valid changed after SearchReadOnly: before=%v after=%v, want unchanged",
+			before.LastRecalledAt.Valid, afterReadOnly.LastRecalledAt.Valid)
+	}
+
+	// Contrast: Search (the mutating counterpart used everywhere except
+	// assemble_context) DOES bump recall.
+	if _, err := s.Search(ctx, "readonly", 10); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	afterSearch, err := s.GetByID(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetByID after Search: %v", err)
+	}
+	if afterSearch.RecallCount <= before.RecallCount {
+		t.Errorf("expected Search (mutating) to bump RecallCount, got before=%d after=%d",
+			before.RecallCount, afterSearch.RecallCount)
+	}
+	if !afterSearch.LastRecalledAt.Valid {
+		t.Error("expected Search (mutating) to set LastRecalledAt")
+	}
+}

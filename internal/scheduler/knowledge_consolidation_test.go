@@ -35,6 +35,10 @@ func (s *stubKnowledgeStore) Search(_ context.Context, _ string, _ int) ([]db.Kn
 	return nil, nil
 }
 
+func (s *stubKnowledgeStore) SearchReadOnly(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
+	return nil, nil
+}
+
 func (s *stubKnowledgeStore) SearchCoarse(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
 	return nil, nil
 }

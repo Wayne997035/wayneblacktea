@@ -279,12 +279,14 @@ func (s *Store) findSimilarAtLevel(ctx context.Context, vec []float32, level int
 	return title, similarity, true, nil
 }
 
-// Search performs full-text search. If an embedding client is available and the query
-// has more than 3 words, it also performs vector similarity search and merges results
-// using Reciprocal Rank Fusion. Results are ordered by strength × similarity DESC
-// (Ebbinghaus decay weighting). On each hit, recall_count is incremented and
-// last_recalled_at is set atomically.
-func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+// searchCore performs the FTS + optional vector-similarity fan-out shared by
+// Search and SearchReadOnly: full-text search, then (if an embedding client
+// is available and the query has more than 3 words) a vector similarity pass
+// merged in via Reciprocal Rank Fusion. Results are ordered by strength ×
+// similarity DESC (Ebbinghaus decay weighting). It performs no writes; it
+// returns the merged result plus the raw FTS/vector hit sets so the caller
+// decides whether to bump recall.
+func (s *Store) searchCore(ctx context.Context, query string, limit int) (merged, ftsItems, vecItems []db.KnowledgeItem, err error) {
 	// strength formula inline: importance * exp(-base_lambda*(1-importance*0.8)*age_days) * (1+recall_count*0.2)
 	// ts_rank is the similarity signal for FTS. Combined: ORDER BY strength * ts_rank DESC.
 	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
@@ -308,49 +310,74 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 
 	rows, err := s.pool.Query(ctx, ftsQ, query, int32(limit), s.workspaceID) //nolint:gosec // G115: caller guarantees positive int32
 	if err != nil {
-		return nil, fmt.Errorf("FTS search: %w", err)
+		return nil, nil, nil, fmt.Errorf("FTS search: %w", err)
 	}
 	defer rows.Close()
 
-	var ftsItems []db.KnowledgeItem
 	for rows.Next() {
 		item, err := scanKnowledgeItemWithScore(rows.Scan)
 		if err != nil {
-			return nil, fmt.Errorf("scanning FTS result: %w", err)
+			return nil, nil, nil, fmt.Errorf("scanning FTS result: %w", err)
 		}
 		ftsItems = append(ftsItems, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating FTS results: %w", err)
+		return nil, nil, nil, fmt.Errorf("iterating FTS results: %w", err)
 	}
-
-	// Bump recall atomically for returned items.
-	s.bumpRecall(ctx, ftsItems)
 
 	// Vector search: only if embedding client has an API key and query is > 3 words.
 	words := strings.Fields(query)
 	if s.embed == nil || len(words) <= 3 {
-		return ftsItems, nil
+		return ftsItems, ftsItems, nil, nil
 	}
 
 	vec, err := s.embed.Embed(ctx, query)
 	if err != nil {
 		slog.Warn("vector search embedding failed, returning FTS results only", "err", err)
-		return ftsItems, nil
+		return ftsItems, ftsItems, nil, nil
 	}
 	if vec == nil {
-		return ftsItems, nil // no API key
+		return ftsItems, ftsItems, nil, nil // no API key
 	}
 
-	vecItems, err := s.vectorSearch(ctx, vec, limit)
+	vecItems, err = s.vectorSearch(ctx, vec, limit)
 	if err != nil {
 		slog.Warn("vector search failed, returning FTS results only", "err", err)
-		return ftsItems, nil
+		return ftsItems, ftsItems, nil, nil
 	}
 
-	merged := mergeRRF(ftsItems, vecItems, limit)
+	merged = mergeRRF(ftsItems, vecItems, limit)
+	return merged, ftsItems, vecItems, nil
+}
+
+// Search performs full-text search. If an embedding client is available and the query
+// has more than 3 words, it also performs vector similarity search and merges results
+// using Reciprocal Rank Fusion. Results are ordered by strength × similarity DESC
+// (Ebbinghaus decay weighting). On each hit, recall_count is incremented and
+// last_recalled_at is set atomically.
+func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	merged, ftsItems, vecItems, err := s.searchCore(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Bump recall atomically for returned items.
+	s.bumpRecall(ctx, ftsItems)
 	// Bump recall for any items returned only from vector search.
-	s.bumpRecall(ctx, vecItems)
+	if len(vecItems) > 0 {
+		s.bumpRecall(ctx, vecItems)
+	}
+	return merged, nil
+}
+
+// SearchReadOnly performs the identical FTS+vector search as Search but never
+// mutates knowledge_items — no recall_count/last_recalled_at bump. Used by
+// contextpack.Assembler.retrieveKnowledge so assemble_context stays genuinely
+// read-only (internal/discipline/discipline.go DeliberatelyExcludedTools).
+func (s *Store) SearchReadOnly(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
+	merged, _, _, err := s.searchCore(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
 	return merged, nil
 }
 

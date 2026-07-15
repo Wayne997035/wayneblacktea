@@ -13,6 +13,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
+	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -67,7 +68,10 @@ type Server struct {
 	skill        skill.StoreIface
 	reflection   reflection.StoreIface
 	behaviorRule behaviorrule.StoreIface
-	atomizer     *ai.Atomizer
+	// contextAssembler backs the assemble_context tool (tools_contextpack.go).
+	// Wired from the same store bundle as the fields above — see New().
+	contextAssembler *contextpack.Assembler
+	atomizer         *ai.Atomizer
 	// atomizeSem limits concurrent background atomize goroutines to prevent
 	// API budget exhaustion from rapid add_* bursts. (security M4)
 	atomizeSem chan struct{}
@@ -232,6 +236,15 @@ func New(stores storage.ServerStores) (*Server, error) {
 		atomizer.WithCostRecorder(costRecorder, wsID)
 	}
 
+	contextAssembler, err := contextpack.NewAssembler(
+		stores.GTD(), stores.Decision(), stores.Knowledge(), stores.Atom(),
+		stores.Procedural(), stores.Skill(), stores.Outcome(), stores.Reflection(),
+		stores.BehaviorRule(), stores.Session(), stores.WorkSession(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("wiring context assembler: %w", err)
+	}
+
 	return &Server{
 		pool:                 stores.PgxPool(),
 		gtd:                  stores.GTD(),
@@ -251,6 +264,7 @@ func New(stores storage.ServerStores) (*Server, error) {
 		skill:                stores.Skill(),
 		reflection:           stores.Reflection(),
 		behaviorRule:         stores.BehaviorRule(),
+		contextAssembler:     contextAssembler,
 		atomizer:             atomizer,
 		atomizeSem:           make(chan struct{}, 5),
 		autologSem:           make(chan struct{}, 50),
@@ -419,7 +433,8 @@ all MCP clients get identical behavior. To change a rule, propose a PR to intern
 // the system_health tool can surface "stuck" patterns (Claude updated a task
 // to in_progress but never called complete_task, etc.).
 func (s *Server) MCPServer() *server.MCPServer {
-	ms := server.NewMCPServer("wayneblacktea", "0.1.0",
+	ms := server.NewMCPServer(
+		"wayneblacktea", "0.1.0",
 		server.WithInstructions(mcpInstructions),
 		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 		server.WithToolHandlerMiddleware(s.autoLogMiddleware()),
@@ -456,6 +471,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerOutcomeTools(ms)
 	s.registerSkillTools(ms)
 	s.registerBehaviorRuleTools(ms)
+	s.registerContextPackTools(ms)
 	s.registerDashboardTools(ms)
 	s.registerReconcileTools(ms)
 	s.registerCloseoutTools(ms)

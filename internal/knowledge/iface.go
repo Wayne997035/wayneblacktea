@@ -13,6 +13,12 @@ import (
 type StoreIface interface {
 	AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem, error)
 	Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
+	// SearchReadOnly is identical to Search (same FTS+vector ranking, same
+	// workspace scope) but never bumps recall_count/last_recalled_at — no
+	// Store write of any kind. Used by contextpack.Assembler.retrieveKnowledge
+	// so assemble_context stays genuinely read-only (see
+	// internal/discipline/discipline.go DeliberatelyExcludedTools).
+	SearchReadOnly(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
 	// SearchCoarse searches only root rows (heading_level=0 or parent_id IS NULL).
 	// Used by search_knowledge mode="coarse".
 	SearchCoarse(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error)
