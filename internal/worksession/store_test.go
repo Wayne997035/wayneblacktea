@@ -2,6 +2,8 @@ package worksession_test
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
@@ -418,7 +420,8 @@ func TestStartWork_Idempotent(t *testing.T) {
 	insertTestTask(t, db, wsID, taskA.String())
 
 	// Manually set the task to in_progress before start_work.
-	if err := db.ExecContext(ctx,
+	if err := db.ExecContext(
+		ctx,
 		`UPDATE tasks SET status = 'in_progress' WHERE id = ?1`, taskA.String(),
 	); err != nil {
 		t.Fatalf("pre-set in_progress: %v", err)
@@ -508,5 +511,596 @@ func TestFinishWork_NoTaskIDs(t *testing.T) {
 	}
 	if got := queryTaskStatus(t, db, taskB.String()); got != statusCompleted {
 		t.Errorf("taskB status: got %q, want completed", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2.2 — evidence chain / verification / outcome linkage (SQLite)
+// ---------------------------------------------------------------------------
+
+const (
+	evidenceStatusPassed = "passed"
+	finalResultSuccess   = "success"
+	// taskCheckCmd is the canonical verification/evidence command literal used
+	// across several tests in this package (both SQLite and Postgres test
+	// files) — named to satisfy goconst's cross-file min-occurrences check.
+	taskCheckCmd = "task check"
+)
+
+func strPtr(s string) *string { return &s }
+
+// assertEvidenceColumns asserts the 5 evidence-chain columns on a *Session
+// match the expected values. Extracted from TestFinish_WritesEvidenceColumns
+// to keep that test's cyclomatic complexity under the linter threshold.
+func assertEvidenceColumns(t *testing.T, sess *worksession.Session, outcomeID uuid.UUID) {
+	t.Helper()
+	if sess.VerificationStatus == nil || *sess.VerificationStatus != evidenceStatusPassed {
+		t.Errorf("VerificationStatus: got %v, want %s", sess.VerificationStatus, evidenceStatusPassed)
+	}
+	if sess.VerificationCommand == nil || *sess.VerificationCommand != "cd build && task check" {
+		t.Errorf("VerificationCommand: got %v, want the check command", sess.VerificationCommand)
+	}
+	if sess.VerificationOutputExcerpt == nil || *sess.VerificationOutputExcerpt != "0 issues" {
+		t.Errorf("VerificationOutputExcerpt: got %v, want '0 issues'", sess.VerificationOutputExcerpt)
+	}
+	if sess.FinalResult == nil || *sess.FinalResult != finalResultSuccess {
+		t.Errorf("FinalResult: got %v, want %s", sess.FinalResult, finalResultSuccess)
+	}
+	if sess.OutcomeID == nil || *sess.OutcomeID != outcomeID {
+		t.Errorf("OutcomeID: got %v, want %s", sess.OutcomeID, outcomeID)
+	}
+}
+
+// TestFinish_WritesEvidenceColumns verifies that Finish persists
+// VerificationStatus/VerificationCommand/VerificationOutputExcerpt/
+// FinalResult/OutcomeID onto the work_sessions row.
+func TestFinish_WritesEvidenceColumns(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "evidence-cols-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	outcomeID := uuid.New()
+	done, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:                 sess.ID,
+		Summary:                   "verified and shipped",
+		VerificationStatus:        strPtr(evidenceStatusPassed),
+		VerificationCommand:       strPtr("cd build && task check"),
+		VerificationOutputExcerpt: strPtr("0 issues"),
+		FinalResult:               strPtr(finalResultSuccess),
+		OutcomeID:                 &outcomeID,
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	assertEvidenceColumns(t, done, outcomeID)
+
+	// Read back via GetByID to prove persistence, not just the Finish return value.
+	reread, err := store.GetByID(ctx, uuid.MustParse(wsID), sess.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	assertEvidenceColumns(t, reread, outcomeID)
+}
+
+// TestAddEvidence_TruncatesOutputExcerpt verifies output_excerpt longer than
+// worksession.EvidenceOutputExcerptCap (2000) runes is truncated to exactly
+// that length on read-back.
+func TestAddEvidence_TruncatesOutputExcerpt(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "truncate-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	longExcerpt := strings.Repeat("a", 2500)
+	got, err := store.AddEvidence(ctx, worksession.Evidence{
+		SessionID:     sess.ID,
+		EvidenceType:  "command",
+		Status:        evidenceStatusPassed,
+		OutputExcerpt: &longExcerpt,
+	})
+	if err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+	if got.OutputExcerpt == nil {
+		t.Fatal("expected non-nil OutputExcerpt")
+	}
+	if n := len([]rune(*got.OutputExcerpt)); n != worksession.EvidenceOutputExcerptCap {
+		t.Errorf("output_excerpt length: got %d runes, want %d", n, worksession.EvidenceOutputExcerptCap)
+	}
+}
+
+// TestAddEvidence_RedactsGithubToken verifies a ghp_-style token embedded in
+// output_excerpt is redacted to [REDACTED:github-token] in what gets stored.
+func TestAddEvidence_RedactsGithubToken(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "redact-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	token := "ghp_" + strings.Repeat("a", 36) // >= 30 chars after ghp_ per redact regex
+	excerpt := "auth failed: token=" + token + " rejected by remote"
+	got, err := store.AddEvidence(ctx, worksession.Evidence{
+		SessionID:     sess.ID,
+		EvidenceType:  "command",
+		Status:        "failed",
+		OutputExcerpt: &excerpt,
+	})
+	if err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+	if got.OutputExcerpt == nil {
+		t.Fatal("expected non-nil OutputExcerpt")
+	}
+	if strings.Contains(*got.OutputExcerpt, token) {
+		t.Errorf("raw token must not survive redaction, got: %s", *got.OutputExcerpt)
+	}
+	if !strings.Contains(*got.OutputExcerpt, "[REDACTED:github-token]") {
+		t.Errorf("expected [REDACTED:github-token] placeholder, got: %s", *got.OutputExcerpt)
+	}
+
+	// Read back via GetEvidence to prove persistence, not just the AddEvidence return value.
+	evs, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if len(evs) != 1 || evs[0].OutputExcerpt == nil || strings.Contains(*evs[0].OutputExcerpt, token) {
+		t.Errorf("stored evidence row must not contain raw token: %+v", evs)
+	}
+}
+
+// TestAddEvidence_RedactBeforeCap_CredentialStraddlingBoundary proves the
+// redact-THEN-cap ordering: a ghp_ token whose original (pre-redaction) span
+// straddles the 2000-rune cap boundary must still be fully redacted, not
+// left as an unredacted partial fragment. If capping happened before
+// redaction, only the first ~26 chars of the 44-char token would survive
+// truncation — far short of the regex's `{30,}` requirement — and the
+// partial raw token would leak into storage unredacted.
+func TestAddEvidence_RedactBeforeCap_CredentialStraddlingBoundary(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "straddle-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const paddingLen = 1970
+	const tokenSuffixLen = 40 // token = "ghp_" + 40 chars = 44 chars total
+	padding := strings.Repeat("x", paddingLen)
+	token := "ghp_" + strings.Repeat("b", tokenSuffixLen)
+	excerpt := padding + token // token spans runes [1970, 2014) — straddles rune index 2000
+
+	got, err := store.AddEvidence(ctx, worksession.Evidence{
+		SessionID:     sess.ID,
+		EvidenceType:  "command",
+		Status:        "failed",
+		OutputExcerpt: &excerpt,
+	})
+	if err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+	if got.OutputExcerpt == nil {
+		t.Fatal("expected non-nil OutputExcerpt")
+	}
+	if strings.Contains(*got.OutputExcerpt, token) {
+		t.Fatalf("raw token straddling the cap boundary must not survive — redact-then-cap ordering violated, got: %s", *got.OutputExcerpt)
+	}
+	if !strings.Contains(*got.OutputExcerpt, "[REDACTED:github-token]") {
+		t.Errorf("expected full [REDACTED:github-token] placeholder (not truncated), got: %s", *got.OutputExcerpt)
+	}
+}
+
+// TestListRecent_DescOrder verifies ListRecent returns sessions ordered by
+// created_at DESC.
+func TestListRecent_DescOrder(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	sessOld, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "recent-repo-old"))
+	if err != nil {
+		t.Fatalf("Create old: %v", err)
+	}
+	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessOld.ID, Summary: "done"}); err != nil {
+		t.Fatalf("Finish old: %v", err)
+	}
+	sessNew, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "recent-repo-new"))
+	if err != nil {
+		t.Fatalf("Create new: %v", err)
+	}
+	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessNew.ID, Summary: "done"}); err != nil {
+		t.Fatalf("Finish new: %v", err)
+	}
+
+	// Force deterministic timestamps so DESC ordering isn't flaky under fast
+	// sequential inserts within the same millisecond.
+	const forceTimestampQ = `UPDATE work_sessions SET created_at = ?2 WHERE id = ?1`
+	if err := db.ExecContext(ctx, forceTimestampQ, sessOld.ID.String(), "2020-01-01T00:00:00.000Z"); err != nil {
+		t.Fatalf("force old timestamp: %v", err)
+	}
+	if err := db.ExecContext(ctx, forceTimestampQ, sessNew.ID.String(), "2020-01-02T00:00:00.000Z"); err != nil {
+		t.Fatalf("force new timestamp: %v", err)
+	}
+
+	got, err := store.ListRecent(ctx, uuid.MustParse(wsID), "", 10)
+	if err != nil {
+		t.Fatalf("ListRecent: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got))
+	}
+	if got[0].ID != sessNew.ID {
+		t.Errorf("expected newest session first, got %s want %s", got[0].ID, sessNew.ID)
+	}
+	if got[1].ID != sessOld.ID {
+		t.Errorf("expected oldest session last, got %s want %s", got[1].ID, sessOld.ID)
+	}
+}
+
+// TestListRecent_HardCapsLimit verifies limit is hard-capped at
+// worksession.MaxListRecentLimit regardless of what the caller requests —
+// exercised indirectly by requesting an absurd limit and confirming no error
+// (the store must clamp, not reject).
+func TestListRecent_HardCapsLimit(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	if _, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "cap-repo")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.ListRecent(ctx, uuid.MustParse(wsID), "", 999999)
+	if err != nil {
+		t.Fatalf("ListRecent with oversized limit must not error, got: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 session, got %d", len(got))
+	}
+}
+
+// TestSetOutcomeLink_NotFound verifies SetOutcomeLink returns the store's
+// ErrNotFound for an unknown session ID.
+func TestSetOutcomeLink_NotFound(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	if err := store.SetOutcomeLink(ctx, uuid.New(), uuid.New()); err != worksession.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestSetOutcomeLink_Success verifies SetOutcomeLink persists outcome_id.
+func TestSetOutcomeLink_Success(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "link-outcome-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	outcomeID := uuid.New()
+	if err := store.SetOutcomeLink(ctx, sess.ID, outcomeID); err != nil {
+		t.Fatalf("SetOutcomeLink: %v", err)
+	}
+
+	got, err := store.GetByID(ctx, uuid.MustParse(wsID), sess.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.OutcomeID == nil || *got.OutcomeID != outcomeID {
+		t.Errorf("OutcomeID: got %v, want %s", got.OutcomeID, outcomeID)
+	}
+}
+
+// TestCreate_RejectsControlCharsInBranchName verifies branch_name containing
+// a newline is rejected (adversarial-input handling, backend-security-design.md §2.1).
+func TestCreate_RejectsControlCharsInBranchName(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	p := makeCreateParams(uuid.MustParse(wsID), "branch-repo")
+	p.BranchName = strPtr("feature/x\ngit push --force")
+
+	if _, err := store.Create(ctx, p); err == nil {
+		t.Error("expected error for branch_name containing newline, got nil")
+	}
+}
+
+// TestCreate_AcceptsCleanBranchName is the happy-path counterpart to
+// TestCreate_RejectsControlCharsInBranchName.
+func TestCreate_AcceptsCleanBranchName(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	p := makeCreateParams(uuid.MustParse(wsID), "clean-branch-repo")
+	p.BranchName = strPtr("feature/action-lifecycle")
+
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sess.BranchName == nil || *sess.BranchName != "feature/action-lifecycle" {
+		t.Errorf("BranchName: got %v, want feature/action-lifecycle", sess.BranchName)
+	}
+}
+
+// TestFinish_RejectsControlCharsInVerificationCommand verifies
+// verification_command containing a newline is rejected.
+func TestFinish_RejectsControlCharsInVerificationCommand(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "verify-cmd-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = store.Finish(ctx, worksession.FinishParams{
+		SessionID:           sess.ID,
+		Summary:             "done",
+		VerificationCommand: strPtr("task check\nrm -rf /"),
+	})
+	if err == nil {
+		t.Error("expected error for verification_command containing newline, got nil")
+	}
+}
+
+// TestGetEvidence_EmptyReturnsEmptySlice verifies GetEvidence returns an
+// empty (non-nil) slice, never nil, when no evidence rows exist.
+func TestGetEvidence_EmptyReturnsEmptySlice(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "no-evidence-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if got == nil {
+		t.Error("expected non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 evidence rows, got %d", len(got))
+	}
+}
+
+// TestFinish_WithEvidence verifies Finish inserts evidence rows supplied via
+// FinishParams.Evidence.
+func TestFinish_WithEvidence(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "finish-evidence-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "done with evidence",
+		Evidence: []worksession.EvidenceInput{
+			{EvidenceType: "command", Status: evidenceStatusPassed, Command: strPtr(taskCheckCmd)},
+			{EvidenceType: "pr", Status: evidenceStatusPassed, Artifact: strPtr("https://github.com/example/repo/pull/1")},
+		},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	evs, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 evidence rows, got %d", len(evs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2 review F2 — deferred_task_ids must never be marked completed
+// ---------------------------------------------------------------------------
+
+// TestFinishWork_DeferredOnly_ExcludesFromFallback verifies that when
+// CompletedTaskIDs is empty (triggering the fallback-to-linked-tasks path),
+// tasks listed in DeferredTaskIDs are excluded from that fallback set.
+func TestFinishWork_DeferredOnly_ExcludesFromFallback(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "deferred-only-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No CompletedTaskIDs — fallback discovers linked tasks, but taskB is
+	// deferred and must be excluded from that fallback.
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:       sess.ID,
+		Summary:         "deferred taskB to next session",
+		DeferredTaskIDs: []uuid.UUID{taskB},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusCompleted {
+		t.Errorf("taskA (not deferred) status: got %q, want completed", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got == statusCompleted {
+		t.Errorf("taskB (deferred) must NOT be completed, got %q", got)
+	}
+}
+
+// TestFinishWork_CompletedAndDeferred_NoOverlap verifies that when
+// CompletedTaskIDs and DeferredTaskIDs are disjoint, only the completed set
+// is marked completed.
+func TestFinishWork_CompletedAndDeferred_NoOverlap(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "completed-deferred-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:        sess.ID,
+		Summary:          "taskA done, taskB deferred",
+		CompletedTaskIDs: []uuid.UUID{taskA},
+		DeferredTaskIDs:  []uuid.UUID{taskB},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got == statusCompleted {
+		t.Errorf("taskB (deferred) must NOT be completed, got %q", got)
+	}
+}
+
+// TestFinishWork_CompletedDeferredOverlap_DeferredWins verifies that when a
+// task ID is listed in BOTH CompletedTaskIDs and DeferredTaskIDs, deferred
+// wins — the task must not be marked completed.
+func TestFinishWork_CompletedDeferredOverlap_DeferredWins(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "overlap-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// taskB is listed in BOTH completed and deferred — deferred must win.
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:        sess.ID,
+		Summary:          "conflicting lists for taskB",
+		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
+		DeferredTaskIDs:  []uuid.UUID{taskB},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got == statusCompleted {
+		t.Errorf("taskB (in both completed and deferred) must NOT be completed — deferred must win, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2 review F5 — GetEvidence must be workspace-scoped
+// ---------------------------------------------------------------------------
+
+// TestGetEvidence_WorkspaceIsolation verifies that GetEvidence does not leak
+// evidence rows across workspaces. Uses two *DB handles pointed at the same
+// on-disk file (not two independent :memory: DBs, which would be trivially
+// isolated regardless of any WHERE-clause scoping) so the test actually
+// exercises the new workspace_id predicate against shared rows.
+func TestGetEvidence_WorkspaceIsolation(t *testing.T) {
+	wsA := uuid.New().String()
+	wsB := uuid.New().String()
+	dbPath := filepath.Join(t.TempDir(), "iso-evidence.db")
+
+	dbA, err := wbtsqlite.Open(context.Background(), dbPath, wsA)
+	if err != nil {
+		t.Fatalf("Open dbA: %v", err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	storeA := wbtsqlite.NewWorkSessionStore(dbA)
+
+	dbB, err := wbtsqlite.Open(context.Background(), dbPath, wsB)
+	if err != nil {
+		t.Fatalf("Open dbB: %v", err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	storeB := wbtsqlite.NewWorkSessionStore(dbB)
+
+	ctx := context.Background()
+	sess, err := storeA.Create(ctx, makeCreateParams(uuid.MustParse(wsA), "iso-evidence-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := storeA.AddEvidence(ctx, worksession.Evidence{
+		SessionID:    sess.ID,
+		EvidenceType: "command",
+		Status:       evidenceStatusPassed,
+		Command:      strPtr(taskCheckCmd),
+	}); err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+
+	// Workspace B must not see workspace A's evidence for this session, even
+	// though it is querying by the same session ID against the same file.
+	got, err := storeB.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence (storeB): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("workspace B must not see workspace A's evidence, got %d rows", len(got))
+	}
+
+	// Workspace A must still see its own evidence (no regression).
+	gotA, err := storeA.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence (storeA): %v", err)
+	}
+	if len(gotA) != 1 {
+		t.Errorf("workspace A should see its own evidence, got %d rows", len(gotA))
 	}
 }

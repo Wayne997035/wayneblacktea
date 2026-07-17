@@ -588,6 +588,26 @@ func (f *fakeWorkSessionStore) LinkedTasks(_ context.Context, _ uuid.UUID) ([]wo
 	return nil, nil
 }
 
+func (f *fakeWorkSessionStore) ListRecent(_ context.Context, _ uuid.UUID, _ string, _ int) ([]worksession.Session, error) {
+	return nil, nil
+}
+
+func (f *fakeWorkSessionStore) AddEvidence(_ context.Context, _ worksession.Evidence) (*worksession.Evidence, error) {
+	return nil, nil
+}
+
+func (f *fakeWorkSessionStore) GetEvidence(_ context.Context, _ uuid.UUID) ([]worksession.Evidence, error) {
+	return nil, nil
+}
+
+func (f *fakeWorkSessionStore) SetOutcomeLink(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
+
+func (f *fakeWorkSessionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
 // ---------------------------------------------------------------------------
 // test harness
 // ---------------------------------------------------------------------------

@@ -1,0 +1,14 @@
+-- 000067_outcomes_session_link.up.sql
+-- Adds an optional column linking an outcome back to the work_session it was
+-- recorded from (wbt-2.0 Phase 2 "Action Lifecycle And Evidence Chain",
+-- P2.4). record_outcome accepts an optional session_id and, when supplied,
+-- best-effort calls worksession.Store.SetOutcomeLink to also set the
+-- work_sessions.outcome_id side of the link (see internal/mcp/tools_outcome.go).
+--
+-- Design notes:
+--   * UUID is nullable with no DEFAULT so existing rows keep NULL
+--     (back-compatible — record_outcome still works without session_id).
+--   * NO FOREIGN KEY per CLAUDE.md red-line #9. A stale/unknown session_id is
+--     allowed to persist silently on the outcomes side — record_outcome does
+--     not fail the call over a bad session_id (no-FK design).
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS work_session_id UUID NULL;

@@ -158,6 +158,10 @@ type Scheduler struct {
 	// nil when running under SQLite (or when no pool is wired in by the caller)
 	// — the prune job is skipped in that case.
 	aiCostLedgerPool *pgxpool.Pool
+	// workSessionEvidencePruner deletes work_session_evidence rows older than
+	// 90d (wbt-2.0 P2.4). Set via WithWorkSessionEvidencePruner after New();
+	// nil skips the prune job.
+	workSessionEvidencePruner workSessionEvidencePruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -196,6 +200,21 @@ const mergedPRsObservedPruneTimeout = 60 * time.Second
 type outcomePruneStore interface {
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
+
+// workSessionEvidencePruneStore is the narrow prune interface used by the
+// daily work_session_evidence cleanup job (wbt-2.0 P2.4). Both
+// worksession.Store and the SQLite WorkSessionStore satisfy it.
+// 90-day retention per backend-security-design.md §1.3.
+type workSessionEvidencePruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// workSessionEvidencePruneRetention is the work_session_evidence TTL (90 days).
+const workSessionEvidencePruneRetention = 90 * 24 * time.Hour
+
+// workSessionEvidencePruneTimeout caps the daily work_session_evidence
+// DELETE. 60 s budget mirrors the other observability-table prune jobs.
+const workSessionEvidencePruneTimeout = 60 * time.Second
 
 // outcomePruneRetention is the outcomes/evaluations TTL (90 days).
 const outcomePruneRetention = 90 * 24 * time.Hour
@@ -714,7 +733,8 @@ func (s *Scheduler) runDailyMergedPRsObservedPrune() {
 		slog.Warn("daily merged_prs_observed prune: PruneOlderThan failed", "err", err)
 		return
 	}
-	slog.Info("daily merged_prs_observed prune: completed",
+	slog.Info(
+		"daily merged_prs_observed prune: completed",
 		"rows_deleted", n,
 		"retention", mergedPRsObservedRetention.String(),
 	)
@@ -755,7 +775,8 @@ func (s *Scheduler) runDailyOutcomePrune() {
 		slog.Warn("daily outcome prune: PruneOlderThan failed", "err", err)
 		return
 	}
-	slog.Info("daily outcome prune: completed",
+	slog.Info(
+		"daily outcome prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(outcomePruneRetention.Hours()/24),
 	)
@@ -795,7 +816,8 @@ func (s *Scheduler) runDailyReflectionPrune() {
 		slog.Warn("daily reflection prune: PruneOlderThan failed", "err", err)
 		return
 	}
-	slog.Info("daily reflection prune: completed",
+	slog.Info(
+		"daily reflection prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(reflectionPruneRetention.Hours()/24),
 	)
@@ -822,6 +844,49 @@ func (sc *Scheduler) WithBehaviorRulePruner(p behaviorRulePruneStore) error {
 	return nil
 }
 
+// WithWorkSessionEvidencePruner wires the work_session_evidence retention
+// store and registers the daily 04:20 prune job. Must be called before
+// Start(). 90-day TTL per backend-security-design.md §1.3 (observability
+// tables). 04:20 avoids overlap with the 03:00-04:15 prune cluster (outcome
+// 03:30, reflection 03:45, discipline-event-m8 03:50, behavior-rule 04:00,
+// ai-cost-ledger 04:15) and the 04:15/04:30 weekly/daily atom jobs.
+func (sc *Scheduler) WithWorkSessionEvidencePruner(p workSessionEvidencePruneStore) error {
+	sc.workSessionEvidencePruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 20, 0))),
+		gocron.NewTask(sc.runDailyWorkSessionEvidencePrune),
+		gocron.WithName("daily-work-session-evidence-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily work_session_evidence prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyWorkSessionEvidencePrune scheduled at 04:20 Asia/Taipei")
+	return nil
+}
+
+// runDailyWorkSessionEvidencePrune deletes work_session_evidence rows older
+// than 90 days. Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyWorkSessionEvidencePrune() {
+	if s.workSessionEvidencePruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), workSessionEvidencePruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-workSessionEvidencePruneRetention)
+	n, err := s.workSessionEvidencePruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily work_session_evidence prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info(
+		"daily work_session_evidence prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(workSessionEvidencePruneRetention.Hours()/24),
+	)
+}
+
 // runDailyBehaviorRulePrune deletes behavior_rules rows with
 // status IN ('rejected','deprecated') older than 365 days.
 // Active and proposed rows are NEVER deleted regardless of age.
@@ -839,7 +904,8 @@ func (s *Scheduler) runDailyBehaviorRulePrune() {
 		slog.Warn("daily behavior_rule prune: PruneOlderThan failed", "err", err)
 		return
 	}
-	slog.Info("daily behavior_rule prune: completed",
+	slog.Info(
+		"daily behavior_rule prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(behaviorRulePruneRetention.Hours()/24),
 	)
@@ -892,7 +958,8 @@ func (s *Scheduler) sendDailyNotionBriefing() {
 	}
 
 	if err := s.notion.UpsertDailyPage(ctx, briefing); err != nil {
-		slog.Warn("daily notion briefing: upserting page failed",
+		slog.Warn(
+			"daily notion briefing: upserting page failed",
 			"err", err,
 			"date", now.Format("2006-01-02"),
 			"in_progress_count", len(briefing.InProgressTasks),
@@ -901,7 +968,8 @@ func (s *Scheduler) sendDailyNotionBriefing() {
 		return
 	}
 
-	slog.Info("daily notion briefing: upsert succeeded",
+	slog.Info(
+		"daily notion briefing: upsert succeeded",
 		"date", now.Format("2006-01-02"),
 		"in_progress_count", len(briefing.InProgressTasks),
 		"recent_decision_count", len(briefing.RecentDecisions),
@@ -968,7 +1036,8 @@ func (s *Scheduler) runDailyDisciplinePrune() {
 		slog.Warn("daily discipline prune: DELETE failed", "err", err)
 		return
 	}
-	slog.Info("daily discipline prune: completed",
+	slog.Info(
+		"daily discipline prune: completed",
 		"rows_deleted", tag.RowsAffected(),
 		"retention", disciplinePruneAge,
 	)
@@ -989,7 +1058,8 @@ DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAg
 		slog.Warn("daily guard prune: DELETE failed", "err", err)
 		return
 	}
-	slog.Info("daily guard prune: completed",
+	slog.Info(
+		"daily guard prune: completed",
 		"rows_deleted", tag.RowsAffected(),
 		"retention", guardPruneAge,
 	)
@@ -1041,7 +1111,8 @@ WHERE status = 'pending' AND type = 'task'
 		slog.Warn("daily pending_proposals prune: mark TTL-stale task proposals failed", "err", markErr)
 	} else {
 		markedRows = markTag.RowsAffected()
-		slog.Info("daily pending_proposals prune: marked TTL-stale task proposals",
+		slog.Info(
+			"daily pending_proposals prune: marked TTL-stale task proposals",
 			"rows_updated", markedRows,
 			"pending_task_retention", pendingProposalsPendingTaskRetention,
 		)
@@ -1073,7 +1144,8 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 		// deadline pressure (which would mean the timeout needs tuning
 		// or the table needs more aggressive indexing). GTD 0ba91291.
 		if errors.Is(err, context.DeadlineExceeded) && markErr == nil && markedRows > 0 {
-			slog.Warn("daily pending_proposals prune: mark succeeded but delete timed out — will retry next run",
+			slog.Warn(
+				"daily pending_proposals prune: mark succeeded but delete timed out — will retry next run",
 				"marked_rows", markedRows,
 				"task_retention", pendingProposalsPendingTaskRetention,
 				"decision_retention", pendingProposalsPendingDecisionRetention,
@@ -1084,7 +1156,8 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 		slog.Warn("daily pending_proposals prune: DELETE failed", "err", err)
 		return
 	}
-	slog.Info("daily pending_proposals prune: completed",
+	slog.Info(
+		"daily pending_proposals prune: completed",
 		"rows_deleted", tag.RowsAffected(),
 		"resolved_retention", pendingProposalsResolvedRetention,
 		"pending_decision_retention", pendingProposalsPendingDecisionRetention,
@@ -1135,7 +1208,8 @@ func (s *Scheduler) weeklyAIConceptReview() {
 			continue
 		}
 		if err := s.learning.UpdateConceptStatus(ctx, res.ID, res.NewStatus); err != nil {
-			slog.Warn("weekly AI concept review: updating concept status failed",
+			slog.Warn(
+				"weekly AI concept review: updating concept status failed",
 				"concept_id", res.ID,
 				"new_status", res.NewStatus,
 				"err", err,
@@ -1143,13 +1217,15 @@ func (s *Scheduler) weeklyAIConceptReview() {
 			continue
 		}
 		updated++
-		slog.Info("weekly AI concept review: concept status updated",
+		slog.Info(
+			"weekly AI concept review: concept status updated",
 			"concept_id", res.ID,
 			"new_status", res.NewStatus,
 		)
 	}
 
-	slog.Info("weekly AI concept review: completed",
+	slog.Info(
+		"weekly AI concept review: completed",
 		"eligible_concepts", len(concepts),
 		"ai_results", len(results),
 		"updated", updated,
@@ -1199,7 +1275,8 @@ func (sc *Scheduler) runDailyDisciplineEventM8Prune() {
 		slog.Warn("daily discipline-event-m8 prune: PruneOlderThan failed", "err", err)
 		return
 	}
-	slog.Info("daily discipline-event-m8 prune: completed",
+	slog.Info(
+		"daily discipline-event-m8 prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(disciplineEventM8PruneRetention.Hours()/24),
 	)
@@ -1239,7 +1316,8 @@ func (sc *Scheduler) runDailyAICostLedgerPrune() {
 		slog.Warn("daily ai_cost_ledger prune: DELETE failed", "err", err)
 		return
 	}
-	slog.Info("daily ai_cost_ledger prune: completed",
+	slog.Info(
+		"daily ai_cost_ledger prune: completed",
 		"rows_deleted", tag.RowsAffected(),
 		"retention", aiCostPruneAge,
 	)

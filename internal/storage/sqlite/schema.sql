@@ -337,7 +337,16 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     last_checkpoint_at  TEXT        NULL,
     completed_at        TEXT        NULL,
     created_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    updated_at          TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    -- Mirrored from migrations/sqlite/000065_work_sessions_evidence.up.sql (wbt-2.0 P2.1).
+    -- context_pack_id / outcome_id: referential integrity in code (red line #9); no FK.
+    context_pack_id              TEXT NULL,
+    verification_status          TEXT NULL CHECK (verification_status IN ('not_run','passed','failed','unknown')),
+    verification_command         TEXT NULL,
+    verification_output_excerpt  TEXT NULL,
+    outcome_id                   TEXT NULL,
+    final_result                 TEXT NULL CHECK (final_result IN ('success','failure','partial','unknown','regressed')),
+    branch_name                  TEXT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_work_sessions_one_active
@@ -352,6 +361,13 @@ CREATE INDEX IF NOT EXISTS idx_work_sessions_repo_name
 
 CREATE INDEX IF NOT EXISTS idx_work_sessions_status
     ON work_sessions(workspace_id, status);
+
+-- Mirrored from migrations/sqlite/000068_work_session_evidence_indexes.up.sql
+-- (wbt-2.0 P2 review F4). Most rows have outcome_id NULL (only
+-- failure/partial/regressed finish_work calls auto-create+link an outcome),
+-- hence the partial index.
+CREATE INDEX IF NOT EXISTS idx_work_sessions_outcome_id
+    ON work_sessions(outcome_id) WHERE outcome_id IS NOT NULL;
 
 -- Mirrored from migrations/sqlite/000022_work_session_tasks.up.sql.
 -- Links work_sessions to tasks with a role classification.
@@ -370,6 +386,36 @@ CREATE INDEX IF NOT EXISTS idx_work_session_tasks_session_id
 
 CREATE INDEX IF NOT EXISTS idx_work_session_tasks_task_id
     ON work_session_tasks(task_id);
+
+-- Mirrored from migrations/sqlite/000066_work_session_evidence.up.sql (wbt-2.0 P2.1).
+-- Evidence rows (command output, PR link, CI result, Railway deploy log, manual
+-- note) attached to a work session's finish_work call. No FOREIGN KEY per
+-- CLAUDE.md red-line #9; session_id/workspace_id integrity enforced app-side.
+-- Retention: 90-day TTL via the daily-work-session-evidence-prune scheduler job.
+CREATE TABLE IF NOT EXISTS work_session_evidence (
+    id             TEXT PRIMARY KEY,
+    workspace_id   TEXT,
+    session_id     TEXT NOT NULL,
+    evidence_type  TEXT NOT NULL CHECK (evidence_type IN ('command','pr','ci','railway','manual_note')),
+    status         TEXT NOT NULL CHECK (status IN ('passed','failed','unknown')),
+    command        TEXT,
+    artifact       TEXT,
+    output_excerpt TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_session_evidence_session_id
+    ON work_session_evidence(session_id);
+
+CREATE INDEX IF NOT EXISTS idx_work_session_evidence_workspace_session_created
+    ON work_session_evidence(workspace_id, session_id, created_at DESC);
+
+-- Mirrored from migrations/sqlite/000068_work_session_evidence_indexes.up.sql
+-- (wbt-2.0 P2 review F3). created_at is not a leading column in either index
+-- above, so the daily prune job's DELETE ... WHERE created_at < ? full-table-
+-- scanned without this.
+CREATE INDEX IF NOT EXISTS idx_work_session_evidence_created_at
+    ON work_session_evidence(created_at);
 
 -- Mirrored from migrations/sqlite/000029_vision_items.up.sql.
 -- Vision items: future ideas that can't be acted on now. No FK constraints (CLAUDE.md #9).
@@ -565,12 +611,20 @@ CREATE TABLE IF NOT EXISTS outcomes (
     -- Added in migration 000063. NO FK per CLAUDE.md #9; integrity enforced app-side.
     -- Mirrors playbooks.source_decision_ids pattern (schema.sql:398).
     related_rule_ids TEXT NOT NULL DEFAULT '[]',
+    -- work_session_id: optional link back to the work_sessions row this outcome
+    -- was recorded from. Added in migration 000067 (wbt-2.0 P2.4).
+    -- NO FK per CLAUDE.md #9; a stale session_id is allowed to persist silently.
+    work_session_id  TEXT,
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_outcomes_workspace_entity ON outcomes(workspace_id, entity_type, entity_id) WHERE workspace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_outcomes_entity_id ON outcomes(entity_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_result ON outcomes(result);
 CREATE INDEX IF NOT EXISTS idx_outcomes_created_at ON outcomes(created_at DESC);
+-- Mirrored from migrations/sqlite/000068_work_session_evidence_indexes.up.sql
+-- (wbt-2.0 P2 review F4). Partial index: work_session_id is NULL for most
+-- outcomes (record_outcome's session_id param is optional).
+CREATE INDEX IF NOT EXISTS idx_outcomes_work_session_id ON outcomes(work_session_id) WHERE work_session_id IS NOT NULL;
 
 -- Mirrored from migrations/sqlite/000055_evaluations.up.sql.
 -- Structured analysis attached to an outcome (root cause + lessons + suggestions).

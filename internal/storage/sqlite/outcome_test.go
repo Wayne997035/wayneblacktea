@@ -136,6 +136,54 @@ func TestSQLiteOutcomeStore_CreateOutcome(t *testing.T) {
 	}
 }
 
+// TestSQLiteOutcomeStore_WorkSessionID mirrors
+// TestStore_CreateOutcome_WorkSessionID (Postgres) — verifies work_session_id
+// (wbt-2.0 P2.4) round-trips through CreateOutcome + GetOutcomeByID, and that
+// omitting it (nil) is a pure regression.
+func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	sessionID := uuid.New()
+	o, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:   &wsID,
+		EntityType:    "task",
+		EntityID:      uuid.New(),
+		Result:        "success",
+		WorkSessionID: &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome: %v", err)
+	}
+	if o.WorkSessionID == nil || *o.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID: got %v, want %s", o.WorkSessionID, sessionID)
+	}
+
+	got, err := store.GetOutcomeByID(ctx, o.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if got.WorkSessionID == nil || *got.WorkSessionID != sessionID {
+		t.Errorf("reread WorkSessionID: got %v, want %s", got.WorkSessionID, sessionID)
+	}
+
+	// Regression: omitting WorkSessionID (nil) must not error and must stay nil.
+	noSession, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    uuid.New(),
+		Result:      "success",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome without WorkSessionID: %v", err)
+	}
+	if noSession.WorkSessionID != nil {
+		t.Errorf("expected nil WorkSessionID when omitted, got %v", noSession.WorkSessionID)
+	}
+}
+
 // TestSQLiteOutcomeStore_GetOutcomeByID verifies found, not-found, and
 // wrong-workspace cases.
 func TestSQLiteOutcomeStore_GetOutcomeByID(t *testing.T) {

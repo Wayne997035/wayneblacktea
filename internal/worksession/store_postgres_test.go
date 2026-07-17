@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
@@ -28,7 +29,8 @@ func run(m *testing.M) int {
 	ctx := context.Background()
 	// postgres:16-alpine is intentional — worksession uses minimal DDL,
 	// not the full migration stack (no pgvector extension needed).
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"postgres:16-alpine",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -75,8 +77,9 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 }
 
 // applyWorkSessionSchema creates the minimal schema required by worksession.Store.
-// It mirrors 000021_work_sessions.up.sql + 000022_work_session_tasks.up.sql plus
-// the tasks table (needed for batchMarkTasksInProgress / batchMarkTasksCompleted).
+// It mirrors 000021_work_sessions.up.sql + 000022_work_session_tasks.up.sql +
+// 000065_work_sessions_evidence.up.sql + 000066_work_session_evidence.up.sql
+// plus the tasks table (needed for batchMarkTasksInProgress / batchMarkTasksCompleted).
 func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	ddl := `
 	CREATE TABLE IF NOT EXISTS tasks (
@@ -110,7 +113,14 @@ func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	    last_checkpoint_at  TIMESTAMPTZ,
 	    completed_at        TIMESTAMPTZ,
 	    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	    context_pack_id              UUID NULL,
+	    verification_status          TEXT NULL CHECK (verification_status IN ('not_run','passed','failed','unknown')),
+	    verification_command         TEXT NULL,
+	    verification_output_excerpt  TEXT NULL,
+	    outcome_id                   UUID NULL,
+	    final_result                 TEXT NULL CHECK (final_result IN ('success','failure','partial','unknown','regressed')),
+	    branch_name                  TEXT NULL
 	);
 
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_work_sessions_one_active
@@ -123,6 +133,18 @@ func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	    role        TEXT        NOT NULL DEFAULT 'primary',
 	    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	    PRIMARY KEY (session_id, task_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS work_session_evidence (
+	    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+	    workspace_id   UUID        NULL,
+	    session_id     UUID        NOT NULL,
+	    evidence_type  TEXT        NOT NULL CHECK (evidence_type IN ('command','pr','ci','railway','manual_note')),
+	    status         TEXT        NOT NULL CHECK (status IN ('passed','failed','unknown')),
+	    command        TEXT        NULL,
+	    artifact       TEXT        NULL,
+	    output_excerpt TEXT        NULL,
+	    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
 	`
 	if _, err := pool.Exec(ctx, ddl); err != nil {
@@ -564,7 +586,8 @@ func TestPgStartWork_Idempotent(t *testing.T) {
 	insertPgTestTask(t, pool, wsID, taskA)
 
 	// Pre-set to in_progress before calling Create.
-	if _, err := pool.Exec(ctx,
+	if _, err := pool.Exec(
+		ctx,
 		`UPDATE tasks SET status = 'in_progress' WHERE id = $1`, taskA,
 	); err != nil {
 		t.Fatalf("pre-set in_progress: %v", err)
@@ -669,5 +692,509 @@ func TestPgFinishWork_NoTaskIDs(t *testing.T) {
 	}
 	if got := queryPgTaskStatus(t, pool, taskB); got != statusCompleted {
 		t.Errorf("taskB status: got %q, want completed", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2.2 — evidence chain / verification / outcome linkage (Postgres)
+// ---------------------------------------------------------------------------
+
+// TestPgStore_Finish_WritesEvidenceColumns mirrors
+// TestFinish_WritesEvidenceColumns (SQLite) against real Postgres.
+func TestPgStore_Finish_WritesEvidenceColumns(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-evidence-cols-repo",
+		Title:       "Evidence cols test",
+		Goal:        "Verify Postgres evidence columns",
+		Source:      "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	outcomeID := uuid.New()
+	verifStatus := "passed"
+	verifCmd := "cd build && task check"
+	verifExcerpt := "0 issues"
+	finalResult := "success"
+	done, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:                 sess.ID,
+		Summary:                   "verified and shipped",
+		VerificationStatus:        &verifStatus,
+		VerificationCommand:       &verifCmd,
+		VerificationOutputExcerpt: &verifExcerpt,
+		FinalResult:               &finalResult,
+		OutcomeID:                 &outcomeID,
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if done.VerificationStatus == nil || *done.VerificationStatus != "passed" {
+		t.Errorf("VerificationStatus: got %v, want passed", done.VerificationStatus)
+	}
+	if done.FinalResult == nil || *done.FinalResult != "success" {
+		t.Errorf("FinalResult: got %v, want success", done.FinalResult)
+	}
+	if done.OutcomeID == nil || *done.OutcomeID != outcomeID {
+		t.Errorf("OutcomeID: got %v, want %s", done.OutcomeID, outcomeID)
+	}
+}
+
+// TestPgStore_AddEvidence_TruncatesOutputExcerpt mirrors
+// TestAddEvidence_TruncatesOutputExcerpt (SQLite) against real Postgres.
+func TestPgStore_AddEvidence_TruncatesOutputExcerpt(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-truncate-repo",
+		Title:       "Truncate test",
+		Goal:        "Verify Postgres truncation",
+		Source:      "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	longExcerpt := strings.Repeat("a", 2500)
+	got, err := store.AddEvidence(ctx, worksession.Evidence{
+		SessionID:     sess.ID,
+		EvidenceType:  "command",
+		Status:        "passed",
+		OutputExcerpt: &longExcerpt,
+	})
+	if err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+	if got.OutputExcerpt == nil {
+		t.Fatal("expected non-nil OutputExcerpt")
+	}
+	if n := len([]rune(*got.OutputExcerpt)); n != worksession.EvidenceOutputExcerptCap {
+		t.Errorf("output_excerpt length: got %d runes, want %d", n, worksession.EvidenceOutputExcerptCap)
+	}
+}
+
+// TestPgStore_AddEvidence_RedactBeforeCap_CredentialStraddlingBoundary
+// mirrors the SQLite test of the same shape against real Postgres, proving
+// redact-then-cap ordering holds for both backends.
+func TestPgStore_AddEvidence_RedactBeforeCap_CredentialStraddlingBoundary(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-straddle-repo",
+		Title:       "Straddle test",
+		Goal:        "Verify Postgres redact-then-cap ordering",
+		Source:      "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const paddingLen = 1970
+	const tokenSuffixLen = 40
+	padding := strings.Repeat("x", paddingLen)
+	token := "ghp_" + strings.Repeat("b", tokenSuffixLen)
+	excerpt := padding + token // token spans runes [1970, 2014) — straddles rune index 2000
+
+	got, err := store.AddEvidence(ctx, worksession.Evidence{
+		SessionID:     sess.ID,
+		EvidenceType:  "command",
+		Status:        "failed",
+		OutputExcerpt: &excerpt,
+	})
+	if err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+	if got.OutputExcerpt == nil {
+		t.Fatal("expected non-nil OutputExcerpt")
+	}
+	if strings.Contains(*got.OutputExcerpt, token) {
+		t.Fatalf("raw token straddling the cap boundary must not survive on Postgres, got: %s", *got.OutputExcerpt)
+	}
+	if !strings.Contains(*got.OutputExcerpt, "[REDACTED:github-token]") {
+		t.Errorf("expected full [REDACTED:github-token] placeholder, got: %s", *got.OutputExcerpt)
+	}
+}
+
+// TestPgStore_ListRecent_DescOrder mirrors TestListRecent_DescOrder (SQLite)
+// against real Postgres.
+func TestPgStore_ListRecent_DescOrder(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sessOld, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-recent-old", Title: "Old", Goal: "old goal", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create old: %v", err)
+	}
+	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessOld.ID, Summary: "done"}); err != nil {
+		t.Fatalf("Finish old: %v", err)
+	}
+	sessNew, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-recent-new", Title: "New", Goal: "new goal", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create new: %v", err)
+	}
+	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessNew.ID, Summary: "done"}); err != nil {
+		t.Fatalf("Finish new: %v", err)
+	}
+
+	// Force deterministic timestamps so DESC ordering isn't flaky under fast
+	// sequential inserts within the same clock tick.
+	if _, err := pool.Exec(ctx, `UPDATE work_sessions SET created_at = '2020-01-01T00:00:00Z' WHERE id = $1`, sessOld.ID); err != nil {
+		t.Fatalf("force old timestamp: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE work_sessions SET created_at = '2020-01-02T00:00:00Z' WHERE id = $1`, sessNew.ID); err != nil {
+		t.Fatalf("force new timestamp: %v", err)
+	}
+
+	got, err := store.ListRecent(ctx, wsID, "", 10)
+	if err != nil {
+		t.Fatalf("ListRecent: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got))
+	}
+	if got[0].ID != sessNew.ID {
+		t.Errorf("expected newest session first, got %s want %s", got[0].ID, sessNew.ID)
+	}
+	if got[1].ID != sessOld.ID {
+		t.Errorf("expected oldest session last, got %s want %s", got[1].ID, sessOld.ID)
+	}
+}
+
+// TestPgStore_SetOutcomeLink_NotFound mirrors TestSetOutcomeLink_NotFound
+// (SQLite) against real Postgres.
+func TestPgStore_SetOutcomeLink_NotFound(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	if err := store.SetOutcomeLink(ctx, uuid.New(), uuid.New()); err != worksession.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestPgStore_SetOutcomeLink_Success mirrors TestSetOutcomeLink_Success
+// (SQLite) against real Postgres.
+func TestPgStore_SetOutcomeLink_Success(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-link-outcome-repo", Title: "Link test", Goal: "goal", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	outcomeID := uuid.New()
+	if err := store.SetOutcomeLink(ctx, sess.ID, outcomeID); err != nil {
+		t.Fatalf("SetOutcomeLink: %v", err)
+	}
+
+	got, err := store.GetByID(ctx, wsID, sess.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.OutcomeID == nil || *got.OutcomeID != outcomeID {
+		t.Errorf("OutcomeID: got %v, want %s", got.OutcomeID, outcomeID)
+	}
+}
+
+// TestPgStore_Create_RejectsControlCharsInBranchName mirrors
+// TestCreate_RejectsControlCharsInBranchName (SQLite) against real Postgres.
+func TestPgStore_Create_RejectsControlCharsInBranchName(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	branchName := "feature/x\ngit push --force"
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-branch-repo", Title: "t", Goal: "g", Source: "test",
+		BranchName: &branchName,
+	})
+	if err == nil {
+		t.Error("expected error for branch_name containing newline, got nil")
+	}
+}
+
+// TestPgStore_Finish_RejectsControlCharsInVerificationCommand mirrors
+// TestFinish_RejectsControlCharsInVerificationCommand (SQLite) against real
+// Postgres.
+func TestPgStore_Finish_RejectsControlCharsInVerificationCommand(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-verify-cmd-repo", Title: "t", Goal: "g", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	badCmd := "task check\nrm -rf /"
+	_, err = store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID, Summary: "done", VerificationCommand: &badCmd,
+	})
+	if err == nil {
+		t.Error("expected error for verification_command containing newline, got nil")
+	}
+}
+
+// TestPgStore_GetEvidence_EmptyReturnsEmptySlice mirrors
+// TestGetEvidence_EmptyReturnsEmptySlice (SQLite) against real Postgres.
+func TestPgStore_GetEvidence_EmptyReturnsEmptySlice(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-no-evidence-repo", Title: "t", Goal: "g", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if got == nil {
+		t.Error("expected non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 evidence rows, got %d", len(got))
+	}
+}
+
+// TestPgStore_Finish_WithEvidence mirrors TestFinish_WithEvidence (SQLite)
+// against real Postgres.
+func TestPgStore_Finish_WithEvidence(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-finish-evidence-repo", Title: "t", Goal: "g", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cmd := taskCheckCmd
+	pr := "https://github.com/example/repo/pull/1"
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "done with evidence",
+		Evidence: []worksession.EvidenceInput{
+			{EvidenceType: "command", Status: "passed", Command: &cmd},
+			{EvidenceType: "pr", Status: "passed", Artifact: &pr},
+		},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	evs, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 evidence rows, got %d", len(evs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2 review F2 — deferred_task_ids must never be marked completed (PG)
+// ---------------------------------------------------------------------------
+
+// TestPgFinishWork_DeferredOnly_ExcludesFromFallback mirrors
+// TestFinishWork_DeferredOnly_ExcludesFromFallback (SQLite) against real
+// Postgres.
+func TestPgFinishWork_DeferredOnly_ExcludesFromFallback(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-deferred-only-repo", Title: "t", Goal: "g", Source: "test",
+		TaskIDs: []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:       sess.ID,
+		Summary:         "deferred taskB to next session",
+		DeferredTaskIDs: []uuid.UUID{taskB},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusCompleted {
+		t.Errorf("taskA (not deferred) status: got %q, want completed", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got == statusCompleted {
+		t.Errorf("taskB (deferred) must NOT be completed, got %q", got)
+	}
+}
+
+// TestPgFinishWork_CompletedAndDeferred_NoOverlap mirrors
+// TestFinishWork_CompletedAndDeferred_NoOverlap (SQLite) against real
+// Postgres.
+func TestPgFinishWork_CompletedAndDeferred_NoOverlap(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-completed-deferred-repo", Title: "t", Goal: "g", Source: "test",
+		TaskIDs: []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:        sess.ID,
+		Summary:          "taskA done, taskB deferred",
+		CompletedTaskIDs: []uuid.UUID{taskA},
+		DeferredTaskIDs:  []uuid.UUID{taskB},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got == statusCompleted {
+		t.Errorf("taskB (deferred) must NOT be completed, got %q", got)
+	}
+}
+
+// TestPgFinishWork_CompletedDeferredOverlap_DeferredWins mirrors
+// TestFinishWork_CompletedDeferredOverlap_DeferredWins (SQLite) against real
+// Postgres.
+func TestPgFinishWork_CompletedDeferredOverlap_DeferredWins(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-overlap-repo", Title: "t", Goal: "g", Source: "test",
+		TaskIDs: []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// taskB is listed in BOTH completed and deferred — deferred must win.
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:        sess.ID,
+		Summary:          "conflicting lists for taskB",
+		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
+		DeferredTaskIDs:  []uuid.UUID{taskB},
+	}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got == statusCompleted {
+		t.Errorf("taskB (in both completed and deferred) must NOT be completed — deferred must win, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2 review F5 — GetEvidence must be workspace-scoped (PG)
+// ---------------------------------------------------------------------------
+
+// TestPgStore_GetEvidence_WorkspaceIsolation mirrors
+// TestGetEvidence_WorkspaceIsolation (SQLite) against real Postgres. Both
+// stores share the same pool/table, so this genuinely exercises the new
+// workspace_id predicate rather than relying on physically separate storage.
+func TestPgStore_GetEvidence_WorkspaceIsolation(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgStore(pool, &wsA)
+	storeB := newPgStore(pool, &wsB)
+	ctx := context.Background()
+
+	sess, err := storeA.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsA, RepoName: "pg-iso-evidence-repo", Title: "t", Goal: "g", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cmd := taskCheckCmd
+	if _, err := storeA.AddEvidence(ctx, worksession.Evidence{
+		SessionID:    sess.ID,
+		EvidenceType: "command",
+		Status:       "passed",
+		Command:      &cmd,
+	}); err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+
+	got, err := storeB.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence (storeB): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("workspace B must not see workspace A's evidence, got %d rows", len(got))
+	}
+
+	gotA, err := storeA.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence (storeA): %v", err)
+	}
+	if len(gotA) != 1 {
+		t.Errorf("workspace A should see its own evidence, got %d rows", len(gotA))
 	}
 }

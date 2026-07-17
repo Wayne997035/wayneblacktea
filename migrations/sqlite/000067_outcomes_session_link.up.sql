@@ -1,0 +1,12 @@
+-- 000067_outcomes_session_link.up.sql (SQLite twin)
+-- Adds work_session_id to outcomes for existing SQLite databases.
+--
+-- Fresh databases: schema.sql already includes this column via
+-- CREATE TABLE IF NOT EXISTS, so this file is a documented no-op for
+-- golang-migrate tooling on fresh DBs. Existing databases (before this
+-- migration): db.go Open() calls applyColumnUpgrades() which issues the same
+-- ALTER TABLE idempotently, ignoring "duplicate column name".
+--
+-- No FOREIGN KEY per CLAUDE.md red-line #9. Referential integrity enforced
+-- app-side; a stale session_id is allowed to persist silently.
+ALTER TABLE outcomes ADD COLUMN work_session_id TEXT;

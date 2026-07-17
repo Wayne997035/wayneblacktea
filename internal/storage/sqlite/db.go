@@ -168,6 +168,26 @@ var columnUpgrades = []columnUpgrade{
 	{table: "project_status_snapshots", column: "embedding_provider", definition: "TEXT"},
 	{table: "project_status_snapshots", column: "embedding_model", definition: "TEXT"},
 	{table: "project_status_snapshots", column: "embedding_dim", definition: "INTEGER"},
+	// migration 000065: evidence + verification columns on work_sessions (wbt-2.0 P2.1).
+	// Fresh DBs already have these via schema.sql CREATE TABLE IF NOT EXISTS; this
+	// ALTER is needed only for DBs created before 000065 was merged.
+	{table: "work_sessions", column: "context_pack_id", definition: "TEXT"},
+	{
+		table: "work_sessions", column: "verification_status",
+		definition: "TEXT CHECK (verification_status IN ('not_run','passed','failed','unknown'))",
+	},
+	{table: "work_sessions", column: "verification_command", definition: "TEXT"},
+	{table: "work_sessions", column: "verification_output_excerpt", definition: "TEXT"},
+	{table: "work_sessions", column: "outcome_id", definition: "TEXT"},
+	{
+		table: "work_sessions", column: "final_result",
+		definition: "TEXT CHECK (final_result IN ('success','failure','partial','unknown','regressed'))",
+	},
+	{table: "work_sessions", column: "branch_name", definition: "TEXT"},
+	// migration 000067: work_session_id link on outcomes (wbt-2.0 P2.4).
+	// Fresh DBs already have this via schema.sql CREATE TABLE IF NOT EXISTS; this
+	// ALTER is needed only for DBs created before 000067 was merged.
+	{table: "outcomes", column: "work_session_id", definition: "TEXT"},
 }
 
 // applyColumnUpgrades idempotently adds columns to existing tables.

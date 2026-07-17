@@ -263,7 +263,9 @@ func (noopAtomStore) Traverse(context.Context, uuid.UUID, int) (*atom.TraverseRe
 func (noopAtomStore) Search(context.Context, *uuid.UUID, string, int) ([]atom.Atom, error) {
 	return nil, nil
 }
-func (noopAtomStore) PruneAtoms(context.Context, time.Time) (int64, error)             { return 0, nil }
+
+func (noopAtomStore) PruneAtoms(context.Context, time.Time) (int64, error) { return 0, nil }
+
 func (noopAtomStore) SetDigestStatus(context.Context, uuid.UUID, string, string) error { return nil }
 
 func (noopAtomStore) CountByDigestStatus(context.Context, *uuid.UUID, string) (int64, error) {
@@ -491,4 +493,24 @@ func (noopWorkSessionStore) LinkTask(context.Context, uuid.UUID, uuid.UUID, stri
 
 func (noopWorkSessionStore) LinkedTasks(context.Context, uuid.UUID) ([]worksession.SessionTask, error) {
 	return nil, nil
+}
+
+func (noopWorkSessionStore) ListRecent(context.Context, uuid.UUID, string, int) ([]worksession.Session, error) {
+	return nil, nil
+}
+
+func (noopWorkSessionStore) AddEvidence(context.Context, worksession.Evidence) (*worksession.Evidence, error) {
+	return nil, nil
+}
+
+func (noopWorkSessionStore) GetEvidence(context.Context, uuid.UUID) ([]worksession.Evidence, error) {
+	return nil, nil
+}
+
+func (noopWorkSessionStore) SetOutcomeLink(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (noopWorkSessionStore) PruneOlderThan(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }

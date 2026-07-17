@@ -600,3 +600,94 @@ func TestWithAICostLedgerPruner_RegistersJob(t *testing.T) {
 		t.Error("aiCostLedgerPool not set by WithAICostLedgerPruner")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2.4: WithWorkSessionEvidencePruner / runDailyWorkSessionEvidencePrune
+// ---------------------------------------------------------------------------
+
+type stubWorkSessionEvidencePruner struct {
+	called    bool
+	gotCutoff time.Time
+	n         int64
+	err       error
+}
+
+func (s *stubWorkSessionEvidencePruner) PruneOlderThan(_ context.Context, cutoff time.Time) (int64, error) {
+	s.called = true
+	s.gotCutoff = cutoff
+	return s.n, s.err
+}
+
+// TestRunDailyWorkSessionEvidencePrune_NilPruner_NoPanic verifies that
+// runDailyWorkSessionEvidencePrune short-circuits cleanly when no pruner is
+// wired (workSessionEvidencePruner is nil — WithWorkSessionEvidencePruner
+// never called). Mirrors the nil-pruner guard pattern used by the other
+// prune jobs.
+func TestRunDailyWorkSessionEvidencePrune_NilPruner_NoPanic(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	// workSessionEvidencePruner is nil → must short-circuit without panicking.
+	sc.runDailyWorkSessionEvidencePrune()
+}
+
+// TestWithWorkSessionEvidencePruner_RegistersJob_And_Delegates verifies that
+// WithWorkSessionEvidencePruner registers the daily-work-session-evidence-prune
+// gocron job and that the runner delegates to PruneOlderThan with a cutoff
+// ~90 days in the past.
+func TestWithWorkSessionEvidencePruner_RegistersJob_And_Delegates(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	pruner := &stubWorkSessionEvidencePruner{n: 3}
+	if err := sc.WithWorkSessionEvidencePruner(pruner); err != nil {
+		t.Fatalf("WithWorkSessionEvidencePruner() error: %v", err)
+	}
+
+	// Job must be registered with gocron.
+	found := false
+	for _, j := range sc.s.Jobs() {
+		if j.Name() == "daily-work-session-evidence-prune" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("daily-work-session-evidence-prune job not found after WithWorkSessionEvidencePruner")
+	}
+
+	// Direct invocation must delegate to PruneOlderThan with a ~90-day cutoff.
+	sc.runDailyWorkSessionEvidencePrune()
+	if !pruner.called {
+		t.Error("PruneOlderThan was not called by runDailyWorkSessionEvidencePrune")
+	}
+	wantCutoff := time.Now().Add(-workSessionEvidencePruneRetention)
+	if diff := pruner.gotCutoff.Sub(wantCutoff); diff < -time.Minute || diff > time.Minute {
+		t.Errorf("PruneOlderThan cutoff = %v, want ~%v (90 days ago)", pruner.gotCutoff, wantCutoff)
+	}
+}
+
+// TestRunDailyWorkSessionEvidencePrune_PrunerError_LogsWarnNoPanic verifies
+// that a PruneOlderThan error is swallowed (logged, not propagated/panicked)
+// — matches the non-fatal error-handling convention of every other prune job.
+func TestRunDailyWorkSessionEvidencePrune_PrunerError_LogsWarnNoPanic(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	pruner := &stubWorkSessionEvidencePruner{err: context.DeadlineExceeded}
+	if err := sc.WithWorkSessionEvidencePruner(pruner); err != nil {
+		t.Fatalf("WithWorkSessionEvidencePruner() error: %v", err)
+	}
+	// Must not panic even though PruneOlderThan returns an error.
+	sc.runDailyWorkSessionEvidencePrune()
+	if !pruner.called {
+		t.Error("PruneOlderThan was not called")
+	}
+}

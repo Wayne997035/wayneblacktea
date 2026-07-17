@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -52,7 +53,8 @@ const maxOutcomeLimit = 100
 
 // registerOutcomeTools registers the 4 outcome/evaluation MCP tools.
 func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("record_outcome",
+	ms.AddTool(mcp.NewTool(
+		"record_outcome",
 		mcp.WithDescription(
 			"Record the result of an executed task, decision, sprint, or project. "+
 				"Closes the Action→Result loop by capturing what actually happened. "+
@@ -76,9 +78,13 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			mcp.Description("Optional JSON object with numeric metrics, e.g. {\"duration_ms\": 1200}")),
 		mcp.WithString("related_rule_ids",
 			mcp.Description("Optional JSON array of behavior rule UUIDs to link, e.g. [\"uuid1\",\"uuid2\"]. Absent or empty = no linked rules.")),
+		mcp.WithString("session_id",
+			mcp.Description("Optional work session UUID this outcome was recorded from — "+
+				"best-effort linked back onto the session via SetOutcomeLink.")),
 	), s.handleRecordOutcome)
 
-	ms.AddTool(mcp.NewTool("evaluate_outcome",
+	ms.AddTool(mcp.NewTool(
+		"evaluate_outcome",
 		mcp.WithDescription(
 			"Attach structured analysis to an existing outcome. "+
 				"Captures root-cause analysis, lessons learned, and improvement suggestions "+
@@ -96,7 +102,8 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			mcp.Description("JSON array of improvement suggestion strings")),
 	), s.handleEvaluateOutcome)
 
-	ms.AddTool(mcp.NewTool("list_recent_outcomes",
+	ms.AddTool(mcp.NewTool(
+		"list_recent_outcomes",
 		mcp.WithDescription(
 			"List recent outcomes ordered by created_at DESC. "+
 				"Optionally filter by entity_type. "+
@@ -108,7 +115,8 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			mcp.Description(fmt.Sprintf("Max results (default 20, max %d)", maxOutcomeLimit))),
 	), s.handleListRecentOutcomes)
 
-	ms.AddTool(mcp.NewTool("find_failed_patterns",
+	ms.AddTool(mcp.NewTool(
+		"find_failed_patterns",
 		mcp.WithDescription(
 			"Retrieve recent failure and regression outcomes together with their evaluations. "+
 				"Use to identify recurring failure patterns and improvement opportunities.",
@@ -160,6 +168,19 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError(rridErr.Error()), nil
 	}
 
+	// session_id is optional. When present it MUST be a well-formed UUID —
+	// validate the format up front so malformed input is rejected outright,
+	// even though an unknown-but-valid UUID is tolerated below (no-FK design;
+	// backend-security-design.md §6 migration comment on work_session_id).
+	var sessionID *uuid.UUID
+	if raw := stringArg(args, "session_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return mcp.NewToolResultError("invalid session_id UUID"), nil
+		}
+		sessionID = &id
+	}
+
 	wsID := s.workspaceUUID()
 	o, err := s.outcome.CreateOutcome(ctx, outcome.CreateOutcomeParams{
 		WorkspaceID:    wsID,
@@ -169,10 +190,22 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 		Notes:          notes,
 		Metrics:        metricsJSON,
 		RelatedRuleIDs: relatedRuleIDs,
+		WorkSessionID:  sessionID,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recording outcome: %v", err)), nil
 	}
+
+	// Best-effort: also set work_sessions.outcome_id so the link is
+	// bidirectional. A stale/unknown session_id (worksession.ErrNotFound) is
+	// tolerated per the no-FK design — record_outcome never fails over this.
+	if sessionID != nil && s.workSession != nil {
+		if linkErr := s.workSession.SetOutcomeLink(ctx, *sessionID, o.ID); linkErr != nil {
+			slog.Warn("record_outcome: SetOutcomeLink failed (non-fatal)",
+				"outcome_id", o.ID, "session_id", *sessionID, "err", linkErr)
+		}
+	}
+
 	// M9: atomize the outcome notes in the background when non-empty.
 	if o.Notes != "" {
 		s.launchAtomize("outcomes", o.ID, o.Notes)

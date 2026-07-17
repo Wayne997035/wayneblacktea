@@ -1,0 +1,4 @@
+-- Migration 000066 rollback: drop work_session_evidence table
+DROP INDEX IF EXISTS idx_work_session_evidence_workspace_session_created;
+DROP INDEX IF EXISTS idx_work_session_evidence_session_id;
+DROP TABLE IF EXISTS work_session_evidence;

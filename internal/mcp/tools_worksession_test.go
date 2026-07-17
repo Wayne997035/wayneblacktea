@@ -16,6 +16,18 @@ import (
 
 const statusInProgress = "in_progress"
 
+// finalResultSuccess / finalResultFailure are local goconst-required constants
+// for this file's final_result test literals. NOTE: tools_behaviorrule_test.go
+// defines outcomeSuccess/outcomeFailure with the same values, but that file is
+// gated `//go:build !integration` — referencing its constants here would break
+// `go test -tags integration` (constants would be undefined). This file has no
+// build tag (compiled under both default and integration builds), so it needs
+// its own always-available constants.
+const (
+	finalResultSuccess = "success"
+	finalResultFailure = "failure"
+)
+
 // newTestWorkSessionServer creates a full Server backed by an in-memory SQLite
 // database for worksession tool tests.
 func newTestWorkSessionServer(t *testing.T) *Server {
@@ -708,5 +720,720 @@ func TestHandleFinishWork_WithDecisions(t *testing.T) {
 	})
 	if r2.IsError {
 		t.Fatalf("finish_work with noisy decisions must still succeed (best-effort), got: %s", resultText(r2))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2.3 — start_work context pack, finish_work evidence chain,
+// list_recent_work_sessions, get_work_session_trace
+// ---------------------------------------------------------------------------
+
+func callListRecentWorkSessions(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	result, err := s.handleListRecentWorkSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleListRecentWorkSessions error: %v", err)
+	}
+	return result
+}
+
+func callGetWorkSessionTrace(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	result, err := s.handleGetWorkSessionTrace(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleGetWorkSessionTrace error: %v", err)
+	}
+	return result
+}
+
+// ---- start_work: context pack ----
+
+func TestHandleStartWork_ReturnsContextPack(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callStartWork(t, s, map[string]any{
+		"repo_name": "context-pack-repo",
+		"title":     "Context pack test",
+		"goal":      "verify assemble_context is called on start_work",
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, resultText(r))
+	}
+	pack, ok := result["context_pack"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected context_pack object in response, got: %v", result["context_pack"])
+	}
+	if pack["objective"] != "verify assemble_context is called on start_work" {
+		t.Errorf("context_pack.objective mismatch: got %v", pack["objective"])
+	}
+}
+
+// TestHandleStartWork_NilContextAssembler_NonFatal verifies start_work still
+// succeeds (with a null context_pack) when contextAssembler is not wired —
+// mirrors TestStartWork_CrossWorkspaceIsolation's bare Server construction.
+func TestHandleStartWork_NilContextAssembler_NonFatal(t *testing.T) {
+	wsID := uuid.New()
+	db, err := wbtsqlite.Open(context.Background(), ":memory:", wsID.String())
+	if err != nil {
+		t.Fatalf("Open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	srv := &Server{workSession: wbtsqlite.NewWorkSessionStore(db), workspaceID: &wsID}
+
+	r := callStartWork(t, srv, map[string]any{
+		"repo_name": "no-assembler-repo",
+		"title":     "No assembler test",
+		"goal":      "verify non-fatal without contextAssembler",
+	})
+	if r.IsError {
+		t.Fatalf("expected success even without contextAssembler, got error: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, resultText(r))
+	}
+	if result["context_pack"] != nil {
+		t.Errorf("expected null context_pack when contextAssembler is nil, got: %v", result["context_pack"])
+	}
+}
+
+// ---- start_work: branch_name ----
+
+func TestHandleStartWork_RejectsOversizedBranchName(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callStartWork(t, s, map[string]any{
+		"repo_name":   "branch-size-repo",
+		"title":       "t",
+		"goal":        "g",
+		"branch_name": strings.Repeat("b", 201),
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized branch_name")
+	}
+	if !strings.Contains(resultText(r), "branch_name exceeds") {
+		t.Errorf("error should mention branch_name limit, got: %s", resultText(r))
+	}
+}
+
+func TestHandleStartWork_PersistsBranchName(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callStartWork(t, s, map[string]any{
+		"repo_name":   "branch-persist-repo",
+		"title":       "t",
+		"goal":        "g",
+		"branch_name": "feature/action-lifecycle",
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	sessID, _ := uuid.Parse(result["session_id"].(string))
+
+	got, err := s.workSession.GetByID(context.Background(), s.workspaceUUIDVal(), sessID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.BranchName == nil || *got.BranchName != "feature/action-lifecycle" {
+		t.Errorf("BranchName: got %v, want feature/action-lifecycle", got.BranchName)
+	}
+}
+
+// ---- finish_work: evidence-chain enum validation ----
+
+func TestHandleFinishWork_InvalidVerificationStatus(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "invalid-verif-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":          sessID,
+		"summary":             "done",
+		"verification_status": "bogus",
+	})
+	if !r.IsError {
+		t.Fatal("expected tool error for invalid verification_status, not a panic or success")
+	}
+	if !strings.Contains(resultText(r), "invalid verification_status") {
+		t.Errorf("error should mention invalid verification_status, got: %s", resultText(r))
+	}
+}
+
+func TestHandleFinishWork_InvalidFinalResult(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "invalid-result-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":   sessID,
+		"summary":      "done",
+		"final_result": "bogus",
+	})
+	if !r.IsError {
+		t.Fatal("expected tool error for invalid final_result, not a panic or success")
+	}
+	if !strings.Contains(resultText(r), "invalid final_result") {
+		t.Errorf("error should mention invalid final_result, got: %s", resultText(r))
+	}
+}
+
+func TestHandleFinishWork_RejectsOversizedVerificationCommand(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "oversized-cmd-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":           sessID,
+		"summary":              "done",
+		"verification_command": strings.Repeat("c", 501),
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized verification_command")
+	}
+}
+
+func TestHandleFinishWork_RejectsOversizedVerificationOutputExcerpt(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "oversized-excerpt-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":                  sessID,
+		"summary":                     "done",
+		"verification_output_excerpt": strings.Repeat("e", 2001),
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized verification_output_excerpt")
+	}
+}
+
+func TestHandleFinishWork_WritesVerificationFields(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "writes-verif-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":                  sessID,
+		"summary":                     "verified fine",
+		"verification_status":         "passed",
+		"verification_command":        "task check",
+		"verification_output_excerpt": "0 issues",
+		"final_result":                finalResultSuccess,
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// final_result=success is not in negativeFinalResults, so no outcome should
+	// be auto-created.
+	if result["outcome_id"] != nil {
+		t.Errorf("expected null outcome_id for final_result=success, got: %v", result["outcome_id"])
+	}
+
+	sessIDParsed, _ := uuid.Parse(sessID)
+	got, err := s.workSession.GetByID(context.Background(), s.workspaceUUIDVal(), sessIDParsed)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.VerificationStatus == nil || *got.VerificationStatus != "passed" {
+		t.Errorf("VerificationStatus not persisted: got %v", got.VerificationStatus)
+	}
+}
+
+// ---- finish_work: auto-outcome-on-failure ----
+
+func TestHandleFinishWork_AutoCreatesOutcomeOnFailure(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	taskID := uuid.New().String()
+	insertMCPTestTask(t, db, "", taskID)
+
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "auto-outcome-repo",
+		"title":     "t",
+		"goal":      "g",
+		"task_ids":  `["` + taskID + `"]`,
+	})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":   sessID,
+		"summary":      "hit a regression",
+		"final_result": finalResultFailure,
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["outcome_id"] == nil || result["outcome_id"] == "" {
+		t.Fatalf("expected non-null outcome_id for final_result=failure with a task ID, got: %v", result["outcome_id"])
+	}
+
+	// SetOutcomeLink must have persisted outcome_id back onto the session.
+	sessIDParsed, _ := uuid.Parse(sessID)
+	got, err := s.workSession.GetByID(context.Background(), s.workspaceUUIDVal(), sessIDParsed)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.OutcomeID == nil {
+		t.Error("expected SetOutcomeLink to have persisted outcome_id onto the session")
+	}
+}
+
+// TestHandleFinishWork_AutoOutcome_NoTaskID_NonFatal verifies that when
+// final_result is negative but no task ID is available (no task_ids linked,
+// no current_task_id), finish_work still succeeds — the auto-outcome step is
+// skipped entirely, not treated as an error.
+func TestHandleFinishWork_AutoOutcome_NoTaskID_NonFatal(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "no-task-outcome-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":   sessID,
+		"summary":      "regressed with no task context",
+		"final_result": "regressed",
+	})
+	if r.IsError {
+		t.Fatalf("finish_work must succeed even when no task ID is available for auto-outcome, got: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["outcome_id"] != nil {
+		t.Errorf("expected null outcome_id when no task ID is available, got: %v", result["outcome_id"])
+	}
+}
+
+// TestHandleFinishWork_AutoOutcome_NilOutcomeStore_NonFatal verifies that
+// finish_work succeeds (and simply skips auto-outcome creation) when the
+// server has no outcome store wired (s.outcome == nil).
+func TestHandleFinishWork_AutoOutcome_NilOutcomeStore_NonFatal(t *testing.T) {
+	wsID := uuid.New()
+	db, err := wbtsqlite.Open(context.Background(), ":memory:", wsID.String())
+	if err != nil {
+		t.Fatalf("Open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	srv := &Server{workSession: wbtsqlite.NewWorkSessionStore(db), workspaceID: &wsID}
+
+	startR := callStartWork(t, srv, map[string]any{"repo_name": "nil-outcome-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, srv, map[string]any{
+		"session_id":   sessID,
+		"summary":      "failed with no outcome store configured",
+		"final_result": finalResultFailure,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work must succeed when outcome store is nil, got: %s", resultText(r))
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["outcome_id"] != nil {
+		t.Errorf("expected null outcome_id when outcome store is nil, got: %v", result["outcome_id"])
+	}
+}
+
+// ---- list_recent_work_sessions ----
+
+func TestHandleListRecentWorkSessions_ExcludesOutputExcerpt(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "list-excerpt-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	finishR := callFinishWork(t, s, map[string]any{
+		"session_id":                  sessID,
+		"summary":                     "done",
+		"verification_output_excerpt": "super-secret-command-output-marker",
+	})
+	if finishR.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(finishR))
+	}
+
+	r := callListRecentWorkSessions(t, s, map[string]any{"repo_name": "list-excerpt-repo"})
+	if r.IsError {
+		t.Fatalf("list_recent_work_sessions failed: %s", resultText(r))
+	}
+	text := resultText(r)
+	if strings.Contains(text, "super-secret-command-output-marker") {
+		t.Errorf("list_recent_work_sessions must NOT include verification_output_excerpt, got: %s", text)
+	}
+	if strings.Contains(text, "verification_output_excerpt") {
+		t.Errorf("list_recent_work_sessions response must not even have the excerpt key, got: %s", text)
+	}
+}
+
+func TestHandleListRecentWorkSessions_ReturnsSummaries(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "list-summaries-repo", "title": "list test", "goal": "g"})
+	sessID := startSessionID(t, startR)
+	if r := callFinishWork(t, s, map[string]any{"session_id": sessID, "summary": "done", "final_result": finalResultSuccess}); r.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(r))
+	}
+
+	r := callListRecentWorkSessions(t, s, map[string]any{"repo_name": "list-summaries-repo"})
+	if r.IsError {
+		t.Fatalf("list_recent_work_sessions failed: %s", resultText(r))
+	}
+	var summaries []map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &summaries); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, resultText(r))
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0]["title"] != "list test" {
+		t.Errorf("title mismatch: got %v", summaries[0]["title"])
+	}
+	if summaries[0]["final_result"] != finalResultSuccess {
+		t.Errorf("final_result mismatch: got %v", summaries[0]["final_result"])
+	}
+}
+
+// ---- get_work_session_trace ----
+
+func TestHandleGetWorkSessionTrace_ReturnsEvidence(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "trace-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+	sessIDParsed, _ := uuid.Parse(sessID)
+
+	cmd := "task check"
+	if _, err := s.workSession.AddEvidence(context.Background(), worksession.Evidence{
+		SessionID:    sessIDParsed,
+		EvidenceType: "command",
+		Status:       "passed",
+		Command:      &cmd,
+	}); err != nil {
+		t.Fatalf("AddEvidence: %v", err)
+	}
+
+	r := callGetWorkSessionTrace(t, s, map[string]any{"session_id": sessID})
+	if r.IsError {
+		t.Fatalf("get_work_session_trace failed: %s", resultText(r))
+	}
+	var trace struct {
+		Session  map[string]any   `json:"session"`
+		Evidence []map[string]any `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &trace); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, resultText(r))
+	}
+	if len(trace.Evidence) != 1 {
+		t.Fatalf("expected 1 evidence row, got %d", len(trace.Evidence))
+	}
+	if trace.Evidence[0]["command"] != cmd {
+		t.Errorf("evidence command mismatch: got %v", trace.Evidence[0]["command"])
+	}
+}
+
+func TestHandleGetWorkSessionTrace_EmptyEvidenceReturnsEmptyArray(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "trace-empty-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callGetWorkSessionTrace(t, s, map[string]any{"session_id": sessID})
+	if r.IsError {
+		t.Fatalf("get_work_session_trace failed: %s", resultText(r))
+	}
+	text := resultText(r)
+	if strings.Contains(text, `"evidence": null`) {
+		t.Errorf("evidence must be an empty array, not null: %s", text)
+	}
+	var trace struct {
+		Evidence []map[string]any `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(text), &trace); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if trace.Evidence == nil {
+		t.Error("expected non-nil empty evidence array")
+	}
+	if len(trace.Evidence) != 0 {
+		t.Errorf("expected 0 evidence rows, got %d", len(trace.Evidence))
+	}
+}
+
+func TestHandleGetWorkSessionTrace_InvalidUUID(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callGetWorkSessionTrace(t, s, map[string]any{"session_id": "not-a-uuid"})
+	if !r.IsError {
+		t.Error("expected tool error for malformed session_id, not a panic or success")
+	}
+}
+
+func TestHandleGetWorkSessionTrace_NotFound(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callGetWorkSessionTrace(t, s, map[string]any{"session_id": uuid.New().String()})
+	if !r.IsError {
+		t.Error("expected not-found tool error for unknown session_id")
+	}
+}
+
+func TestHandleGetWorkSessionTrace_MissingSessionID(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callGetWorkSessionTrace(t, s, map[string]any{})
+	if !r.IsError {
+		t.Error("expected error for missing session_id")
+	}
+}
+
+// startSessionID unmarshals a start_work result and extracts session_id,
+// failing the test if the start_work call itself errored.
+func startSessionID(t *testing.T, startR *mcpmsg.CallToolResult) string {
+	t.Helper()
+	if startR.IsError {
+		t.Fatalf("start_work setup failed: %s", resultText(startR))
+	}
+	var startResult map[string]any
+	if err := json.Unmarshal([]byte(resultText(startR)), &startResult); err != nil {
+		t.Fatalf("unmarshal start: %v", err)
+	}
+	sessID, _ := startResult["session_id"].(string)
+	if sessID == "" {
+		t.Fatal("start_work response missing session_id")
+	}
+	return sessID
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2 review F1 — finish_work evidence array wiring
+// ---------------------------------------------------------------------------
+
+// TestHandleFinishWork_WithEvidence_PersistsAndReadableViaTrace verifies the
+// full round trip: finish_work's evidence JSON array is parsed, validated,
+// and stored, then readable back via get_work_session_trace.
+func TestHandleFinishWork_WithEvidence_PersistsAndReadableViaTrace(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-wire-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	evidenceJSON := `[` +
+		`{"evidence_type":"command","status":"passed","command":"cd build && task check","output_excerpt":"0 issues"},` +
+		`{"evidence_type":"pr","status":"passed","artifact":"https://github.com/example/repo/pull/1"}` +
+		`]`
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "done with evidence",
+		"evidence":   evidenceJSON,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work with evidence must succeed, got: %s", resultText(r))
+	}
+
+	trace := callGetWorkSessionTrace(t, s, map[string]any{"session_id": sessID})
+	if trace.IsError {
+		t.Fatalf("get_work_session_trace failed: %s", resultText(trace))
+	}
+	var parsed struct {
+		Evidence []map[string]any `json:"evidence"`
+	}
+	if err := json.Unmarshal([]byte(resultText(trace)), &parsed); err != nil {
+		t.Fatalf("unmarshal trace: %v (raw: %s)", err, resultText(trace))
+	}
+	if len(parsed.Evidence) != 2 {
+		t.Fatalf("expected 2 evidence rows via trace, got %d", len(parsed.Evidence))
+	}
+	// GetEvidence orders by created_at ASC, i.e. insertion order.
+	if parsed.Evidence[0]["evidence_type"] != "command" || parsed.Evidence[0]["command"] != "cd build && task check" {
+		t.Errorf("evidence[0] mismatch: %v", parsed.Evidence[0])
+	}
+	if parsed.Evidence[1]["evidence_type"] != "pr" || parsed.Evidence[1]["artifact"] != "https://github.com/example/repo/pull/1" {
+		t.Errorf("evidence[1] mismatch: %v", parsed.Evidence[1])
+	}
+}
+
+func TestHandleFinishWork_RejectsOversizedEvidenceArray(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-oversized-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	items := make([]string, 0, 21)
+	for range 21 {
+		items = append(items, `{"evidence_type":"manual_note","status":"unknown"}`)
+	}
+	evidenceJSON := "[" + strings.Join(items, ",") + "]"
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "too much evidence",
+		"evidence":   evidenceJSON,
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized evidence array")
+	}
+	if !strings.Contains(resultText(r), "evidence exceeds limit") {
+		t.Errorf("error should mention limit, got: %s", resultText(r))
+	}
+}
+
+func TestHandleFinishWork_RejectsInvalidEvidenceType(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-badtype-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "bad type",
+		"evidence":   `[{"evidence_type":"bogus","status":"passed"}]`,
+	})
+	if !r.IsError {
+		t.Fatal("expected error for invalid evidence_type")
+	}
+	if !strings.Contains(resultText(r), "invalid evidence_type") {
+		t.Errorf("error should mention invalid evidence_type, got: %s", resultText(r))
+	}
+}
+
+func TestHandleFinishWork_RejectsInvalidEvidenceStatus(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-badstatus-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "bad status",
+		"evidence":   `[{"evidence_type":"command","status":"bogus"}]`,
+	})
+	if !r.IsError {
+		t.Fatal("expected error for invalid status")
+	}
+	if !strings.Contains(resultText(r), "invalid status") {
+		t.Errorf("error should mention invalid status, got: %s", resultText(r))
+	}
+}
+
+// TestHandleFinishWork_RejectsControlCharsInEvidenceCommand verifies
+// adversarial-input handling (backend-security-design.md §2.1): a
+// prompt-injected agent must not be able to smuggle a second shell
+// instruction into evidence.command via an embedded newline.
+func TestHandleFinishWork_RejectsControlCharsInEvidenceCommand(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-controlchars-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	evidenceJSON := `[{"evidence_type":"command","status":"passed","command":"task check\nrm -rf /"}]`
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "injected newline",
+		"evidence":   evidenceJSON,
+	})
+	if !r.IsError {
+		t.Fatal("expected error for control chars in evidence command")
+	}
+}
+
+func TestHandleFinishWork_RejectsOversizedEvidenceCommand(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-oversizedcmd-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	longCmd := strings.Repeat("c", 501)
+	evidenceJSON, err := json.Marshal([]map[string]any{
+		{"evidence_type": "command", "status": "passed", "command": longCmd},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "oversized command",
+		"evidence":   string(evidenceJSON),
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized evidence command")
+	}
+	if !strings.Contains(resultText(r), "command exceeds") {
+		t.Errorf("error should mention command length limit, got: %s", resultText(r))
+	}
+}
+
+func TestHandleFinishWork_RejectsMalformedEvidenceJSON(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "evidence-malformed-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "not json",
+		"evidence":   "not-a-json-array",
+	})
+	if !r.IsError {
+		t.Fatal("expected error for malformed evidence JSON")
+	}
+	if !strings.Contains(resultText(r), "invalid evidence JSON") {
+		t.Errorf("error should mention invalid evidence JSON, got: %s", resultText(r))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2 review F2 — deferred_task_ids end-to-end smoke test (MCP layer)
+// ---------------------------------------------------------------------------
+
+// queryMCPTaskStatus reads the status column for a task directly from the
+// SQLite DB backing the test server. Mirrors queryTaskStatus in
+// internal/worksession/store_test.go (unexported there, so duplicated here).
+func queryMCPTaskStatus(t *testing.T, db *wbtsqlite.DB, taskID string) string {
+	t.Helper()
+	row := db.QueryRowContext(context.Background(), `SELECT status FROM tasks WHERE id = ?1`, taskID)
+	var status string
+	if err := row.Scan(&status); err != nil {
+		t.Fatalf("queryMCPTaskStatus %s: %v", taskID, err)
+	}
+	return status
+}
+
+// TestHandleFinishWork_DeferredTaskNotMarkedCompleted is the end-to-end (MCP
+// request → handler → store) regression test for F2: a task listed in
+// deferred_task_ids must never come out of finish_work as completed, even
+// when a sibling task is explicitly completed in the same call.
+func TestHandleFinishWork_DeferredTaskNotMarkedCompleted(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	taskA := uuid.New().String()
+	taskB := uuid.New().String()
+	insertMCPTestTask(t, db, "", taskA)
+	insertMCPTestTask(t, db, "", taskB)
+
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "deferred-e2e-repo",
+		"title":     "t",
+		"goal":      "g",
+		"task_ids":  `["` + taskA + `","` + taskB + `"]`,
+	})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":         sessID,
+		"summary":            "taskA done, taskB deferred via MCP handler",
+		"completed_task_ids": `["` + taskA + `"]`,
+		"deferred_task_ids":  `["` + taskB + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(r))
+	}
+
+	if got := queryMCPTaskStatus(t, db, taskA); got != taskStatusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryMCPTaskStatus(t, db, taskB); got == taskStatusCompleted {
+		t.Errorf("taskB (deferred) must NOT be completed, got %q", got)
 	}
 }

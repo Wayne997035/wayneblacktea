@@ -141,7 +141,8 @@ func run() error {
 		WithKnowledge(stores.Knowledge()).
 		WithTask(stores.GTD())
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
-	learningH := handler.NewLearningHandler(stores.Learning(),
+	learningH := handler.NewLearningHandler(
+		stores.Learning(),
 		handler.WithKnowledgeStore(stores.Knowledge()),
 		handler.WithDecisionStore(stores.Decision()),
 	)
@@ -466,6 +467,13 @@ func run() error {
 	if stores.BehaviorRule() != nil {
 		if err := sched.WithBehaviorRulePruner(stores.BehaviorRule()); err != nil {
 			return fmt.Errorf("wiring behavior rule pruner: %w", err)
+		}
+	}
+	// Wire work_session_evidence pruner (both backends; 90-day TTL per
+	// backend-security-design.md §1.3, wbt-2.0 P2.4).
+	if stores.WorkSession() != nil {
+		if err := sched.WithWorkSessionEvidencePruner(stores.WorkSession()); err != nil {
+			return fmt.Errorf("wiring work_session_evidence pruner: %w", err)
 		}
 	}
 	// Wire behavior governance weekly job (Wednesday 04:15 Asia/Taipei). Applies

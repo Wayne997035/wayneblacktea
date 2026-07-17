@@ -48,7 +48,11 @@ type Outcome struct {
 	// referenced rule, closing the outcome→rule confidence feedback loop.
 	// NO FK per CLAUDE.md #9; stale rule IDs are tolerated application-side.
 	RelatedRuleIDs []uuid.UUID `json:"related_rule_ids,omitempty"`
-	CreatedAt      time.Time   `json:"created_at"`
+	// WorkSessionID optionally links this outcome back to the work_sessions
+	// row it was recorded from (wbt-2.0 P2.4, migration 000067). NO FK per
+	// CLAUDE.md #9; a stale session_id is tolerated application-side.
+	WorkSessionID *uuid.UUID `json:"work_session_id,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // Evaluation is a structured analysis record attached to an Outcome.
@@ -74,6 +78,9 @@ type CreateOutcomeParams struct {
 	// When provided, the behavior governance scheduler job will call ApplyOutcome
 	// for each rule. Pass empty slice (not nil) for clarity; nil is also accepted.
 	RelatedRuleIDs []uuid.UUID
+	// WorkSessionID optionally links this outcome to the work session it was
+	// recorded from. See Outcome.WorkSessionID doc comment for the no-FK rationale.
+	WorkSessionID *uuid.UUID
 }
 
 // CreateEvaluationParams holds parameters for evaluating an outcome.

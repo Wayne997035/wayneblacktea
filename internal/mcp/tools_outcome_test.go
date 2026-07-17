@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -194,6 +195,104 @@ func TestHandleRecordOutcome_InvalidResult(t *testing.T) {
 	})
 	if !r.IsError {
 		t.Fatalf("expected IsError=true for invalid result")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 P2.4 — record_outcome session_id linkage
+// ---------------------------------------------------------------------------
+
+// TestHandleRecordOutcome_InvalidSessionIDUUID verifies a malformed session_id
+// is rejected BEFORE CreateOutcome is ever called (validate UUID format
+// first, per backend-security-design.md's no-FK design note: a stale-but-
+// well-formed UUID is tolerated, a malformed string is not).
+func TestHandleRecordOutcome_InvalidSessionIDUUID(t *testing.T) {
+	store := &stubOutcomeStore{}
+	s := newOutcomeServer(store)
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   uuid.New().String(),
+		"result":      "success",
+		"session_id":  "not-a-uuid",
+	})
+	if !r.IsError {
+		t.Fatal("expected IsError=true for invalid session_id UUID")
+	}
+	if store.lastCreateParams.EntityType != "" {
+		t.Error("CreateOutcome must not be called when session_id is malformed")
+	}
+}
+
+// TestHandleRecordOutcome_NoSessionID_Regression verifies calls without
+// session_id remain fully regression-safe (WorkSessionID stays nil, no
+// SetOutcomeLink attempted, no workSession store dependency required).
+func TestHandleRecordOutcome_NoSessionID_Regression(t *testing.T) {
+	store := &stubOutcomeStore{returnOutcome: outcome.Outcome{ID: uuid.New(), Result: "success"}}
+	s := newOutcomeServer(store) // no workSession wired at all
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   uuid.New().String(),
+		"result":      "success",
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	if store.lastCreateParams.WorkSessionID != nil {
+		t.Errorf("expected nil WorkSessionID when session_id is absent, got %v", store.lastCreateParams.WorkSessionID)
+	}
+}
+
+// TestHandleRecordOutcome_WithSessionID_LinksBothDirections verifies a valid
+// session_id (1) is stored on the outcome's work_session_id and (2) triggers
+// a best-effort SetOutcomeLink call that persists outcome_id back onto the
+// work_sessions row — the bidirectional link.
+func TestHandleRecordOutcome_WithSessionID_LinksBothDirections(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{"repo_name": "record-outcome-link-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   uuid.New().String(),
+		"result":      "success",
+		"session_id":  sessID,
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var o map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &o); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if o["work_session_id"] != sessID {
+		t.Errorf("outcome.work_session_id: got %v, want %s", o["work_session_id"], sessID)
+	}
+
+	// Verify the reverse direction: work_sessions.outcome_id got set too.
+	sessIDParsed, _ := uuid.Parse(sessID)
+	got, err := s.workSession.GetByID(context.Background(), s.workspaceUUIDVal(), sessIDParsed)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	outcomeIDStr, _ := o["id"].(string)
+	if got.OutcomeID == nil || got.OutcomeID.String() != outcomeIDStr {
+		t.Errorf("SetOutcomeLink did not persist outcome_id on the session: got %v, want %s", got.OutcomeID, outcomeIDStr)
+	}
+}
+
+// TestHandleRecordOutcome_UnknownSessionID_NonFatal verifies a well-formed
+// but unknown session_id still creates the outcome (non-fatal) — SetOutcomeLink
+// silently tolerates worksession.ErrNotFound per the no-FK design.
+func TestHandleRecordOutcome_UnknownSessionID_NonFatal(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   uuid.New().String(),
+		"result":      "success",
+		"session_id":  uuid.New().String(), // well-formed, but no such session exists
+	})
+	if r.IsError {
+		t.Fatalf("expected success even with unknown session_id, got error: %s", resultText(r))
 	}
 }
 

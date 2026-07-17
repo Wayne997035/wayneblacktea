@@ -39,8 +39,8 @@ func uuidFromPgtype(v pgtype.UUID) *uuid.UUID {
 }
 
 // outcomeSelectCols is the canonical column list for outcome SELECT queries.
-// related_rule_ids was added in migration 000063.
-const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, created_at`
+// related_rule_ids was added in migration 000063; work_session_id in 000067.
+const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, created_at`
 
 // evaluationSelectCols is the canonical column list for evaluation SELECT queries.
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
@@ -51,6 +51,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		o              Outcome
 		wsID           pgtype.UUID
 		entityID       pgtype.UUID
+		workSessionID  pgtype.UUID
 		createdAt      pgtype.Timestamptz
 		notesText      pgtype.Text
 		relatedRuleIDs []uuid.UUID
@@ -64,6 +65,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		&o.Metrics,
 		&notesText,
 		&relatedRuleIDs,
+		&workSessionID,
 		&createdAt,
 	)
 	if err != nil {
@@ -73,6 +75,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 	if entityID.Valid {
 		o.EntityID = uuid.UUID(entityID.Bytes)
 	}
+	o.WorkSessionID = uuidFromPgtype(workSessionID)
 	if createdAt.Valid {
 		o.CreatedAt = createdAt.Time
 	}
@@ -119,8 +122,8 @@ func scanEvaluationRow(rows pgx.Rows) (Evaluation, error) {
 // CreateOutcome inserts a new outcome row and returns the persisted record.
 func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
-		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
 		RETURNING ` + outcomeSelectCols
 
 	var notesArg pgtype.Text
@@ -140,7 +143,8 @@ func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (
 		relatedRuleIDs = []uuid.UUID{}
 	}
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		toPgtypeUUID(params.WorkspaceID),
 		params.EntityType,
 		params.EntityID,
@@ -148,6 +152,7 @@ func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (
 		metricsArg,
 		notesArg,
 		relatedRuleIDs,
+		toPgtypeUUID(params.WorkSessionID),
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("creating outcome: %w", err)
@@ -246,7 +251,8 @@ func (s *Store) CreateEvaluation(ctx context.Context, params CreateEvaluationPar
 		suggestions = []byte("[]")
 	}
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		toPgtypeUUID(params.WorkspaceID),
 		params.OutcomeID,
 		params.Analysis,

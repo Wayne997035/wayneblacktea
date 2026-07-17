@@ -25,8 +25,9 @@ func NewOutcomeStore(d *DB) *OutcomeStore {
 var _ outcome.StoreIface = (*OutcomeStore)(nil)
 
 const (
-	// outcomeSelectCols includes related_rule_ids added in migration 000063.
-	outcomeSelectCols    = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, created_at`
+	// outcomeSelectCols includes related_rule_ids added in migration 000063
+	// and work_session_id added in migration 000067.
+	outcomeSelectCols    = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, created_at`
 	evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
 )
 
@@ -39,6 +40,7 @@ type outcomeRawRow struct {
 	metricsNS      sql.NullString
 	notesNS        sql.NullString
 	relatedRuleIDs string // JSON array stored as TEXT, e.g. '["uuid1","uuid2"]'
+	workSessionNS  sql.NullString
 	createdNS      sql.NullString
 }
 
@@ -63,6 +65,7 @@ func scanOutcomeRawRow(scan func(...any) error) (outcomeRawRow, error) {
 		&r.metricsNS,
 		&r.notesNS,
 		&r.relatedRuleIDs,
+		&r.workSessionNS,
 		&r.createdNS,
 	)
 	return r, err
@@ -92,6 +95,7 @@ func parseOutcomeRow(r outcomeRawRow) outcome.Outcome {
 	}
 	// Decode related_rule_ids from JSON TEXT using the shared helper in playbooks.go.
 	o.RelatedRuleIDs = parseUUIDSlice(r.relatedRuleIDs)
+	o.WorkSessionID = nullStringToUUIDPtr(r.workSessionNS)
 	if t := parseTimestamptz(r.createdNS); t.Valid {
 		o.CreatedAt = t.Time
 	}
@@ -141,8 +145,8 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 	now := nowRFC3339()
 
 	const q = `INSERT INTO outcomes
-		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, created_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
 
 	var metricsArg any
 	if len(params.Metrics) > 0 {
@@ -155,7 +159,8 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 	// Encode related_rule_ids using the shared helper (playbooks.go:109).
 	relatedRuleIDsStr := encodeUUIDSlice(params.RelatedRuleIDs)
 
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		nullStringFromUUID(params.WorkspaceID),
 		params.EntityType,
@@ -164,6 +169,7 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 		metricsArg,
 		notesArg,
 		relatedRuleIDsStr,
+		nullStringFromUUID(params.WorkSessionID),
 		now,
 	)
 	if err != nil {
@@ -268,7 +274,8 @@ func (s *OutcomeStore) CreateEvaluation(ctx context.Context, params outcome.Crea
 		(id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
 
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		nullStringFromUUID(params.WorkspaceID),
 		params.OutcomeID.String(),
