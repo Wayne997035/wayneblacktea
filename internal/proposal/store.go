@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -34,7 +35,7 @@ func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
 	if p, ok := dbtx.(pgxBeginTx); ok {
 		pool = p
 	}
-	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID), pool: pool}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: pgconv.ToUUID(workspaceID), pool: pool}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
@@ -42,17 +43,6 @@ func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
 // begin nested transactions.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
-}
-
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
-func toUUID(id *uuid.UUID) pgtype.UUID {
-	if id == nil {
-		return pgtype.UUID{}
-	}
-	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
 // Create records a new pending proposal. Payload is opaque JSON; the caller is
@@ -64,13 +54,13 @@ func toUUID(id *uuid.UUID) pgtype.UUID {
 func (s *Store) Create(ctx context.Context, p CreateParams) (*db.PendingProposal, error) {
 	ws := s.workspaceID
 	if p.WorkspaceID != nil {
-		ws = toUUID(p.WorkspaceID)
+		ws = pgconv.ToUUID(p.WorkspaceID)
 	}
 	row, err := s.q.CreatePendingProposal(ctx, db.CreatePendingProposalParams{
 		WorkspaceID: ws,
 		Type:        string(p.Type),
 		Payload:     p.Payload,
-		ProposedBy:  toText(p.ProposedBy),
+		ProposedBy:  pgconv.ToText(p.ProposedBy),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating proposal: %w", err)

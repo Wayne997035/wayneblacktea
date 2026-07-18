@@ -27,11 +27,16 @@ ALTER TABLE project_status_snapshots ADD COLUMN embedding_model     TEXT;
 ALTER TABLE project_status_snapshots ADD COLUMN embedding_dim       INTEGER;
 
 -- Tag all existing non-null-embedding rows as 'hashed'/32-dim.
+--
+-- decisions is deliberately excluded here (see migrations/HISTORICAL_EXCEPTIONS.md):
+-- unlike session_handoffs and project_status_snapshots, decisions has never
+-- carried a raw `embedding` column in internal/storage/sqlite/schema.sql (the
+-- runtime authority until E1) — migration 000020 added it, but migration
+-- 000026's FK-drop table-rebuild dropped it again (decisions_new's column
+-- list never included it), and no SQLite DB has ever actually executed this
+-- file before E1 made migrations/sqlite/ a real runner. Backfilling a column
+-- that no real schema state has would error "no such column: embedding".
 UPDATE session_handoffs
-   SET embedding_provider = 'hashed', embedding_dim = 32
- WHERE embedding IS NOT NULL AND embedding_provider IS NULL;
-
-UPDATE decisions
    SET embedding_provider = 'hashed', embedding_dim = 32
  WHERE embedding IS NOT NULL AND embedding_provider IS NULL;
 

@@ -87,7 +87,8 @@ func TestStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 	// focused on the GTD cascade behaviour (and to avoid coupling to the
 	// worksession.Store API which has its own tests).
 	sessionID := uuid.New()
-	if _, err := pool.Exec(ctx, `
+	if _, err := pool.Exec(
+		ctx, `
 		INSERT INTO work_sessions (
 		    id, workspace_id, repo_name, project_id, title, goal, status, source,
 		    confirmed_plan_id, current_task_id, started_at, created_at, updated_at
@@ -99,7 +100,8 @@ func TestStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert work_session: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
+	if _, err := pool.Exec(
+		ctx, `
 		INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
 		VALUES ($1, $2, 'primary', NOW())`,
 		sessionID, task.ID,
@@ -109,7 +111,8 @@ func TestStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 
 	// Sanity check: link row exists, current_task_id is set.
 	var preLinks int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = $1`, task.ID,
 	).Scan(&preLinks); err != nil {
 		t.Fatalf("pre-count: %v", err)
@@ -125,7 +128,8 @@ func TestStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 
 	// Assertion 1: link row is gone (was ON DELETE CASCADE).
 	var postLinks int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = $1`, task.ID,
 	).Scan(&postLinks); err != nil {
 		t.Fatalf("post-count links: %v", err)
@@ -136,7 +140,8 @@ func TestStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 
 	// Assertion 2: current_task_id is now NULL (was ON DELETE SET NULL).
 	var currentTaskID *uuid.UUID
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT current_task_id FROM work_sessions WHERE id = $1`, sessionID,
 	).Scan(&currentTaskID); err != nil {
 		t.Fatalf("post-read session: %v", err)
@@ -209,7 +214,8 @@ func TestStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	// plus a workspace-A join row. These belong to workspace A and a
 	// workspace-B caller must not touch them.
 	sessionID := uuid.New()
-	if _, err := pool.Exec(ctx, `
+	if _, err := pool.Exec(
+		ctx, `
 		INSERT INTO work_sessions (
 		    id, workspace_id, repo_name, project_id, title, goal, status, source,
 		    confirmed_plan_id, current_task_id, started_at, created_at, updated_at
@@ -221,7 +227,8 @@ func TestStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert work_session: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
+	if _, err := pool.Exec(
+		ctx, `
 		INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
 		VALUES ($1, $2, 'primary', NOW())`,
 		sessionID, task.ID,
@@ -237,7 +244,8 @@ func TestStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 
 	// Assertion 1: the parent task still exists when read from workspace A.
 	var taskCount int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM tasks WHERE id = $1`, task.ID,
 	).Scan(&taskCount); err != nil {
 		t.Fatalf("count task: %v", err)
@@ -249,7 +257,8 @@ func TestStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	// Assertion 2: the workspace-A join-table row MUST still be present.
 	// Without the pre-check the task_id-only cleanup DELETE would erase it.
 	var linksRemaining int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM work_session_tasks WHERE task_id = $1`, task.ID,
 	).Scan(&linksRemaining); err != nil {
 		t.Fatalf("count surviving join rows: %v", err)
@@ -262,7 +271,8 @@ func TestStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	// point at the original task. Without the pre-check the task_id-only
 	// UPDATE would NULL it.
 	var currentTaskID *uuid.UUID
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT current_task_id FROM work_sessions WHERE id = $1`, sessionID,
 	).Scan(&currentTaskID); err != nil {
 		t.Fatalf("read current_task_id: %v", err)
@@ -727,7 +737,8 @@ func TestStore_ProjectsByRepoName_PG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject p2: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := pool.Exec(
+		ctx,
 		`UPDATE projects SET repo_name = $1 WHERE id IN ($2, $3)`,
 		"wayneblacktea", p1.ID, p2.ID,
 	); err != nil {
@@ -776,7 +787,8 @@ func TestStore_ProjectsByRepoName_WorkspaceMismatch_PG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject pA: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := pool.Exec(
+		ctx,
 		`UPDATE projects SET repo_name = $1 WHERE id = $2`,
 		"shared-repo", pA.ID,
 	); err != nil {
@@ -802,7 +814,8 @@ func TestStore_ProjectsByRepoName_WorkspaceMismatch_PG(t *testing.T) {
 func readRepoName(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, label string) *string {
 	t.Helper()
 	var repoName *string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT repo_name FROM projects WHERE id = $1`, id,
 	).Scan(&repoName); err != nil {
 		t.Fatalf("%s: %v", label, err)
@@ -974,7 +987,8 @@ func TestStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := pool.Exec(
+		ctx,
 		`UPDATE tasks SET created_at = $1 WHERE id = $2`, april2026, task.ID,
 	); err != nil {
 		t.Fatalf("back-date created_at: %v", err)
@@ -1024,7 +1038,8 @@ func TestStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := pool.Exec(
+		ctx,
 		`UPDATE tasks SET created_at = $1, updated_at = $1 WHERE id = $2`, april2026, task.ID,
 	); err != nil {
 		t.Fatalf("back-date: %v", err)
@@ -1433,7 +1448,7 @@ func TestStore_BeginTask_HappyPath(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	result, err := store.BeginTask(ctx, task.ID, wsID)
+	result, err := store.BeginTask(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("BeginTask: %v", err)
 	}
@@ -1472,7 +1487,7 @@ func TestStore_BeginTask_Idempotent(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if _, err := store.BeginTask(ctx, task.ID, wsID); err != nil {
+	if _, err := store.BeginTask(ctx, task.ID); err != nil {
 		t.Fatalf("BeginTask first: %v", err)
 	}
 	logsBefore, err := store.ListActivityLogsSince(ctx, task.CreatedAt.Time, 100)
@@ -1481,7 +1496,7 @@ func TestStore_BeginTask_Idempotent(t *testing.T) {
 	}
 	countBefore := countAction(logsBefore, "work_session_started")
 
-	if _, err := store.BeginTask(ctx, task.ID, wsID); err != nil {
+	if _, err := store.BeginTask(ctx, task.ID); err != nil {
 		t.Fatalf("BeginTask second (idempotent): %v", err)
 	}
 	logsAfter, err := store.ListActivityLogsSince(ctx, task.CreatedAt.Time, 100)
@@ -1502,7 +1517,7 @@ func TestStore_BeginTask_NotFound(t *testing.T) {
 	store := newPgGTDStore(pool, &wsID)
 	ctx := context.Background()
 
-	_, err := store.BeginTask(ctx, uuid.New(), wsID)
+	_, err := store.BeginTask(ctx, uuid.New())
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected gtd.ErrNotFound, got %v", err)
 	}
@@ -1522,7 +1537,7 @@ func TestStore_BeginTask_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("CreateTask in wsA: %v", err)
 	}
 
-	_, err = storeB.BeginTask(ctx, task.ID, wsB)
+	_, err = storeB.BeginTask(ctx, task.ID)
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for cross-workspace begin, got %v", err)
 	}
@@ -1539,65 +1554,105 @@ func countAction(logs []db.ActivityLog, action string) int {
 	return n
 }
 
-// TestStore_SetVisionItemID_HappyPath verifies that SetVisionItemID persists
-// the vision_item_id column on the task row and returns the updated task.
-func TestStore_SetVisionItemID_HappyPath(t *testing.T) {
+// backdatePgActivityLog rewrites created_at for all activity_log rows with
+// the given action, bypassing LogActivity (which always stamps NOW()).
+func backdatePgActivityLog(t *testing.T, pool *pgxpool.Pool, action string, createdAt time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(
+		context.Background(),
+		`UPDATE activity_log SET created_at = $1 WHERE action = $2`, createdAt, action,
+	); err != nil {
+		t.Fatalf("backdate activity_log: %v", err)
+	}
+}
+
+func countPgActivityLogRows(t *testing.T, pool *pgxpool.Pool, action string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM activity_log WHERE action = $1`, action).Scan(&n); err != nil {
+		t.Fatalf("count activity_log: %v", err)
+	}
+	return n
+}
+
+// TestStore_PruneOlderThan_ActivityLog_Expired verifies that an activity_log
+// row older than the cutoff is deleted on Postgres.
+func TestStore_PruneOlderThan_ActivityLog_Expired(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
 	store := newPgGTDStore(pool, &wsID)
 	ctx := context.Background()
 
-	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "vision task", Priority: 3})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	if err := store.LogActivity(ctx, "actor", "pg_expired_action", nil, ""); err != nil {
+		t.Fatalf("LogActivity: %v", err)
 	}
+	backdatePgActivityLog(t, pool, "pg_expired_action", time.Now().Add(-400*24*time.Hour))
 
-	visionID := uuid.New()
-	updated, err := store.SetVisionItemID(ctx, task.ID, visionID)
+	cutoff := time.Now().Add(-365 * 24 * time.Hour)
+	n, err := store.PruneOlderThan(ctx, cutoff)
 	if err != nil {
-		t.Fatalf("SetVisionItemID: %v", err)
+		t.Fatalf("PruneOlderThan: %v", err)
 	}
-	if !updated.VisionItemID.Valid {
-		t.Fatal("want VisionItemID.Valid=true after SetVisionItemID")
+	if n < 1 {
+		t.Errorf("rows deleted = %d, want >= 1", n)
 	}
-	gotVisionID := uuid.UUID(updated.VisionItemID.Bytes)
-	if gotVisionID != visionID {
-		t.Errorf("VisionItemID: got %s, want %s", gotVisionID, visionID)
+	if got := countPgActivityLogRows(t, pool, "pg_expired_action"); got != 0 {
+		t.Errorf("expired row survived: count = %d, want 0", got)
 	}
 }
 
-// TestStore_SetVisionItemID_NotFound verifies that SetVisionItemID returns
-// ErrNotFound when the task does not exist in the store's workspace.
-func TestStore_SetVisionItemID_NotFound(t *testing.T) {
+// TestStore_PruneOlderThan_ActivityLog_NotExpired verifies that a fresh
+// activity_log row is NOT deleted on Postgres.
+func TestStore_PruneOlderThan_ActivityLog_NotExpired(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
 	store := newPgGTDStore(pool, &wsID)
 	ctx := context.Background()
 
-	_, err := store.SetVisionItemID(ctx, uuid.New(), uuid.New())
-	if !errors.Is(err, gtd.ErrNotFound) {
-		t.Errorf("expected gtd.ErrNotFound for unknown task ID, got %v", err)
+	if err := store.LogActivity(ctx, "actor", "pg_fresh_action", nil, ""); err != nil {
+		t.Fatalf("LogActivity: %v", err)
+	}
+	backdatePgActivityLog(t, pool, "pg_fresh_action", time.Now().Add(-10*24*time.Hour))
+
+	cutoff := time.Now().Add(-365 * 24 * time.Hour)
+	if _, err := store.PruneOlderThan(ctx, cutoff); err != nil {
+		t.Fatalf("PruneOlderThan: %v", err)
+	}
+	if got := countPgActivityLogRows(t, pool, "pg_fresh_action"); got != 1 {
+		t.Errorf("fresh row was pruned: count = %d, want 1", got)
 	}
 }
 
-// TestStore_SetVisionItemID_WorkspaceIsolation verifies that a store scoped to
-// workspace B cannot set vision_item_id on a task owned by workspace A.
-func TestStore_SetVisionItemID_WorkspaceIsolation(t *testing.T) {
+// TestStore_PruneOlderThan_ActivityLog_Boundary verifies the cutoff
+// comparison is strict-less-than on Postgres: a row exactly at the cutoff
+// survives, a row 1 second before the cutoff is deleted.
+func TestStore_PruneOlderThan_ActivityLog_Boundary(t *testing.T) {
 	pool := openTestPgPool(t)
-	wsA := uuid.New()
-	wsB := uuid.New()
-	storeA := newPgGTDStore(pool, &wsA)
-	storeB := newPgGTDStore(pool, &wsB)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
 	ctx := context.Background()
 
-	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a vision task", Priority: 2})
-	if err != nil {
-		t.Fatalf("CreateTask in wsA: %v", err)
-	}
+	cutoff := time.Now().Add(-365 * 24 * time.Hour)
 
-	_, err = storeB.SetVisionItemID(ctx, task.ID, uuid.New())
-	if !errors.Is(err, gtd.ErrNotFound) {
-		t.Errorf("expected ErrNotFound for cross-workspace SetVisionItemID, got %v", err)
+	if err := store.LogActivity(ctx, "actor", "pg_at_cutoff", nil, ""); err != nil {
+		t.Fatalf("LogActivity (pg_at_cutoff): %v", err)
+	}
+	backdatePgActivityLog(t, pool, "pg_at_cutoff", cutoff)
+
+	if err := store.LogActivity(ctx, "actor", "pg_just_before_cutoff", nil, ""); err != nil {
+		t.Fatalf("LogActivity (pg_just_before_cutoff): %v", err)
+	}
+	backdatePgActivityLog(t, pool, "pg_just_before_cutoff", cutoff.Add(-1*time.Second))
+
+	if _, err := store.PruneOlderThan(ctx, cutoff); err != nil {
+		t.Fatalf("PruneOlderThan: %v", err)
+	}
+	if got := countPgActivityLogRows(t, pool, "pg_at_cutoff"); got != 1 {
+		t.Errorf("row exactly at cutoff was pruned: count = %d, want 1 (survive)", got)
+	}
+	if got := countPgActivityLogRows(t, pool, "pg_just_before_cutoff"); got != 0 {
+		t.Errorf("row just before cutoff survived: count = %d, want 0 (pruned)", got)
 	}
 }
 

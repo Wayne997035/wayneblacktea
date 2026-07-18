@@ -15,7 +15,6 @@
 -- databases, so this file exists only for Postgres↔SQLite numbering parity
 -- (backend-security-design.md §6.3) and for upgrading pre-existing dev DBs.
 
-DROP INDEX IF EXISTS sqlite_autoindex_repos_1;
 DROP INDEX IF EXISTS idx_repos_name_unique;
 
 -- COALESCE(workspace_id,'') is required because SQLite treats NULL != NULL,

@@ -55,11 +55,3 @@ func WorkspaceIDFromEnv() (*uuid.UUID, error) {
 	}
 	return &id, nil
 }
-
-// UserIDFromEnv returns the optional user identity configured via USER_ID.
-// Returns ("", nil) when unset. The schema does not yet have a user_id column
-// (deferred to Phase C/D); this helper exists so the MCP/HTTP surface can
-// already start reading the value (e.g. for proposed_by attribution).
-func UserIDFromEnv() string {
-	return strings.TrimSpace(os.Getenv("USER_ID"))
-}

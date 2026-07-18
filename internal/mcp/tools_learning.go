@@ -7,17 +7,18 @@ import (
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
-	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 func (s *Server) registerLearningTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("get_due_reviews",
+	ms.AddTool(mcp.NewTool(
+		"get_due_reviews",
 		mcp.WithDescription("Returns all concepts currently due for review."),
 	), s.handleGetDueReviews)
 
-	ms.AddTool(mcp.NewTool("submit_review",
+	ms.AddTool(mcp.NewTool(
+		"submit_review",
 		mcp.WithDescription("Submits a review rating for a concept and updates the next review schedule."),
 		mcp.WithString("schedule_id", mcp.Description("Review schedule UUID"), mcp.Required()),
 		mcp.WithNumber("rating", mcp.Description("Rating: 1=Again, 2=Hard, 3=Good, 4=Easy"), mcp.Required()),
@@ -26,7 +27,8 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 		mcp.WithNumber("review_count", mcp.Description("Current review count from get_due_reviews")),
 	), s.handleSubmitReview)
 
-	ms.AddTool(mcp.NewTool("create_concept",
+	ms.AddTool(mcp.NewTool(
+		"create_concept",
 		mcp.WithDescription("Creates a new concept and initialises its FSRS review schedule."),
 		mcp.WithString("title", mcp.Description("Concept title"), mcp.Required()),
 		mcp.WithString("content", mcp.Description("Concept explanation / body"), mcp.Required()),
@@ -45,13 +47,9 @@ func (s *Server) handleGetDueReviews(ctx context.Context, _ mcp.CallToolRequest)
 func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
-	rawID := stringArg(args, "schedule_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("schedule_id is required"), nil
-	}
-	scheduleID, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid schedule_id UUID"), nil
+	scheduleID, errResult := requireUUIDArg(args, "schedule_id", "invalid schedule_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	ratingVal := int(numberArg(args, "rating"))

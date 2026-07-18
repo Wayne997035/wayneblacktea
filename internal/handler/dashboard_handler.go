@@ -9,8 +9,6 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/aicost"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/proposal"
-	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -232,96 +230,6 @@ func (h *DashboardHandler) GetRecentDecisions(c echo.Context) error {
 		}
 		if d.CreatedAt.Valid {
 			r.CreatedAt = d.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
-		}
-		out = append(out, r)
-	}
-	return c.JSON(http.StatusOK, out)
-}
-
-// activeProjectResponse is the JSON shape for active projects.
-type activeProjectResponse struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Title       string `json:"title"`
-	Status      string `json:"status"`
-	Area        string `json:"area,omitempty"`
-	Description string `json:"description,omitempty"`
-	Priority    int32  `json:"priority"`
-}
-
-// GetActiveProjects handles GET /api/dashboard/active-projects.
-func (h *DashboardHandler) GetActiveProjects(c echo.Context) error {
-	ctx := c.Request().Context()
-	projects, err := h.gtd.ListActiveProjects(ctx)
-	if err != nil {
-		c.Logger().Errorf("GetActiveProjects: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-	}
-
-	out := make([]activeProjectResponse, 0, len(projects))
-	for _, p := range projects {
-		r := activeProjectResponse{
-			ID:       p.ID.String(),
-			Name:     p.Name,
-			Title:    p.Title,
-			Status:   p.Status,
-			Area:     p.Area,
-			Priority: p.Priority,
-		}
-		if p.Description.Valid {
-			r.Description = p.Description.String
-		}
-		out = append(out, r)
-	}
-	return c.JSON(http.StatusOK, out)
-}
-
-// dashboardWeeklyProgressResponse is the JSON shape for GET /api/dashboard/weekly-progress.
-type dashboardWeeklyProgressResponse struct {
-	Completed int64 `json:"completed"`
-	Total     int64 `json:"total"`
-}
-
-// GetWeeklyProgress handles GET /api/dashboard/weekly-progress.
-func (h *DashboardHandler) GetWeeklyProgress(c echo.Context) error {
-	ctx := c.Request().Context()
-	completed, total, err := h.gtd.WeeklyProgress(ctx)
-	if err != nil {
-		c.Logger().Errorf("GetWeeklyProgress: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-	}
-	return c.JSON(http.StatusOK, dashboardWeeklyProgressResponse{Completed: completed, Total: total})
-}
-
-// pendingKnowledgeProposalResponse is the JSON shape for pending knowledge proposals.
-type pendingKnowledgeProposalResponse struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at,omitempty"`
-}
-
-// GetPendingKnowledgeProposals handles GET /api/dashboard/pending-knowledge-proposals.
-func (h *DashboardHandler) GetPendingKnowledgeProposals(c echo.Context) error {
-	ctx := c.Request().Context()
-	pending, err := h.proposal.ListPending(ctx)
-	if err != nil {
-		c.Logger().Errorf("GetPendingKnowledgeProposals: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-	}
-
-	out := make([]pendingKnowledgeProposalResponse, 0)
-	for _, p := range pending {
-		if p.Type != string(proposal.TypeKnowledge) {
-			continue
-		}
-		r := pendingKnowledgeProposalResponse{
-			ID:     p.ID.String(),
-			Type:   p.Type,
-			Status: p.Status,
-		}
-		if p.CreatedAt.Valid {
-			r.CreatedAt = p.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
 		out = append(out, r)
 	}
@@ -562,54 +470,6 @@ func (h *DashboardHandler) GetAutomationFeed(c echo.Context) error {
 	})
 }
 
-// vagueTasksResponse is the JSON shape for GET /api/dashboard/vague-tasks.
-// Mirrors the system_health VaguePendingTaskCount / VagueSampleIDs fields so
-// frontend / monitoring clients can subscribe to either signal without
-// translating shapes.
-type vagueTasksResponse struct {
-	Count     int      `json:"count"`
-	SampleIDs []string `json:"sample_ids"`
-}
-
-// maxDashboardVagueSampleIDs caps the number of vague-task IDs returned by
-// the HTTP endpoint. Kept consistent with the system_health cap so the two
-// signals agree.
-const maxDashboardVagueSampleIDs = 5
-
-// countVagueTasks scans tasks for pending/in_progress entries whose
-// Description is flagged by validator.CheckVagueness for the task's Kind.
-// Returns the total count plus the first `sampleCap` IDs in scan order.
-//
-// Mirrors the MCP system_health helper of the same purpose — kept in the
-// handler package to avoid importing internal/mcp (cycle), and to keep the
-// HTTP surface self-contained. Behavioural drift between the two helpers is
-// guarded by validator.CheckVagueness being the single source of truth.
-func countVagueTasks(tasks []db.Task, sampleCap int) (int, []string) {
-	count := 0
-	var sampleIDs []string
-	const (
-		statusPending    = "pending"
-		statusInProgress = "in_progress"
-	)
-	for _, t := range tasks {
-		if t.Status != statusPending && t.Status != statusInProgress {
-			continue
-		}
-		if !t.Description.Valid || t.Description.String == "" {
-			continue
-		}
-		warnings := validator.CheckVagueness("description", t.Description.String, t.Kind)
-		if len(warnings) == 0 {
-			continue
-		}
-		count++
-		if len(sampleIDs) < sampleCap {
-			sampleIDs = append(sampleIDs, t.ID.String())
-		}
-	}
-	return count, sampleIDs
-}
-
 // aiCostResponse is the JSON shape for GET /api/dashboard/ai-cost.
 type aiCostResponse struct {
 	// ByModel holds one entry per distinct model active in the last 30 days.
@@ -645,30 +505,4 @@ func (h *DashboardHandler) GetAICost(c echo.Context) error {
 		TotalCostUSD: float64(grandTotal) / 1_000_000,
 		Period:       "30d",
 	})
-}
-
-// GetVagueTasks handles GET /api/dashboard/vague-tasks.
-//
-// It scans pending/in_progress tasks in the configured workspace and counts
-// those whose Description triggers validator.CheckVagueness for the task's
-// Kind (chore tasks are exempt per CheckVagueness). The first
-// maxDashboardVagueSampleIDs IDs are returned alongside the total count.
-//
-// This is a defence-in-depth surface: the structural fix for the
-// auto-capture regression (engineer A's TASK 4) is the must-have; this
-// endpoint exists so any future leak — whether from auto-capture or another
-// path — is visible without spelunking system_health.
-func (h *DashboardHandler) GetVagueTasks(c echo.Context) error {
-	ctx := c.Request().Context()
-	tasks, err := h.gtd.Tasks(ctx, nil)
-	if err != nil {
-		c.Logger().Errorf("GetVagueTasks Tasks: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
-	}
-
-	count, sampleIDs := countVagueTasks(tasks, maxDashboardVagueSampleIDs)
-	if sampleIDs == nil {
-		sampleIDs = []string{}
-	}
-	return c.JSON(http.StatusOK, vagueTasksResponse{Count: count, SampleIDs: sampleIDs})
 }

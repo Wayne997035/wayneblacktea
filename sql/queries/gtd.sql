@@ -112,11 +112,6 @@ WHERE id = sqlc.arg('id')::uuid
   AND status != 'in_progress'
 RETURNING *;
 
--- name: CountTotalActiveTasks :one
-SELECT COUNT(*) FROM tasks
-WHERE status IN ('pending', 'in_progress')
-  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
-
 -- name: CountWeeklyRelevantTasks :one
 -- Returns count of tasks that are "relevant to this week":
 -- (1) completed this week, OR

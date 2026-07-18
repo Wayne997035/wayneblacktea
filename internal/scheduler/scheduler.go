@@ -162,6 +162,17 @@ type Scheduler struct {
 	// 90d (wbt-2.0 P2.4). Set via WithWorkSessionEvidencePruner after New();
 	// nil skips the prune job.
 	workSessionEvidencePruner workSessionEvidencePruneStore
+	// activityLogPruner deletes activity_log rows older than 365d.
+	// Set via WithActivityLogPruner after New(); nil skips the prune job.
+	activityLogPruner activityLogPruneStore
+	// projectStatusSnapshotPruner deletes project_status_snapshots rows older
+	// than 180d. Set via WithProjectStatusSnapshotPruner after New(); nil
+	// skips the prune job.
+	projectStatusSnapshotPruner projectStatusSnapshotPruneStore
+	// sessionHandoffPruner deletes resolved session_handoffs rows older than
+	// 365d (open handoffs are never pruned). Set via WithSessionHandoffPruner
+	// after New(); nil skips the prune job.
+	sessionHandoffPruner sessionHandoffPruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -251,6 +262,51 @@ const behaviorRulePruneRetention = 365 * 24 * time.Hour
 
 // behaviorRulePruneTimeout caps the daily behavior_rules DELETE. 60 s budget.
 const behaviorRulePruneTimeout = 60 * time.Second
+
+// activityLogPruneStore is the narrow prune interface used by the daily
+// activity_log cleanup job. gtd.Store (PG) and sqlite.GTDStore both satisfy
+// it. 365-day retention per backend-security-design.md §1.3.
+type activityLogPruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// activityLogPruneRetention is the activity_log TTL (365 days).
+const activityLogPruneRetention = 365 * 24 * time.Hour
+
+// activityLogPruneTimeout caps the daily activity_log DELETE. 60 s budget
+// mirrors the other observability-table prune jobs.
+const activityLogPruneTimeout = 60 * time.Second
+
+// projectStatusSnapshotPruneStore is the narrow prune interface used by the
+// daily project_status_snapshots cleanup job. snapshot.Store (PG only —
+// there is no SQLite implementation of snapshot.StoreIface) satisfies it.
+// 180-day retention per backend-security-design.md §1.3.
+type projectStatusSnapshotPruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// projectStatusSnapshotPruneRetention is the project_status_snapshots TTL
+// (180 days).
+const projectStatusSnapshotPruneRetention = 180 * 24 * time.Hour
+
+// projectStatusSnapshotPruneTimeout caps the daily project_status_snapshots
+// DELETE. 60 s budget.
+const projectStatusSnapshotPruneTimeout = 60 * time.Second
+
+// sessionHandoffPruneStore is the narrow prune interface used by the daily
+// session_handoffs cleanup job. session.Store (PG) and sqlite.SessionStore
+// both satisfy it. 365-day retention (resolved handoffs only) per
+// backend-security-design.md §1.3.
+type sessionHandoffPruneStore interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// sessionHandoffPruneRetention is the session_handoffs TTL (365 days),
+// applied only to rows where resolved_at IS NOT NULL.
+const sessionHandoffPruneRetention = 365 * 24 * time.Hour
+
+// sessionHandoffPruneTimeout caps the daily session_handoffs DELETE. 60 s budget.
+const sessionHandoffPruneTimeout = 60 * time.Second
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -908,6 +964,133 @@ func (s *Scheduler) runDailyBehaviorRulePrune() {
 		"daily behavior_rule prune: completed",
 		"rows_deleted", n,
 		"retention_days", int(behaviorRulePruneRetention.Hours()/24),
+	)
+}
+
+// WithActivityLogPruner wires the activity_log retention store and registers
+// the daily 04:35 prune job. Must be called before Start(). 365-day TTL per
+// backend-security-design.md §1.3. 04:35 avoids the 03:00-04:30 prune cluster
+// (pending-proposals/merged-prs 03:00, outcome 03:30, reflection 03:45,
+// discipline-event-m8 03:50, behavior-rule 04:00, ai-cost-ledger 04:15,
+// work-session-evidence 04:20, atom-consolidation 04:30).
+func (sc *Scheduler) WithActivityLogPruner(p activityLogPruneStore) error {
+	sc.activityLogPruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 35, 0))),
+		gocron.NewTask(sc.runDailyActivityLogPrune),
+		gocron.WithName("daily-activity-log-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily activity_log prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyActivityLogPrune scheduled at 04:35 Asia/Taipei")
+	return nil
+}
+
+// runDailyActivityLogPrune deletes activity_log rows older than 365 days.
+// Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailyActivityLogPrune() {
+	if s.activityLogPruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), activityLogPruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-activityLogPruneRetention)
+	n, err := s.activityLogPruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily activity_log prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info(
+		"daily activity_log prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(activityLogPruneRetention.Hours()/24),
+	)
+}
+
+// WithProjectStatusSnapshotPruner wires the project_status_snapshots
+// retention store and registers the daily 04:40 prune job. Must be called
+// before Start(). 180-day TTL per backend-security-design.md §1.3.
+// Postgres-only: there is no SQLite implementation of snapshot.StoreIface.
+func (sc *Scheduler) WithProjectStatusSnapshotPruner(p projectStatusSnapshotPruneStore) error {
+	sc.projectStatusSnapshotPruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 40, 0))),
+		gocron.NewTask(sc.runDailyProjectStatusSnapshotPrune),
+		gocron.WithName("daily-project-status-snapshot-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily project_status_snapshots prune job: %w", err)
+	}
+	slog.Info("scheduler: DailyProjectStatusSnapshotPrune scheduled at 04:40 Asia/Taipei")
+	return nil
+}
+
+// runDailyProjectStatusSnapshotPrune deletes project_status_snapshots rows
+// older than 180 days. Errors are logged at warn level — the scheduler keeps
+// running.
+func (s *Scheduler) runDailyProjectStatusSnapshotPrune() {
+	if s.projectStatusSnapshotPruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), projectStatusSnapshotPruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-projectStatusSnapshotPruneRetention)
+	n, err := s.projectStatusSnapshotPruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily project_status_snapshot prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info(
+		"daily project_status_snapshot prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(projectStatusSnapshotPruneRetention.Hours()/24),
+	)
+}
+
+// WithSessionHandoffPruner wires the session_handoffs retention store and
+// registers the daily 04:45 prune job. Must be called before Start().
+// 365-day TTL for resolved handoffs per backend-security-design.md §1.3.
+// Open (unresolved) handoffs are NEVER auto-pruned regardless of age.
+func (sc *Scheduler) WithSessionHandoffPruner(p sessionHandoffPruneStore) error {
+	sc.sessionHandoffPruner = p
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 45, 0))),
+		gocron.NewTask(sc.runDailySessionHandoffPrune),
+		gocron.WithName("daily-session-handoff-prune"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily session_handoffs prune job: %w", err)
+	}
+	slog.Info("scheduler: DailySessionHandoffPrune scheduled at 04:45 Asia/Taipei")
+	return nil
+}
+
+// runDailySessionHandoffPrune deletes resolved session_handoffs rows older
+// than 365 days. Open handoffs are never touched (see PruneOlderThan doc).
+// Errors are logged at warn level — the scheduler keeps running.
+func (s *Scheduler) runDailySessionHandoffPrune() {
+	if s.sessionHandoffPruner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionHandoffPruneTimeout)
+	defer cancel()
+
+	cutoff := time.Now().Add(-sessionHandoffPruneRetention)
+	n, err := s.sessionHandoffPruner.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn("daily session_handoff prune: PruneOlderThan failed", "err", err)
+		return
+	}
+	slog.Info(
+		"daily session_handoff prune: completed",
+		"rows_deleted", n,
+		"retention_days", int(sessionHandoffPruneRetention.Hours()/24),
 	)
 }
 

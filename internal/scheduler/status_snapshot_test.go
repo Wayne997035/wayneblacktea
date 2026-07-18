@@ -53,6 +53,10 @@ func (s *stubSnapshotStore) LatestSlugs(_ context.Context) ([]string, error) {
 	return s.slugs, nil
 }
 
+func (s *stubSnapshotStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
 // ---------------------------------------------------------------------------
 // Stub snapshot.GeneratorIface
 // ---------------------------------------------------------------------------

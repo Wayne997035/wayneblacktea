@@ -113,7 +113,7 @@ func (f *fakeGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Ma
 	return nil, nil
 }
 
-func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID) (*db.Task, error) {
 	return nil, nil
 }
 
@@ -151,6 +151,10 @@ func (f *fakeGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.Updat
 func (f *fakeGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return nil }
 func (f *fakeGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
 	return 0, 0, nil
+}
+
+func (f *fakeGTDStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
 }
 
 func (f *fakeGTDStore) AddChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ gtd.ChecklistItem) ([]gtd.ChecklistItem, error) {
@@ -355,10 +359,6 @@ func (f *fakeSkillStore) Add(_ context.Context, _ skill.AddParams) (*skill.Skill
 	return nil, nil
 }
 
-func (f *fakeSkillStore) GetByID(_ context.Context, _ string, _ *string) (*skill.Skill, error) {
-	return nil, nil
-}
-
 func (f *fakeSkillStore) IncrementSuccess(_ context.Context, _ string, _ *string) (*skill.Skill, error) {
 	return nil, nil
 }
@@ -479,10 +479,6 @@ func (f *fakeBehaviorRuleStore) Propose(_ context.Context, _ behaviorrule.Create
 	return nil, nil
 }
 
-func (f *fakeBehaviorRuleStore) GetByID(_ context.Context, _ uuid.UUID) (*behaviorrule.BehaviorRule, error) {
-	return nil, nil
-}
-
 func (f *fakeBehaviorRuleStore) ApplyOutcome(_ context.Context, _ uuid.UUID, _ string) (*behaviorrule.BehaviorRule, error) {
 	return nil, nil
 }
@@ -540,6 +536,10 @@ func (f *fakeSessionStore) HandoffsSince(_ context.Context, _ time.Time, _ int) 
 
 func (f *fakeSessionStore) HandoffsByRepo(_ context.Context, _ string, _ int) ([]db.SessionHandoff, error) {
 	return nil, nil
+}
+
+func (f *fakeSessionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------

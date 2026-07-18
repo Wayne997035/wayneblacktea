@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -21,23 +22,12 @@ type Store struct {
 // NewStore returns a Store backed by the given DBTX scoped to the optional
 // workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: pgconv.ToUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
-}
-
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
-func toUUID(id *uuid.UUID) pgtype.UUID {
-	if id == nil {
-		return pgtype.UUID{}
-	}
-	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
 // ActiveRepos returns all repos with status = 'active', ordered by last_activity.
@@ -137,12 +127,12 @@ func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (*db.Repo, e
 	}
 	row, err := s.q.UpsertRepo(ctx, db.UpsertRepoParams{
 		Name:            p.Name,
-		Path:            toText(p.Path),
-		Description:     toText(p.Description),
-		Language:        toText(p.Language),
-		CurrentBranch:   toText(p.CurrentBranch),
+		Path:            pgconv.ToText(p.Path),
+		Description:     pgconv.ToText(p.Description),
+		Language:        pgconv.ToText(p.Language),
+		CurrentBranch:   pgconv.ToText(p.CurrentBranch),
 		KnownIssues:     p.KnownIssues,
-		NextPlannedStep: toText(p.NextPlannedStep),
+		NextPlannedStep: pgconv.ToText(p.NextPlannedStep),
 		WorkspaceID:     s.workspaceID,
 	})
 	if err != nil {

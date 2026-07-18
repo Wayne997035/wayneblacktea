@@ -36,7 +36,6 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
-	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/timeline"
@@ -134,7 +133,6 @@ func run() error {
 	wsH := handler.NewWorkspaceHandler(stores.Workspace())
 	wsOverviewH := handler.NewWorkspaceOverviewHandler(stores.Workspace(), stores.GTD(), stores.Decision(), stores.Session())
 	decH := handler.NewDecisionHandler(stores.Decision())
-	sessH := handler.NewSessionHandler(stores.Session()).WithEmbedder(search.NewEmbeddingClientFromEnv())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
 		WithDecision(stores.Decision()).
@@ -157,7 +155,6 @@ func run() error {
 	if pool := stores.PgxPool(); pool != nil {
 		dashH.SetAICostStore(aicost.NewPgStore(pool, stores.WorkspaceID()))
 	}
-	workSessH := handler.NewWorkSessionHandler(stores.WorkSession(), stores.WorkspaceID())
 	visionH := handler.NewVisionHandler(stores.Vision())
 	authSessH := handler.NewAuthSessionHandler(apiKey)
 	timelineAgg := &timeline.Aggregator{
@@ -287,18 +284,12 @@ func run() error {
 	api.POST("/projects", gtdH.CreateProject, mutationRL)
 	api.GET("/projects/:id", gtdH.GetProject)
 	api.PATCH("/projects/:id", gtdH.UpdateProject, mutationRL)
-	api.PATCH("/projects/:id/status", gtdH.UpdateProjectStatus, mutationRL)
 	api.GET("/projects/:id/tasks", gtdH.ListProjectTasks)
 
 	api.GET("/tasks", gtdH.ListTasks)
 	api.POST("/tasks", gtdH.CreateTask, mutationRL)
 	api.PATCH("/tasks/:id", gtdH.UpdateTask, mutationRL)
-	api.PATCH("/tasks/:id/status", gtdH.UpdateTaskStatus, mutationRL)
 	api.PATCH("/tasks/:id/complete", gtdH.CompleteTask, mutationRL)
-	api.POST("/tasks/:id/begin", gtdH.BeginTask, mutationRL)
-	api.POST("/tasks/:id/checklist/items", gtdH.AddChecklistItem, mutationRL)
-	api.PATCH("/tasks/:id/checklist/items/:item_id", gtdH.UpdateChecklistItem, mutationRL)
-	api.DELETE("/tasks/:id/checklist/items/:item_id", gtdH.DeleteChecklistItem, mutationRL)
 
 	// reconcile handler wiring (sprint feature/gtd-enforce-server-side GTD-fix 9/12)
 	// Closes the "PR merged but task still pending" gap: Claude posts a list of
@@ -322,14 +313,9 @@ func run() error {
 	api.GET("/workspace/settings", wsH.GetSettings)
 	api.PATCH("/workspace/settings", wsH.PatchSettings, mutationRL)
 
-	// handoffRL caps POST /session/handoff at 5 req/min — each request may
+	// handoffRL caps POST /auto-handoff at 5 req/min — each request may
 	// spawn a Gemini embedding call; keep well below Gemini free-tier quota.
-	// Also applied to /auto-handoff which shares the same goroutine budget.
 	handoffRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(5))
-	api.GET("/session/handoff", sessH.GetHandoff)
-	api.POST("/session/handoff", sessH.SetHandoff, handoffRL)
-
-	api.GET("/work-sessions/active", workSessH.GetActiveWorkSession)
 
 	api.GET("/vision", visionH.ListVision)
 	api.POST("/vision", visionH.AddVision, mutationRL)
@@ -360,16 +346,11 @@ func run() error {
 	dashboardRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(30))
 	api.GET("/dashboard/stats", dashH.GetStats, dashboardRL)
 	api.GET("/dashboard/recent-decisions", dashH.GetRecentDecisions, dashboardRL)
-	api.GET("/dashboard/active-projects", dashH.GetActiveProjects, dashboardRL)
-	api.GET("/dashboard/weekly-progress", dashH.GetWeeklyProgress, dashboardRL)
-	api.GET("/dashboard/pending-knowledge-proposals", dashH.GetPendingKnowledgeProposals, dashboardRL)
 	api.GET("/dashboard/next-task", dashH.GetNextTask, dashboardRL)
 	api.GET("/dashboard/upcoming-tasks", dashH.GetUpcomingTasks, dashboardRL)
 	api.GET("/dashboard/upcoming", dashH.GetUpcoming, dashboardRL)
 	api.GET("/dashboard/automation-health", dashH.GetAutomationHealth, dashboardRL)
 	api.GET("/dashboard/automation-feed", dashH.GetAutomationFeed, dashboardRL)
-	// vague-tasks dashboard endpoint (sprint feature/gtd-enforce-server-side TASK 5)
-	api.GET("/dashboard/vague-tasks", dashH.GetVagueTasks, dashboardRL)
 	// ai-cost ledger (1.5-C): per-model token + cost aggregation, last 30d.
 	api.GET("/dashboard/ai-cost", dashH.GetAICost, dashboardRL)
 
@@ -474,6 +455,28 @@ func run() error {
 	if stores.WorkSession() != nil {
 		if err := sched.WithWorkSessionEvidencePruner(stores.WorkSession()); err != nil {
 			return fmt.Errorf("wiring work_session_evidence pruner: %w", err)
+		}
+	}
+	// Wire activity_log pruner (both backends; 365-day TTL per
+	// backend-security-design.md §1.3).
+	if stores.GTD() != nil {
+		if err := sched.WithActivityLogPruner(stores.GTD()); err != nil {
+			return fmt.Errorf("wiring activity_log pruner: %w", err)
+		}
+	}
+	// Wire project_status_snapshots pruner (Postgres only — snapStore is nil
+	// under SQLite or when CLAUDE_API_KEY is unset; see buildSnapshotDeps).
+	// 180-day TTL per backend-security-design.md §1.3.
+	if snapStore != nil {
+		if err := sched.WithProjectStatusSnapshotPruner(snapStore); err != nil {
+			return fmt.Errorf("wiring project_status_snapshots pruner: %w", err)
+		}
+	}
+	// Wire session_handoffs pruner (both backends; 365-day TTL for resolved
+	// handoffs per backend-security-design.md §1.3; open handoffs never pruned).
+	if stores.Session() != nil {
+		if err := sched.WithSessionHandoffPruner(stores.Session()); err != nil {
+			return fmt.Errorf("wiring session_handoffs pruner: %w", err)
 		}
 	}
 	// Wire behavior governance weekly job (Wednesday 04:15 Asia/Taipei). Applies

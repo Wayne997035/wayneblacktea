@@ -22,10 +22,8 @@ All `/api/*` routes require auth. Replace `https://your-host` and `YOUR_API_KEY`
 | GET | `/api/projects` | Yes | — | Active projects |
 | POST | `/api/projects` | Yes | — | Create project |
 | GET | `/api/projects/:id` | Yes | — | Project + recent decisions |
-| PATCH | `/api/projects/:id/status` | Yes | — | Update project status |
 | GET | `/api/projects/:id/tasks` | Yes | — | Tasks for a project |
 | POST | `/api/tasks` | Yes | — | Create task |
-| PATCH | `/api/tasks/:id/status` | Yes | — | Update task status |
 | PATCH | `/api/tasks/:id/complete` | Yes | — | Complete task + record artifact |
 | GET | `/api/decisions` | Yes | — | List decisions (`repo_name`, `project_id`, `limit`) |
 | POST | `/api/decisions` | Yes | — | Log a decision |
@@ -37,9 +35,6 @@ All `/api/*` routes require auth. Replace `https://your-host` and `YOUR_API_KEY`
 | GET | `/api/search` | Yes | 20/min | Cross-domain search (`q`) |
 | GET | `/api/dashboard/stats` | Yes | 30/min | Aggregate counts |
 | GET | `/api/dashboard/recent-decisions` | Yes | 30/min | Recent decisions |
-| GET | `/api/dashboard/active-projects` | Yes | 30/min | Active projects + task counts |
-| GET | `/api/dashboard/weekly-progress` | Yes | 30/min | This week's task completion |
-| GET | `/api/dashboard/pending-knowledge-proposals` | Yes | 30/min | Pending knowledge proposals |
 | GET | `/api/learning/reviews` | Yes | — | Concepts due for review |
 | POST | `/api/learning/reviews/:id/submit` | Yes | — | Submit FSRS review rating |
 | POST | `/api/learning/concepts` | Yes | — | Create concept + schedule |
@@ -49,8 +44,6 @@ All `/api/*` routes require auth. Replace `https://your-host` and `YOUR_API_KEY`
 | POST | `/api/auto-handoff` | Yes | 5/min | Create session handoff (Stop hook) |
 | GET | `/api/workspace/repos` | Yes | — | Tracked repositories |
 | POST | `/api/workspace/repos` | Yes | — | Create/update repository |
-| GET | `/api/session/handoff` | Yes | — | Latest unresolved handoff |
-| POST | `/api/session/handoff` | Yes | — | Create session handoff |
 | GET | `/api/vision` | Yes | — | List vision items (`?status=`, `?initiative=`) |
 | POST | `/api/vision` | Yes | — | Add vision item |
 | PATCH | `/api/vision/:id` | Yes | — | Update vision item |
@@ -76,14 +69,6 @@ All `/api/*` routes require auth. Replace `https://your-host` and `YOUR_API_KEY`
 
 `name` (unique slug), `title`, `area` required. `priority` 1–5.
 
-### PATCH /api/projects/:id/status
-
-```json
-{"status": "completed"}
-```
-
-Values: `active` `completed` `archived` `on_hold`
-
 ### POST /api/tasks
 
 ```json
@@ -91,14 +76,6 @@ Values: `active` `completed` `archived` `on_hold`
 ```
 
 `title` required. `priority` 1–5 (execution order). `importance` 1=high 2=medium 3=low.
-
-### PATCH /api/tasks/:id/status
-
-```json
-{"status": "in_progress"}
-```
-
-Values: `pending` `in_progress` `cancelled`
 
 ### PATCH /api/tasks/:id/complete
 
@@ -171,12 +148,6 @@ Ratings: 1=Again 2=Hard 3=Good 4=Easy.
 
 ```json
 {"name": "wayneblacktea", "path": "/Users/YOURNAME/project", "language": "Go", "current_branch": "main"}
-```
-
-### POST /api/session/handoff
-
-```json
-{"intent": "Finish runbook PR", "repo_name": "wayneblacktea", "context_summary": "api.md done"}
 ```
 
 ### POST /api/vision

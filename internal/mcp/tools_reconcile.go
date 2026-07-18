@@ -21,7 +21,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
-	mcpmsg "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 	mcpsrv "github.com/mark3labs/mcp-go/server"
 )
 
@@ -34,9 +34,9 @@ const reconcileMCPMaxStringField = 4 * 1024
 
 // registerReconcileTools wires reconcile_merged_prs into the MCP server.
 func (s *Server) registerReconcileTools(ms *mcpsrv.MCPServer) {
-	ms.AddTool(mcpmsg.NewTool(
+	ms.AddTool(mcp.NewTool(
 		"reconcile_merged_prs",
-		mcpmsg.WithDescription(
+		mcp.WithDescription(
 			"Accepts a Claude-supplied list of recently-merged PRs and matches them "+
 				"against pending/in_progress tasks by pr_url or branch_name. TWO-STEP: "+
 				"the first call (confirm absent/false) only PREVIEWS matches — returns "+
@@ -56,14 +56,14 @@ func (s *Server) registerReconcileTools(ms *mcpsrv.MCPServer) {
 				"\"merged_at\":\"RFC3339\",\"title\":\"...\",\"body\":\"...\","+
 				"\"repo\":\"owner/repo\"}, ...]}",
 		),
-		mcpmsg.WithString("payload",
-			mcpmsg.Description("JSON string of {\"merged_prs\":[...]}. Required on the "+
+		mcp.WithString("payload",
+			mcp.Description("JSON string of {\"merged_prs\":[...]}. Required on the "+
 				"preview call (confirm absent/false); ignored entirely when confirm=true. "+
 				"Same shape as POST /api/tasks/reconcile-merged-prs.")),
-		mcpmsg.WithBoolean("confirm",
-			mcpmsg.Description("Set true on the second call to apply the completions computed during preview")),
-		mcpmsg.WithString("reconcile_token",
-			mcpmsg.Description("Token returned by the preview call; required when confirm=true")),
+		mcp.WithBoolean("confirm",
+			mcp.Description("Set true on the second call to apply the completions computed during preview")),
+		mcp.WithString("reconcile_token",
+			mcp.Description("Token returned by the preview call; required when confirm=true")),
 	), s.handleReconcileMergedPRs)
 }
 
@@ -134,8 +134,8 @@ func reconcileAmbiguousOut(ambig []gtd.Ambiguous) []reconcileMCPAmbiguous {
 // claim can no longer silently complete real tasks in a single tool call.
 func (s *Server) handleReconcileMergedPRs(
 	ctx context.Context,
-	req mcpmsg.CallToolRequest,
-) (*mcpmsg.CallToolResult, error) {
+	req mcp.CallToolRequest,
+) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	if boolArg(args, "confirm") {
 		return s.handleReconcileMergedPRsConfirm(ctx, args)
@@ -150,15 +150,15 @@ func (s *Server) handleReconcileMergedPRs(
 func (s *Server) handleReconcileMergedPRsPreview(
 	ctx context.Context,
 	args map[string]any,
-) (*mcpmsg.CallToolResult, error) {
+) (*mcp.CallToolResult, error) {
 	raw := stringArg(args, "payload")
 	if raw == "" {
-		return mcpmsg.NewToolResultError("payload is required"), nil
+		return mcp.NewToolResultError("payload is required"), nil
 	}
 
 	var p reconcileMCPPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return mcpmsg.NewToolResultError("invalid payload JSON: " + err.Error()), nil
+		return mcp.NewToolResultError("invalid payload JSON: " + err.Error()), nil
 	}
 	// Short-circuit BEFORE the prune+cap+token-issuance block below. Without
 	// this check, a completely empty merged_prs:[] payload still ran the full
@@ -169,17 +169,17 @@ func (s *Server) handleReconcileMergedPRsPreview(
 	// in flight" (a rolling, near-zero-cost functional DoS). Rejecting empty
 	// payloads here means they never consume token-cap budget.
 	if len(p.MergedPRs) == 0 {
-		return mcpmsg.NewToolResultError("merged_prs must contain at least 1 entry"), nil
+		return mcp.NewToolResultError("merged_prs must contain at least 1 entry"), nil
 	}
 	if len(p.MergedPRs) > reconcileMCPMaxEntries {
-		return mcpmsg.NewToolResultError(
+		return mcp.NewToolResultError(
 			fmt.Sprintf("merged_prs exceeds %d entries per call", reconcileMCPMaxEntries),
 		), nil
 	}
 
 	prs, msg := reconcileMCPValidate(p.MergedPRs)
 	if msg != "" {
-		return mcpmsg.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 
 	// Persist every observed PR into merged_prs_observed (Phase 2 audit
@@ -190,7 +190,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	result, err := gtd.MatchMergedPRs(ctx, s.gtd, prs)
 	if err != nil {
-		return mcpmsg.NewToolResultError(fmt.Sprintf("match: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("match: %v", err)), nil
 	}
 
 	// BatchCompleteTasksByPRMatch and WriteAutoApplied are deliberately NOT
@@ -261,7 +261,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 		return true
 	})
 	if count >= maxPendingReconciles {
-		return mcpmsg.NewToolResultError("too many pending reconciliations in flight; retry later"), nil
+		return mcp.NewToolResultError("too many pending reconciliations in flight; retry later"), nil
 	}
 
 	token := uuid.NewString()
@@ -296,23 +296,23 @@ func (s *Server) handleReconcileMergedPRsPreview(
 func (s *Server) handleReconcileMergedPRsConfirm(
 	ctx context.Context,
 	args map[string]any,
-) (*mcpmsg.CallToolResult, error) {
+) (*mcp.CallToolResult, error) {
 	token := stringArg(args, "reconcile_token")
 	if token == "" {
-		return mcpmsg.NewToolResultError("reconcile_token is required when confirm=true"), nil
+		return mcp.NewToolResultError("reconcile_token is required when confirm=true"), nil
 	}
 	stored, ok := s.reconcileTokens.LoadAndDelete(token)
 	if !ok {
-		return mcpmsg.NewToolResultError(
+		return mcp.NewToolResultError(
 			"no pending reconciliation for this reconcile_token; call without confirm first to obtain matches and a token",
 		), nil
 	}
 	rec, ok := stored.(reconcileConfirmation)
 	if !ok {
-		return mcpmsg.NewToolResultError("internal: reconcile token state corrupted"), nil
+		return mcp.NewToolResultError("internal: reconcile token state corrupted"), nil
 	}
 	if s.now().After(rec.expiresAt) {
-		return mcpmsg.NewToolResultError("reconcile_token expired; call without confirm to obtain a new token"), nil
+		return mcp.NewToolResultError("reconcile_token expired; call without confirm to obtain a new token"), nil
 	}
 
 	// appliedIDs is keyed by TaskID for exactly the matches whose guarded
@@ -323,7 +323,7 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	// absent from this map even though it is still present in rec.matches.
 	appliedIDs, err := s.gtd.BatchCompleteTasksByPRMatch(ctx, rec.matches)
 	if err != nil {
-		return mcpmsg.NewToolResultError(fmt.Sprintf("batch complete: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("batch complete: %v", err)), nil
 	}
 
 	// Round-3 Finding 2: only write a completion_candidates 'auto_applied'

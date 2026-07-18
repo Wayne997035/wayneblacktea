@@ -1,6 +1,6 @@
-# AI tool config (personal, local only)
+# AI tool config (personal, local only) — AGENTS.md is tracked (repo guide
+# for AI coding agents), CLAUDE.md/.claude/ stay local-only.
 CLAUDE.md
-AGENTS.md
 .claude/
 !.claude/settings.json
 .mcp.json

@@ -41,6 +41,12 @@ type StoreIface interface {
 	// value, scoped to the configured workspace. Ordered by created_at DESC.
 	// Used by the workspace repo overview to surface recent context for a repo.
 	HandoffsByRepo(ctx context.Context, repoName string, limit int) ([]db.SessionHandoff, error)
+	// PruneOlderThan hard-deletes session_handoffs rows where resolved_at IS
+	// NOT NULL and resolved_at < cutoff. Open (unresolved) handoffs are NEVER
+	// deleted regardless of age — they represent a session still in progress.
+	// Global cleanup (no workspace filter). Called daily by the scheduler to
+	// enforce the 365-day TTL per backend-security-design.md §1.3.
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 var _ StoreIface = (*Store)(nil)

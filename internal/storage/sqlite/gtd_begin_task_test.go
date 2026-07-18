@@ -25,8 +25,7 @@ func TestGTDStore_BeginTask_HappyPath(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	wsID := uuid.UUID{} // unscoped (no workspace)
-	result, err := s.BeginTask(ctx, task.ID, wsID)
+	result, err := s.BeginTask(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("BeginTask: %v", err)
 	}
@@ -66,9 +65,8 @@ func TestGTDStore_BeginTask_Idempotent(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	wsID := uuid.UUID{}
 	// First call — transitions to in_progress.
-	if _, err := s.BeginTask(ctx, task.ID, wsID); err != nil {
+	if _, err := s.BeginTask(ctx, task.ID); err != nil {
 		t.Fatalf("BeginTask first call: %v", err)
 	}
 
@@ -84,7 +82,7 @@ func TestGTDStore_BeginTask_Idempotent(t *testing.T) {
 	}
 
 	// Second call — should be idempotent.
-	result, err := s.BeginTask(ctx, task.ID, wsID)
+	result, err := s.BeginTask(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("BeginTask second call (idempotent): %v", err)
 	}
@@ -113,7 +111,7 @@ func TestGTDStore_BeginTask_NotFound(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()
 
-	_, err := s.BeginTask(ctx, uuid.New(), uuid.UUID{})
+	_, err := s.BeginTask(ctx, uuid.New())
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected gtd.ErrNotFound, got %v", err)
 	}
@@ -135,7 +133,7 @@ func TestGTDStore_BeginTask_WorkspaceIsolation(t *testing.T) {
 	}
 
 	// Attempting to begin with workspace B store should return ErrNotFound.
-	_, err = storeB.BeginTask(ctx, task.ID, uuid.UUID{})
+	_, err = storeB.BeginTask(ctx, task.ID)
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected ErrNotFound when accessing cross-workspace task, got %v", err)
 	}

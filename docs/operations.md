@@ -24,12 +24,13 @@ which is run manually with `psql`. A no-op marker
 keeps the historical `schema_migrations` row 000011 consistent for databases
 that already applied the original, and must remain a no-op forever.
 
-**Recommended path for new installs:** use "WORKSPACE_ID Backfill (migration
-000015)" below instead. 000015 covers the same 11 tables with plain SQL (no
-psql metacommands) and ships a proper `.down.sql`. Only follow the procedure
-below if you specifically need to replay the legacy 000011 script — e.g.
-reconciling a database that already has schema_migrations row 000011
-applied, or investigating pre-000015 history.
+**Recommended path for new installs:** use the WORKSPACE_ID backfill SOP in
+[`runbook.md` §4](runbook.md#4-workspace_id-backfill-sop) instead — it covers
+migration 000015 (plain SQL, no psql metacommands, proper `.down.sql`) for
+both Postgres and SQLite. Only follow the procedure below if you specifically
+need to replay the legacy 000011 script — e.g. reconciling a database that
+already has schema_migrations row 000011 applied, or investigating
+pre-000015 history.
 
 **What it touches:** all 11 domain tables that carry a `workspace_id`
 column (`goals`, `projects`, `tasks`, `activity_log`, `repos`, `decisions`,
@@ -147,9 +148,8 @@ Railway will redeploy on env var save. For local:
 ./bin/wayneblacktea-server -env .env
 ```
 
-Verify the server picked it up by checking the startup log line
-(`workspace scoping: enabled (uuid=…)`) and querying any list
-endpoint:
+Verify the server picked it up — no startup log line is emitted for this,
+verification is API-side — by querying any list endpoint:
 
 ```bash
 curl -H "Authorization: Bearer $API_KEY" \
@@ -196,134 +196,10 @@ same 11 tables.
 
 ## WORKSPACE_ID Backfill (migration 000015)
 
-Migration `000015_workspace_id_backfill` is the production-ready follow-up to
-the scaffold in `000011`. Run this if you are enabling workspace scoping on a
-production DB that was not covered by `000011` (e.g. Railway instances where
-`000011` was skipped because it was marked NOT AUTO-RUN).
-
-**Sentinel UUID used by 000015:** `00000000-0000-0000-0000-000000000001`
-(distinct from the `000011` sentinel `…000000000000` so down.sql can target
-exactly the rows this migration set, not rows from a previous 000011 run).
-
-**Tables covered:** `goals`, `projects`, `tasks`, `activity_log`, `repos`,
-`decisions`, `session_handoffs`, `knowledge_items`, `concepts`,
-`review_schedule`, `pending_proposals`.
-
-Tables added after 000011 (`workspace_preferences`, `project_arch`) are
-intentionally excluded: `workspace_preferences` uses `workspace_id` as PRIMARY
-KEY (never NULL), and `project_arch` is tenant-agnostic (slug-keyed).
-
-### Step 0 — dry-run to see how many rows will be touched
-
-```bash
-psql "$DATABASE_URL" -c "
-  SELECT 'goals'             AS t, COUNT(*) FROM goals             WHERE workspace_id IS NULL
-  UNION ALL SELECT 'projects',     COUNT(*) FROM projects          WHERE workspace_id IS NULL
-  UNION ALL SELECT 'tasks',        COUNT(*) FROM tasks             WHERE workspace_id IS NULL
-  UNION ALL SELECT 'activity_log', COUNT(*) FROM activity_log      WHERE workspace_id IS NULL
-  UNION ALL SELECT 'repos',        COUNT(*) FROM repos             WHERE workspace_id IS NULL
-  UNION ALL SELECT 'decisions',    COUNT(*) FROM decisions         WHERE workspace_id IS NULL
-  UNION ALL SELECT 'session_handoffs', COUNT(*) FROM session_handoffs WHERE workspace_id IS NULL
-  UNION ALL SELECT 'knowledge_items',  COUNT(*) FROM knowledge_items  WHERE workspace_id IS NULL
-  UNION ALL SELECT 'concepts',     COUNT(*) FROM concepts          WHERE workspace_id IS NULL
-  UNION ALL SELECT 'review_schedule',  COUNT(*) FROM review_schedule  WHERE workspace_id IS NULL
-  UNION ALL SELECT 'pending_proposals', COUNT(*) FROM pending_proposals WHERE workspace_id IS NULL;
-"
-```
-
-If all counts are 0 you do not need this migration — every row already has a
-workspace assigned.
-
-### Step 1 — pick your WORKSPACE_ID
-
-Follow the same steps as the 000011 section above to generate and validate a
-UUID. If you already ran 000011 and set WORKSPACE_ID in Railway, reuse that
-same UUID here so all rows end up in the same workspace.
-
-```bash
-WORKSPACE_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-echo "$WORKSPACE_UUID"
-
-# Sanity check — refuse the nil sentinel and 000011's sentinel
-if [ "$WORKSPACE_UUID" = "00000000-0000-0000-0000-000000000000" ] || \
-   [ "$WORKSPACE_UUID" = "00000000-0000-0000-0000-000000000001" ]; then
-  echo "refusing to use a reserved sentinel as WORKSPACE_ID" >&2
-  exit 1
-fi
-```
-
-### Step 2 — substitute sentinel and apply (Postgres)
-
-```bash
-# Copy to /tmp — NEVER edit the repo files in place.
-cp migrations/000015_workspace_id_backfill.up.sql   /tmp/applied-000015.up.sql
-cp migrations/000015_workspace_id_backfill.down.sql /tmp/applied-000015.down.sql
-
-# Substitute sentinel with your real UUID (BSD sed on macOS: sed -i '').
-sed -i "s/00000000-0000-0000-0000-000000000001/$WORKSPACE_UUID/g" \
-    /tmp/applied-000015.up.sql \
-    /tmp/applied-000015.down.sql
-
-# Apply.
-psql "$DATABASE_URL" -f /tmp/applied-000015.up.sql
-```
-
-**Verify** the backfill landed:
-
-```bash
-psql "$DATABASE_URL" -c \
-  "SELECT 'goals' AS t, COUNT(*) FROM goals WHERE workspace_id = '$WORKSPACE_UUID'
-   UNION ALL SELECT 'tasks', COUNT(*) FROM tasks WHERE workspace_id = '$WORKSPACE_UUID'
-   UNION ALL SELECT 'decisions', COUNT(*) FROM decisions WHERE workspace_id = '$WORKSPACE_UUID';"
-```
-
-### Step 3 — set WORKSPACE_ID in Railway
-
-1. Open the service in the Railway dashboard.
-2. **Variables** -> **New Variable**: `WORKSPACE_ID = <paste $WORKSPACE_UUID>`.
-3. Save. Railway will redeploy automatically.
-
-Do NOT commit the UUID to git — it is per-environment sensitive configuration.
-
-Verify the server picked it up:
-
-```bash
-railway logs --tail | grep "workspace scoping"
-# Expected: workspace scoping: enabled (uuid=<your-uuid>)
-```
-
-### Rollback
-
-```bash
-# Reuses the /tmp copy with your UUID already substituted.
-psql "$DATABASE_URL" -f /tmp/applied-000015.down.sql
-```
-
-Then remove `WORKSPACE_ID` from Railway variables and redeploy.
-
-### SQLite self-hosters
-
-```bash
-cp migrations/sqlite/000015_workspace_id_backfill.up.sql   /tmp/applied-sqlite-000015.up.sql
-cp migrations/sqlite/000015_workspace_id_backfill.down.sql /tmp/applied-sqlite-000015.down.sql
-
-# BSD sed on macOS: sed -i ''
-sed -i "s/00000000-0000-0000-0000-000000000001/$WORKSPACE_UUID/g" \
-    /tmp/applied-sqlite-000015.up.sql \
-    /tmp/applied-sqlite-000015.down.sql
-
-sqlite3 ./wayneblacktea.db < /tmp/applied-sqlite-000015.up.sql
-```
-
-Rollback:
-
-```bash
-sqlite3 ./wayneblacktea.db < /tmp/applied-sqlite-000015.down.sql
-```
-
-Cleanup after successful verification:
-
-```bash
-rm /tmp/applied-000015.up.sql /tmp/applied-000015.down.sql
-rm /tmp/applied-sqlite-000015.up.sql /tmp/applied-sqlite-000015.down.sql
-```
+This is the routine, day-to-day WORKSPACE_ID backfill SOP (dry-run, generate
+UUID, apply, verify, rollback — both Postgres and SQLite). It has moved to
+[`runbook.md` §4 — WORKSPACE_ID backfill SOP](runbook.md#4-workspace_id-backfill-sop)
+so there is one canonical copy instead of two drifting ones. Run this if you
+are enabling workspace scoping on a production DB that was not covered by
+`000011` (e.g. Railway instances where `000011` was skipped because it was
+marked NOT AUTO-RUN).

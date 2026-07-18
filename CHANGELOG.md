@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Full-repo audit
+
+- Dead code removal: unused SQL queries, orphan files, and duplicated helpers consolidated across several commits; `internal/storage/sqlite/schema.sql`'s exported `Schema()` accessor removed (zero remaining callers).
+- REST API: 13 unused endpoints removed.
+- Retention: three new daily pruners added — `activity_log` (365 days), `project_status_snapshots` (180 days, Postgres-only), and `session_handoffs` (365 days, resolved rows only; open handoffs are never pruned). See `docs/retention-policy.md`.
+- SQLite: schema evolution now runs through golang-migrate against the embedded `migrations/sqlite/*.sql` set (baseline `000012_sqlite_baseline` through `000072`) instead of the old `schema.sql`-applied-idempotently mechanism. A pre-existing DB with no `schema_migrations` table is adopted by Force-stamping it at the latest version rather than replaying history; `schema.sql` is retired to a test-fixture-only role.
+- Docs: internal planning docs archived to `docs/internal/`, `AGENTS.md` and `docs/ci-secrets.md` rewritten to match the workflows that actually exist, and the `docs/operations.md` legacy-000011 backfill section corrected.
+
+### Added — wbt-2.0 P2 Action Lifecycle
+
+- Work session evidence chain: `finish_work` accepts an `evidence` array (command output, PR/CI links, Railway deploy logs, manual notes); `get_work_session_trace` reads it back to reconstruct what was actually verified.
+- Deferred-task semantics and outcome linkage wired into the work-session lifecycle, plus retention indexes for the new evidence tables.
+
+### Added — wbt-2.0 P1 Context Pack MVP
+
+- `assemble_context` MCP tool: a deterministic, budget-bounded context pack assembled from 10 domain stores (decisions, knowledge, procedural memories, atoms, outcomes, and related session history) — read-only, with additive ranking, per-type caps, and rune-budget trimming.
+- `knowledge.SearchReadOnly` added (both backends) so context assembly never bumps recall stats — keeps the tool genuinely side-effect-free.
+
+### Added — wbt-2.0 P0 doc sprint
+
+- `docs/mcp-tools.md`, `docs/architecture.md`, `docs/retention-policy.md`, `DESIGN.md`, and `security.md` synced to the code as it stood at that point (88 MCP tools documented, scheduler jobs 3→19, bounded contexts 7→22).
+
 ### Added — Phase 2 install simplification
 
 - `wbt setup`: one-command install. Reads/creates global config, ensures SQLite directory, resolves the HTTP port, reclaims it if occupied, spawns `wayneblacktea-server` in the background via `nohup` (PID file at `$XDG_STATE_HOME/wayneblacktea/server.pid`), polls `/health`, then registers the HTTP MCP transport with Claude Code via `claude mcp add`. Supports `--port`, `--no-mcp`, `--mcp-name`, `--server-bin` flags. Reuses an already-running healthy instance instead of double-spawning.
@@ -95,15 +117,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CONTRIBUTING.md with workflow + code style.
 - `.goreleaser.yml` cross-compiling `wayneblacktea-server` and
   `wayneblacktea-mcp` for macOS/Linux on amd64 and arm64.
-
-### Known limitations
-- The SQLite backend is **not yet implemented**. Setting
-  `STORAGE_BACKEND=sqlite` errors at startup. Tracked as a follow-up task.
-- Phase A migrations are not auto-applied. After upgrading, run each
-  `migrations/000008..010_*.up.sql` against your live database.
-- Existing rows have `NULL` workspace_id; setting `WORKSPACE_ID` will hide
-  them. A backfill migration scaffold is at
-  `migrations/000011_backfill_workspace_id.sql` (commented; customise
-  before running).
 
 [Unreleased]: https://github.com/Wayne997035/wayneblacktea/commits/master

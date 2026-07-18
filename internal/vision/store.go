@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,25 +23,7 @@ type Store struct {
 // NewStore returns a Store backed by the given pool, scoped to the optional workspaceID.
 // nil workspaceID = legacy unscoped mode.
 func NewStore(pool *pgxpool.Pool, workspaceID *uuid.UUID) *Store {
-	return &Store{pool: pool, workspaceID: toUUID(workspaceID)}
-}
-
-func toUUID(id *uuid.UUID) pgtype.UUID {
-	if id == nil {
-		return pgtype.UUID{}
-	}
-	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
-}
-
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
-func toTimestamptz(t *time.Time) pgtype.Timestamptz {
-	if t == nil {
-		return pgtype.Timestamptz{}
-	}
-	return pgtype.Timestamptz{Time: *t, Valid: true}
+	return &Store{pool: pool, workspaceID: pgconv.ToUUID(workspaceID)}
 }
 
 func dependsOnJSON(deps []string) string {
@@ -153,16 +136,17 @@ func (s *Store) Add(ctx context.Context, p AddVisionParams) (*VisionItem, error)
 		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
 		RETURNING ` + selectCols
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		id,
 		s.workspaceID,
-		toText(p.RepoName),
-		toUUID(p.ProjectID),
+		pgconv.ToText(p.RepoName),
+		pgconv.ToUUID(p.ProjectID),
 		p.Title,
 		p.WhyBlocked,
 		deps,
-		toText(p.ParentInitiative),
-		toText(p.ContextMD),
+		pgconv.ToText(p.ParentInitiative),
+		pgconv.ToText(p.ContextMD),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("inserting vision item: %w", err)
@@ -234,7 +218,7 @@ func (s *Store) Update(ctx context.Context, id uuid.UUID, p UpdateVisionParams) 
 		p.LastDiscussedAt = &now
 	}
 
-	args := []any{id, s.workspaceID, toTimestamptz(p.LastDiscussedAt)}
+	args := []any{id, s.workspaceID, pgconv.ToTimestamptz(p.LastDiscussedAt)}
 	setClauses := []string{"last_discussed_at = $3"}
 
 	if p.Status != nil {
@@ -242,7 +226,7 @@ func (s *Store) Update(ctx context.Context, id uuid.UUID, p UpdateVisionParams) 
 		setClauses = append(setClauses, fmt.Sprintf("status = $%d", len(args)))
 	}
 	if p.ContextMD != nil {
-		args = append(args, toText(*p.ContextMD))
+		args = append(args, pgconv.ToText(*p.ContextMD))
 		setClauses = append(setClauses, fmt.Sprintf("context_md = $%d", len(args)))
 	}
 

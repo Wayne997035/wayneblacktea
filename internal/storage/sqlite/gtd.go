@@ -778,6 +778,22 @@ func (s *GTDStore) ListActivityLogsSince(ctx context.Context, since time.Time, m
 	return out, errWrap("ListActivityLogsSince iter", rows.Err())
 }
 
+// PruneOlderThan hard-deletes activity_log rows created before cutoff.
+// Global cleanup (no workspace filter) — matches the Postgres Store.
+func (s *GTDStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM activity_log WHERE created_at < ?1`
+	cutoffStr := cutoff.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	res, err := s.db.conn.ExecContext(ctx, q, cutoffStr)
+	if err != nil {
+		return 0, errWrap("PruneOlderThan", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, errWrap("PruneOlderThan rows affected", err)
+	}
+	return n, nil
+}
+
 // LogActivity records an activity log entry. project may be nil.
 func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
 	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
@@ -871,7 +887,7 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 // Idempotency: if the task is already in_progress, the task row is returned
 // as-is without writing a duplicate activity_log row.
 // Returns gtd.ErrNotFound when no task matches id inside the configured workspace.
-func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error) {
+func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	idStr := id.String()
 
 	// Idempotency: read current status before opening a transaction.

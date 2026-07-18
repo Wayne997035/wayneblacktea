@@ -14,10 +14,6 @@ type StoreIface interface {
 	// Add inserts a new skill and returns the persisted record.
 	Add(ctx context.Context, p AddParams) (*Skill, error)
 
-	// GetByID returns the skill identified by id, scoped to workspaceID when non-nil.
-	// Returns ErrNotFound when no matching row exists.
-	GetByID(ctx context.Context, id string, workspaceID *string) (*Skill, error)
-
 	// Search returns skills whose name or description match f.Query (ILIKE/LIKE),
 	// scoped to f.WorkspaceID when non-nil, ordered by success_count DESC.
 	Search(ctx context.Context, f SearchFilter) ([]*Skill, error)

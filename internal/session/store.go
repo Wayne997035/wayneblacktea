@@ -9,6 +9,7 @@ import (
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,23 +26,12 @@ type Store struct {
 // NewStore returns a Store backed by the given DBTX scoped to the optional
 // workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: pgconv.ToUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
-}
-
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
-func toUUID(id *uuid.UUID) pgtype.UUID {
-	if id == nil {
-		return pgtype.UUID{}
-	}
-	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
 // marshalNextActions serialises []NextAction to JSON bytes, returning '[]'
@@ -96,8 +86,9 @@ func (s *Store) SetHandoff(ctx context.Context, p HandoffParams) (*db.SessionHan
 		(project_id, repo_name, intent, context_summary, next_actions, workspace_id)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions`
-	rows, err := s.dbtx.Query(ctx, q,
-		toUUID(p.ProjectID), toText(p.RepoName), p.Intent, toText(p.ContextSummary),
+	rows, err := s.dbtx.Query(
+		ctx, q,
+		pgconv.ToUUID(p.ProjectID), pgconv.ToText(p.RepoName), p.Intent, pgconv.ToText(p.ContextSummary),
 		nextActionsJSON, s.workspaceID,
 	)
 	if err != nil {
@@ -415,6 +406,20 @@ func (s *Store) MarkNextActionDone(ctx context.Context, handoffID uuid.UUID, ste
 		return nil, fmt.Errorf("mark_next_action_done: scan update result %s: %w", handoffID, err)
 	}
 	return &updated2, nil
+}
+
+// PruneOlderThan hard-deletes session_handoffs rows where resolved_at IS NOT
+// NULL and resolved_at < cutoff. Open (unresolved) handoffs are NEVER
+// deleted regardless of age. Global cleanup (no workspace filter) — cutoff
+// is computed server-side by the caller (scheduler) and passed as a
+// parameterised argument.
+func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM session_handoffs WHERE resolved_at IS NOT NULL AND resolved_at < $1`
+	tag, err := s.dbtx.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning session_handoffs: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // Resolve marks a handoff as resolved so it will not appear in future queries.

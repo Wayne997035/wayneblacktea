@@ -125,6 +125,23 @@ func (s *SessionStore) Resolve(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// PruneOlderThan hard-deletes session_handoffs rows where resolved_at IS NOT
+// NULL and resolved_at < cutoff. Open (unresolved) handoffs are NEVER
+// deleted regardless of age. Matches the Postgres Store.
+func (s *SessionStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM session_handoffs WHERE resolved_at IS NOT NULL AND resolved_at < ?1`
+	cutoffStr := cutoff.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	res, err := s.db.conn.ExecContext(ctx, q, cutoffStr)
+	if err != nil {
+		return 0, errWrap("PruneOlderThan", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, errWrap("PruneOlderThan rows affected", err)
+	}
+	return n, nil
+}
+
 // UpdateSummary writes summary to the most recent unresolved handoff's
 // summary_text column. Best-effort: 0 rows affected (no unresolved handoff) is
 // not an error.

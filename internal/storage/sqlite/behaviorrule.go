@@ -115,7 +115,8 @@ func (s *BehaviorRuleStore) Propose(ctx context.Context, p behaviorrule.CreatePa
 		 confidence, status, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'proposed', ?8, ?8)`
 
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		wsArg,
 		p.Condition,
@@ -174,11 +175,6 @@ func (s *BehaviorRuleStore) List(ctx context.Context, p behaviorrule.ListParams)
 	return out, errWrap("BehaviorRuleStore.List iter", rows.Err())
 }
 
-// GetByID returns the behavior rule with the given ID.
-func (s *BehaviorRuleStore) GetByID(ctx context.Context, id uuid.UUID) (*behaviorrule.BehaviorRule, error) {
-	return s.getByID(ctx, id)
-}
-
 func (s *BehaviorRuleStore) getByID(ctx context.Context, id uuid.UUID) (*behaviorrule.BehaviorRule, error) {
 	const q = `SELECT ` + behaviorRuleSelectCols + ` FROM behavior_rules
 		WHERE id = ?1
@@ -197,6 +193,9 @@ func (s *BehaviorRuleStore) getByID(ctx context.Context, id uuid.UUID) (*behavio
 // ApplyOutcome applies the confidence formula atomically in a single UPDATE.
 // SQLite uses CASE expressions to implement the atomic update without a
 // read-then-write race.
+// SECURITY: workspace-scoped — matches List's scoping and the Postgres Store,
+// so a store scoped to workspace A cannot apply an outcome to a rule owned by
+// workspace B.
 func (s *BehaviorRuleStore) ApplyOutcome(ctx context.Context, id uuid.UUID, outcome string) (*behaviorrule.BehaviorRule, error) {
 	now := nowRFC3339()
 
@@ -209,18 +208,20 @@ func (s *BehaviorRuleStore) ApplyOutcome(ctx context.Context, id uuid.UUID, outc
 				status = CASE WHEN status = 'proposed' THEN 'active' ELSE status END,
 				confidence = MIN(confidence + 0.05, 1.00),
 				updated_at = ?2
-			WHERE id = ?1`
+			WHERE id = ?1
+			  AND (?3 IS NULL OR workspace_id = ?3)`
 	case "failure":
 		q = `UPDATE behavior_rules
 			SET
 				confidence = MAX(confidence - 0.10, 0.00),
 				updated_at = ?2
-			WHERE id = ?1`
+			WHERE id = ?1
+			  AND (?3 IS NULL OR workspace_id = ?3)`
 	default:
 		return nil, fmt.Errorf("behaviorrule: invalid outcome %q; must be 'success' or 'failure'", outcome)
 	}
 
-	result, err := s.db.conn.ExecContext(ctx, q, id.String(), now)
+	result, err := s.db.conn.ExecContext(ctx, q, id.String(), now, s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("BehaviorRuleStore.ApplyOutcome", err)
 	}
@@ -235,13 +236,15 @@ func (s *BehaviorRuleStore) ApplyOutcome(ctx context.Context, id uuid.UUID, outc
 }
 
 // Deprecate sets the rule's status to 'deprecated'. Idempotent.
+// SECURITY: workspace-scoped — matches List's scoping and the Postgres Store.
 func (s *BehaviorRuleStore) Deprecate(ctx context.Context, id uuid.UUID) (*behaviorrule.BehaviorRule, error) {
 	now := nowRFC3339()
 	const q = `UPDATE behavior_rules
 		SET status = 'deprecated', updated_at = ?2
-		WHERE id = ?1`
+		WHERE id = ?1
+		  AND (?3 IS NULL OR workspace_id = ?3)`
 
-	result, err := s.db.conn.ExecContext(ctx, q, id.String(), now)
+	result, err := s.db.conn.ExecContext(ctx, q, id.String(), now, s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("BehaviorRuleStore.Deprecate", err)
 	}

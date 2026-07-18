@@ -1,6 +1,6 @@
 # wayneblacktea MCP Tools Reference
 
-The MCP server (`cmd/mcp`) connects Claude Code to wayneblacktea via `.mcp.json`.
+The MCP server (`wbt mcp` stdio, or the HTTP transport at `/mcp`) connects Claude Code to wayneblacktea.
 
 ---
 
@@ -12,6 +12,7 @@ The MCP server (`cmd/mcp`) connects Claude Code to wayneblacktea via `.mcp.json`
 | `get_today_context` | Context | R | No | No |
 | `list_active_repos` | Context | R | No | No |
 | `sync_repo` | Context | W | Yes | No |
+| `assemble_context` | Context Pack | R | No | No |
 | `list_projects` | GTD | R | No | No |
 | `create_project` | GTD | W | No | No |
 | `get_project` | GTD | R | No | No |
@@ -74,6 +75,8 @@ The MCP server (`cmd/mcp`) connects Claude Code to wayneblacktea via `.mcp.json`
 | `get_active_work` | Work Session | R | No | No |
 | `checkpoint_work` | Work Session | W | No | No |
 | `finish_work` | Work Session | W | No | No |
+| `list_recent_work_sessions` | Work Session | R | No | No |
+| `get_work_session_trace` | Work Session | R | No | No |
 | `closeout_session_check` | Closeout | W | No | No |
 | `detect_completion_candidates` | Dashboard | W | No | No |
 | `reconcile_dashboard` | Dashboard | W | No | No |
@@ -143,6 +146,21 @@ Optional: `recent_calls` (default 20), `stuck_threshold_hours` (default 4). Retu
 |-----|----------|
 | `name` | Yes — unique repo name |
 | `path` `description` `language` `current_branch` `next_planned_step` | No |
+
+---
+
+### `assemble_context`
+
+Assembles a ranked, budget-bounded context pack for the current task from stored memory — decisions, knowledge, procedural how-tos, atoms, outcomes, and related session history — trimmed to fit a character budget. Call before starting a non-trivial task to get a compact brief instead of re-reading the whole workspace. Read-only: `persist=true` is rejected outright (reserved for a future phase).
+
+| Arg | Required |
+|-----|----------|
+| `objective` (max 2000 chars) | Yes — drives relevance scoring |
+| `repo_name` `project_id` (UUID) `task_id` (UUID) `branch_name` | No — scope/relevance signals |
+| `files_touched` | No — JSON array, max 50 entries, 500 chars each; excess dropped |
+| `budget_chars` | No — character budget, default 12000, clamped to 1000-50000 |
+| `include_types` | No — restrict to these memory types (`semantic` `episodic` `procedural` `rules` `skills` `atoms` `outcomes`); unrecognised values are ignored |
+| `persist` | No — reserved for a future phase; MUST be `false`/omitted today |
 
 ---
 
@@ -551,6 +569,18 @@ Close the current work session as completed. Sets `status=completed`, records `c
 |-----|----------|
 | `session_id` `summary` (max 5000 chars) | Yes |
 | `completed_task_ids` `deferred_task_ids` `follow_up_tasks` `new_decisions` (JSON arrays) `artifact` | No |
+
+### `list_recent_work_sessions`
+
+List recent work sessions ordered by `created_at` DESC. Optionally filter by `repo_name`. Returns lightweight summaries — call `get_work_session_trace` for full evidence detail on one session.
+
+Optional `repo_name`. Optional `limit` (default 20, max 100).
+
+### `get_work_session_trace`
+
+Get a work session plus its full evidence chain (command output, PR/CI links, manual notes recorded at `finish_work`). Use to reconstruct what was actually verified for a session.
+
+`session_id` (UUID) required.
 
 ---
 

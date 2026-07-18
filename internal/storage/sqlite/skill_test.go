@@ -95,34 +95,6 @@ func TestSkillStore_Add(t *testing.T) {
 	}
 }
 
-// TestSkillStore_GetByID verifies ErrNotFound for unknown ID and happy path.
-func TestSkillStore_GetByID(t *testing.T) {
-	db := newSkillTestDB(t)
-	store := wbtsqlite.NewSkillStore(db)
-	ctx := context.Background()
-
-	t.Run("ErrNotFound for unknown ID", func(t *testing.T) {
-		_, err := store.GetByID(ctx, "no-such-id", nil)
-		if !errors.Is(err, skill.ErrNotFound) {
-			t.Errorf("want ErrNotFound, got %v", err)
-		}
-	})
-
-	t.Run("returns inserted skill", func(t *testing.T) {
-		sk, err := store.Add(ctx, skill.AddParams{Name: "lookup-me"})
-		if err != nil {
-			t.Fatalf("Add: %v", err)
-		}
-		got, err := store.GetByID(ctx, sk.ID, nil)
-		if err != nil {
-			t.Fatalf("GetByID: %v", err)
-		}
-		if got.Name != "lookup-me" {
-			t.Errorf("Name: got %q, want %q", got.Name, "lookup-me")
-		}
-	})
-}
-
 // TestSkillStore_Search verifies LIKE-based search and empty-result behaviour.
 func TestSkillStore_Search(t *testing.T) {
 	db := newSkillTestDB(t)

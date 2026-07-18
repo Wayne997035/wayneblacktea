@@ -8,85 +8,90 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	"github.com/google/uuid"
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 func (s *Server) registerSkillTools(ms *server.MCPServer) {
-	ms.AddTool(mcpgo.NewTool("extract_skill",
-		mcpgo.WithDescription(
+	ms.AddTool(mcp.NewTool(
+		"extract_skill",
+		mcp.WithDescription(
 			"Extracts and persists a reusable skill definition from the current session. "+
 				"Provide a name, description, trigger conditions, step-by-step approach, "+
 				"common failure modes, and a verification checklist.",
 		),
-		mcpgo.WithString("name",
-			mcpgo.Description("Short unique name for the skill (max 200 chars)"),
-			mcpgo.Required(), mcpgo.MaxLength(200)),
-		mcpgo.WithString("description",
-			mcpgo.Description("What the skill does and when to apply it (max 5000 chars)"),
-			mcpgo.MaxLength(5000)),
-		mcpgo.WithString("triggers",
-			mcpgo.Description("Comma-separated trigger conditions that indicate this skill applies")),
-		mcpgo.WithString("steps",
-			mcpgo.Description("Comma-separated ordered steps for executing the skill")),
-		mcpgo.WithString("failure_modes",
-			mcpgo.Description("Comma-separated common failure modes to watch for")),
-		mcpgo.WithString("verification_checklist",
-			mcpgo.Description("Comma-separated verification checks to confirm success")),
-		mcpgo.WithString("source_atom_ids",
-			mcpgo.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
+		mcp.WithString("name",
+			mcp.Description("Short unique name for the skill (max 200 chars)"),
+			mcp.Required(), mcp.MaxLength(200)),
+		mcp.WithString("description",
+			mcp.Description("What the skill does and when to apply it (max 5000 chars)"),
+			mcp.MaxLength(5000)),
+		mcp.WithString("triggers",
+			mcp.Description("Comma-separated trigger conditions that indicate this skill applies")),
+		mcp.WithString("steps",
+			mcp.Description("Comma-separated ordered steps for executing the skill")),
+		mcp.WithString("failure_modes",
+			mcp.Description("Comma-separated common failure modes to watch for")),
+		mcp.WithString("verification_checklist",
+			mcp.Description("Comma-separated verification checks to confirm success")),
+		mcp.WithString("source_atom_ids",
+			mcp.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
 	), s.handleExtractSkill)
 
-	ms.AddTool(mcpgo.NewTool("search_skills",
-		mcpgo.WithDescription(
+	ms.AddTool(mcp.NewTool(
+		"search_skills",
+		mcp.WithDescription(
 			"Searches persisted skills by name or description. "+
 				"Returns matching skills ordered by success_count DESC.",
 		),
-		mcpgo.WithString("query",
-			mcpgo.Description("Search query (matches name and description)"),
-			mcpgo.Required()),
-		mcpgo.WithNumber("limit",
-			mcpgo.Description("Max results (default 10)")),
+		mcp.WithString("query",
+			mcp.Description("Search query (matches name and description)"),
+			mcp.Required()),
+		mcp.WithNumber("limit",
+			mcp.Description("Max results (default 10)")),
 	), s.handleSearchSkills)
 
-	ms.AddTool(mcpgo.NewTool("use_skill",
-		mcpgo.WithDescription(
+	ms.AddTool(mcp.NewTool(
+		"use_skill",
+		mcp.WithDescription(
 			"Records that a skill was applied successfully. Increments success_count "+
 				"and updates last_used_at. Returns the updated skill.",
 		),
-		mcpgo.WithString("skill_id",
-			mcpgo.Description("UUID of the skill to mark as used"),
-			mcpgo.Required()),
+		mcp.WithString("skill_id",
+			mcp.Description("UUID of the skill to mark as used"),
+			mcp.Required()),
 	), s.handleUseSkill)
 
-	ms.AddTool(mcpgo.NewTool("update_skill_from_outcome",
-		mcpgo.WithDescription(
+	ms.AddTool(mcp.NewTool(
+		"update_skill_from_outcome",
+		mcp.WithDescription(
 			"Records a success or failure outcome for a skill execution. "+
 				"Appends the outcome reference and notes to the skill's examples log "+
 				"and increments the appropriate counter.",
 		),
-		mcpgo.WithString("skill_id",
-			mcpgo.Description("UUID of the skill"),
-			mcpgo.Required()),
-		mcpgo.WithString("outcome_id",
-			mcpgo.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK)")),
-		mcpgo.WithBoolean("success",
-			mcpgo.Description("true = success outcome, false = failure outcome")),
-		mcpgo.WithString("notes",
-			mcpgo.Description("Notes about the outcome (max 2000 chars)"),
-			mcpgo.MaxLength(2000)),
+		mcp.WithString("skill_id",
+			mcp.Description("UUID of the skill"),
+			mcp.Required()),
+		mcp.WithString("outcome_id",
+			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK)")),
+		mcp.WithBoolean("success",
+			mcp.Description("true = success outcome, false = failure outcome")),
+		mcp.WithString("notes",
+			mcp.Description("Notes about the outcome (max 2000 chars)"),
+			mcp.MaxLength(2000)),
 	), s.handleUpdateSkillFromOutcome)
 
-	ms.AddTool(mcpgo.NewTool("list_relevant_skills",
-		mcpgo.WithDescription(
+	ms.AddTool(mcp.NewTool(
+		"list_relevant_skills",
+		mcp.WithDescription(
 			"Lists skills most relevant to the current task context. "+
 				"Skills are ordered by success_count DESC, last_used_at DESC. "+
 				"Optionally filter by keyword query.",
 		),
-		mcpgo.WithString("query",
-			mcpgo.Description("Optional keyword to filter by name or description")),
-		mcpgo.WithNumber("limit",
-			mcpgo.Description("Max results (default 10)")),
+		mcp.WithString("query",
+			mcp.Description("Optional keyword to filter by name or description")),
+		mcp.WithNumber("limit",
+			mcp.Description("Max results (default 10)")),
 	), s.handleListRelevantSkills)
 }
 
@@ -135,33 +140,33 @@ func validateNotes(notes string) string {
 }
 
 // handleExtractSkill implements the extract_skill MCP tool.
-func (s *Server) handleExtractSkill(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	name := stringArg(args, "name")
 	if msg := validateSkillName(name); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 
 	description := stringArg(args, "description")
 	if msg := validateSkillDescription(description); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 
 	rawTriggers := stringArg(args, "triggers")
 	if msg := validateSkillCSVField(rawTriggers, "triggers"); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 	rawSteps := stringArg(args, "steps")
 	if msg := validateSkillCSVField(rawSteps, "steps"); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 	rawFailureModes := stringArg(args, "failure_modes")
 	if msg := validateSkillCSVField(rawFailureModes, "failure_modes"); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 	rawVerification := stringArg(args, "verification_checklist")
 	if msg := validateSkillCSVField(rawVerification, "verification_checklist"); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 
 	p := skill.AddParams{
@@ -182,7 +187,7 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcpgo.CallToolReque
 
 	sk, err := s.skill.Add(ctx, p)
 	if err != nil {
-		return mcpgo.NewToolResultError(fmt.Sprintf("extracting skill: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("extracting skill: %v", err)), nil
 	}
 
 	s.launchAtomize("skills", mustParseUUID(sk.ID), name+" "+description)
@@ -190,11 +195,11 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcpgo.CallToolReque
 }
 
 // handleSearchSkills implements the search_skills MCP tool.
-func (s *Server) handleSearchSkills(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *Server) handleSearchSkills(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query := stringArg(args, "query")
 	if query == "" {
-		return mcpgo.NewToolResultError("query is required"), nil
+		return mcp.NewToolResultError("query is required"), nil
 	}
 
 	limit := int(numberArg(args, "limit"))
@@ -213,7 +218,7 @@ func (s *Server) handleSearchSkills(ctx context.Context, req mcpgo.CallToolReque
 
 	results, err := s.skill.Search(ctx, f)
 	if err != nil {
-		return mcpgo.NewToolResultError(fmt.Sprintf("searching skills: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("searching skills: %v", err)), nil
 	}
 	if results == nil {
 		results = []*skill.Skill{}
@@ -222,11 +227,11 @@ func (s *Server) handleSearchSkills(ctx context.Context, req mcpgo.CallToolReque
 }
 
 // handleUseSkill implements the use_skill MCP tool.
-func (s *Server) handleUseSkill(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *Server) handleUseSkill(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	skillID := stringArg(args, "skill_id")
 	if skillID == "" {
-		return mcpgo.NewToolResultError("skill_id is required"), nil
+		return mcp.NewToolResultError("skill_id is required"), nil
 	}
 
 	var wsStr *string
@@ -238,24 +243,24 @@ func (s *Server) handleUseSkill(ctx context.Context, req mcpgo.CallToolRequest) 
 	sk, err := s.skill.IncrementSuccess(ctx, skillID, wsStr)
 	if err != nil {
 		if errors.Is(err, skill.ErrNotFound) {
-			return mcpgo.NewToolResultError("skill not found"), nil
+			return mcp.NewToolResultError("skill not found"), nil
 		}
-		return mcpgo.NewToolResultError(fmt.Sprintf("using skill: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("using skill: %v", err)), nil
 	}
 	return jsonText(sk)
 }
 
 // handleUpdateSkillFromOutcome implements the update_skill_from_outcome MCP tool.
-func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	skillID := stringArg(args, "skill_id")
 	if skillID == "" {
-		return mcpgo.NewToolResultError("skill_id is required"), nil
+		return mcp.NewToolResultError("skill_id is required"), nil
 	}
 
 	notes := stringArg(args, "notes")
 	if msg := validateNotes(notes); msg != "" {
-		return mcpgo.NewToolResultError(msg), nil
+		return mcp.NewToolResultError(msg), nil
 	}
 
 	success := boolArg(args, "success")
@@ -276,9 +281,9 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcpgo.Cal
 	sk, err := s.skill.UpdateFromOutcome(ctx, p, wsStr)
 	if err != nil {
 		if errors.Is(err, skill.ErrNotFound) {
-			return mcpgo.NewToolResultError("skill not found"), nil
+			return mcp.NewToolResultError("skill not found"), nil
 		}
-		return mcpgo.NewToolResultError(fmt.Sprintf("updating skill from outcome: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("updating skill from outcome: %v", err)), nil
 	}
 
 	if notes != "" {
@@ -288,7 +293,7 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcpgo.Cal
 }
 
 // handleListRelevantSkills implements the list_relevant_skills MCP tool.
-func (s *Server) handleListRelevantSkills(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *Server) handleListRelevantSkills(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query := stringArg(args, "query")
 
@@ -305,7 +310,7 @@ func (s *Server) handleListRelevantSkills(ctx context.Context, req mcpgo.CallToo
 
 	results, err := s.skill.ListRelevant(ctx, wsStr, query, limit)
 	if err != nil {
-		return mcpgo.NewToolResultError(fmt.Sprintf("listing relevant skills: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("listing relevant skills: %v", err)), nil
 	}
 	if results == nil {
 		results = []*skill.Skill{}

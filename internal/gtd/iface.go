@@ -90,15 +90,19 @@ type StoreIface interface {
 	BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match) (map[uuid.UUID]bool, error)
 	// BeginTask atomically sets task status to in_progress and records a
 	// work_session_started activity log entry. Returns ErrNotFound when no task
-	// matches id + workspaceID.
+	// matches id inside the Store's configured workspace.
 	// Idempotent: if already in_progress, returns the task without error and
 	// without writing a duplicate activity_log entry.
-	BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error)
+	BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error
 	// ListActivityLogsSince returns activity_log rows created on or after since,
 	// scoped to the configured workspace. Results are ordered by created_at ASC.
 	// maxRows caps the result set to prevent unbounded memory usage.
 	ListActivityLogsSince(ctx context.Context, since time.Time, maxRows int32) ([]db.ActivityLog, error)
+	// PruneOlderThan hard-deletes activity_log rows created before cutoff.
+	// Global cleanup (no workspace filter) — called daily by the scheduler to
+	// enforce the 365-day TTL per backend-security-design.md §1.3.
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error)

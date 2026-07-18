@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	"github.com/google/uuid"
 )
@@ -155,7 +156,8 @@ func (s *SkillStore) Add(ctx context.Context, p skill.AddParams) (*skill.Skill, 
 		 created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`
 
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id,
 		s.db.workspaceArg(),
 		p.Name,
@@ -174,25 +176,6 @@ func (s *SkillStore) Add(ctx context.Context, p skill.AddParams) (*skill.Skill, 
 	return s.getByID(ctx, id)
 }
 
-// GetByID returns the skill for the given id, scoped to workspaceID when non-nil.
-func (s *SkillStore) GetByID(ctx context.Context, id string, workspaceID *string) (*skill.Skill, error) {
-	wsArg := stringToNullableArg(workspaceID)
-
-	const q = `SELECT ` + skillSelectCols + ` FROM skills
-		WHERE id = ?1
-		  AND (?2 IS NULL OR workspace_id = ?2)
-		LIMIT 1`
-	row := s.db.conn.QueryRowContext(ctx, q, id, wsArg)
-	sk, err := scanSkillRow(row.Scan)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, skill.ErrNotFound
-	}
-	if err != nil {
-		return nil, errWrap("SkillStore.GetByID", err)
-	}
-	return &sk, nil
-}
-
 // Search returns skills whose name or description match f.Query (LIKE).
 func (s *SkillStore) Search(ctx context.Context, f skill.SearchFilter) ([]*skill.Skill, error) {
 	limit := f.Limit
@@ -201,7 +184,7 @@ func (s *SkillStore) Search(ctx context.Context, f skill.SearchFilter) ([]*skill
 	}
 
 	wsArg := stringToNullableArg(f.WorkspaceID)
-	pattern := "%" + escapeLike(f.Query) + "%"
+	pattern := "%" + likeescape.Escape(f.Query) + "%"
 
 	const q = `SELECT ` + skillSelectCols + ` FROM skills
 		WHERE (?1 IS NULL OR workspace_id = ?1)
@@ -315,7 +298,7 @@ func (s *SkillStore) ListRelevant(ctx context.Context, workspaceID *string, quer
 			LIMIT ?2`
 		args = []any{wsArg, limit}
 	} else {
-		pattern := "%" + escapeLike(query) + "%"
+		pattern := "%" + likeescape.Escape(query) + "%"
 		q = `SELECT ` + skillSelectCols + ` FROM skills
 			WHERE (?1 IS NULL OR workspace_id = ?1)
 			  AND (name LIKE ?2 ESCAPE '\' OR description LIKE ?2 ESCAPE '\')

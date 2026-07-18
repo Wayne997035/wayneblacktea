@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/google/uuid"
 )
@@ -132,7 +133,8 @@ func (s *ProceduralStore) Add(ctx context.Context, p procedural.AddParams) (*pro
 		(id, workspace_id, repo_name, project_id, title, when_to_use,
 		 approach_md, tools_used, files_touched, created_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		s.db.workspaceArg(),
 		p.RepoName,
@@ -166,7 +168,7 @@ func (s *ProceduralStore) Query(ctx context.Context, f procedural.QueryFilter) (
 	}
 
 	if f.Keywords != "" {
-		kw := "%" + escapeLike(f.Keywords) + "%"
+		kw := "%" + likeescape.Escape(f.Keywords) + "%"
 		args = append(args, kw)
 		pos := len(args)
 		whereParts = append(whereParts,
@@ -204,7 +206,8 @@ func (s *ProceduralStore) MarkUsed(ctx context.Context, id uuid.UUID) (*procedur
 		    last_used_at  = ?3
 		WHERE id = ?1
 		  AND (?2 IS NULL OR workspace_id = ?2)`
-	res, err := s.db.conn.ExecContext(ctx, q,
+	res, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		s.db.workspaceArg(),
 		nowRFC3339(),

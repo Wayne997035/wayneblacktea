@@ -59,14 +59,3 @@ func TestWorkspaceIDFromEnv_TrimsWhitespace(t *testing.T) {
 		t.Errorf("expected trimmed UUID, got %v", got)
 	}
 }
-
-func TestUserIDFromEnv(t *testing.T) {
-	t.Setenv("USER_ID", "  wayne  ")
-	if got := runtime.UserIDFromEnv(); got != "wayne" {
-		t.Errorf("expected trimmed 'wayne', got %q", got)
-	}
-	t.Setenv("USER_ID", "")
-	if got := runtime.UserIDFromEnv(); got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}

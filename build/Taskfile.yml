@@ -63,6 +63,8 @@ tasks:
       - build-wbt-context
       - build-wbt-hook
       - build-wbt-guard
+      - build-seed
+      - build-discordbot
 
   mod-tidy:
     desc: "Verify go.mod and go.sum are tidy (matches CI check)"
@@ -166,6 +168,24 @@ tasks:
     cmds:
       - mkdir -p bin
       - go build -o bin/wbt-guard ./cmd/wbt-guard/
+    dir: ..
+
+  build-seed:
+    desc: "Build the wbt-seed canonical-data seeding binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-seed ./cmd/seed/
+    dir: ..
+
+  build-discordbot:
+    desc: "Build the wbt-discordbot Discord bot binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-discordbot ./cmd/discordbot/
     dir: ..
 
   lint:

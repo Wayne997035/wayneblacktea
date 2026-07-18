@@ -497,6 +497,9 @@ func itemFromWorkSession(s *worksession.Session) Item {
 	prov := map[string]string{"source_table": "work_sessions"}
 	if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
 		prov["recent"] = isRecent(t)
+	} else {
+		slog.Warn("itemFromWorkSession: parsing CreatedAt failed, omitting recent flag",
+			"session_id", s.ID, "created_at", s.CreatedAt, "err", err)
 	}
 	if s.RepoName != "" {
 		prov["repo_name"] = s.RepoName

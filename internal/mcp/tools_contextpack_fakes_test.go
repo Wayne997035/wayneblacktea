@@ -94,7 +94,7 @@ func (noopGTDStore) BatchCompleteTasksByPRMatch(context.Context, []gtd.Match) (m
 	return nil, nil
 }
 
-func (noopGTDStore) BeginTask(context.Context, uuid.UUID, uuid.UUID) (*db.Task, error) {
+func (noopGTDStore) BeginTask(context.Context, uuid.UUID) (*db.Task, error) {
 	return nil, nil
 }
 
@@ -135,6 +135,10 @@ func (noopGTDStore) UpdateProject(context.Context, uuid.UUID, gtd.UpdateProjectP
 }
 func (noopGTDStore) DeleteTask(context.Context, uuid.UUID) error          { return nil }
 func (noopGTDStore) WeeklyProgress(context.Context) (int64, int64, error) { return 0, 0, nil }
+func (noopGTDStore) PruneOlderThan(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (noopGTDStore) AddChecklistItem(context.Context, uuid.UUID, uuid.UUID, gtd.ChecklistItem) ([]gtd.ChecklistItem, error) {
 	return nil, nil
 }
@@ -307,10 +311,6 @@ var _ skill.StoreIface = noopSkillStore{}
 
 func (noopSkillStore) Add(context.Context, skill.AddParams) (*skill.Skill, error) { return nil, nil }
 
-func (noopSkillStore) GetByID(context.Context, string, *string) (*skill.Skill, error) {
-	return nil, nil
-}
-
 func (noopSkillStore) Search(context.Context, skill.SearchFilter) ([]*skill.Skill, error) {
 	return nil, nil
 }
@@ -406,10 +406,6 @@ func (noopBehaviorRuleStore) List(context.Context, behaviorrule.ListParams) ([]*
 	return nil, nil
 }
 
-func (noopBehaviorRuleStore) GetByID(context.Context, uuid.UUID) (*behaviorrule.BehaviorRule, error) {
-	return nil, nil
-}
-
 func (noopBehaviorRuleStore) ApplyOutcome(context.Context, uuid.UUID, string) (*behaviorrule.BehaviorRule, error) {
 	return nil, nil
 }
@@ -457,6 +453,10 @@ func (noopSessionStore) HandoffsSince(context.Context, time.Time, int) ([]db.Ses
 
 func (noopSessionStore) HandoffsByRepo(context.Context, string, int) ([]db.SessionHandoff, error) {
 	return nil, nil
+}
+
+func (noopSessionStore) PruneOlderThan(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------

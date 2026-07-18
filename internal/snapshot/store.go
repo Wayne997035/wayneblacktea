@@ -63,7 +63,8 @@ VALUES
 RETURNING id, slug, workspace_id, generated_at, sprint_summary, gap_analysis,
           sota_catchup_pct, pending_summary, source_decision_ids, source`
 
-	return s.scanOne(s.pool.QueryRow(ctx, q,
+	return s.scanOne(s.pool.QueryRow(
+		ctx, q,
 		p.Slug, wsID, p.SprintSummary, p.GapAnalysis,
 		p.SotaCatchupPct, p.PendingSummary, idsJSON, src,
 	))
@@ -114,6 +115,20 @@ ORDER BY slug`
 		return nil, fmt.Errorf("snapshot: iterating slugs: %w", err)
 	}
 	return slugs, nil
+}
+
+// PruneOlderThan hard-deletes project_status_snapshots rows generated before
+// cutoff. Global cleanup (no workspace filter) — this is an observability/
+// derived-data table, not user-authored content, and the retention job runs
+// once for the whole deployment. cutoff is computed server-side by the
+// caller (scheduler) and passed as a parameterised argument.
+func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM project_status_snapshots WHERE generated_at < $1`
+	tag, err := s.pool.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("snapshot: pruning project_status_snapshots: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *Store) scanOne(row pgx.Row) (*Snapshot, error) {

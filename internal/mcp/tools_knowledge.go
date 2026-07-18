@@ -10,6 +10,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -18,7 +19,8 @@ import (
 const maxKnowledgeListLimit = 200
 
 func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("add_knowledge",
+	ms.AddTool(mcp.NewTool(
+		"add_knowledge",
 		mcp.WithDescription(
 			"CALL to save a new knowledge item (article, TIL, bookmark, zettelkasten). "+
 				"Used after Discord bot analysis or manual learning.",
@@ -32,7 +34,8 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 		mcp.WithString("task_id", mcp.Description("Task UUID this knowledge item relates to")),
 	), s.handleAddKnowledge)
 
-	ms.AddTool(mcp.NewTool("search_knowledge",
+	ms.AddTool(mcp.NewTool(
+		"search_knowledge",
 		mcp.WithDescription(
 			"CALL before fetching/analyzing a URL — check if content is already saved. "+
 				"Searches by full-text and vector similarity. "+
@@ -47,13 +50,15 @@ func (s *Server) registerKnowledgeTools(ms *server.MCPServer) {
 		mcp.WithBoolean("include_atoms", mcp.Description("When true, also search memory atoms and return them in a separate 'atoms' array")),
 	), s.handleSearchKnowledge)
 
-	ms.AddTool(mcp.NewTool("list_knowledge",
+	ms.AddTool(mcp.NewTool(
+		"list_knowledge",
 		mcp.WithDescription("Lists knowledge items ordered by creation date."),
 		mcp.WithNumber("limit", mcp.Description("Maximum results to return (default 20)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), s.handleListKnowledge)
 
-	ms.AddTool(mcp.NewTool("sync_to_notion",
+	ms.AddTool(mcp.NewTool(
+		"sync_to_notion",
 		mcp.WithDescription("Syncs a knowledge item to the configured Notion database and returns the page URL."),
 		mcp.WithString("knowledge_id", mcp.Description("Knowledge item UUID"), mcp.Required()),
 	), s.handleSyncToNotion)
@@ -91,6 +96,39 @@ func validateKnowledgeArgs(itemType, title, content, url string, tags []string) 
 	return ""
 }
 
+// splitKnowledgeTags splits a comma-separated "tags" argument into a
+// trimmed, non-empty slice. Extracted from handleAddKnowledge to keep it
+// under the gocyclo limit.
+func splitKnowledgeTags(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var tags []string
+	for _, t := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(t); trimmed != "" {
+			tags = append(tags, trimmed)
+		}
+	}
+	return tags
+}
+
+// sanitizeKnowledgeText rejects control characters in title (short,
+// single-line, rendered in lists) and content (long-form, may be markdown so
+// newlines are semantic content and stay allowed). Neither field is silently
+// modified — bad input is a hard error, not a stripped write. Per
+// backend-security-design.md §5.4.
+func sanitizeKnowledgeText(title, content string) (string, string, error) {
+	cleanTitle, err := sanitize.RejectControlChars(title, mcpKnowledgeMaxTitleLen, false)
+	if err != nil {
+		return "", "", fmt.Errorf("title: %w", err)
+	}
+	cleanContent, err := sanitize.RejectControlChars(content, mcpKnowledgeMaxContentLen, true)
+	if err != nil {
+		return "", "", fmt.Errorf("content: %w", err)
+	}
+	return cleanTitle, cleanContent, nil
+}
+
 func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	itemType := stringArg(args, "type")
@@ -98,17 +136,16 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	content := stringArg(args, "content")
 	url := stringArg(args, "url")
 
-	var tags []string
-	if raw := stringArg(args, "tags"); raw != "" {
-		for _, t := range strings.Split(raw, ",") {
-			if trimmed := strings.TrimSpace(t); trimmed != "" {
-				tags = append(tags, trimmed)
-			}
-		}
-	}
+	tags := splitKnowledgeTags(stringArg(args, "tags"))
 
 	if msg := validateKnowledgeArgs(itemType, title, content, url, tags); msg != "" {
 		return mcp.NewToolResultError(msg), nil
+	}
+
+	var ccErr error
+	title, content, ccErr = sanitizeKnowledgeText(title, content)
+	if ccErr != nil {
+		return mcp.NewToolResultError(ccErr.Error()), nil
 	}
 
 	cleanedTags, reason := sanitizeTags(tags)
@@ -265,14 +302,9 @@ func (s *Server) handleListKnowledge(ctx context.Context, req mcp.CallToolReques
 
 func (s *Server) handleSyncToNotion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "knowledge_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("knowledge_id is required"), nil
-	}
-
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid knowledge_id UUID"), nil
+	id, errResult := requireUUIDArg(args, "knowledge_id", "invalid knowledge_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	if s.notion == nil {
@@ -281,7 +313,7 @@ func (s *Server) handleSyncToNotion(ctx context.Context, req mcp.CallToolRequest
 
 	item, err := s.knowledge.GetByID(ctx, id)
 	if errors.Is(err, knowledge.ErrNotFound) {
-		return mcp.NewToolResultError(fmt.Sprintf("knowledge item %s not found", rawID)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("knowledge item %s not found", id)), nil
 	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("fetching knowledge item: %v", err)), nil

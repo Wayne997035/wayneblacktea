@@ -48,6 +48,8 @@ wbt status                      # shows pid / port / health
 claude mcp get wayneblacktea    # should show ✔ Connected
 ```
 
+Open Claude Code from any directory — no `.mcp.json` needed.
+
 Sister commands:
 
 | Command | What it does |
@@ -69,6 +71,30 @@ Sister commands:
 | curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | **Requires a published release** (no release binaries yet) |
 
 See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, pre-built release binary options, and [Troubleshooting](./docs/install.md#troubleshooting).
+
+## 5-minute onboarding
+
+Once `wbt setup` finishes, open Claude Code from any directory and try:
+
+```
+# See what the server already remembers
+> get_today_context
+
+# Log a decision (stored permanently, queryable by repo)
+> log_decision "Chose SQLite because..."
+
+# Add a task
+> add_task "Implement login flow" --project my-project
+
+# Atomically confirm a multi-step plan
+> confirm_plan {phases: [...], decisions: [...]}
+
+# Save a knowledge note (keyword + semantic vector search)
+> add_knowledge {title: "JWT expiry best practices", content: "..."}
+
+# Record an idea that isn't actionable yet
+> add_vision_item {title: "Multi-agent collaboration protocol", why_blocked: "waiting on the E1 provider interface"}
+```
 
 Full tool reference: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
 

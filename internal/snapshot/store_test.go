@@ -57,6 +57,10 @@ func (s *stubStore) LatestSlugs(_ context.Context) ([]string, error) {
 	return s.latestSlugs, nil
 }
 
+func (s *stubStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests for IsNotFound
 // ---------------------------------------------------------------------------

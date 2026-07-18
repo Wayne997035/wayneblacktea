@@ -104,7 +104,8 @@ func (s *Store) Propose(ctx context.Context, p CreateParams) (*BehaviorRule, err
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING ` + selectCols
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		id,
 		wsArg,
 		p.Condition,
@@ -177,34 +178,11 @@ func (s *Store) List(ctx context.Context, p ListParams) ([]*BehaviorRule, error)
 	return out, nil
 }
 
-// GetByID returns the behavior rule with the given ID.
-// Returns ErrNotFound when no matching rule exists.
-func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*BehaviorRule, error) {
-	const q = `SELECT ` + selectCols + ` FROM behavior_rules
-		WHERE id = $1
-		LIMIT 1`
-
-	rows, err := s.pool.Query(ctx, q, id)
-	if err != nil {
-		return nil, fmt.Errorf("get behavior_rule by id: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("get behavior_rule by id rows.Err: %w", err)
-		}
-		return nil, ErrNotFound
-	}
-	r, err := scanRule(rows.Scan)
-	if err != nil {
-		return nil, fmt.Errorf("get behavior_rule by id scan: %w", err)
-	}
-	return r, nil
-}
-
 // ApplyOutcome applies the confidence formula atomically.
 // A single UPDATE...RETURNING avoids the read-then-update race condition.
+// SECURITY: workspace-scoped — a store scoped to workspace A cannot apply an
+// outcome to a rule owned by workspace B, matching List's scoping (§ store
+// scoping audit, aligns with the workspace predicate already used by List).
 func (s *Store) ApplyOutcome(ctx context.Context, id uuid.UUID, outcome string) (*BehaviorRule, error) {
 	var q string
 	switch outcome {
@@ -218,6 +196,7 @@ func (s *Store) ApplyOutcome(ctx context.Context, id uuid.UUID, outcome string) 
 				confidence = LEAST(confidence + 0.05, 1.00),
 				updated_at = NOW()
 			WHERE id = $1
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			RETURNING ` + selectCols
 	case "failure":
 		q = `UPDATE behavior_rules
@@ -225,12 +204,13 @@ func (s *Store) ApplyOutcome(ctx context.Context, id uuid.UUID, outcome string) 
 				confidence = GREATEST(confidence - 0.10, 0.00),
 				updated_at = NOW()
 			WHERE id = $1
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			RETURNING ` + selectCols
 	default:
 		return nil, fmt.Errorf("behaviorrule: invalid outcome %q; must be 'success' or 'failure'", outcome)
 	}
 
-	rows, err := s.pool.Query(ctx, q, id)
+	rows, err := s.pool.Query(ctx, q, id, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("applying outcome to behavior_rule: %w", err)
 	}
@@ -254,13 +234,16 @@ func (s *Store) ApplyOutcome(ctx context.Context, id uuid.UUID, outcome string) 
 
 // Deprecate sets the rule's status to 'deprecated'. Idempotent.
 // Returns ErrNotFound when no matching rule exists.
+// SECURITY: workspace-scoped — a store scoped to workspace A cannot deprecate
+// a rule owned by workspace B, matching List's scoping.
 func (s *Store) Deprecate(ctx context.Context, id uuid.UUID) (*BehaviorRule, error) {
 	const q = `UPDATE behavior_rules
 		SET status = 'deprecated', updated_at = NOW()
 		WHERE id = $1
+		  AND ($2::uuid IS NULL OR workspace_id = $2)
 		RETURNING ` + selectCols
 
-	rows, err := s.pool.Query(ctx, q, id)
+	rows, err := s.pool.Query(ctx, q, id, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("deprecating behavior_rule: %w", err)
 	}

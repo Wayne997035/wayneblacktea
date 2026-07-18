@@ -774,13 +774,9 @@ func (s *Server) handleGetWorkSessionTrace(ctx context.Context, req mcp.CallTool
 	}
 	args := req.GetArguments()
 
-	rawSessID := stringArg(args, "session_id")
-	if rawSessID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
-	}
-	sessID, err := uuid.Parse(rawSessID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid session_id UUID"), nil
+	sessID, errResult := requireUUIDArg(args, "session_id", "invalid session_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	sess, err := s.workSession.GetByID(ctx, s.workspaceUUIDVal(), sessID)

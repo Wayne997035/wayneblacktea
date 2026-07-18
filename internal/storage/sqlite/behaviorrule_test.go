@@ -2,7 +2,6 @@ package sqlite_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -293,17 +292,22 @@ func TestSQLiteBehaviorRuleStore_PruneOlderThan(t *testing.T) {
 		t.Errorf("expected at least 1 row deleted, got %d", n)
 	}
 
-	// deprecated row should be gone
-	_, err = store.GetByID(ctx, dep.ID)
-	if !errors.Is(err, behaviorrule.ErrNotFound) {
-		t.Errorf("deprecated row should be pruned; got err=%v", err)
+	// Verify survivorship via List (no dedicated GetByID — removed as dead code).
+	remaining, err := store.List(ctx, behaviorrule.ListParams{WorkspaceID: &wsID, Limit: 20})
+	if err != nil {
+		t.Fatalf("List after prune: %v", err)
 	}
-
-	// active and proposed should survive
-	if _, err := store.GetByID(ctx, active.ID); err != nil {
-		t.Errorf("active row was unexpectedly pruned: %v", err)
+	remainingIDs := make(map[uuid.UUID]bool, len(remaining))
+	for _, r := range remaining {
+		remainingIDs[r.ID] = true
 	}
-	if _, err := store.GetByID(ctx, proposed.ID); err != nil {
-		t.Errorf("proposed row was unexpectedly pruned: %v", err)
+	if remainingIDs[dep.ID] {
+		t.Error("deprecated row should have been pruned but still exists")
+	}
+	if !remainingIDs[active.ID] {
+		t.Error("active row was unexpectedly pruned")
+	}
+	if !remainingIDs[proposed.ID] {
+		t.Error("proposed row was unexpectedly pruned")
 	}
 }

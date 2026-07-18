@@ -1,5 +1,9 @@
 # P0a Design Rationale
 
+> **Status:** Historical decision record (2026-05), not a description of
+> current behavior. Kept for future readers judging whether later changes
+> still align with the original P0a intent.
+
 > Sprint: P0a Session Core (α/β/γ split)
 > Baseline: After PR #49 merge (2026-05-02)
 > Status: Frozen — α开工 2026-05-02

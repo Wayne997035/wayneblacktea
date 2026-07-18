@@ -3,11 +3,6 @@ INSERT INTO concepts (title, content, tags, workspace_id)
 VALUES ($1, $2, $3, $4)
 RETURNING *;
 
--- name: GetConceptByID :one
-SELECT * FROM concepts
-WHERE id = sqlc.arg('id')
-  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
-
 -- name: ListDueReviews :many
 SELECT c.id, c.title, c.content, c.tags, c.created_at, c.updated_at, c.status,
        rs.id as schedule_id, rs.stability, rs.difficulty, rs.due_date, rs.review_count

@@ -1,4 +1,23 @@
--- SQLite-dialect schema, applied idempotently at sqlite.New() time.
+-- SQLite-dialect schema — HISTORICAL / TEST-FIXTURE ONLY as of E1 (2026-07-18).
+--
+-- This file is NO LONGER the runtime authority. Open() (db.go) now brings the
+-- schema up to date via migrations/sqlite/*.sql through golang-migrate; see
+-- internal/storage/sqlite/migrate.go. The canonical target schema snapshot is
+-- testdata/schema_golden.sql (compared against by TestGoldenSchemaEquivalence
+-- in golden_schema_test.go).
+--
+-- This file is kept, unmodified, only because two test helpers still exec it
+-- directly to build fixture DBs that simulate the pre-E1 world:
+--   - buildLegacySchemaDB (golden_schema_test.go): regenerates
+--     testdata/schema_golden.sql from this file's output, for on-demand
+--     re-verification that the golden snapshot still matches what this file
+--     would have produced.
+--   - buildPreExistingDB (migrate_test.go): builds a realistic "pre-existing
+--     install created before the migration runner existed" fixture for the
+--     runMigrations adoption-path test (schema_migrations absent + tasks
+--     present -> Force-stamp, never replay).
+-- Do not add new columns/tables here for new features — add a new
+-- migrations/sqlite/NNNNNN_*.up.sql file instead.
 --
 -- Differences vs the canonical Postgres schema:
 --   * UUIDs are TEXT (canonical 8-4-4-4-12 lowercase). Generated app-side.

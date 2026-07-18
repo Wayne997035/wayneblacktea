@@ -506,6 +506,31 @@ func floatArg(args map[string]any, key string) float64 {
 	return v
 }
 
+// requireUUIDArg extracts args[key], validates it is present and a
+// well-formed UUID, and returns a ready-to-send MCP error result on failure.
+// The empty-value message is always "<key> is required"; invalidMsg is used
+// verbatim when the value is non-empty but fails uuid.Parse. Callers that
+// need the underlying parse error embedded in the message (a handful of
+// handlers do) keep their own inline uuid.Parse instead of this helper.
+//
+// Usage:
+//
+//	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+//	if errResult != nil {
+//	    return errResult, nil
+//	}
+func requireUUIDArg(args map[string]any, key, invalidMsg string) (uuid.UUID, *mcp.CallToolResult) {
+	raw := stringArg(args, key)
+	if raw == "" {
+		return uuid.UUID{}, mcp.NewToolResultError(key + " is required")
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.UUID{}, mcp.NewToolResultError(invalidMsg)
+	}
+	return id, nil
+}
+
 // jsonText marshals v to indented JSON and returns a tool result text.
 func jsonText(v any) (*mcp.CallToolResult, error) {
 	out, err := json.MarshalIndent(v, "", "  ")

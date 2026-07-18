@@ -20,6 +20,49 @@ type ActivityLog struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
+// AI token usage and computed USD cost per API call. 30-day retention via daily-ai-cost-ledger-prune scheduler job per backend-security-design.md §1.3.
+type AiCostLedger struct {
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	Caller           string      `json:"caller"`
+	Model            string      `json:"model"`
+	InputTokens      int64       `json:"input_tokens"`
+	OutputTokens     int64       `json:"output_tokens"`
+	CacheReadTokens  int64       `json:"cache_read_tokens"`
+	CacheWriteTokens int64       `json:"cache_write_tokens"`
+	// Computed cost in micro-USD (USD * 1_000_000). Stored as integer to avoid float rounding.
+	CostUsdMicro int64              `json:"cost_usd_micro"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+// behavior_rules table; 365-day retention for rejected/deprecated rows via daily-behavior-rule-prune job per backend-security-design.md §1.3. Active and proposed rows are never auto-pruned.
+type BehaviorRule struct {
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Condition   string             `json:"condition"`
+	Action      string             `json:"action"`
+	SourceType  string             `json:"source_type"`
+	SourceID    pgtype.UUID        `json:"source_id"`
+	Confidence  pgtype.Numeric     `json:"confidence"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type CompletionCandidate struct {
+	ID                uuid.UUID          `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	TaskID            uuid.UUID          `json:"task_id"`
+	RepoName          pgtype.Text        `json:"repo_name"`
+	Reason            string             `json:"reason"`
+	EvidenceRefs      []string           `json:"evidence_refs"`
+	Confidence        string             `json:"confidence"`
+	SuggestedArtifact pgtype.Text        `json:"suggested_artifact"`
+	Status            string             `json:"status"`
+	DetectedAt        pgtype.Timestamptz `json:"detected_at"`
+	ResolvedAt        pgtype.Timestamptz `json:"resolved_at"`
+}
+
 type Concept struct {
 	ID             uuid.UUID          `json:"id"`
 	Title          string             `json:"title"`
@@ -37,17 +80,54 @@ type Concept struct {
 }
 
 type Decision struct {
-	ID           uuid.UUID          `json:"id"`
-	ProjectID    pgtype.UUID        `json:"project_id"`
-	RepoName     pgtype.Text        `json:"repo_name"`
-	Title        string             `json:"title"`
-	Context      string             `json:"context"`
-	Decision     string             `json:"decision"`
-	Rationale    string             `json:"rationale"`
-	Alternatives pgtype.Text        `json:"alternatives"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
-	TaskID       pgtype.UUID        `json:"task_id"`
+	ID                uuid.UUID          `json:"id"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	RepoName          pgtype.Text        `json:"repo_name"`
+	Title             string             `json:"title"`
+	Context           string             `json:"context"`
+	Decision          string             `json:"decision"`
+	Rationale         string             `json:"rationale"`
+	Alternatives      pgtype.Text        `json:"alternatives"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Embedding         []byte             `json:"embedding"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	EmbeddingProvider pgtype.Text        `json:"embedding_provider"`
+	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
+	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
+}
+
+// MCP tool-call audit trail for meta-rule drift detection; 30-day TTL via task discipline-prune
+type DisciplineEvent struct {
+	ID               int64              `json:"id"`
+	SessionID        string             `json:"session_id"`
+	RepoName         pgtype.Text        `json:"repo_name"`
+	ToolName         string             `json:"tool_name"`
+	IsMutating       bool               `json:"is_mutating"`
+	ObservedAt       pgtype.Timestamptz `json:"observed_at"`
+	LinkedDecisionID pgtype.UUID        `json:"linked_decision_id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+}
+
+// Watchdog meta-cognition events (M8). 90-day retention via daily-discipline-event-m8-prune scheduler job per backend-security-design.md §1.3.
+type DisciplineEventsM8 struct {
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	EventType   string             `json:"event_type"`
+	Severity    string             `json:"severity"`
+	Detail      []byte             `json:"detail"`
+	ResolvedAt  pgtype.Timestamptz `json:"resolved_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type Evaluation struct {
+	ID                     uuid.UUID          `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	OutcomeID              uuid.UUID          `json:"outcome_id"`
+	Analysis               string             `json:"analysis"`
+	Lessons                []byte             `json:"lessons"`
+	ImprovementSuggestions []byte             `json:"improvement_suggestions"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 }
 
 type Goal struct {
@@ -60,6 +140,32 @@ type Goal struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+}
+
+type GuardBypass struct {
+	ID        uuid.UUID          `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	Scope     string             `json:"scope"`
+	Target    string             `json:"target"`
+	ToolName  pgtype.Text        `json:"tool_name"`
+	Reason    string             `json:"reason"`
+	CreatedBy pgtype.Text        `json:"created_by"`
+}
+
+type GuardEvent struct {
+	ID         uuid.UUID          `json:"id"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	SessionID  pgtype.Text        `json:"session_id"`
+	ToolName   string             `json:"tool_name"`
+	ToolInput  []byte             `json:"tool_input"`
+	Cwd        pgtype.Text        `json:"cwd"`
+	RepoName   pgtype.Text        `json:"repo_name"`
+	RiskTier   int16              `json:"risk_tier"`
+	RiskReason pgtype.Text        `json:"risk_reason"`
+	WouldDeny  bool               `json:"would_deny"`
+	Matcher    string             `json:"matcher"`
+	BypassID   pgtype.UUID        `json:"bypass_id"`
 }
 
 type KnowledgeItem struct {
@@ -109,6 +215,29 @@ type KnowledgeRanked struct {
 	Strength       interface{}        `json:"strength"`
 }
 
+// Atomic fact units; retain 90 days (TTL not enforced by DB; use scheduled DELETE)
+type MemoryAtom struct {
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ParentTable string             `json:"parent_table"`
+	ParentID    uuid.UUID          `json:"parent_id"`
+	Content     string             `json:"content"`
+	Keywords    []byte             `json:"keywords"`
+	Tags        []byte             `json:"tags"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	// pending | done | failed | consolidated | promoted
+	DigestStatus string      `json:"digest_status"`
+	ErrorMsg     pgtype.Text `json:"error_msg"`
+}
+
+type MemoryLink struct {
+	FromAtomID uuid.UUID          `json:"from_atom_id"`
+	ToAtomID   uuid.UUID          `json:"to_atom_id"`
+	LinkType   string             `json:"link_type"`
+	Confidence float32            `json:"confidence"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
 type MergedPrsObserved struct {
 	ID          uuid.UUID          `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -119,6 +248,19 @@ type MergedPrsObserved struct {
 	BodyExcerpt pgtype.Text        `json:"body_excerpt"`
 	MergedAt    pgtype.Timestamptz `json:"merged_at"`
 	ObservedAt  pgtype.Timestamptz `json:"observed_at"`
+}
+
+type Outcome struct {
+	ID             uuid.UUID          `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	EntityType     string             `json:"entity_type"`
+	EntityID       uuid.UUID          `json:"entity_id"`
+	Result         string             `json:"result"`
+	Metrics        []byte             `json:"metrics"`
+	Notes          pgtype.Text        `json:"notes"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	RelatedRuleIds []uuid.UUID        `json:"related_rule_ids"`
+	WorkSessionID  pgtype.UUID        `json:"work_session_id"`
 }
 
 type PendingProposal struct {
@@ -133,6 +275,34 @@ type PendingProposal struct {
 	Reason      pgtype.Text        `json:"reason"`
 }
 
+type Playbook struct {
+	ID                uuid.UUID          `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	TriggerPattern    string             `json:"trigger_pattern"`
+	ActionTemplate    string             `json:"action_template"`
+	SourceDecisionIds []uuid.UUID        `json:"source_decision_ids"`
+	Confidence        pgtype.Numeric     `json:"confidence"`
+	Hits              int32              `json:"hits"`
+	LastUsedAt        pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProceduralMemory struct {
+	ID           uuid.UUID          `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RepoName     string             `json:"repo_name"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	Title        string             `json:"title"`
+	WhenToUse    string             `json:"when_to_use"`
+	ApproachMd   string             `json:"approach_md"`
+	ToolsUsed    []byte             `json:"tools_used"`
+	FilesTouched []byte             `json:"files_touched"`
+	SuccessCount int32              `json:"success_count"`
+	LastUsedAt   pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Project struct {
 	ID          uuid.UUID          `json:"id"`
 	GoalID      pgtype.UUID        `json:"goal_id"`
@@ -145,6 +315,49 @@ type Project struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	// Optional repo binding for workspace overview drill-down; populated by hand-rolled UPDATE post-migration
+	RepoName pgtype.Text `json:"repo_name"`
+}
+
+type ProjectArch struct {
+	ID            uuid.UUID          `json:"id"`
+	Slug          string             `json:"slug"`
+	Summary       string             `json:"summary"`
+	FileMap       []byte             `json:"file_map"`
+	LastCommitSha string             `json:"last_commit_sha"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProjectStatusSnapshot struct {
+	ID                uuid.UUID          `json:"id"`
+	Slug              string             `json:"slug"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	GeneratedAt       pgtype.Timestamptz `json:"generated_at"`
+	SprintSummary     pgtype.Text        `json:"sprint_summary"`
+	GapAnalysis       pgtype.Text        `json:"gap_analysis"`
+	SotaCatchupPct    pgtype.Int4        `json:"sota_catchup_pct"`
+	PendingSummary    pgtype.Text        `json:"pending_summary"`
+	SourceDecisionIds []uuid.UUID        `json:"source_decision_ids"`
+	Embedding         []byte             `json:"embedding"`
+	Source            string             `json:"source"`
+	EmbeddingProvider pgtype.Text        `json:"embedding_provider"`
+	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
+	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
+}
+
+// Persisted AI reflection records; 180-day retention via the scheduled daily-reflection-prune job (DELETE WHERE created_at < NOW() - INTERVAL '180 days') per backend-security-design.md §1.3.
+type Reflection struct {
+	ID                uuid.UUID          `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Type              string             `json:"type"`
+	RelatedEntityType pgtype.Text        `json:"related_entity_type"`
+	RelatedEntityID   pgtype.UUID        `json:"related_entity_id"`
+	Summary           string             `json:"summary"`
+	Insights          []byte             `json:"insights"`
+	PatternsDetected  []byte             `json:"patterns_detected"`
+	SuggestedActions  []byte             `json:"suggested_actions"`
+	Confidence        float64            `json:"confidence"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 type Repo struct {
@@ -177,15 +390,40 @@ type ReviewSchedule struct {
 }
 
 type SessionHandoff struct {
-	ID             uuid.UUID          `json:"id"`
-	ProjectID      pgtype.UUID        `json:"project_id"`
-	RepoName       pgtype.Text        `json:"repo_name"`
-	Intent         string             `json:"intent"`
-	ContextSummary pgtype.Text        `json:"context_summary"`
-	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	NextActions    []byte             `json:"next_actions"`
+	ID                uuid.UUID          `json:"id"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	RepoName          pgtype.Text        `json:"repo_name"`
+	Intent            string             `json:"intent"`
+	ContextSummary    pgtype.Text        `json:"context_summary"`
+	ResolvedAt        pgtype.Timestamptz `json:"resolved_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	SummaryText       pgtype.Text        `json:"summary_text"`
+	Embedding         []byte             `json:"embedding"`
+	NextActions       []byte             `json:"next_actions"`
+	EmbeddingProvider pgtype.Text        `json:"embedding_provider"`
+	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
+	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
+}
+
+// Curated skill library — intentionally no TTL; rows accumulate by design (explicit extract_skill only).
+type Skill struct {
+	ID                    uuid.UUID   `json:"id"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Name                  string      `json:"name"`
+	Description           string      `json:"description"`
+	Triggers              []byte      `json:"triggers"`
+	Steps                 []byte      `json:"steps"`
+	FailureModes          []byte      `json:"failure_modes"`
+	VerificationChecklist []byte      `json:"verification_checklist"`
+	Examples              []byte      `json:"examples"`
+	// Code-layer refs to memory_atoms.id; no FK per project red-line #9
+	SourceAtomIds []byte             `json:"source_atom_ids"`
+	SuccessCount  int32              `json:"success_count"`
+	FailureCount  int32              `json:"failure_count"`
+	LastUsedAt    pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Task struct {
@@ -209,4 +447,72 @@ type Task struct {
 	PRUrl        pgtype.Text        `json:"pr_url"`
 	CommitSHAs   []string           `json:"commit_shas"`
 	VisionItemID pgtype.UUID        `json:"vision_item_id"`
+}
+
+type VisionItem struct {
+	ID               uuid.UUID          `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	RepoName         pgtype.Text        `json:"repo_name"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
+	Title            string             `json:"title"`
+	WhyBlocked       string             `json:"why_blocked"`
+	DependsOn        []byte             `json:"depends_on"`
+	ParentInitiative pgtype.Text        `json:"parent_initiative"`
+	Status           string             `json:"status"`
+	ContextMd        pgtype.Text        `json:"context_md"`
+	PromotedTaskID   pgtype.UUID        `json:"promoted_task_id"`
+	LastDiscussedAt  pgtype.Timestamptz `json:"last_discussed_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkSession struct {
+	ID                        uuid.UUID          `json:"id"`
+	WorkspaceID               uuid.UUID          `json:"workspace_id"`
+	RepoName                  string             `json:"repo_name"`
+	ProjectID                 pgtype.UUID        `json:"project_id"`
+	Title                     string             `json:"title"`
+	Goal                      string             `json:"goal"`
+	Status                    string             `json:"status"`
+	Source                    string             `json:"source"`
+	ConfirmedPlanID           pgtype.UUID        `json:"confirmed_plan_id"`
+	CurrentTaskID             pgtype.UUID        `json:"current_task_id"`
+	FinalSummary              pgtype.Text        `json:"final_summary"`
+	StartedAt                 pgtype.Timestamptz `json:"started_at"`
+	LastCheckpointAt          pgtype.Timestamptz `json:"last_checkpoint_at"`
+	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	ContextPackID             pgtype.UUID        `json:"context_pack_id"`
+	VerificationStatus        pgtype.Text        `json:"verification_status"`
+	VerificationCommand       pgtype.Text        `json:"verification_command"`
+	VerificationOutputExcerpt pgtype.Text        `json:"verification_output_excerpt"`
+	OutcomeID                 pgtype.UUID        `json:"outcome_id"`
+	FinalResult               pgtype.Text        `json:"final_result"`
+	BranchName                pgtype.Text        `json:"branch_name"`
+}
+
+type WorkSessionEvidence struct {
+	ID            uuid.UUID          `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	SessionID     uuid.UUID          `json:"session_id"`
+	EvidenceType  string             `json:"evidence_type"`
+	Status        string             `json:"status"`
+	Command       pgtype.Text        `json:"command"`
+	Artifact      pgtype.Text        `json:"artifact"`
+	OutputExcerpt pgtype.Text        `json:"output_excerpt"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkSessionTask struct {
+	SessionID uuid.UUID          `json:"session_id"`
+	TaskID    uuid.UUID          `json:"task_id"`
+	Role      string             `json:"role"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkspacePreference struct {
+	WorkspaceID     uuid.UUID          `json:"workspace_id"`
+	ModelPreference string             `json:"model_preference"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }

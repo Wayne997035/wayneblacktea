@@ -14,7 +14,7 @@ import (
 const createDecision = `-- name: CreateDecision :one
 INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, task_id
+RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim
 `
 
 type CreateDecisionParams struct {
@@ -53,13 +53,17 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		&i.Alternatives,
 		&i.CreatedAt,
 		&i.WorkspaceID,
+		&i.Embedding,
 		&i.TaskID,
+		&i.EmbeddingProvider,
+		&i.EmbeddingModel,
+		&i.EmbeddingDim,
 	)
 	return i, err
 }
 
 const listAllDecisions = `-- name: ListAllDecisions :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, task_id FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
 LIMIT $2
@@ -90,7 +94,11 @@ func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsPara
 			&i.Alternatives,
 			&i.CreatedAt,
 			&i.WorkspaceID,
+			&i.Embedding,
 			&i.TaskID,
+			&i.EmbeddingProvider,
+			&i.EmbeddingModel,
+			&i.EmbeddingDim,
 		); err != nil {
 			return nil, err
 		}
@@ -103,7 +111,7 @@ func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsPara
 }
 
 const listDecisionsByProject = `-- name: ListDecisionsByProject :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, task_id FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
 WHERE project_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -136,7 +144,11 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 			&i.Alternatives,
 			&i.CreatedAt,
 			&i.WorkspaceID,
+			&i.Embedding,
 			&i.TaskID,
+			&i.EmbeddingProvider,
+			&i.EmbeddingModel,
+			&i.EmbeddingDim,
 		); err != nil {
 			return nil, err
 		}
@@ -149,7 +161,7 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 }
 
 const listDecisionsByRepo = `-- name: ListDecisionsByRepo :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, task_id FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
 WHERE repo_name = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -182,7 +194,11 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 			&i.Alternatives,
 			&i.CreatedAt,
 			&i.WorkspaceID,
+			&i.Embedding,
 			&i.TaskID,
+			&i.EmbeddingProvider,
+			&i.EmbeddingModel,
+			&i.EmbeddingDim,
 		); err != nil {
 			return nil, err
 		}
@@ -195,7 +211,7 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 }
 
 const listDecisionsByTaskID = `-- name: ListDecisionsByTaskID :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, task_id FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
 WHERE task_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -228,7 +244,11 @@ func (q *Queries) ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsBy
 			&i.Alternatives,
 			&i.CreatedAt,
 			&i.WorkspaceID,
+			&i.Embedding,
 			&i.TaskID,
+			&i.EmbeddingProvider,
+			&i.EmbeddingModel,
+			&i.EmbeddingDim,
 		); err != nil {
 			return nil, err
 		}

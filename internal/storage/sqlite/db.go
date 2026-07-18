@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers "sqlite"
 )
@@ -17,8 +16,11 @@ type DB struct {
 	workspaceID string // empty = legacy unscoped mode
 }
 
-// Open creates a new DB by opening dsn (e.g. "file:wbt.db" or ":memory:")
-// and applying the embedded schema idempotently. workspaceID may be empty.
+// Open creates a new DB by opening dsn (e.g. "file:wbt.db" or ":memory:") and
+// bringing its schema up to date via the embedded golang-migrate migration
+// set (migrations/sqlite/); see runMigrations for the adoption-vs-replay
+// logic. workspaceID may be empty. schema.sql is no longer the runtime
+// authority — see its header comment.
 func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -53,18 +55,9 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite busy timeout: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, schemaSQL); err != nil {
+	if err := runMigrations(ctx, conn); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("sqlite apply schema: %w", err)
-	}
-	// applyColumnUpgrades adds columns introduced after an existing DB was created.
-	// schema.sql uses CREATE TABLE IF NOT EXISTS — new columns in the definition
-	// are silently skipped on existing tables. Each ALTER here is idempotent:
-	// "duplicate column name" errors are ignored so the call is safe on both
-	// fresh and pre-existing databases.
-	if err := applyColumnUpgrades(ctx, conn); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("sqlite apply column upgrades: %w", err)
+		return nil, fmt.Errorf("sqlite run migrations: %w", err)
 	}
 	// Rebuilds the FTS5 inverted index unconditionally from knowledge_items; at personal scale completes in <1 ms.
 	if _, err := conn.ExecContext(ctx, `INSERT INTO knowledge_items_fts(knowledge_items_fts) VALUES('rebuild')`); err != nil {
@@ -138,73 +131,4 @@ func (d *DB) SqlConn() *sql.DB {
 // in legacy unscoped mode.
 func (d *DB) WorkspaceID() string {
 	return d.workspaceID
-}
-
-// columnUpgrade describes a single idempotent ALTER TABLE ADD COLUMN operation.
-type columnUpgrade struct {
-	table      string
-	column     string
-	definition string // column type + constraints, e.g. "TEXT NOT NULL DEFAULT '[]'"
-}
-
-// columnUpgrades lists columns added to existing tables after the initial
-// schema.sql was shipped. Each entry mirrors a migrations/sqlite/000NNN_*.up.sql
-// file that performs the same ALTER TABLE. ORDER MATTERS: apply in ascending
-// migration number order so dependencies are satisfied.
-var columnUpgrades = []columnUpgrade{
-	// migration 000063: related_rule_ids on outcomes (TEXT JSON array, default empty).
-	// Fresh DBs already have this via schema.sql CREATE TABLE IF NOT EXISTS; this
-	// ALTER is needed only for DBs created before 000063 was merged.
-	{table: "outcomes", column: "related_rule_ids", definition: "TEXT NOT NULL DEFAULT '[]'"},
-	// migration 000064: embedding provider metadata on session_handoffs, decisions,
-	// project_status_snapshots. Nullable columns; existing rows keep NULL and are
-	// treated as 'hashed' by SearchByCosine provider-filter logic.
-	{table: "session_handoffs", column: "embedding_provider", definition: "TEXT"},
-	{table: "session_handoffs", column: "embedding_model", definition: "TEXT"},
-	{table: "session_handoffs", column: "embedding_dim", definition: "INTEGER"},
-	{table: "decisions", column: "embedding_provider", definition: "TEXT"},
-	{table: "decisions", column: "embedding_model", definition: "TEXT"},
-	{table: "decisions", column: "embedding_dim", definition: "INTEGER"},
-	{table: "project_status_snapshots", column: "embedding_provider", definition: "TEXT"},
-	{table: "project_status_snapshots", column: "embedding_model", definition: "TEXT"},
-	{table: "project_status_snapshots", column: "embedding_dim", definition: "INTEGER"},
-	// migration 000065: evidence + verification columns on work_sessions (wbt-2.0 P2.1).
-	// Fresh DBs already have these via schema.sql CREATE TABLE IF NOT EXISTS; this
-	// ALTER is needed only for DBs created before 000065 was merged.
-	{table: "work_sessions", column: "context_pack_id", definition: "TEXT"},
-	{
-		table: "work_sessions", column: "verification_status",
-		definition: "TEXT CHECK (verification_status IN ('not_run','passed','failed','unknown'))",
-	},
-	{table: "work_sessions", column: "verification_command", definition: "TEXT"},
-	{table: "work_sessions", column: "verification_output_excerpt", definition: "TEXT"},
-	{table: "work_sessions", column: "outcome_id", definition: "TEXT"},
-	{
-		table: "work_sessions", column: "final_result",
-		definition: "TEXT CHECK (final_result IN ('success','failure','partial','unknown','regressed'))",
-	},
-	{table: "work_sessions", column: "branch_name", definition: "TEXT"},
-	// migration 000067: work_session_id link on outcomes (wbt-2.0 P2.4).
-	// Fresh DBs already have this via schema.sql CREATE TABLE IF NOT EXISTS; this
-	// ALTER is needed only for DBs created before 000067 was merged.
-	{table: "outcomes", column: "work_session_id", definition: "TEXT"},
-}
-
-// applyColumnUpgrades idempotently adds columns to existing tables.
-// SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS, so we detect
-// "duplicate column name" errors by string-matching the error message and treat
-// them as success. All other errors are returned as failures.
-func applyColumnUpgrades(ctx context.Context, conn *sql.DB) error {
-	for _, u := range columnUpgrades {
-		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", u.table, u.column, u.definition)
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			// SQLite returns "duplicate column name: <col>" when the column exists.
-			// Treat this as idempotent success — the column is already present.
-			if strings.Contains(err.Error(), "duplicate column name") {
-				continue
-			}
-			return fmt.Errorf("adding column %s.%s: %w", u.table, u.column, err)
-		}
-	}
-	return nil
 }

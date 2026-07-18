@@ -138,7 +138,7 @@ func (f *fakeGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uui
 	return f.err
 }
 
-func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID) (*db.Task, error) {
 	f.beginTaskCalls++
 	if f.beginTaskResult != nil {
 		return f.beginTaskResult, f.err
@@ -556,66 +556,6 @@ func TestGTDHandler_GetProject(t *testing.T) {
 	}
 }
 
-func TestGTDHandler_UpdateProjectStatus(t *testing.T) {
-	id := uuid.New()
-	updated := &db.Project{ID: id, Status: "completed"}
-	cases := []struct {
-		name     string
-		paramID  string
-		body     string
-		store    *fakeGTDStore
-		wantCode int
-	}{
-		{
-			name:     "updates status",
-			paramID:  id.String(),
-			body:     `{"status":"completed"}`,
-			store:    &fakeGTDStore{updatedProj: updated},
-			wantCode: http.StatusOK,
-		},
-		{
-			name:     "invalid UUID → 400",
-			paramID:  "bad",
-			body:     `{"status":"completed"}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "missing status → 400",
-			paramID:  id.String(),
-			body:     `{}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "invalid status → 400",
-			paramID:  id.String(),
-			body:     `{"status":"garbage"}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "not found → 404",
-			paramID:  id.String(),
-			body:     `{"status":"completed"}`,
-			store:    &fakeGTDStore{err: gtd.ErrNotFound},
-			wantCode: http.StatusNotFound,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEcho()
-			h := handler.NewGTDHandler(tc.store)
-			e.PATCH("/api/projects/:id/status", h.UpdateProjectStatus)
-			rec := performRequest(e, http.MethodPatch, "/api/projects/"+tc.paramID+"/status", tc.body)
-			if rec.Code != tc.wantCode {
-				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
-			}
-		})
-	}
-}
-
 func TestGTDHandler_UpdateGoal(t *testing.T) {
 	id := uuid.New()
 	updated := &db.Goal{ID: id, Title: "New Title", Status: "active"}
@@ -1016,81 +956,6 @@ func TestGTDHandler_CompleteTask(t *testing.T) {
 			h := handler.NewGTDHandler(tc.store)
 			e.PATCH("/api/tasks/:id/complete", h.CompleteTask)
 			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+tc.paramID+"/complete", tc.body)
-			if rec.Code != tc.wantCode {
-				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
-			}
-		})
-	}
-}
-
-// TestGTDHandler_UpdateTaskStatus exercises the PATCH /api/tasks/:id/status endpoint.
-func TestGTDHandler_UpdateTaskStatus(t *testing.T) {
-	id := uuid.New()
-	updated := &db.Task{ID: id, Status: "in_progress"}
-	cases := []struct {
-		name     string
-		paramID  string
-		body     string
-		store    *fakeGTDStore
-		wantCode int
-	}{
-		{
-			name:     "sets in_progress",
-			paramID:  id.String(),
-			body:     `{"status":"in_progress"}`,
-			store:    &fakeGTDStore{updatedTask: updated},
-			wantCode: http.StatusOK,
-		},
-		{
-			name:     "sets pending",
-			paramID:  id.String(),
-			body:     `{"status":"pending"}`,
-			store:    &fakeGTDStore{updatedTask: updated},
-			wantCode: http.StatusOK,
-		},
-		{
-			name:     "status=completed → 400 (use CompleteTask)",
-			paramID:  id.String(),
-			body:     `{"status":"completed"}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "arbitrary status → 400",
-			paramID:  id.String(),
-			body:     `{"status":"invalid_status"}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "missing status → 400",
-			paramID:  id.String(),
-			body:     `{}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "invalid UUID → 400",
-			paramID:  "not-uuid",
-			body:     `{"status":"pending"}`,
-			store:    &fakeGTDStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "not found → 404",
-			paramID:  id.String(),
-			body:     `{"status":"pending"}`,
-			store:    &fakeGTDStore{err: gtd.ErrNotFound},
-			wantCode: http.StatusNotFound,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEcho()
-			h := handler.NewGTDHandler(tc.store)
-			e.PATCH("/api/tasks/:id/status", h.UpdateTaskStatus)
-			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+tc.paramID+"/status", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
@@ -1603,100 +1468,6 @@ func TestDecisionHandler_LogDecision(t *testing.T) {
 			h := handler.NewDecisionHandler(tc.store)
 			e.POST("/api/decisions", h.LogDecision)
 			rec := performRequest(e, http.MethodPost, "/api/decisions", tc.body)
-			if rec.Code != tc.wantCode {
-				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
-			}
-		})
-	}
-}
-
-// ---- Session handler tests ----
-
-func TestSessionHandler_GetHandoff(t *testing.T) {
-	h1 := &db.SessionHandoff{ID: uuid.New(), Intent: "continue feature"}
-	cases := []struct {
-		name     string
-		store    *fakeSessionStore
-		wantCode int
-		wantNull bool
-	}{
-		{
-			name:     "returns handoff",
-			store:    &fakeSessionStore{handoff: h1},
-			wantCode: http.StatusOK,
-		},
-		{
-			name:     "no handoff → 200 null",
-			store:    &fakeSessionStore{err: session.ErrNotFound},
-			wantCode: http.StatusOK,
-			wantNull: true,
-		},
-		{
-			name:     "store error → 500",
-			store:    &fakeSessionStore{err: errors.New("db error")},
-			wantCode: http.StatusInternalServerError,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEcho()
-			h := handler.NewSessionHandler(tc.store)
-			e.GET("/api/session/handoff", h.GetHandoff)
-			rec := performRequest(e, http.MethodGet, "/api/session/handoff", "")
-			if rec.Code != tc.wantCode {
-				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
-			}
-			if tc.wantNull {
-				body := strings.TrimSpace(rec.Body.String())
-				if body != jsonNull {
-					t.Errorf("expected null body, got: %s", body)
-				}
-			}
-		})
-	}
-}
-
-func TestSessionHandler_SetHandoff(t *testing.T) {
-	result := &db.SessionHandoff{ID: uuid.New(), Intent: "continue feature"}
-	cases := []struct {
-		name     string
-		body     string
-		store    *fakeSessionStore
-		wantCode int
-	}{
-		{
-			name:     "sets handoff",
-			body:     `{"intent":"continue feature","repo_name":"wayneblacktea"}`,
-			store:    &fakeSessionStore{setResult: result},
-			wantCode: http.StatusCreated,
-		},
-		{
-			name:     "missing intent → 400",
-			body:     `{"repo_name":"wayneblacktea"}`,
-			store:    &fakeSessionStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "invalid JSON → 400",
-			body:     `{bad`,
-			store:    &fakeSessionStore{},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "store error → 500",
-			body:     `{"intent":"continue feature"}`,
-			store:    &fakeSessionStore{err: errors.New("db write fail")},
-			wantCode: http.StatusInternalServerError,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEcho()
-			h := handler.NewSessionHandler(tc.store)
-			e.POST("/api/session/handoff", h.SetHandoff)
-			rec := performRequest(e, http.MethodPost, "/api/session/handoff", tc.body)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

@@ -9,13 +9,13 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
-	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 func (s *Server) registerVisionTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("add_vision_item",
+	ms.AddTool(mcp.NewTool(
+		"add_vision_item",
 		mcp.WithDescription(
 			"Records a future idea that cannot be acted on now. "+
 				"CALL when user says: '未來想做', '之後再說', '現在還不能', "+
@@ -30,14 +30,17 @@ func (s *Server) registerVisionTools(ms *server.MCPServer) {
 		mcp.WithString("repo_name", mcp.Description("Repository or project slug this idea belongs to")),
 	), s.handleAddVisionItem)
 
-	ms.AddTool(mcp.NewTool("list_vision_items",
+	ms.AddTool(mcp.NewTool(
+		"list_vision_items",
 		mcp.WithDescription("Lists vision items (future ideas). Returns summary view (no context_md) for brevity."),
 		mcp.WithString("parent_initiative", mcp.Description("Filter by initiative/roadmap name")),
 		mcp.WithString("status", mcp.Description(
-			"Filter by status: open, discussing, maturing, promoted, dismissed. Default: all non-dismissed.")),
+			"Filter by status: open, discussing, maturing, promoted, dismissed. Default: all non-dismissed.",
+		)),
 	), s.handleListVisionItems)
 
-	ms.AddTool(mcp.NewTool("update_vision_item",
+	ms.AddTool(mcp.NewTool(
+		"update_vision_item",
 		mcp.WithDescription("Updates a vision item's status or context. Auto-sets last_discussed_at to NOW() if not provided."),
 		mcp.WithString("id", mcp.Description("Vision item UUID"), mcp.Required()),
 		mcp.WithString("status", mcp.Description("New status: open, discussing, maturing, promoted, dismissed")),
@@ -45,7 +48,8 @@ func (s *Server) registerVisionTools(ms *server.MCPServer) {
 		mcp.WithString("last_discussed_at", mcp.Description("Override discussion timestamp in RFC3339 format")),
 	), s.handleUpdateVisionItem)
 
-	ms.AddTool(mcp.NewTool("promote_vision_to_task",
+	ms.AddTool(mcp.NewTool(
+		"promote_vision_to_task",
 		mcp.WithDescription(
 			"Promotes a vision item to a real GTD task. "+
 				"Creates the GTD task, marks vision item status='promoted', "+
@@ -126,13 +130,9 @@ func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequ
 
 func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "id")
-	if rawID == "" {
-		return mcp.NewToolResultError("id is required"), nil
-	}
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid id UUID"), nil
+	id, errResult := requireUUIDArg(args, "id", "invalid id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	p := vision.UpdateVisionParams{}
@@ -174,13 +174,9 @@ func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolReq
 
 func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "id")
-	if rawID == "" {
-		return mcp.NewToolResultError("id is required"), nil
-	}
-	visionID, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid id UUID"), nil
+	visionID, errResult := requireUUIDArg(args, "id", "invalid id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	// Load vision item to get default title.

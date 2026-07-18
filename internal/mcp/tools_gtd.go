@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"sort"
@@ -394,13 +395,9 @@ func (s *Server) handleCreateProject(ctx context.Context, req mcp.CallToolReques
 
 func (s *Server) handleUpdateProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "project_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("project_id is required"), nil
-	}
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
+	id, errResult := requireUUIDArg(args, "project_id", errMsgInvalidProjectIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	// Load the existing project to fill omitted fields (preserve-on-omit semantics).
@@ -637,13 +634,9 @@ func (s *Server) handleListTasks(ctx context.Context, req mcp.CallToolRequest) (
 // pending, in_progress, completed, and cancelled tasks alike.
 func (s *Server) handleGetTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	raw := stringArg(args, "task_id")
-	if raw == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 	task, err := s.gtd.GetTaskByID(ctx, id)
 	if errors.Is(err, gtd.ErrNotFound) {
@@ -672,13 +665,9 @@ var allowedTransitions = map[string]map[string]bool{
 // same-to-same. Covers reopen (completed/cancelled → pending/in_progress).
 func (s *Server) handleSetTaskStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "task_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
-	}
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	rawStatus := stringArg(args, "status")
@@ -810,6 +799,7 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {
+		slog.Warn("add_task: CreateTask failed", "title", title, "err", err)
 		return mcp.NewToolResultError(fmt.Sprintf("creating task: %v", err)), nil
 	}
 
@@ -822,13 +812,9 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 
 func (s *Server) handleCompleteTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	raw := stringArg(args, "task_id")
-	if raw == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	var artifact *string
@@ -841,6 +827,7 @@ func (s *Server) handleCompleteTask(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
+		slog.Warn("complete_task: CompleteTask failed", "task_id", id, "err", err)
 		return mcp.NewToolResultError(fmt.Sprintf("completing task: %v", err)), nil
 	}
 
@@ -862,19 +849,27 @@ func (s *Server) handleCompleteTask(ctx context.Context, req mcp.CallToolRequest
 // SECURITY: only stores the URL string, never makes an HTTP fetch.
 func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, task *db.Task, artifact string) *db.Task {
 	var up gtd.UpdateTaskParams
+	var artifactKind string
 	if githubPRURLRe.MatchString(artifact) {
 		up.PRUrl = &artifact
+		artifactKind = "pr_url"
 	} else if commitSHARe.MatchString(artifact) {
 		newSHAs := make([]string, len(task.CommitSHAs)+1)
 		copy(newSHAs, task.CommitSHAs)
 		newSHAs[len(task.CommitSHAs)] = artifact
 		up.CommitSHAs = newSHAs
+		artifactKind = "commit_sha"
 	}
 	if up.PRUrl == nil && up.CommitSHAs == nil {
 		return nil
 	}
 	updated, updateErr := s.gtd.UpdateTask(ctx, id, up)
 	if updateErr != nil {
+		// Not propagated to the caller — complete_task already succeeded and
+		// returns the pre-side-effect task. Logged so operators can see the
+		// artifact link silently failed to attach. Never log artifact itself
+		// (may be a URL/SHA); artifactKind is enough to diagnose.
+		slog.Warn("applyArtifactSideEffects: UpdateTask failed", "task_id", id, "artifact_kind", artifactKind, "err", updateErr)
 		return nil
 	}
 	return updated
@@ -985,13 +980,9 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 
 func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "task_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
-	}
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	p, errMsg := parseUpdateTaskArgs(args)
@@ -1007,6 +998,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
+		slog.Warn("update_task: UpdateTask failed", "task_id", id, "err", err)
 		return mcp.NewToolResultError(fmt.Sprintf("updating task: %v", err)), nil
 	}
 	return jsonText(task)
@@ -1014,13 +1006,9 @@ func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) 
 
 func (s *Server) handleUpdateProjectStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "project_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("project_id is required"), nil
-	}
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
+	id, errResult := requireUUIDArg(args, "project_id", errMsgInvalidProjectIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 	rawStatus := stringArg(args, "status")
 	if rawStatus == "" {
@@ -1110,13 +1098,9 @@ func (s *Server) handleLogActivity(ctx context.Context, req mcp.CallToolRequest)
 // upstream client can't synthesize one without first making a "read" call.
 func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	raw := stringArg(args, "task_id")
-	if raw == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	confirm := boolArg(args, "confirm")
@@ -1175,6 +1159,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
+		slog.Warn("delete_task: DeleteTask failed", "task_id", id, "err", err)
 		return mcp.NewToolResultError(fmt.Sprintf("deleting task: %v", err)), nil
 	}
 	return mcp.NewToolResultText("task deleted"), nil
@@ -1210,13 +1195,9 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, req mcp.CallToolRequ
 
 func (s *Server) handleChecklistAddItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawTaskID := stringArg(args, "task_id")
-	if rawTaskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
-	}
-	taskID, err := uuid.Parse(rawTaskID)
-	if err != nil {
-		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+	taskID, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	title := stringArg(args, "title")
@@ -1338,8 +1319,7 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 		), nil
 	}
 
-	wsID := workspaceUUIDFromPgtype(s.gtd.WorkspaceID())
-	task, err := s.gtd.BeginTask(ctx, id, wsID)
+	task, err := s.gtd.BeginTask(ctx, id)
 	if errors.Is(err, gtd.ErrNotFound) {
 		return mcp.NewToolResultError("task not found: " + idStr), nil
 	}

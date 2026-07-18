@@ -12,70 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createSessionHandoff = `-- name: CreateSessionHandoff :one
-INSERT INTO session_handoffs (project_id, repo_name, intent, context_summary, workspace_id)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions
-`
-
-type CreateSessionHandoffParams struct {
-	ProjectID      pgtype.UUID `json:"project_id"`
-	RepoName       pgtype.Text `json:"repo_name"`
-	Intent         string      `json:"intent"`
-	ContextSummary pgtype.Text `json:"context_summary"`
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) CreateSessionHandoff(ctx context.Context, arg CreateSessionHandoffParams) (SessionHandoff, error) {
-	row := q.db.QueryRow(ctx, createSessionHandoff,
-		arg.ProjectID,
-		arg.RepoName,
-		arg.Intent,
-		arg.ContextSummary,
-		arg.WorkspaceID,
-	)
-	var i SessionHandoff
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.RepoName,
-		&i.Intent,
-		&i.ContextSummary,
-		&i.ResolvedAt,
-		&i.CreatedAt,
-		&i.WorkspaceID,
-		&i.NextActions,
-	)
-	return i, err
-}
-
-const getLatestUnresolvedHandoff = `-- name: GetLatestUnresolvedHandoff :one
-SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions FROM session_handoffs
-WHERE resolved_at IS NULL
-  AND ($1::uuid IS NULL OR workspace_id = $1)
-ORDER BY created_at DESC
-LIMIT 1
-`
-
-func (q *Queries) GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pgtype.UUID) (SessionHandoff, error) {
-	row := q.db.QueryRow(ctx, getLatestUnresolvedHandoff, workspaceID)
-	var i SessionHandoff
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.RepoName,
-		&i.Intent,
-		&i.ContextSummary,
-		&i.ResolvedAt,
-		&i.CreatedAt,
-		&i.WorkspaceID,
-		&i.NextActions,
-	)
-	return i, err
-}
-
 const handoffsSince = `-- name: HandoffsSince :many
-SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, next_actions FROM session_handoffs
+SELECT id, project_id, repo_name, intent, context_summary, resolved_at, created_at, workspace_id, summary_text, embedding, next_actions, embedding_provider, embedding_model, embedding_dim FROM session_handoffs
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
   AND (created_at >= $2 OR (resolved_at IS NOT NULL AND resolved_at >= $2))
 ORDER BY created_at DESC
@@ -106,7 +44,12 @@ func (q *Queries) HandoffsSince(ctx context.Context, arg HandoffsSinceParams) ([
 			&i.ResolvedAt,
 			&i.CreatedAt,
 			&i.WorkspaceID,
+			&i.SummaryText,
+			&i.Embedding,
 			&i.NextActions,
+			&i.EmbeddingProvider,
+			&i.EmbeddingModel,
+			&i.EmbeddingDim,
 		); err != nil {
 			return nil, err
 		}

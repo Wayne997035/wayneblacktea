@@ -80,38 +80,6 @@ func (q *Queries) CreateReviewSchedule(ctx context.Context, arg CreateReviewSche
 	return i, err
 }
 
-const getConceptByID = `-- name: GetConceptByID :one
-SELECT id, title, content, tags, created_at, updated_at, workspace_id, status, importance, recall_count, last_recalled_at, base_lambda, archived_at FROM concepts
-WHERE id = $1
-  AND ($2::uuid IS NULL OR workspace_id = $2)
-`
-
-type GetConceptByIDParams struct {
-	ID          uuid.UUID   `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetConceptByID(ctx context.Context, arg GetConceptByIDParams) (Concept, error) {
-	row := q.db.QueryRow(ctx, getConceptByID, arg.ID, arg.WorkspaceID)
-	var i Concept
-	err := row.Scan(
-		&i.ID,
-		&i.Title,
-		&i.Content,
-		&i.Tags,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.WorkspaceID,
-		&i.Status,
-		&i.Importance,
-		&i.RecallCount,
-		&i.LastRecalledAt,
-		&i.BaseLambda,
-		&i.ArchivedAt,
-	)
-	return i, err
-}
-
 const listConcepts = `-- name: ListConcepts :many
 SELECT id, title, content, tags, created_at, updated_at, workspace_id, status, importance, recall_count, last_recalled_at, base_lambda, archived_at FROM concepts
 WHERE ($1::uuid IS NULL OR workspace_id = $1)

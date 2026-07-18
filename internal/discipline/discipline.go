@@ -15,15 +15,10 @@ package discipline
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
-
-// ErrNotFound is returned when a requested event does not exist (currently
-// unused by the v1 API, but reserved for future per-id lookups).
-var ErrNotFound = errors.New("discipline: event not found")
 
 // MutatingTools is the canonical allowlist of MCP tool names that trigger
 // is_mutating=true when middleware records a discipline_events row.

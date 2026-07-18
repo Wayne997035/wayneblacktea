@@ -38,7 +38,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -186,43 +187,6 @@ func TestStore_Add(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestStore_GetByID verifies GetByID returns ErrNotFound for unknown IDs.
-func TestStore_GetByID(t *testing.T) {
-	pool := openTestPgPool(t)
-	wsID := uuid.New()
-	store := skill.New(pool, &wsID)
-	ctx := context.Background()
-	wsIDStr := wsID.String()
-
-	t.Run("ErrNotFound for unknown UUID", func(t *testing.T) {
-		_, err := store.GetByID(ctx, uuid.New().String(), &wsIDStr)
-		if !errors.Is(err, skill.ErrNotFound) {
-			t.Errorf("want ErrNotFound, got %v", err)
-		}
-	})
-
-	t.Run("ErrNotFound for invalid UUID string", func(t *testing.T) {
-		_, err := store.GetByID(ctx, "not-a-uuid", &wsIDStr)
-		if err == nil {
-			t.Error("expected error for invalid UUID")
-		}
-	})
-
-	t.Run("returns inserted skill", func(t *testing.T) {
-		sk, err := store.Add(ctx, skill.AddParams{Name: "find-me", Description: "desc"})
-		if err != nil {
-			t.Fatalf("Add: %v", err)
-		}
-		got, err := store.GetByID(ctx, sk.ID, &wsIDStr)
-		if err != nil {
-			t.Fatalf("GetByID: %v", err)
-		}
-		if got.Name != "find-me" {
-			t.Errorf("Name: got %q, want %q", got.Name, "find-me")
-		}
-	})
 }
 
 // TestStore_IncrementSuccess verifies the success counter is incremented.

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -150,7 +150,8 @@ func (s *Store) Add(ctx context.Context, p AddParams) (*Skill, error) {
 		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb)
 		RETURNING ` + skillSelectCols
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		s.workspaceID,
 		p.Name,
 		p.Description,
@@ -179,29 +180,6 @@ func (s *Store) Add(ctx context.Context, p AddParams) (*Skill, error) {
 	return sk, nil
 }
 
-// GetByID returns the skill for the given id, scoped to workspaceID when non-nil.
-func (s *Store) GetByID(ctx context.Context, id string, workspaceID *string) (*Skill, error) {
-	const q = `SELECT ` + skillSelectCols + ` FROM skills
-		WHERE id = $1
-		  AND ($2::uuid IS NULL OR workspace_id = $2)
-		LIMIT 1`
-
-	rows, err := s.pool.Query(ctx, q, id, toNullableUUID(workspaceID))
-	if err != nil {
-		return nil, fmt.Errorf("getting skill: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, ErrNotFound
-	}
-	sk, err := scanSkillRow(rows)
-	if err != nil {
-		return nil, fmt.Errorf("getting skill scan: %w", err)
-	}
-	return sk, nil
-}
-
 // Search returns skills whose name or description match f.Query (ILIKE), ordered
 // by success_count DESC.
 func (s *Store) Search(ctx context.Context, f SearchFilter) ([]*Skill, error) {
@@ -210,7 +188,7 @@ func (s *Store) Search(ctx context.Context, f SearchFilter) ([]*Skill, error) {
 		limit = 10
 	}
 
-	pattern := "%" + escapeLikePostgres(f.Query) + "%"
+	pattern := "%" + likeescape.Escape(f.Query) + "%"
 
 	const q = `SELECT ` + skillSelectCols + ` FROM skills
 		WHERE ($1::uuid IS NULL OR workspace_id = $1)
@@ -333,7 +311,7 @@ func (s *Store) ListRelevant(ctx context.Context, workspaceID *string, query str
 			LIMIT $2`
 		args = []any{toNullableUUID(workspaceID), limit}
 	} else {
-		pattern := "%" + escapeLikePostgres(query) + "%"
+		pattern := "%" + likeescape.Escape(query) + "%"
 		q = `SELECT ` + skillSelectCols + ` FROM skills
 			WHERE ($1::uuid IS NULL OR workspace_id = $1)
 			  AND (name ILIKE $2 ESCAPE '\' OR description ILIKE $2 ESCAPE '\')
@@ -360,13 +338,4 @@ func (s *Store) ListRelevant(ctx context.Context, workspaceID *string, query str
 		return nil, fmt.Errorf("listing relevant skills rows.Err: %w", err)
 	}
 	return out, nil
-}
-
-// escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied
-// query strings are treated as literals. Pair with ESCAPE '\' in the SQL clause.
-func escapeLikePostgres(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `%`, `\%`)
-	s = strings.ReplaceAll(s, `_`, `\_`)
-	return s
 }

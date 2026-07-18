@@ -9,13 +9,14 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
-	"github.com/google/uuid"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 func (s *Server) registerProceduralTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("add_procedural",
+	ms.AddTool(mcp.NewTool(
+		"add_procedural",
 		mcp.WithDescription(
 			"Saves a reusable how-to memory: title, when to use it, markdown approach, "+
 				"tools used, and files typically touched. Call after completing a complex task "+
@@ -38,7 +39,8 @@ func (s *Server) registerProceduralTools(ms *server.MCPServer) {
 			mcp.Description("Comma-separated list of files or patterns typically touched")),
 	), s.handleAddProcedural)
 
-	ms.AddTool(mcp.NewTool("query_procedural",
+	ms.AddTool(mcp.NewTool(
+		"query_procedural",
 		mcp.WithDescription(
 			"Returns procedural memories matching keywords. Searches title, when_to_use, "+
 				"and approach_md. Results ordered by success_count DESC so the most-proven "+
@@ -53,7 +55,8 @@ func (s *Server) registerProceduralTools(ms *server.MCPServer) {
 			mcp.Description("Max results to return (default 10, max 20)")),
 	), s.handleQueryProcedural)
 
-	ms.AddTool(mcp.NewTool("mark_procedural_used",
+	ms.AddTool(mcp.NewTool(
+		"mark_procedural_used",
 		mcp.WithDescription(
 			"Increments the success_count of a procedural memory and sets last_used_at. "+
 				"Call after successfully applying a procedural memory to reinforce its ranking.",
@@ -63,7 +66,8 @@ func (s *Server) registerProceduralTools(ms *server.MCPServer) {
 			mcp.Required()),
 	), s.handleMarkProceduralUsed)
 
-	ms.AddTool(mcp.NewTool("recall",
+	ms.AddTool(mcp.NewTool(
+		"recall",
 		mcp.WithDescription(
 			"Unified cross-type memory search. Searches episodic (recent session handoffs), "+
 				"semantic (knowledge + decisions), and procedural memories simultaneously. "+
@@ -75,7 +79,8 @@ func (s *Server) registerProceduralTools(ms *server.MCPServer) {
 		mcp.WithString("types",
 			mcp.Description(
 				"Comma-separated memory types to search: episodic, semantic, procedural. "+
-					"Default: all three.")),
+					"Default: all three.",
+			)),
 	), s.handleRecall)
 }
 
@@ -96,14 +101,34 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 	if len([]rune(whenToUse)) > 2000 {
 		return mcp.NewToolResultError("when_to_use exceeds 2000 character limit"), nil
 	}
-	if approachMD := stringArg(args, "approach_md"); len([]rune(approachMD)) > 20000 {
+	approachMD := stringArg(args, "approach_md")
+	if len([]rune(approachMD)) > 20000 {
 		return mcp.NewToolResultError("approach_md exceeds 20000 character limit"), nil
+	}
+
+	// title is short/single-line — reject embedded control chars/newlines
+	// outright. when_to_use and approach_md are long-form (approach_md is
+	// explicitly markdown) so newlines are semantic content and stay
+	// allowed; only NUL/ANSI/other control bytes are rejected. None of the
+	// three is silently modified — bad input is a hard error.
+	var ccErr error
+	title, ccErr = sanitize.RejectControlChars(title, 200, false)
+	if ccErr != nil {
+		return mcp.NewToolResultError("title: " + ccErr.Error()), nil
+	}
+	whenToUse, ccErr = sanitize.RejectControlChars(whenToUse, 2000, true)
+	if ccErr != nil {
+		return mcp.NewToolResultError("when_to_use: " + ccErr.Error()), nil
+	}
+	approachMD, ccErr = sanitize.RejectControlChars(approachMD, 20000, true)
+	if ccErr != nil {
+		return mcp.NewToolResultError("approach_md: " + ccErr.Error()), nil
 	}
 
 	p := procedural.AddParams{
 		Title:        title,
 		WhenToUse:    whenToUse,
-		ApproachMD:   stringArg(args, "approach_md"),
+		ApproachMD:   approachMD,
 		RepoName:     stringArg(args, "repo_name"),
 		ToolsUsed:    splitCSV(stringArg(args, "tools_used")),
 		FilesTouched: splitCSV(stringArg(args, "files_touched")),
@@ -158,13 +183,9 @@ func (s *Server) handleQueryProcedural(ctx context.Context, req mcp.CallToolRequ
 // handleMarkProceduralUsed increments a procedural memory's success count.
 func (s *Server) handleMarkProceduralUsed(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "id")
-	if rawID == "" {
-		return mcp.NewToolResultError("id is required"), nil
-	}
-	id, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid id UUID"), nil
+	id, errResult := requireUUIDArg(args, "id", "invalid id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	mem, err := s.procedural.MarkUsed(ctx, id)

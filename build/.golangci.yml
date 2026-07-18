@@ -116,6 +116,12 @@ linters:
       - path: "internal/storage/sqlite/db.go"
         linters:
           - unqueryvet # ExecContext/QueryRowContext are generic wrappers; schemaSQL is embedded constant; all call sites use parameterized args (no interpolation)
+      - path: "internal/storage/sqlite/golden_schema_test.go"
+        linters:
+          - unqueryvet # same schemaSQL embedded constant as db.go, executed here only to build a throwaway :memory: fixture DB for golden-schema capture; no interpolation
+      - path: "internal/storage/sqlite/migrate_test.go"
+        linters:
+          - unqueryvet # same schemaSQL embedded constant as db.go, executed here only to build a throwaway :memory: fixture DB simulating a pre-existing install; no interpolation
       - path: "internal/gtd/store\\.go"
         linters:
           - unqueryvet # queryFilteredTasks concatenates compile-time const selectCols only; all dynamic values use bound params ($1..$5); no user input reaches the query structure

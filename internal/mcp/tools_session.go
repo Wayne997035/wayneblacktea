@@ -13,7 +13,8 @@ import (
 )
 
 func (s *Server) registerSessionTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("set_session_handoff",
+	ms.AddTool(mcp.NewTool(
+		"set_session_handoff",
 		mcp.WithDescription("CALL when user says tomorrow/next time/later. Records what to continue in next session."),
 		mcp.WithString("intent", mcp.Description("What to continue next session"), mcp.Required()),
 		mcp.WithString("repo_name", mcp.Description("Repository being worked on")),
@@ -21,15 +22,18 @@ func (s *Server) registerSessionTools(ms *server.MCPServer) {
 		mcp.WithString("project_id", mcp.Description("Active project UUID")),
 		mcp.WithString("next_actions", mcp.Description(
 			`Optional JSON array of next-action objects. Each object: `+
-				`{"step":1,"title":"<short>","command":"<optional>","expected":"<optional>","status":"pending","ref_task_id":"<optional uuid>"}`)),
+				`{"step":1,"title":"<short>","command":"<optional>","expected":"<optional>","status":"pending","ref_task_id":"<optional uuid>"}`,
+		)),
 	), s.handleSetSessionHandoff)
 
-	ms.AddTool(mcp.NewTool("resolve_handoff",
+	ms.AddTool(mcp.NewTool(
+		"resolve_handoff",
 		mcp.WithDescription("Marks the pending session handoff as resolved (work resumed)."),
 		mcp.WithString("handoff_id", mcp.Description("Handoff UUID to resolve"), mcp.Required()),
 	), s.handleResolveHandoff)
 
-	ms.AddTool(mcp.NewTool("mark_next_action_done",
+	ms.AddTool(mcp.NewTool(
+		"mark_next_action_done",
 		mcp.WithDescription("Sets next_actions[step].status = 'done' for the given handoff. "+
 			"Only works on handoffs that belong to the caller's workspace."),
 		mcp.WithString("handoff_id", mcp.Description("Session handoff UUID"), mcp.Required()),
@@ -80,13 +84,9 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 
 func (s *Server) handleResolveHandoff(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	raw := stringArg(args, "handoff_id")
-	if raw == "" {
-		return mcp.NewToolResultError("handoff_id is required"), nil
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return mcp.NewToolResultError("invalid handoff_id UUID"), nil
+	id, errResult := requireUUIDArg(args, "handoff_id", "invalid handoff_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	if err := s.session.Resolve(ctx, id); errors.Is(err, session.ErrNotFound) {
@@ -100,13 +100,9 @@ func (s *Server) handleResolveHandoff(ctx context.Context, req mcp.CallToolReque
 
 func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "handoff_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("handoff_id is required"), nil
-	}
-	handoffID, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid handoff_id UUID"), nil
+	handoffID, errResult := requireUUIDArg(args, "handoff_id", "invalid handoff_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	stepN := numberArg(args, "step")

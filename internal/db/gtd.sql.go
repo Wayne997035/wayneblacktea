@@ -112,19 +112,6 @@ func (q *Queries) CountCompletedTasksThisWeek(ctx context.Context, workspaceID p
 	return count, err
 }
 
-const countTotalActiveTasks = `-- name: CountTotalActiveTasks :one
-SELECT COUNT(*) FROM tasks
-WHERE status IN ('pending', 'in_progress')
-  AND ($1::uuid IS NULL OR workspace_id = $1)
-`
-
-func (q *Queries) CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countTotalActiveTasks, workspaceID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countWeeklyRelevantTasks = `-- name: CountWeeklyRelevantTasks :one
 SELECT COUNT(*) FROM tasks
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
@@ -224,7 +211,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 const createProject = `-- name: CreateProject :one
 INSERT INTO projects (goal_id, name, title, description, area, priority, workspace_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name
 `
 
 type CreateProjectParams struct {
@@ -260,6 +247,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.RepoName,
 	)
 	return i, err
 }
@@ -392,7 +380,7 @@ func (q *Queries) GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUI
 }
 
 const getProjectByID = `-- name: GetProjectByID :one
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name FROM projects
 WHERE id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 LIMIT 1
@@ -418,12 +406,13 @@ func (q *Queries) GetProjectByID(ctx context.Context, arg GetProjectByIDParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.RepoName,
 	)
 	return i, err
 }
 
 const getProjectByName = `-- name: GetProjectByName :one
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name FROM projects
 WHERE name = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 LIMIT 1
@@ -449,6 +438,7 @@ func (q *Queries) GetProjectByName(ctx context.Context, arg GetProjectByNamePara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.RepoName,
 	)
 	return i, err
 }
@@ -546,7 +536,7 @@ func (q *Queries) ListActiveGoals(ctx context.Context, workspaceID pgtype.UUID) 
 
 const listActiveProjects = `-- name: ListActiveProjects :many
 
-SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id FROM projects
+SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name FROM projects
 WHERE status = 'active'
   AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY priority ASC, updated_at DESC
@@ -575,6 +565,7 @@ func (q *Queries) ListActiveProjects(ctx context.Context, workspaceID pgtype.UUI
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.WorkspaceID,
+			&i.RepoName,
 		); err != nil {
 			return nil, err
 		}
@@ -746,7 +737,7 @@ SET title       = $1,
     updated_at  = NOW()
 WHERE id = $7
   AND ($8::uuid IS NULL OR workspace_id = $8)
-RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name
 `
 
 type UpdateProjectParams struct {
@@ -784,6 +775,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.RepoName,
 	)
 	return i, err
 }
@@ -792,7 +784,7 @@ const updateProjectStatus = `-- name: UpdateProjectStatus :one
 UPDATE projects SET status = $1, updated_at = NOW()
 WHERE id = $2
   AND ($3::uuid IS NULL OR workspace_id = $3)
-RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id
+RETURNING id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name
 `
 
 type UpdateProjectStatusParams struct {
@@ -816,6 +808,7 @@ func (q *Queries) UpdateProjectStatus(ctx context.Context, arg UpdateProjectStat
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.RepoName,
 	)
 	return i, err
 }

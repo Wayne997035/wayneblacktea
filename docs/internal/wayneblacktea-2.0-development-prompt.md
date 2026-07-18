@@ -1,5 +1,10 @@
 # wayneblacktea 2.0 Development Prompt
 
+> **Status:** Phase 0/1/2 already shipped (commits `e8b7f16` / `7eaf0f2` /
+> `f2e9829`); Phase 3–7 are still pending. This document is internal
+> development planning, not a description of current behavior — see
+> [`docs/architecture.md`](../architecture.md) for what's actually shipped.
+
 Last reviewed: 2026-06-02
 
 This document is a source-backed development prompt for planning and building

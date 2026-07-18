@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/google/uuid"
 )
 
@@ -100,7 +101,8 @@ func (s *AtomStore) AddAtom(ctx context.Context, p atom.AddAtomParams) (*atom.At
 	const q = `INSERT INTO memory_atoms
 		(id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		nullStringFromUUID(p.WorkspaceID), // use caller-supplied workspace (reviewer minor)
 		p.ParentTable,
@@ -121,7 +123,8 @@ func (s *AtomStore) AddLink(ctx context.Context, p atom.AddLinkParams) error {
 	const q = `INSERT OR IGNORE INTO memory_links
 		(from_atom_id, to_atom_id, link_type, confidence)
 		VALUES (?1, ?2, ?3, ?4)`
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		p.FromAtomID.String(),
 		p.ToAtomID.String(),
 		p.LinkType,
@@ -236,7 +239,7 @@ func (s *AtomStore) Search(ctx context.Context, workspaceID *uuid.UUID, query st
 		limit = 10
 	}
 
-	pattern := "%" + escapeLike(query) + "%"
+	pattern := "%" + likeescape.Escape(query) + "%"
 	var wsArg any
 	if workspaceID != nil {
 		wsArg = workspaceID.String()

@@ -17,7 +17,6 @@ type Querier interface {
 	BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams) (Task, error)
 	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
 	CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
-	CountTotalActiveTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	// Returns count of tasks that are "relevant to this week":
 	// (1) completed this week, OR
 	// (2) pending/in_progress AND (due_date this week OR created this week)
@@ -26,20 +25,15 @@ type Querier interface {
 	CreateConcept(ctx context.Context, arg CreateConceptParams) (Concept, error)
 	CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error)
 	CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error)
-	CreateKnowledgeItem(ctx context.Context, arg CreateKnowledgeItemParams) (KnowledgeItem, error)
 	CreatePendingProposal(ctx context.Context, arg CreatePendingProposalParams) (PendingProposal, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	CreateReviewSchedule(ctx context.Context, arg CreateReviewScheduleParams) (ReviewSchedule, error)
-	CreateSessionHandoff(ctx context.Context, arg CreateSessionHandoffParams) (SessionHandoff, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	// The Go-side store wraps this in a transaction together with cleanup of
 	// work_session_tasks + work_sessions.current_task_id (the cascade behaviour
 	// previously enforced by FKs; see migration 000026 and gtd.Store.DeleteTask).
 	DeleteTask(ctx context.Context, arg DeleteTaskParams) error
 	GetAllPendingTasks(ctx context.Context, workspaceID pgtype.UUID) ([]Task, error)
-	GetConceptByID(ctx context.Context, arg GetConceptByIDParams) (Concept, error)
-	GetKnowledgeByID(ctx context.Context, arg GetKnowledgeByIDParams) (GetKnowledgeByIDRow, error)
-	GetLatestUnresolvedHandoff(ctx context.Context, workspaceID pgtype.UUID) (SessionHandoff, error)
 	GetPendingProposal(ctx context.Context, arg GetPendingProposalParams) (PendingProposal, error)
 	GetProjectByID(ctx context.Context, arg GetProjectByIDParams) (Project, error)
 	GetProjectByName(ctx context.Context, arg GetProjectByNameParams) (Project, error)
@@ -58,9 +52,6 @@ type Querier interface {
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
 	ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsByTaskIDParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
-	ListKnowledge(ctx context.Context, arg ListKnowledgeParams) ([]KnowledgeItem, error)
-	ListKnowledgeByProjectID(ctx context.Context, arg ListKnowledgeByProjectIDParams) ([]KnowledgeItem, error)
-	ListKnowledgeByTaskID(ctx context.Context, arg ListKnowledgeByTaskIDParams) ([]KnowledgeItem, error)
 	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
 	// All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to
 	// render both the "open" and the "completed/cancelled" sections; the default
@@ -71,9 +62,6 @@ type Querier interface {
 	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
 	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
 	ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error)
-	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
-	// alias (rank) in the same query level — wrapping materialises it first.
-	SearchKnowledgeFTS(ctx context.Context, arg SearchKnowledgeFTSParams) ([]SearchKnowledgeFTSRow, error)
 	SetTaskVisionItemID(ctx context.Context, arg SetTaskVisionItemIDParams) (Task, error)
 	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
 	UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error)

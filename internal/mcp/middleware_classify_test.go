@@ -240,6 +240,10 @@ func (m *mockClassifyGTDStore) WeeklyProgress(_ context.Context) (int64, int64, 
 	return 0, 0, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
+	return 0, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) ListActivityLogsSince(_ context.Context, _ time.Time, _ int32) ([]db.ActivityLog, error) {
 	return nil, errMockNotImpl
 }
@@ -290,7 +294,7 @@ func (m *mockClassifyGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUI
 	return errMockNotImpl
 }
 
-func (m *mockClassifyGTDStore) BeginTask(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*db.Task, error) {
+func (m *mockClassifyGTDStore) BeginTask(_ context.Context, _ uuid.UUID) (*db.Task, error) {
 	return nil, errMockNotImpl
 }
 

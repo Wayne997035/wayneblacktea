@@ -78,10 +78,6 @@ func (s *stubBehaviorRuleStore) List(_ context.Context, _ behaviorrule.ListParam
 	return s.listRules, s.listErr
 }
 
-func (s *stubBehaviorRuleStore) GetByID(_ context.Context, _ uuid.UUID) (*behaviorrule.BehaviorRule, error) {
-	return nil, behaviorrule.ErrNotFound
-}
-
 func (s *stubBehaviorRuleStore) ApplyOutcome(_ context.Context, id uuid.UUID, out string) (*behaviorrule.BehaviorRule, error) {
 	s.applyOutcomeCalls = append(s.applyOutcomeCalls, applyOutcomeCall{ruleID: id, outcome: out})
 	if s.applyOutcomeErr != nil {

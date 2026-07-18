@@ -238,16 +238,6 @@ func (s *KnowledgeStore) urlDedupCheck(ctx context.Context, url string) error {
 	return errWrap("knowledge url dedup", err)
 }
 
-// escapeLike escapes LIKE wildcards in user input so they are treated as
-// literals when used with SQLite ESCAPE '\'. The outer % wildcards are added
-// by the caller after escaping.
-func escapeLike(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `%`, `\%`)
-	s = strings.ReplaceAll(s, `_`, `\_`)
-	return s
-}
-
 // toFTS5Query converts a user search string to an FTS5 MATCH expression.
 // Special characters are stripped; each word gets a * suffix for prefix
 // matching so "conf" matches "configuration" and "config".

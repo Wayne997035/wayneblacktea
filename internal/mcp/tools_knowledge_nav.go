@@ -41,7 +41,8 @@ func navItemFromDB(item *db.KnowledgeItem) knowledgeNavItem {
 }
 
 func (s *Server) registerKnowledgeNavTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("navigate_knowledge",
+	ms.AddTool(mcp.NewTool(
+		"navigate_knowledge",
 		mcp.WithDescription(
 			"Browse the knowledge tree. With no arguments returns all root-level items "+
 				"(parent_id IS NULL). Supply parent_id to list the direct children of that item "+
@@ -50,7 +51,8 @@ func (s *Server) registerKnowledgeNavTools(ms *server.MCPServer) {
 		mcp.WithString("parent_id", mcp.Description("UUID of the parent item whose children to list. Omit to list root items.")),
 	), s.handleNavigateKnowledge)
 
-	ms.AddTool(mcp.NewTool("outline_knowledge",
+	ms.AddTool(mcp.NewTool(
+		"outline_knowledge",
 		mcp.WithDescription(
 			"Returns the heading tree for a root document. Fetches all children of the given "+
 				"item_id ordered by heading level — useful as a lightweight table of contents "+
@@ -95,19 +97,14 @@ func (s *Server) handleNavigateKnowledge(ctx context.Context, req mcp.CallToolRe
 
 func (s *Server) handleOutlineKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "item_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("item_id is required"), nil
-	}
-
-	itemID, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid item_id UUID"), nil
+	itemID, errResult := requireUUIDArg(args, "item_id", "invalid item_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	items, err := s.knowledge.ListChildren(ctx, itemID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("outlining knowledge item %s: %v", rawID, err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("outlining knowledge item %s: %v", itemID, err)), nil
 	}
 	nav := make([]knowledgeNavItem, 0, len(items))
 	for _, item := range items {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -35,7 +36,7 @@ type Store struct {
 // NewStore returns a Store backed by the given DBTX (pool or transaction)
 // scoped to the optional workspaceID. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: pgconv.ToUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope, for use
@@ -47,24 +48,6 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 // WorkspaceID exposes the configured workspace UUID (or zero pgtype.UUID).
 func (s *Store) WorkspaceID() pgtype.UUID {
 	return s.workspaceID
-}
-
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
-func toTimestamptz(t *time.Time) pgtype.Timestamptz {
-	if t == nil {
-		return pgtype.Timestamptz{}
-	}
-	return pgtype.Timestamptz{Time: *t, Valid: true}
-}
-
-func toUUID(id *uuid.UUID) pgtype.UUID {
-	if id == nil {
-		return pgtype.UUID{}
-	}
-	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
 // ListActiveProjects returns all active projects ordered by priority.
@@ -169,8 +152,8 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 		          created_at, updated_at, workspace_id`
 	rows, err := s.dbtx.Query(
 		ctx, q,
-		toUUID(p.GoalID), p.Name, p.Title, toText(p.Description),
-		area, priority, toText(p.RepoName), s.workspaceID,
+		pgconv.ToUUID(p.GoalID), p.Name, p.Title, pgconv.ToText(p.Description),
+		area, priority, pgconv.ToText(p.RepoName), s.workspaceID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -200,7 +183,7 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 func (s *Store) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error) {
 	if projectID != nil {
 		rows, err := s.q.GetTasksByProject(ctx, db.GetTasksByProjectParams{
-			ProjectID:   toUUID(projectID),
+			ProjectID:   pgconv.ToUUID(projectID),
 			WorkspaceID: s.workspaceID,
 		})
 		if err != nil {
@@ -222,7 +205,7 @@ func (s *Store) Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, err
 // without resurrecting completed rows in the global pending lists.
 func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error) {
 	rows, err := s.q.ListProjectTasksAllStatuses(ctx, db.ListProjectTasksAllStatusesParams{
-		ProjectID:   toUUID(&projectID),
+		ProjectID:   pgconv.ToUUID(&projectID),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
@@ -303,7 +286,7 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, toUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
 	case "all":
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -311,7 +294,7 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, toUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -320,7 +303,7 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($3::uuid IS NULL OR workspace_id = $3)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $4 OFFSET $5`
-		rows, err = s.dbtx.Query(ctx, q, f.Status, toUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing filtered tasks: %w", err)
@@ -465,10 +448,10 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		          branch_name, pr_url, commit_shas, vision_item_id`
 	rows, err := s.dbtx.Query(
 		ctx, q,
-		toUUID(p.ProjectID), p.Title, toText(p.Description), priority, toText(p.Assignee),
-		toTimestamptz(p.DueDate), toInt2(p.Importance), toText(p.Context), kind,
-		toText(coalesceStringPtr(p.BranchName)), toText(coalesceStringPtr(p.PRUrl)),
-		s.workspaceID, toUUID(p.VisionItemID),
+		pgconv.ToUUID(p.ProjectID), p.Title, pgconv.ToText(p.Description), priority, pgconv.ToText(p.Assignee),
+		pgconv.ToTimestamptz(p.DueDate), toInt2(p.Importance), pgconv.ToText(p.Context), kind,
+		pgconv.ToText(coalesceStringPtr(p.BranchName)), pgconv.ToText(coalesceStringPtr(p.PRUrl)),
+		s.workspaceID, pgconv.ToUUID(p.VisionItemID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating task %q: %w", p.Title, err)
@@ -489,24 +472,6 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		return nil, fmt.Errorf("scanning created task %q: %w", p.Title, err)
 	}
 	return &t, nil
-}
-
-// SetVisionItemID links a task to the vision item it was promoted from.
-// Returns ErrNotFound when no task matches id in the configured workspace.
-// SECURITY: workspace-scoped.
-func (s *Store) SetVisionItemID(ctx context.Context, taskID uuid.UUID, visionItemID uuid.UUID) (*db.Task, error) {
-	row, err := s.q.SetTaskVisionItemID(ctx, db.SetTaskVisionItemIDParams{
-		ID:           taskID,
-		VisionItemID: toUUID(&visionItemID),
-		WorkspaceID:  s.workspaceID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("setting vision_item_id on task %s: %w", taskID, err)
-	}
-	return &row, nil
 }
 
 // coalesceStringPtr returns the dereferenced value when non-nil, else empty string.
@@ -608,7 +573,7 @@ func (s *Store) applyOnePRMatch(ctx context.Context, qtx *db.Queries, m Match) (
 	if _, err := qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       "system",
 		Action:      "pr_auto_close",
-		Notes:       toText(sanitize.Notes(notes)),
+		Notes:       pgconv.ToText(sanitize.Notes(notes)),
 		WorkspaceID: s.workspaceID,
 	}); err != nil {
 		return false, fmt.Errorf("activity log: %w", err)
@@ -641,8 +606,11 @@ func (s *Store) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string
 //
 // Idempotency: if the task is already in_progress, the task row is returned
 // as-is without writing a duplicate activity_log row.
-// Returns ErrNotFound when no task matches id inside the configured workspace.
-func (s *Store) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UUID) (*db.Task, error) {
+// Returns ErrNotFound when no task matches id inside the configured workspace
+// (scoped via the Store's own workspaceID, not a caller-supplied argument —
+// see AddChecklistItem for the alternative pattern where the caller does pass
+// an explicit workspace scope).
+func (s *Store) BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	// Idempotency: read current status before opening a transaction.
 	existing, err := s.getTaskByID(ctx, id)
 	if err != nil {
@@ -698,7 +666,7 @@ func (s *Store) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UU
 	_, err = qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       "system",
 		Action:      "work_session_started",
-		Notes:       toText(sanitize.Notes("task: " + task.Title)),
+		Notes:       pgconv.ToText(sanitize.Notes("task: " + task.Title)),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
@@ -716,9 +684,9 @@ func (s *Store) BeginTask(ctx context.Context, id uuid.UUID, workspaceID uuid.UU
 func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
 	_, err := s.q.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       actor,
-		ProjectID:   toUUID(projectID),
+		ProjectID:   pgconv.ToUUID(projectID),
 		Action:      action,
-		Notes:       toText(sanitize.Notes(notes)),
+		Notes:       pgconv.ToText(sanitize.Notes(notes)),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
@@ -740,9 +708,9 @@ func (s *Store) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
 func (s *Store) CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error) {
 	row, err := s.q.CreateGoal(ctx, db.CreateGoalParams{
 		Title:       p.Title,
-		Description: toText(p.Description),
-		Area:        toText(p.Area),
-		DueDate:     toTimestamptz(p.DueDate),
+		Description: pgconv.ToText(p.Description),
+		Area:        pgconv.ToText(p.Area),
+		DueDate:     pgconv.ToTimestamptz(p.DueDate),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
@@ -837,7 +805,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 
 	var description pgtype.Text
 	if p.Description != nil {
-		description = toText(*p.Description)
+		description = pgconv.ToText(*p.Description)
 	} else {
 		description = existing.Description
 	}
@@ -853,21 +821,21 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 
 	var assignee pgtype.Text
 	if p.Assignee != nil {
-		assignee = toText(*p.Assignee)
+		assignee = pgconv.ToText(*p.Assignee)
 	} else {
 		assignee = existing.Assignee
 	}
 
 	var dueDate pgtype.Timestamptz
 	if p.DueDate != nil {
-		dueDate = toTimestamptz(p.DueDate)
+		dueDate = pgconv.ToTimestamptz(p.DueDate)
 	} else {
 		dueDate = existing.DueDate
 	}
 
 	var taskContext pgtype.Text
 	if p.Context != nil {
-		taskContext = toText(*p.Context)
+		taskContext = pgconv.ToText(*p.Context)
 	} else {
 		taskContext = existing.Context
 	}
@@ -881,14 +849,14 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 
 	var branchName pgtype.Text
 	if p.BranchName != nil {
-		branchName = toText(*p.BranchName)
+		branchName = pgconv.ToText(*p.BranchName)
 	} else {
 		branchName = existing.BranchName
 	}
 
 	var prURL pgtype.Text
 	if p.PRUrl != nil {
-		prURL = toText(*p.PRUrl)
+		prURL = pgconv.ToText(*p.PRUrl)
 	} else {
 		prURL = existing.PRUrl
 	}
@@ -948,10 +916,10 @@ func (s *Store) UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams
 	row, err := s.q.UpdateGoal(ctx, db.UpdateGoalParams{
 		ID:          id,
 		Title:       p.Title,
-		Description: toText(p.Description),
-		Area:        toText(p.Area),
+		Description: pgconv.ToText(p.Description),
+		Area:        pgconv.ToText(p.Area),
 		Status:      string(p.Status),
-		DueDate:     toTimestamptz(p.DueDate),
+		DueDate:     pgconv.ToTimestamptz(p.DueDate),
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
@@ -1001,8 +969,8 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 			          created_at, updated_at, workspace_id`
 		rows, err = s.dbtx.Query(
 			ctx, q,
-			p.Title, toText(p.Description), area, priority, string(p.Status), toUUID(p.GoalID),
-			toText(*p.RepoName),
+			p.Title, pgconv.ToText(p.Description), area, priority, string(p.Status), pgconv.ToUUID(p.GoalID),
+			pgconv.ToText(*p.RepoName),
 			id, s.workspaceID,
 		)
 	} else {
@@ -1020,7 +988,7 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 			          created_at, updated_at, workspace_id`
 		rows, err = s.dbtx.Query(
 			ctx, q,
-			p.Title, toText(p.Description), area, priority, string(p.Status), toUUID(p.GoalID),
+			p.Title, pgconv.ToText(p.Description), area, priority, string(p.Status), pgconv.ToUUID(p.GoalID),
 			id, s.workspaceID,
 		)
 	}
@@ -1312,6 +1280,21 @@ func (s *Store) ListActivityLogsSince(ctx context.Context, since time.Time, maxR
 	return out, nil
 }
 
+// PruneOlderThan hard-deletes activity_log rows created before cutoff.
+// Global cleanup (no workspace filter) — activity_log is an observability
+// table, not user-authored data, and the retention job runs once for the
+// whole deployment regardless of how many workspaces exist. cutoff is
+// computed server-side by the caller (scheduler) and passed as a
+// parameterised argument — never built from user input.
+func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM activity_log WHERE created_at < $1`
+	tag, err := s.dbtx.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning activity_log: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // TopPendingTask returns the single highest-priority pending task in the
 // configured workspace, ordered by priority ASC NULLS LAST, importance ASC
 // NULLS LAST, created_at ASC. Returns nil, nil when no pending task exists.
@@ -1500,7 +1483,7 @@ func (s *Store) AddChecklistItem(
 		}
 	}()
 
-	wsFilter := toUUID(&workspaceID)
+	wsFilter := pgconv.ToUUID(&workspaceID)
 	items, err := loadChecklistTx(ctx, tx, taskID, wsFilter)
 	if err != nil {
 		return nil, err
@@ -1573,7 +1556,7 @@ func (s *Store) UpdateChecklistItem(
 		}
 	}()
 
-	wsFilter := toUUID(&workspaceID)
+	wsFilter := pgconv.ToUUID(&workspaceID)
 	items, err := loadChecklistTx(ctx, tx, taskID, wsFilter)
 	if err != nil {
 		return nil, err
@@ -1613,7 +1596,7 @@ func (s *Store) DeleteChecklistItem(ctx context.Context, taskID uuid.UUID, works
 		}
 	}()
 
-	wsFilter := toUUID(&workspaceID)
+	wsFilter := pgconv.ToUUID(&workspaceID)
 	items, err := loadChecklistTx(ctx, tx, taskID, wsFilter)
 	if err != nil {
 		return err

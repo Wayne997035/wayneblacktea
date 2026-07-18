@@ -16,10 +16,6 @@ type StoreIface interface {
 	// List returns behavior rules matching the filter, ordered by created_at DESC.
 	List(ctx context.Context, p ListParams) ([]*BehaviorRule, error)
 
-	// GetByID returns the behavior rule with the given ID.
-	// Returns ErrNotFound when no matching rule exists.
-	GetByID(ctx context.Context, id uuid.UUID) (*BehaviorRule, error)
-
 	// ApplyOutcome applies the confidence formula atomically and conditionally
 	// transitions the status:
 	//   outcome='success' AND status='proposed' → status='active', confidence += 0.05 (cap 1.00)

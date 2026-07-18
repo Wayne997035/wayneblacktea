@@ -7,6 +7,7 @@ import (
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -23,23 +24,12 @@ type Store struct {
 // NewStore returns a Store backed by the given DBTX scoped to the optional
 // workspace. nil workspaceID = legacy unscoped mode.
 func NewStore(dbtx db.DBTX, workspaceID *uuid.UUID) *Store {
-	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: toUUID(workspaceID)}
+	return &Store{q: db.New(dbtx), dbtx: dbtx, workspaceID: pgconv.ToUUID(workspaceID)}
 }
 
 // WithTx returns a Store bound to tx, preserving the workspace scope.
 func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
-}
-
-func toText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
-}
-
-func toUUID(id *uuid.UUID) pgtype.UUID {
-	if id == nil {
-		return pgtype.UUID{}
-	}
-	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
 
 // Log records a new architectural decision.
@@ -66,14 +56,14 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 		return nil, fmt.Errorf("log_decision: decision %w", err)
 	}
 	row, err := s.q.CreateDecision(ctx, db.CreateDecisionParams{
-		ProjectID:    toUUID(p.ProjectID),
-		TaskID:       toUUID(p.TaskID),
-		RepoName:     toText(p.RepoName),
+		ProjectID:    pgconv.ToUUID(p.ProjectID),
+		TaskID:       pgconv.ToUUID(p.TaskID),
+		RepoName:     pgconv.ToText(p.RepoName),
 		Title:        p.Title,
 		Context:      p.Context,
 		Decision:     p.Decision,
 		Rationale:    p.Rationale,
-		Alternatives: toText(p.Alternatives),
+		Alternatives: pgconv.ToText(p.Alternatives),
 		WorkspaceID:  s.workspaceID,
 	})
 	if err != nil {
@@ -85,7 +75,7 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 // ByRepo returns the most recent decisions for a given repo name.
 func (s *Store) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByRepo(ctx, db.ListDecisionsByRepoParams{
-		RepoName:    toText(repoName),
+		RepoName:    pgconv.ToText(repoName),
 		WorkspaceID: s.workspaceID,
 		LimitN:      limit,
 	})
@@ -183,7 +173,7 @@ func (s *Store) SearchByCosine(ctx context.Context, queryEmbedding []float32, li
 // SECURITY: scoped to workspace_id.
 func (s *Store) ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByTaskID(ctx, db.ListDecisionsByTaskIDParams{
-		TaskID:      toUUID(&taskID),
+		TaskID:      pgconv.ToUUID(&taskID),
 		WorkspaceID: s.workspaceID,
 		LimitN:      limit,
 	})
@@ -196,7 +186,7 @@ func (s *Store) ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db
 // ByProject returns the most recent decisions for a given project ID.
 func (s *Store) ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByProject(ctx, db.ListDecisionsByProjectParams{
-		ProjectID:   toUUID(&projectID),
+		ProjectID:   pgconv.ToUUID(&projectID),
 		WorkspaceID: s.workspaceID,
 		LimitN:      limit,
 	})

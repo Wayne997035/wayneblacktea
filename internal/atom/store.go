@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -139,7 +139,8 @@ func (s *Store) AddAtom(ctx context.Context, p AddAtomParams) (*Atom, error) {
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
 		RETURNING ` + atomSelectCols
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		id,
 		toUUID(p.WorkspaceID),
 		p.ParentTable,
@@ -173,7 +174,8 @@ func (s *Store) AddLink(ctx context.Context, p AddLinkParams) error {
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (from_atom_id, to_atom_id, link_type) DO NOTHING`
 
-	_, err := s.pool.Exec(ctx, q,
+	_, err := s.pool.Exec(
+		ctx, q,
 		p.FromAtomID,
 		p.ToAtomID,
 		p.LinkType,
@@ -341,7 +343,7 @@ func (s *Store) Search(ctx context.Context, workspaceID *uuid.UUID, query string
 		limit = 10
 	}
 
-	pattern := "%" + escapeLikePostgres(query) + "%"
+	pattern := "%" + likeescape.Escape(query) + "%"
 	wsUUID := toUUID(workspaceID)
 
 	const q = `SELECT ` + atomSelectCols + ` FROM memory_atoms
@@ -462,13 +464,4 @@ func (s *Store) CountTotal(ctx context.Context, workspaceID *uuid.UUID) (int64, 
 		return 0, fmt.Errorf("counting total atoms: %w", err)
 	}
 	return n, nil
-}
-
-// escapeLikePostgres escapes Postgres LIKE/ILIKE metacharacters so user-supplied
-// query strings are treated as literals. Pair with ESCAPE '\' in the SQL clause.
-func escapeLikePostgres(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `%`, `\%`)
-	s = strings.ReplaceAll(s, `_`, `\_`)
-	return s
 }

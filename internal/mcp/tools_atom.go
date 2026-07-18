@@ -19,7 +19,8 @@ import (
 )
 
 func (s *Server) registerAtomTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("promote_atom_to_knowledge",
+	ms.AddTool(mcp.NewTool(
+		"promote_atom_to_knowledge",
 		mcp.WithDescription(
 			"Manually promote a consolidated memory atom into a pending knowledge proposal. "+
 				"The atom must have content >= 80 chars and at least 2 tags. "+
@@ -32,7 +33,8 @@ func (s *Server) registerAtomTools(ms *server.MCPServer) {
 			mcp.Required()),
 	), s.handlePromoteAtomToKnowledge)
 
-	ms.AddTool(mcp.NewTool("traverse_atoms",
+	ms.AddTool(mcp.NewTool(
+		"traverse_atoms",
 		mcp.WithDescription(
 			"Traverse the memory atom graph from a starting atom, following links up to depth hops. "+
 				"Returns visited atoms and links. Use to explore how facts relate.",
@@ -44,7 +46,8 @@ func (s *Server) registerAtomTools(ms *server.MCPServer) {
 			mcp.Description("Max hops to follow (1-5, default 2)")),
 	), s.handleTraverseAtoms)
 
-	ms.AddTool(mcp.NewTool("search_atoms",
+	ms.AddTool(mcp.NewTool(
+		"search_atoms",
 		mcp.WithDescription(
 			"Search memory atoms by keyword across content, keywords, and tags. "+
 				"Returns atoms whose content or metadata contains the query string.",
@@ -60,13 +63,9 @@ func (s *Server) registerAtomTools(ms *server.MCPServer) {
 // handleTraverseAtoms performs BFS traversal from a start atom.
 func (s *Server) handleTraverseAtoms(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "start_atom_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("start_atom_id is required"), nil
-	}
-	startID, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid start_atom_id UUID"), nil
+	startID, errResult := requireUUIDArg(args, "start_atom_id", "invalid start_atom_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	depth := int(numberArg(args, "depth"))
@@ -252,13 +251,9 @@ func (s *Server) launchAtomize(parentTable string, parentID uuid.UUID, text stri
 // Deduplication is delegated to AddItem's similarity check at confirm_proposal time.
 func (s *Server) handlePromoteAtomToKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	rawID := stringArg(args, "atom_id")
-	if rawID == "" {
-		return mcp.NewToolResultError("atom_id is required"), nil
-	}
-	atomID, err := uuid.Parse(rawID)
-	if err != nil {
-		return mcp.NewToolResultError("invalid atom_id UUID"), nil
+	atomID, errResult := requireUUIDArg(args, "atom_id", "invalid atom_id UUID")
+	if errResult != nil {
+		return errResult, nil
 	}
 	if s.atom == nil {
 		return mcp.NewToolResultError("atom store not available"), nil

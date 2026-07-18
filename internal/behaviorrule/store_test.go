@@ -37,7 +37,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -388,16 +389,22 @@ func TestStore_PruneOlderThan(t *testing.T) {
 		t.Errorf("expected at least 1 row deleted, got %d", n)
 	}
 
-	// The deprecated row should be gone
-	if _, err := store.GetByID(ctx, dep.ID); err == nil {
+	// Verify survivorship via List (no dedicated GetByID — removed as dead code).
+	remaining, err := store.List(ctx, behaviorrule.ListParams{WorkspaceID: &wsID, Limit: 20})
+	if err != nil {
+		t.Fatalf("List after prune: %v", err)
+	}
+	remainingIDs := make(map[uuid.UUID]bool, len(remaining))
+	for _, r := range remaining {
+		remainingIDs[r.ID] = true
+	}
+	if remainingIDs[dep.ID] {
 		t.Error("deprecated row should have been pruned but still exists")
 	}
-
-	// The active and proposed rows should still exist
-	if _, err := store.GetByID(ctx, active.ID); err != nil {
-		t.Errorf("active row was unexpectedly pruned: %v", err)
+	if !remainingIDs[active.ID] {
+		t.Error("active row was unexpectedly pruned")
 	}
-	if _, err := store.GetByID(ctx, proposed.ID); err != nil {
-		t.Errorf("proposed row was unexpectedly pruned: %v", err)
+	if !remainingIDs[proposed.ID] {
+		t.Error("proposed row was unexpectedly pruned")
 	}
 }
