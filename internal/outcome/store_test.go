@@ -428,6 +428,79 @@ func TestStore_PruneOlderThan(t *testing.T) {
 	}
 }
 
+// TestStore_ExistsForEntity mirrors TestSQLiteOutcomeStore_ExistsForEntity —
+// verifies the existence check used by complete_task's idempotent
+// draft-outcome seeding against a real Postgres backend (indexes
+// idx_outcomes_entity_id / idx_outcomes_workspace_entity, migration 000054).
+func TestStore_ExistsForEntity(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+
+	t.Run("false before any outcome exists", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if exists {
+			t.Error("expected false before any outcome is created")
+		}
+	})
+
+	if _, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	}); err != nil {
+		t.Fatalf("CreateOutcome: %v", err)
+	}
+
+	t.Run("true after outcome created, same workspace", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if !exists {
+			t.Error("expected true after outcome is created for the same workspace")
+		}
+	})
+
+	t.Run("false for a different entity_type", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, &wsID, "decision", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if exists {
+			t.Error("expected false for entity_type=decision when only a task outcome exists")
+		}
+	})
+
+	t.Run("false for a different workspace", func(t *testing.T) {
+		other := uuid.New()
+		exists, err := store.ExistsForEntity(ctx, &other, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if exists {
+			t.Error("expected false when scoped to a different workspace")
+		}
+	})
+
+	t.Run("true when unscoped (nil workspaceID)", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, nil, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if !exists {
+			t.Error("expected true when workspaceID is nil (unscoped)")
+		}
+	})
+}
+
 // TestStore_RelatedRuleIDs verifies that the related_rule_ids UUID[] column
 // introduced in migration 000063 round-trips correctly through the PG store.
 func TestStore_RelatedRuleIDs(t *testing.T) {

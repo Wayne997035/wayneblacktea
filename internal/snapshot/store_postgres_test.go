@@ -21,11 +21,10 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 }
 
 // insertSnapshotFixture inserts a project_status_snapshots row directly via
-// SQL rather than through Store.Write. Write's source_decision_ids handling
-// is broken against real Postgres (json.Marshal'd []byte passed into a
-// native UUID[] column — "malformed array literal" from pgx, discovered by
-// this test's first draft; see PruneOlderThan discovered-but-not-touched
-// note). Bypassing Write here keeps this commit's scope to the pruner only.
+// SQL rather than through Store.Write. It exists so the PruneOlderThan tests
+// below can set up fixtures at a specific generated_at without depending on
+// Write's own logic. Store.Write itself is exercised directly by
+// TestStore_Write.
 func insertSnapshotFixture(t *testing.T, pool *pgxpool.Pool, wsID uuid.UUID, slug string, generatedAt time.Time) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
@@ -46,6 +45,86 @@ func snapshotExists(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) bool {
 		t.Fatalf("count project_status_snapshots: %v", err)
 	}
 	return n == 1
+}
+
+// uuidSlicesEqual reports whether a and b contain the same UUIDs in the same
+// order. Postgres UUID[] preserves insertion order, so exact-order comparison
+// is the correct round-trip check here.
+func uuidSlicesEqual(a, b []uuid.UUID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestStore_Write exercises Store.Write directly against real Postgres,
+// covering the source_decision_ids UUID[] column that json.Marshal/Unmarshal
+// previously wrote as a malformed array literal (pgx rejected it at the
+// Postgres wire protocol level, not just at scan time). Both the two-ID case
+// and the nil case (generator.go never sets SourceDecisionIDs today — see
+// EnsureSnapshot) are covered so a regression to the old []byte encoding
+// path fails loudly here instead of silently in the Saturday cron.
+func TestStore_Write(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := snapshot.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	id1, id2 := uuid.New(), uuid.New()
+
+	tests := []struct {
+		name    string
+		ids     []uuid.UUID
+		wantIDs []uuid.UUID
+	}{
+		{
+			name:    "two decision ids round-trip",
+			ids:     []uuid.UUID{id1, id2},
+			wantIDs: []uuid.UUID{id1, id2},
+		},
+		{
+			name:    "nil decision ids (production shape - generator.go never sets this field)",
+			ids:     nil,
+			wantIDs: []uuid.UUID{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			slug := "write-test-" + uuid.NewString()
+			snap, err := store.Write(ctx, snapshot.WriteParams{
+				Slug:              slug,
+				WorkspaceID:       &wsID,
+				SprintSummary:     "sprint",
+				GapAnalysis:       "gap",
+				SotaCatchupPct:    42,
+				PendingSummary:    "pending",
+				SourceDecisionIDs: tt.ids,
+			})
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if !uuidSlicesEqual(snap.SourceDecisionIDs, tt.wantIDs) {
+				t.Errorf("Write returned SourceDecisionIDs = %v, want %v", snap.SourceDecisionIDs, tt.wantIDs)
+			}
+
+			// Round-trip through LatestFresh confirms the UUID[] column was
+			// actually persisted correctly by Postgres, not just accepted by
+			// the driver on the way in.
+			fresh, err := store.LatestFresh(ctx, slug, time.Minute)
+			if err != nil {
+				t.Fatalf("LatestFresh: %v", err)
+			}
+			if !uuidSlicesEqual(fresh.SourceDecisionIDs, tt.wantIDs) {
+				t.Errorf("LatestFresh SourceDecisionIDs = %v, want %v", fresh.SourceDecisionIDs, tt.wantIDs)
+			}
+		})
+	}
 }
 
 // TestStore_PruneOlderThan_Expired verifies that a snapshot older than the

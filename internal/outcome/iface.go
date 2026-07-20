@@ -42,6 +42,13 @@ type StoreIface interface {
 	// cutoff. Evaluations are deleted first (no FK cascade per red-line §9).
 	// Called daily by the scheduler to enforce the 90-day TTL.
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+
+	// ExistsForEntity reports whether an outcome row already exists for the
+	// given entity, optionally scoped to workspaceID. outcomes has no unique
+	// constraint on (entity_type, entity_id) — see migrations/000054 — so
+	// callers needing idempotent outcome creation (e.g. complete_task's
+	// draft-outcome seeding) MUST check this first.
+	ExistsForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (bool, error)
 }
 
 // Compile-time assertion: Postgres Store satisfies StoreIface.

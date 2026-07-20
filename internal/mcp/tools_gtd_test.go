@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,11 @@ func (sp *spyOutcomeStore) ListFailedOutcomes(_ context.Context, _ *uuid.UUID, _
 func (sp *spyOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	sp.calls++
 	return 0, nil
+}
+
+func (sp *spyOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
+	sp.calls++
+	return false, nil
 }
 
 // Compile-time guarantee that the spy satisfies the full interface.
@@ -131,6 +137,18 @@ func callSetTaskStatus(t *testing.T, s *Server, args map[string]any) *mcpmsg.Cal
 	res, err := s.handleSetTaskStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleSetTaskStatus error: %v", err)
+	}
+	return res
+}
+
+// callCompleteTask invokes handleCompleteTask with the given args.
+func callCompleteTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	res, err := s.handleCompleteTask(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCompleteTask error: %v", err)
 	}
 	return res
 }
@@ -672,6 +690,133 @@ func TestSetTaskStatus_MissingTaskID(t *testing.T) {
 	r := callSetTaskStatus(t, s, map[string]any{"status": "pending"})
 	if !r.IsError {
 		t.Fatalf("missing task_id must error, got: %s", resultText(r))
+	}
+}
+
+// ---- handleCompleteTask draft-outcome seeding tests ----
+
+// TestHandleCompleteTask_SeedsOutcome verifies complete_task on a pending
+// task with no outcome auto-seeds exactly one result="unknown" outcome row,
+// while leaving the response shape (task JSON, not outcome JSON) unchanged.
+func TestHandleCompleteTask_SeedsOutcome(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	id := seedTaskWithDueDate(t, s, "")
+
+	r := callCompleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r.IsError {
+		t.Fatalf("complete_task should succeed, got: %s", resultText(r))
+	}
+	var task struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	if task.Status != taskStatusCompleted {
+		t.Errorf("task.Status = %q, want completed", task.Status)
+	}
+	if task.ID != id.String() {
+		t.Errorf("response shape must still be the task, got id=%q want %q", task.ID, id.String())
+	}
+
+	outcomes, err := s.outcome.ListRecentOutcomes(ctx, nil, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	var matches []outcome.Outcome
+	for _, o := range outcomes {
+		if o.EntityID == id {
+			matches = append(matches, o)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly 1 seeded outcome for task %s, got %d", id, len(matches))
+	}
+	if matches[0].Result != "unknown" {
+		t.Errorf("seeded outcome Result = %q, want unknown", matches[0].Result)
+	}
+	if matches[0].EntityType != "task" {
+		t.Errorf("seeded outcome EntityType = %q, want task", matches[0].EntityType)
+	}
+}
+
+// TestHandleCompleteTask_SeedsOutcome_Idempotent verifies calling
+// complete_task twice on the same task_id (gtd.CompleteTask itself is
+// idempotent — see sql/queries/gtd.sql CompleteTask, unconditional UPDATE)
+// only ever produces one seeded outcome row, guarded by ExistsForEntity since
+// outcomes has no unique constraint on (entity_type, entity_id).
+func TestHandleCompleteTask_SeedsOutcome_Idempotent(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	id := seedTaskWithDueDate(t, s, "")
+
+	r1 := callCompleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r1.IsError {
+		t.Fatalf("first complete_task should succeed, got: %s", resultText(r1))
+	}
+	r2 := callCompleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r2.IsError {
+		t.Fatalf("second complete_task should succeed, got: %s", resultText(r2))
+	}
+
+	outcomes, err := s.outcome.ListRecentOutcomes(ctx, nil, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	count := 0
+	for _, o := range outcomes {
+		if o.EntityID == id {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 outcome after 2 complete_task calls, got %d", count)
+	}
+}
+
+// TestHandleCompleteTask_NotFound_NoOutcomeSeeded verifies a non-existent
+// task_id returns "task not found" and never reaches the outcome-seeding
+// step (spy detects zero calls).
+func TestHandleCompleteTask_NotFound_NoOutcomeSeeded(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	spy := &spyOutcomeStore{}
+	s.outcome = spy
+
+	r := callCompleteTask(t, s, map[string]any{"task_id": uuid.New().String()})
+	if !r.IsError {
+		t.Fatalf("non-existent task_id must error, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "not found") {
+		t.Errorf("error should say 'not found', got: %s", resultText(r))
+	}
+	if spy.calls != 0 {
+		t.Errorf("outcome store must not be touched when task is not found, got %d call(s)", spy.calls)
+	}
+}
+
+// TestHandleCompleteTask_SeedFailure_TaskStillSucceeds verifies that when the
+// outcome store errors during seeding, complete_task still returns the
+// completed task successfully (best-effort, log-and-swallow per
+// applyArtifactSideEffects' established pattern in this file).
+func TestHandleCompleteTask_SeedFailure_TaskStillSucceeds(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTaskWithDueDate(t, s, "")
+	s.outcome = &stubOutcomeStore{returnErr: errors.New("outcome store unavailable")}
+
+	r := callCompleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r.IsError {
+		t.Fatalf("complete_task must still succeed when outcome seeding fails, got: %s", resultText(r))
+	}
+	var task struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	if task.Status != taskStatusCompleted {
+		t.Errorf("task.Status = %q, want completed", task.Status)
 	}
 }
 

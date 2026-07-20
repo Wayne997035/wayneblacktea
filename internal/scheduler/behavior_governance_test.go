@@ -50,6 +50,10 @@ func (s *stubOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64
 	return 0, nil
 }
 
+func (s *stubOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 // ---------------------------------------------------------------------------
 // stub behaviorrule.StoreIface
 // ---------------------------------------------------------------------------

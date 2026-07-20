@@ -393,6 +393,79 @@ func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
 	}
 }
 
+// TestSQLiteOutcomeStore_ExistsForEntity verifies the existence check used by
+// complete_task's idempotent draft-outcome seeding: false before any outcome
+// exists, true after one is created, workspace-scoped false for a different
+// workspace, and unscoped (nil workspaceID) true regardless of workspace.
+func TestSQLiteOutcomeStore_ExistsForEntity(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	t.Run("false before any outcome exists", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if exists {
+			t.Error("expected false before any outcome is created")
+		}
+	})
+
+	if _, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	}); err != nil {
+		t.Fatalf("CreateOutcome: %v", err)
+	}
+
+	t.Run("true after outcome created, same workspace", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if !exists {
+			t.Error("expected true after outcome is created for the same workspace")
+		}
+	})
+
+	t.Run("false for a different entity_type", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, &wsID, "decision", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if exists {
+			t.Error("expected false for entity_type=decision when only a task outcome exists")
+		}
+	})
+
+	t.Run("false for a different workspace", func(t *testing.T) {
+		other := uuid.New()
+		exists, err := store.ExistsForEntity(ctx, &other, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if exists {
+			t.Error("expected false when scoped to a different workspace")
+		}
+	})
+
+	t.Run("true when unscoped (nil workspaceID)", func(t *testing.T) {
+		exists, err := store.ExistsForEntity(ctx, nil, "task", entityID)
+		if err != nil {
+			t.Fatalf("ExistsForEntity: %v", err)
+		}
+		if !exists {
+			t.Error("expected true when workspaceID is nil (unscoped)")
+		}
+	})
+}
+
 // TestSQLiteOutcomeStore_RelatedRuleIDs verifies JSON round-trip for
 // related_rule_ids (empty and populated cases — migration 000063).
 func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {

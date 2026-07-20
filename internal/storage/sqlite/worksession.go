@@ -607,9 +607,23 @@ func (s *WorkSessionStore) AddEvidence(ctx context.Context, ev worksession.Evide
 		}
 	}
 
-	wsArg := nullStringFromUUID(ev.WorkspaceID)
-	if s.db.workspaceID != "" {
-		wsArg = s.db.workspaceID
+	// Workspace stamping: legacy mode (no WORKSPACE_ID configured, i.e.
+	// s.db.workspaceID == "") stamps the zero-UUID sentinel rather than SQL
+	// NULL, mirroring worksession.Store (Postgres)'s legacy-mode uuid.Nil
+	// stamp (wbt-2.0 security backlog — GetEvidence below performs a real
+	// equality filter against this same value; a NULL stamp would have made
+	// that filter unfalsifiable). This is a deliberate, LOCAL asymmetry with
+	// the rest of this file's `(?N IS NULL OR workspace_id = ?N)` convention
+	// used by Checkpoint/Finish/GetByID/ListRecent — those intentionally
+	// treat "no configured workspace" as "match anything" so a personal
+	// single-tenant deployment with no WORKSPACE_ID set still sees its own
+	// data. work_session_evidence gets the stricter treatment as
+	// defence-in-depth because evidence rows carry free-text command output
+	// that is later read back into an LLM context via get_work_session_trace
+	// (backend-security-design.md §2).
+	wsArg := s.db.workspaceID
+	if wsArg == "" {
+		wsArg = uuid.Nil.String()
 	}
 
 	var excerptArg any
@@ -645,20 +659,44 @@ func (s *WorkSessionStore) getEvidenceByID(ctx context.Context, id uuid.UUID) (*
 }
 
 // GetEvidence returns all work_session_evidence rows for sessionID, scoped to
-// the store's configured workspace (wbt-2.0 P2 review F5 — mirrors
-// Checkpoint/Finish's `(?N IS NULL OR workspace_id = ?N)` pattern via
-// workspaceArg(); defence in depth alongside the caller-side GetByID gate
-// that handleGetWorkSessionTrace already performs before calling this).
-// AddEvidence (called only from within Finish) stamps workspace_id with this
-// same resolved value whenever the store is configured, so the predicate
-// here never excludes rows written through the normal Finish path. Ordered
-// by created_at ASC. Returns an empty (non-nil) slice when no rows exist.
+// the store's configured workspace via a real equality filter (wbt-2.0
+// security backlog — unlike Checkpoint/Finish/GetByID/ListRecent's
+// `(?N IS NULL OR workspace_id = ?N)` pattern via workspaceArg(), which
+// degenerates to always-true in legacy mode, this filter uses the same
+// zero-UUID-in-legacy-mode value AddEvidence stamps above, so it actually
+// filters even when no WORKSPACE_ID is configured. This intentionally
+// diverges from the rest of the file — see AddEvidence's comment for the
+// defence-in-depth rationale — and from Postgres's worksession.Store, which
+// already used a real equality filter here (this SQLite fix brings the two
+// backends into parity). Defence in depth alongside the caller-side GetByID
+// gate that handleGetWorkSessionTrace already performs before calling this.
+// Row count is hard-capped at worksession.MaxEvidenceListLimit; ordered by
+// created_at ASC so a cap hit drops the newest row(s), not the oldest.
+// Returns an empty (non-nil) slice when no rows exist.
+//
+// Bug fix (wbt-2.0 review round2 F3): in legacy mode (s.db.workspaceID == ""),
+// the predicate also accepts workspace_id IS NULL. Before the zero-UUID
+// stamping above was introduced, legacy-mode AddEvidence wrote SQL NULL into
+// workspace_id; the strict `workspace_id = ?1` equality filter added here
+// then made those pre-existing rows permanently unreadable (NULL never
+// equals a value in SQL) with no error — silent data loss for anyone who had
+// evidence rows from before that change. Non-legacy mode (a real
+// s.db.workspaceID configured) keeps the strict equality-only filter; NULL
+// rows never belong to a configured workspace and must stay invisible there.
 func (s *WorkSessionStore) GetEvidence(ctx context.Context, sessionID uuid.UUID) ([]worksession.Evidence, error) {
-	ws := s.db.workspaceArg()
-	const q = `SELECT ` + evidenceSelectCols + ` FROM work_session_evidence
-		WHERE (?1 IS NULL OR workspace_id = ?1) AND session_id = ?2 ORDER BY created_at ASC`
+	legacy := s.db.workspaceID == ""
+	ws := s.db.workspaceID
+	if legacy {
+		ws = uuid.Nil.String()
+	}
+	q := `SELECT ` + evidenceSelectCols + ` FROM work_session_evidence
+		WHERE workspace_id = ?1 AND session_id = ?2 ORDER BY created_at ASC LIMIT ?3`
+	if legacy {
+		q = `SELECT ` + evidenceSelectCols + ` FROM work_session_evidence
+			WHERE (workspace_id = ?1 OR workspace_id IS NULL) AND session_id = ?2 ORDER BY created_at ASC LIMIT ?3`
+	}
 
-	rows, err := s.db.conn.QueryContext(ctx, q, ws, sessionID.String())
+	rows, err := s.db.conn.QueryContext(ctx, q, ws, sessionID.String(), worksession.MaxEvidenceListLimit)
 	if err != nil {
 		return nil, errWrap("WorkSessionStore.GetEvidence", err)
 	}

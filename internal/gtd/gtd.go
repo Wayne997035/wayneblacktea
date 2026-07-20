@@ -2,6 +2,7 @@ package gtd
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -157,6 +158,19 @@ type TaskFilter struct {
 	Status    string
 	Limit     int
 	Offset    int
+
+	// UpdatedSince, when non-nil, restricts results to rows with
+	// updated_at >= *UpdatedSince, applied in the WHERE clause (both PG and
+	// SQLite backends) rather than filtered client-side after the LIMIT. Nil
+	// (the zero value) preserves prior behaviour for existing callers.
+	//
+	// wbt-2.0 review round2 F2: detectTaskNoOutcome's ORDER BY priority ASC,
+	// created_at ASC + Limit 500 lets a growing total completed-task count
+	// silently push recently-completed rows out of the window before the
+	// 7-day cutoff filter ever runs in Go. Pushing the cutoff into the WHERE
+	// clause makes the LIMIT apply to the already-filtered set, so rows
+	// inside the recency window are never dropped by row count alone.
+	UpdatedSince *time.Time
 }
 
 // UpdateChecklistItemParams holds the optional fields for patching a checklist item.
@@ -166,6 +180,40 @@ type UpdateChecklistItemParams struct {
 	Title       *string
 	Notes       *string
 	EvidenceURL *string
+}
+
+// PullForwardCap is the maximum number of tasks PullForwardTasks returns.
+// Fixed per user decision (2026-07-19): pull-forward is intentionally small so
+// it surfaces important-but-not-yet-due work without drowning out today's
+// actual due work in the session-start context.
+const PullForwardCap = 5
+
+// PullForwardTomorrowStart returns the absolute instant that is midnight
+// "tomorrow" in Asia/Taipei relative to refDate. This is the boundary both
+// PullForwardTasks backends (internal/gtd/store.go for Postgres,
+// internal/storage/sqlite/gtd.go for SQLite) use to decide whether a task is
+// due today (excluded — that's today's work, not pull-forward) vs due
+// tomorrow or later (eligible). Shared here so the two backends cannot drift.
+//
+// MUST build the boundary via time.Date on refDate.In(loc), NOT
+// refDate.UTC().Truncate(24*time.Hour) — Time.Truncate rounds against the
+// absolute duration since the zero time (effectively a UTC-aligned
+// operation), not the wall-clock day in the given Location. The old
+// UTC-truncation boundary therefore landed at Taipei 08:00, not Taipei
+// 00:00 — a task due later THIS Taipei calendar day (e.g. 23:00 Taipei) has
+// a UTC due_date that already fell on/after that skewed boundary and was
+// wrongly pulled forward as if it were tomorrow's work (production bug,
+// confirmed 2026-07-20). Taiwan has no DST, so this was a plain offset bug,
+// not a DST edge case. Mirrors the Asia/Taipei source used throughout
+// internal/scheduler (see scheduler.go's own time.LoadLocation calls).
+func PullForwardTomorrowStart(refDate time.Time) (time.Time, error) {
+	loc, err := time.LoadLocation("Asia/Taipei")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("PullForwardTomorrowStart: loading Asia/Taipei timezone: %w", err)
+	}
+	inTaipei := refDate.In(loc)
+	y, m, d := inTaipei.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, loc), nil
 }
 
 // ChecklistMaxTitle is the maximum length for a checklist item title in runes.

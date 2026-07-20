@@ -199,6 +199,17 @@ func nullStringFromUUID(id *uuid.UUID) any {
 	return id.String()
 }
 
+// nullTimeArg returns NULL for a nil pointer, otherwise t formatted in the
+// same RFC3339 TEXT layout this package stores timestamps in (nowRFC3339
+// above), so lexicographic comparison against stored updated_at/created_at
+// columns is chronologically correct.
+func nullTimeArg(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}
+
 // ----- StoreIface methods -----
 
 // ListActiveProjects returns all active projects in the configured workspace.
@@ -401,33 +412,37 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 		rows *sql.Rows
 		err  error
 	)
+	updatedSinceArg := nullTimeArg(f.UpdatedSince)
 	switch f.Status {
 	case "", "active":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE status IN ('pending','in_progress')
 			  AND (?1 IS NULL OR project_id = ?1)
 			  AND (?2 IS NULL OR workspace_id = ?2)
+			  AND (?5 IS NULL OR updated_at >= ?5)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg)
 	case "all":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE (?1 IS NULL OR project_id = ?1)
 			  AND (?2 IS NULL OR workspace_id = ?2)
+			  AND (?5 IS NULL OR updated_at >= ?5)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg)
 	default:
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE status = ?1
 			  AND (?2 IS NULL OR project_id = ?2)
 			  AND (?3 IS NULL OR workspace_id = ?3)
+			  AND (?6 IS NULL OR updated_at >= ?6)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?4 OFFSET ?5`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset)
+			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg)
 	}
 	if err != nil {
 		return nil, errWrap("TasksFiltered", err)
@@ -517,6 +532,34 @@ func (s *GTDStore) UpcomingTasks(ctx context.Context, refDate time.Time, days, l
 		return nil, errWrap("UpcomingTasks", err)
 	}
 	return s.scanTaskRows(rows, "UpcomingTasks")
+}
+
+// PullForwardTasks mirrors the Postgres-side gtd.Store.PullForwardTasks: up to
+// gtd.PullForwardCap pending/in_progress, importance=1 tasks whose due_date is
+// NULL or falls on/after "tomorrow" (midnight, Asia/Taipei, relative to
+// refDate — see gtd.PullForwardTomorrowStart, shared with the Postgres
+// backend so the two cannot drift). SQLite stores due_date as RFC3339Nano
+// TEXT (UTC), so lexicographic string comparison against the tomorrow-start
+// boundary (itself converted to UTC before formatting) is equivalent to a
+// timestamp comparison — the same invariant UpcomingTasks relies on above.
+func (s *GTDStore) PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.Task, error) {
+	tomorrowStart, err := gtd.PullForwardTomorrowStart(refDate)
+	if err != nil {
+		return nil, errWrap("PullForwardTasks", err)
+	}
+	tomorrowStartStr := tomorrowStart.UTC().Format(time.RFC3339Nano)
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
+		WHERE status IN ('pending','in_progress')
+		  AND importance = 1
+		  AND (?1 IS NULL OR workspace_id = ?1)
+		  AND (due_date IS NULL OR due_date >= ?2)
+		ORDER BY due_date ASC NULLS LAST, priority ASC
+		LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), tomorrowStartStr, gtd.PullForwardCap)
+	if err != nil {
+		return nil, errWrap("PullForwardTasks", err)
+	}
+	return s.scanTaskRows(rows, "PullForwardTasks")
 }
 
 // Tasks returns pending/in-progress tasks, optionally filtered by projectID.

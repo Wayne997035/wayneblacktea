@@ -12,6 +12,8 @@ import (
 	"time"
 
 	gtdPkg "github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
+	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -394,6 +396,105 @@ func TestAnalyzeAgentBehavior_LiveFindings_EmptyWhenAllHaveDueDate(t *testing.T)
 		if f.EventType == eventTaskMissingDueDate {
 			t.Errorf("task with due_date should NOT appear as missing_due_date finding")
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// detectTaskNoOutcome tests
+// ---------------------------------------------------------------------------
+
+// setTaskUpdatedAt directly rewrites a task's updated_at column via the raw
+// SQLite handle so tests can simulate "completed N days ago" without waiting.
+// Format matches internal/storage/sqlite/gtd.go's nowRFC3339().
+func setTaskUpdatedAt(t *testing.T, db *wbtsqlite.DB, id uuid.UUID, when time.Time) {
+	t.Helper()
+	ts := when.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	if err := db.ExecContext(context.Background(), "UPDATE tasks SET updated_at = ? WHERE id = ?", ts, id.String()); err != nil {
+		t.Fatalf("setTaskUpdatedAt: %v", err)
+	}
+}
+
+// TestDetectTaskNoOutcome_HasOutcome_NoFinding verifies a task completed
+// within the 7-day cutoff that already has an outcome produces no finding.
+func TestDetectTaskNoOutcome_HasOutcome_NoFinding(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	s.disciplineEventStore = &stubDisciplineEventStore{}
+	ctx := context.Background()
+
+	id := seedTaskWithDueDate(t, s, "completed")
+	setTaskUpdatedAt(t, db, id, time.Now().Add(-2*24*time.Hour))
+
+	if _, err := s.outcome.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   id,
+		Result:     "success",
+	}); err != nil {
+		t.Fatalf("seeding outcome: %v", err)
+	}
+
+	findings := s.detectTaskNoOutcome(ctx, nil)
+	for _, f := range findings {
+		if strings.Contains(string(f.Detail), id.String()) {
+			t.Errorf("task %s has an outcome, must NOT appear in findings", id)
+		}
+	}
+}
+
+// TestDetectTaskNoOutcome_MissingOutcome_Finding verifies a task completed
+// within the 7-day cutoff with no outcome produces exactly one finding and
+// persists a discipline_events_m8 row via the wired store.
+func TestDetectTaskNoOutcome_MissingOutcome_Finding(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	des := &stubDisciplineEventStore{}
+	s.disciplineEventStore = des
+	ctx := context.Background()
+
+	id := seedTaskWithDueDate(t, s, "completed")
+	setTaskUpdatedAt(t, db, id, time.Now().Add(-2*24*time.Hour))
+
+	findings := s.detectTaskNoOutcome(ctx, nil)
+	found := false
+	for _, f := range findings {
+		if strings.Contains(string(f.Detail), id.String()) {
+			found = true
+		}
+		if f.EventType != string(watchdog.EventTypeTaskNoOutcome) {
+			t.Errorf("EventType = %q, want task_no_outcome", f.EventType)
+		}
+	}
+	if !found {
+		t.Fatalf("task %s missing an outcome must appear in findings; got: %v", id, findings)
+	}
+	if des.lastInserted.EventType != watchdog.EventTypeTaskNoOutcome {
+		t.Errorf("discipline event not persisted: lastInserted.EventType = %q, want task_no_outcome", des.lastInserted.EventType)
+	}
+}
+
+// TestDetectTaskNoOutcome_OutsideCutoff_NoFinding verifies a task completed
+// 10 days ago (outside the 7-day cutoff) with no outcome produces no finding.
+func TestDetectTaskNoOutcome_OutsideCutoff_NoFinding(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	s.disciplineEventStore = &stubDisciplineEventStore{}
+	ctx := context.Background()
+
+	id := seedTaskWithDueDate(t, s, "completed")
+	setTaskUpdatedAt(t, db, id, time.Now().Add(-10*24*time.Hour))
+
+	findings := s.detectTaskNoOutcome(ctx, nil)
+	for _, f := range findings {
+		if strings.Contains(string(f.Detail), id.String()) {
+			t.Errorf("task %s completed 10 days ago is outside the 7-day cutoff, must NOT appear in findings", id)
+		}
+	}
+}
+
+// TestDetectTaskNoOutcome_NilGTDOrOutcome_NoPanic verifies the nil-guard at
+// the top of detectTaskNoOutcome returns nil without panicking when either
+// dependency is unwired.
+func TestDetectTaskNoOutcome_NilGTDOrOutcome_NoPanic(t *testing.T) {
+	s := &Server{disciplineEventStore: &stubDisciplineEventStore{}}
+	if findings := s.detectTaskNoOutcome(context.Background(), nil); len(findings) != 0 {
+		t.Errorf("nil gtd/outcome: expected no findings, got %d", len(findings))
 	}
 }
 

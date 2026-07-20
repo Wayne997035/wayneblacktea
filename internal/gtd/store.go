@@ -277,6 +277,10 @@ func (s *Store) TasksFiltered(ctx context.Context, f TaskFilter) ([]db.Task, err
 func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f TaskFilter) ([]db.Task, error) {
 	var rows pgx.Rows
 	var err error
+	var updatedSinceArg any
+	if f.UpdatedSince != nil {
+		updatedSinceArg = *f.UpdatedSince
+	}
 	switch f.Status {
 	case "", "active":
 		q := `SELECT ` + selectCols + `
@@ -284,26 +288,29 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			WHERE status IN ('pending','in_progress')
 			  AND ($1::uuid IS NULL OR project_id = $1)
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg)
 	case "all":
 		q := `SELECT ` + selectCols + `
 			FROM tasks
 			WHERE ($1::uuid IS NULL OR project_id = $1)
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM tasks
 			WHERE status = $1
 			  AND ($2::uuid IS NULL OR project_id = $2)
 			  AND ($3::uuid IS NULL OR workspace_id = $3)
+			  AND ($6::timestamptz IS NULL OR updated_at >= $6)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $4 OFFSET $5`
-		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset)
+		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing filtered tasks: %w", err)
@@ -422,6 +429,54 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating upcoming tasks: %w", err)
+	}
+	return out, nil
+}
+
+// PullForwardTasks returns up to PullForwardCap pending/in_progress tasks
+// with importance=1 (high) whose due_date is NULL or falls on/after
+// "tomorrow" (midnight, Asia/Taipei, relative to refDate — see
+// PullForwardTomorrowStart). Tasks due today or overdue are excluded — those
+// already surface as "today" work via UpcomingTasks / GroupUpcomingTasks;
+// this query surfaces important work that hasn't yet entered the due-date
+// radar. Ordered due_date ASC NULLS LAST, priority ASC. Workspace scoped,
+// read-only, evaluated fresh on every call.
+//
+// Hand-rolled (not sqlc) to match the sibling UpcomingTasks query style.
+func (s *Store) PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.Task, error) {
+	tomorrowStart, err := PullForwardTomorrowStart(refDate)
+	if err != nil {
+		return nil, fmt.Errorf("listing pull-forward tasks: %w", err)
+	}
+	const q = `SELECT id, project_id, title, description, status, priority, assignee,
+		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
+		branch_name, pr_url, commit_shas
+		FROM tasks
+		WHERE status IN ('pending','in_progress')
+		  AND importance = 1
+		  AND ($1::uuid IS NULL OR workspace_id = $1)
+		  AND (due_date IS NULL OR due_date >= $2)
+		ORDER BY due_date ASC NULLS LAST, priority ASC
+		LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID, tomorrowStart, PullForwardCap)
+	if err != nil {
+		return nil, fmt.Errorf("listing pull-forward tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []db.Task
+	for rows.Next() {
+		var t db.Task
+		if err := rows.Scan(
+			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
+			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+		); err != nil {
+			return nil, fmt.Errorf("scanning pull-forward task: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating pull-forward tasks: %w", err)
 	}
 	return out, nil
 }

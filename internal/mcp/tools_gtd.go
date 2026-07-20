@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -839,7 +840,40 @@ func (s *Server) handleCompleteTask(ctx context.Context, req mcp.CallToolRequest
 		}
 	}
 
+	s.seedDraftOutcome(ctx, id)
+
 	return jsonText(task)
+}
+
+// seedDraftOutcome best-effort records a result:"unknown" outcome for a
+// just-completed task so the outcome→evaluate_outcome→behavior_governance
+// learning loop always has fuel, even when the agent never calls
+// record_outcome itself. Idempotent: outcomes has no unique constraint on
+// (entity_type, entity_id) (migration 000054), so a duplicate-check via
+// ExistsForEntity guards against complete_task being called more than once
+// for the same task. Failures are logged and swallowed — complete_task has
+// already succeeded by the time this runs and must never fail because of it.
+func (s *Server) seedDraftOutcome(ctx context.Context, taskID uuid.UUID) {
+	if s.outcome == nil {
+		return
+	}
+	wsID := s.workspaceUUID()
+	exists, err := s.outcome.ExistsForEntity(ctx, wsID, "task", taskID)
+	if err != nil {
+		slog.Warn("complete_task: outcome.ExistsForEntity failed (non-fatal, skipping seed)", "task_id", taskID, "err", err)
+		return
+	}
+	if exists {
+		return
+	}
+	if _, err := s.outcome.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: wsID,
+		EntityType:  "task",
+		EntityID:    taskID,
+		Result:      "unknown",
+	}); err != nil {
+		slog.Warn("complete_task: seeding draft outcome failed (non-fatal)", "task_id", taskID, "err", err)
+	}
 }
 
 // applyArtifactSideEffects detects whether artifact is a GitHub PR URL or a

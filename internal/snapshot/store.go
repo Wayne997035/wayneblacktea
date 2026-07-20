@@ -2,7 +2,6 @@ package snapshot
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -38,13 +37,12 @@ func (s *Store) Write(ctx context.Context, p WriteParams) (*Snapshot, error) {
 		src = "auto-status-snapshot"
 	}
 
+	// pgx handles []uuid.UUID natively for UUID[] (same pattern as
+	// outcome/store.go CreateOutcome). Use empty slice, not nil, so the
+	// column receives '{}' rather than NULL.
 	decisionIDs := p.SourceDecisionIDs
 	if decisionIDs == nil {
 		decisionIDs = []uuid.UUID{}
-	}
-	idsJSON, err := json.Marshal(decisionIDs)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot: marshaling source_decision_ids: %w", err)
 	}
 
 	var wsID pgtype.UUID
@@ -66,7 +64,7 @@ RETURNING id, slug, workspace_id, generated_at, sprint_summary, gap_analysis,
 	return s.scanOne(s.pool.QueryRow(
 		ctx, q,
 		p.Slug, wsID, p.SprintSummary, p.GapAnalysis,
-		p.SotaCatchupPct, p.PendingSummary, idsJSON, src,
+		p.SotaCatchupPct, p.PendingSummary, decisionIDs, src,
 	))
 }
 
@@ -140,12 +138,12 @@ func (s *Store) scanOne(row pgx.Row) (*Snapshot, error) {
 		gapAnalys  pgtype.Text
 		catchupPct pgtype.Int4
 		pendSum    pgtype.Text
-		idsJSON    []byte
+		decIDs     []uuid.UUID
 	)
 	err := row.Scan(
 		&snap.ID, &snap.Slug, &wsID, &genAt,
 		&sprintSum, &gapAnalys, &catchupPct, &pendSum,
-		&idsJSON, &snap.Source,
+		&decIDs, &snap.Source,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -166,10 +164,9 @@ func (s *Store) scanOne(row pgx.Row) (*Snapshot, error) {
 	snap.SotaCatchupPct = int(catchupPct.Int32)
 	snap.PendingSummary = pendSum.String
 
-	if len(idsJSON) > 0 {
-		if err := json.Unmarshal(idsJSON, &snap.SourceDecisionIDs); err != nil {
-			return nil, fmt.Errorf("snapshot: unmarshaling source_decision_ids: %w", err)
-		}
+	if decIDs == nil {
+		decIDs = []uuid.UUID{}
 	}
+	snap.SourceDecisionIDs = decIDs
 	return &snap, nil
 }

@@ -2,9 +2,11 @@ package worksession_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
@@ -1039,6 +1041,103 @@ func TestFinishWork_CompletedDeferredOverlap_DeferredWins(t *testing.T) {
 	}
 	if got := queryTaskStatus(t, db, taskB.String()); got == statusCompleted {
 		t.Errorf("taskB (in both completed and deferred) must NOT be completed — deferred must win, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wbt-2.0 security backlog — SQLite/Postgres legacy-mode workspace parity for
+// GetEvidence, and a hard row cap
+// ---------------------------------------------------------------------------
+
+// TestGetEvidence_LegacyModeRoundTrip verifies that in legacy mode (no
+// WORKSPACE_ID configured — empty workspaceID string), AddEvidence's
+// zero-UUID stamp and GetEvidence's equality filter round-trip correctly.
+// Before this fix, GetEvidence's `(?1 IS NULL OR workspace_id = ?1)`
+// predicate degenerated to always-true in legacy mode (AddEvidence wrote SQL
+// NULL, GetEvidence's ?1 arg was also NULL) — round trips passed by
+// accident, not by a real filter. This test locks in the new real-equality
+// behavior and mirrors TestPgStore_GetEvidence_NilWorkspace (Postgres),
+// which already filtered correctly via a real uuid.Nil equality check.
+func TestGetEvidence_LegacyModeRoundTrip(t *testing.T) {
+	store := newStore(t, "") // legacy mode: empty workspaceID
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.Nil, "legacy-evidence-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := store.AddEvidence(ctx, worksession.Evidence{
+		SessionID:    sess.ID,
+		EvidenceType: "command",
+		Status:       evidenceStatusPassed,
+		Command:      strPtr(taskCheckCmd),
+	}); err != nil {
+		t.Fatalf("AddEvidence in legacy mode: %v", err)
+	}
+
+	got, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence in legacy mode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 evidence row in legacy mode round trip, got %d", len(got))
+	}
+	if got[0].Command == nil || *got[0].Command != taskCheckCmd {
+		t.Errorf("command mismatch: got %v, want %s", got[0].Command, taskCheckCmd)
+	}
+}
+
+// TestGetEvidence_HardCapsLimit verifies GetEvidence returns at most
+// worksession.MaxEvidenceListLimit (100) rows even when more exist,
+// preserving created_at ASC order and dropping the newest row when the cap
+// is hit (mirrors TestListRecent_HardCapsLimit's shape).
+func TestGetEvidence_HardCapsLimit(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "evidence-cap-repo"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const seedCount = worksession.MaxEvidenceListLimit + 1
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range seedCount {
+		cmd := fmt.Sprintf("cmd-%03d", i)
+		ev, err := store.AddEvidence(ctx, worksession.Evidence{
+			SessionID:    sess.ID,
+			EvidenceType: "command",
+			Status:       evidenceStatusPassed,
+			Command:      &cmd,
+		})
+		if err != nil {
+			t.Fatalf("AddEvidence[%d]: %v", i, err)
+		}
+		// Force strictly increasing timestamps so ORDER BY created_at ASC is
+		// deterministic — fast sequential inserts can otherwise share the
+		// same millisecond (mirrors TestListRecent_DescOrder's forced-
+		// timestamp pattern above).
+		ts := base.Add(time.Duration(i) * time.Second).Format("2006-01-02T15:04:05.000Z07:00")
+		if err := db.ExecContext(ctx, `UPDATE work_session_evidence SET created_at = ?2 WHERE id = ?1`, ev.ID.String(), ts); err != nil {
+			t.Fatalf("force timestamp[%d]: %v", i, err)
+		}
+	}
+
+	got, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if len(got) != worksession.MaxEvidenceListLimit {
+		t.Fatalf("expected exactly %d evidence rows (hard cap), got %d", worksession.MaxEvidenceListLimit, len(got))
+	}
+	if got[0].Command == nil || *got[0].Command != "cmd-000" {
+		t.Errorf("expected first row command=cmd-000 (oldest, ASC order), got %v", got[0].Command)
+	}
+	if got[len(got)-1].Command == nil || *got[len(got)-1].Command != "cmd-099" {
+		t.Errorf("expected last row command=cmd-099 (cap drops newest row cmd-100), got %v", got[len(got)-1].Command)
 	}
 }
 

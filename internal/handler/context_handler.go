@@ -117,6 +117,11 @@ type todayContextResponse struct {
 	WeeklyProgress       weeklyProgressResponse        `json:"weekly_progress"`
 	PendingHandoff       *pendingHandoffHTTPView       `json:"pending_handoff"`
 	LatestStatusSnapshot *latestStatusSnapshotResponse `json:"latest_status_snapshot,omitempty"`
+	// PulledForward holds up to gtd.PullForwardCap important (importance=1)
+	// tasks not yet due, auto-surfaced into today's context (2026-07-19 user
+	// decision: automatic, data-only). Always a non-nil slice — empty array,
+	// never null, so web/src/hooks/useContextToday.ts doesn't need a presence check.
+	PulledForward []db.Task `json:"pulled_forward"`
 }
 
 // GetTodayContext returns active goals, projects, weekly progress and pending handoff.
@@ -147,6 +152,15 @@ func (h *ContextHandler) GetTodayContext(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 
+	pulledForward, err := h.gtd.PullForwardTasks(ctx, time.Now())
+	if err != nil {
+		c.Logger().Errorf("GetTodayContext loading pull-forward tasks: %v", err)
+		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if pulledForward == nil {
+		pulledForward = []db.Task{}
+	}
+
 	// Best-effort: fetch the latest status snapshot (age < 24 h) for the
 	// primary project. Failures are logged at warn level and skipped so the
 	// response is never blocked by snapshot unavailability.
@@ -172,5 +186,6 @@ func (h *ContextHandler) GetTodayContext(c echo.Context) error {
 		},
 		PendingHandoff:       buildPendingHandoffHTTPView(freshDashboardHandoff(handoff, time.Now())),
 		LatestStatusSnapshot: latestSnap,
+		PulledForward:        pulledForward,
 	})
 }

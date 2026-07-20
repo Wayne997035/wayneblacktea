@@ -78,6 +78,10 @@ func (noopGTDStore) UpcomingTasks(context.Context, time.Time, int, int) ([]db.Ta
 	return nil, nil
 }
 
+func (noopGTDStore) PullForwardTasks(context.Context, time.Time) ([]db.Task, error) {
+	return nil, nil
+}
+
 func (noopGTDStore) TasksForTimeline(context.Context, time.Time, time.Time) ([]db.Task, error) {
 	return nil, nil
 }
@@ -359,6 +363,10 @@ func (noopOutcomeStore) ListFailedOutcomes(context.Context, *uuid.UUID, int) ([]
 	return nil, nil
 }
 func (noopOutcomeStore) PruneOlderThan(context.Context, time.Time) (int64, error) { return 0, nil }
+
+func (noopOutcomeStore) ExistsForEntity(context.Context, *uuid.UUID, string, uuid.UUID) (bool, error) {
+	return false, nil
+}
 
 // ---------------------------------------------------------------------------
 // noopReflectionStore

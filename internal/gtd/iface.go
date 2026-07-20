@@ -59,6 +59,17 @@ type StoreIface interface {
 	// task. Results are ordered by COALESCE(updated_at, created_at) DESC,
 	// capped at 10000 rows. Workspace scoping is applied by the implementation.
 	TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error)
+	// PullForwardTasks returns up to PullForwardCap pending/in_progress tasks
+	// with importance=1 (high) whose due_date is NULL or falls on/after
+	// "tomorrow" (the day after refDate, evaluated in UTC). Tasks due today or
+	// overdue are excluded — those already surface via UpcomingTasks /
+	// GroupUpcomingTasks as "today" work; this query is specifically for
+	// important work that hasn't yet entered the due-date radar, so it isn't
+	// silently missed until due_date or a manual list_tasks query surfaces it.
+	// Ordered due_date ASC NULLS LAST, priority ASC. Workspace scoped,
+	// read-only (no mutation), evaluated fresh on every call — no caching or
+	// persisted "already pulled" state.
+	PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.Task, error)
 	CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	// BatchCompleteTasksByPRMatch marks every Match in matches as completed,

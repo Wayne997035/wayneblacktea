@@ -97,6 +97,10 @@ func (f *fakeGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) (
 	return nil, nil
 }
 
+func (f *fakeGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
+	return nil, nil
+}
+
 func (f *fakeGTDStore) TasksForTimeline(_ context.Context, _, _ time.Time) ([]db.Task, error) {
 	return nil, nil
 }
@@ -408,6 +412,10 @@ func (f *fakeOutcomeStore) ListEvaluationsByOutcomeID(_ context.Context, _ uuid.
 
 func (f *fakeOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
+}
+
+func (f *fakeOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
+	return false, nil
 }
 
 // ---------------------------------------------------------------------------

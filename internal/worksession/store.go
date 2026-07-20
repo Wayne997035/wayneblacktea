@@ -641,9 +641,10 @@ func (s *Store) GetEvidence(ctx context.Context, sessionID uuid.UUID) ([]Evidenc
 	}
 
 	const q = `SELECT ` + evidenceSelectReturning + `
-		FROM work_session_evidence WHERE workspace_id = $1 AND session_id = $2 ORDER BY created_at ASC`
+		FROM work_session_evidence WHERE workspace_id = $1 AND session_id = $2
+		ORDER BY created_at ASC LIMIT $3`
 
-	rows, err := s.pool.Query(ctx, q, ws, sessionID)
+	rows, err := s.pool.Query(ctx, q, ws, sessionID, MaxEvidenceListLimit)
 	if err != nil {
 		return nil, fmt.Errorf("worksession.GetEvidence: %w", err)
 	}

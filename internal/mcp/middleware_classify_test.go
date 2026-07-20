@@ -274,6 +274,10 @@ func (m *mockClassifyGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, 
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
 	return nil, errMockNotImpl
 }

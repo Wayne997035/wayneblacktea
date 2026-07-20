@@ -60,3 +60,26 @@ Known exception:
   are immutable, and comment-only drift does not affect execution. This note
   is the canonical correction — since E1 (2026-07-18), `migrations/sqlite/`
   IS executed by golang-migrate at `Open()`.
+
+- **2026-07-19, comment errata in
+  `migrations/000068_work_session_evidence_indexes.up.sql`** (merged via
+  f2e9829; file immutable, comment-only drift, this note is the canonical
+  correction — same convention as the stale-header note above; r3-db review
+  Minor ×2):
+
+  - The F4 justification claims the two partial indexes "back
+    `get_work_session_trace` / `record_outcome` reverse lookups". Neither
+    query path exists: `get_work_session_trace` resolves the session by its
+    `id` primary key, and `SetOutcomeLink` updates by `id + workspace_id`
+    (`internal/worksession/store.go` `SetOutcomeLink`, `UPDATE … WHERE id =
+    $2 AND workspace_id = $3`). Read `idx_work_sessions_outcome_id` /
+    `idx_outcomes_work_session_id` as forward-compatible hardening for the
+    outcome↔work-session reverse lookups planned by the wbt-2.0
+    learning-loop work, not as serving a query that already runs.
+
+  - The `context_pack_id` paragraph cites
+    `internal/mcp/tools_worksession.go:198`, but that line is
+    `parseTaskIDsFromField`. The supporting fact lives at the
+    `assembleStartWorkContext` comment ("context_pack_id stays NULL always:
+    Phase 2 does not persist Packs yet"). Line numbers into Go source drift —
+    trust the named function/comment, not the cited line.

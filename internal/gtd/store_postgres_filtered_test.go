@@ -335,3 +335,80 @@ func TestPGStore_TasksFiltered_WorkspaceScoping(t *testing.T) {
 		}
 	}
 }
+
+// TestPGStore_TasksFiltered_UpdatedSince verifies the UpdatedSince filter
+// excludes rows updated before the cutoff and includes rows updated at/after
+// it. Regression coverage for wbt-2.0 review round2 F2 (Postgres side —
+// mirrors TestSQLiteStore_TasksFiltered_UpdatedSince).
+func TestPGStore_TasksFiltered_UpdatedSince(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	oldID := seedPGTaskAndReturn(t, store, nil, "completed")
+	recentID := seedPGTaskAndReturn(t, store, nil, "completed")
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET updated_at = $1 WHERE id = $2`, time.Now().Add(-30*24*time.Hour), oldID); err != nil {
+		t.Fatalf("back-date oldID: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET updated_at = $1 WHERE id = $2`, time.Now().Add(-2*24*time.Hour), recentID); err != nil {
+		t.Fatalf("back-date recentID: %v", err)
+	}
+
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	tasks, err := store.TasksFiltered(ctx, gtd.TaskFilter{Status: "completed", Limit: 50, UpdatedSince: &cutoff})
+	if err != nil {
+		t.Fatalf("TasksFiltered: %v", err)
+	}
+	found := make(map[uuid.UUID]bool)
+	for _, tk := range tasks {
+		found[tk.ID] = true
+	}
+	if found[oldID] {
+		t.Errorf("task updated 30 days ago must be excluded by UpdatedSince cutoff, but was returned")
+	}
+	if !found[recentID] {
+		t.Errorf("task updated 2 days ago must be included (inside the cutoff window), was not returned")
+	}
+}
+
+// TestPGStore_TasksFiltered_UpdatedSince_SurvivesLimitCap is the direct
+// regression test for wbt-2.0 review round2 F2: seed more completed tasks
+// than Limit, all updated before the cutoff except one updated after it.
+// Without UpdatedSince pushed into the WHERE clause, ORDER BY priority ASC,
+// created_at ASC would surface the old tasks first and the LIMIT would cut
+// off before ever reaching the one recently-updated task.
+func TestPGStore_TasksFiltered_UpdatedSince_SurvivesLimitCap(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	const limit = 5
+	for range limit + 2 {
+		id := seedPGTaskAndReturn(t, store, nil, "completed")
+		if _, err := pool.Exec(ctx, `UPDATE tasks SET updated_at = $1 WHERE id = $2`, time.Now().Add(-30*24*time.Hour), id); err != nil {
+			t.Fatalf("back-date old task: %v", err)
+		}
+	}
+	recentID := seedPGTaskAndReturn(t, store, nil, "completed")
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET updated_at = $1 WHERE id = $2`, time.Now().Add(-2*24*time.Hour), recentID); err != nil {
+		t.Fatalf("back-date recentID: %v", err)
+	}
+
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	tasks, err := store.TasksFiltered(ctx, gtd.TaskFilter{Status: "completed", Limit: limit, UpdatedSince: &cutoff})
+	if err != nil {
+		t.Fatalf("TasksFiltered: %v", err)
+	}
+	found := false
+	for _, tk := range tasks {
+		if tk.ID == recentID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("recently-updated task %s must survive the Limit cap once UpdatedSince filters at the DB level; got %d tasks",
+			recentID, len(tasks))
+	}
+}

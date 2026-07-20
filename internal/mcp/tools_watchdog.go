@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	proposalpkg "github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/google/uuid"
@@ -393,12 +394,24 @@ func (s *Server) detectTaskNoOutcome(ctx context.Context, wsID *uuid.UUID) []age
 	if s.gtd == nil || s.outcome == nil {
 		return nil
 	}
-	tasks, err := s.gtd.Tasks(ctx, nil)
+	// Bug fix: Tasks(nil) only returns pending/in_progress (active) tasks — a
+	// completed task can structurally never appear there, which made this
+	// detection permanently dead. TasksFiltered(Status:"completed") is the
+	// correct data source. Limit 500 mirrors the ListRecentOutcomes cap below
+	// (personal-scale single-tenant app; revisit if either cap is ever hit).
+	//
+	// Bug fix (wbt-2.0 review round2 F2): UpdatedSince pushes the 7-day cutoff
+	// into the WHERE clause instead of filtering client-side after the LIMIT.
+	// Without it, ORDER BY priority ASC, created_at ASC + Limit 500 surfaces
+	// the OLDEST completed tasks first — once total completed tasks exceed
+	// 500, recently-completed rows silently fall outside the window and this
+	// detection goes dead again despite the Go-side cutoff check below.
+	cutoff7d := time.Now().Add(-7 * 24 * time.Hour)
+	tasks, err := s.gtd.TasksFiltered(ctx, gtd.TaskFilter{Status: "completed", Limit: 500, UpdatedSince: &cutoff7d})
 	if err != nil {
-		slog.Warn("analyze_agent_behavior: gtd.Tasks (task_no_outcome) failed", "error", err)
+		slog.Warn("analyze_agent_behavior: gtd.TasksFiltered (task_no_outcome) failed", "error", err)
 		return nil
 	}
-	cutoff7d := time.Now().Add(-7 * 24 * time.Hour)
 	recentOutcomes, oErr := s.outcome.ListRecentOutcomes(ctx, wsID, "task", 500)
 	if oErr != nil {
 		slog.Warn("analyze_agent_behavior: ListRecentOutcomes failed", "error", oErr)
@@ -410,7 +423,11 @@ func (s *Server) detectTaskNoOutcome(ctx context.Context, wsID *uuid.UUID) []age
 	}
 	var out []agentBehaviorFinding
 	for _, t := range tasks {
-		if t.Status != "done" {
+		// Bug fix: the terminal status string is "completed"
+		// (gtd.TaskStatusCompleted, internal/gtd/gtd.go:45), not "done".
+		// TasksFiltered already scopes to status="completed"; this check is
+		// defense-in-depth against a future data-source change.
+		if t.Status != "completed" {
 			continue
 		}
 		completedAt := t.UpdatedAt
@@ -482,13 +499,8 @@ func (s *Server) detectDecisionNoReflection(ctx context.Context, wsID *uuid.UUID
 // that lack a due_date. This detection is intentionally NOT persisted to
 // discipline_events_m8 (no EventType const, no insertWatchdogEvent call) so
 // that the watchdog/store.go EventType enum and its "8 categories" comment
-// remain unchanged.
-//
-// NOTE: detectTaskNoOutcome (above) has a pre-existing bug: it filters on
-// t.Status != "done" but the terminal status string is "completed" — this
-// means the detection is currently dead. This is a known issue flagged for
-// a follow-up fix; the new detection below uses t.DueDate.Valid which is the
-// correct field and must NOT copy the "done" string bug.
+// remain unchanged. Uses t.DueDate.Valid, independent of the task status
+// string handling in detectTaskNoOutcome above.
 func (s *Server) detectTasksMissingDueDate(ctx context.Context, wsID *uuid.UUID) []agentBehaviorFinding {
 	if s.gtd == nil {
 		return nil

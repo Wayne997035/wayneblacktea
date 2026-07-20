@@ -25,7 +25,8 @@ const primaryProjectSlug = "wayneblacktea"
 func (s *Server) registerContextTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("get_today_context",
 		mcp.WithDescription(
-			"CALL AT SESSION START. Returns active goals, projects, weekly progress, and pending session handoff.",
+			"CALL AT SESSION START. Returns active goals, projects, weekly progress, pending session handoff, "+
+				"and pulled_forward (up to 5 important tasks not yet due, surfaced early so they aren't missed).",
 		),
 	), s.handleGetTodayContext)
 
@@ -105,6 +106,11 @@ type todayContext struct {
 	PendingHandoff       *pendingHandoffView   `json:"pending_handoff"`
 	ArchSnapshotData     string                `json:"arch_snapshot_data,omitempty"` // empty when no snapshot stored
 	LatestStatusSnapshot *latestStatusSnapshot `json:"latest_status_snapshot,omitempty"`
+	// PulledForward holds up to gtd.PullForwardCap important (importance=1)
+	// tasks not yet due, auto-surfaced into today's context (2026-07-19 user
+	// decision: automatic, data-only, no manual pull tool). Always a non-nil
+	// slice — empty array, never null, so clients don't need a presence check.
+	PulledForward []db.Task `json:"pulled_forward"`
 }
 
 func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -126,6 +132,14 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 	handoff, err := s.session.LatestHandoff(ctx)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return mcp.NewToolResultError(fmt.Sprintf("loading handoff: %v", err)), nil
+	}
+
+	pulledForward, err := s.gtd.PullForwardTasks(ctx, time.Now())
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("loading pull-forward tasks: %v", err)), nil
+	}
+	if pulledForward == nil {
+		pulledForward = []db.Task{}
 	}
 
 	// Best-effort: fetch the arch snapshot for the primary project. The raw
@@ -163,6 +177,7 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 		PendingHandoff:       buildPendingHandoffView(handoff),
 		ArchSnapshotData:     archData,
 		LatestStatusSnapshot: latestSnap,
+		PulledForward:        pulledForward,
 	})
 }
 

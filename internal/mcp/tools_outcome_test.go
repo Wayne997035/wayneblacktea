@@ -79,6 +79,10 @@ func (s *stubOutcomeStore) PruneOlderThan(_ context.Context, cutoff time.Time) (
 	return 0, s.returnErr
 }
 
+func (s *stubOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
+	return false, s.returnErr
+}
+
 // --- helpers ---
 
 func callRecordOutcome(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
@@ -601,6 +605,10 @@ func (e *evalFailingStore) ListFailedOutcomes(_ context.Context, _ *uuid.UUID, _
 
 func (e *evalFailingStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
+}
+
+func (e *evalFailingStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
+	return false, nil
 }
 
 // --- isJSONArray / validateJSONArrayArg unit tests ---

@@ -46,6 +46,12 @@ type fakeGTDStore struct {
 	beginTaskCalls           int
 	capturedUpdateTaskParams *gtd.UpdateTaskParams
 	beginTaskResult          *db.Task
+	// pullForwardTasks/pullForwardErr are separate from the shared err field
+	// above so tests can exercise the PullForwardTasks error path without
+	// also breaking ActiveGoals/ListActiveProjects, which the handler calls
+	// first in GetTodayContext.
+	pullForwardTasks []db.Task
+	pullForwardErr   error
 }
 
 func (f *fakeGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) {
@@ -84,6 +90,10 @@ func (f *fakeGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error)
 func (f *fakeGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
 	f.allStatusCalls++
 	return f.allStatusTasks, f.err
+}
+
+func (f *fakeGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
+	return f.pullForwardTasks, f.pullForwardErr
 }
 
 func (f *fakeGTDStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {

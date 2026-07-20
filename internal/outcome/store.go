@@ -366,3 +366,20 @@ func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, er
 	}
 	return tag.RowsAffected(), nil
 }
+
+// ExistsForEntity reports whether an outcome row already exists for the given
+// entity, optionally scoped to workspaceID. Backed by idx_outcomes_entity_id /
+// idx_outcomes_workspace_entity (migration 000054).
+func (s *Store) ExistsForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (bool, error) {
+	const q = `SELECT EXISTS(
+		SELECT 1 FROM outcomes
+		WHERE entity_type = $1
+		  AND entity_id = $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+	)`
+	var exists bool
+	if err := s.pool.QueryRow(ctx, q, entityType, entityID, toPgtypeUUID(workspaceID)).Scan(&exists); err != nil {
+		return false, fmt.Errorf("checking outcome existence for %s %s: %w", entityType, entityID, err)
+	}
+	return exists, nil
+}

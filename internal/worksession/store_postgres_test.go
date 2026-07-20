@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
@@ -1157,6 +1158,116 @@ func TestPgFinishWork_CompletedDeferredOverlap_DeferredWins(t *testing.T) {
 // TestGetEvidence_WorkspaceIsolation (SQLite) against real Postgres. Both
 // stores share the same pool/table, so this genuinely exercises the new
 // workspace_id predicate rather than relying on physically separate storage.
+// TestPgStore_GetEvidence_NilWorkspace mirrors TestPgStore_Checkpoint_NilWorkspace:
+// legacy mode (no WORKSPACE_ID env → nil workspaceID) stamps evidence writes
+// with uuid.Nil and GetEvidence's read filter with the same value, so a
+// legacy-mode write→read round trip must return the row unfiltered by any
+// spurious cross-workspace mismatch. This is the regression-protection
+// counterpart to the SQLite parity fix in the same PR (wbt-2.0 security
+// backlog) — it proves Postgres's existing zero-UUID equality filter was
+// already correct and self-consistent, which SQLite's degenerate
+// `?1 IS NULL` predicate was not.
+//
+// Evidence is attached via Finish (worksession.FinishParams.Evidence), not a
+// direct AddEvidence call, because that mirrors the only production call
+// path: AddEvidence has exactly two call sites in the whole module and both
+// are internal to Finish (Postgres store.go and the SQLite equivalent),
+// which explicitly resolves and stamps a zero-value WorkspaceID pointer in
+// legacy mode before calling AddEvidence. A direct AddEvidence call that
+// omits WorkspaceID falls through to Postgres's ev.WorkspaceID fallback
+// (nil), which writes SQL NULL instead of uuid.Nil — a pre-existing,
+// out-of-scope edge case for callers that bypass Finish, not exercised by
+// any production code path today.
+func TestPgStore_GetEvidence_NilWorkspace(t *testing.T) {
+	pool := openTestPgPool(t)
+	store := newPgStore(pool, nil)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: uuid.Nil,
+		RepoName:    "nil-ws-evidence-repo",
+		Title:       "Nil workspace evidence test",
+		Goal:        "Legacy mode round trip",
+		Source:      "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cmd := taskCheckCmd
+	if _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "nil ws done with evidence",
+		Evidence: []worksession.EvidenceInput{
+			{EvidenceType: "command", Status: "passed", Command: &cmd},
+		},
+	}); err != nil {
+		t.Fatalf("Finish with nil workspace: %v", err)
+	}
+
+	got, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence with nil workspace: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 evidence row in legacy mode round trip, got %d", len(got))
+	}
+	if got[0].Command == nil || *got[0].Command != cmd {
+		t.Errorf("command mismatch: got %v, want %s", got[0].Command, cmd)
+	}
+}
+
+// TestPgStore_GetEvidence_HardCapsLimit mirrors TestGetEvidence_HardCapsLimit
+// (SQLite) against real Postgres: GetEvidence returns at most
+// worksession.MaxEvidenceListLimit (100) rows, preserving created_at ASC
+// order and dropping the newest row when the cap is hit.
+func TestPgStore_GetEvidence_HardCapsLimit(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID, RepoName: "pg-evidence-cap-repo", Title: "t", Goal: "g", Source: "test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const seedCount = worksession.MaxEvidenceListLimit + 1
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range seedCount {
+		cmd := fmt.Sprintf("cmd-%03d", i)
+		ev, err := store.AddEvidence(ctx, worksession.Evidence{
+			SessionID:    sess.ID,
+			EvidenceType: "command",
+			Status:       "passed",
+			Command:      &cmd,
+		})
+		if err != nil {
+			t.Fatalf("AddEvidence[%d]: %v", i, err)
+		}
+		ts := base.Add(time.Duration(i) * time.Second)
+		if _, err := pool.Exec(ctx, `UPDATE work_session_evidence SET created_at = $2 WHERE id = $1`, ev.ID, ts); err != nil {
+			t.Fatalf("force timestamp[%d]: %v", i, err)
+		}
+	}
+
+	got, err := store.GetEvidence(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if len(got) != worksession.MaxEvidenceListLimit {
+		t.Fatalf("expected exactly %d evidence rows (hard cap), got %d", worksession.MaxEvidenceListLimit, len(got))
+	}
+	if got[0].Command == nil || *got[0].Command != "cmd-000" {
+		t.Errorf("expected first row command=cmd-000 (oldest, ASC order), got %v", got[0].Command)
+	}
+	if got[len(got)-1].Command == nil || *got[len(got)-1].Command != "cmd-099" {
+		t.Errorf("expected last row command=cmd-099 (cap drops newest row cmd-100), got %v", got[len(got)-1].Command)
+	}
+}
+
 func TestPgStore_GetEvidence_WorkspaceIsolation(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsA := uuid.New()

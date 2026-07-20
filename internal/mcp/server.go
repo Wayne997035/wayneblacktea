@@ -355,6 +355,8 @@ const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — USAGE PROTOCOL
 
 ## Session Start
 Call get_today_context first. If there is a pending handoff, resolve_handoff after reading it.
+pulled_forward in the response holds important (importance=1) tasks that aren't due yet —
+treat these as real candidate work for today, not just FYI noise.
 
 ## Architecture / past decisions
 Call list_decisions with the relevant repo_name before answering. Always verify in code too.
@@ -411,6 +413,7 @@ mid-session course correction, rule-source changes (CLAUDE.md / mcpInstructions 
 
 ## complete_task triggers
 "好了" "搞定" "done" "ship it" "looks good" "讚" "漂亮" — only when a task is currently in_progress and the assistant just reported completion.
+complete_task auto-seeds a draft outcome (result="unknown") — upgrade it with evaluate_outcome/record_outcome once real context is known.
 
 ## Note on auto-logging
 High-signal tools (complete_task, confirm_plan, add_task, log_decision, set_session_handoff)

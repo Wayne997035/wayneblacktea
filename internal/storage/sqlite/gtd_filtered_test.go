@@ -392,3 +392,93 @@ func TestSQLiteStore_TasksFiltered_EmptyDB_NoError(t *testing.T) {
 		t.Errorf("empty DB should return 0 tasks, got %d", len(tasks))
 	}
 }
+
+// openMemWithDB is like openMem but also returns the raw *sqlite.DB handle so
+// tests can rewrite updated_at directly (bypassing the store API, which has
+// no "set completion time" method).
+func openMemWithDB(t *testing.T, workspaceID string) (*sqlite.GTDStore, *sqlite.DB) {
+	t.Helper()
+	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return sqlite.NewGTDStore(d), d
+}
+
+// setSQLiteTaskUpdatedAt directly rewrites a task's updated_at column,
+// matching the RFC3339 TEXT layout internal/storage/sqlite/gtd.go stores
+// timestamps in.
+func setSQLiteTaskUpdatedAt(t *testing.T, d *sqlite.DB, id uuid.UUID, when time.Time) {
+	t.Helper()
+	ts := when.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	if err := d.ExecContext(context.Background(), "UPDATE tasks SET updated_at = ? WHERE id = ?", ts, id.String()); err != nil {
+		t.Fatalf("setSQLiteTaskUpdatedAt: %v", err)
+	}
+}
+
+// TestSQLiteStore_TasksFiltered_UpdatedSince verifies the UpdatedSince filter
+// excludes rows updated before the cutoff and includes rows updated at/after
+// it. Regression coverage for wbt-2.0 review round2 F2.
+func TestSQLiteStore_TasksFiltered_UpdatedSince(t *testing.T) {
+	s, d := openMemWithDB(t, "")
+	ctx := context.Background()
+	due := time.Now().Add(24 * time.Hour)
+
+	oldID := seedSQLiteTask(t, s, &due, "completed")
+	recentID := seedSQLiteTask(t, s, &due, "completed")
+	setSQLiteTaskUpdatedAt(t, d, oldID, time.Now().Add(-30*24*time.Hour))
+	setSQLiteTaskUpdatedAt(t, d, recentID, time.Now().Add(-2*24*time.Hour))
+
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	tasks, err := s.TasksFiltered(ctx, gtd.TaskFilter{Status: "completed", Limit: 50, UpdatedSince: &cutoff})
+	if err != nil {
+		t.Fatalf("TasksFiltered: %v", err)
+	}
+	found := make(map[uuid.UUID]bool)
+	for _, tk := range tasks {
+		found[tk.ID] = true
+	}
+	if found[oldID] {
+		t.Errorf("task updated 30 days ago must be excluded by UpdatedSince cutoff, but was returned")
+	}
+	if !found[recentID] {
+		t.Errorf("task updated 2 days ago must be included (inside the cutoff window), was not returned")
+	}
+}
+
+// TestSQLiteStore_TasksFiltered_UpdatedSince_SurvivesLimitCap is the direct
+// regression test for wbt-2.0 review round2 F2: seed more completed tasks
+// than Limit, all updated before the cutoff except one updated after it.
+// Without UpdatedSince pushed into the WHERE clause, ORDER BY priority ASC,
+// created_at ASC would surface the old tasks first and the LIMIT would cut
+// off before ever reaching the one recently-updated task.
+func TestSQLiteStore_TasksFiltered_UpdatedSince_SurvivesLimitCap(t *testing.T) {
+	s, d := openMemWithDB(t, "")
+	ctx := context.Background()
+	due := time.Now().Add(24 * time.Hour)
+
+	const limit = 5
+	for range limit + 2 {
+		id := seedSQLiteTask(t, s, &due, "completed")
+		setSQLiteTaskUpdatedAt(t, d, id, time.Now().Add(-30*24*time.Hour))
+	}
+	recentID := seedSQLiteTask(t, s, &due, "completed")
+	setSQLiteTaskUpdatedAt(t, d, recentID, time.Now().Add(-2*24*time.Hour))
+
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	tasks, err := s.TasksFiltered(ctx, gtd.TaskFilter{Status: "completed", Limit: limit, UpdatedSince: &cutoff})
+	if err != nil {
+		t.Fatalf("TasksFiltered: %v", err)
+	}
+	found := false
+	for _, tk := range tasks {
+		if tk.ID == recentID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("recently-updated task %s must survive the Limit cap once UpdatedSince filters at the DB level; got %d tasks",
+			recentID, len(tasks))
+	}
+}

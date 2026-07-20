@@ -63,6 +63,19 @@ var AllowedEvidenceStatuses = map[string]bool{
 // an LLM requesting an unbounded list). Mirrors outcome.maxOutcomeLimit.
 const MaxListRecentLimit = 100
 
+// MaxEvidenceListLimit is the server-side hard cap on the number of
+// work_session_evidence rows GetEvidence returns for a single session,
+// regardless of how many rows actually exist (resource guard against an
+// unbounded evidence table — sibling constant of MaxListRecentLimit above).
+// Both stores apply this as a SQL LIMIT while preserving ORDER BY created_at
+// ASC, so hitting the cap drops the NEWEST row(s), not the oldest. The
+// current single write path (finish_work's evidence array, capped
+// server-side at maxEvidenceItems=20 in internal/mcp/tools_worksession.go)
+// cannot reach this cap on its own — it exists as defence in depth against
+// any future write path or direct AddEvidence caller that inserts
+// unboundedly.
+const MaxEvidenceListLimit = 100
+
 // EvidenceOutputExcerptCap is the maximum rune length for
 // Evidence.OutputExcerpt and Session.VerificationOutputExcerpt after
 // redaction. Applied AFTER redact.ForLLM — redact-then-cap order is

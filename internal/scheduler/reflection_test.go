@@ -117,6 +117,10 @@ func (s *stubGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) (
 	return nil, nil
 }
 
+func (s *stubGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
 	return nil, nil
 }

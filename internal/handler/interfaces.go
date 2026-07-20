@@ -36,6 +36,9 @@ type gtdStore interface {
 	// GET /api/projects/:id/tasks (used by the project-detail UI to render
 	// the "completed" section). Default behaviour stays active-only.
 	TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error)
+	// PullForwardTasks backs the pulled_forward field of GET /api/context/today —
+	// see gtd.StoreIface.PullForwardTasks for full semantics.
+	PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.Task, error)
 	CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error)
 	CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error)
 	BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error)
