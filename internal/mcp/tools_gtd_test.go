@@ -154,12 +154,17 @@ func callCompleteTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.Call
 }
 
 // seedTaskWithDueDate creates a task via the store (bypasses MCP handler due_date check).
+// Assignee is always set to a canonical actor because some callers transition
+// the seeded task to in_progress, which the P6.7 domain-layer gate requires
+// an owner for; tests that specifically exercise the no-assignee case use
+// seedTask (tools_gtd_delete_test.go) instead.
 func seedTaskWithDueDate(t *testing.T, s *Server, status string) uuid.UUID {
 	t.Helper()
 	due := time.Now().Add(24 * time.Hour)
 	p := gtd.CreateTaskParams{
-		Title:   "task-" + uuid.NewString(),
-		DueDate: &due,
+		Title:    "task-" + uuid.NewString(),
+		DueDate:  &due,
+		Assignee: "claude",
 	}
 	task, err := s.gtd.CreateTask(context.Background(), p)
 	if err != nil {
@@ -594,6 +599,49 @@ func TestSetTaskStatus_PendingToInProgress(t *testing.T) {
 		t.Fatalf("pending→in_progress must succeed, got: %s", resultText(r))
 	}
 	task, _ := s.gtd.GetTaskByID(context.Background(), id)
+	if task.Status != statusInProgress {
+		t.Errorf("status = %q, want in_progress", task.Status)
+	}
+}
+
+// TestSetTaskStatus_PendingToInProgress_RequiresAssignee verifies the p6-7
+// domain-layer gate reaches set_task_status even though this MCP tool has no
+// assignee-specific handling of its own (unlike update_task's
+// requireAssigneeForInProgress) — the guarantee is enforced by
+// gtd.UpdateTaskStatus itself, so any caller is covered.
+func TestSetTaskStatus_PendingToInProgress_RequiresAssignee(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s) // no assignee set
+	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "in_progress"})
+	if !r.IsError {
+		t.Fatalf("set_task_status pending→in_progress on an unowned task must error, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "assignee") {
+		t.Errorf("error should mention assignee, got: %s", resultText(r))
+	}
+	task, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if task.Status != taskStatusPending {
+		t.Errorf("status changed to %q despite rejected transition", task.Status)
+	}
+}
+
+// TestSetTaskStatus_PendingToInProgress_ExistingAssigneeNotBlocked verifies a
+// task that already has an assignee transitions cleanly via set_task_status
+// with no extra argument needed.
+func TestSetTaskStatus_PendingToInProgress_ExistingAssigneeNotBlocked(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTaskWithAssignee(t, s, "claude")
+	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "in_progress"})
+	if r.IsError {
+		t.Fatalf("set_task_status pending→in_progress on an owned task must succeed, got: %s", resultText(r))
+	}
+	task, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
 	if task.Status != statusInProgress {
 		t.Errorf("status = %q, want in_progress", task.Status)
 	}

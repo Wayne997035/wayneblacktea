@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -644,6 +646,21 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	if kind == "" {
 		kind = "general"
 	}
+
+	// Domain-layer gate (P6.7, sunk from the MCP-only guard in P6.6): any
+	// non-empty assignee MUST resolve through the canonical actor allowlist
+	// before it reaches storage, regardless of caller. Empty stays empty
+	// (unowned task — new tasks always insert as 'pending', so no
+	// in_progress guard applies here).
+	assignee := p.Assignee
+	if strings.TrimSpace(assignee) != "" {
+		normalized, nerr := gtd.NormalizeActor(assignee)
+		if nerr != nil {
+			return nil, fmt.Errorf("creating task %q: %w", p.Title, nerr)
+		}
+		assignee = normalized
+	}
+
 	// commit_shas stored as JSON TEXT in SQLite; always empty on creation.
 	const commitSHAsJSON = "[]"
 	const q = `INSERT INTO tasks
@@ -663,7 +680,7 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
-		nullStringIfEmpty(p.Context), nullStringIfEmpty(p.Assignee), dueVal, kind,
+		nullStringIfEmpty(p.Context), nullStringIfEmpty(assignee), dueVal, kind,
 		branchVal, prURLVal, commitSHAsJSON, now)
 	if err != nil {
 		return nil, errWrap("CreateTask", err)
@@ -908,6 +925,25 @@ func (s *GTDStore) goalByID(ctx context.Context, id uuid.UUID) (*db.Goal, error)
 
 // UpdateTaskStatus sets the status of a task.
 func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gtd.TaskStatus) (*db.Task, error) {
+	// Domain-layer gate (P6.7): UpdateTaskStatus takes no assignee argument,
+	// so an existing-row read is the only way to check "does this task have
+	// an owner" before allowing the in_progress transition. Skipped for any
+	// other target status — no extra read on the hot pending/completed/
+	// cancelled paths.
+	if status == gtd.TaskStatusInProgress {
+		existing, err := s.taskByID(ctx, id)
+		if err != nil {
+			return nil, err // gtd.ErrNotFound already wrapped
+		}
+		existingAssignee := ""
+		if existing.Assignee.Valid {
+			existingAssignee = existing.Assignee.String
+		}
+		if rerr := gtd.RequireAssigneeForInProgress(existingAssignee, status); rerr != nil {
+			return nil, fmt.Errorf("updating task %s status: %w", id, rerr)
+		}
+	}
+
 	const q = `UPDATE tasks
 		SET status = ?2, updated_at = ?3
 		WHERE id = ?1
@@ -940,6 +976,18 @@ func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error
 	}
 	if existing.Status == "in_progress" {
 		return existing, nil
+	}
+
+	// Domain-layer gate (P6.7): BeginTask takes no assignee argument, so the
+	// only source of truth is the existing row — MCP begin_task persists a
+	// caller-supplied assignee via UpdateTask BEFORE calling BeginTask (see
+	// handleBeginTask) precisely so it shows up here.
+	existingAssignee := ""
+	if existing.Assignee.Valid {
+		existingAssignee = existing.Assignee.String
+	}
+	if rerr := gtd.RequireAssigneeForInProgress(existingAssignee, gtd.TaskStatusInProgress); rerr != nil {
+		return nil, fmt.Errorf("beginning task %s: %w", id, rerr)
 	}
 
 	tx, err := s.db.conn.BeginTx(ctx, nil)
@@ -1119,7 +1167,31 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		return nil, err // ErrNotFound propagated as-is
 	}
 
+	// Domain-layer gate (P6.7): a NEW assignee value being set THIS call must
+	// resolve through the canonical allowlist before merging in. Empty
+	// string is the explicit-clear case (mergeTaskFields' nullStringIfEmpty
+	// turns it into NULL) and is left untouched — clearing is always allowed.
+	if p.Assignee != nil && strings.TrimSpace(*p.Assignee) != "" {
+		normalized, nerr := gtd.NormalizeActor(*p.Assignee)
+		if nerr != nil {
+			return nil, fmt.Errorf("updating task %s: %w", id, nerr)
+		}
+		p.Assignee = &normalized
+	}
+
 	m := mergeTaskFields(existing, p)
+
+	// Once both merged values are known, reject a write that would leave the
+	// row in_progress with no resolved assignee — whether that's because this
+	// call clears assignee while also setting in_progress, or because the
+	// row already had none and this call didn't supply one.
+	mergedAssignee := ""
+	if av, ok := m.assignee.(string); ok {
+		mergedAssignee = av
+	}
+	if rerr := gtd.RequireAssigneeForInProgress(mergedAssignee, gtd.TaskStatus(m.status)); rerr != nil {
+		return nil, fmt.Errorf("updating task %s: %w", id, rerr)
+	}
 
 	const q = `UPDATE tasks
 		SET title       = ?2,

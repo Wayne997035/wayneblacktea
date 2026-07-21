@@ -2145,3 +2145,93 @@ func TestHandleFinishWork_DeferredTaskNotMarkedCompleted(t *testing.T) {
 		t.Errorf("taskB (deferred) must NOT be completed, got %q", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P6.8 — assignee gate on start_work (MCP layer, end to end)
+// ---------------------------------------------------------------------------
+
+// queryMCPTaskAssignee reads the assignee column for a task directly from the
+// SQLite DB backing the test server. Returns "" for SQL NULL. Mirrors
+// queryTaskAssignee in internal/worksession/store_test.go (unexported there,
+// so duplicated here, matching queryMCPTaskStatus's existing pattern).
+func queryMCPTaskAssignee(t *testing.T, db *wbtsqlite.DB, taskID string) string {
+	t.Helper()
+	row := db.QueryRowContext(context.Background(), `SELECT COALESCE(assignee, '') FROM tasks WHERE id = ?1`, taskID)
+	var assignee string
+	if err := row.Scan(&assignee); err != nil {
+		t.Fatalf("queryMCPTaskAssignee %s: %v", taskID, err)
+	}
+	return assignee
+}
+
+// TestHandleStartWork_RejectsInvalidAssignee verifies start_work's assignee
+// argument is validated through gtd.NormalizeActor's whitelist before it can
+// reach worksession.CreateParams.Assignee.
+func TestHandleStartWork_RejectsInvalidAssignee(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callStartWork(t, s, map[string]any{
+		"repo_name": "invalid-assignee-repo",
+		"title":     "t",
+		"goal":      "g",
+		"assignee":  "gemini",
+	})
+	if !r.IsError {
+		t.Fatal("expected error for unrecognized assignee")
+	}
+	if !strings.Contains(resultText(r), "recognized actor") {
+		t.Errorf("error should mention the allowlist, got: %s", resultText(r))
+	}
+}
+
+// TestHandleStartWork_StampsAssigneeOntoUnassignedTask is the end-to-end (MCP
+// request → handler → store) regression test for the P6.8 gate: a linked
+// task_id with no existing assignee gets stamped with start_work's assignee
+// argument when it flips to in_progress.
+func TestHandleStartWork_StampsAssigneeOntoUnassignedTask(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	taskID := uuid.New().String()
+	insertMCPTestTask(t, db, "", taskID)
+
+	r := callStartWork(t, s, map[string]any{
+		"repo_name": "stamp-assignee-e2e-repo",
+		"title":     "t",
+		"goal":      "g",
+		"task_ids":  `["` + taskID + `"]`,
+		"assignee":  "human",
+	})
+	if r.IsError {
+		t.Fatalf("start_work failed: %s", resultText(r))
+	}
+
+	if got := queryMCPTaskStatus(t, db, taskID); got != taskStatusInProgress {
+		t.Errorf("task status: got %q, want in_progress", got)
+	}
+	if got := queryMCPTaskAssignee(t, db, taskID); got != "human" {
+		t.Errorf("task assignee: got %q, want stamped \"human\"", got)
+	}
+}
+
+// TestHandleStartWork_NoAssigneeAnywhere_TaskStaysPending is the end-to-end
+// counterpart of TestStartWork_NoAssigneeAnywhere_TaskStaysPending
+// (internal/worksession/store_test.go): calling start_work with no assignee
+// argument, linking a task_id that also has none, must leave that task
+// pending rather than silently flipping it to an ownerless in_progress row.
+func TestHandleStartWork_NoAssigneeAnywhere_TaskStaysPending(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	taskID := uuid.New().String()
+	insertMCPTestTask(t, db, "", taskID)
+
+	r := callStartWork(t, s, map[string]any{
+		"repo_name": "no-assignee-e2e-repo",
+		"title":     "t",
+		"goal":      "g",
+		"task_ids":  `["` + taskID + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("start_work failed: %s", resultText(r))
+	}
+
+	if got := queryMCPTaskStatus(t, db, taskID); got != "pending" {
+		t.Errorf("task status: got %q, want pending (must NOT flip with no assignee anywhere)", got)
+	}
+}

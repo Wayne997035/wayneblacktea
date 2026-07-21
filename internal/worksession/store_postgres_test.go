@@ -2,6 +2,7 @@ package worksession_test
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -91,6 +93,7 @@ func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	    status       TEXT    NOT NULL DEFAULT 'pending'
 	                         CHECK (status IN ('pending','in_progress','completed','cancelled')),
 	    priority     INTEGER NOT NULL DEFAULT 3,
+	    assignee     TEXT,
 	    artifact     TEXT,
 	    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -154,13 +157,27 @@ func applyWorkSessionSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// insertPgTestTask inserts a minimal tasks row for PG integration tests.
+// insertPgTestTask inserts a minimal tasks row (no assignee) for PG
+// integration tests.
 func insertPgTestTask(t *testing.T, pool *pgxpool.Pool, wsID uuid.UUID, taskID uuid.UUID) {
 	t.Helper()
 	const q = `INSERT INTO tasks (id, workspace_id, title, status, priority)
 		VALUES ($1,$2,'test task','pending',3)`
 	if _, err := pool.Exec(context.Background(), q, taskID, wsID); err != nil {
 		t.Fatalf("insertPgTestTask %s: %v", taskID, err)
+	}
+}
+
+// insertPgTestTaskWithAssignee inserts a tasks row pre-seeded with assignee —
+// the P6.8 sibling of insertPgTestTask, used to verify
+// batchMarkTasksInProgress preserves an existing assignee instead of
+// overwriting it with the session's.
+func insertPgTestTaskWithAssignee(t *testing.T, pool *pgxpool.Pool, wsID uuid.UUID, taskID uuid.UUID, assignee string) {
+	t.Helper()
+	const q = `INSERT INTO tasks (id, workspace_id, title, status, priority, assignee)
+		VALUES ($1,$2,'test task','pending',3,$3)`
+	if _, err := pool.Exec(context.Background(), q, taskID, wsID, assignee); err != nil {
+		t.Fatalf("insertPgTestTaskWithAssignee %s: %v", taskID, err)
 	}
 }
 
@@ -173,6 +190,18 @@ func queryPgTaskStatus(t *testing.T, pool *pgxpool.Pool, taskID uuid.UUID) strin
 		t.Fatalf("queryPgTaskStatus %s: %v", taskID, err)
 	}
 	return status
+}
+
+// queryPgTaskAssignee reads the assignee of a task from Postgres. Returns ""
+// for SQL NULL.
+func queryPgTaskAssignee(t *testing.T, pool *pgxpool.Pool, taskID uuid.UUID) string {
+	t.Helper()
+	row := pool.QueryRow(context.Background(), `SELECT COALESCE(assignee, '') FROM tasks WHERE id = $1`, taskID)
+	var assignee string
+	if err := row.Scan(&assignee); err != nil {
+		t.Fatalf("queryPgTaskAssignee %s: %v", taskID, err)
+	}
+	return assignee
 }
 
 // newPgStore returns a postgres-backed Store for the test pool.
@@ -543,7 +572,9 @@ func TestPgStore_Finish_NotFound(t *testing.T) {
 // ---- task auto-status PG tests ----
 
 // TestPgStartWork_AutoMarksTasksInProgress verifies that Create transitions
-// linked tasks from pending → in_progress in Postgres.
+// linked tasks from pending → in_progress in Postgres. Assignee is supplied
+// (P6.8 gate) so the transition is allowed to happen — the no-assignee reject
+// path is covered separately by TestPgStartWork_NoAssigneeAnywhere_TaskStaysPending.
 func TestPgStartWork_AutoMarksTasksInProgress(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
@@ -562,6 +593,7 @@ func TestPgStartWork_AutoMarksTasksInProgress(t *testing.T) {
 		Goal:        "verify in_progress auto-mark",
 		Source:      "test",
 		TaskIDs:     []uuid.UUID{taskA, taskB},
+		Assignee:    assigneeClaude,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -572,6 +604,135 @@ func TestPgStartWork_AutoMarksTasksInProgress(t *testing.T) {
 	}
 	if got := queryPgTaskStatus(t, pool, taskB); got != statusInProgress {
 		t.Errorf("taskB status: got %q, want in_progress", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P6.8 — assignee gate on the worksession-start in_progress transition (PG)
+// ---------------------------------------------------------------------------
+
+// TestPgStartWork_StampsAssigneeOntoUnassignedTask verifies a session-level
+// assignee is stamped onto a linked task that currently has none, at the
+// moment it flips pending → in_progress.
+func TestPgStartWork_StampsAssigneeOntoUnassignedTask(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-stamp-assignee-repo",
+		Title:       "PG stamp assignee",
+		Goal:        "verify assignee stamping",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA},
+		Assignee:    assigneeClaude,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress", got)
+	}
+	if got := queryPgTaskAssignee(t, pool, taskA); got != assigneeClaude {
+		t.Errorf("taskA assignee: got %q, want stamped %q", got, assigneeClaude)
+	}
+}
+
+// TestPgStartWork_PreservesExistingAssignee verifies a task that already has
+// an assignee keeps it — the session's assignee must NOT overwrite an
+// existing owner.
+func TestPgStartWork_PreservesExistingAssignee(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertPgTestTaskWithAssignee(t, pool, wsID, taskA, assigneeHuman)
+
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-preserve-assignee-repo",
+		Title:       "PG preserve assignee",
+		Goal:        "verify existing assignee preserved",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA},
+		Assignee:    assigneeClaude,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress", got)
+	}
+	if got := queryPgTaskAssignee(t, pool, taskA); got != assigneeHuman {
+		t.Errorf("taskA assignee: got %q, want preserved %q (not overwritten by session assignee)", got, assigneeHuman)
+	}
+}
+
+// TestPgStartWork_NoAssigneeAnywhere_TaskStaysPending verifies the reject
+// half of the P6.8 gate: a task with no assignee, linked to a session that
+// also supplies none, is excluded from the flip entirely and stays pending —
+// rather than becoming an ownerless in_progress row.
+func TestPgStartWork_NoAssigneeAnywhere_TaskStaysPending(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-no-assignee-anywhere-repo",
+		Title:       "PG no assignee anywhere",
+		Goal:        "verify reject-not-flip",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got != statusPending {
+		t.Errorf("taskA status: got %q, want pending (must NOT flip with no assignee anywhere)", got)
+	}
+	if got := queryPgTaskAssignee(t, pool, taskA); got != "" {
+		t.Errorf("taskA assignee: got %q, want empty", got)
+	}
+}
+
+// TestPgStore_Create_RejectsInvalidAssignee verifies the domain-layer
+// defense-in-depth re-validation (mirrors gtd.Store.CreateTask/UpdateTask):
+// an unrecognized Assignee value is rejected even though the MCP layer
+// (tools_worksession.go/tools_plan.go) already validates on the way in.
+func TestPgStore_Create_RejectsInvalidAssignee(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	_, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-invalid-assignee-repo",
+		Title:       "PG invalid assignee",
+		Goal:        "verify rejection",
+		Source:      "test",
+		Assignee:    "gemini",
+	})
+	if err == nil {
+		t.Fatal("Create with unrecognized assignee must error")
+	}
+	if !errors.Is(err, gtd.ErrInvalidAssignee) {
+		t.Errorf("expected gtd.ErrInvalidAssignee, got: %v", err)
 	}
 }
 

@@ -44,6 +44,7 @@ func TestMCPBeginTask_PersistsBranchAndPR(t *testing.T) {
 		"task_id":     id.String(),
 		"branch_name": "feature/foo",
 		"pr_url":      "https://github.com/Wayne997035/wayneblacktea/pull/999",
+		"assignee":    "claude",
 	})
 	if r.IsError {
 		t.Fatalf("begin_task error: %s", resultText(r))
@@ -125,10 +126,13 @@ func TestMCPBeginTask_RejectsInvalidPRURL(t *testing.T) {
 	}
 }
 
-// TestMCPBeginTask_NoLinkageArgs covers the legacy no-args call.
+// TestMCPBeginTask_NoLinkageArgs covers the legacy no-args call. seedTaskWithAssignee
+// gives the task an existing owner so the p6-7 in_progress guard is satisfied
+// without needing an assignee arg on this call (see
+// TestMCPBeginTask_RequiresAssignee below for the no-owner rejection case).
 func TestMCPBeginTask_NoLinkageArgs(t *testing.T) {
 	s := newTestWorkSessionServer(t)
-	id := seedTask(t, s)
+	id := seedTaskWithAssignee(t, s, "claude")
 
 	r := callBeginTask(t, s, map[string]any{"task_id": id.String()})
 	if r.IsError {
@@ -144,5 +148,79 @@ func TestMCPBeginTask_NoLinkageArgs(t *testing.T) {
 	}
 	if got.BranchName.Valid {
 		t.Errorf("branch_name should remain NULL when not supplied: got %+v", got.BranchName)
+	}
+}
+
+// TestMCPBeginTask_RequiresAssignee verifies begin_task rejects a task that
+// has no assignee (neither already on the row nor supplied this call) — the
+// p6-7 domain-layer gate applied to the begin_task path.
+func TestMCPBeginTask_RequiresAssignee(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s) // no assignee set
+
+	r := callBeginTask(t, s, map[string]any{"task_id": id.String()})
+	if !r.IsError {
+		t.Fatalf("begin_task on an unowned task with no assignee arg must error, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "assignee") {
+		t.Errorf("error should mention assignee, got: %s", resultText(r))
+	}
+
+	got, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != taskStatusPending {
+		t.Errorf("status changed to %q despite rejected begin_task", got.Status)
+	}
+}
+
+// TestMCPBeginTask_AssigneeArgPersistsAndUnblocks verifies that supplying
+// assignee on the begin_task call itself both persists the assignee and
+// satisfies the in_progress guard for a task that had no prior owner.
+func TestMCPBeginTask_AssigneeArgPersistsAndUnblocks(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s) // no assignee set
+
+	r := callBeginTask(t, s, map[string]any{"task_id": id.String(), "assignee": "codex"})
+	if r.IsError {
+		t.Fatalf("begin_task with assignee arg on unowned task must succeed, got: %s", resultText(r))
+	}
+
+	got, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != statusInProgress {
+		t.Errorf("status = %q, want in_progress", got.Status)
+	}
+	if !got.Assignee.Valid || got.Assignee.String != "codex" {
+		t.Errorf("assignee persisted = %+v, want normalized \"codex\"", got.Assignee)
+	}
+}
+
+// TestMCPBeginTask_InvalidAssignee verifies begin_task rejects an
+// unrecognized assignee value via the same NormalizeActor allowlist used by
+// add_task/update_task.
+func TestMCPBeginTask_InvalidAssignee(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	r := callBeginTask(t, s, map[string]any{"task_id": id.String(), "assignee": "gemini"})
+	if !r.IsError {
+		t.Fatalf("begin_task with unrecognized assignee must error, got: %s", resultText(r))
+	}
+	for _, canonical := range gtd.CanonicalActors {
+		if !strings.Contains(resultText(r), canonical) {
+			t.Errorf("error should list canonical value %q, got: %s", canonical, resultText(r))
+		}
+	}
+
+	got, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != taskStatusPending {
+		t.Errorf("status changed to %q despite rejected assignee", got.Status)
 	}
 }

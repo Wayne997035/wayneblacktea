@@ -1,0 +1,29 @@
+[
+  {
+    "id": "learn-001-repeated-success-becomes-candidate",
+    "outcomes": [
+      {"status": "success", "repo": "wayneblacktea", "files": ["internal/evals/evals.go"], "procedure": "add-eval-harness-scaffold"},
+      {"status": "success", "repo": "wayneblacktea", "files": ["internal/evals/fixture_loader.go"], "procedure": "add-eval-harness-scaffold"},
+      {"status": "success", "repo": "wayneblacktea", "files": ["internal/evals/provider_eval.go"], "procedure": "add-eval-harness-scaffold"}
+    ],
+    "skill_name": "add-eval-harness-scaffold",
+    "expect_candidate": true
+  },
+  {
+    "id": "learn-002-single-success-not-enough",
+    "outcomes": [
+      {"status": "success", "repo": "wayneblacktea", "files": ["internal/scheduler/behavior_governance.go"], "procedure": "apply-behavior-rule-outcome"}
+    ],
+    "skill_name": "apply-behavior-rule-outcome",
+    "expect_candidate": false
+  },
+  {
+    "id": "learn-003-failure-lowers-ranking-not-candidate",
+    "outcomes": [
+      {"status": "success", "repo": "wayneblacktea", "files": ["internal/outcome/store.go"], "procedure": "prune-old-outcomes"},
+      {"status": "failure", "repo": "wayneblacktea", "files": ["internal/outcome/store.go"], "procedure": "prune-old-outcomes"}
+    ],
+    "skill_name": "prune-old-outcomes",
+    "expect_candidate": false
+  }
+]

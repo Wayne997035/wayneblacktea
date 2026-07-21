@@ -243,6 +243,23 @@ type CreateParams struct {
 	// BranchName is the git branch this session is working on (wbt-2.0 P2.1).
 	// Optional; validated with CheckControlChars (single-line, no newlines).
 	BranchName *string
+	// Assignee is the canonical actor initiating this session (P6.8 — closes
+	// the sixth in_progress transition path that P6.7's domain-layer gate
+	// (gtd.RequireAssigneeForInProgress) cannot reach: batchMarkTasksInProgress
+	// is a raw batch UPDATE against the tasks table that bypasses gtd.Store
+	// entirely). Validated via gtd.NormalizeActor by both Store implementations
+	// before use (defense in depth — mirrors gtd.Store.CreateTask/UpdateTask
+	// re-validating despite the MCP layer already validating on the way in).
+	// When a linked task_id already has a non-empty assignee, that value is
+	// kept and this field is ignored for that task. When a linked task_id has
+	// no assignee, this value is stamped onto it at the moment it flips from
+	// pending to in_progress; if this field is ALSO empty, that task_id is
+	// excluded from the flip and stays pending — the batch-update equivalent
+	// of RequireAssigneeForInProgress rejecting the transition, rather than
+	// silently producing an ownerless in_progress row. Empty is allowed at
+	// the session level: a session started with no assignee simply defers to
+	// whatever each linked task already has.
+	Assignee string
 }
 
 // CheckpointParams holds the inputs for checkpointing a work session.

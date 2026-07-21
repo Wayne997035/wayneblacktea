@@ -18,6 +18,9 @@ func seedPGTask(t *testing.T, store *gtd.Store, due *time.Time, status string) *
 	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
 		Title:   "pg-task-" + uuid.NewString()[:8],
 		DueDate: due,
+		// Assignee always set: some callers transition to in_progress below,
+		// which requires an owner (P6.7 domain-layer gate).
+		Assignee: "claude",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -37,6 +40,9 @@ func seedPGTaskAndReturn(t *testing.T, store *gtd.Store, due *time.Time, status 
 	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
 		Title:   "pg-task-" + uuid.NewString()[:8],
 		DueDate: due,
+		// Assignee always set: some callers transition to in_progress below,
+		// which requires an owner (P6.7 domain-layer gate).
+		Assignee: "claude",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -59,7 +65,7 @@ func TestPGStore_TasksFiltered_StatusActive_Default(t *testing.T) {
 
 	due := time.Now().Add(24 * time.Hour)
 	pendingID := seedPGTaskAndReturn(t, store, &due, "pending")
-	inProgID := seedPGTaskAndReturn(t, store, &due, "in_progress")
+	inProgID := seedPGTaskAndReturn(t, store, &due, statusInProgress)
 	_ = seedPGTaskAndReturn(t, store, &due, "completed")
 	_ = seedPGTaskAndReturn(t, store, &due, "cancelled")
 
@@ -71,7 +77,7 @@ func TestPGStore_TasksFiltered_StatusActive_Default(t *testing.T) {
 	found := make(map[uuid.UUID]bool)
 	for _, tk := range tasks {
 		found[tk.ID] = true
-		if tk.Status != statusPending && tk.Status != "in_progress" {
+		if tk.Status != statusPending && tk.Status != statusInProgress {
 			t.Errorf("default active filter returned task with status %q", tk.Status)
 		}
 	}

@@ -249,8 +249,8 @@ func TestGTDStore_WeeklyProgress_AllStatuses(t *testing.T) {
 		t.Fatalf("CreateTask pending: %v", err)
 	}
 
-	// In progress
-	t2, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "in_progress", Priority: 3})
+	// In progress (assignee required by the P6.7 domain-layer gate)
+	t2, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "in_progress", Priority: 3, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask in_progress: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestGTDStore_LogActivityAndUpdateStatus(t *testing.T) {
 		t.Fatalf("LogActivity: %v", err)
 	}
 
-	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "p", Priority: 3})
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "p", Priority: 3, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -1517,7 +1517,7 @@ func TestGTDStore_UpdateTask_AllFields(t *testing.T) {
 	newDesc := "new desc"
 	newPrio := int32(1)
 	newImp := int16(2)
-	newAssignee := "wayne"
+	newAssignee := "human" // must be a canonical actor (gtd.NormalizeActor allowlist)
 	due := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	newCtx := "discussion context"
 	newStatus := string(gtd.TaskStatusInProgress)
@@ -1740,7 +1740,7 @@ func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
 	todayDue := now.Add(time.Hour)
 	s := openMem(t, uuid.New().String())
 
-	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "in-progress-task", Priority: 2, DueDate: &todayDue})
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "in-progress-task", Priority: 2, DueDate: &todayDue, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -1772,7 +1772,7 @@ func TestGTDStore_UpdateTaskStatus_WorkspaceIsolation(t *testing.T) {
 	t.Cleanup(func() { _ = dbA.Close() })
 	storeA := sqlite.NewGTDStore(dbA)
 
-	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a task", Priority: 3})
+	task, err := storeA.CreateTask(ctx, gtd.CreateTaskParams{Title: "ws-a task", Priority: 3, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}

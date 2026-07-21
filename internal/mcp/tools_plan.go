@@ -32,6 +32,12 @@ func (s *Server) registerPlanTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 		mcp.WithString("repo_name", mcp.Description("Repository name (optional)")),
+		mcp.WithString("assignee", mcp.Description(
+			"Canonical actor confirming/executing this plan (one of: claude, codex, human — or a recognized "+
+				"alias). Stamped onto any phase task that currently has no assignee when it flips to in_progress "+
+				"via the created work session. Optional, but a phase task with neither an existing assignee nor "+
+				"this value stays pending instead of flipping (P6.8 assignee gate).",
+		)),
 	), s.handleConfirmPlan)
 }
 
@@ -81,6 +87,15 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	}
 	repoName := stringArg(args, "repo_name")
 
+	// P6.8: assignee is optional but, when present, MUST resolve through
+	// gtd.NormalizeActor's whitelist (backend-security-design.md §2.1 — LLM
+	// tool input is adversarial). Same resolveAssigneeArg helper start_work
+	// and add_task/update_task already use.
+	assignee, assigneeErrMsg := resolveAssigneeArg(args)
+	if assigneeErrMsg != "" {
+		return mcp.NewToolResultError(assigneeErrMsg), nil
+	}
+
 	// Create phase tasks and collect their UUIDs for the work session link.
 	createdTasks, taskIDs, err := s.createPhaseTasksWithIDs(ctx, phases, projectID)
 	if err != nil {
@@ -94,7 +109,7 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 
 	// Always create an in_progress work session (D2: no bool flag).
 	// Best-effort: work session failure must not block the tasks/decisions result.
-	sessionID := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs)
+	sessionID := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs, assignee)
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Plan confirmed. Tasks created (%d):\n", len(createdTasks))
@@ -178,6 +193,7 @@ func (s *Server) createWorkSessionForPlan(
 	projectID *uuid.UUID,
 	phases []phaseInput,
 	taskIDs []uuid.UUID,
+	assignee string,
 ) *string {
 	if s.workSession == nil {
 		return nil
@@ -214,6 +230,7 @@ func (s *Server) createWorkSessionForPlan(
 		Goal:        goal,
 		Source:      "confirm_plan",
 		TaskIDs:     taskIDs,
+		Assignee:    assignee,
 	})
 	if err != nil {
 		// ErrAlreadyActive: a session is already in_progress for this repo.

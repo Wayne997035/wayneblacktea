@@ -229,3 +229,58 @@ func TestHandleConfirmPlan_EmptyPhaseTitleSkipped(t *testing.T) {
 		t.Errorf("empty-title phase should be skipped; expected 2 tasks: %s", text)
 	}
 }
+
+// ---- P6.8: assignee gate on confirm_plan's created work session ----
+
+// TestHandleConfirmPlan_RejectsInvalidAssignee verifies confirm_plan's
+// assignee argument is validated through gtd.NormalizeActor's whitelist
+// before it can reach worksession.CreateParams.Assignee.
+func TestHandleConfirmPlan_RejectsInvalidAssignee(t *testing.T) {
+	s := newMinimalPlanServer(t)
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"Do A","description":"A","priority":1}]`,
+		"repo_name": "invalid-assignee-plan-repo",
+		"assignee":  "gemini",
+	})
+	if !r.IsError {
+		t.Fatal("expected error for unrecognized assignee")
+	}
+	if !strings.Contains(resultText(r), "recognized actor") {
+		t.Errorf("error should mention the allowlist, got: %s", resultText(r))
+	}
+}
+
+// TestHandleConfirmPlan_StampsAssigneeOntoPhaseTask is the end-to-end (MCP
+// request → handler → store) regression test for the P6.8 gate on
+// confirm_plan: the phase task created and linked into the work session has
+// no assignee at creation time (createPhaseTasksWithIDs does not set one), so
+// it must be stamped with confirm_plan's assignee argument when the session
+// flips it to in_progress.
+func TestHandleConfirmPlan_StampsAssigneeOntoPhaseTask(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"Do A","description":"A","priority":1}]`,
+		"repo_name": "stamp-assignee-plan-repo",
+		"assignee":  "human",
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "Work session started") {
+		t.Fatalf("expected a work session to be created: %s", text)
+	}
+
+	var taskID string
+	row := db.QueryRowContext(context.Background(), `SELECT id FROM tasks WHERE title = ?1`, "Do A")
+	if err := row.Scan(&taskID); err != nil {
+		t.Fatalf("query created task: %v", err)
+	}
+
+	if got := queryMCPTaskStatus(t, db, taskID); got != taskStatusInProgress {
+		t.Errorf("phase task status: got %q, want in_progress", got)
+	}
+	if got := queryMCPTaskAssignee(t, db, taskID); got != "human" {
+		t.Errorf("phase task assignee: got %q, want stamped \"human\"", got)
+	}
+}

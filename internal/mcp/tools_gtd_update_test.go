@@ -149,7 +149,10 @@ func TestUpdateTask_InvalidStatusReturnsError(t *testing.T) {
 func TestUpdateTask_StatusToInProgress(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
-	r := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "status": "in_progress"})
+	// p6-6: in_progress now requires an assignee (this call supplies one
+	// since the seeded task has none) — see
+	// tools_gtd_assignee_test.go for the dedicated enforcement tests.
+	r := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "status": "in_progress", "assignee": "claude"})
 	if r.IsError {
 		t.Fatalf("status=in_progress must succeed, got: %s", resultText(r))
 	}

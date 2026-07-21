@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -153,6 +154,20 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
 		return nil, err
 	}
 
+	// P6.8: resolve p.Assignee through gtd.NormalizeActor before it can reach
+	// batchMarkTasksInProgress's stamping below — defense in depth alongside
+	// the MCP-layer validation in tools_worksession.go/tools_plan.go (mirrors
+	// gtd.Store.CreateTask/UpdateTask re-validating despite the MCP layer
+	// already having validated on the way in). Empty stays empty.
+	sessionAssignee := strings.TrimSpace(p.Assignee)
+	if sessionAssignee != "" {
+		normalized, err := gtd.NormalizeActor(sessionAssignee)
+		if err != nil {
+			return nil, fmt.Errorf("worksession.Create: %w", err)
+		}
+		sessionAssignee = normalized
+	}
+
 	// Workspace scoping: always use the store-configured workspace, never
 	// trust the value from tool input.
 	wsID := p.WorkspaceID
@@ -221,9 +236,16 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
 	}
 
 	// Batch-update linked tasks to in_progress after the session tx commits.
-	// Non-fatal: session is committed; task status update is best-effort.
+	// Non-fatal: session is committed; task status update is best-effort —
+	// but the error is still observed and logged (P6.8 fix: this used to be
+	// `_ = s.batchMarkTasksInProgress(...)`, silently discarding real
+	// execution errors such as a lost DB connection; now mirrors the SQLite
+	// store's Create, which already logged this error correctly).
 	if len(p.TaskIDs) > 0 {
-		_ = s.batchMarkTasksInProgress(ctx, wsID, p.TaskIDs)
+		if err := s.batchMarkTasksInProgress(ctx, wsID, p.TaskIDs, sessionAssignee); err != nil {
+			slog.Warn("worksession.Create: batchMarkTasksInProgress failed (non-fatal)",
+				"session_id", id, "err", err)
+		}
 	}
 
 	return sess, nil
@@ -233,24 +255,43 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Session, error) {
 // currently 'pending'. It is idempotent: tasks already in_progress are
 // untouched. Workspace boundary is enforced by the WHERE clause so a
 // compromised caller cannot update tasks belonging to a different workspace.
-func (s *Store) batchMarkTasksInProgress(ctx context.Context, wsID uuid.UUID, taskIDs []uuid.UUID) error {
+//
+// P6.8 assignee gate: sessionAssignee (already gtd.NormalizeActor'd by Create,
+// or "") is stamped onto a task's assignee column ONLY when that task
+// currently has none — COALESCE(NULLIF(assignee,”), NULLIF($2,”)) keeps an
+// existing assignee untouched and falls back to sessionAssignee otherwise.
+// The WHERE clause's trailing predicate excludes any row that would end up
+// with neither (task has no assignee AND sessionAssignee is empty) — that
+// task_id stays 'pending' instead of flipping to an ownerless in_progress
+// row. TRIM(assignee) matches gtd.RequireAssigneeForInProgress's
+// strings.TrimSpace, so a whitespace-only assignee (persistable via the HTTP
+// CreateTask path, which skips NormalizeActor when TrimSpace is empty) is
+// treated as empty here too — no divergence (P6.8 round-3 security fix).
+// This is the batch-update equivalent of
+// gtd.RequireAssigneeForInProgress: reject the transition rather than
+// silently allow it, applied per-row since this is a bulk operation across
+// potentially many task_ids with different existing-assignee states.
+func (s *Store) batchMarkTasksInProgress(ctx context.Context, wsID uuid.UUID, taskIDs []uuid.UUID, sessionAssignee string) error {
 	if len(taskIDs) == 0 {
 		return nil
 	}
 	// Build $N placeholders for the IN clause.
-	// $1 = workspace_id, $2…$N+1 = task IDs.
-	idArgs := make([]any, 0, len(taskIDs)+1)
-	idArgs = append(idArgs, wsID)
+	// $1 = workspace_id, $2 = session assignee, $3…$N+2 = task IDs.
+	idArgs := make([]any, 0, len(taskIDs)+2)
+	idArgs = append(idArgs, wsID, sessionAssignee)
 	placeholders := make([]string, len(taskIDs))
 	for i, id := range taskIDs {
 		idArgs = append(idArgs, id)
-		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		placeholders[i] = fmt.Sprintf("$%d", i+3)
 	}
 	q := fmt.Sprintf(`UPDATE tasks
-		SET status = 'in_progress', updated_at = NOW()
+		SET status = 'in_progress',
+		    assignee = COALESCE(NULLIF(TRIM(assignee), ''), NULLIF($2, '')),
+		    updated_at = NOW()
 		WHERE id IN (%s)
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		  AND status = 'pending'`,
+		  AND status = 'pending'
+		  AND (NULLIF(TRIM(assignee), '') IS NOT NULL OR NULLIF($2, '') IS NOT NULL)`,
 		strings.Join(placeholders, ","))
 	_, err := s.pool.Exec(ctx, q, idArgs...)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -494,6 +495,22 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 	if kind == "" {
 		kind = "general"
 	}
+
+	// Domain-layer gate (P6.7, sunk from the MCP-only guard in P6.6): any
+	// non-empty assignee MUST resolve through the canonical actor allowlist
+	// before it reaches storage, regardless of caller (MCP, HTTP, or a
+	// WithTx transactional materialiser). Empty stays empty (unowned task —
+	// new tasks always insert as 'pending' below, so no in_progress guard
+	// applies here).
+	assignee := p.Assignee
+	if strings.TrimSpace(assignee) != "" {
+		normalized, err := NormalizeActor(assignee)
+		if err != nil {
+			return nil, fmt.Errorf("creating task %q: %w", p.Title, err)
+		}
+		assignee = normalized
+	}
+
 	const q = `INSERT INTO tasks
 		(project_id, title, description, status, priority, assignee, due_date, importance, context, kind,
 		 branch_name, pr_url, commit_shas, workspace_id, vision_item_id)
@@ -503,7 +520,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		          branch_name, pr_url, commit_shas, vision_item_id`
 	rows, err := s.dbtx.Query(
 		ctx, q,
-		pgconv.ToUUID(p.ProjectID), p.Title, pgconv.ToText(p.Description), priority, pgconv.ToText(p.Assignee),
+		pgconv.ToUUID(p.ProjectID), p.Title, pgconv.ToText(p.Description), priority, pgconv.ToText(assignee),
 		pgconv.ToTimestamptz(p.DueDate), toInt2(p.Importance), pgconv.ToText(p.Context), kind,
 		pgconv.ToText(coalesceStringPtr(p.BranchName)), pgconv.ToText(coalesceStringPtr(p.PRUrl)),
 		s.workspaceID, pgconv.ToUUID(p.VisionItemID),
@@ -675,6 +692,18 @@ func (s *Store) BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 		return existing, nil
 	}
 
+	// Domain-layer gate (P6.7): BeginTask takes no assignee argument, so the
+	// only source of truth is the existing row — MCP begin_task persists a
+	// caller-supplied assignee via UpdateTask BEFORE calling BeginTask (see
+	// handleBeginTask) precisely so it shows up here.
+	existingAssignee := ""
+	if existing.Assignee.Valid {
+		existingAssignee = existing.Assignee.String
+	}
+	if err := RequireAssigneeForInProgress(existingAssignee, TaskStatusInProgress); err != nil {
+		return nil, fmt.Errorf("beginning task %s: %w", id, err)
+	}
+
 	beginner, ok := s.dbtx.(txBeginner)
 	if !ok {
 		return nil, fmt.Errorf("begin task %s: dbtx does not support Begin", id)
@@ -776,6 +805,25 @@ func (s *Store) CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, e
 
 // UpdateTaskStatus sets the status of a task by ID.
 func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error) {
+	// Domain-layer gate (P6.7): UpdateTaskStatus takes no assignee argument,
+	// so an existing-row read is the only way to check "does this task have
+	// an owner" before allowing the in_progress transition. Skipped entirely
+	// for any other target status — no extra read on the hot pending/
+	// completed/cancelled paths.
+	if status == TaskStatusInProgress {
+		existing, err := s.getTaskByID(ctx, id)
+		if err != nil {
+			return nil, err // ErrNotFound already wrapped
+		}
+		existingAssignee := ""
+		if existing.Assignee.Valid {
+			existingAssignee = existing.Assignee.String
+		}
+		if err := RequireAssigneeForInProgress(existingAssignee, status); err != nil {
+			return nil, fmt.Errorf("updating task %s status: %w", id, err)
+		}
+	}
+
 	row, err := s.q.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
 		ID:          id,
 		Status:      string(status),
@@ -845,6 +893,38 @@ func coalesceInt32(ptr *int32, fallback int32) int32 {
 	return fallback
 }
 
+// resolveAssigneeForUpdate merges and validates the assignee column for an
+// UpdateTask write in one pass: p.Assignee == nil preserves existing; a
+// non-empty NEW value must resolve through NormalizeActor (P6.7 domain-layer
+// gate) before merging in; empty string is the explicit-clear case. The
+// merged result is then checked against RequireAssigneeForInProgress using
+// status (already merged by the caller), rejecting a write that would leave
+// the row in_progress with no resolved assignee. Extracted from UpdateTask —
+// which pre-reads `existing` and merges every other field inline — to keep
+// its cyclomatic complexity within the gocyclo budget.
+func resolveAssigneeForUpdate(p *UpdateTaskParams, existingAssignee pgtype.Text, status string) (pgtype.Text, error) {
+	assignee := existingAssignee
+	if p.Assignee != nil {
+		newAssignee := *p.Assignee
+		if strings.TrimSpace(newAssignee) != "" {
+			normalized, err := NormalizeActor(newAssignee)
+			if err != nil {
+				return pgtype.Text{}, err
+			}
+			newAssignee = normalized
+		}
+		assignee = pgconv.ToText(newAssignee)
+	}
+	mergedAssignee := ""
+	if assignee.Valid {
+		mergedAssignee = assignee.String
+	}
+	if err := RequireAssigneeForInProgress(mergedAssignee, TaskStatus(status)); err != nil {
+		return pgtype.Text{}, err
+	}
+	return assignee, nil
+}
+
 // UpdateTask performs a partial update of a task by ID. nil fields in p are
 // preserved from the existing row (no null-clear support). Pre-reads the existing
 // task to fill nil params, then executes a single UPDATE RETURNING.
@@ -874,13 +954,6 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		importance = existing.Importance
 	}
 
-	var assignee pgtype.Text
-	if p.Assignee != nil {
-		assignee = pgconv.ToText(*p.Assignee)
-	} else {
-		assignee = existing.Assignee
-	}
-
 	var dueDate pgtype.Timestamptz
 	if p.DueDate != nil {
 		dueDate = pgconv.ToTimestamptz(p.DueDate)
@@ -900,6 +973,11 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		status = *p.Status
 	} else {
 		status = existing.Status
+	}
+
+	assignee, err := resolveAssigneeForUpdate(&p, existing.Assignee, status)
+	if err != nil {
+		return nil, fmt.Errorf("updating task %s: %w", id, err)
 	}
 
 	var branchName pgtype.Text

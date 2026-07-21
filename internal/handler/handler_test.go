@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -466,6 +467,43 @@ func TestGTDHandler_CreateTask_Validation(t *testing.T) {
 			}
 			if tc.wantWarningsEmpty && hdr != "" {
 				t.Errorf("expected no X-Vagueness-Warnings header, got: %s", hdr)
+			}
+		})
+	}
+}
+
+// TestGTDHandler_CreateTask_AssigneeErrorMapping verifies the p6-7 HTTP
+// error-mapping change: gtd.ErrInvalidAssignee (returned by the domain-layer
+// gate now embedded in CreateTask on both backends) surfaces as 400, not the
+// generic 500 every other store error maps to. The fake store here stands in
+// for the real Store/GTDStore — the domain-layer gate itself is covered by
+// TestStore_CreateTask_InvalidAssignee_PG / TestGTDStore_CreateTask_InvalidAssignee_SQLite.
+func TestGTDHandler_CreateTask_AssigneeErrorMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "invalid assignee → 400",
+			store:    &fakeGTDStore{err: fmt.Errorf("creating task %q: %w", "x", gtd.ErrInvalidAssignee)},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "unrelated store error still → 500",
+			store:    &fakeGTDStore{err: errors.New("db write fail")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.POST("/api/tasks", h.CreateTask)
+			rec := performRequest(e, http.MethodPost, "/api/tasks", `{"title":"x","assignee":"gemini"}`)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
 		})
 	}
@@ -1131,6 +1169,56 @@ func TestGTDHandler_UpdateTask(t *testing.T) {
 			h := handler.NewGTDHandler(tc.store)
 			e.PATCH("/api/tasks/:id", h.UpdateTask)
 			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+tc.paramID, tc.body)
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestGTDHandler_UpdateTask_AssigneeErrorMapping verifies the p6-7 HTTP
+// error-mapping change: gtd.ErrInvalidAssignee and
+// gtd.ErrAssigneeRequiredForInProgress (both returned by the domain-layer
+// gate now embedded in UpdateTask on both backends) surface as 400, not the
+// generic 500 every other store error maps to. errors.Is-based matching (not
+// string matching) proves the mapping works even through fmt.Errorf %w
+// wrapping, matching how the real Store wraps these errors.
+func TestGTDHandler_UpdateTask_AssigneeErrorMapping(t *testing.T) {
+	id := uuid.New()
+
+	cases := []struct {
+		name     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "invalid assignee → 400",
+			store:    &fakeGTDStore{err: fmt.Errorf("updating task %s: %w", id, gtd.ErrInvalidAssignee)},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "in_progress requires assignee → 400",
+			store:    &fakeGTDStore{err: fmt.Errorf("updating task %s: %w", id, gtd.ErrAssigneeRequiredForInProgress)},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "not found still takes precedence → 404",
+			store:    &fakeGTDStore{err: gtd.ErrNotFound},
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name:     "unrelated store error still → 500",
+			store:    &fakeGTDStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.PATCH("/api/tasks/:id", h.UpdateTask)
+			rec := performRequest(e, http.MethodPatch, "/api/tasks/"+id.String(), `{"status":"in_progress"}`)
 			if rec.Code != tc.wantCode {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}

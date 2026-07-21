@@ -314,6 +314,9 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 
 	task, err := h.store.CreateTask(c.Request().Context(), buildCreateTaskParams(&req, kind))
 	if err != nil {
+		if errors.Is(err, gtd.ErrInvalidAssignee) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
+		}
 		c.Logger().Errorf("CreateTask: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
@@ -576,6 +579,9 @@ func (h *GTDHandler) UpdateTask(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, gtd.ErrNotFound) {
 			return c.JSON(http.StatusNotFound, errResp("task not found"))
+		}
+		if errors.Is(err, gtd.ErrInvalidAssignee) || errors.Is(err, gtd.ErrAssigneeRequiredForInProgress) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
 		}
 		c.Logger().Errorf("UpdateTask: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))

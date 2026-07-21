@@ -81,6 +81,12 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 		mcp.WithString("source", mcp.Description("Source trigger: 'manual', 'confirm_plan', 'hook', or 'other'. Defaults to 'manual'.")),
 		mcp.WithString("branch_name", mcp.Description("Git branch this session is working on (optional)"), mcp.MaxLength(maxBranchNameLen)),
+		mcp.WithString("assignee", mcp.Description(
+			"Canonical actor initiating this session (one of: claude, codex, human — or a recognized alias). "+
+				"Stamped onto any linked task_id that currently has no assignee when it flips to in_progress. "+
+				"Optional, but a linked task_id with neither an existing assignee nor this value stays pending "+
+				"instead of flipping (P6.8 assignee gate).",
+		)),
 	), s.handleStartWork)
 
 	ms.AddTool(mcp.NewTool(
@@ -310,6 +316,15 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		return errRes, nil
 	}
 
+	// P6.8: assignee is optional but, when present, MUST resolve through
+	// gtd.NormalizeActor's whitelist (backend-security-design.md §2.1 — LLM
+	// tool input is adversarial). resolveAssigneeArg is the same helper
+	// add_task/update_task already use (internal/mcp/tools_gtd.go).
+	assignee, assigneeErrMsg := resolveAssigneeArg(args)
+	if assigneeErrMsg != "" {
+		return mcp.NewToolResultError(assigneeErrMsg), nil
+	}
+
 	sess, err := s.workSession.Create(ctx, worksession.CreateParams{
 		WorkspaceID: s.workspaceUUIDVal(),
 		RepoName:    repoName,
@@ -319,6 +334,7 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		Source:      source,
 		TaskIDs:     taskIDs,
 		BranchName:  branchNamePtr,
+		Assignee:    assignee,
 	})
 	if err != nil {
 		if errors.Is(err, worksession.ErrAlreadyActive) {

@@ -58,21 +58,83 @@ func branchNameHasControlChars(s string) bool {
 	return false
 }
 
+// resolveAssigneeArg reads the "assignee" arg and, when non-empty, resolves
+// it to a canonical actor via gtd.NormalizeActor. Empty input is allowed
+// (many tasks start unowned) and resolves to "". Returns a non-empty error
+// message on validation failure — whitelist, not blacklist
+// (backend-security-design.md §2.1: LLM tool input is adversarial; an
+// unvalidated assignee corrupts the "who is working on what" audit trail).
+func resolveAssigneeArg(args map[string]any) (string, string) {
+	raw := stringArg(args, "assignee")
+	if raw == "" {
+		return "", ""
+	}
+	normalized, err := gtd.NormalizeActor(raw)
+	if err != nil {
+		return "", err.Error()
+	}
+	return normalized, ""
+}
+
+// applyProjectIDArg parses the optional "project_id" arg and sets
+// p.ProjectID when present. Returns a non-empty error message on an invalid
+// UUID. Extracted from handleAddTask to keep its cyclomatic complexity
+// within the gocyclo budget (mirrors the applyBranchAndPR pattern below).
+func applyProjectIDArg(args map[string]any, p *gtd.CreateTaskParams) string {
+	raw := stringArg(args, "project_id")
+	if raw == "" {
+		return ""
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return errMsgInvalidProjectIDUUID
+	}
+	p.ProjectID = &id
+	return ""
+}
+
+// parseImportanceArg extracts and validates the optional "importance" arg
+// (1=high, 2=med, 3=low), shared by add_task and update_task so the range
+// check isn't duplicated. Returns (nil, "") when the arg is absent, or a
+// non-empty error message on an out-of-range value.
+func parseImportanceArg(args map[string]any) (*int16, string) {
+	imp := numberArg(args, "importance")
+	if imp <= 0 {
+		return nil, ""
+	}
+	if imp > 3 {
+		return nil, "importance must be 1, 2, or 3"
+	}
+	v := int16(imp)
+	return &v, ""
+}
+
+// errMsgBranchNameTooLong, errMsgBranchNameControlChars and errMsgInvalidPRURL
+// are the shared validation messages for branch_name/pr_url, hoisted to
+// package-level constants because add_task (applyBranchAndPR), update_task
+// (applyBranchAndPRUpdate), and begin_task (validateBeginTaskLinkageArgs)
+// all enforce the identical rule (goconst).
+const (
+	errMsgBranchNameTooLong      = "branch_name must not exceed 255 characters"
+	errMsgBranchNameControlChars = "branch_name must not contain control characters"
+	errMsgInvalidPRURL           = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+)
+
 // applyBranchAndPR validates and sets branch_name and pr_url on a CreateTaskParams.
 // Returns a non-empty error message on validation failure.
 func applyBranchAndPR(args map[string]any, p *gtd.CreateTaskParams) string {
 	if bn := stringArg(args, "branch_name"); bn != "" {
 		if len(bn) > 255 {
-			return "branch_name must not exceed 255 characters"
+			return errMsgBranchNameTooLong
 		}
 		if branchNameHasControlChars(bn) {
-			return "branch_name must not contain control characters"
+			return errMsgBranchNameControlChars
 		}
 		p.BranchName = &bn
 	}
 	if pu := stringArg(args, "pr_url"); pu != "" {
 		if !githubPRURLRe.MatchString(pu) {
-			return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+			return errMsgInvalidPRURL
 		}
 		p.PRUrl = &pu
 	}
@@ -87,10 +149,10 @@ func applyBranchAndPRUpdate(args map[string]any, p *gtd.UpdateTaskParams) string
 		bn := stringArg(args, "branch_name")
 		if bn != "" {
 			if len(bn) > 255 {
-				return "branch_name must not exceed 255 characters"
+				return errMsgBranchNameTooLong
 			}
 			if branchNameHasControlChars(bn) {
-				return "branch_name must not contain control characters"
+				return errMsgBranchNameControlChars
 			}
 		}
 		p.BranchName = &bn
@@ -98,7 +160,7 @@ func applyBranchAndPRUpdate(args map[string]any, p *gtd.UpdateTaskParams) string
 	if _, ok := args["pr_url"]; ok {
 		pu := stringArg(args, "pr_url")
 		if pu != "" && !githubPRURLRe.MatchString(pu) {
-			return "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
+			return errMsgInvalidPRURL
 		}
 		p.PRUrl = &pu
 	}
@@ -346,6 +408,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("pr_url",
 			mcp.Description("Optional GitHub PR URL to persist on the task (e.g. https://github.com/org/repo/pull/123). "+
 				"Pass this once the PR is open so reconcile_merged_prs can match on merge.")),
+		mcp.WithString("assignee",
+			mcp.Description("Who is starting this task. Required unless the task already has an assignee — "+
+				"a task cannot enter in_progress without a known owner (p6-7).")),
 	), s.handleBeginTask)
 }
 
@@ -763,28 +828,27 @@ func (s *Server) handleAddTask(ctx context.Context, req mcp.CallToolRequest) (*m
 		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
 	}
 
+	assignee, assigneeErr := resolveAssigneeArg(args)
+	if assigneeErr != "" {
+		return mcp.NewToolResultError(assigneeErr), nil
+	}
+
 	p := gtd.CreateTaskParams{
 		Title:       title,
 		Description: description,
-		Assignee:    stringArg(args, "assignee"),
+		Assignee:    assignee,
 		Priority:    numberArg(args, "priority"),
 		Context:     stringArg(args, "context"),
 		Kind:        kind,
 	}
-	if raw := stringArg(args, "project_id"); raw != "" {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return mcp.NewToolResultError(errMsgInvalidProjectIDUUID), nil
-		}
-		p.ProjectID = &id
+	if msg := applyProjectIDArg(args, &p); msg != "" {
+		return mcp.NewToolResultError(msg), nil
 	}
-	if imp := numberArg(args, "importance"); imp > 0 {
-		if imp < 1 || imp > 3 {
-			return mcp.NewToolResultError("importance must be 1, 2, or 3"), nil
-		}
-		v := int16(imp)
-		p.Importance = &v
+	imp, impErr := parseImportanceArg(args)
+	if impErr != "" {
+		return mcp.NewToolResultError(impErr), nil
 	}
+	p.Importance = imp
 	if msg := applyBranchAndPR(args, &p); msg != "" {
 		return mcp.NewToolResultError(msg), nil
 	}
@@ -974,16 +1038,18 @@ func parseUpdateTaskArgs(args map[string]any) (gtd.UpdateTaskParams, string) {
 		v := int32(raw)
 		p.Priority = &v
 	}
-	if raw := numberArg(args, "importance"); raw > 0 {
-		if raw > 3 {
-			return p, "importance must be 1, 2, or 3"
-		}
-		v := int16(raw)
-		p.Importance = &v
+	imp, impErr := parseImportanceArg(args)
+	if impErr != "" {
+		return p, impErr
 	}
+	p.Importance = imp
 
 	if assignee := stringArg(args, "assignee"); assignee != "" {
-		p.Assignee = &assignee
+		normalized, normErr := gtd.NormalizeActor(assignee)
+		if normErr != nil {
+			return p, normErr.Error()
+		}
+		p.Assignee = &normalized
 	}
 	if rawDue := stringArg(args, "due_date"); rawDue != "" {
 		t, parseErr := time.Parse(time.RFC3339, rawDue)
@@ -1012,6 +1078,35 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 		p.BranchName == nil && p.PRUrl == nil && p.CommitSHAs == nil
 }
 
+// requireAssigneeForInProgress enforces that a task cannot transition to
+// in_progress without a known owner (p6-6: multi-AI collaboration needs a
+// reliable answer to "who is working on this"). A no-op unless this call is
+// actually setting status=in_progress. When the call itself sets assignee,
+// that's sufficient — no extra read needed. Otherwise the existing row is
+// consulted: a task that already carries a valid assignee may re-enter
+// in_progress without repeating it. Returns a non-nil tool-error result when
+// neither this call nor the existing row have an assignee.
+func (s *Server) requireAssigneeForInProgress(ctx context.Context, id uuid.UUID, p gtd.UpdateTaskParams) *mcp.CallToolResult {
+	if p.Status == nil || *p.Status != string(gtd.TaskStatusInProgress) {
+		return nil
+	}
+	if p.Assignee != nil && strings.TrimSpace(*p.Assignee) != "" {
+		return nil
+	}
+	existing, err := s.gtd.GetTaskByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return mcp.NewToolResultError("task not found")
+		}
+		slog.Warn("update_task: GetTaskByID failed while checking assignee for in_progress", "task_id", id, "err", err)
+		return mcp.NewToolResultError(fmt.Sprintf("checking task before in_progress transition: %v", err))
+	}
+	if existing.Assignee.Valid && strings.TrimSpace(existing.Assignee.String) != "" {
+		return nil
+	}
+	return mcp.NewToolResultError("assignee is required when moving a task to in_progress; set assignee on this call or beforehand")
+}
+
 func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	id, errResult := requireUUIDArg(args, "task_id", errMsgInvalidTaskIDUUID)
@@ -1025,6 +1120,9 @@ func (s *Server) handleUpdateTask(ctx context.Context, req mcp.CallToolRequest) 
 	}
 	if updateTaskParamsIsEmpty(p) {
 		return mcp.NewToolResultError("at least one field is required"), nil
+	}
+	if errResult := s.requireAssigneeForInProgress(ctx, id, p); errResult != nil {
+		return errResult, nil
 	}
 
 	task, err := s.gtd.UpdateTask(ctx, id, p)
@@ -1326,6 +1424,73 @@ func (s *Server) handleChecklistComplete(ctx context.Context, req mcp.CallToolRe
 	return jsonText(items)
 }
 
+// validateBeginTaskLinkageArgs checks the optional branch_name/pr_url args
+// BEFORE handleBeginTask mutates anything, so a validation failure never
+// leaves the task half-mutated (sprint feature/gtd-enforce-server-side
+// GTD-fix 8/12). Extracted from handleBeginTask to keep its cyclomatic
+// complexity within the gocyclo budget. Returns a non-empty error message on
+// validation failure.
+func validateBeginTaskLinkageArgs(branchName, prURL string) string {
+	if branchName != "" {
+		if len(branchName) > 255 {
+			return errMsgBranchNameTooLong
+		}
+		if branchNameHasControlChars(branchName) {
+			return errMsgBranchNameControlChars
+		}
+	}
+	if prURL != "" && !githubPRURLRe.MatchString(prURL) {
+		return errMsgInvalidPRURL
+	}
+	return ""
+}
+
+// persistAssigneeBeforeBegin saves a caller-supplied assignee BEFORE
+// handleBeginTask calls BeginTask (not after, unlike branch_name/pr_url):
+// BeginTask's domain-layer in_progress guard (gtd.RequireAssigneeForInProgress)
+// reads the EXISTING row, so the assignee must already be there by the time
+// BeginTask runs. A task with no assignee (neither on this call nor already
+// on the row) is rejected by that guard — this early-fail check just gives a
+// friendlier message (mirrors requireAssigneeForInProgress for update_task).
+// A no-op when assignee is empty. Returns a non-nil tool-error result on
+// failure.
+func (s *Server) persistAssigneeBeforeBegin(ctx context.Context, id uuid.UUID, idStr, assignee string) *mcp.CallToolResult {
+	if assignee == "" {
+		return nil
+	}
+	if _, err := s.gtd.UpdateTask(ctx, id, gtd.UpdateTaskParams{Assignee: &assignee}); err != nil {
+		if errors.Is(err, gtd.ErrNotFound) {
+			return mcp.NewToolResultError("task not found: " + idStr)
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("persisting assignee before begin: %v", err))
+	}
+	return nil
+}
+
+// persistBeginTaskLinkage saves branch_name/pr_url AFTER BeginTask has
+// already flipped the status, so we don't disturb BeginTask's idempotency
+// contract. A no-op (returns task unchanged) when neither arg is set.
+// Returns a non-nil tool-error result on failure.
+func (s *Server) persistBeginTaskLinkage(
+	ctx context.Context, id uuid.UUID, task *db.Task, branchName, prURL string,
+) (*db.Task, *mcp.CallToolResult) {
+	if branchName == "" && prURL == "" {
+		return task, nil
+	}
+	up := gtd.UpdateTaskParams{}
+	if branchName != "" {
+		up.BranchName = &branchName
+	}
+	if prURL != "" {
+		up.PRUrl = &prURL
+	}
+	updated, err := s.gtd.UpdateTask(ctx, id, up)
+	if err != nil {
+		return task, mcp.NewToolResultError(fmt.Sprintf("beginning task linkage persist: %v", err))
+	}
+	return updated, nil
+}
+
 func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	idStr := stringArg(args, "task_id")
@@ -1334,23 +1499,18 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("invalid task_id: " + err.Error()), nil
 	}
 
-	// Validate optional linkage args BEFORE we mutate the task so the caller
-	// gets a clean error instead of a half-applied state (sprint
-	// feature/gtd-enforce-server-side GTD-fix 8/12).
 	branchName := stringArg(args, "branch_name")
 	prURL := stringArg(args, "pr_url")
-	if branchName != "" {
-		if len(branchName) > 255 {
-			return mcp.NewToolResultError("branch_name must not exceed 255 characters"), nil
-		}
-		if branchNameHasControlChars(branchName) {
-			return mcp.NewToolResultError("branch_name must not contain control characters"), nil
-		}
+	if msg := validateBeginTaskLinkageArgs(branchName, prURL); msg != "" {
+		return mcp.NewToolResultError(msg), nil
 	}
-	if prURL != "" && !githubPRURLRe.MatchString(prURL) {
-		return mcp.NewToolResultError(
-			"pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)",
-		), nil
+
+	assignee, assigneeErr := resolveAssigneeArg(args)
+	if assigneeErr != "" {
+		return mcp.NewToolResultError(assigneeErr), nil
+	}
+	if errResult := s.persistAssigneeBeforeBegin(ctx, id, idStr, assignee); errResult != nil {
+		return errResult, nil
 	}
 
 	task, err := s.gtd.BeginTask(ctx, id)
@@ -1361,23 +1521,9 @@ func (s *Server) handleBeginTask(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(fmt.Sprintf("beginning task: %v", err)), nil
 	}
 
-	// Persist linkage after status flip via UpdateTask so we don't disturb
-	// BeginTask's idempotency contract.
-	if branchName != "" || prURL != "" {
-		up := gtd.UpdateTaskParams{}
-		if branchName != "" {
-			up.BranchName = &branchName
-		}
-		if prURL != "" {
-			up.PRUrl = &prURL
-		}
-		updated, uerr := s.gtd.UpdateTask(ctx, id, up)
-		if uerr != nil {
-			return mcp.NewToolResultError(
-				fmt.Sprintf("beginning task linkage persist: %v", uerr),
-			), nil
-		}
-		task = updated
+	task, errResult := s.persistBeginTaskLinkage(ctx, id, task, branchName, prURL)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	return jsonText(map[string]any{

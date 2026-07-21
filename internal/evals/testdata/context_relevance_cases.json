@@ -1,0 +1,32 @@
+[
+  {
+    "id": "ctx-001-includes-current-task",
+    "description": "context pack must surface the item tagged as the current task above unrelated items",
+    "items": [
+      {"id": "item-task-current", "source": "task", "content": "Implement eval harness scaffold for Phase 6", "score": 0.95},
+      {"id": "item-note-unrelated", "source": "note", "content": "Grocery list for weekend", "score": 0.10},
+      {"id": "item-decision-old", "source": "decision", "content": "Deprecated: use REST instead of gRPC (superseded)", "score": 0.20}
+    ],
+    "expected_top_ids": ["item-task-current"]
+  },
+  {
+    "id": "ctx-002-includes-latest-decision",
+    "description": "context pack must include the most recent relevant architecture decision",
+    "items": [
+      {"id": "item-decision-latest", "source": "decision", "content": "Use context.Context for Grader.Grade to support standalone CLI", "score": 0.90},
+      {"id": "item-decision-stale", "source": "decision", "content": "Earlier draft: Grader.Grade took *testing.T directly", "score": 0.30},
+      {"id": "item-log-noise", "source": "log", "content": "Routine health check ping", "score": 0.05}
+    ],
+    "expected_top_ids": ["item-decision-latest"]
+  },
+  {
+    "id": "ctx-003-excludes-deprecated-rule",
+    "description": "context pack must exclude a rule explicitly marked deprecated even if topically similar",
+    "items": [
+      {"id": "item-rule-active", "source": "rule", "content": "Active rule: redact credential patterns before persisting tool input", "score": 0.85},
+      {"id": "item-rule-deprecated", "source": "rule", "content": "Deprecated rule: store raw tool input unredacted", "score": 0.80},
+      {"id": "item-rule-unrelated", "source": "rule", "content": "Unrelated rule about commit message formatting", "score": 0.15}
+    ],
+    "expected_top_ids": ["item-rule-active"]
+  }
+]

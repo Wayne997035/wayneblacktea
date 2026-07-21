@@ -20,7 +20,7 @@ func TestGTDStore_BeginTask_HappyPath(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()
 
-	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "implement feature X", Priority: 2})
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "implement feature X", Priority: 2, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestGTDStore_BeginTask_Idempotent(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()
 
-	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "idempotent task", Priority: 1})
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "idempotent task", Priority: 1, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}

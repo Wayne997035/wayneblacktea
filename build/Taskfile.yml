@@ -65,6 +65,7 @@ tasks:
       - build-wbt-guard
       - build-seed
       - build-discordbot
+      - build-wbt-eval
 
   mod-tidy:
     desc: "Verify go.mod and go.sum are tidy (matches CI check)"
@@ -188,6 +189,15 @@ tasks:
       - go build -o bin/wbt-discordbot ./cmd/discordbot/
     dir: ..
 
+  build-wbt-eval:
+    desc: "Build the wbt-eval standalone provider-backed eval CLI to bin/ (Phase 6.5 — intentionally NOT in lint/test/test-integration's package lists below: it must never run as part of the default quality gate, see cmd/wbt-eval/main.go's package doc)"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/wbt-eval ./cmd/wbt-eval/
+    dir: ..
+
   lint:
     desc: "Run golangci-lint"
     deps:
@@ -212,7 +222,16 @@ tasks:
       # -short skips testcontainers-based integration tests that require Docker.
       # No -race: mcp + sqlite packages are goroutine-heavy; race adds 5-10× overhead
       # and pushes unit tests past the 5-min budget. Use test-race for targeted race checks.
-      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      # ./internal/... is a glob, so internal/evals' deterministic eval graders
+      # (Phase 6.1-6.4) already run here on every `task check` with zero extra
+      # wiring. cmd/wbt-eval (Phase 6.5) IS in this list for its unit tests
+      # (validateFlags, a pure allowlist check): `go test ./cmd/wbt-eval/...`
+      # compiles and runs main_test.go only — it never invokes run()/main() and
+      # therefore never touches a provider or the network. What must stay out of
+      # the default gate is *executing the binary* bin/wbt-eval (build-wbt-eval
+      # above builds but never runs it); running the package's unit tests is
+      # gate-safe and required for new-function test coverage.
+      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/... ./cmd/wbt-eval/...
     dir: ..
 
   test-race:

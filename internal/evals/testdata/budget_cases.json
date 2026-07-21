@@ -1,0 +1,34 @@
+[
+  {
+    "id": "budget-001-all-items-fit",
+    "items": [
+      {"id": "item-a", "size_bytes": 100, "priority": 3},
+      {"id": "item-b", "size_bytes": 150, "priority": 2},
+      {"id": "item-c", "size_bytes": 50, "priority": 1}
+    ],
+    "budget_bytes": 500,
+    "expect_included": ["item-a", "item-b", "item-c"],
+    "expect_omitted_count": 0
+  },
+  {
+    "id": "budget-002-partial-fit-by-priority",
+    "items": [
+      {"id": "item-high", "size_bytes": 300, "priority": 3},
+      {"id": "item-mid", "size_bytes": 300, "priority": 2},
+      {"id": "item-low", "size_bytes": 300, "priority": 1}
+    ],
+    "budget_bytes": 500,
+    "expect_included": ["item-high"],
+    "expect_omitted_count": 2
+  },
+  {
+    "id": "budget-003-nothing-fits",
+    "items": [
+      {"id": "item-oversized-a", "size_bytes": 1000, "priority": 2},
+      {"id": "item-oversized-b", "size_bytes": 900, "priority": 1}
+    ],
+    "budget_bytes": 500,
+    "expect_included": [],
+    "expect_omitted_count": 2
+  }
+]

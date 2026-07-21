@@ -1,0 +1,26 @@
+[
+  {
+    "id": "discipline-001-matches-prior-decision",
+    "tool_name": "git_commit",
+    "has_prior_decision": true,
+    "expect_drift": false
+  },
+  {
+    "id": "discipline-002-deviates-from-prior-decision",
+    "tool_name": "git_push_force",
+    "has_prior_decision": true,
+    "expect_drift": true
+  },
+  {
+    "id": "discipline-003-no-prior-decision-no-drift-baseline",
+    "tool_name": "read_file",
+    "has_prior_decision": false,
+    "expect_drift": false
+  },
+  {
+    "id": "discipline-004-mutating-tool-no-prior-decision-drifts",
+    "tool_name": "add_task",
+    "has_prior_decision": false,
+    "expect_drift": true
+  }
+]

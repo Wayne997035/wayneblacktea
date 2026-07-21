@@ -2,12 +2,14 @@ package worksession_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
@@ -17,6 +19,17 @@ const (
 	statusCheckpointed = "checkpointed"
 	statusCompleted    = "completed"
 	statusInProgress   = "in_progress"
+	statusPending      = "pending"
+)
+
+// assigneeClaude / assigneeHuman are canonical gtd.NormalizeActor values used
+// across this file and store_postgres_test.go's P6.8 assignee-gate tests
+// (both files share package worksession_test, so goconst counts occurrences
+// across both — hoisted here once both crossed the min-occurrences-3
+// threshold).
+const (
+	assigneeClaude = "claude"
+	assigneeHuman  = "human"
 )
 
 // openTestDB opens an in-memory SQLite DB for testing.
@@ -258,6 +271,31 @@ func insertTestTask(t *testing.T, db *wbtsqlite.DB, wsID, taskID string) {
 	}
 }
 
+// insertTestTaskWithAssignee is the P6.8 sibling of insertTestTask, seeding a
+// task with an existing assignee — used to verify batchMarkTasksInProgressSQLite
+// preserves it instead of overwriting with the session's assignee.
+func insertTestTaskWithAssignee(t *testing.T, db *wbtsqlite.DB, wsID, taskID, assignee string) {
+	t.Helper()
+	const q = `INSERT INTO tasks (id, workspace_id, title, status, priority, assignee)
+		VALUES (?1,?2,'test task','pending',3,?3)`
+	if err := db.ExecContext(context.Background(), q, taskID, wsID, assignee); err != nil {
+		t.Fatalf("insertTestTaskWithAssignee: %v", err)
+	}
+}
+
+// queryTaskAssignee reads the assignee column for a task directly from the
+// SQLite DB. Returns "" for SQL NULL.
+func queryTaskAssignee(t *testing.T, db *wbtsqlite.DB, taskID string) string {
+	t.Helper()
+	row := db.QueryRowContext(context.Background(),
+		`SELECT COALESCE(assignee, '') FROM tasks WHERE id = ?1`, taskID)
+	var assignee string
+	if err := row.Scan(&assignee); err != nil {
+		t.Fatalf("queryTaskAssignee %s: %v", taskID, err)
+	}
+	return assignee
+}
+
 // ---- LinkTask and LinkedTasks ----
 
 func TestWorkSessionStore_LinkedTasks(t *testing.T) {
@@ -382,7 +420,10 @@ func queryTaskStatus(t *testing.T, db *wbtsqlite.DB, taskID string) string {
 }
 
 // TestStartWork_AutoMarksTasksInProgress verifies that start_work (Create)
-// transitions linked tasks from pending → in_progress.
+// transitions linked tasks from pending → in_progress. Assignee is supplied
+// (P6.8 gate) so the transition is allowed to happen — the no-assignee
+// reject path is covered separately by
+// TestStartWork_NoAssigneeAnywhere_TaskStaysPending.
 func TestStartWork_AutoMarksTasksInProgress(t *testing.T) {
 	wsID := uuid.New().String()
 	db := openTestDB(t, wsID)
@@ -396,6 +437,7 @@ func TestStartWork_AutoMarksTasksInProgress(t *testing.T) {
 
 	p := makeCreateParams(uuid.MustParse(wsID), "auto-in-progress-repo")
 	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	p.Assignee = assigneeClaude
 
 	_, err := store.Create(ctx, p)
 	if err != nil {
@@ -439,6 +481,143 @@ func TestStartWork_Idempotent(t *testing.T) {
 	// Task was already in_progress; it must remain in_progress (not downgraded).
 	if got := queryTaskStatus(t, db, taskA.String()); got != statusInProgress {
 		t.Errorf("taskA status: got %q, want in_progress (must stay)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P6.8 — assignee gate on the worksession-start in_progress transition
+// (SQLite; mirrors the Postgres tests of the same shape in
+// store_postgres_test.go)
+// ---------------------------------------------------------------------------
+
+// TestStartWork_StampsAssigneeOntoUnassignedTask verifies a session-level
+// assignee is stamped onto a linked task that currently has none, at the
+// moment it flips pending → in_progress.
+func TestStartWork_StampsAssigneeOntoUnassignedTask(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "stamp-assignee-repo")
+	p.TaskIDs = []uuid.UUID{taskA}
+	p.Assignee = assigneeClaude
+	_, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress", got)
+	}
+	if got := queryTaskAssignee(t, db, taskA.String()); got != assigneeClaude {
+		t.Errorf("taskA assignee: got %q, want stamped %q", got, assigneeClaude)
+	}
+}
+
+// TestStartWork_PreservesExistingAssignee verifies a task that already has an
+// assignee keeps it — the session's assignee must NOT overwrite an existing
+// owner.
+func TestStartWork_PreservesExistingAssignee(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertTestTaskWithAssignee(t, db, wsID, taskA.String(), assigneeHuman)
+
+	p := makeCreateParams(uuid.MustParse(wsID), "preserve-assignee-repo")
+	p.TaskIDs = []uuid.UUID{taskA}
+	p.Assignee = assigneeClaude
+	_, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusInProgress {
+		t.Errorf("taskA status: got %q, want in_progress", got)
+	}
+	if got := queryTaskAssignee(t, db, taskA.String()); got != assigneeHuman {
+		t.Errorf("taskA assignee: got %q, want preserved %q (not overwritten by session assignee)", got, assigneeHuman)
+	}
+}
+
+// TestStartWork_NoAssigneeAnywhere_TaskStaysPending verifies the reject half
+// of the P6.8 gate: a task with no assignee, linked to a session that also
+// supplies none, is excluded from the flip entirely and stays pending —
+// rather than becoming an ownerless in_progress row.
+func TestStartWork_NoAssigneeAnywhere_TaskStaysPending(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "no-assignee-anywhere-repo")
+	p.TaskIDs = []uuid.UUID{taskA}
+	_, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusPending {
+		t.Errorf("taskA status: got %q, want pending (must NOT flip with no assignee anywhere)", got)
+	}
+	if got := queryTaskAssignee(t, db, taskA.String()); got != "" {
+		t.Errorf("taskA assignee: got %q, want empty", got)
+	}
+}
+
+// TestStartWork_WhitespaceAssignee_TaskStaysPending pins the P6.8 round-3
+// security fix: a whitespace-only assignee (persistable via the HTTP
+// CreateTask path, which skips NormalizeActor when strings.TrimSpace is empty)
+// must be treated as ownerless by the SQL gate's TRIM, so the task stays
+// pending instead of flipping to an effectively-ownerless in_progress row.
+// Without TRIM, NULLIF('   ',”) is non-empty and the task would wrongly flip.
+func TestStartWork_WhitespaceAssignee_TaskStaysPending(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	insertTestTaskWithAssignee(t, db, wsID, taskA.String(), "   ")
+
+	p := makeCreateParams(uuid.MustParse(wsID), "whitespace-assignee-repo")
+	p.TaskIDs = []uuid.UUID{taskA}
+	if _, err := store.Create(ctx, p); err != nil { // no session assignee
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got != statusPending {
+		t.Errorf("taskA status: got %q, want pending (whitespace-only assignee must be treated as ownerless)", got)
+	}
+}
+
+// TestWorkSessionStore_Create_RejectsInvalidAssignee verifies the
+// domain-layer defense-in-depth re-validation (mirrors
+// gtd.Store.CreateTask/UpdateTask): an unrecognized Assignee value is
+// rejected even though the MCP layer (tools_worksession.go/tools_plan.go)
+// already validates on the way in.
+func TestWorkSessionStore_Create_RejectsInvalidAssignee(t *testing.T) {
+	wsID := uuid.New().String()
+	store := newStore(t, wsID)
+	ctx := context.Background()
+
+	p := makeCreateParams(uuid.MustParse(wsID), "invalid-assignee-repo")
+	p.Assignee = "gemini"
+	_, err := store.Create(ctx, p)
+	if err == nil {
+		t.Fatal("Create with unrecognized assignee must error")
+	}
+	if !errors.Is(err, gtd.ErrInvalidAssignee) {
+		t.Errorf("expected gtd.ErrInvalidAssignee, got: %v", err)
 	}
 }
 

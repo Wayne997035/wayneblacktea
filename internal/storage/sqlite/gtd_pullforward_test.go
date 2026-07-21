@@ -23,6 +23,9 @@ func sqlitePullForwardCreateTask(
 		Priority:   priority,
 		DueDate:    due,
 		Importance: importance,
+		// Assignee always set: some callers transition to in_progress below,
+		// which requires an owner (P6.7 domain-layer gate).
+		Assignee: "claude",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask(%q): %v", title, err)

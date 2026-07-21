@@ -1132,7 +1132,7 @@ func TestGTDStore_UpdateTask_PG_AllFields(t *testing.T) {
 	newDesc := "new desc"
 	newPrio := int32(1)
 	newImp := int16(2)
-	newAssignee := "wayne"
+	newAssignee := "human" // must be a canonical actor (gtd.NormalizeActor allowlist)
 	due := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	newCtx := "discussion context"
 	newStatus := string(gtd.TaskStatusInProgress)
@@ -1229,6 +1229,10 @@ func pgUpcomingCreateTask(
 		Priority:   2,
 		DueDate:    due,
 		Importance: importance,
+		// Assignee always set: some callers transition to in_progress below,
+		// which requires an owner (P6.7 domain-layer gate); pending/completed/
+		// cancelled callers are unaffected by the extra field.
+		Assignee: "claude",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask(%q): %v", title, err)
@@ -1443,7 +1447,7 @@ func TestStore_BeginTask_HappyPath(t *testing.T) {
 	store := newPgGTDStore(pool, &wsID)
 	ctx := context.Background()
 
-	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg begin task test", Priority: 2})
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg begin task test", Priority: 2, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -1452,7 +1456,7 @@ func TestStore_BeginTask_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTask: %v", err)
 	}
-	if result.Status != "in_progress" {
+	if result.Status != statusInProgress {
 		t.Errorf("expected status in_progress, got %q", result.Status)
 	}
 
@@ -1482,7 +1486,7 @@ func TestStore_BeginTask_Idempotent(t *testing.T) {
 	store := newPgGTDStore(pool, &wsID)
 	ctx := context.Background()
 
-	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "idempotent pg task", Priority: 1})
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "idempotent pg task", Priority: 1, Assignee: "claude"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}

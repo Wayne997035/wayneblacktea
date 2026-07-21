@@ -177,6 +177,10 @@ func seedDemoTasks(ctx context.Context, store *gtd.Store, projectIDs []*uuid.UUI
 		priority    int32
 		importance  int16
 		status      gtd.TaskStatus
+		// assignee is required whenever status is in_progress (p6-7
+		// domain-layer gate in Store.UpdateTaskStatus); left empty for
+		// pending/completed specs below.
+		assignee string
 	}
 
 	specs := []taskSpec{
@@ -195,6 +199,7 @@ func seedDemoTasks(ctx context.Context, store *gtd.Store, projectIDs []*uuid.UUI
 			priority:    2,
 			importance:  2,
 			status:      gtd.TaskStatusInProgress,
+			assignee:    "claude",
 		},
 		{
 			projectIdx:  0,
@@ -211,6 +216,7 @@ func seedDemoTasks(ctx context.Context, store *gtd.Store, projectIDs []*uuid.UUI
 			priority:    2,
 			importance:  2,
 			status:      gtd.TaskStatusInProgress,
+			assignee:    "human",
 		},
 		{
 			projectIdx:  1,
@@ -234,6 +240,7 @@ func seedDemoTasks(ctx context.Context, store *gtd.Store, projectIDs []*uuid.UUI
 			Description: sp.description,
 			Priority:    sp.priority,
 			Importance:  &sp.importance,
+			Assignee:    sp.assignee,
 		})
 		if err != nil {
 			// Postgres unique violation (duplicate title + project)

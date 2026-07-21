@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 )
@@ -31,27 +32,37 @@ func sqliteInClause(n int) string {
 
 // batchMarkTasksInProgressSQLite sets status='in_progress' WHERE status='pending'
 // for the given task IDs, scoped to workspace ws.
-// Arg layout: ?1..?N = task IDs, ?N+1 = workspace (nil or string), ?N+2 = now.
+// Arg layout: ?1..?N = task IDs, ?N+1 = workspace (nil or string), ?N+2 =
+// session assignee (already gtd.NormalizeActor'd or empty), ?N+3 = now.
+//
+// P6.8 assignee gate: mirrors worksession.Store.batchMarkTasksInProgress
+// (Postgres) exactly — COALESCE keeps an existing non-empty assignee, falls
+// back to sessionAssignee when the task has none, and the WHERE clause
+// excludes any row that would end up with neither (stays 'pending' instead
+// of becoming an ownerless in_progress row).
 func batchMarkTasksInProgressSQLite(ctx context.Context, conn interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, ws any, taskIDs []uuid.UUID,
+}, ws any, taskIDs []uuid.UUID, sessionAssignee string,
 ) error {
 	if len(taskIDs) == 0 {
 		return nil
 	}
 	n := len(taskIDs)
 	// Pre-allocate the full args slice to avoid gocritic appendAssign.
-	args := make([]any, 0, n+2)
+	args := make([]any, 0, n+3)
 	for _, id := range taskIDs {
 		args = append(args, id.String())
 	}
-	args = append(args, ws, nowRFC3339())
+	args = append(args, ws, sessionAssignee, nowRFC3339())
 	q := fmt.Sprintf(`UPDATE tasks
-		SET status = 'in_progress', updated_at = ?%d
+		SET status = 'in_progress',
+		    assignee = COALESCE(NULLIF(TRIM(assignee), ''), NULLIF(?%d, '')),
+		    updated_at = ?%d
 		WHERE id IN (%s)
 		  AND (?%d IS NULL OR workspace_id = ?%d)
-		  AND status = 'pending'`,
-		n+2, sqliteInClause(n), n+1, n+1)
+		  AND status = 'pending'
+		  AND (NULLIF(TRIM(assignee), '') IS NOT NULL OR NULLIF(?%d, '') IS NOT NULL)`,
+		n+2, n+3, sqliteInClause(n), n+1, n+1, n+2)
 	if _, err := conn.ExecContext(ctx, q, args...); err != nil {
 		return fmt.Errorf("batchMarkTasksInProgressSQLite: %w", err)
 	}
@@ -273,6 +284,19 @@ func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParam
 		return nil, err
 	}
 
+	// P6.8: resolve p.Assignee through gtd.NormalizeActor before it can reach
+	// batchMarkTasksInProgressSQLite's stamping below — mirrors the Postgres
+	// store's Create (defense in depth alongside the MCP-layer validation in
+	// tools_worksession.go/tools_plan.go). Empty stays empty.
+	sessionAssignee := strings.TrimSpace(p.Assignee)
+	if sessionAssignee != "" {
+		normalized, err := gtd.NormalizeActor(sessionAssignee)
+		if err != nil {
+			return nil, fmt.Errorf("worksession.Create: %w", err)
+		}
+		sessionAssignee = normalized
+	}
+
 	wsID := p.WorkspaceID.String()
 	if s.db.workspaceID != "" {
 		wsID = s.db.workspaceID
@@ -288,7 +312,7 @@ func (s *WorkSessionStore) Create(ctx context.Context, p worksession.CreateParam
 	// Batch-update linked tasks to in_progress after the session tx commits.
 	// Non-fatal: session is committed; task status update is best-effort.
 	if len(p.TaskIDs) > 0 {
-		if err := batchMarkTasksInProgressSQLite(ctx, s.db.conn, s.db.workspaceArg(), p.TaskIDs); err != nil {
+		if err := batchMarkTasksInProgressSQLite(ctx, s.db.conn, s.db.workspaceArg(), p.TaskIDs, sessionAssignee); err != nil {
 			slog.Warn(
 				"batchMarkTasksInProgressSQLite: failed to mark tasks in_progress",
 				"session_id", id,
