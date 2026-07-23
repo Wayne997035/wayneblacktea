@@ -29,6 +29,30 @@ type BudgetEnforcer interface {
 // running total over budgetBytes is skipped (counted as omitted), and the
 // loop continues to later, possibly-smaller items rather than stopping at
 // the first miss.
+//
+// This is a SYNTHETIC FIXTURE ENFORCER, not the production budget path, and
+// this grader does NOT prove production contextpack budget enforcement is
+// correct. The real implementation, internal/contextpack.trimToBudget
+// (scorer.go), differs from this stub in every dimension that matters:
+//   - Unit: trimToBudget counts runes of Item.Summary (utf8.RuneCountInString);
+//     this stub counts BudgetItem.SizeBytes, an opaque caller-supplied int.
+//   - Stop condition: trimToBudget stops non-pinned inclusion outright at the
+//     first item that would overflow the budget (everything after is
+//     dropped); this stub skips the offending item and keeps trying
+//     later, possibly-smaller items (skip-and-continue).
+//   - Pinning: trimToBudget always keeps TypeTask/TypeProject items
+//     (isPinned) regardless of score or budget; this stub has no pinning
+//     concept — every item is subject to the same priority-ordered cutoff.
+//
+// budget_cases.json fixtures and this file only exercise the invented
+// greedy-skip model above. Passing this grader is evidence the stub's own
+// invented model is internally consistent (conservation + expected
+// included/omitted match); it is NOT evidence that trimToBudget behaves
+// correctly. A grader wired directly to internal/contextpack.trimToBudget
+// (or an adapter satisfying BudgetEnforcer by calling it) would be required
+// to make that claim, and is out of scope for this fix — see P6-F1 scope
+// boundaries (backend-security-design.md §2: grader semantics are not
+// touched by this change; this comment only documents an existing gap).
 type stubBudgetEnforcer struct{}
 
 func (stubBudgetEnforcer) Apply(items []BudgetItem, budgetBytes int) ([]BudgetItem, int) {

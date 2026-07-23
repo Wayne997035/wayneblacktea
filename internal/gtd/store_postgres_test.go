@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	migrationfs "github.com/Wayne997035/wayneblacktea/migrations"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -1716,5 +1717,129 @@ func TestGTDStore_PG_GetTaskByID(t *testing.T) {
 		if !errors.Is(err, gtd.ErrNotFound) {
 			t.Errorf("expected gtd.ErrNotFound from wrong workspace, got %v", err)
 		}
+	})
+}
+
+// pgSeedRepoName is the fixture value used across the P6-F2 repo_name
+// subtests below. Hoisted to a const (rather than repeating the literal) to
+// keep goconst quiet on top of the file's pre-existing "wayneblacktea"
+// literals from TestStore_ProjectsByRepoName_PG / TestMigration000039.
+const pgSeedRepoName = "wayneblacktea"
+
+// assertRepoNameValue checks a pgtype.Text repo_name against an expected
+// (valid, value) pair. Extracted so the P6-F2 subtests below stay under the
+// gocyclo budget — each subtest calls this once instead of inlining an
+// `if !x.Valid || x.String != want` branch.
+func assertRepoNameValue(t *testing.T, label string, got pgtype.Text, wantValid bool, wantValue string) {
+	t.Helper()
+	if got.Valid != wantValid {
+		t.Errorf("%s: repo_name.Valid = %v, want %v (got %+v)", label, got.Valid, wantValid, got)
+		return
+	}
+	if wantValid && got.String != wantValue {
+		t.Errorf("%s: repo_name = %q, want %q", label, got.String, wantValue)
+	}
+}
+
+// assertPgProjectRepoNameFreshRead re-reads projectID via GetProjectByID and
+// asserts its repo_name matches what UpdateProject returned — pins the P6-F2
+// acceptance criterion that the update response shape equals a subsequent
+// fresh read (list_projects/get_project).
+func assertPgProjectRepoNameFreshRead(t *testing.T, ctx context.Context, store *gtd.Store, projectID uuid.UUID, updated pgtype.Text) {
+	t.Helper()
+	fresh, err := store.GetProjectByID(ctx, projectID)
+	if err != nil {
+		t.Fatalf("GetProjectByID: %v", err)
+	}
+	if fresh.RepoName != updated {
+		t.Errorf("UpdateProject response repo_name %+v does not match fresh read %+v", updated, fresh.RepoName)
+	}
+}
+
+// TestGTDStore_PG_UpdateProject_RepoName pins P6-F2 on real Postgres
+// (testcontainers): UpdateProject's RETURNING/Scan branches MUST carry
+// repo_name so the MCP response shape matches a subsequent fresh read
+// (GetProjectByID / list_projects), for all three RepoName pointer states.
+// Mirrors TestGTDStore_UpdateProject's repo_name subtests in
+// storage/sqlite/gtd_test.go — required by backend-security-design.md §6.5
+// (dual-backend integration parity).
+func TestGTDStore_PG_UpdateProject_RepoName(t *testing.T) {
+	t.Run("repo_name omitted (nil pointer) → preserves existing value", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+
+		p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "pg-repo-preserve-" + wsID.String()[:8], Title: "Original", Area: "engineering",
+			RepoName: pgSeedRepoName,
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		updated, err := store.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:  "Updated Title",
+			Status: gtd.ProjectStatusActive,
+			// RepoName intentionally nil (omitted) — must preserve pgSeedRepoName.
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		assertRepoNameValue(t, "omitted", updated.RepoName, true, pgSeedRepoName)
+		assertPgProjectRepoNameFreshRead(t, ctx, store, p.ID, updated.RepoName)
+	})
+
+	t.Run("repo_name explicit non-empty → persists and returns new value", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+
+		p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "pg-repo-set-" + wsID.String()[:8], Title: "Original", Area: "engineering",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		newRepo := "food-photo-log"
+		updated, err := store.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:    "Updated Title",
+			Status:   gtd.ProjectStatusActive,
+			RepoName: &newRepo,
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		assertRepoNameValue(t, "explicit non-empty", updated.RepoName, true, newRepo)
+		assertPgProjectRepoNameFreshRead(t, ctx, store, p.ID, updated.RepoName)
+	})
+
+	t.Run("repo_name explicit empty string → clears to NULL and returns invalid", func(t *testing.T) {
+		pool := openTestPgPool(t)
+		wsID := uuid.New()
+		store := newPgGTDStore(pool, &wsID)
+		ctx := context.Background()
+
+		p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "pg-repo-clear-" + wsID.String()[:8], Title: "Original", Area: "engineering",
+			RepoName: pgSeedRepoName,
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		empty := ""
+		updated, err := store.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:    "Updated Title",
+			Status:   gtd.ProjectStatusActive,
+			RepoName: &empty,
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		assertRepoNameValue(t, "explicit empty", updated.RepoName, false, "")
+		assertPgProjectRepoNameFreshRead(t, ctx, store, p.ID, updated.RepoName)
 	})
 }

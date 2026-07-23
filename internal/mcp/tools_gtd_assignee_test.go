@@ -25,6 +25,41 @@ func seedTaskWithAssignee(t *testing.T, s *Server, assignee string) uuid.UUID {
 	return task.ID
 }
 
+// --- add_task assignee schema ---
+
+// TestAddTaskSchema_AssigneeMaxLength verifies the registered add_task tool
+// exposes assignee's client-side length hint (mcp.MaxLength(100),
+// tools_gtd.go) in its InputSchema — this is a defensive upper bound only
+// (backend-security-design.md §2: runtime discipline.NormalizeActor's
+// canonical-actor allowlist remains the sole validation authority; this
+// schema hint never replaces it). A regression here (the option dropped, or
+// applied to the wrong property) would only be caught by a client-side
+// schema inspector, never by a server-side test that only calls the handler
+// — hence testing the registered *mcp.Tool directly instead of exercising
+// handleAddTask.
+func TestAddTaskSchema_AssigneeMaxLength(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	tool := s.MCPServer().GetTool("add_task")
+	if tool == nil {
+		t.Fatal("add_task not registered on MCPServer()")
+	}
+
+	assigneeSchema, ok := tool.Tool.InputSchema.Properties["assignee"].(map[string]any)
+	if !ok {
+		t.Fatalf("add_task InputSchema.Properties[%q] = %#v, want map[string]any",
+			"assignee", tool.Tool.InputSchema.Properties["assignee"])
+	}
+
+	maxLength, ok := assigneeSchema["maxLength"]
+	if !ok {
+		t.Fatal("add_task assignee schema has no maxLength")
+	}
+	if maxLength != 100 {
+		t.Errorf("add_task assignee maxLength = %v, want 100", maxLength)
+	}
+}
+
 // --- add_task assignee validation ---
 
 func TestAddTask_InvalidAssignee(t *testing.T) {

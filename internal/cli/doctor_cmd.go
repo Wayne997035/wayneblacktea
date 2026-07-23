@@ -32,6 +32,7 @@ import (
 	"time"
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,6 +58,31 @@ type DoctorSnapshot struct {
 	DueReviews       int       `json:"due_reviews"`
 	ForgottenSignals []string  `json:"forgotten_signals,omitempty"`
 	SessionSummary   string    `json:"session_summary,omitempty"`
+
+	// GoalsDue and TopPending are the OPS-1 delivery-visibility fields,
+	// consumed by _project/.claude/hooks/session-start.sh. Both are
+	// deliberately NOT `omitempty`: GoalsDue MUST always render as "[]"
+	// (never omitted/null) and TopPending MUST always render as an object
+	// or explicit "null" — see newDoctorSnapshot for the always-non-nil
+	// GoalsDue initialisation that makes this hold even on fail-soft paths
+	// that never reach the DB. Title + deadline only; no goal/task IDs,
+	// descriptions, or other context is exposed (backend-security-design.md
+	// §3.2 data minimisation).
+	GoalsDue   []gtd.DeliveryGoal `json:"goals_due"`
+	TopPending *gtd.DeliveryTask  `json:"top_pending"`
+}
+
+// newDoctorSnapshot returns a DoctorSnapshot with GeneratedAt set and
+// GoalsDue pre-initialised to a non-nil empty slice, so every fail-soft
+// early-return path in RunDoctor (missing DSN, bad config, TLS error, pool
+// connect failure) still emits goals_due:[] rather than goals_due:null.
+// TopPending needs no such initialisation — its zero value (nil pointer)
+// already marshals to JSON null, which is the correct fail-soft shape.
+func newDoctorSnapshot() DoctorSnapshot {
+	return DoctorSnapshot{
+		GeneratedAt: time.Now().UTC(),
+		GoalsDue:    []gtd.DeliveryGoal{},
+	}
 }
 
 // RunDoctor dispatches `wbt doctor`. args is unused but kept for the standard
@@ -69,7 +95,7 @@ func RunDoctor(_ []string) error {
 		dsn = DSNFromFallback()
 	}
 	if dsn == "" {
-		emitDoctor(DoctorSnapshot{GeneratedAt: time.Now().UTC()})
+		emitDoctor(newDoctorSnapshot())
 		return nil
 	}
 
@@ -78,7 +104,7 @@ func RunDoctor(_ []string) error {
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		emitDoctor(DoctorSnapshot{GeneratedAt: time.Now().UTC()})
+		emitDoctor(newDoctorSnapshot())
 		return nil
 	}
 	cfg.MaxConns = 2
@@ -87,7 +113,7 @@ func RunDoctor(_ []string) error {
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
 	if tlsErr != nil {
 		slog.Error("doctor DB TLS config failed; emitting empty snapshot", "err", tlsErr)
-		emitDoctor(DoctorSnapshot{GeneratedAt: time.Now().UTC()})
+		emitDoctor(newDoctorSnapshot())
 		return nil
 	}
 	if tlsCfg != nil {
@@ -95,13 +121,13 @@ func RunDoctor(_ []string) error {
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		emitDoctor(DoctorSnapshot{GeneratedAt: time.Now().UTC()})
+		emitDoctor(newDoctorSnapshot())
 		return nil
 	}
 	defer pool.Close()
 
 	wsID := WorkspaceFromEnv()
-	snap := DoctorSnapshot{GeneratedAt: time.Now().UTC()}
+	snap := newDoctorSnapshot()
 	if wsID != nil {
 		snap.Workspace = wsID.String()
 	}
@@ -110,6 +136,7 @@ func RunDoctor(_ []string) error {
 	collectTaskHealth(ctx, pool, wsID, stuckThreshold, &snap)
 	collectProposalCount(ctx, pool, wsID, &snap)
 	collectDueReviewCount(ctx, pool, wsID, &snap)
+	collectDeliveryVisibility(ctx, gtd.NewStore(pool, wsID), &snap)
 
 	// Session summary: read stdin transcript, call Haiku, persist.
 	// A separate 30 s budget so AI latency does not consume the 15 s DB timeout.
@@ -368,6 +395,26 @@ func collectDueReviewCount(ctx context.Context, pool *pgxpool.Pool, ws *uuid.UUI
 		WHERE rs.due_date <= NOW()
 		  AND ($1::uuid IS NULL OR c.workspace_id = $1)`
 	_ = pool.QueryRow(ctx, q, ws).Scan(&snap.DueReviews)
+}
+
+// collectDeliveryVisibility populates snap.GoalsDue and snap.TopPending via
+// gtd.StoreIface (reusing ActiveGoals / TopPendingTask — no new query or
+// schema, per OPS-1 boundaries). The two collectors run independently: a
+// failure in one is slog.Warn'd and leaves that field at its fail-soft
+// default (goals_due stays the pre-initialised "[]" from newDoctorSnapshot;
+// top_pending stays nil/"null") without blocking the other collector or
+// leaking the underlying error text into the JSON output.
+func collectDeliveryVisibility(ctx context.Context, store gtd.StoreIface, snap *DoctorSnapshot) {
+	if goals, err := gtd.BuildGoalsDue(ctx, store, time.Now()); err != nil {
+		slog.Warn("doctor: goals_due collection failed", "err", err)
+	} else {
+		snap.GoalsDue = goals
+	}
+	if top, err := gtd.BuildTopPending(ctx, store); err != nil {
+		slog.Warn("doctor: top_pending collection failed", "err", err)
+	} else {
+		snap.TopPending = top
+	}
 }
 
 // DetectDoctorSignals returns the forgotten-signal strings for snapshot s.

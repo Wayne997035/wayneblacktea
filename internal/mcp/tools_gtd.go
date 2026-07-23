@@ -229,7 +229,15 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		mcp.WithString("title", mcp.Description("Task title"), mcp.Required()),
 		mcp.WithString("project_id", mcp.Description("Parent project UUID")),
 		mcp.WithString("description", mcp.Description("Task details")),
-		mcp.WithString("assignee", mcp.Description("Who owns this task")),
+		// mcp.MaxLength(100) is a defensive client-side upper bound
+		// (backend-security-design.md §2: LLM tool input is hostile) against
+		// an unbounded assignee string reaching this handler. It is NOT the
+		// validation authority: gtd.NormalizeActor's canonical-actor
+		// allowlist (handleAddTask below) still rejects any raw value that
+		// isn't a known actor/alias regardless of length, so an
+		// mcp-go-runtime bypass of this hint (it's advisory-only, per
+		// tools_worksession.go's established pattern) still fails closed.
+		mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(100)),
 		mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
 		mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low) — distinct from priority")),
 		mcp.WithString("context", mcp.Description("Free-form discussion background — why this task came up")),

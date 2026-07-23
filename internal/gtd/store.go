@@ -1099,7 +1099,7 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 			WHERE id = $8
 			  AND ($9::uuid IS NULL OR workspace_id = $9)
 			RETURNING id, goal_id, name, title, description, status, area, priority,
-			          created_at, updated_at, workspace_id`
+			          created_at, updated_at, workspace_id, repo_name`
 		rows, err = s.dbtx.Query(
 			ctx, q,
 			p.Title, pgconv.ToText(p.Description), area, priority, string(p.Status), pgconv.ToUUID(p.GoalID),
@@ -1118,7 +1118,7 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 			WHERE id = $7
 			  AND ($8::uuid IS NULL OR workspace_id = $8)
 			RETURNING id, goal_id, name, title, description, status, area, priority,
-			          created_at, updated_at, workspace_id`
+			          created_at, updated_at, workspace_id, repo_name`
 		rows, err = s.dbtx.Query(
 			ctx, q,
 			p.Title, pgconv.ToText(p.Description), area, priority, string(p.Status), pgconv.ToUUID(p.GoalID),
@@ -1138,7 +1138,7 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProject
 	var row db.Project
 	if err := rows.Scan(
 		&row.ID, &row.GoalID, &row.Name, &row.Title, &row.Description, &row.Status, &row.Area, &row.Priority,
-		&row.CreatedAt, &row.UpdatedAt, &row.WorkspaceID,
+		&row.CreatedAt, &row.UpdatedAt, &row.WorkspaceID, &row.RepoName,
 	); err != nil {
 		return nil, fmt.Errorf("scanning updated project %s: %w", id, err)
 	}

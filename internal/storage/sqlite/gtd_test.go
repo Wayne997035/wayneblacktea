@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // openMem opens an in-memory SQLite DB and applies the embedded schema.
@@ -1171,6 +1172,121 @@ func TestGTDStore_UpdateProject(t *testing.T) {
 		if !errors.Is(err, gtd.ErrNotFound) {
 			t.Errorf("cross-workspace update must return ErrNotFound, got %v", err)
 		}
+	})
+}
+
+// sqliteSeedRepoName is the fixture value used across the P6-F2 repo_name
+// subtests below. Hoisted to a const (rather than repeating the literal) to
+// keep goconst quiet on top of the file's other pre-existing "wayneblacktea"
+// literals (e.g. TestGTDStore_ProjectsByRepoName).
+const sqliteSeedRepoName = "wayneblacktea"
+
+// assertSqliteRepoNameValue checks a pgtype.Text repo_name against an
+// expected (valid, value) pair. Extracted so TestGTDStore_UpdateProject_RepoName
+// stays under the gocyclo budget — each subtest calls this once instead of
+// inlining an `if !x.Valid || x.String != want` branch.
+func assertSqliteRepoNameValue(t *testing.T, label string, got pgtype.Text, wantValid bool, wantValue string) {
+	t.Helper()
+	if got.Valid != wantValid {
+		t.Errorf("%s: repo_name.Valid = %v, want %v (got %+v)", label, got.Valid, wantValid, got)
+		return
+	}
+	if wantValid && got.String != wantValue {
+		t.Errorf("%s: repo_name = %q, want %q", label, got.String, wantValue)
+	}
+}
+
+// assertSqliteProjectRepoNameFreshRead re-reads projectID via GetProjectByID
+// and asserts its repo_name matches what UpdateProject returned — pins the
+// P6-F2 acceptance criterion that the update response shape equals a
+// subsequent fresh read (list_projects/get_project).
+func assertSqliteProjectRepoNameFreshRead(t *testing.T, ctx context.Context, s *sqlite.GTDStore, projectID uuid.UUID, updated pgtype.Text) {
+	t.Helper()
+	fresh, err := s.GetProjectByID(ctx, projectID)
+	if err != nil {
+		t.Fatalf("GetProjectByID: %v", err)
+	}
+	if fresh.RepoName != updated {
+		t.Errorf("UpdateProject response repo_name %+v does not match fresh read %+v", updated, fresh.RepoName)
+	}
+}
+
+// TestGTDStore_UpdateProject_RepoName pins P6-F2 on SQLite: UpdateProject's
+// response (and the shared projectsSelectCols/scanProject read path) MUST
+// carry repo_name with the same shape a subsequent fresh read (GetProjectByID)
+// returns, for all three RepoName pointer states (nil/non-empty/empty).
+// Mirrors TestGTDStore_PG_UpdateProject_RepoName in store_postgres_test.go —
+// required by backend-security-design.md §6.5 (dual-backend integration parity).
+func TestGTDStore_UpdateProject_RepoName(t *testing.T) {
+	t.Run("repo_name omitted (nil pointer) → preserves existing value", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "repo-preserve", Title: "Original", Area: "engineering", RepoName: sqliteSeedRepoName,
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		updated, err := s.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:  "Updated Title",
+			Status: gtd.ProjectStatusActive,
+			// RepoName intentionally nil (omitted) — must preserve sqliteSeedRepoName.
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		assertSqliteRepoNameValue(t, "omitted", updated.RepoName, true, sqliteSeedRepoName)
+		assertSqliteProjectRepoNameFreshRead(t, ctx, s, p.ID, updated.RepoName)
+	})
+
+	t.Run("repo_name explicit non-empty → persists and returns new value", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "repo-set", Title: "Original", Area: "engineering",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		newRepo := "food-photo-log"
+		updated, err := s.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:    "Updated Title",
+			Status:   gtd.ProjectStatusActive,
+			RepoName: &newRepo,
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		assertSqliteRepoNameValue(t, "explicit non-empty", updated.RepoName, true, newRepo)
+		assertSqliteProjectRepoNameFreshRead(t, ctx, s, p.ID, updated.RepoName)
+	})
+
+	t.Run("repo_name explicit empty string → clears to NULL and returns invalid", func(t *testing.T) {
+		s := openMem(t, "")
+		ctx := context.Background()
+
+		p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "repo-clear", Title: "Original", Area: "engineering", RepoName: sqliteSeedRepoName,
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+
+		empty := ""
+		updated, err := s.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+			Title:    "Updated Title",
+			Status:   gtd.ProjectStatusActive,
+			RepoName: &empty,
+		})
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		assertSqliteRepoNameValue(t, "explicit empty", updated.RepoName, false, "")
+		assertSqliteProjectRepoNameFreshRead(t, ctx, s, p.ID, updated.RepoName)
 	})
 }
 

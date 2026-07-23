@@ -46,6 +46,23 @@ const (
 	behaviorCandidateDays   = 7 * 24 * time.Hour
 )
 
+// decisionOutcomeReviewDailyCap bounds how many decisions runDecisionOutcomeReview
+// processes per invocation. Incident 2026-07-19 (Railway prod log): a 613-row
+// no-outcome backlog caused the job to insert 316 pending_proposals (~285 ms
+// per round-trip to Aiven Postgres) before tripping cognitiveJobTimeout
+// (context deadline exceeded) — the remaining ~297 decisions were silently
+// dropped for that run, and the NEXT day's run re-scanned the same undeduped
+// backlog from scratch, doubling up proposals for decisions already proposed.
+// The cap keeps each run comfortably inside the 90 s budget; the SQL-level
+// dedup (NOT EXISTS on pending_proposals.payload->>'source_entity_id') plus
+// ORDER BY d.created_at ASC guarantees the backlog drains forward across
+// consecutive daily runs instead of reprocessing the same head-of-queue rows.
+//
+// var (not const) so integration tests can shrink it to exercise the cap
+// path without seeding hundreds of rows — matches the pendingProposalsPruneTimeout
+// override pattern used elsewhere in this package.
+var decisionOutcomeReviewDailyCap = 200
+
 // cognitiveDeps bundles dependencies for the 7 cognitive scheduler jobs.
 // All fields are pointer/interface so the nil-check skip path works without
 // panics.
@@ -254,7 +271,8 @@ func (sc *Scheduler) runWeeklyGoalReview() {
 		}
 		created++
 	}
-	slog.Info("cognitive: weekly_goal_review: completed",
+	slog.Info(
+		"cognitive: weekly_goal_review: completed",
 		"goals_scanned", len(goals),
 		"proposals_created", created,
 	)
@@ -343,7 +361,8 @@ WHERE workspace_id = $1
 		}
 		created++
 	}
-	slog.Info("cognitive: stuck_task_detection: completed",
+	slog.Info(
+		"cognitive: stuck_task_detection: completed",
 		"stuck_tasks_found", len(tasks),
 		"proposals_created", created,
 	)
@@ -354,9 +373,20 @@ WHERE workspace_id = $1
 // ---------------------------------------------------------------------------
 
 // runDecisionOutcomeReview fires at 10:00 daily. It finds decisions older than
-// 30 days without any recorded outcome via a raw LEFT JOIN SQL query on
-// disciplinePool, then creates one TypeTask pending_proposal per qualifying
-// decision so the user can confirm the follow-up task to record the outcome.
+// 30 days without any recorded outcome via a raw SQL query on disciplinePool,
+// then creates one TypeTask pending_proposal per qualifying decision so the
+// user can confirm the follow-up task to record the outcome.
+//
+// Dedup + daily cap (fix for 2026-07-19 incident, see decisionOutcomeReviewDailyCap
+// doc comment): the query excludes decisions that already have a pending,
+// scheduler-originated proposal for this job (matched via
+// payload->>'source_entity_id' — see proposal.TaskPayload.SourceEntityID) and
+// caps the result set to decisionOutcomeReviewDailyCap rows, ordered oldest
+// decision first so consecutive daily runs drain the backlog forward. This
+// does NOT bypass the human-confirm gate — dedup only prevents duplicate
+// *pending* proposals; the user still must accept each one via
+// confirm_proposal before it becomes a real task (Excessive Agency boundary
+// unchanged).
 //
 // Skip path: if disciplinePool is nil, logs info.
 func (sc *Scheduler) runDecisionOutcomeReview() {
@@ -380,9 +410,18 @@ WHERE d.workspace_id = $1
       SELECT 1 FROM outcomes o
       WHERE o.entity_type = 'decision'
         AND o.entity_id = d.id
-  )`
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM pending_proposals p
+      WHERE p.type = 'task'
+        AND p.proposed_by = 'scheduler:decision_outcome_review'
+        AND p.status = 'pending'
+        AND p.payload->>'source_entity_id' = d.id::text
+  )
+ORDER BY d.created_at ASC
+LIMIT $2`
 
-	rows, err := sc.disciplinePool.Query(ctx, q, deps.workspaceID)
+	rows, err := sc.disciplinePool.Query(ctx, q, deps.workspaceID, decisionOutcomeReviewDailyCap)
 	if err != nil {
 		slog.Warn("cognitive: decision_outcome_review: query failed", "err", err)
 		return
@@ -414,10 +453,11 @@ WHERE d.workspace_id = $1
 			d.title,
 		)
 		payload, merr := json.Marshal(proposal.TaskPayload{
-			Title:         fmt.Sprintf("Record outcome for decision: %s", d.title),
-			SourceTool:    "scheduler:decision_outcome_review",
-			Description:   content,
-			SuggestedKind: "general",
+			Title:          fmt.Sprintf("Record outcome for decision: %s", d.title),
+			SourceTool:     "scheduler:decision_outcome_review",
+			Description:    content,
+			SuggestedKind:  "general",
+			SourceEntityID: d.id.String(),
 		})
 		if merr != nil {
 			slog.Warn("cognitive: decision_outcome_review: marshal payload failed", "decision_id", d.id, "err", merr)
@@ -434,7 +474,8 @@ WHERE d.workspace_id = $1
 		}
 		created++
 	}
-	slog.Info("cognitive: decision_outcome_review: completed",
+	slog.Info(
+		"cognitive: decision_outcome_review: completed",
 		"decisions_without_outcome", len(decisions),
 		"proposals_created", created,
 	)
@@ -518,14 +559,16 @@ WHERE workspace_id = $1
 		}
 		created++
 	}
-	slog.Info("cognitive: knowledge_to_skill_candidate: completed",
+	slog.Info(
+		"cognitive: knowledge_to_skill_candidate: completed",
 		"high_recall_items", len(items),
 		"proposals_created", created,
 	)
 	// Direction-D instrumentation: log activity so atom/outcome growth is visible
 	// in the dashboard automation feed. Best-effort: failures do not abort the job.
 	if deps.gtd != nil {
-		if logErr := deps.gtd.LogActivity(ctx, "scheduler", "knowledge_to_skill_candidate",
+		if logErr := deps.gtd.LogActivity(
+			ctx, "scheduler", "knowledge_to_skill_candidate",
 			nil,
 			fmt.Sprintf("high_recall_items=%d proposals_created=%d", len(items), created),
 		); logErr != nil {
@@ -574,7 +617,8 @@ WHERE proposed_by LIKE 'scheduler:%'
 		slog.Warn("cognitive: proposal_cleanup: UPDATE failed", "err", err)
 		return
 	}
-	slog.Info("cognitive: proposal_cleanup: completed",
+	slog.Info(
+		"cognitive: proposal_cleanup: completed",
 		"rows_affected", tag.RowsAffected(),
 		"retention", proposalCleanupInterval,
 	)
@@ -641,13 +685,15 @@ func (sc *Scheduler) runBehaviorRuleCandidate() {
 		}
 		created++
 	}
-	slog.Info("cognitive: behavior_rule_candidate: completed",
+	slog.Info(
+		"cognitive: behavior_rule_candidate: completed",
 		"reflections_with_patterns", len(reflections),
 		"proposals_created", created,
 	)
 	// Direction-D instrumentation: best-effort activity log for dashboard feed.
 	if deps.gtd != nil {
-		if logErr := deps.gtd.LogActivity(ctx, "scheduler", "behavior_rule_candidate",
+		if logErr := deps.gtd.LogActivity(
+			ctx, "scheduler", "behavior_rule_candidate",
 			nil,
 			fmt.Sprintf("reflections_with_patterns=%d proposals_created=%d", len(reflections), created),
 		); logErr != nil {

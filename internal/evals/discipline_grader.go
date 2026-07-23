@@ -16,16 +16,18 @@ type DisciplineChecker interface {
 	RequiresVerification(toolName string) bool
 }
 
-// stubDisciplineChecker satisfies DisciplineChecker by reading
-// discipline.MutatingTools directly. It MUST NOT copy that map into a local
-// constant: doing so would let a tool silently removed from the live
-// allowlist keep passing this grader instead of failing it (dispatch threat
-// surface: "contributor removes a mutating tool from MutatingTools ->
+// stubDisciplineChecker satisfies DisciplineChecker by calling
+// discipline.IsMutating, which itself reads discipline.MutatingTools
+// directly. It MUST NOT copy that map into a local constant, and MUST NOT
+// re-implement the map lookup inline: either would let a tool silently
+// removed from the live allowlist (or a future change to IsMutating's
+// lookup logic) keep passing this grader instead of failing it (dispatch
+// threat surface: "contributor removes a mutating tool from MutatingTools ->
 // verification gate silently bypassed").
 type stubDisciplineChecker struct{}
 
 func (stubDisciplineChecker) RequiresVerification(toolName string) bool {
-	return discipline.MutatingTools[toolName]
+	return discipline.IsMutating(toolName)
 }
 
 // destructiveNamePatterns are tool-name substrings that always carry

@@ -110,7 +110,7 @@ func nsString(ns sql.NullString) string {
 	return ns.String
 }
 
-const projectsSelectCols = `id, workspace_id, goal_id, name, title, description, status, area, priority, created_at, updated_at`
+const projectsSelectCols = `id, workspace_id, goal_id, name, title, description, status, area, priority, created_at, updated_at, repo_name`
 
 func scanProject(scan func(...any) error) (db.Project, error) {
 	var (
@@ -118,9 +118,10 @@ func scanProject(scan func(...any) error) (db.Project, error) {
 		idStr, statusStr, areaStr string
 		workspaceIDNS, goalIDNS   sql.NullString
 		descNS, createdNS, updNS  sql.NullString
+		repoNameNS                sql.NullString
 	)
 	err := scan(&idStr, &workspaceIDNS, &goalIDNS, &p.Name, &p.Title, &descNS,
-		&statusStr, &areaStr, &p.Priority, &createdNS, &updNS)
+		&statusStr, &areaStr, &p.Priority, &createdNS, &updNS, &repoNameNS)
 	if err != nil {
 		return db.Project{}, err
 	}
@@ -134,6 +135,7 @@ func scanProject(scan func(...any) error) (db.Project, error) {
 	p.Area = areaStr
 	p.CreatedAt = parseTimestamptz(createdNS)
 	p.UpdatedAt = parseTimestamptz(updNS)
+	p.RepoName = pgtypeText(repoNameNS.String, repoNameNS.Valid)
 	return p, nil
 }
 

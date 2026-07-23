@@ -53,6 +53,14 @@ type TaskPayload struct {
 	ClassifierRationale string `json:"classifier_rationale,omitempty"`
 	SuggestedKind       string `json:"suggested_kind,omitempty"`
 	Description         string `json:"description,omitempty"`
+	// SourceEntityID is an opaque foreign entity UUID (as string; NEVER a real
+	// FK per CLAUDE.md red-line #9) that scheduler jobs stamp so a follow-up
+	// run can SQL-dedup against it via payload->>'source_entity_id' instead of
+	// re-scanning application-side. Currently written by
+	// scheduler.runDecisionOutcomeReview (keyed on decisions.id) to prevent the
+	// daily job from re-proposing the same decision every run. Empty for
+	// non-scheduler producers (MCP auto-capture, handler autolog).
+	SourceEntityID string `json:"source_entity_id,omitempty"`
 }
 
 // MaxTaskPayloadBytes caps the JSON-encoded TaskPayload size before persist.
