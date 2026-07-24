@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -47,11 +48,11 @@ func TestValidateBranchName_RuneLength(t *testing.T) {
 	}
 }
 
-// TestStrictVagueness_ParseBool verifies the handler-package strictVagueness
-// helper accepts the strconv.ParseBool truthy set ("1", "t", "T", "true",
-// "True", "TRUE") and rejects everything else (including the previously-
-// accepted-only "true" plus "0", empty, garbage). Round-1 follow-up GTD
-// 6cda1ce2.
+// TestStrictVagueness_ParseBool verifies validator.StrictModeEnabled (the
+// single-source gate this package now reads instead of its own copy) accepts
+// the strconv.ParseBool truthy set ("1", "t", "T", "true", "True", "TRUE")
+// and rejects everything else (including the previously-accepted-only "true"
+// plus "0", empty, garbage). Round-1 follow-up GTD 6cda1ce2.
 func TestStrictVagueness_ParseBool(t *testing.T) {
 	cases := []struct {
 		name string
@@ -73,17 +74,19 @@ func TestStrictVagueness_ParseBool(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("WBT_STRICT_VAGUENESS", tc.env)
-			if got := handler.StrictVaguenessForTest(); got != tc.want {
-				t.Errorf("strictVagueness() with env=%q = %v, want %v", tc.env, got, tc.want)
+			if got := validator.StrictModeEnabled(); got != tc.want {
+				t.Errorf("StrictModeEnabled() with env=%q = %v, want %v", tc.env, got, tc.want)
 			}
 		})
 	}
 }
 
 // TestCreateTaskRequest_StrictVagueness verifies that the CreateTask handler
-// reads WBT_STRICT_VAGUENESS through the unified strictVagueness() helper
+// reads WBT_STRICT_VAGUENESS through validator.StrictModeEnabled()
 // (strconv.ParseBool) — round-2 follow-up for M-1, replacing the deleted
-// strictVaguenessEnabled() == "true" reader on gtd_handler.go.
+// strictVaguenessEnabled() == "true" reader on gtd_handler.go. Dedup follow-
+// up: this package no longer owns its own copy of the reader either — see
+// internal/validator/task_input.go.
 //
 // Drives the full CreateTask handler path with a vague description ("TBD")
 // and asserts:

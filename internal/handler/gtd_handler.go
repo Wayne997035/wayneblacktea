@@ -302,10 +302,8 @@ func (h *GTDHandler) CreateTask(c echo.Context) error {
 	}
 
 	// Vagueness and kind-field checks — warn-by-default, strict on opt-in.
-	var allWarnings []string
-	allWarnings = append(allWarnings, validator.CheckVagueness("description", req.Description, kind)...)
-	allWarnings = append(allWarnings, validator.CheckKindFields(kind, req.Description)...)
-	if len(allWarnings) > 0 && strictVagueness() {
+	allWarnings := validator.CheckTaskInput(req.Description, kind)
+	if len(allWarnings) > 0 && validator.StrictModeEnabled() {
 		return c.JSON(http.StatusBadRequest, map[string]any{
 			"error":    "vagueness check failed",
 			"warnings": allWarnings,

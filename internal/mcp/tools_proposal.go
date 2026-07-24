@@ -66,7 +66,8 @@ const (
 )
 
 func (s *Server) registerProposalTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("confirm_proposals",
+	ms.AddTool(mcp.NewTool(
+		"confirm_proposals",
 		mcp.WithDescription(
 			"Batch accept or reject multiple pending proposals in a single call. "+
 				"Accepts 1–100 proposal UUIDs and a single action ('accept' or 'reject'). "+
@@ -77,7 +78,8 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 		mcp.WithString("action", mcp.Description("'accept' or 'reject'"), mcp.Required()),
 	), s.handleConfirmProposals)
 
-	ms.AddTool(mcp.NewTool("propose_goal",
+	ms.AddTool(mcp.NewTool(
+		"propose_goal",
 		mcp.WithDescription(
 			"Propose a new goal for user confirmation. Stays pending until confirm_proposal "+
 				"is called with action='accept'. Use this when an agent suggests a goal "+
@@ -90,7 +92,8 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 		mcp.WithString("proposed_by", mcp.Description("Agent identity (e.g. claude-code, discord-bot)")),
 	), s.handleProposeGoal)
 
-	ms.AddTool(mcp.NewTool("propose_project",
+	ms.AddTool(mcp.NewTool(
+		"propose_project",
 		mcp.WithDescription(
 			"Propose a new project for user confirmation. Stays pending until confirm_proposal "+
 				"is called with action='accept'.",
@@ -104,11 +107,13 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 		mcp.WithString("proposed_by", mcp.Description("Agent identity")),
 	), s.handleProposeProject)
 
-	ms.AddTool(mcp.NewTool("list_pending_proposals",
+	ms.AddTool(mcp.NewTool(
+		"list_pending_proposals",
 		mcp.WithDescription("Lists all proposals awaiting user resolution, newest first."),
 	), s.handleListPendingProposals)
 
-	ms.AddTool(mcp.NewTool("confirm_proposal",
+	ms.AddTool(mcp.NewTool(
+		"confirm_proposal",
 		mcp.WithDescription(
 			"Resolves a pending proposal. action='accept' materializes the entity (goal/project/concept) "+
 				"atomically; action='reject' marks the proposal rejected without materializing.",
@@ -587,7 +592,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 // The post-commit step is keyed off prop.Type == TypeTask plus created == nil
 // (same dispatch as TypeKnowledge).
 func (s *Server) materializeTaskSQLite(_ context.Context, _ *sql.Tx, prop *db.PendingProposal) (any, string) {
-	if _, _, errMsg := decodeTaskProposalParams(prop.Payload, s.strictVagueness()); errMsg != "" {
+	if _, _, errMsg := decodeTaskProposalParams(prop.Payload, validator.StrictModeEnabled()); errMsg != "" {
 		return nil, errMsg
 	}
 	return nil, "" // signals tx can commit; post-commit path does CreateTask
@@ -674,7 +679,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 // atomically. Strict-mode validator failures return errMsg → tx rolls back.
 // Warn mode returns a {task, warnings} map so the response surfaces them.
 func (s *Server) materializeTaskPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
-	params, warnings, errMsg := decodeTaskProposalParams(prop.Payload, s.strictVagueness())
+	params, warnings, errMsg := decodeTaskProposalParams(prop.Payload, validator.StrictModeEnabled())
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -771,7 +776,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 // validator → calls s.gtd.CreateTask (no tx — see TypeKnowledge pattern).
 // Strict mode errMsg aborts; warn mode wraps the task with warnings.
 func (s *Server) materializeTaskIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
-	params, warnings, errMsg := decodeTaskProposalParams(prop.Payload, s.strictVagueness())
+	params, warnings, errMsg := decodeTaskProposalParams(prop.Payload, validator.StrictModeEnabled())
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -1022,9 +1027,7 @@ func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams
 		kind = validator.KindGeneral
 	}
 
-	var warnings []string
-	warnings = append(warnings, validator.CheckVagueness("description", tp.Description, kind)...)
-	warnings = append(warnings, validator.CheckKindFields(kind, tp.Description)...)
+	warnings := validator.CheckTaskInput(tp.Description, kind)
 	if len(warnings) > 0 && strict {
 		return gtd.CreateTaskParams{}, warnings, fmt.Sprintf("vagueness check failed: %v", warnings)
 	}

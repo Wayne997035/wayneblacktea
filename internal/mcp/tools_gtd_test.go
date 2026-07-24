@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
@@ -66,14 +67,15 @@ func (sp *spyOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ st
 // Compile-time guarantee that the spy satisfies the full interface.
 var _ outcome.StoreIface = (*spyOutcomeStore)(nil)
 
-// TestStrictVagueness_ParseBool verifies that (*Server).strictVagueness reads
-// WBT_STRICT_VAGUENESS through strconv.ParseBool, accepting the canonical
-// truthy/falsy set ("1", "t", "true", "True", "TRUE", "T" → true; "0",
-// "false", "f", empty, anything not in the truthy set → false).
+// TestStrictVagueness_ParseBool verifies that validator.StrictModeEnabled
+// (the single-source gate every MCP tool now reads) accepts the canonical
+// strconv.ParseBool truthy/falsy set ("1", "t", "true", "True", "TRUE", "T"
+// → true; "0", "false", "f", empty, anything not in the truthy set → false).
 //
 // Round-1 follow-up GTD 6cda1ce2: tightens the previous exact-"true" match
 // so operators don't get caught out by `WBT_STRICT_VAGUENESS=1` silently
-// running in warn mode.
+// running in warn mode. Dedup follow-up: this package no longer owns its own
+// copy of the reader — see internal/validator/task_input.go.
 func TestStrictVagueness_ParseBool(t *testing.T) {
 	cases := []struct {
 		name string
@@ -92,12 +94,11 @@ func TestStrictVagueness_ParseBool(t *testing.T) {
 		{"invalid_garbage_falsy", "yes", false},
 		{"invalid_two_falsy", "2", false},
 	}
-	s := &Server{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("WBT_STRICT_VAGUENESS", tc.env)
-			if got := s.strictVagueness(); got != tc.want {
-				t.Errorf("strictVagueness() with env=%q = %v, want %v", tc.env, got, tc.want)
+			if got := validator.StrictModeEnabled(); got != tc.want {
+				t.Errorf("StrictModeEnabled() with env=%q = %v, want %v", tc.env, got, tc.want)
 			}
 		})
 	}

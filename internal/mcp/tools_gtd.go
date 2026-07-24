@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -22,15 +20,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
-
-// strictVagueness reports whether WBT_STRICT_VAGUENESS is set to a truthy
-// value in the server environment. Accepts the canonical strconv.ParseBool
-// set ("1", "t", "T", "true", "True", "TRUE"). Never sourced from tool
-// arguments (user-controlled).
-func (s *Server) strictVagueness() bool {
-	b, _ := strconv.ParseBool(os.Getenv("WBT_STRICT_VAGUENESS"))
-	return b
-}
 
 // repoNameRe enforces a safe slug format for project repo_name values passed
 // through MCP tools. Keeps the column semantically queryable and prevents
@@ -819,10 +808,8 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 
 	// Vagueness and kind-field checks. For MCP, warnings are embedded in the
 	// result JSON body (no HTTP headers available). Strict mode → tool error.
-	var allWarnings []string
-	allWarnings = append(allWarnings, validator.CheckVagueness("description", args.Description, kind)...)
-	allWarnings = append(allWarnings, validator.CheckKindFields(kind, args.Description)...)
-	if len(allWarnings) > 0 && s.strictVagueness() {
+	allWarnings := validator.CheckTaskInput(args.Description, kind)
+	if len(allWarnings) > 0 && validator.StrictModeEnabled() {
 		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
 	}
 

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -20,15 +18,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
-
-// strictVagueness returns true when WBT_STRICT_VAGUENESS env is set to a
-// truthy value as understood by strconv.ParseBool ("1", "t", "T", "true",
-// "True", "TRUE"). Centralised so the literal lives in one place (matches
-// MCP tools_gtd.go:24).
-func strictVagueness() bool {
-	b, _ := strconv.ParseBool(os.Getenv("WBT_STRICT_VAGUENESS"))
-	return b
-}
 
 const (
 	proposalBodyLimit = 32 * 1024 // 32 KB — enough for 100 UUIDs and action
@@ -366,10 +355,8 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 	if !validator.IsValidKind(kind) {
 		kind = validator.KindGeneral
 	}
-	var warnings []string
-	warnings = append(warnings, validator.CheckVagueness("description", tp.Description, kind)...)
-	warnings = append(warnings, validator.CheckKindFields(kind, tp.Description)...)
-	if len(warnings) > 0 && strictVagueness() {
+	warnings := validator.CheckTaskInput(tp.Description, kind)
+	if len(warnings) > 0 && validator.StrictModeEnabled() {
 		return c.JSON(http.StatusBadRequest, map[string]any{
 			"error":    "vagueness check failed",
 			"warnings": warnings,
@@ -813,10 +800,8 @@ func (h *ProposalHandler) batchResolveOne(
 				if kind == "" || !validator.IsValidKind(kind) {
 					kind = validator.KindGeneral
 				}
-				var warnings []string
-				warnings = append(warnings, validator.CheckVagueness("description", m.tp.Description, kind)...)
-				warnings = append(warnings, validator.CheckKindFields(kind, m.tp.Description)...)
-				if len(warnings) > 0 && strictVagueness() {
+				warnings := validator.CheckTaskInput(m.tp.Description, kind)
+				if len(warnings) > 0 && validator.StrictModeEnabled() {
 					entry.Error = "vagueness check failed: " + strings.Join(warnings, "; ")
 					return entry
 				}
