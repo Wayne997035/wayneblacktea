@@ -15,6 +15,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
+	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -75,6 +76,17 @@ type ServerStores interface {
 	Reflection() reflection.StoreIface
 	BehaviorRule() behaviorrule.StoreIface
 	DisciplineEventStore() watchdog.DisciplineEventStoreIface
+
+	// KnowledgePruner / LearningPruner return decay.PrunerStore for the
+	// active backend's knowledge / concepts stores. Both the Postgres and
+	// SQLite backends implement decay.PrunerStore via SoftPruneDecayed; the
+	// type assertion lives here (backend-internal detail) so callers such as
+	// cmd/server's buildPruner never need to type-assert a backend-specific
+	// type themselves. Returns nil when the concrete store does not
+	// implement the interface (unexpected backend) — the daily prune job for
+	// that table is then skipped gracefully, matching prior behavior.
+	KnowledgePruner() decay.PrunerStore
+	LearningPruner() decay.PrunerStore
 
 	// WorkspaceID returns the workspace UUID configured at startup, or nil
 	// when operating in legacy single-workspace mode. Used by MCP tools that

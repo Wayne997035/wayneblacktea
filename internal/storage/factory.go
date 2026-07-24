@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
+	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -242,6 +243,25 @@ func (p *postgresServerStores) BehaviorRule() behaviorrule.StoreIface { return p
 func (p *postgresServerStores) DisciplineEventStore() watchdog.DisciplineEventStoreIface {
 	return p.disciplineEventM8Store
 }
+
+// KnowledgePruner / LearningPruner implement the decay.PrunerStore assertion
+// once, here, so cmd/server never type-asserts a backend-specific store.
+// *knowledge.Store and *learning.Store both implement decay.PrunerStore via
+// SoftPruneDecayed (see internal/knowledge/store.go, internal/learning/store.go).
+func (p *postgresServerStores) KnowledgePruner() decay.PrunerStore {
+	if ps, ok := p.Knowledge().(decay.PrunerStore); ok {
+		return ps
+	}
+	return nil
+}
+
+func (p *postgresServerStores) LearningPruner() decay.PrunerStore {
+	if ps, ok := p.Learning().(decay.PrunerStore); ok {
+		return ps
+	}
+	return nil
+}
+
 func (p *postgresServerStores) WorkspaceID() *uuid.UUID                  { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { return p.pool }
 func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
@@ -428,6 +448,24 @@ func (s *sqliteServerStores) BehaviorRule() behaviorrule.StoreIface { return s.b
 func (s *sqliteServerStores) DisciplineEventStore() watchdog.DisciplineEventStoreIface {
 	return s.disciplineEventM8Store
 }
+
+// KnowledgePruner / LearningPruner: see the postgresServerStores doc comment
+// above — same assertion, SQLite-backed. *wbtsqlite.KnowledgeStore and
+// *wbtsqlite.LearningStore implement decay.PrunerStore via SoftPruneDecayed.
+func (s *sqliteServerStores) KnowledgePruner() decay.PrunerStore {
+	if ps, ok := s.Knowledge().(decay.PrunerStore); ok {
+		return ps
+	}
+	return nil
+}
+
+func (s *sqliteServerStores) LearningPruner() decay.PrunerStore {
+	if ps, ok := s.Learning().(decay.PrunerStore); ok {
+		return ps
+	}
+	return nil
+}
+
 func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                  { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return nil }
 func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }
