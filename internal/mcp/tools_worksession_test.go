@@ -64,6 +64,16 @@ func newTestWorkSessionServerWithDB(t *testing.T) (*Server, *wbtsqlite.DB) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// MCPServer() registers every tool (including deriving+caching each
+	// toolSpec via addTool/registerToolSpec — see toolspec.go). Tests below
+	// call handler methods directly rather than dispatching through the
+	// returned *server.MCPServer (see callStartWork's doc comment), but the
+	// seam-wrapped handlers (tools_gtd.go) still need their toolSpec
+	// registered before seam() can validate/decode args. Calling this once
+	// here — exactly as production init (cmd/mcp/main.go) does — makes that
+	// deterministic regardless of test run order/filter, instead of relying
+	// on some other test file happening to call it first.
+	srv.MCPServer()
 	return srv, db
 }
 

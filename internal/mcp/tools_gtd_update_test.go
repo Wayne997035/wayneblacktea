@@ -9,83 +9,64 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
-// callAddTask invokes handleAddTask with the given args.
+// callAddTask invokes add_task (seam + handleAddTask) with the given args.
 func callAddTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	req := mcpmsg.CallToolRequest{}
-	req.Params.Arguments = args
-	res, err := s.handleAddTask(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleAddTask error: %v", err)
-	}
-	return res
+	return callTool(t, "add_task", args, s.handleAddTask)
 }
 
-// callUpdateTask invokes handleUpdateTask with the given args. Never returns a
-// Go error; tool-level errors surface via CallToolResult.IsError.
+// callUpdateTask invokes update_task (seam + handleUpdateTask) with the given
+// args. Never returns a Go error; tool-level errors surface via
+// CallToolResult.IsError.
 func callUpdateTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	req := mcpmsg.CallToolRequest{}
-	req.Params.Arguments = args
-	res, err := s.handleUpdateTask(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleUpdateTask error: %v", err)
-	}
-	return res
+	return callTool(t, "update_task", args, s.handleUpdateTask)
 }
 
-// callGetUpcomingWork invokes handleGetUpcomingWork with the given args.
+// callGetUpcomingWork invokes get_upcoming_work (seam + handleGetUpcomingWork)
+// with the given args.
 func callGetUpcomingWork(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	req := mcpmsg.CallToolRequest{}
-	req.Params.Arguments = args
-	res, err := s.handleGetUpcomingWork(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleGetUpcomingWork error: %v", err)
-	}
-	return res
+	return callTool(t, "get_upcoming_work", args, s.handleGetUpcomingWork)
 }
 
 // --- parseUpdateTaskArgs validation ---
-
-func TestParseUpdateTaskArgs_InvalidStatus(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"status": "completed"})
-	if msg == "" {
-		t.Fatal("expected error for completed status via update_task")
-	}
-	if !strings.Contains(msg, "pending") {
-		t.Errorf("error should mention valid statuses, got: %s", msg)
-	}
-}
+//
+// TestParseUpdateTaskArgs_InvalidStatus was removed: status enum-membership
+// moved from this function to the seam (update_task's status arg declares
+// mcp.Enum(...) at registration — see toolspec.go validate()). Coverage for
+// "status=completed via update_task must error" is preserved end-to-end by
+// TestUpdateTask_InvalidStatusReturnsError below, which now exercises the
+// seam's check rather than parseUpdateTaskArgs' own.
 
 func TestParseUpdateTaskArgs_ValidStatuses(t *testing.T) {
-	for _, s := range []string{"pending", "in_progress", "cancelled"} {
-		p, msg := parseUpdateTaskArgs(map[string]any{"status": s})
+	for _, st := range []string{"pending", "in_progress", "cancelled"} {
+		p, msg := parseUpdateTaskArgs(UpdateTaskArgs{Status: st})
 		if msg != "" {
-			t.Errorf("status %q should be valid, got error: %s", s, msg)
+			t.Errorf("status %q should be valid, got error: %s", st, msg)
 		}
-		if p.Status == nil || *p.Status != s {
-			t.Errorf("status %q not propagated correctly", s)
+		if p.Status == nil || *p.Status != st {
+			t.Errorf("status %q not propagated correctly", st)
 		}
 	}
 }
 
 func TestParseUpdateTaskArgs_PriorityOutOfRange(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"priority": float64(6)})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{Priority: 6})
 	if msg == "" {
 		t.Fatal("expected error for priority=6")
 	}
 }
 
 func TestParseUpdateTaskArgs_ImportanceOutOfRange(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"importance": float64(4)})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{Importance: 4})
 	if msg == "" {
 		t.Fatal("expected error for importance=4")
 	}
 }
 
 func TestParseUpdateTaskArgs_InvalidDueDate(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"due_date": "not-a-date"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{DueDate: "not-a-date"})
 	if msg == "" {
 		t.Fatal("expected error for bad due_date")
 	}
@@ -95,7 +76,7 @@ func TestParseUpdateTaskArgs_InvalidDueDate(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_ValidDueDate(t *testing.T) {
-	p, msg := parseUpdateTaskArgs(map[string]any{"due_date": "2026-12-31T00:00:00Z"})
+	p, msg := parseUpdateTaskArgs(UpdateTaskArgs{DueDate: "2026-12-31T00:00:00Z"})
 	if msg != "" {
 		t.Fatalf("valid RFC3339 should pass, got: %s", msg)
 	}
@@ -212,7 +193,7 @@ func TestGetUpcomingWork_DefaultsApplied(t *testing.T) {
 // --- branch_name / pr_url validation (M-1, M-2) ---
 
 func TestParseUpdateTaskArgs_BranchNameTooLong(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": strings.Repeat("a", 256)})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr(strings.Repeat("a", 256))})
 	if msg == "" {
 		t.Fatal("expected error for branch_name > 255 chars")
 	}
@@ -222,7 +203,7 @@ func TestParseUpdateTaskArgs_BranchNameTooLong(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_BranchNameNewline(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": "feature/bad\nname"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr("feature/bad\nname")})
 	if msg == "" {
 		t.Fatal("expected error for branch_name with \\n control char")
 	}
@@ -232,7 +213,7 @@ func TestParseUpdateTaskArgs_BranchNameNewline(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_BranchNameDEL(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": "feature/bad\x7fname"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr("feature/bad\x7fname")})
 	if msg == "" {
 		t.Fatal("expected error for branch_name with DEL (0x7F)")
 	}
@@ -240,44 +221,44 @@ func TestParseUpdateTaskArgs_BranchNameDEL(t *testing.T) {
 
 func TestParseUpdateTaskArgs_BranchNameUnicodeControl(t *testing.T) {
 	// U+200B zero-width space — a Unicode format char (Cf) that bytes < 0x20 alone would miss.
-	_, msg := parseUpdateTaskArgs(map[string]any{"branch_name": "feature/bad" + "\u200b" + "name"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr("feature/bad" + "\u200b" + "name")})
 	if msg == "" {
 		t.Fatal("expected error for branch_name with U+200B zero-width space")
 	}
 }
 
 func TestParseUpdateTaskArgs_PRUrlInvalidHost(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://notgithub.com/foo/bar/pull/1"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("https://notgithub.com/foo/bar/pull/1")})
 	if msg == "" {
 		t.Fatal("expected error for pr_url on non-github host")
 	}
 }
 
 func TestParseUpdateTaskArgs_PRUrlJavaScript(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "javascript:alert(1)"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("javascript:alert(1)")})
 	if msg == "" {
 		t.Fatal("expected error for javascript: pr_url")
 	}
 }
 
 func TestParseUpdateTaskArgs_PRUrlIssuesNotPulls(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://github.com/foo/bar/issues/1"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("https://github.com/foo/bar/issues/1")})
 	if msg == "" {
 		t.Fatal("expected error for pr_url pointing to issues (not pulls)")
 	}
 }
 
 func TestParseUpdateTaskArgs_PRUrlTrailingPath(t *testing.T) {
-	_, msg := parseUpdateTaskArgs(map[string]any{"pr_url": "https://github.com/owner/repo/pull/42/files"})
+	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("https://github.com/owner/repo/pull/42/files")})
 	if msg == "" {
 		t.Fatal("expected error for pr_url with trailing path /files")
 	}
 }
 
 func TestParseUpdateTaskArgs_ValidBranchAndPR(t *testing.T) {
-	p, msg := parseUpdateTaskArgs(map[string]any{
-		"branch_name": "feature/my-feature",
-		"pr_url":      "https://github.com/owner/repo/pull/42",
+	p, msg := parseUpdateTaskArgs(UpdateTaskArgs{
+		BranchName: strPtr("feature/my-feature"),
+		PRUrl:      strPtr("https://github.com/owner/repo/pull/42"),
 	})
 	if msg != "" {
 		t.Fatalf("valid branch_name+pr_url should pass, got: %s", msg)
@@ -292,7 +273,7 @@ func TestParseUpdateTaskArgs_ValidBranchAndPR(t *testing.T) {
 
 func TestParseUpdateTaskArgs_ClearPRUrl(t *testing.T) {
 	// Explicit empty string clears the field without triggering URL validation.
-	p, msg := parseUpdateTaskArgs(map[string]any{"pr_url": ""})
+	p, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("")})
 	if msg != "" {
 		t.Fatalf("explicit empty pr_url should pass (clear semantics), got: %s", msg)
 	}
@@ -301,6 +282,16 @@ func TestParseUpdateTaskArgs_ClearPRUrl(t *testing.T) {
 	}
 	if *p.PRUrl != "" {
 		t.Errorf("expected empty string, got: %q", *p.PRUrl)
+	}
+}
+
+// --- handleAddTask required-title (seam-absorbed) ---
+
+func TestAddTask_MissingTitle(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddTask(t, s, map[string]any{"due_date": "2026-12-31T00:00:00Z"})
+	if !r.IsError || resultText(r) != wantTitleRequired {
+		t.Errorf("got %q, want %q", resultText(r), wantTitleRequired)
 	}
 }
 

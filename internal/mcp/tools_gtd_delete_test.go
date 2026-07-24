@@ -12,18 +12,12 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
-// callDeleteTask invokes handleDeleteTask with the supplied arguments. Returns
-// the tool result; never returns a Go error (tool errors surface via
-// CallToolResult.IsError = true).
+// callDeleteTask invokes delete_task (seam + handleDeleteTask) with the
+// supplied arguments. Returns the tool result; never returns a Go error
+// (tool errors surface via CallToolResult.IsError = true).
 func callDeleteTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	req := mcpmsg.CallToolRequest{}
-	req.Params.Arguments = args
-	res, err := s.handleDeleteTask(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleDeleteTask error: %v", err)
-	}
-	return res
+	return callTool(t, "delete_task", args, s.handleDeleteTask)
 }
 
 // seedTask creates a single GTD task and returns its UUID for delete tests.

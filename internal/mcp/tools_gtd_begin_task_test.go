@@ -10,16 +10,10 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
-// callBeginTask invokes handleBeginTask with the given args.
+// callBeginTask invokes begin_task (seam + handleBeginTask) with the given args.
 func callBeginTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	req := mcpmsg.CallToolRequest{}
-	req.Params.Arguments = args
-	res, err := s.handleBeginTask(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleBeginTask error: %v", err)
-	}
-	return res
+	return callTool(t, "begin_task", args, s.handleBeginTask)
 }
 
 // beginTaskResponse mirrors the MCP envelope.
