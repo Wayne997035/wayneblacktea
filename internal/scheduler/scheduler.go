@@ -17,19 +17,10 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
-	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/go-co-op/gocron/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// aiCostPruneTimeout caps the daily ai_cost_ledger DELETE. 60 s budget
-// consistent with other prune jobs.
-const aiCostPruneTimeout = 60 * time.Second
-
-// aiCostPruneAge is the retention window for ai_cost_ledger rows.
-// 30 days per backend-security-design.md §1.3 (observability tables MUST have TTL).
-const aiCostPruneAge = "30 days"
 
 // disciplinePruneTimeout caps the daily discipline_events DELETE. The query
 // is index-supported (idx_discipline_events_observed_at) and finishes well
@@ -130,49 +121,12 @@ type Scheduler struct {
 	// in by the caller) — the prune job is skipped in that case because
 	// SQLite is dev-local single-tenant and has no growth concern.
 	disciplinePool *pgxpool.Pool
-	// candidatePruner deletes resolved completion_candidates older than 30d.
-	// Set via WithCandidatePruner after New(); nil skips the prune job.
-	candidatePruner candidateRetentionStore
-	// mergedPRsPruner deletes merged_prs_observed rows older than 30d.
-	// Set via WithMergedPRsPruner after New(); nil skips the prune job.
-	mergedPRsPruner mergedPRsRetentionStore
-	// outcomePruner deletes outcomes + evaluations rows older than 90d.
-	// Set via WithOutcomePruner after New(); nil skips the prune job.
-	outcomePruner outcomePruneStore
-	// reflectionPruner deletes reflections rows older than 180d.
-	// Set via WithReflectionPruner after New(); nil skips the prune job.
-	reflectionPruner reflectionPruneStore
-	// behaviorRulePruner deletes behavior_rules rows (status rejected/deprecated) older than 365d.
-	// Set via WithBehaviorRulePruner after New(); nil skips the prune job.
-	behaviorRulePruner behaviorRulePruneStore
 	// governanceDeps bundles the behavior governance weekly job dependencies.
 	// Set via WithBehaviorGovernance after New(); nil skips the job.
 	governanceDeps *governanceDeps
 	// cognitiveDeps bundles the 7 Memory-7 cognitive job dependencies.
 	// Set via WithCognitiveDeps after New(); nil skips all 7 cognitive jobs.
 	cognitiveDeps *cognitiveDeps
-	// disciplineEventM8Pruner deletes discipline_events_m8 rows older than
-	// 90d. Set via WithDisciplineEventPruner after New(); nil skips the job.
-	disciplineEventM8Pruner watchdog.DisciplineEventStoreIface
-	// aiCostLedgerPool is the pgxpool used by the daily ai_cost_ledger prune job.
-	// nil when running under SQLite (or when no pool is wired in by the caller)
-	// — the prune job is skipped in that case.
-	aiCostLedgerPool *pgxpool.Pool
-	// workSessionEvidencePruner deletes work_session_evidence rows older than
-	// 90d (wbt-2.0 P2.4). Set via WithWorkSessionEvidencePruner after New();
-	// nil skips the prune job.
-	workSessionEvidencePruner workSessionEvidencePruneStore
-	// activityLogPruner deletes activity_log rows older than 365d.
-	// Set via WithActivityLogPruner after New(); nil skips the prune job.
-	activityLogPruner activityLogPruneStore
-	// projectStatusSnapshotPruner deletes project_status_snapshots rows older
-	// than 180d. Set via WithProjectStatusSnapshotPruner after New(); nil
-	// skips the prune job.
-	projectStatusSnapshotPruner projectStatusSnapshotPruneStore
-	// sessionHandoffPruner deletes resolved session_handoffs rows older than
-	// 365d (open handoffs are never pruned). Set via WithSessionHandoffPruner
-	// after New(); nil skips the prune job.
-	sessionHandoffPruner sessionHandoffPruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -182,131 +136,164 @@ type DiscordSender interface {
 
 // candidateRetentionStore is the narrow prune interface used by the daily
 // completion-candidate cleanup job. completioncandidate.Store satisfies it.
+// PruneResolved takes a retention duration rather than a cutoff time, so
+// candidatePrunerAdapter bridges it to the unified PrunerStore contract.
 type candidateRetentionStore interface {
 	PruneResolved(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
 // mergedPRsRetentionStore is the narrow prune interface used by the daily
-// merged_prs_observed cleanup job. mergedprs.Store satisfies it.
-// 30-day retention codified by backend-security-design.md §1.3 (observability
-// table TTL).
+// merged_prs_observed cleanup job. mergedprs.Store satisfies it. Like
+// candidateRetentionStore, PruneOlderThan here takes a duration rather than
+// a cutoff time; mergedPRsPrunerAdapter bridges it to PrunerStore.
 type mergedPRsRetentionStore interface {
 	PruneOlderThan(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
-// mergedPRsObservedRetention is the retention window for merged_prs_observed.
-// 30 days mirrors discipline / guard / completion-candidate retention so the
-// daily 03:00 prune cluster handles every observability table with the same
-// budget. Documented in migrations/000052_merged_prs_observed.up.sql.
-const mergedPRsObservedRetention = 30 * 24 * time.Hour
-
-// mergedPRsObservedPruneTimeout caps the daily DELETE. Same 60 s budget as
-// the discipline / guard prune jobs — well under a second on personal-OS
-// scale, the ceiling leaves room for a momentarily slow Aiven Postgres.
-const mergedPRsObservedPruneTimeout = 60 * time.Second
-
-// outcomePruneStore is the narrow prune interface used by the daily
-// outcomes + evaluations cleanup job. outcome.Store satisfies it.
-// 90-day retention per backend-security-design.md §1.3.
-type outcomePruneStore interface {
+// PrunerStore is the unified narrow interface every daily TTL-prune job
+// registered via WithPruner satisfies: delete rows older than cutoff and
+// report the number of rows removed.
+type PrunerStore interface {
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
-// workSessionEvidencePruneStore is the narrow prune interface used by the
-// daily work_session_evidence cleanup job (wbt-2.0 P2.4). Both
-// worksession.Store and the SQLite WorkSessionStore satisfy it.
-// 90-day retention per backend-security-design.md §1.3.
-type workSessionEvidencePruneStore interface {
-	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+// PrunerSpec describes one daily TTL-prune job. Adding a new observability
+// table's retention job is a single PrunerSpec value passed to WithPruner —
+// no new interface, With*Pruner method, or exec block required.
+type PrunerSpec struct {
+	// Name identifies the table/job in gocron job names ("daily-<Name>-prune")
+	// and log messages.
+	Name string
+	// Store performs the delete. Use one of the New*PrunerAdapter helpers
+	// below to wrap a store whose native method doesn't already match
+	// PrunerStore's cutoff-time signature.
+	Store PrunerStore
+	// Retention is the TTL window; rows with a timestamp older than
+	// time.Now().Add(-Retention) are eligible for deletion.
+	Retention time.Duration
+	// Hour, Minute are the Asia/Taipei time-of-day the job fires daily.
+	// uint (not int) matches gocron.NewAtTime's signature so no runtime
+	// conversion — and no gosec G115 overflow finding — is needed.
+	Hour, Minute uint
 }
 
-// workSessionEvidencePruneRetention is the work_session_evidence TTL (90 days).
-const workSessionEvidencePruneRetention = 90 * 24 * time.Hour
+// prunerJobTimeout caps every registry-driven daily prune job's DELETE.
+// 60 s budget — uniform across all prior individually-timed prune jobs,
+// which all used this same value under different constant names.
+const prunerJobTimeout = 60 * time.Second
 
-// workSessionEvidencePruneTimeout caps the daily work_session_evidence
-// DELETE. 60 s budget mirrors the other observability-table prune jobs.
-const workSessionEvidencePruneTimeout = 60 * time.Second
-
-// outcomePruneRetention is the outcomes/evaluations TTL (90 days).
-const outcomePruneRetention = 90 * 24 * time.Hour
-
-// outcomePruneTimeout caps the daily outcomes DELETE. 60 s budget leaves
-// room for a momentarily slow Aiven Postgres without wedging the scheduler.
-const outcomePruneTimeout = 60 * time.Second
-
-// reflectionPruneStore is the narrow prune interface used by the daily
-// reflections cleanup job. reflection.Store (PG) and sqlite.ReflectionStore
-// both satisfy it. 180-day retention per backend-security-design.md §1.3.
-type reflectionPruneStore interface {
-	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+// WithPruner registers a daily TTL-prune job driven by spec. Must be called
+// before Start(). Callers are responsible for the nil-store skip check
+// (mirrors the pre-refactor "if store != nil { sched.WithXxxPruner(store) }"
+// pattern in cmd/server/main.go) — WithPruner itself assumes spec.Store is
+// non-nil.
+func (sc *Scheduler) WithPruner(spec PrunerSpec) error {
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(spec.Hour, spec.Minute, 0))),
+		gocron.NewTask(func() { runPrune(spec) }),
+		gocron.WithName(fmt.Sprintf("daily-%s-prune", spec.Name)),
+		// LimitModeReschedule: drop a run if the previous one is still
+		// executing rather than piling up goroutines.
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily %s prune job: %w", spec.Name, err)
+	}
+	slog.Info(
+		"scheduler: daily prune job scheduled",
+		"table", spec.Name,
+		"hour", spec.Hour,
+		"minute", spec.Minute,
+		"retention_days", int(spec.Retention.Hours()/24),
+	)
+	return nil
 }
 
-// reflectionPruneRetention is the reflections TTL (180 days).
-const reflectionPruneRetention = 180 * 24 * time.Hour
+// runPrune executes spec's PruneOlderThan against a fresh timeout-bounded
+// context and logs the outcome. A free function (not a Scheduler method) so
+// it's directly unit-testable without constructing a full Scheduler. Errors
+// are logged at warn level — the scheduler MUST keep running other jobs
+// regardless of a single table's DB hiccup.
+func runPrune(spec PrunerSpec) {
+	ctx, cancel := context.WithTimeout(context.Background(), prunerJobTimeout)
+	defer cancel()
 
-// reflectionPruneTimeout caps the daily reflections DELETE. 60 s budget.
-const reflectionPruneTimeout = 60 * time.Second
-
-// behaviorRulePruneStore is the narrow prune interface used by the daily
-// behavior_rules cleanup job. behaviorrule.Store (PG) and
-// sqlite.BehaviorRuleStore both satisfy it. 365-day retention for
-// rejected/deprecated rows per backend-security-design.md §1.3.
-// Active and proposed rows are NEVER auto-pruned.
-type behaviorRulePruneStore interface {
-	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+	cutoff := time.Now().Add(-spec.Retention)
+	n, err := spec.Store.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		slog.Warn(fmt.Sprintf("daily %s prune: PruneOlderThan failed", spec.Name), "err", err)
+		return
+	}
+	slog.Info(
+		fmt.Sprintf("daily %s prune: completed", spec.Name),
+		"rows_deleted", n,
+		"retention_days", int(spec.Retention.Hours()/24),
+	)
 }
 
-// behaviorRulePruneRetention is the behavior_rules TTL (365 days) for
-// rejected/deprecated rows.
-const behaviorRulePruneRetention = 365 * 24 * time.Hour
+// candidatePrunerAdapter adapts candidateRetentionStore's
+// PruneResolved(ctx, olderThan time.Duration) to the PrunerStore contract.
+// cutoff was computed by runPrune as time.Now().Add(-spec.Retention)
+// immediately before this call, so time.Since(cutoff) recovers that same
+// retention duration (sub-millisecond of computation drift, immaterial for a
+// day-granularity TTL).
+type candidatePrunerAdapter struct{ store candidateRetentionStore }
 
-// behaviorRulePruneTimeout caps the daily behavior_rules DELETE. 60 s budget.
-const behaviorRulePruneTimeout = 60 * time.Second
-
-// activityLogPruneStore is the narrow prune interface used by the daily
-// activity_log cleanup job. gtd.Store (PG) and sqlite.GTDStore both satisfy
-// it. 365-day retention per backend-security-design.md §1.3.
-type activityLogPruneStore interface {
-	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+func (a candidatePrunerAdapter) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	n, err := a.store.PruneResolved(ctx, time.Since(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("candidate PruneResolved: %w", err)
+	}
+	return n, nil
 }
 
-// activityLogPruneRetention is the activity_log TTL (365 days).
-const activityLogPruneRetention = 365 * 24 * time.Hour
-
-// activityLogPruneTimeout caps the daily activity_log DELETE. 60 s budget
-// mirrors the other observability-table prune jobs.
-const activityLogPruneTimeout = 60 * time.Second
-
-// projectStatusSnapshotPruneStore is the narrow prune interface used by the
-// daily project_status_snapshots cleanup job. snapshot.Store (PG only —
-// there is no SQLite implementation of snapshot.StoreIface) satisfies it.
-// 180-day retention per backend-security-design.md §1.3.
-type projectStatusSnapshotPruneStore interface {
-	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+// NewCandidatePrunerAdapter wraps a completion-candidate store (whose
+// PruneResolved takes a retention duration) so it satisfies PrunerStore for
+// use in a PrunerSpec.
+func NewCandidatePrunerAdapter(store candidateRetentionStore) PrunerStore {
+	return candidatePrunerAdapter{store: store}
 }
 
-// projectStatusSnapshotPruneRetention is the project_status_snapshots TTL
-// (180 days).
-const projectStatusSnapshotPruneRetention = 180 * 24 * time.Hour
+// mergedPRsPrunerAdapter adapts mergedPRsRetentionStore's
+// PruneOlderThan(ctx, olderThan time.Duration) to the PrunerStore contract.
+// Same cutoff-to-duration derivation rationale as candidatePrunerAdapter.
+type mergedPRsPrunerAdapter struct{ store mergedPRsRetentionStore }
 
-// projectStatusSnapshotPruneTimeout caps the daily project_status_snapshots
-// DELETE. 60 s budget.
-const projectStatusSnapshotPruneTimeout = 60 * time.Second
-
-// sessionHandoffPruneStore is the narrow prune interface used by the daily
-// session_handoffs cleanup job. session.Store (PG) and sqlite.SessionStore
-// both satisfy it. 365-day retention (resolved handoffs only) per
-// backend-security-design.md §1.3.
-type sessionHandoffPruneStore interface {
-	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+func (a mergedPRsPrunerAdapter) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	n, err := a.store.PruneOlderThan(ctx, time.Since(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("merged_prs_observed PruneOlderThan: %w", err)
+	}
+	return n, nil
 }
 
-// sessionHandoffPruneRetention is the session_handoffs TTL (365 days),
-// applied only to rows where resolved_at IS NOT NULL.
-const sessionHandoffPruneRetention = 365 * 24 * time.Hour
+// NewMergedPRsPrunerAdapter wraps a merged_prs_observed store (whose
+// PruneOlderThan takes a retention duration, not a cutoff) so it satisfies
+// PrunerStore for use in a PrunerSpec.
+func NewMergedPRsPrunerAdapter(store mergedPRsRetentionStore) PrunerStore {
+	return mergedPRsPrunerAdapter{store: store}
+}
 
-// sessionHandoffPruneTimeout caps the daily session_handoffs DELETE. 60 s budget.
-const sessionHandoffPruneTimeout = 60 * time.Second
+// aiCostLedgerPrunerAdapter adapts a raw *pgxpool.Pool to the PrunerStore
+// contract for ai_cost_ledger, which has no dedicated Store type. Uses a
+// parameterized cutoff instead of the pre-refactor `NOW() - INTERVAL '30
+// days'` literal — same 30-day retention, computed from the app server's
+// clock like every other registry-driven prune job instead of Postgres's.
+type aiCostLedgerPrunerAdapter struct{ pool *pgxpool.Pool }
+
+func (a aiCostLedgerPrunerAdapter) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := a.pool.Exec(ctx, `DELETE FROM ai_cost_ledger WHERE created_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("ai_cost_ledger DELETE: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// NewAICostLedgerPrunerAdapter wraps a Postgres pool so it satisfies
+// PrunerStore for use in a PrunerSpec.
+func NewAICostLedgerPrunerAdapter(pool *pgxpool.Pool) PrunerStore {
+	return aiCostLedgerPrunerAdapter{pool: pool}
+}
 
 // statusSnapshotDeps bundles the dependencies needed by the Saturday status
 // snapshot cron job. All fields are required when sDeps is non-nil.
@@ -718,382 +705,6 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// WithCandidatePruner wires a completion-candidate retention store and
-// registers the daily 23:00 prune job. Must be called before Start().
-func (sc *Scheduler) WithCandidatePruner(p candidateRetentionStore) error {
-	sc.candidatePruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(23, 0, 0))),
-		gocron.NewTask(sc.runDailyCandidatePrune),
-		gocron.WithName("daily-candidate-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily candidate prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyCandidatePrune scheduled at 23:00 Asia/Taipei")
-	return nil
-}
-
-// runDailyCandidatePrune deletes resolved completion_candidates older than
-// 30 days (TTL mandated by backend-security-design.md §1.3). Errors are
-// logged at warn level — the scheduler keeps running other jobs regardless.
-func (s *Scheduler) runDailyCandidatePrune() {
-	if s.candidatePruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	n, err := s.candidatePruner.PruneResolved(ctx, 30*24*time.Hour)
-	if err != nil {
-		slog.Warn("daily candidate prune: PruneResolved failed", "err", err)
-		return
-	}
-	slog.Info("daily candidate prune: completed", "rows_deleted", n)
-}
-
-// WithMergedPRsPruner wires the merged_prs_observed retention store and
-// registers the daily 03:00 prune job. Must be called before Start().
-// 30-day TTL per backend-security-design.md §1.3 (observability tables).
-// 03:00 keeps it inside the existing 03:00 pending_proposals prune cluster
-// instead of growing the 23:00 cluster — avoids slamming the pgxpool with
-// multiple concurrent DELETEs against large tables.
-func (sc *Scheduler) WithMergedPRsPruner(p mergedPRsRetentionStore) error {
-	sc.mergedPRsPruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 0, 0))),
-		gocron.NewTask(sc.runDailyMergedPRsObservedPrune),
-		gocron.WithName("daily-merged-prs-observed-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily merged_prs_observed prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyMergedPRsObservedPrune scheduled at 03:00 Asia/Taipei")
-	return nil
-}
-
-// runDailyMergedPRsObservedPrune deletes merged_prs_observed rows older than
-// the 30-day retention window. Errors are logged at warn level so the
-// scheduler keeps running other jobs regardless.
-func (s *Scheduler) runDailyMergedPRsObservedPrune() {
-	if s.mergedPRsPruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), mergedPRsObservedPruneTimeout)
-	defer cancel()
-
-	n, err := s.mergedPRsPruner.PruneOlderThan(ctx, mergedPRsObservedRetention)
-	if err != nil {
-		slog.Warn("daily merged_prs_observed prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily merged_prs_observed prune: completed",
-		"rows_deleted", n,
-		"retention", mergedPRsObservedRetention.String(),
-	)
-}
-
-// WithOutcomePruner wires the outcomes retention store and registers the daily
-// 03:30 prune job. Must be called before Start().
-// 90-day TTL per backend-security-design.md §1.3 (observability tables).
-// 03:30 avoids overlap with the 03:00 pending_proposals + merged_prs cluster.
-func (sc *Scheduler) WithOutcomePruner(p outcomePruneStore) error {
-	sc.outcomePruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 30, 0))),
-		gocron.NewTask(sc.runDailyOutcomePrune),
-		gocron.WithName("daily-outcome-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily outcome prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyOutcomePrune scheduled at 03:30 Asia/Taipei")
-	return nil
-}
-
-// runDailyOutcomePrune deletes outcomes + evaluations rows older than 90 days.
-// Evaluations are deleted first in the same transaction (no FK cascade per
-// red-line §9). Errors are logged at warn level — the scheduler keeps running.
-func (s *Scheduler) runDailyOutcomePrune() {
-	if s.outcomePruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), outcomePruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-outcomePruneRetention)
-	n, err := s.outcomePruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily outcome prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily outcome prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(outcomePruneRetention.Hours()/24),
-	)
-}
-
-// WithReflectionPruner wires the reflections retention store and registers the
-// daily 03:45 prune job. Must be called before Start().
-// 180-day TTL per backend-security-design.md §1.3 (observability tables).
-// 03:45 avoids overlap with the 03:00/03:30 pending_proposals/outcome cluster.
-func (sc *Scheduler) WithReflectionPruner(p reflectionPruneStore) error {
-	sc.reflectionPruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 45, 0))),
-		gocron.NewTask(sc.runDailyReflectionPrune),
-		gocron.WithName("daily-reflection-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily reflection prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyReflectionPrune scheduled at 03:45 Asia/Taipei")
-	return nil
-}
-
-// runDailyReflectionPrune deletes reflections rows older than 180 days.
-// Errors are logged at warn level — the scheduler keeps running.
-func (s *Scheduler) runDailyReflectionPrune() {
-	if s.reflectionPruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), reflectionPruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-reflectionPruneRetention)
-	n, err := s.reflectionPruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily reflection prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily reflection prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(reflectionPruneRetention.Hours()/24),
-	)
-}
-
-// WithBehaviorRulePruner wires the behavior_rules retention store and
-// registers the daily 04:00 prune job. Must be called before Start().
-// 365-day TTL for rejected/deprecated rows per backend-security-design.md §1.3.
-// Active and proposed rows are NEVER auto-pruned.
-// 04:00 is distinct from the 03:00/03:30/03:45 cluster to avoid gocron
-// singleton-mode reschedule interference under slow DB conditions.
-func (sc *Scheduler) WithBehaviorRulePruner(p behaviorRulePruneStore) error {
-	sc.behaviorRulePruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 0, 0))),
-		gocron.NewTask(sc.runDailyBehaviorRulePrune),
-		gocron.WithName("daily-behavior-rule-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily behavior_rule prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyBehaviorRulePrune scheduled at 04:00 Asia/Taipei")
-	return nil
-}
-
-// WithWorkSessionEvidencePruner wires the work_session_evidence retention
-// store and registers the daily 04:20 prune job. Must be called before
-// Start(). 90-day TTL per backend-security-design.md §1.3 (observability
-// tables). 04:20 avoids overlap with the 03:00-04:15 prune cluster (outcome
-// 03:30, reflection 03:45, discipline-event-m8 03:50, behavior-rule 04:00,
-// ai-cost-ledger 04:15) and the 04:15/04:30 weekly/daily atom jobs.
-func (sc *Scheduler) WithWorkSessionEvidencePruner(p workSessionEvidencePruneStore) error {
-	sc.workSessionEvidencePruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 20, 0))),
-		gocron.NewTask(sc.runDailyWorkSessionEvidencePrune),
-		gocron.WithName("daily-work-session-evidence-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily work_session_evidence prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyWorkSessionEvidencePrune scheduled at 04:20 Asia/Taipei")
-	return nil
-}
-
-// runDailyWorkSessionEvidencePrune deletes work_session_evidence rows older
-// than 90 days. Errors are logged at warn level — the scheduler keeps running.
-func (s *Scheduler) runDailyWorkSessionEvidencePrune() {
-	if s.workSessionEvidencePruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), workSessionEvidencePruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-workSessionEvidencePruneRetention)
-	n, err := s.workSessionEvidencePruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily work_session_evidence prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily work_session_evidence prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(workSessionEvidencePruneRetention.Hours()/24),
-	)
-}
-
-// runDailyBehaviorRulePrune deletes behavior_rules rows with
-// status IN ('rejected','deprecated') older than 365 days.
-// Active and proposed rows are NEVER deleted regardless of age.
-// Errors are logged at warn level — the scheduler keeps running.
-func (s *Scheduler) runDailyBehaviorRulePrune() {
-	if s.behaviorRulePruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), behaviorRulePruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-behaviorRulePruneRetention)
-	n, err := s.behaviorRulePruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily behavior_rule prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily behavior_rule prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(behaviorRulePruneRetention.Hours()/24),
-	)
-}
-
-// WithActivityLogPruner wires the activity_log retention store and registers
-// the daily 04:35 prune job. Must be called before Start(). 365-day TTL per
-// backend-security-design.md §1.3. 04:35 avoids the 03:00-04:30 prune cluster
-// (pending-proposals/merged-prs 03:00, outcome 03:30, reflection 03:45,
-// discipline-event-m8 03:50, behavior-rule 04:00, ai-cost-ledger 04:15,
-// work-session-evidence 04:20, atom-consolidation 04:30).
-func (sc *Scheduler) WithActivityLogPruner(p activityLogPruneStore) error {
-	sc.activityLogPruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 35, 0))),
-		gocron.NewTask(sc.runDailyActivityLogPrune),
-		gocron.WithName("daily-activity-log-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily activity_log prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyActivityLogPrune scheduled at 04:35 Asia/Taipei")
-	return nil
-}
-
-// runDailyActivityLogPrune deletes activity_log rows older than 365 days.
-// Errors are logged at warn level — the scheduler keeps running.
-func (s *Scheduler) runDailyActivityLogPrune() {
-	if s.activityLogPruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), activityLogPruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-activityLogPruneRetention)
-	n, err := s.activityLogPruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily activity_log prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily activity_log prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(activityLogPruneRetention.Hours()/24),
-	)
-}
-
-// WithProjectStatusSnapshotPruner wires the project_status_snapshots
-// retention store and registers the daily 04:40 prune job. Must be called
-// before Start(). 180-day TTL per backend-security-design.md §1.3.
-// Postgres-only: there is no SQLite implementation of snapshot.StoreIface.
-func (sc *Scheduler) WithProjectStatusSnapshotPruner(p projectStatusSnapshotPruneStore) error {
-	sc.projectStatusSnapshotPruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 40, 0))),
-		gocron.NewTask(sc.runDailyProjectStatusSnapshotPrune),
-		gocron.WithName("daily-project-status-snapshot-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily project_status_snapshots prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyProjectStatusSnapshotPrune scheduled at 04:40 Asia/Taipei")
-	return nil
-}
-
-// runDailyProjectStatusSnapshotPrune deletes project_status_snapshots rows
-// older than 180 days. Errors are logged at warn level — the scheduler keeps
-// running.
-func (s *Scheduler) runDailyProjectStatusSnapshotPrune() {
-	if s.projectStatusSnapshotPruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), projectStatusSnapshotPruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-projectStatusSnapshotPruneRetention)
-	n, err := s.projectStatusSnapshotPruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily project_status_snapshot prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily project_status_snapshot prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(projectStatusSnapshotPruneRetention.Hours()/24),
-	)
-}
-
-// WithSessionHandoffPruner wires the session_handoffs retention store and
-// registers the daily 04:45 prune job. Must be called before Start().
-// 365-day TTL for resolved handoffs per backend-security-design.md §1.3.
-// Open (unresolved) handoffs are NEVER auto-pruned regardless of age.
-func (sc *Scheduler) WithSessionHandoffPruner(p sessionHandoffPruneStore) error {
-	sc.sessionHandoffPruner = p
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 45, 0))),
-		gocron.NewTask(sc.runDailySessionHandoffPrune),
-		gocron.WithName("daily-session-handoff-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily session_handoffs prune job: %w", err)
-	}
-	slog.Info("scheduler: DailySessionHandoffPrune scheduled at 04:45 Asia/Taipei")
-	return nil
-}
-
-// runDailySessionHandoffPrune deletes resolved session_handoffs rows older
-// than 365 days. Open handoffs are never touched (see PruneOlderThan doc).
-// Errors are logged at warn level — the scheduler keeps running.
-func (s *Scheduler) runDailySessionHandoffPrune() {
-	if s.sessionHandoffPruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionHandoffPruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-sessionHandoffPruneRetention)
-	n, err := s.sessionHandoffPruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily session_handoff prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily session_handoff prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(sessionHandoffPruneRetention.Hours()/24),
-	)
-}
-
 func (s *Scheduler) sendDailyReviewReminder() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1412,96 +1023,5 @@ func (s *Scheduler) weeklyAIConceptReview() {
 		"eligible_concepts", len(concepts),
 		"ai_results", len(results),
 		"updated", updated,
-	)
-}
-
-// disciplineEventM8PruneTimeout caps the daily discipline_events_m8 DELETE.
-const disciplineEventM8PruneTimeout = 60 * time.Second
-
-// disciplineEventM8PruneRetention is the TTL for discipline_events_m8 rows
-// (90 days per backend-security-design.md §1.3).
-const disciplineEventM8PruneRetention = 90 * 24 * time.Hour
-
-// WithDisciplineEventPruner wires the discipline_events_m8 store and registers
-// a daily 03:30 prune job. Must be called before Start().
-// 90-day TTL per backend-security-design.md §1.3 (observability tables).
-// 03:30 avoids overlap with the 03:00 pending_proposals cluster. Note: if
-// WithOutcomePruner is also registered at 03:30 on the same scheduler, use
-// a separate scheduler instance or offset to 03:50 to avoid slot collision.
-func (sc *Scheduler) WithDisciplineEventPruner(store watchdog.DisciplineEventStoreIface) error {
-	sc.disciplineEventM8Pruner = store
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 50, 0))),
-		gocron.NewTask(sc.runDailyDisciplineEventM8Prune),
-		gocron.WithName("daily-discipline-event-m8-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily discipline-event-m8 prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyDisciplineEventM8Prune scheduled at 03:50 Asia/Taipei")
-	return nil
-}
-
-// runDailyDisciplineEventM8Prune deletes discipline_events_m8 rows older than
-// 90 days. Errors are logged at warn level — the scheduler keeps running.
-func (sc *Scheduler) runDailyDisciplineEventM8Prune() {
-	if sc.disciplineEventM8Pruner == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), disciplineEventM8PruneTimeout)
-	defer cancel()
-
-	cutoff := time.Now().Add(-disciplineEventM8PruneRetention)
-	n, err := sc.disciplineEventM8Pruner.PruneOlderThan(ctx, cutoff)
-	if err != nil {
-		slog.Warn("daily discipline-event-m8 prune: PruneOlderThan failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily discipline-event-m8 prune: completed",
-		"rows_deleted", n,
-		"retention_days", int(disciplineEventM8PruneRetention.Hours()/24),
-	)
-}
-
-// WithAICostLedgerPruner wires the Postgres pool for ai_cost_ledger pruning
-// and registers the daily 04:15 prune job. Must be called before Start().
-// 30-day TTL per backend-security-design.md §1.3 (observability tables).
-// 04:15 avoids overlap with the 03:00-04:00 prune cluster.
-func (sc *Scheduler) WithAICostLedgerPruner(pool *pgxpool.Pool) error {
-	sc.aiCostLedgerPool = pool
-	_, err := sc.s.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 15, 0))),
-		gocron.NewTask(sc.runDailyAICostLedgerPrune),
-		gocron.WithName("daily-ai-cost-ledger-prune"),
-		gocron.WithSingletonMode(gocron.LimitModeReschedule),
-	)
-	if err != nil {
-		return fmt.Errorf("registering daily ai_cost_ledger prune job: %w", err)
-	}
-	slog.Info("scheduler: DailyAICostLedgerPrune scheduled at 04:15 Asia/Taipei")
-	return nil
-}
-
-// runDailyAICostLedgerPrune deletes ai_cost_ledger rows older than 30 days.
-// Errors are logged at warn level — the scheduler keeps running.
-func (sc *Scheduler) runDailyAICostLedgerPrune() {
-	if sc.aiCostLedgerPool == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), aiCostPruneTimeout)
-	defer cancel()
-
-	const q = `DELETE FROM ai_cost_ledger WHERE created_at < NOW() - INTERVAL '` + aiCostPruneAge + `'`
-	tag, err := sc.aiCostLedgerPool.Exec(ctx, q)
-	if err != nil {
-		slog.Warn("daily ai_cost_ledger prune: DELETE failed", "err", err)
-		return
-	}
-	slog.Info(
-		"daily ai_cost_ledger prune: completed",
-		"rows_deleted", tag.RowsAffected(),
-		"retention", aiCostPruneAge,
 	)
 }

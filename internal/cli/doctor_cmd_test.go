@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
@@ -92,6 +95,46 @@ func TestNewDoctorSnapshot_DeliveryFieldsFailSoftShape(t *testing.T) {
 	}
 	if string(topRaw) != "null" {
 		t.Errorf(`top_pending = %s, want "null"`, topRaw)
+	}
+}
+
+// fakeErrStore implements gtd.StoreIface with only ActiveGoals/TopPendingTask
+// wired to return errors; every other method panics if called (embeds a nil
+// gtd.StoreIface). Mirrors internal/gtd/delivery_test.go's fakeGTDStore
+// pattern — collectDeliveryVisibility must never touch anything beyond
+// those two methods.
+type fakeErrStore struct {
+	gtd.StoreIface
+}
+
+func (f *fakeErrStore) ActiveGoals(_ context.Context) ([]db.Goal, error) {
+	return nil, errors.New("db unavailable")
+}
+
+func (f *fakeErrStore) TopPendingTask(_ context.Context) (*db.Task, error) {
+	return nil, errors.New("db unavailable")
+}
+
+// TestCollectDeliveryVisibility_StoreErrorAfterConnect_LeavesDefaults pins
+// the review-round-2 coverage gap: collectDeliveryVisibility's fail-soft
+// branch (store connects successfully but the query itself errors) is
+// distinct from the four early-return paths already covered by
+// TestNewDoctorSnapshot_DeliveryFieldsFailSoftShape (which never reach
+// collectDeliveryVisibility at all). This test drives collectDeliveryVisibility
+// directly with a store that errors on both calls and asserts the snapshot's
+// GoalsDue/TopPending retain their newDoctorSnapshot() defaults rather than
+// being left nil or partially mutated.
+func TestCollectDeliveryVisibility_StoreErrorAfterConnect_LeavesDefaults(t *testing.T) {
+	snap := newDoctorSnapshot()
+	store := &fakeErrStore{}
+
+	collectDeliveryVisibility(context.Background(), store, &snap)
+
+	if snap.GoalsDue == nil || len(snap.GoalsDue) != 0 {
+		t.Errorf("GoalsDue = %+v, want empty non-nil slice (newDoctorSnapshot default preserved)", snap.GoalsDue)
+	}
+	if snap.TopPending != nil {
+		t.Errorf("TopPending = %+v, want nil (default preserved)", snap.TopPending)
 	}
 }
 

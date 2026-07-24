@@ -95,8 +95,9 @@ func (s *Store) ProjectByName(ctx context.Context, name string) (*db.Project, er
 // error — repos without paired projects are normal.
 //
 // Hand-rolled (not sqlc) so adding the new column doesn't require a sqlc
-// regen on every contributor's machine. Returns []db.Project (existing struct
-// fields only) so we don't have to bump db.Project schema either.
+// regen on every contributor's machine. db.Project already carries a
+// RepoName field (pgtype.Text) — populated below same as every other
+// project read path.
 //
 // Empty input → empty result fast-path (avoids a wildcard scan on the
 // composite index).
@@ -105,7 +106,7 @@ func (s *Store) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.P
 		return nil, nil
 	}
 	const q = `SELECT id, goal_id, name, title, description, status, area, priority,
-		created_at, updated_at, workspace_id
+		created_at, updated_at, workspace_id, repo_name
 		FROM projects
 		WHERE repo_name = $1
 		  AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -120,7 +121,7 @@ func (s *Store) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.P
 		var p db.Project
 		if err := rows.Scan(
 			&p.ID, &p.GoalID, &p.Name, &p.Title, &p.Description, &p.Status, &p.Area, &p.Priority,
-			&p.CreatedAt, &p.UpdatedAt, &p.WorkspaceID,
+			&p.CreatedAt, &p.UpdatedAt, &p.WorkspaceID, &p.RepoName,
 		); err != nil {
 			return nil, fmt.Errorf("scanning project for repo %q: %w", repoName, err)
 		}
@@ -150,7 +151,7 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 		(goal_id, name, title, description, status, area, priority, repo_name, workspace_id)
 		VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
 		RETURNING id, goal_id, name, title, description, status, area, priority,
-		          created_at, updated_at, workspace_id`
+		          created_at, updated_at, workspace_id, repo_name`
 	rows, err := s.dbtx.Query(
 		ctx, q,
 		pgconv.ToUUID(p.GoalID), p.Name, p.Title, pgconv.ToText(p.Description),
@@ -173,7 +174,7 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 	var row db.Project
 	if err := rows.Scan(
 		&row.ID, &row.GoalID, &row.Name, &row.Title, &row.Description, &row.Status, &row.Area, &row.Priority,
-		&row.CreatedAt, &row.UpdatedAt, &row.WorkspaceID,
+		&row.CreatedAt, &row.UpdatedAt, &row.WorkspaceID, &row.RepoName,
 	); err != nil {
 		return nil, fmt.Errorf("scanning created project %q: %w", p.Name, err)
 	}

@@ -61,7 +61,7 @@ type atomCluster struct {
 
 // WithAtomConsolidator wires the atom consolidation deps and registers the
 // daily 04:30 Asia/Taipei cron job. Must be called before Start().
-// Following the existing With-method pattern (WithCandidatePruner, etc.);
+// Following the existing With-method pattern (WithBehaviorGovernance, etc.);
 // New() signature is NOT changed (M9 acceptance criterion 12).
 func (sc *Scheduler) WithAtomConsolidator(deps *atomConsolidDeps) error {
 	if deps == nil {

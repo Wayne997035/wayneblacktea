@@ -419,48 +419,110 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("creating scheduler: %w", err)
 	}
+	// Daily TTL-prune jobs share one registry loop (scheduler.WithPruner);
+	// adding a new observability table's retention job is a single
+	// PrunerSpec value, not a new interface/method/exec block. Retention and
+	// hour/minute values below are unchanged from the pre-refactor
+	// per-table With*Pruner constants.
 	if cs := buildCandidateStore(stores); cs != nil {
-		if err := sched.WithCandidatePruner(cs); err != nil {
+		// 30-day TTL, 23:00 Asia/Taipei (backend-security-design.md §1.3).
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "candidate",
+			Store:     scheduler.NewCandidatePrunerAdapter(cs),
+			Retention: 30 * 24 * time.Hour,
+			Hour:      23,
+			Minute:    0,
+		}); err != nil {
 			return fmt.Errorf("wiring candidate pruner: %w", err)
 		}
 	}
 	if mps := buildMergedPRsStore(stores); mps != nil {
-		if err := sched.WithMergedPRsPruner(mps); err != nil {
+		// 30-day TTL, 03:00 Asia/Taipei — keeps it inside the existing 03:00
+		// pending_proposals cluster instead of growing the 23:00 cluster,
+		// avoiding multiple concurrent DELETEs against large tables.
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "merged_prs_observed",
+			Store:     scheduler.NewMergedPRsPrunerAdapter(mps),
+			Retention: 30 * 24 * time.Hour,
+			Hour:      3,
+			Minute:    0,
+		}); err != nil {
 			return fmt.Errorf("wiring merged_prs_observed pruner: %w", err)
 		}
 	}
 	// Wire outcome pruner — Postgres only (outcomes table requires pgx pool;
 	// SQLite local dev has no growth concern requiring scheduled TTL).
+	// 90-day TTL, 03:30 — avoids overlap with the 03:00 pending_proposals +
+	// merged_prs cluster.
 	if stores.PgxPool() != nil {
-		if err := sched.WithOutcomePruner(stores.Outcome()); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "outcome",
+			Store:     stores.Outcome(),
+			Retention: 90 * 24 * time.Hour,
+			Hour:      3,
+			Minute:    30,
+		}); err != nil {
 			return fmt.Errorf("wiring outcome pruner: %w", err)
 		}
 	}
 	// Wire reflection pruner (both backends; reflections accumulate on weekly
 	// Saturday cron + per-cycle generate_reflection; 180-day TTL per §1.3).
+	// 03:45 avoids overlap with the 03:00/03:30 pending_proposals/outcome cluster.
 	if stores.Reflection() != nil {
-		if err := sched.WithReflectionPruner(stores.Reflection()); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "reflection",
+			Store:     stores.Reflection(),
+			Retention: 180 * 24 * time.Hour,
+			Hour:      3,
+			Minute:    45,
+		}); err != nil {
 			return fmt.Errorf("wiring reflection pruner: %w", err)
 		}
 	}
 	// Wire behavior rule pruner (both backends; 365-day TTL for rejected/deprecated
 	// rows per backend-security-design.md §1.3; active/proposed rows never auto-pruned).
+	// 04:00 is distinct from the 03:00/03:30/03:45 cluster to avoid gocron
+	// singleton-mode reschedule interference under slow DB conditions.
 	if stores.BehaviorRule() != nil {
-		if err := sched.WithBehaviorRulePruner(stores.BehaviorRule()); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "behavior_rule",
+			Store:     stores.BehaviorRule(),
+			Retention: 365 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    0,
+		}); err != nil {
 			return fmt.Errorf("wiring behavior rule pruner: %w", err)
 		}
 	}
 	// Wire work_session_evidence pruner (both backends; 90-day TTL per
-	// backend-security-design.md §1.3, wbt-2.0 P2.4).
+	// backend-security-design.md §1.3, wbt-2.0 P2.4). 04:20 avoids overlap
+	// with the 03:00-04:15 prune cluster (outcome 03:30, reflection 03:45,
+	// discipline-event-m8 03:50, behavior-rule 04:00, ai-cost-ledger 04:15)
+	// and the 04:15/04:30 weekly/daily atom jobs.
 	if stores.WorkSession() != nil {
-		if err := sched.WithWorkSessionEvidencePruner(stores.WorkSession()); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "work_session_evidence",
+			Store:     stores.WorkSession(),
+			Retention: 90 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    20,
+		}); err != nil {
 			return fmt.Errorf("wiring work_session_evidence pruner: %w", err)
 		}
 	}
 	// Wire activity_log pruner (both backends; 365-day TTL per
-	// backend-security-design.md §1.3).
+	// backend-security-design.md §1.3). 04:35 avoids the 03:00-04:30 prune
+	// cluster (pending-proposals/merged-prs 03:00, outcome 03:30, reflection
+	// 03:45, discipline-event-m8 03:50, behavior-rule 04:00, ai-cost-ledger
+	// 04:15, work-session-evidence 04:20, atom-consolidation 04:30).
 	if stores.GTD() != nil {
-		if err := sched.WithActivityLogPruner(stores.GTD()); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "activity_log",
+			Store:     stores.GTD(),
+			Retention: 365 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    35,
+		}); err != nil {
 			return fmt.Errorf("wiring activity_log pruner: %w", err)
 		}
 	}
@@ -468,14 +530,26 @@ func run() error {
 	// under SQLite or when CLAUDE_API_KEY is unset; see buildSnapshotDeps).
 	// 180-day TTL per backend-security-design.md §1.3.
 	if snapStore != nil {
-		if err := sched.WithProjectStatusSnapshotPruner(snapStore); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "project_status_snapshot",
+			Store:     snapStore,
+			Retention: 180 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    40,
+		}); err != nil {
 			return fmt.Errorf("wiring project_status_snapshots pruner: %w", err)
 		}
 	}
 	// Wire session_handoffs pruner (both backends; 365-day TTL for resolved
 	// handoffs per backend-security-design.md §1.3; open handoffs never pruned).
 	if stores.Session() != nil {
-		if err := sched.WithSessionHandoffPruner(stores.Session()); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "session_handoff",
+			Store:     stores.Session(),
+			Retention: 365 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    45,
+		}); err != nil {
 			return fmt.Errorf("wiring session_handoffs pruner: %w", err)
 		}
 	}
@@ -514,14 +588,29 @@ func run() error {
 		return fmt.Errorf("wiring cognitive deps: %w", err)
 	}
 	// Wire discipline_events_m8 pruner — both backends, 90-day TTL per §1.3.
+	// 03:50 avoids overlap with the 03:00 pending_proposals cluster and the
+	// 03:30 outcome pruner slot.
 	if des := stores.DisciplineEventStore(); des != nil {
-		if err := sched.WithDisciplineEventPruner(des); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "discipline_event_m8",
+			Store:     des,
+			Retention: 90 * 24 * time.Hour,
+			Hour:      3,
+			Minute:    50,
+		}); err != nil {
 			return fmt.Errorf("wiring discipline event m8 pruner: %w", err)
 		}
 	}
-	// Wire ai_cost_ledger pruner — PG-only, 30-day TTL per §1.3.
+	// Wire ai_cost_ledger pruner — PG-only, 30-day TTL per §1.3. 04:15 avoids
+	// overlap with the 03:00-04:00 prune cluster.
 	if pool := stores.PgxPool(); pool != nil {
-		if err := sched.WithAICostLedgerPruner(pool); err != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "ai_cost_ledger",
+			Store:     scheduler.NewAICostLedgerPrunerAdapter(pool),
+			Retention: 30 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    15,
+		}); err != nil {
 			return fmt.Errorf("wiring ai_cost_ledger pruner: %w", err)
 		}
 	}

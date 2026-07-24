@@ -62,7 +62,7 @@ func NewAtomBridgeDeps(store atom.StoreIface, prop proposal.StoreIface, workspac
 
 // WithAtomBridge wires the atom-bridge deps and registers the weekly Saturday
 // 04:15 Asia/Taipei cron job. Must be called before Start().
-// Mirrors the WithBehaviorRulePruner pattern in scheduler.go.
+// Mirrors the WithPruner/PrunerSpec registry pattern in scheduler.go.
 func (sc *Scheduler) WithAtomBridge(deps *atomBridgeDeps) error {
 	if deps == nil {
 		slog.Info("scheduler: AtomBridge skipped (deps nil)")
@@ -186,7 +186,8 @@ func runAtomBridge(deps atomBridgeDeps) {
 		promoted++
 	}
 
-	slog.Info("atom_bridge: weekly run completed",
+	slog.Info(
+		"atom_bridge: weekly run completed",
 		"consolidated_total", count,
 		"fetched", len(atoms),
 		"promoted", promoted,

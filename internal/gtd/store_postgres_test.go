@@ -1726,6 +1726,74 @@ func TestGTDStore_PG_GetTaskByID(t *testing.T) {
 // literals from TestStore_ProjectsByRepoName_PG / TestMigration000039.
 const pgSeedRepoName = "wayneblacktea"
 
+// TestGTDStore_PG_CreateProject_RepoName pins the review-round-2 finding:
+// CreateProject's own RETURNING/Scan must carry repo_name, not just a
+// subsequent re-read (GetProjectByID / ProjectsByRepoName). The MCP
+// handle_create_project response serializes CreateProject's return value
+// directly (internal/mcp/tools_gtd.go handleCreateProject → jsonText), so a
+// gap here means callers see repo_name:null immediately after creation even
+// though the column persisted correctly.
+func TestGTDStore_PG_CreateProject_RepoName(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	t.Run("repo_name provided → CreateProject's own return value carries it", func(t *testing.T) {
+		p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "pg-create-repo-" + wsID.String()[:8], Title: "Original", Area: "engineering",
+			RepoName: pgSeedRepoName,
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+		assertRepoNameValue(t, "CreateProject direct return", p.RepoName, true, pgSeedRepoName)
+	})
+
+	t.Run("repo_name omitted → CreateProject's own return value is NULL, not error", func(t *testing.T) {
+		p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: "pg-create-norepo-" + wsID.String()[:8], Title: "Original", Area: "engineering",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+		assertRepoNameValue(t, "CreateProject direct return (no repo)", p.RepoName, false, "")
+	})
+}
+
+// TestGTDStore_PG_ProjectsByRepoName_ScanIncludesRepoName pins the sibling
+// review-round-2 finding: ProjectsByRepoName's SELECT/Scan must carry
+// repo_name on the returned rows themselves (this query filters BY
+// repo_name, so every returned row must echo it back consistently with
+// CreateProject / UpdateProject / GetProjectByID).
+func TestGTDStore_PG_ProjectsByRepoName_ScanIncludesRepoName(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	repoName := "pg-scan-repo-" + wsID.String()[:8]
+	p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "pg-scan-project-" + wsID.String()[:8], Title: "Original", Area: "engineering",
+		RepoName: repoName,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	got, err := store.ProjectsByRepoName(ctx, repoName)
+	if err != nil {
+		t.Fatalf("ProjectsByRepoName: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 project, got %d (%+v)", len(got), got)
+	}
+	if got[0].ID != p.ID {
+		t.Fatalf("expected project %s, got %s", p.ID, got[0].ID)
+	}
+	assertRepoNameValue(t, "ProjectsByRepoName scan", got[0].RepoName, true, repoName)
+}
+
 // assertRepoNameValue checks a pgtype.Text repo_name against an expected
 // (valid, value) pair. Extracted so the P6-F2 subtests below stay under the
 // gocyclo budget — each subtest calls this once instead of inlining an
