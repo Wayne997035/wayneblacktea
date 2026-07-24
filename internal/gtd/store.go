@@ -684,85 +684,101 @@ func (s *Store) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string
 // see AddChecklistItem for the alternative pattern where the caller does pass
 // an explicit workspace scope).
 func (s *Store) BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error) {
-	// Idempotency: read current status before opening a transaction.
-	existing, err := s.getTaskByID(ctx, id)
-	if err != nil {
-		return nil, err // ErrNotFound already wrapped
-	}
-	if existing.Status == "in_progress" {
-		return existing, nil
-	}
+	return BeginTaskOrchestration(ctx, id, &pgBeginTaskAdapter{s: s, id: id})
+}
 
-	// Domain-layer gate (P6.7): BeginTask takes no assignee argument, so the
-	// only source of truth is the existing row — MCP begin_task persists a
-	// caller-supplied assignee via UpdateTask BEFORE calling BeginTask (see
-	// handleBeginTask) precisely so it shows up here.
-	existingAssignee := ""
-	if existing.Assignee.Valid {
-		existingAssignee = existing.Assignee.String
-	}
-	if err := RequireAssigneeForInProgress(existingAssignee, TaskStatusInProgress); err != nil {
-		return nil, fmt.Errorf("beginning task %s: %w", id, err)
-	}
+// pgBeginTaskAdapter is the Postgres-backed BeginTaskAdapter used by
+// Store.BeginTask. Constructed fresh per call; holds the open tx and the
+// sqlc-returned row as state between the interface's method calls.
+type pgBeginTaskAdapter struct {
+	s      *Store
+	id     uuid.UUID
+	tx     pgx.Tx
+	qtx    *db.Queries
+	result db.Task
+}
 
-	beginner, ok := s.dbtx.(txBeginner)
+func (a *pgBeginTaskAdapter) ReadExisting(ctx context.Context) (*db.Task, error) {
+	return a.s.getTaskByID(ctx, a.id)
+}
+
+func (a *pgBeginTaskAdapter) BeginTx(ctx context.Context) error {
+	beginner, ok := a.s.dbtx.(txBeginner)
 	if !ok {
-		return nil, fmt.Errorf("begin task %s: dbtx does not support Begin", id)
+		return fmt.Errorf("dbtx does not support Begin")
 	}
 	tx, err := beginner.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin task %s: begin tx: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
+	a.tx = tx
+	a.qtx = a.s.q.WithTx(tx)
+	return nil
+}
 
-	qtx := s.q.WithTx(tx)
-	// Use BeginTaskStatus (AND status != 'in_progress' guard) to prevent
-	// duplicate activity_log rows when two concurrent calls race.
-	// ErrNoRows here means either not found OR already in_progress.
-	task, err := qtx.BeginTaskStatus(ctx, db.BeginTaskStatusParams{
-		ID:          id,
-		WorkspaceID: uuid.UUID(s.workspaceID.Bytes),
+// GuardedUpdate uses BeginTaskStatus (AND status != 'in_progress' guard) to
+// prevent duplicate activity_log rows when two concurrent calls race.
+// ErrNoRows here means either not found OR already in_progress.
+func (a *pgBeginTaskAdapter) GuardedUpdate(ctx context.Context) (bool, error) {
+	task, err := a.qtx.BeginTaskStatus(ctx, db.BeginTaskStatusParams{
+		ID:          a.id,
+		WorkspaceID: uuid.UUID(a.s.workspaceID.Bytes),
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Distinguish "already in_progress" (idempotent) from "not found".
-			reread, re := s.getTaskByID(ctx, id)
-			if re != nil {
-				return nil, re // ErrNotFound
-			}
-			if reread.Status == "in_progress" {
-				// Idempotent: commit empty tx, return existing row without logging.
-				if ce := tx.Commit(ctx); ce != nil {
-					return nil, fmt.Errorf("begin task %s: commit: %w", id, ce)
-				}
-				committed = true
-				return reread, nil
-			}
-			return nil, ErrNotFound
+			return true, nil
 		}
-		return nil, fmt.Errorf("begin task %s: update status: %w", id, err)
+		return false, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
+	a.result = task
+	return false, nil
+}
 
-	_, err = qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
+// ResolveGuardBlocked re-reads (via the Store's outer dbtx, not the open tx —
+// Postgres's connection pool has no single-writer constraint, so this read
+// alongside a still-open tx is safe) to distinguish "already in_progress"
+// (idempotent) from "not found". It only commits the (empty, no-op) tx in the
+// idempotent case; the not-found case falls through to the deferred Rollback.
+func (a *pgBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.Task, error) {
+	reread, err := a.s.getTaskByID(ctx, a.id)
+	if err != nil {
+		return nil, fmt.Errorf("%w", err) // ErrNotFound, transparently wrapped for wrapcheck
+	}
+	if reread.Status == string(TaskStatusInProgress) {
+		if err := a.tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
+		}
+		return reread, nil
+	}
+	return nil, ErrNotFound
+}
+
+// CreateActivityLog uses a.result.Title — the tx-fresh row returned by
+// GuardedUpdate's RETURNING clause — rather than the pre-tx ReadExisting
+// title, so a title edit racing with this BeginTask call cannot leave a
+// stale title in the audit note.
+func (a *pgBeginTaskAdapter) CreateActivityLog(ctx context.Context) error {
+	_, err := a.qtx.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       "system",
 		Action:      "work_session_started",
-		Notes:       pgconv.ToText(sanitize.Notes("task: " + task.Title)),
-		WorkspaceID: s.workspaceID,
+		Notes:       pgconv.ToText(sanitize.Notes("task: " + a.result.Title)),
+		WorkspaceID: a.s.workspaceID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("begin task %s: log activity: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
+	return nil
+}
 
-	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("begin task %s: commit: %w", id, err)
+func (a *pgBeginTaskAdapter) Commit(ctx context.Context) (*db.Task, error) {
+	if err := a.tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
-	committed = true
-	return &task, nil
+	return &a.result, nil
+}
+
+func (a *pgBeginTaskAdapter) Rollback(ctx context.Context) {
+	_ = a.tx.Rollback(ctx)
 }
 
 // LogActivity records an activity entry.

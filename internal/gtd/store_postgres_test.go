@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1545,6 +1546,91 @@ func TestStore_BeginTask_WorkspaceIsolation(t *testing.T) {
 	_, err = storeB.BeginTask(ctx, task.ID)
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for cross-workspace begin, got %v", err)
+	}
+}
+
+// TestStore_BeginTask_ActivityLogUsesTxFreshTitle is a regression test for a
+// title-source bug: PG's BeginTask logged the pre-transaction (ReadExisting)
+// title into activity_log instead of the transaction-fresh title from
+// GuardedUpdate's RETURNING clause. A concurrent title edit that commits
+// after ReadExisting but before the guarded UPDATE would otherwise leave a
+// stale title in the audit note.
+//
+// The race is made deterministic — not timing-luck-based — by holding a
+// row-level write lock on the task via a second, uncommitted transaction's
+// title UPDATE. Store.BeginTask's ReadExisting is a plain SELECT (no row
+// lock), so it reads the pre-edit title while the lock is held; its own
+// GuardedUpdate is itself an UPDATE against the same row, so Postgres blocks
+// it on that lock until the lock-holder commits, after which its RETURNING
+// clause reflects the freshly committed title. The 100ms sleep before
+// committing only needs to outlast ReadExisting+BeginTx (a local SELECT plus
+// opening a tx, both non-blocking) — it does not need to reach GuardedUpdate,
+// which is guaranteed (not timing-dependent) to observe the post-commit row
+// because it physically cannot proceed until the lock is released.
+func TestStore_BeginTask_ActivityLogUsesTxFreshTitle(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	const staleTitle = "pre-race title"
+	const freshTitle = "concurrently-edited title"
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: staleTitle, Priority: 2, Assignee: "claude"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	lockTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
+	}
+	defer func() { _ = lockTx.Rollback(ctx) }()
+	if _, err := lockTx.Exec(ctx, `UPDATE tasks SET title = $1 WHERE id = $2`, freshTitle, task.ID); err != nil {
+		t.Fatalf("lock tx title update: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.BeginTask(ctx, task.ID)
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if err := lockTx.Commit(ctx); err != nil {
+		t.Fatalf("commit lock tx: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("BeginTask: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("BeginTask did not return within 10s — GuardedUpdate likely stuck on the lock tx")
+	}
+
+	logs, err := store.ListActivityLogsSince(ctx, task.CreatedAt.Time, 10)
+	if err != nil {
+		t.Fatalf("ListActivityLogsSince: %v", err)
+	}
+	var notes string
+	var found bool
+	for _, l := range logs {
+		if l.Action == "work_session_started" {
+			found = true
+			notes = l.Notes.String
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a work_session_started activity_log entry")
+	}
+	if !strings.Contains(notes, freshTitle) {
+		t.Errorf("expected activity_log Notes to contain the tx-fresh title %q, got %q", freshTitle, notes)
+	}
+	if strings.Contains(notes, staleTitle) {
+		t.Errorf("activity_log Notes contains the stale pre-tx title %q (regression), got %q", staleTitle, notes)
 	}
 }
 

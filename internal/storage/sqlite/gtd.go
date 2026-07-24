@@ -969,87 +969,106 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 // as-is without writing a duplicate activity_log row.
 // Returns gtd.ErrNotFound when no task matches id inside the configured workspace.
 func (s *GTDStore) BeginTask(ctx context.Context, id uuid.UUID) (*db.Task, error) {
-	idStr := id.String()
-
-	// Idempotency: read current status before opening a transaction.
-	existing, err := s.taskByID(ctx, id)
+	task, err := gtd.BeginTaskOrchestration(ctx, id, &sqliteBeginTaskAdapter{s: s, id: id})
 	if err != nil {
-		return nil, err // gtd.ErrNotFound already wrapped by taskByID
+		return nil, fmt.Errorf("%w", err) // context already added by BeginTaskOrchestration
 	}
-	if existing.Status == "in_progress" {
-		return existing, nil
-	}
+	return task, nil
+}
 
-	// Domain-layer gate (P6.7): BeginTask takes no assignee argument, so the
-	// only source of truth is the existing row — MCP begin_task persists a
-	// caller-supplied assignee via UpdateTask BEFORE calling BeginTask (see
-	// handleBeginTask) precisely so it shows up here.
-	existingAssignee := ""
-	if existing.Assignee.Valid {
-		existingAssignee = existing.Assignee.String
-	}
-	if rerr := gtd.RequireAssigneeForInProgress(existingAssignee, gtd.TaskStatusInProgress); rerr != nil {
-		return nil, fmt.Errorf("beginning task %s: %w", id, rerr)
-	}
+// sqliteBeginTaskAdapter is the SQLite-backed gtd.BeginTaskAdapter used by
+// GTDStore.BeginTask. Constructed fresh per call; holds the open tx and the
+// pre-tx title (stashed in ReadExisting) as state between the interface's
+// method calls.
+type sqliteBeginTaskAdapter struct {
+	s             *GTDStore
+	id            uuid.UUID
+	tx            *sql.Tx
+	existingTitle string
+}
 
-	tx, err := s.db.conn.BeginTx(ctx, nil)
+func (a *sqliteBeginTaskAdapter) ReadExisting(ctx context.Context) (*db.Task, error) {
+	task, err := a.s.taskByID(ctx, a.id)
 	if err != nil {
-		return nil, errWrap("BeginTask begin", err)
+		return nil, err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
+	a.existingTitle = task.Title
+	return task, nil
+}
 
+func (a *sqliteBeginTaskAdapter) BeginTx(ctx context.Context) error {
+	tx, err := a.s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
+	}
+	a.tx = tx
+	return nil
+}
+
+// GuardedUpdate only flips status when status != in_progress, guarding
+// against a TOCTOU race between the idempotency check and this write.
+func (a *sqliteBeginTaskAdapter) GuardedUpdate(ctx context.Context) (bool, error) {
 	now := nowRFC3339()
-	// UPDATE only when status != in_progress to guard against a TOCTOU race
-	// between the idempotency check above and the transaction write.
-	res, err := tx.ExecContext(
+	res, err := a.tx.ExecContext(
 		ctx,
 		`UPDATE tasks
 		    SET status = 'in_progress', updated_at = ?2
 		  WHERE id = ?1
 		    AND (?3 IS NULL OR workspace_id = ?3)
 		    AND status != 'in_progress'`,
-		idStr, now, s.db.workspaceArg(),
+		a.id.String(), now, a.s.db.workspaceArg(),
 	)
 	if err != nil {
-		return nil, errWrap("BeginTask update status", err)
+		return false, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
 	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		// Either task disappeared mid-tx or another goroutine raced us to
-		// in_progress. Re-read to distinguish: taskByID inside the tx would
-		// require passing tx, so use the idempotency path (already harmless).
-		_ = tx.Rollback()
-		committed = true
-		task, rerr := s.taskByID(ctx, id)
-		if rerr != nil {
-			return nil, rerr
-		}
-		if task.Status == "in_progress" {
-			return task, nil // raced to in_progress — idempotent
-		}
-		return nil, gtd.ErrNotFound
-	}
+	return affected == 0, nil
+}
 
-	_, err = tx.ExecContext(
+// ResolveGuardBlocked rolls back the open tx BEFORE re-reading outside it.
+// SQLite serialises all access through a single pooled connection
+// (db.SetMaxOpenConns(1) in Open); re-reading via s.taskByID while the tx
+// still holds that one connection would block forever waiting for a
+// connection the same goroutine is holding open — the rollback-first order is
+// a correctness requirement, not a style choice.
+func (a *sqliteBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.Task, error) {
+	_ = a.tx.Rollback()
+	task, err := a.s.taskByID(ctx, a.id)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status == string(gtd.TaskStatusInProgress) {
+		return task, nil // raced to in_progress — idempotent
+	}
+	return nil, gtd.ErrNotFound
+}
+
+// CreateActivityLog uses a.existingTitle — stashed in ReadExisting, before
+// the transaction opened — matching SQLite's original (pre-refactor)
+// title-source behavior. Unlike Postgres, SQLite's GuardedUpdate does not
+// return a fresh row, so there is no tx-fresh title available here.
+func (a *sqliteBeginTaskAdapter) CreateActivityLog(ctx context.Context) error {
+	_, err := a.tx.ExecContext(
 		ctx,
 		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
 		 VALUES (?1, ?2, 'system', NULL, 'work_session_started', ?3)`,
-		uuid.New().String(), s.db.workspaceArg(), sanitize.Notes("task: "+existing.Title),
+		uuid.New().String(), a.s.db.workspaceArg(), sanitize.Notes("task: "+a.existingTitle),
 	)
 	if err != nil {
-		return nil, errWrap("BeginTask log activity", err)
+		return fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
+	return nil
+}
 
-	if err = tx.Commit(); err != nil {
-		return nil, errWrap("BeginTask commit", err)
+func (a *sqliteBeginTaskAdapter) Commit(ctx context.Context) (*db.Task, error) {
+	if err := a.tx.Commit(); err != nil {
+		return nil, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 	}
-	committed = true
-	return s.taskByID(ctx, id)
+	return a.s.taskByID(ctx, a.id)
+}
+
+func (a *sqliteBeginTaskAdapter) Rollback(context.Context) {
+	_ = a.tx.Rollback()
 }
 
 // mergedTaskFields holds the resolved column values for an UpdateTask write,
