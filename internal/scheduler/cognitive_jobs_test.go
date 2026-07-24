@@ -396,3 +396,43 @@ func TestBehaviorRuleCandidate_SkipsNilReflectionStore(t *testing.T) {
 		t.Errorf("expected 0 proposals when reflection store is nil, got %d", len(propStore.created))
 	}
 }
+
+// TestBehaviorRuleCandidate_SkipsEmptySummary exercises runProposalLoop's
+// ok=false skip branch: behavior_rule_candidate's build callback returns
+// ok=false for reflections with an empty Summary, so those must NOT produce
+// a pending_proposal while non-empty-Summary reflections in the same batch
+// still do.
+func TestBehaviorRuleCandidate_SkipsEmptySummary(t *testing.T) {
+	propStore := &stubProposalStore{}
+	wsID := uuid.New()
+	reflStore := &stubReflectionStore{
+		recentPatterns: []*reflection.Reflection{
+			{ID: uuid.New(), Type: "weekly", Summary: "", CreatedAt: time.Now()},
+			{ID: uuid.New(), Type: "weekly", Summary: "user tends to defer decisions on Fridays", CreatedAt: time.Now()},
+			{ID: uuid.New(), Type: "daily", Summary: "", CreatedAt: time.Now()},
+			{ID: uuid.New(), Type: "daily", Summary: "recurring stuck-task pattern in area X", CreatedAt: time.Now()},
+		},
+	}
+	sc := &Scheduler{
+		cognitiveDeps: &cognitiveDeps{
+			reflection:  reflStore,
+			proposal:    propStore,
+			workspaceID: &wsID,
+		},
+	}
+	sc.runBehaviorRuleCandidate()
+
+	if len(propStore.created) != 2 {
+		t.Fatalf("expected 2 proposals (only non-empty-Summary reflections), got %d", len(propStore.created))
+	}
+	for _, row := range propStore.created {
+		var kp proposal.KnowledgePayload
+		if err := json.Unmarshal(row.Payload, &kp); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if !strings.Contains(kp.Content, "user tends to defer decisions on Fridays") &&
+			!strings.Contains(kp.Content, "recurring stuck-task pattern in area X") {
+			t.Errorf("unexpected proposal content (empty-Summary reflection should have been skipped): %q", kp.Content)
+		}
+	}
+}

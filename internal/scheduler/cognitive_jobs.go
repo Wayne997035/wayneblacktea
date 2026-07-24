@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/reflection"
@@ -167,6 +168,69 @@ func (sc *Scheduler) WithCognitiveDeps(deps *cognitiveDeps) error {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helper: detect -> propose -> log runner
+// ---------------------------------------------------------------------------
+
+// runProposalLoop is the common "detect -> propose -> log" tail shared by the
+// 5 cognitive jobs that create one pending_proposal per detected item
+// (weekly_goal_review, stuck_task_detection, decision_outcome_review,
+// knowledge_to_skill_candidate, behavior_rule_candidate). Each job still owns
+// its own detect query + empty-check; only the identical loop body — build
+// payload, marshal, Create, log — is collapsed here. Go methods can't be
+// generic, so this is a free function taking the scheduler's proposal store
+// and workspace ID explicitly rather than a *Scheduler receiver.
+//
+// build(item) returns (proposal.Type, payload value, ok). ok=false skips the
+// item without creating a proposal (used by behavior_rule_candidate to skip
+// reflections with an empty Summary). Marshal/Create failures are logged via
+// slog.Warn (with "item_id", idFunc(item) for log correlation — the
+// pre-refactor per-job code logged this under a job-specific key like
+// "goal_id"/"task_id"/"decision_id"; the shared runner standardises the key
+// name to "item_id" but idFunc still supplies the same underlying ID value)
+// and the loop continues (matches pre-refactor per-job behavior — one bad
+// item never aborts the batch). job is used as the "cognitive: <job>: ..."
+// log-message prefix; proposedBy is the CreateParams.ProposedBy value (the
+// two differ for some jobs, e.g. job="stuck_task_detection" but
+// proposedBy="scheduler:stuck_task"). countLabel is the slog key for the
+// pre-loop item count in the completion log. Returns the number of proposals
+// actually created so callers with a trailing gtd.LogActivity call can report
+// it.
+func runProposalLoop[T any](
+	ctx context.Context,
+	prop proposal.StoreIface,
+	wsID *uuid.UUID,
+	job, proposedBy, countLabel string,
+	items []T,
+	build func(item T) (proposal.Type, any, bool),
+	idFunc func(item T) string,
+) int {
+	created := 0
+	for _, item := range items {
+		ptype, payloadVal, ok := build(item)
+		if !ok {
+			continue
+		}
+		payload, merr := json.Marshal(payloadVal)
+		if merr != nil {
+			slog.Warn(fmt.Sprintf("cognitive: %s: marshal payload failed", job), "item_id", idFunc(item), "err", merr)
+			continue
+		}
+		if _, cerr := prop.Create(ctx, proposal.CreateParams{
+			WorkspaceID: wsID,
+			Type:        ptype,
+			Payload:     payload,
+			ProposedBy:  proposedBy,
+		}); cerr != nil {
+			slog.Warn(fmt.Sprintf("cognitive: %s: Create proposal failed", job), "item_id", idFunc(item), "err", cerr)
+			continue
+		}
+		created++
+	}
+	slog.Info(fmt.Sprintf("cognitive: %s: completed", job), countLabel, len(items), "proposals_created", created)
+	return created
+}
+
+// ---------------------------------------------------------------------------
 // Job 1: daily_reflection
 // ---------------------------------------------------------------------------
 
@@ -250,31 +314,17 @@ func (sc *Scheduler) runWeeklyGoalReview() {
 		return
 	}
 
-	created := 0
-	for _, g := range goals {
-		payload, merr := json.Marshal(proposal.KnowledgePayload{
-			Title:   fmt.Sprintf("Weekly goal review: %s", g.Title),
-			Content: fmt.Sprintf("Goal '%s' is still active. Consider reviewing progress or updating status.", g.Title),
-		})
-		if merr != nil {
-			slog.Warn("cognitive: weekly_goal_review: marshal payload failed", "goal_id", g.ID, "err", merr)
-			continue
-		}
-		if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-			WorkspaceID: deps.workspaceID,
-			Type:        proposal.TypeKnowledge,
-			Payload:     payload,
-			ProposedBy:  "scheduler:weekly_goal_review",
-		}); cerr != nil {
-			slog.Warn("cognitive: weekly_goal_review: Create proposal failed", "goal_id", g.ID, "err", cerr)
-			continue
-		}
-		created++
-	}
-	slog.Info(
-		"cognitive: weekly_goal_review: completed",
-		"goals_scanned", len(goals),
-		"proposals_created", created,
+	runProposalLoop(
+		ctx, deps.proposal, deps.workspaceID,
+		"weekly_goal_review", "scheduler:weekly_goal_review", "goals_scanned",
+		goals,
+		func(g db.Goal) (proposal.Type, any, bool) {
+			return proposal.TypeKnowledge, proposal.KnowledgePayload{
+				Title:   fmt.Sprintf("Weekly goal review: %s", g.Title),
+				Content: fmt.Sprintf("Goal '%s' is still active. Consider reviewing progress or updating status.", g.Title),
+			}, true
+		},
+		func(g db.Goal) string { return g.ID.String() },
 	)
 }
 
@@ -333,38 +383,24 @@ WHERE workspace_id = $1
 		slog.Warn("cognitive: stuck_task_detection: rows iteration error", "err", rerr)
 	}
 
-	created := 0
-	for _, t := range tasks {
-		content := fmt.Sprintf(
-			"Task '%s' has been in_progress for more than 7 days without an update."+
-				" Consider unblocking or deprioritising.",
-			t.title,
-		)
-		payload, merr := json.Marshal(proposal.TaskPayload{
-			Title:         fmt.Sprintf("Unblock stuck task: %s", t.title),
-			SourceTool:    "scheduler:stuck_task",
-			Description:   content,
-			SuggestedKind: "general",
-		})
-		if merr != nil {
-			slog.Warn("cognitive: stuck_task_detection: marshal payload failed", "task_id", t.id, "err", merr)
-			continue
-		}
-		if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-			WorkspaceID: deps.workspaceID,
-			Type:        proposal.TypeTask,
-			Payload:     payload,
-			ProposedBy:  "scheduler:stuck_task",
-		}); cerr != nil {
-			slog.Warn("cognitive: stuck_task_detection: Create proposal failed", "task_id", t.id, "err", cerr)
-			continue
-		}
-		created++
-	}
-	slog.Info(
-		"cognitive: stuck_task_detection: completed",
-		"stuck_tasks_found", len(tasks),
-		"proposals_created", created,
+	runProposalLoop(
+		ctx, deps.proposal, deps.workspaceID,
+		"stuck_task_detection", "scheduler:stuck_task", "stuck_tasks_found",
+		tasks,
+		func(t stuckTask) (proposal.Type, any, bool) {
+			content := fmt.Sprintf(
+				"Task '%s' has been in_progress for more than 7 days without an update."+
+					" Consider unblocking or deprioritising.",
+				t.title,
+			)
+			return proposal.TypeTask, proposal.TaskPayload{
+				Title:         fmt.Sprintf("Unblock stuck task: %s", t.title),
+				SourceTool:    "scheduler:stuck_task",
+				Description:   content,
+				SuggestedKind: "general",
+			}, true
+		},
+		func(t stuckTask) string { return t.id.String() },
 	)
 }
 
@@ -445,39 +481,25 @@ LIMIT $2`
 		slog.Warn("cognitive: decision_outcome_review: rows iteration error", "err", rerr)
 	}
 
-	created := 0
-	for _, d := range decisions {
-		content := fmt.Sprintf(
-			"Decision '%s' was made more than 30 days ago but has no recorded outcome."+
-				" Consider recording what happened.",
-			d.title,
-		)
-		payload, merr := json.Marshal(proposal.TaskPayload{
-			Title:          fmt.Sprintf("Record outcome for decision: %s", d.title),
-			SourceTool:     "scheduler:decision_outcome_review",
-			Description:    content,
-			SuggestedKind:  "general",
-			SourceEntityID: d.id.String(),
-		})
-		if merr != nil {
-			slog.Warn("cognitive: decision_outcome_review: marshal payload failed", "decision_id", d.id, "err", merr)
-			continue
-		}
-		if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-			WorkspaceID: deps.workspaceID,
-			Type:        proposal.TypeTask,
-			Payload:     payload,
-			ProposedBy:  "scheduler:decision_outcome_review",
-		}); cerr != nil {
-			slog.Warn("cognitive: decision_outcome_review: Create proposal failed", "decision_id", d.id, "err", cerr)
-			continue
-		}
-		created++
-	}
-	slog.Info(
-		"cognitive: decision_outcome_review: completed",
-		"decisions_without_outcome", len(decisions),
-		"proposals_created", created,
+	runProposalLoop(
+		ctx, deps.proposal, deps.workspaceID,
+		"decision_outcome_review", "scheduler:decision_outcome_review", "decisions_without_outcome",
+		decisions,
+		func(d decRow) (proposal.Type, any, bool) {
+			content := fmt.Sprintf(
+				"Decision '%s' was made more than 30 days ago but has no recorded outcome."+
+					" Consider recording what happened.",
+				d.title,
+			)
+			return proposal.TypeTask, proposal.TaskPayload{
+				Title:          fmt.Sprintf("Record outcome for decision: %s", d.title),
+				SourceTool:     "scheduler:decision_outcome_review",
+				Description:    content,
+				SuggestedKind:  "general",
+				SourceEntityID: d.id.String(),
+			}, true
+		},
+		func(d decRow) string { return d.id.String() },
 	)
 }
 
@@ -538,31 +560,20 @@ WHERE workspace_id = $1
 		slog.Warn("cognitive: knowledge_to_skill_candidate: rows iteration error", "err", rerr)
 	}
 
-	created := 0
-	for _, ki := range items {
-		payload, merr := json.Marshal(proposal.KnowledgePayload{
-			Title:   fmt.Sprintf("Skill candidate: %s", ki.title),
-			Content: fmt.Sprintf("Knowledge item '%s' has been recalled more than 3 times. Consider promoting it to a skill or playbook.", ki.title),
-		})
-		if merr != nil {
-			slog.Warn("cognitive: knowledge_to_skill_candidate: marshal payload failed", "item_id", ki.id, "err", merr)
-			continue
-		}
-		if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-			WorkspaceID: deps.workspaceID,
-			Type:        proposal.TypeKnowledge,
-			Payload:     payload,
-			ProposedBy:  "scheduler:knowledge_to_skill",
-		}); cerr != nil {
-			slog.Warn("cognitive: knowledge_to_skill_candidate: Create proposal failed", "item_id", ki.id, "err", cerr)
-			continue
-		}
-		created++
-	}
-	slog.Info(
-		"cognitive: knowledge_to_skill_candidate: completed",
-		"high_recall_items", len(items),
-		"proposals_created", created,
+	created := runProposalLoop(
+		ctx, deps.proposal, deps.workspaceID,
+		"knowledge_to_skill_candidate", "scheduler:knowledge_to_skill", "high_recall_items",
+		items,
+		func(ki kiRow) (proposal.Type, any, bool) {
+			return proposal.TypeKnowledge, proposal.KnowledgePayload{
+				Title: fmt.Sprintf("Skill candidate: %s", ki.title),
+				Content: fmt.Sprintf(
+					"Knowledge item '%s' has been recalled more than 3 times. Consider promoting it to a skill or playbook.",
+					ki.title,
+				),
+			}, true
+		},
+		func(ki kiRow) string { return ki.id.String() },
 	)
 	// Direction-D instrumentation: log activity so atom/outcome growth is visible
 	// in the dashboard automation feed. Best-effort: failures do not abort the job.
@@ -661,34 +672,20 @@ func (sc *Scheduler) runBehaviorRuleCandidate() {
 		return
 	}
 
-	created := 0
-	for _, r := range reflections {
-		if r.Summary == "" {
-			continue
-		}
-		payload, merr := json.Marshal(proposal.KnowledgePayload{
-			Title:   fmt.Sprintf("Behavior rule candidate from %s reflection", r.Type),
-			Content: fmt.Sprintf("Pattern detected in reflection (type=%s, created=%s): %s", r.Type, r.CreatedAt.Format("2006-01-02"), r.Summary),
-		})
-		if merr != nil {
-			slog.Warn("cognitive: behavior_rule_candidate: marshal payload failed", "reflection_id", r.ID, "err", merr)
-			continue
-		}
-		if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-			WorkspaceID: deps.workspaceID,
-			Type:        proposal.TypeKnowledge,
-			Payload:     payload,
-			ProposedBy:  "scheduler:behavior_rule_candidate",
-		}); cerr != nil {
-			slog.Warn("cognitive: behavior_rule_candidate: Create proposal failed", "reflection_id", r.ID, "err", cerr)
-			continue
-		}
-		created++
-	}
-	slog.Info(
-		"cognitive: behavior_rule_candidate: completed",
-		"reflections_with_patterns", len(reflections),
-		"proposals_created", created,
+	created := runProposalLoop(
+		ctx, deps.proposal, deps.workspaceID,
+		"behavior_rule_candidate", "scheduler:behavior_rule_candidate", "reflections_with_patterns",
+		reflections,
+		func(r *reflection.Reflection) (proposal.Type, any, bool) {
+			if r.Summary == "" {
+				return "", nil, false
+			}
+			return proposal.TypeKnowledge, proposal.KnowledgePayload{
+				Title:   fmt.Sprintf("Behavior rule candidate from %s reflection", r.Type),
+				Content: fmt.Sprintf("Pattern detected in reflection (type=%s, created=%s): %s", r.Type, r.CreatedAt.Format("2006-01-02"), r.Summary),
+			}, true
+		},
+		func(r *reflection.Reflection) string { return r.ID.String() },
 	)
 	// Direction-D instrumentation: best-effort activity log for dashboard feed.
 	if deps.gtd != nil {
