@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -136,5 +137,74 @@ func TestGTDStore_BeginTask_WorkspaceIsolation(t *testing.T) {
 	_, err = storeB.BeginTask(ctx, task.ID)
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected ErrNotFound when accessing cross-workspace task, got %v", err)
+	}
+}
+
+// TestGTDStore_BeginTask_Concurrent_GuardBlocked exercises the
+// RowsAffected()==0 guard-blocked path in sqliteBeginTaskAdapter.GuardedUpdate:
+// two goroutines racing to begin the same task must not both write a
+// work_session_started activity_log entry. SQLite's connection pool is
+// capped at 1 connection (db.SetMaxOpenConns(1) in Open), so ReadExisting's
+// plain SELECT is far cheaper than the full
+// BeginTx+GuardedUpdate+CreateActivityLog+Commit sequence: in practice both
+// goroutines' ReadExisting calls observe "pending" before either commits, so
+// one of the two hits the guard-blocked branch (the `AND status !=
+// 'in_progress'` guard matches zero rows) and falls through to
+// ResolveGuardBlocked's rollback-before-reread. The assertion below — both
+// calls succeed, exactly one activity_log row — is the outcome invariant
+// that path exists to guarantee, and holds regardless of the exact
+// goroutine interleaving.
+func TestGTDStore_BeginTask_Concurrent_GuardBlocked(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "race task", Priority: 1, Assignee: "claude"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	const n = 2
+	start := make(chan struct{})
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := s.BeginTask(ctx, task.ID)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("BeginTask: %v", err)
+		}
+	}
+
+	logs, err := s.ListActivityLogsSince(ctx, task.CreatedAt.Time, 10)
+	if err != nil {
+		t.Fatalf("ListActivityLogsSince: %v", err)
+	}
+	var count int
+	for _, l := range logs {
+		if l.Action == actionWorkSessionStart {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 work_session_started activity_log entry from %d concurrent BeginTask calls, got %d", n, count)
+	}
+
+	final, err := s.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if final.Status != statusInProgress {
+		t.Errorf("expected final status in_progress, got %q", final.Status)
 	}
 }

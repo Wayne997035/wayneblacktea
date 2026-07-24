@@ -1198,108 +1198,127 @@ type txBeginner interface {
 // All statements run inside a single transaction so a partial state is
 // impossible. Workspace authorisation is enforced by an explicit pre-check
 // inside the tx BEFORE any cleanup runs: if the task does not exist in the
-// configured workspace the tx is rolled back and the call is a silent no-op
-// (matching the pre-fix behaviour where a workspace-mismatched DELETE simply
-// affected 0 rows). The pre-check ensures cleanup never touches another
-// workspace's join rows or work_sessions; the parent DELETE's workspace
-// filter is now redundant defence-in-depth.
+// configured workspace the call is a silent no-op (matching the pre-fix
+// behaviour where a workspace-mismatched DELETE simply affected 0 rows). The
+// pre-check ensures cleanup never touches another workspace's join rows or
+// work_sessions; the parent DELETE's workspace filter is now redundant
+// defence-in-depth. See DeleteTaskOrchestration (deletetask_orchestration.go)
+// for the shared control flow this delegates to.
 func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	beginner, ok := s.dbtx.(txBeginner)
-	if !ok {
-		return fmt.Errorf("deleting task %s: dbtx does not support Begin (cannot run cascade cleanup atomically)", id)
-	}
+	return DeleteTaskOrchestration(ctx, id, &pgDeleteTaskAdapter{s: s, id: id})
+}
 
+// pgDeleteTaskAdapter is the Postgres-backed DeleteTaskAdapter used by
+// Store.DeleteTask. Constructed fresh per call; holds the open tx as state
+// between the interface's method calls.
+type pgDeleteTaskAdapter struct {
+	s  *Store
+	id uuid.UUID
+	tx pgx.Tx
+}
+
+func (a *pgDeleteTaskAdapter) BeginTx(ctx context.Context) error {
+	beginner, ok := a.s.dbtx.(txBeginner)
+	if !ok {
+		return errors.New("dbtx does not support Begin (cannot run cascade cleanup atomically)")
+	}
 	tx, err := beginner.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("deleting task %s: begin tx: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			// Best-effort rollback; ignore error because tx may already have
-			// closed if Commit succeeded between the check and this defer.
-			_ = tx.Rollback(ctx)
-		}
-	}()
+	a.tx = tx
+	return nil
+}
 
-	// 0. Workspace authorisation pre-check. The cleanup statements below are
-	// keyed only by task_id, so without this guard a cross-workspace caller
-	// could delete another workspace's join rows / NULL its current_task_id
-	// pointer (the parent DELETE's workspace filter would 0-row but the
-	// damage to neighbouring tables would already be done).
+func (a *pgDeleteTaskAdapter) WorkspacePrecheck(ctx context.Context) (bool, error) {
 	var exists bool
-	if err = tx.QueryRow(
+	if err := a.tx.QueryRow(
 		ctx,
 		`SELECT EXISTS(
 		    SELECT 1 FROM tasks
 		     WHERE id = $1
 		       AND ($2::uuid IS NULL OR workspace_id = $2)
-		 )`, id, s.workspaceID,
+		 )`, a.id, a.s.workspaceID,
 	).Scan(&exists); err != nil {
-		return fmt.Errorf("deleting task %s: workspace pre-check: %w", id, err)
+		return false, fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
-	if !exists {
-		// Roll back the empty tx and silently no-op, matching the pre-fix
-		// behaviour where a missing / workspace-mismatched task simply
-		// affected 0 rows on the parent DELETE.
-		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			return fmt.Errorf("deleting task %s: rollback after workspace miss: %w", id, rbErr)
-		}
-		committed = true // suppress the deferred Rollback (already done).
-		return nil
-	}
+	return exists, nil
+}
 
-	// 1. Remove join-table rows (was ON DELETE CASCADE on work_session_tasks.task_id).
-	if _, err = tx.Exec(
+// CleanupWorkSessionTasks removes join-table rows (was ON DELETE CASCADE on
+// work_session_tasks.task_id).
+func (a *pgDeleteTaskAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
+	if _, err := a.tx.Exec(
 		ctx,
-		`DELETE FROM work_session_tasks WHERE task_id = $1`, id,
+		`DELETE FROM work_session_tasks WHERE task_id = $1`, a.id,
 	); err != nil {
-		return fmt.Errorf("deleting task %s: cleanup work_session_tasks: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
+	return nil
+}
 
-	// 2. NULL out work_sessions.current_task_id (was ON DELETE SET NULL).
-	if _, err = tx.Exec(
+// NullifyWorkSessionsCurrentTask NULLs out work_sessions.current_task_id
+// (was ON DELETE SET NULL).
+func (a *pgDeleteTaskAdapter) NullifyWorkSessionsCurrentTask(ctx context.Context) error {
+	if _, err := a.tx.Exec(
 		ctx,
 		`UPDATE work_sessions
 		   SET current_task_id = NULL,
 		       updated_at      = NOW()
-		 WHERE current_task_id = $1`, id,
+		 WHERE current_task_id = $1`, a.id,
 	); err != nil {
-		return fmt.Errorf("deleting task %s: nullify work_sessions.current_task_id: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
+	return nil
+}
 
-	// 3a. Remove completion_candidates rows referencing this task.
-	if _, err = tx.Exec(
+// CleanupCompletionCandidates removes completion_candidates rows
+// referencing this task.
+func (a *pgDeleteTaskAdapter) CleanupCompletionCandidates(ctx context.Context) error {
+	if _, err := a.tx.Exec(
 		ctx,
-		`DELETE FROM completion_candidates WHERE task_id = $1`, id,
+		`DELETE FROM completion_candidates WHERE task_id = $1`, a.id,
 	); err != nil {
-		return fmt.Errorf("deleting task %s: cleanup completion_candidates: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
+	return nil
+}
 
-	// 3b. Reset vision_items that were promoted from this task.
-	if _, err = tx.Exec(
+// ResetPromotedVisionItems resets vision_items that were promoted from this
+// task.
+func (a *pgDeleteTaskAdapter) ResetPromotedVisionItems(ctx context.Context) error {
+	if _, err := a.tx.Exec(
 		ctx,
 		`UPDATE vision_items
 		    SET promoted_task_id = NULL,
 		        status           = 'open'
-		  WHERE promoted_task_id = $1`, id,
+		  WHERE promoted_task_id = $1`, a.id,
 	); err != nil {
-		return fmt.Errorf("deleting task %s: reset vision_items.promoted_task_id: %w", id, err)
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
-
-	// 5. Delete the task itself, scoped to the configured workspace.
-	if err = s.q.WithTx(tx).DeleteTask(ctx, db.DeleteTaskParams{
-		ID:          id,
-		WorkspaceID: s.workspaceID,
-	}); err != nil {
-		return fmt.Errorf("deleting task %s: %w", id, err)
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("deleting task %s: commit: %w", id, err)
-	}
-	committed = true
 	return nil
+}
+
+// DeleteTaskRow deletes the task itself, scoped to the configured workspace.
+func (a *pgDeleteTaskAdapter) DeleteTaskRow(ctx context.Context) error {
+	if err := a.s.q.WithTx(a.tx).DeleteTask(ctx, db.DeleteTaskParams{
+		ID:          a.id,
+		WorkspaceID: a.s.workspaceID,
+	}); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
+func (a *pgDeleteTaskAdapter) Commit(ctx context.Context) error {
+	if err := a.tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
+func (a *pgDeleteTaskAdapter) Rollback(ctx context.Context) {
+	_ = a.tx.Rollback(ctx)
 }
 
 // LatestActivityAt returns the created_at of the most-recent activity_log row,

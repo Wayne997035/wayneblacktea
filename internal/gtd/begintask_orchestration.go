@@ -111,7 +111,7 @@ func BeginTaskOrchestration(ctx context.Context, id uuid.UUID, adapter BeginTask
 			if errors.Is(err, ErrNotFound) {
 				return nil, fmt.Errorf("%w", err)
 			}
-			return nil, fmt.Errorf("begin task %s: commit: %w", id, err)
+			return nil, fmt.Errorf("begin task %s: resolve guard-blocked: %w", id, err)
 		}
 		return task, nil
 	}

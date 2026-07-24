@@ -168,13 +168,19 @@ func TestBeginTaskOrchestration_GuardBlocked_NotFound(t *testing.T) {
 	if !reflect.DeepEqual(f.calls, wantCalls) {
 		t.Errorf("expected the guard-blocked branch to never reach log/commit, got %v", f.calls)
 	}
+	// ErrNotFound must stay bare (errors.Is-detectable), unlike every other
+	// step's error which gets the uniform "begin task <id>: <step>: " prefix.
+	bareErrPrefix := fmt.Sprintf("begin task %s:", id)
+	if strings.HasPrefix(err.Error(), bareErrPrefix) {
+		t.Errorf("expected ErrNotFound to stay bare with no step prefix, got %q", err.Error())
+	}
 }
 
 // TestBeginTaskOrchestration_GuardBlocked_ResolveNonNotFoundError verifies
 // the other half of ResolveGuardBlocked's two error kinds: a non-ErrNotFound
 // error (e.g. the adapter's own commit/re-read failure) gets the uniform
-// "begin task <id>: commit: %w" step prefix, unlike the ErrNotFound case
-// above which stays bare.
+// "begin task <id>: resolve guard-blocked: %w" step prefix, unlike the
+// ErrNotFound case above which stays bare.
 func TestBeginTaskOrchestration_GuardBlocked_ResolveNonNotFoundError(t *testing.T) {
 	id := uuid.New()
 	existing := fakeTask(id, "pending", "claude")
@@ -192,7 +198,7 @@ func TestBeginTaskOrchestration_GuardBlocked_ResolveNonNotFoundError(t *testing.
 	if errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("non-ErrNotFound resolve error must not match errors.Is(gtd.ErrNotFound), got %v", err)
 	}
-	wantPrefix := fmt.Sprintf("begin task %s: commit: ", id)
+	wantPrefix := fmt.Sprintf("begin task %s: resolve guard-blocked: ", id)
 	if !strings.HasPrefix(err.Error(), wantPrefix) {
 		t.Errorf("expected error to carry the uniform step prefix %q, got %q", wantPrefix, err.Error())
 	}
