@@ -10,9 +10,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/reflection"
@@ -24,8 +22,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// fake gtd.StoreIface — only GetTaskByID/GetProjectByID/ProjectsByRepoName/
-// WorkspaceID are exercised by retrieve(); the rest are unused stubs.
+// fake TaskProjectReadPort (gtd.StoreIface's read subset, see ports.go) —
+// every method below is exercised by retrieve(); no unused stub methods
+// remain now that contextpack owns its own narrow read port instead of the
+// full ~25-method gtd.StoreIface.
 // ---------------------------------------------------------------------------
 
 type fakeGTDStore struct {
@@ -41,7 +41,7 @@ type fakeGTDStore struct {
 	projectsByRepoErr error
 }
 
-var _ gtd.StoreIface = (*fakeGTDStore)(nil)
+var _ TaskProjectReadPort = (*fakeGTDStore)(nil)
 
 func (f *fakeGTDStore) WorkspaceID() pgtype.UUID {
 	return pgtype.UUID{Bytes: f.workspaceID, Valid: true}
@@ -71,120 +71,8 @@ func (f *fakeGTDStore) ProjectsByRepoName(_ context.Context, _ string) ([]db.Pro
 	return f.projectsByRepo, f.projectsByRepoErr
 }
 
-func (f *fakeGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) { return nil, nil }
-
-func (f *fakeGTDStore) ProjectByName(_ context.Context, _ string) (*db.Project, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParams) (*db.Project, error) {
-	return nil, nil
-}
-func (f *fakeGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) { return nil, nil }
-func (f *fakeGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) TasksForTimeline(_ context.Context, _, _ time.Time) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) CompleteTask(_ context.Context, _ uuid.UUID, _ *string) (*db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (map[uuid.UUID]bool, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) BeginTask(_ context.Context, _ uuid.UUID) (*db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) LogActivity(_ context.Context, _, _ string, _ *uuid.UUID, _ string) error {
-	return nil
-}
-
-func (f *fakeGTDStore) ListActivityLogsSince(_ context.Context, _ time.Time, _ int32) ([]db.ActivityLog, error) {
-	return nil, nil
-}
-func (f *fakeGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) { return nil, nil }
-func (f *fakeGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*db.Goal, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.TaskStatus) (*db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd.ProjectStatus) (*db.Project, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGoalParams) (*db.Goal, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
-	return nil, nil
-}
-func (f *fakeGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return nil }
-func (f *fakeGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
-	return 0, 0, nil
-}
-
-func (f *fakeGTDStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
-func (f *fakeGTDStore) AddChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ gtd.ChecklistItem) ([]gtd.ChecklistItem, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) UpdateChecklistItem(
-	_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID, _ gtd.UpdateChecklistItemParams,
-) ([]gtd.ChecklistItem, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) DeleteChecklistItem(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ uuid.UUID) error {
-	return nil
-}
-func (f *fakeGTDStore) TopPendingTask(_ context.Context) (*db.Task, error) { return nil, nil }
-func (f *fakeGTDStore) RecentCompletedTasks(_ context.Context, _ uuid.UUID, _ int32) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (f *fakeGTDStore) RecentActivityByProject(_ context.Context, _ uuid.UUID, _ time.Time, _ int32) ([]db.ActivityLog, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake decision.StoreIface
+// fake DecisionReadPort (decision.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeDecisionStore struct {
@@ -198,7 +86,7 @@ type fakeDecisionStore struct {
 	byTaskErr error
 }
 
-var _ decision.StoreIface = (*fakeDecisionStore)(nil)
+var _ DecisionReadPort = (*fakeDecisionStore)(nil)
 
 func (f *fakeDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
 	return f.byRepo, f.byRepoErr
@@ -212,18 +100,8 @@ func (f *fakeDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]d
 	return f.byTask, f.byTaskErr
 }
 
-func (f *fakeDecisionStore) Log(_ context.Context, _ decision.LogParams) (*db.Decision, error) {
-	return nil, nil
-}
-
-func (f *fakeDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) { return nil, nil }
-
-func (f *fakeDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake knowledge.StoreIface
+// fake KnowledgeReadPort (knowledge.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeKnowledgeStore struct {
@@ -231,58 +109,14 @@ type fakeKnowledgeStore struct {
 	searchErr     error
 }
 
-var _ knowledge.StoreIface = (*fakeKnowledgeStore)(nil)
-
-func (f *fakeKnowledgeStore) Search(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
-	return f.searchResults, f.searchErr
-}
+var _ KnowledgeReadPort = (*fakeKnowledgeStore)(nil)
 
 func (f *fakeKnowledgeStore) SearchReadOnly(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
 	return f.searchResults, f.searchErr
 }
 
-func (f *fakeKnowledgeStore) AddItem(_ context.Context, _ knowledge.AddItemParams) (*db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) SearchCoarse(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) List(_ context.Context, _, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) GetByID(_ context.Context, _ uuid.UUID) (*db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) UpdateLearningValue(_ context.Context, _ uuid.UUID, _ int) error {
-	return nil
-}
-
-func (f *fakeKnowledgeStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) ListChildren(_ context.Context, _ uuid.UUID) ([]*db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) ListRoots(_ context.Context) ([]*db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) ListByProjectID(_ context.Context, _ uuid.UUID, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (f *fakeKnowledgeStore) ListByTaskID(_ context.Context, _ uuid.UUID, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake atom.StoreIface
+// fake AtomReadPort (atom.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeAtomStore struct {
@@ -290,39 +124,14 @@ type fakeAtomStore struct {
 	searchErr     error
 }
 
-var _ atom.StoreIface = (*fakeAtomStore)(nil)
+var _ AtomReadPort = (*fakeAtomStore)(nil)
 
 func (f *fakeAtomStore) Search(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]atom.Atom, error) {
 	return f.searchResults, f.searchErr
 }
 
-func (f *fakeAtomStore) AddAtom(_ context.Context, _ atom.AddAtomParams) (*atom.Atom, error) {
-	return nil, nil
-}
-func (f *fakeAtomStore) AddLink(_ context.Context, _ atom.AddLinkParams) error { return nil }
-func (f *fakeAtomStore) ListByParent(_ context.Context, _ string, _ uuid.UUID) ([]atom.Atom, error) {
-	return nil, nil
-}
-
-func (f *fakeAtomStore) Traverse(_ context.Context, _ uuid.UUID, _ int) (*atom.TraverseResult, error) {
-	return nil, nil
-}
-func (f *fakeAtomStore) PruneAtoms(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
-func (f *fakeAtomStore) SetDigestStatus(_ context.Context, _ uuid.UUID, _ string, _ string) error {
-	return nil
-}
-
-func (f *fakeAtomStore) CountByDigestStatus(_ context.Context, _ *uuid.UUID, _ string) (int64, error) {
-	return 0, nil
-}
-
-func (f *fakeAtomStore) ListByDigestStatus(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]atom.Atom, error) {
-	return nil, nil
-}
-func (f *fakeAtomStore) CountTotal(_ context.Context, _ *uuid.UUID) (int64, error) { return 0, nil }
-
 // ---------------------------------------------------------------------------
-// fake procedural.StoreIface
+// fake ProceduralReadPort (procedural.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeProceduralStore struct {
@@ -330,22 +139,14 @@ type fakeProceduralStore struct {
 	queryErr     error
 }
 
-var _ procedural.StoreIface = (*fakeProceduralStore)(nil)
+var _ ProceduralReadPort = (*fakeProceduralStore)(nil)
 
 func (f *fakeProceduralStore) Query(_ context.Context, _ procedural.QueryFilter) ([]procedural.ProceduralMemory, error) {
 	return f.queryResults, f.queryErr
 }
 
-func (f *fakeProceduralStore) Add(_ context.Context, _ procedural.AddParams) (*procedural.ProceduralMemory, error) {
-	return nil, nil
-}
-
-func (f *fakeProceduralStore) MarkUsed(_ context.Context, _ uuid.UUID) (*procedural.ProceduralMemory, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake skill.StoreIface
+// fake SkillReadPort (skill.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeSkillStore struct {
@@ -353,30 +154,14 @@ type fakeSkillStore struct {
 	searchErr     error
 }
 
-var _ skill.StoreIface = (*fakeSkillStore)(nil)
+var _ SkillReadPort = (*fakeSkillStore)(nil)
 
 func (f *fakeSkillStore) Search(_ context.Context, _ skill.SearchFilter) ([]*skill.Skill, error) {
 	return f.searchResults, f.searchErr
 }
 
-func (f *fakeSkillStore) Add(_ context.Context, _ skill.AddParams) (*skill.Skill, error) {
-	return nil, nil
-}
-
-func (f *fakeSkillStore) IncrementSuccess(_ context.Context, _ string, _ *string) (*skill.Skill, error) {
-	return nil, nil
-}
-
-func (f *fakeSkillStore) UpdateFromOutcome(_ context.Context, _ skill.UpdateFromOutcomeParams, _ *string) (*skill.Skill, error) {
-	return nil, nil
-}
-
-func (f *fakeSkillStore) ListRelevant(_ context.Context, _ *string, _ string, _ int) ([]*skill.Skill, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake outcome.StoreIface
+// fake OutcomeReadPort (outcome.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeOutcomeStore struct {
@@ -384,42 +169,14 @@ type fakeOutcomeStore struct {
 	failedErr     error
 }
 
-var _ outcome.StoreIface = (*fakeOutcomeStore)(nil)
+var _ OutcomeReadPort = (*fakeOutcomeStore)(nil)
 
 func (f *fakeOutcomeStore) ListFailedOutcomes(_ context.Context, _ *uuid.UUID, _ int) ([]outcome.Outcome, error) {
 	return f.failedResults, f.failedErr
 }
 
-func (f *fakeOutcomeStore) CreateOutcome(_ context.Context, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
-	return outcome.Outcome{}, nil
-}
-
-func (f *fakeOutcomeStore) GetOutcomeByID(_ context.Context, _ uuid.UUID, _ *uuid.UUID) (outcome.Outcome, error) {
-	return outcome.Outcome{}, nil
-}
-
-func (f *fakeOutcomeStore) ListRecentOutcomes(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]outcome.Outcome, error) {
-	return nil, nil
-}
-
-func (f *fakeOutcomeStore) CreateEvaluation(_ context.Context, _ outcome.CreateEvaluationParams) (outcome.Evaluation, error) {
-	return outcome.Evaluation{}, nil
-}
-
-func (f *fakeOutcomeStore) ListEvaluationsByOutcomeID(_ context.Context, _ uuid.UUID, _ *uuid.UUID) ([]outcome.Evaluation, error) {
-	return nil, nil
-}
-
-func (f *fakeOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
-func (f *fakeOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
-	return false, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake reflection.StoreIface
+// fake ReflectionReadPort (reflection.StoreIface's read subset)
 // ---------------------------------------------------------------------------
 
 type fakeReflectionStore struct {
@@ -427,37 +184,16 @@ type fakeReflectionStore struct {
 	recentErr error
 }
 
-var _ reflection.StoreIface = (*fakeReflectionStore)(nil)
+var _ ReflectionReadPort = (*fakeReflectionStore)(nil)
 
 func (f *fakeReflectionStore) RecentWithPatterns(_ context.Context, _ *uuid.UUID, _ time.Time, _ int) ([]*reflection.Reflection, error) {
 	return f.recent, f.recentErr
 }
 
-func (f *fakeReflectionStore) Create(_ context.Context, _ reflection.CreateParams) (*reflection.Reflection, error) {
-	return nil, nil
-}
-
-func (f *fakeReflectionStore) List(_ context.Context, _ reflection.ListParams) ([]*reflection.Reflection, error) {
-	return nil, nil
-}
-
-func (f *fakeReflectionStore) GetLatest(_ context.Context, _ *uuid.UUID, _ string) (*reflection.Reflection, error) {
-	return nil, nil
-}
-
-func (f *fakeReflectionStore) ByRelatedEntity(
-	_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID, _ int,
-) ([]*reflection.Reflection, error) {
-	return nil, nil
-}
-
-func (f *fakeReflectionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake behaviorrule.StoreIface — List filters by Status like the real store,
-// so tests can assert retrieve() actually requests Status="active" only.
+// fake BehaviorRuleReadPort (behaviorrule.StoreIface's read subset) — List
+// filters by Status like the real store, so tests can assert retrieve()
+// actually requests Status="active" only.
 // ---------------------------------------------------------------------------
 
 type fakeBehaviorRuleStore struct {
@@ -465,7 +201,7 @@ type fakeBehaviorRuleStore struct {
 	listErr error
 }
 
-var _ behaviorrule.StoreIface = (*fakeBehaviorRuleStore)(nil)
+var _ BehaviorRuleReadPort = (*fakeBehaviorRuleStore)(nil)
 
 func (f *fakeBehaviorRuleStore) List(_ context.Context, p behaviorrule.ListParams) ([]*behaviorrule.BehaviorRule, error) {
 	if f.listErr != nil {
@@ -483,25 +219,10 @@ func (f *fakeBehaviorRuleStore) List(_ context.Context, p behaviorrule.ListParam
 	return out, nil
 }
 
-func (f *fakeBehaviorRuleStore) Propose(_ context.Context, _ behaviorrule.CreateParams) (*behaviorrule.BehaviorRule, error) {
-	return nil, nil
-}
-
-func (f *fakeBehaviorRuleStore) ApplyOutcome(_ context.Context, _ uuid.UUID, _ string) (*behaviorrule.BehaviorRule, error) {
-	return nil, nil
-}
-
-func (f *fakeBehaviorRuleStore) Deprecate(_ context.Context, _ uuid.UUID) (*behaviorrule.BehaviorRule, error) {
-	return nil, nil
-}
-
-func (f *fakeBehaviorRuleStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake session.StoreIface — LatestHandoff defaults to ErrNotFound, mirroring
-// the real store's contract when no unresolved handoff exists.
+// fake SessionReadPort (session.StoreIface's read subset) — LatestHandoff
+// defaults to ErrNotFound, mirroring the real store's contract when no
+// unresolved handoff exists.
 // ---------------------------------------------------------------------------
 
 type fakeSessionStore struct {
@@ -509,7 +230,7 @@ type fakeSessionStore struct {
 	latestErr     error
 }
 
-var _ session.StoreIface = (*fakeSessionStore)(nil)
+var _ SessionReadPort = (*fakeSessionStore)(nil)
 
 func (f *fakeSessionStore) LatestHandoff(_ context.Context) (*db.SessionHandoff, error) {
 	if f.latestHandoff != nil {
@@ -521,38 +242,10 @@ func (f *fakeSessionStore) LatestHandoff(_ context.Context) (*db.SessionHandoff,
 	return nil, session.ErrNotFound
 }
 
-func (f *fakeSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams) (*db.SessionHandoff, error) {
-	return nil, nil
-}
-func (f *fakeSessionStore) Resolve(_ context.Context, _ uuid.UUID) error { return nil }
-func (f *fakeSessionStore) MarkNextActionDone(_ context.Context, _ uuid.UUID, _ int) (*db.SessionHandoff, error) {
-	return nil, nil
-}
-func (f *fakeSessionStore) UpdateSummary(_ context.Context, _ string) error   { return nil }
-func (f *fakeSessionStore) UpdateEmbedding(_ context.Context, _ []byte) error { return nil }
-func (f *fakeSessionStore) UpdateEmbeddingByID(_ context.Context, _ uuid.UUID, _ []byte, _ string, _ int) error {
-	return nil
-}
-
-func (f *fakeSessionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.SessionHandoff, error) {
-	return nil, nil
-}
-
-func (f *fakeSessionStore) HandoffsSince(_ context.Context, _ time.Time, _ int) ([]db.SessionHandoff, error) {
-	return nil, nil
-}
-
-func (f *fakeSessionStore) HandoffsByRepo(_ context.Context, _ string, _ int) ([]db.SessionHandoff, error) {
-	return nil, nil
-}
-
-func (f *fakeSessionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // ---------------------------------------------------------------------------
-// fake worksession.StoreIface — GetActive defaults to Active:false, mirroring
-// the real store's "no in_progress session" contract.
+// fake WorkSessionReadPort (worksession.StoreIface's read subset) —
+// GetActive defaults to Active:false, mirroring the real store's "no
+// in_progress session" contract.
 // ---------------------------------------------------------------------------
 
 type fakeWorkSessionStore struct {
@@ -560,7 +253,7 @@ type fakeWorkSessionStore struct {
 	activeErr error
 }
 
-var _ worksession.StoreIface = (*fakeWorkSessionStore)(nil)
+var _ WorkSessionReadPort = (*fakeWorkSessionStore)(nil)
 
 func (f *fakeWorkSessionStore) GetActive(_ context.Context, _ uuid.UUID, _ string) (*worksession.ActiveSessionResult, error) {
 	if f.activeErr != nil {
@@ -570,50 +263,6 @@ func (f *fakeWorkSessionStore) GetActive(_ context.Context, _ uuid.UUID, _ strin
 		return f.active, nil
 	}
 	return &worksession.ActiveSessionResult{}, nil
-}
-
-func (f *fakeWorkSessionStore) Create(_ context.Context, _ worksession.CreateParams) (*worksession.Session, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) Checkpoint(_ context.Context, _ worksession.CheckpointParams) (*worksession.Session, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) Finish(_ context.Context, _ worksession.FinishParams) (*worksession.Session, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) GetByID(_ context.Context, _, _ uuid.UUID) (*worksession.Session, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) LinkTask(_ context.Context, _, _ uuid.UUID, _ string) error {
-	return nil
-}
-
-func (f *fakeWorkSessionStore) LinkedTasks(_ context.Context, _ uuid.UUID) ([]worksession.SessionTask, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) ListRecent(_ context.Context, _ uuid.UUID, _ string, _ int) ([]worksession.Session, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) AddEvidence(_ context.Context, _ worksession.Evidence) (*worksession.Evidence, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) GetEvidence(_ context.Context, _ uuid.UUID) ([]worksession.Evidence, error) {
-	return nil, nil
-}
-
-func (f *fakeWorkSessionStore) SetOutcomeLink(_ context.Context, _, _ uuid.UUID) error {
-	return nil
-}
-
-func (f *fakeWorkSessionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
 }
 
 // ---------------------------------------------------------------------------

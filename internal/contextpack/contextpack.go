@@ -10,17 +10,6 @@ import (
 	"sort"
 	"unicode/utf8"
 
-	"github.com/Wayne997035/wayneblacktea/internal/atom"
-	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
-	"github.com/Wayne997035/wayneblacktea/internal/decision"
-	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
-	"github.com/Wayne997035/wayneblacktea/internal/outcome"
-	"github.com/Wayne997035/wayneblacktea/internal/procedural"
-	"github.com/Wayne997035/wayneblacktea/internal/reflection"
-	"github.com/Wayne997035/wayneblacktea/internal/session"
-	"github.com/Wayne997035/wayneblacktea/internal/skill"
-	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 )
 
@@ -103,40 +92,41 @@ type Pack struct {
 	Omitted     []Omitted  `json:"omitted"`
 }
 
-// Assembler holds the domain stores needed to retrieve, score, and trim
-// context pack candidates. It is backend-agnostic: every field is a
-// StoreIface, so the same Assembler runs against either the Postgres or the
-// SQLite bundle.
+// Assembler holds the domain read ports needed to retrieve, score, and trim
+// context pack candidates. It is backend-agnostic: every field is a narrow,
+// consumer-owned read port (see ports.go) implemented structurally by the
+// same Postgres/SQLite stores that satisfy the full domain StoreIface — no
+// adapter type is needed to narrow them.
 type Assembler struct {
-	gtd          gtd.StoreIface
-	decision     decision.StoreIface
-	knowledge    knowledge.StoreIface
-	atom         atom.StoreIface
-	procedural   procedural.StoreIface
-	skill        skill.StoreIface
-	outcome      outcome.StoreIface
-	reflection   reflection.StoreIface
-	behaviorRule behaviorrule.StoreIface
-	session      session.StoreIface
-	workSession  worksession.StoreIface
+	gtd          TaskProjectReadPort
+	decision     DecisionReadPort
+	knowledge    KnowledgeReadPort
+	atom         AtomReadPort
+	procedural   ProceduralReadPort
+	skill        SkillReadPort
+	outcome      OutcomeReadPort
+	reflection   ReflectionReadPort
+	behaviorRule BehaviorRuleReadPort
+	session      SessionReadPort
+	workSession  WorkSessionReadPort
 }
 
-// NewAssembler wires the domain stores an Assembler needs. All arguments are
-// required — a nil store would panic on first use deep inside retrieve()
+// NewAssembler wires the domain read ports an Assembler needs. All arguments
+// are required — a nil store would panic on first use deep inside retrieve()
 // (internal/contextpack/retrieval.go), so NewAssembler rejects nil up front
 // instead of leaving the invariant unenforced.
 func NewAssembler(
-	gtdStore gtd.StoreIface,
-	decisionStore decision.StoreIface,
-	knowledgeStore knowledge.StoreIface,
-	atomStore atom.StoreIface,
-	proceduralStore procedural.StoreIface,
-	skillStore skill.StoreIface,
-	outcomeStore outcome.StoreIface,
-	reflectionStore reflection.StoreIface,
-	behaviorRuleStore behaviorrule.StoreIface,
-	sessionStore session.StoreIface,
-	workSessionStore worksession.StoreIface,
+	gtdStore TaskProjectReadPort,
+	decisionStore DecisionReadPort,
+	knowledgeStore KnowledgeReadPort,
+	atomStore AtomReadPort,
+	proceduralStore ProceduralReadPort,
+	skillStore SkillReadPort,
+	outcomeStore OutcomeReadPort,
+	reflectionStore ReflectionReadPort,
+	behaviorRuleStore BehaviorRuleReadPort,
+	sessionStore SessionReadPort,
+	workSessionStore WorkSessionReadPort,
 ) (*Assembler, error) {
 	switch {
 	case gtdStore == nil:

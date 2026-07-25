@@ -69,9 +69,10 @@ $ConfigDir  = Join-Path $env:LOCALAPPDATA 'wayneblacktea\config'
 $EnvFile    = Join-Path $ConfigDir '.env'
 
 # Binaries shipped in the cli archive (must stay in sync with .goreleaser.yaml
-# archive id "cli" `ids:` list).
+# archive id "cli" `ids:` list). The MCP stdio entry point is now `wbt mcp`
+# (Phase 2.3 of install simplification); the standalone wayneblacktea-mcp
+# binary was removed.
 $CliBinaries = @('wbt.exe', 'wbt-context.exe', 'wbt-hook.exe', 'wbt-guard.exe', 'wbt-doctor.exe')
-$McpBinary   = 'wayneblacktea-mcp.exe'
 
 function Write-Info  { param([string]$Msg) Write-Host "[install] $Msg" -ForegroundColor Cyan }
 function Write-Warn2 { param([string]$Msg) Write-Host "[install] WARN: $Msg" -ForegroundColor Yellow }
@@ -331,12 +332,15 @@ function Register-McpServer {
     if ($null -eq $claude) {
         Write-Warn2 "claude CLI not found — skipping MCP registration"
         Write-Warn2 "after installing Claude Code, run:"
-        Write-Warn2 "  claude mcp add wayneblacktea -- `"$InstallDir\$McpBinary`""
+        Write-Warn2 "  claude mcp add wayneblacktea -- `"$InstallDir\wbt.exe`" mcp"
         return
     }
     Write-Info "registering wayneblacktea MCP server with claude CLI"
-    $exe = Join-Path $InstallDir $McpBinary
-    & claude mcp add wayneblacktea -- $exe 2>$null
+    # Phase 2.3: MCP stdio entry point is now `wbt mcp` (the standalone
+    # wayneblacktea-mcp binary was removed); both serve the same
+    # internal/mcprunner.Run wiring.
+    $exe = Join-Path $InstallDir 'wbt.exe'
+    & claude mcp add wayneblacktea -- $exe mcp 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Info "MCP server registered"
     } else {
@@ -353,7 +357,6 @@ Write-Info "detected platform: $os/$arch"
 $ver = Get-LatestVersion
 Write-Info "installing wayneblacktea v$ver"
 
-$mcpArchive    = "wayneblacktea-mcp_${ver}_${os}_${arch}.zip"
 $cliArchive    = "wayneblacktea-cli_${ver}_${os}_${arch}.zip"
 $checksumsName = 'checksums.txt'
 $signatureName = 'checksums.txt.sig'
@@ -385,33 +388,29 @@ try {
 
     $checksumMap = Get-ChecksumMap -ChecksumsPath $sumsPath
 
-    $mcpZip = Join-Path $tmpDir $mcpArchive
     $cliZip = Join-Path $tmpDir $cliArchive
-    Invoke-VerifiedDownload -Url "$GitHubDl/v$ver/$mcpArchive" -OutFile $mcpZip -ChecksumMap $checksumMap
     Invoke-VerifiedDownload -Url "$GitHubDl/v$ver/$cliArchive" -OutFile $cliZip -ChecksumMap $checksumMap
 
     Write-Info "verifying archive contents are safe"
-    Test-ArchiveSafe -ArchivePath $mcpZip
     Test-ArchiveSafe -ArchivePath $cliZip
 
-    Write-Info "extracting archives"
+    Write-Info "extracting archive"
     $extractDir = Join-Path $tmpDir 'extract'
     New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-    Expand-Archive -Path $mcpZip -DestinationPath $extractDir -Force
     Expand-Archive -Path $cliZip -DestinationPath $extractDir -Force
 
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    # Install all 6 binaries: wayneblacktea-mcp + 5 CLI tools (wbt, wbt-context,
-    # wbt-hook, wbt-guard, wbt-doctor). MUST stay aligned with .goreleaser.yaml
-    # archive `cli` ids list. (Round 2 / R-M2)
-    $allBinaries = @($McpBinary) + $CliBinaries
-    foreach ($exe in $allBinaries) {
+    # Install the 5 CLI binaries (wbt, wbt-context, wbt-hook, wbt-guard,
+    # wbt-doctor). MUST stay aligned with .goreleaser.yaml archive `cli` ids
+    # list. The MCP stdio entry point is now `wbt mcp`; the standalone
+    # wayneblacktea-mcp binary was removed in Phase 2.3.
+    foreach ($exe in $CliBinaries) {
         $src = Join-Path $extractDir $exe
         if (-not (Test-Path $src)) {
-            Stop-WithError "expected binary $exe missing from extracted archives" 2
+            Stop-WithError "expected binary $exe missing from extracted archive" 2
         }
         Copy-Item -Path $src -Destination (Join-Path $InstallDir $exe) -Force
         Write-Info "installed $InstallDir\$exe"

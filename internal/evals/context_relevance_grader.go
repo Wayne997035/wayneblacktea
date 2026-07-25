@@ -16,10 +16,12 @@
 //     only the winning item's Summary reports the rest via Pack.Omitted
 //     rather than silently dropping them.
 //
-// contextpack.NewAssembler requires 11 non-nil domain stores
-// (contextpack.go:128); only gtd/decision/knowledge/behaviorRule carry
-// fixture-driven state below, the remaining 7 are pure no-op stubs required
-// solely to satisfy the constructor's signature.
+// contextpack.NewAssembler wires 11 narrow, consumer-owned read ports (see
+// internal/contextpack/ports.go) rather than the 11 full domain StoreIfaces
+// — only gtd/decision/knowledge/behaviorRule carry fixture-driven state
+// below; the remaining 7 stubs implement just the one method their read
+// port requires (returning zero values), since no fixture item routes
+// through those sources.
 package evals
 
 import (
@@ -35,9 +37,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
 	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/reflection"
@@ -98,9 +98,9 @@ type ContextRelevanceCase struct {
 }
 
 // ---------------------------------------------------------------------------
-// stub gtd.StoreIface — only WorkspaceID/GetTaskByID carry fixture state;
-// every other method exists solely to satisfy the interface contextpack.
-// NewAssembler requires and is never exercised by these fixtures.
+// stub contextpack.TaskProjectReadPort — only WorkspaceID/GetTaskByID carry
+// fixture state; GetProjectByID/ProjectsByRepoName exist solely to satisfy
+// the port and are never exercised by these fixtures.
 // ---------------------------------------------------------------------------
 
 type stubGTDStore struct {
@@ -108,7 +108,7 @@ type stubGTDStore struct {
 	taskByID    *db.Task
 }
 
-var _ gtd.StoreIface = (*stubGTDStore)(nil)
+var _ contextpack.TaskProjectReadPort = (*stubGTDStore)(nil)
 
 func (s *stubGTDStore) WorkspaceID() pgtype.UUID {
 	return pgtype.UUID{Bytes: s.workspaceID, Valid: true}
@@ -129,131 +129,15 @@ func (s *stubGTDStore) ProjectsByRepoName(_ context.Context, _ string) ([]db.Pro
 	return nil, nil
 }
 
-func (s *stubGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) { return nil, nil }
-
-func (s *stubGTDStore) ProjectByName(_ context.Context, _ string) (*db.Project, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) CreateProject(_ context.Context, _ gtd.CreateProjectParams) (*db.Project, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) { return nil, nil }
-
-func (s *stubGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) TasksByDueDateRange(_ context.Context, _, _ time.Time) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) UpcomingTasks(_ context.Context, _ time.Time, _, _ int) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) TasksForTimeline(_ context.Context, _, _ time.Time) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) CompleteTask(_ context.Context, _ uuid.UUID, _ *string) (*db.Task, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) BatchCompleteTasksByPRMatch(_ context.Context, _ []gtd.Match) (map[uuid.UUID]bool, error) {
-	return map[uuid.UUID]bool{}, nil
-}
-
-func (s *stubGTDStore) BeginTask(_ context.Context, _ uuid.UUID) (*db.Task, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) LogActivity(_ context.Context, _, _ string, _ *uuid.UUID, _ string) error {
-	return nil
-}
-
-func (s *stubGTDStore) ListActivityLogsSince(_ context.Context, _ time.Time, _ int32) ([]db.ActivityLog, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) { return nil, nil }
-
-func (s *stubGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*db.Goal, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.TaskStatus) (*db.Task, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) UpdateTask(_ context.Context, _ uuid.UUID, _ gtd.UpdateTaskParams) (*db.Task, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) UpdateProjectStatus(_ context.Context, _ uuid.UUID, _ gtd.ProjectStatus) (*db.Project, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGoalParams) (*db.Goal, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return nil }
-
-func (s *stubGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) { return 0, 0, nil }
-
-func (s *stubGTDStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
-
-func (s *stubGTDStore) AddChecklistItem(_ context.Context, _, _ uuid.UUID, _ gtd.ChecklistItem) ([]gtd.ChecklistItem, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) UpdateChecklistItem(
-	_ context.Context, _, _, _ uuid.UUID, _ gtd.UpdateChecklistItemParams,
-) ([]gtd.ChecklistItem, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) DeleteChecklistItem(_ context.Context, _, _, _ uuid.UUID) error { return nil }
-
-func (s *stubGTDStore) TopPendingTask(_ context.Context) (*db.Task, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubGTDStore) RecentCompletedTasks(_ context.Context, _ uuid.UUID, _ int32) ([]db.Task, error) {
-	return nil, nil
-}
-
-func (s *stubGTDStore) RecentActivityByProject(_ context.Context, _ uuid.UUID, _ time.Time, _ int32) ([]db.ActivityLog, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub decision.StoreIface — only ByRepo carries fixture state.
+// stub contextpack.DecisionReadPort — only ByRepo carries fixture state.
 // ---------------------------------------------------------------------------
 
 type stubDecisionStore struct {
 	byRepo []db.Decision
 }
 
-var _ decision.StoreIface = (*stubDecisionStore)(nil)
+var _ contextpack.DecisionReadPort = (*stubDecisionStore)(nil)
 
 func (s *stubDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
 	return s.byRepo, nil
@@ -267,256 +151,100 @@ func (s *stubDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]d
 	return nil, nil
 }
 
-func (s *stubDecisionStore) Log(_ context.Context, _ decision.LogParams) (*db.Decision, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) { return nil, nil }
-
-func (s *stubDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub knowledge.StoreIface — only SearchReadOnly carries fixture state.
-// retrieveKnowledge (contextpack/retrieval.go) calls SearchReadOnly, never
-// Search, so fixture items intentionally live only there.
+// stub contextpack.KnowledgeReadPort — only SearchReadOnly carries fixture
+// state. retrieveKnowledge (contextpack/retrieval.go) calls SearchReadOnly,
+// never Search, so fixture items intentionally live only there.
 // ---------------------------------------------------------------------------
 
 type stubKnowledgeStore struct {
 	searchResults []db.KnowledgeItem
 }
 
-var _ knowledge.StoreIface = (*stubKnowledgeStore)(nil)
-
-func (s *stubKnowledgeStore) Search(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
+var _ contextpack.KnowledgeReadPort = (*stubKnowledgeStore)(nil)
 
 func (s *stubKnowledgeStore) SearchReadOnly(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
 	return s.searchResults, nil
 }
 
-func (s *stubKnowledgeStore) AddItem(_ context.Context, _ knowledge.AddItemParams) (*db.KnowledgeItem, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubKnowledgeStore) SearchCoarse(_ context.Context, _ string, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (s *stubKnowledgeStore) List(_ context.Context, _, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (s *stubKnowledgeStore) GetByID(_ context.Context, _ uuid.UUID) (*db.KnowledgeItem, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubKnowledgeStore) UpdateLearningValue(_ context.Context, _ uuid.UUID, _ int) error {
-	return nil
-}
-
-func (s *stubKnowledgeStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (s *stubKnowledgeStore) ListChildren(_ context.Context, _ uuid.UUID) ([]*db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (s *stubKnowledgeStore) ListRoots(_ context.Context) ([]*db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (s *stubKnowledgeStore) ListByProjectID(_ context.Context, _ uuid.UUID, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
-func (s *stubKnowledgeStore) ListByTaskID(_ context.Context, _ uuid.UUID, _ int) ([]db.KnowledgeItem, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub atom.StoreIface — pure no-op; no atom-sourced fixture item exists.
+// stub contextpack.AtomReadPort — pure no-op; no atom-sourced fixture item
+// exists.
 // ---------------------------------------------------------------------------
 
 type stubAtomStore struct{}
 
-var _ atom.StoreIface = (*stubAtomStore)(nil)
+var _ contextpack.AtomReadPort = (*stubAtomStore)(nil)
 
 func (s *stubAtomStore) Search(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]atom.Atom, error) {
 	return nil, nil
 }
 
-func (s *stubAtomStore) AddAtom(_ context.Context, _ atom.AddAtomParams) (*atom.Atom, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubAtomStore) AddLink(_ context.Context, _ atom.AddLinkParams) error { return nil }
-
-func (s *stubAtomStore) ListByParent(_ context.Context, _ string, _ uuid.UUID) ([]atom.Atom, error) {
-	return nil, nil
-}
-
-func (s *stubAtomStore) Traverse(_ context.Context, _ uuid.UUID, _ int) (*atom.TraverseResult, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubAtomStore) PruneAtoms(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
-
-func (s *stubAtomStore) SetDigestStatus(_ context.Context, _ uuid.UUID, _, _ string) error {
-	return nil
-}
-
-func (s *stubAtomStore) CountByDigestStatus(_ context.Context, _ *uuid.UUID, _ string) (int64, error) {
-	return 0, nil
-}
-
-func (s *stubAtomStore) ListByDigestStatus(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]atom.Atom, error) {
-	return nil, nil
-}
-
-func (s *stubAtomStore) CountTotal(_ context.Context, _ *uuid.UUID) (int64, error) { return 0, nil }
-
 // ---------------------------------------------------------------------------
-// stub procedural.StoreIface — pure no-op; no procedural-sourced fixture item
-// exists.
+// stub contextpack.ProceduralReadPort — pure no-op; no procedural-sourced
+// fixture item exists.
 // ---------------------------------------------------------------------------
 
 type stubProceduralStore struct{}
 
-var _ procedural.StoreIface = (*stubProceduralStore)(nil)
+var _ contextpack.ProceduralReadPort = (*stubProceduralStore)(nil)
 
 func (s *stubProceduralStore) Query(_ context.Context, _ procedural.QueryFilter) ([]procedural.ProceduralMemory, error) {
 	return nil, nil
 }
 
-func (s *stubProceduralStore) Add(_ context.Context, _ procedural.AddParams) (*procedural.ProceduralMemory, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubProceduralStore) MarkUsed(_ context.Context, _ uuid.UUID) (*procedural.ProceduralMemory, error) {
-	return nil, errStubNotConfigured
-}
-
 // ---------------------------------------------------------------------------
-// stub skill.StoreIface — pure no-op; no skill-sourced fixture item exists.
+// stub contextpack.SkillReadPort — pure no-op; no skill-sourced fixture item
+// exists.
 // ---------------------------------------------------------------------------
 
 type stubSkillStore struct{}
 
-var _ skill.StoreIface = (*stubSkillStore)(nil)
+var _ contextpack.SkillReadPort = (*stubSkillStore)(nil)
 
 func (s *stubSkillStore) Search(_ context.Context, _ skill.SearchFilter) ([]*skill.Skill, error) {
 	return nil, nil
 }
 
-func (s *stubSkillStore) Add(_ context.Context, _ skill.AddParams) (*skill.Skill, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubSkillStore) IncrementSuccess(_ context.Context, _ string, _ *string) (*skill.Skill, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubSkillStore) UpdateFromOutcome(_ context.Context, _ skill.UpdateFromOutcomeParams, _ *string) (*skill.Skill, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubSkillStore) ListRelevant(_ context.Context, _ *string, _ string, _ int) ([]*skill.Skill, error) {
-	return nil, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub outcome.StoreIface — pure no-op; no outcome-sourced fixture item
-// exists.
+// stub contextpack.OutcomeReadPort — pure no-op; no outcome-sourced fixture
+// item exists.
 // ---------------------------------------------------------------------------
 
 type stubOutcomeStore struct{}
 
-var _ outcome.StoreIface = (*stubOutcomeStore)(nil)
+var _ contextpack.OutcomeReadPort = (*stubOutcomeStore)(nil)
 
 func (s *stubOutcomeStore) ListFailedOutcomes(_ context.Context, _ *uuid.UUID, _ int) ([]outcome.Outcome, error) {
 	return nil, nil
 }
 
-func (s *stubOutcomeStore) CreateOutcome(_ context.Context, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
-	return outcome.Outcome{}, nil
-}
-
-func (s *stubOutcomeStore) GetOutcomeByID(_ context.Context, _ uuid.UUID, _ *uuid.UUID) (outcome.Outcome, error) {
-	return outcome.Outcome{}, errStubNotConfigured
-}
-
-func (s *stubOutcomeStore) ListRecentOutcomes(_ context.Context, _ *uuid.UUID, _ string, _ int) ([]outcome.Outcome, error) {
-	return nil, nil
-}
-
-func (s *stubOutcomeStore) CreateEvaluation(_ context.Context, _ outcome.CreateEvaluationParams) (outcome.Evaluation, error) {
-	return outcome.Evaluation{}, nil
-}
-
-func (s *stubOutcomeStore) ListEvaluationsByOutcomeID(_ context.Context, _ uuid.UUID, _ *uuid.UUID) ([]outcome.Evaluation, error) {
-	return nil, nil
-}
-
-func (s *stubOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
-func (s *stubOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
-	return false, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub reflection.StoreIface — pure no-op; no reflection-sourced fixture
-// item exists.
+// stub contextpack.ReflectionReadPort — pure no-op; no reflection-sourced
+// fixture item exists.
 // ---------------------------------------------------------------------------
 
 type stubReflectionStore struct{}
 
-var _ reflection.StoreIface = (*stubReflectionStore)(nil)
+var _ contextpack.ReflectionReadPort = (*stubReflectionStore)(nil)
 
 func (s *stubReflectionStore) RecentWithPatterns(_ context.Context, _ *uuid.UUID, _ time.Time, _ int) ([]*reflection.Reflection, error) {
 	return nil, nil
 }
 
-func (s *stubReflectionStore) Create(_ context.Context, _ reflection.CreateParams) (*reflection.Reflection, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubReflectionStore) List(_ context.Context, _ reflection.ListParams) ([]*reflection.Reflection, error) {
-	return nil, nil
-}
-
-func (s *stubReflectionStore) GetLatest(_ context.Context, _ *uuid.UUID, _ string) (*reflection.Reflection, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubReflectionStore) ByRelatedEntity(
-	_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID, _ int,
-) ([]*reflection.Reflection, error) {
-	return nil, nil
-}
-
-func (s *stubReflectionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub behaviorrule.StoreIface — List carries fixture state and mirrors the
-// real store's Status filter, so a fixture rule with Status "deprecated" is
-// genuinely excluded here, the same contract retrieveBehaviorRules
-// (contextpack/retrieval.go) relies on in production rather than a
-// fixture-side simulation of exclusion.
+// stub contextpack.BehaviorRuleReadPort — List carries fixture state and
+// mirrors the real store's Status filter, so a fixture rule with Status
+// "deprecated" is genuinely excluded here, the same contract
+// retrieveBehaviorRules (contextpack/retrieval.go) relies on in production
+// rather than a fixture-side simulation of exclusion.
 // ---------------------------------------------------------------------------
 
 type stubBehaviorRuleStore struct {
 	rules []*behaviorrule.BehaviorRule
 }
 
-var _ behaviorrule.StoreIface = (*stubBehaviorRuleStore)(nil)
+var _ contextpack.BehaviorRuleReadPort = (*stubBehaviorRuleStore)(nil)
 
 func (s *stubBehaviorRuleStore) List(_ context.Context, p behaviorrule.ListParams) ([]*behaviorrule.BehaviorRule, error) {
 	if p.Status == nil {
@@ -531,124 +259,32 @@ func (s *stubBehaviorRuleStore) List(_ context.Context, p behaviorrule.ListParam
 	return out, nil
 }
 
-func (s *stubBehaviorRuleStore) Propose(_ context.Context, _ behaviorrule.CreateParams) (*behaviorrule.BehaviorRule, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubBehaviorRuleStore) ApplyOutcome(_ context.Context, _ uuid.UUID, _ string) (*behaviorrule.BehaviorRule, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubBehaviorRuleStore) Deprecate(_ context.Context, _ uuid.UUID) (*behaviorrule.BehaviorRule, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubBehaviorRuleStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub session.StoreIface — LatestHandoff defaults to ErrNotFound, mirroring
-// the real store's "no unresolved handoff" contract; no fixture ever
-// populates one.
+// stub contextpack.SessionReadPort — LatestHandoff defaults to ErrNotFound,
+// mirroring the real store's "no unresolved handoff" contract; no fixture
+// ever populates one.
 // ---------------------------------------------------------------------------
 
 type stubSessionStore struct{}
 
-var _ session.StoreIface = (*stubSessionStore)(nil)
+var _ contextpack.SessionReadPort = (*stubSessionStore)(nil)
 
 func (s *stubSessionStore) LatestHandoff(_ context.Context) (*db.SessionHandoff, error) {
 	return nil, session.ErrNotFound
 }
 
-func (s *stubSessionStore) SetHandoff(_ context.Context, _ session.HandoffParams) (*db.SessionHandoff, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubSessionStore) Resolve(_ context.Context, _ uuid.UUID) error { return nil }
-
-func (s *stubSessionStore) MarkNextActionDone(_ context.Context, _ uuid.UUID, _ int) (*db.SessionHandoff, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubSessionStore) UpdateSummary(_ context.Context, _ string) error { return nil }
-
-func (s *stubSessionStore) UpdateEmbedding(_ context.Context, _ []byte) error { return nil }
-
-func (s *stubSessionStore) UpdateEmbeddingByID(_ context.Context, _ uuid.UUID, _ []byte, _ string, _ int) error {
-	return nil
-}
-
-func (s *stubSessionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.SessionHandoff, error) {
-	return nil, nil
-}
-
-func (s *stubSessionStore) HandoffsSince(_ context.Context, _ time.Time, _ int) ([]db.SessionHandoff, error) {
-	return nil, nil
-}
-
-func (s *stubSessionStore) HandoffsByRepo(_ context.Context, _ string, _ int) ([]db.SessionHandoff, error) {
-	return nil, nil
-}
-
-func (s *stubSessionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // ---------------------------------------------------------------------------
-// stub worksession.StoreIface — GetActive defaults to Active:false,
-// mirroring the real store's "no in_progress session" contract; no fixture
-// ever populates one.
+// stub contextpack.WorkSessionReadPort — GetActive defaults to
+// Active:false, mirroring the real store's "no in_progress session"
+// contract; no fixture ever populates one.
 // ---------------------------------------------------------------------------
 
 type stubWorkSessionStore struct{}
 
-var _ worksession.StoreIface = (*stubWorkSessionStore)(nil)
+var _ contextpack.WorkSessionReadPort = (*stubWorkSessionStore)(nil)
 
 func (s *stubWorkSessionStore) GetActive(_ context.Context, _ uuid.UUID, _ string) (*worksession.ActiveSessionResult, error) {
 	return &worksession.ActiveSessionResult{}, nil
-}
-
-func (s *stubWorkSessionStore) Create(_ context.Context, _ worksession.CreateParams) (*worksession.Session, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubWorkSessionStore) Checkpoint(_ context.Context, _ worksession.CheckpointParams) (*worksession.Session, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubWorkSessionStore) Finish(_ context.Context, _ worksession.FinishParams) (*worksession.Session, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubWorkSessionStore) GetByID(_ context.Context, _, _ uuid.UUID) (*worksession.Session, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubWorkSessionStore) LinkTask(_ context.Context, _, _ uuid.UUID, _ string) error {
-	return nil
-}
-
-func (s *stubWorkSessionStore) LinkedTasks(_ context.Context, _ uuid.UUID) ([]worksession.SessionTask, error) {
-	return nil, nil
-}
-
-func (s *stubWorkSessionStore) ListRecent(_ context.Context, _ uuid.UUID, _ string, _ int) ([]worksession.Session, error) {
-	return nil, nil
-}
-
-func (s *stubWorkSessionStore) AddEvidence(_ context.Context, _ worksession.Evidence) (*worksession.Evidence, error) {
-	return nil, errStubNotConfigured
-}
-
-func (s *stubWorkSessionStore) GetEvidence(_ context.Context, _ uuid.UUID) ([]worksession.Evidence, error) {
-	return nil, nil
-}
-
-func (s *stubWorkSessionStore) SetOutcomeLink(_ context.Context, _, _ uuid.UUID) error { return nil }
-
-func (s *stubWorkSessionStore) PruneOlderThan(_ context.Context, _ time.Time) (int64, error) {
-	return 0, nil
 }
 
 // ---------------------------------------------------------------------------
