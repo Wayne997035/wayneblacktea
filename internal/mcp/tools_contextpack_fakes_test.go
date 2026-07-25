@@ -198,6 +198,10 @@ func (noopDecisionStore) SearchByCosine(context.Context, []float32, int) ([]db.D
 	return nil, nil
 }
 
+func (noopDecisionStore) List(context.Context, decision.ListParams) ([]db.Decision, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // noopKnowledgeStore
 // ---------------------------------------------------------------------------

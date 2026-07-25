@@ -1155,6 +1155,7 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 		if _, logErr := s.decision.Log(ctx, decision.LogParams{
 			Title:    title,
 			RepoName: repoName,
+			Source:   decision.SourceManual,
 		}); logErr != nil {
 			logTitle := title
 			if runes := []rune(logTitle); len(runes) > 80 {

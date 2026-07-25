@@ -48,6 +48,7 @@ func TestLogAndListDecision(t *testing.T) {
 		Context:   "Need PostgreSQL-specific features",
 		Decision:  "Use pgx/v5 directly",
 		Rationale: "Native pgx supports pgvector and arrays cleanly",
+		Source:    decision.SourceManual,
 	})
 	if err != nil {
 		t.Fatalf("Log: %v", err)
@@ -80,6 +81,7 @@ func TestLog_EmptyTitle(t *testing.T) {
 		Context:   "ctx",
 		Decision:  "dec",
 		Rationale: "rat",
+		Source:    decision.SourceManual,
 	})
 	// Empty string is still a valid NOT NULL value in Postgres,
 	// so this should succeed — verify graceful handling.

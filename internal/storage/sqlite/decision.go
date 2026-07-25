@@ -31,9 +31,10 @@ func sqliteNowMillis() string {
 }
 
 // decisionsSelectCols lists all columns returned by decision read queries.
-// task_id was added in migration 000048.
+// task_id was added in migration 000048; source was added in migration
+// 000073.
 const decisionsSelectCols = `id, project_id, repo_name, title, context, decision,
-	rationale, alternatives, created_at, workspace_id, task_id`
+	rationale, alternatives, created_at, workspace_id, task_id, source`
 
 func scanDecision(scan func(...any) error) (db.Decision, error) {
 	var (
@@ -42,9 +43,10 @@ func scanDecision(scan func(...any) error) (db.Decision, error) {
 		projectIDNS, repoNS, wsNS sql.NullString
 		alternativesNS, createdNS sql.NullString
 		taskIDNS                  sql.NullString
+		source                    string
 	)
 	err := scan(&idStr, &projectIDNS, &repoNS, &d.Title, &d.Context, &d.Decision,
-		&d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS)
+		&d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &source)
 	if err != nil {
 		return db.Decision{}, err
 	}
@@ -57,20 +59,26 @@ func scanDecision(scan func(...any) error) (db.Decision, error) {
 	d.CreatedAt = parseTimestamptz(createdNS)
 	d.WorkspaceID = pgtypeUUID(nsString(wsNS))
 	d.TaskID = pgtypeUUID(nsString(taskIDNS))
+	d.Source = source
 	return d, nil
 }
 
 // Log records a new architectural decision.
-// task_id (migration 000048) is stored as nullable TEXT UUID.
+// task_id (migration 000048) is stored as nullable TEXT UUID. p.Source is
+// validated before write — an invalid Source writes zero rows.
 func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Decision, error) {
+	if !p.Source.Valid() {
+		return nil, decision.ErrInvalidSource
+	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
-		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID))
+		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID),
+		string(p.Source))
 	if err != nil {
 		return nil, errWrap("LogDecision", err)
 	}
@@ -82,15 +90,20 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 // type='decision') can atomically commit the materialised decision and the
 // proposal-resolve in a single transaction. Returns the freshly-generated ID
 // on success — callers that want the full row can SELECT it after Commit.
+// p.Source is validated before write — an invalid Source writes zero rows.
 func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogParams) (uuid.UUID, error) {
+	if !p.Source.Valid() {
+		return uuid.UUID{}, decision.ErrInvalidSource
+	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
 	_, err := tx.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
-		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID))
+		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID),
+		string(p.Source))
 	if err != nil {
 		return uuid.UUID{}, errWrap("LogDecisionTx", err)
 	}
@@ -103,16 +116,23 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 // cmd/qa-seed. Embedding columns are intentionally left NULL (all nullable) —
 // pgvector recall is out of the QA-seed v1 scope; only CRUD-shaped fields
 // used by the frontend are copied. Fails (no upsert) on a duplicate id —
-// callers MUST import into a fresh database.
+// callers MUST import into a fresh database. d.Source is validated before
+// write, same as Log/LogTx — the source-of-truth Postgres row is expected to
+// already be valid, but this guard doesn't delegate that assumption to the
+// DB CHECK constraint (backend-security-design.md §5.2; security review
+// round 2, m-1).
 func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error {
+	if !decision.Source(d.Source).Valid() {
+		return decision.ErrInvalidSource
+	}
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		d.ID.String(), pgUUIDToNullString(d.WorkspaceID), pgUUIDToNullString(d.ProjectID),
 		pgTextToNullString(d.RepoName), d.Title, d.Context, d.Decision, d.Rationale,
 		pgTextToNullString(d.Alternatives), pgTimestamptzToString(d.CreatedAt),
-		pgUUIDToNullString(d.TaskID))
+		pgUUIDToNullString(d.TaskID), d.Source)
 	if err != nil {
 		return errWrap("ImportDecision", err)
 	}
@@ -136,6 +156,26 @@ func (s *DecisionStore) All(ctx context.Context, limit int32) ([]db.Decision, er
 		ORDER BY created_at DESC, id DESC
 		LIMIT ?2`
 	return s.list(ctx, "AllDecisions", q, s.db.workspaceArg(), limit)
+}
+
+// List returns decisions filtered by p (project XOR repo, plus IncludeAuto).
+// Workspace scoping comes from s.db.workspaceArg() (bound at Open time),
+// never from p — mirrors the PG Store.List behaviour. Source is filtered
+// BEFORE ORDER/LIMIT so the limit isn't consumed by rows that get excluded.
+func (s *DecisionStore) List(ctx context.Context, p decision.ListParams) ([]db.Decision, error) {
+	if err := p.Validate(); err != nil {
+		return nil, errWrap("List", err)
+	}
+	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions
+		WHERE (?1 IS NULL OR workspace_id = ?1)
+		  AND (?2 IS NULL OR project_id = ?2)
+		  AND (?3 IS NULL OR repo_name = ?3)
+		  AND (?4 OR source = 'manual')
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?5`
+	return s.list(ctx, "List", q,
+		s.db.workspaceArg(), nullStringFromUUID(p.ProjectID), nullStringIfEmpty(p.RepoName),
+		p.IncludeAuto, p.Limit)
 }
 
 // ByProject returns the most recent decisions for a given project ID.
@@ -190,9 +230,10 @@ func (s *DecisionStore) SearchByCosine(ctx context.Context, queryEmbedding []flo
 		var projectIDNS, repoNS, wsNS sql.NullString
 		var alternativesNS, createdNS sql.NullString
 		var taskIDNS sql.NullString
+		var source string
 		var rawEmbed []byte
 		if err := rows.Scan(&idStr, &projectIDNS, &repoNS, &d.Title, &d.Context,
-			&d.Decision, &d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &rawEmbed); err != nil {
+			&d.Decision, &d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &source, &rawEmbed); err != nil {
 			continue
 		}
 		if id, parseErr := uuid.Parse(idStr); parseErr == nil {
@@ -204,6 +245,7 @@ func (s *DecisionStore) SearchByCosine(ctx context.Context, queryEmbedding []flo
 		d.CreatedAt = parseTimestamptz(createdNS)
 		d.WorkspaceID = pgtypeUUID(nsString(wsNS))
 		d.TaskID = pgtypeUUID(nsString(taskIDNS))
+		d.Source = source
 
 		vec := localai.DeserializeEmbedding(rawEmbed)
 		if vec == nil {

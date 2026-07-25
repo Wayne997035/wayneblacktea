@@ -45,6 +45,7 @@ func TestDecisionStore_LogAndListRoundTrip(t *testing.T) {
 		Decision:     "implement domain stores",
 		Rationale:    "remove Postgres requirement",
 		Alternatives: "keep Postgres only",
+		Source:       decision.SourceManual,
 	})
 	if err != nil {
 		t.Fatalf("Log: %v", err)
@@ -69,6 +70,7 @@ func TestDecisionStore_NullOptionalFields(t *testing.T) {
 		Context:   "ctx",
 		Decision:  "decide",
 		Rationale: "because",
+		Source:    decision.SourceManual,
 	})
 	if err != nil {
 		t.Fatalf("Log: %v", err)
@@ -110,11 +112,13 @@ func TestDecisionStore_ByRepoByProjectAndLimit(t *testing.T) {
 	projectID := seedDecisionProject(t, d, "decision-filter")
 	if _, err := s.Log(context.Background(), decision.LogParams{
 		ProjectID: &projectID, RepoName: "repo-a", Title: "a1", Context: "c", Decision: "d", Rationale: "r",
+		Source: decision.SourceManual,
 	}); err != nil {
 		t.Fatalf("Log a1: %v", err)
 	}
 	if _, err := s.Log(context.Background(), decision.LogParams{
 		RepoName: "repo-b", Title: "b1", Context: "c", Decision: "d", Rationale: "r",
+		Source: decision.SourceManual,
 	}); err != nil {
 		t.Fatalf("Log b1: %v", err)
 	}
@@ -144,6 +148,7 @@ func TestDecisionStore_WorkspaceIsolation(t *testing.T) {
 
 	if _, err := storeA.Log(ctx, decision.LogParams{
 		RepoName: "repo", Title: "only-a", Context: "c", Decision: "d", Rationale: "r",
+		Source: decision.SourceManual,
 	}); err != nil {
 		t.Fatalf("Log A: %v", err)
 	}
@@ -186,6 +191,7 @@ func TestDecisionStore_ByTask_HappyPath(t *testing.T) {
 		Context:   "ctx",
 		Decision:  "decide",
 		Rationale: "because",
+		Source:    decision.SourceManual,
 	})
 	if err != nil {
 		t.Fatalf("Log: %v", err)
@@ -232,6 +238,7 @@ func TestDecisionStore_ByTask_WorkspaceScoping(t *testing.T) {
 		Context:   "c",
 		Decision:  "d",
 		Rationale: "r",
+		Source:    decision.SourceManual,
 	}); err != nil {
 		t.Fatalf("Log A: %v", err)
 	}

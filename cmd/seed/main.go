@@ -341,6 +341,7 @@ func seedDemoDecisions(ctx context.Context, store *decision.Store) error {
 			Decision:     sp.decision,
 			Rationale:    sp.rationale,
 			Alternatives: sp.alternatives,
+			Source:       decision.SourceManual,
 		})
 		if err != nil {
 			slog.Warn("failed to create demo decision", "title", sp.title, "err", err)

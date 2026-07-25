@@ -3,10 +3,12 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/google/uuid"
 )
 
@@ -32,6 +34,7 @@ func TestDecisionStore_ImportDecision(t *testing.T) {
 				RepoName: pgTextVal("wayneblacktea"), Title: "Use pgvector",
 				Context: "ctx", Decision: "decided", Rationale: "because",
 				Alternatives: pgTextVal("alt A, alt B"), CreatedAt: pgTimeVal(fixed),
+				Source: "manual",
 			},
 		},
 		{
@@ -39,6 +42,7 @@ func TestDecisionStore_ImportDecision(t *testing.T) {
 			decision: db.Decision{
 				ID: uuid.New(), Title: "No FK constraints", Context: "ctx2",
 				Decision: "decided2", Rationale: "because2", CreatedAt: pgTimeVal(fixed),
+				Source: "auto",
 			},
 		},
 	}
@@ -77,7 +81,7 @@ func TestDecisionStore_ImportDecision_DuplicateIDFails(t *testing.T) {
 	ctx := context.Background()
 	d := db.Decision{
 		ID: uuid.New(), Title: "dup", Context: "c", Decision: "d", Rationale: "r",
-		CreatedAt: pgTimeVal(time.Now()),
+		CreatedAt: pgTimeVal(time.Now()), Source: "manual",
 	}
 
 	if err := s.ImportDecision(ctx, d); err != nil {
@@ -85,6 +89,38 @@ func TestDecisionStore_ImportDecision_DuplicateIDFails(t *testing.T) {
 	}
 	if err := s.ImportDecision(ctx, d); err == nil {
 		t.Fatal("re-importing a duplicate id: expected error, got nil")
+	}
+}
+
+// TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows verifies
+// ImportDecision has its own Source.Valid() guard, matching Log/LogTx,
+// instead of delegating that validation to the decisions.source CHECK
+// constraint (backend-security-design.md §5.2; security review round 2,
+// m-1). Asserts both the sentinel error and that no row lands in the table.
+func TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows(t *testing.T) {
+	raw, s := openDecisionDB(t, ":memory:", "")
+	ctx := context.Background()
+	id := uuid.New()
+	d := db.Decision{
+		ID: id, Title: "bad-source-import", Context: "c", Decision: "d", Rationale: "r",
+		CreatedAt: pgTimeVal(time.Now()), Source: "system", // not manual/auto
+	}
+
+	err := s.ImportDecision(ctx, d)
+	if err == nil {
+		t.Fatal("expected error for invalid source, got nil")
+	}
+	if !errors.Is(err, decision.ErrInvalidSource) {
+		t.Errorf("expected ErrInvalidSource, got %v", err)
+	}
+
+	var count int
+	row := raw.QueryRowContext(ctx, `SELECT count(*) FROM decisions WHERE id = ?1`, id.String())
+	if scanErr := row.Scan(&count); scanErr != nil {
+		t.Fatalf("count check: %v", scanErr)
+	}
+	if count != 0 {
+		t.Errorf("expected zero rows written for invalid source, got %d", count)
 	}
 }
 

@@ -125,6 +125,10 @@ func (m *mockDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int
 	return nil, nil
 }
 
+func (m *mockDecisionStore) List(_ context.Context, _ decision.ListParams) ([]db.Decision, error) {
+	return nil, nil
+}
+
 func (m *mockDecisionStore) recordedLogs() []decisionLog {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -879,6 +883,10 @@ func (m *mockDecisionStoreWithAll) ByTask(_ context.Context, _ uuid.UUID, _ int3
 }
 
 func (m *mockDecisionStoreWithAll) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
+	return nil, nil
+}
+
+func (m *mockDecisionStoreWithAll) List(_ context.Context, _ decision.ListParams) ([]db.Decision, error) {
 	return nil, nil
 }
 

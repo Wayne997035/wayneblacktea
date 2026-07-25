@@ -296,7 +296,8 @@ func (h *AutologHandler) buildMechanicalIntent(ctx context.Context) (string, err
 		decTitles = append(decTitles, d.Title)
 	}
 
-	return fmt.Sprintf("%s in_progress=[%s] recent_decisions=[%s]",
+	return fmt.Sprintf(
+		"%s in_progress=[%s] recent_decisions=[%s]",
 		autoHandoffPrefix,
 		strings.Join(inProgress, ", "),
 		strings.Join(decTitles, ", "),
@@ -355,6 +356,7 @@ func (h *AutologHandler) logImplicitDecision(ctx context.Context, title string) 
 		Context:   "auto-extracted from session transcript",
 		Decision:  title,
 		Rationale: "implicitly decided during session",
+		Source:    decision.SourceAuto,
 	})
 	if err != nil {
 		return fmt.Errorf("log implicit decision: %w", err)
@@ -475,7 +477,8 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 		if terr != nil {
 			return fmt.Errorf("auto-create task: direct create: %w", terr)
 		}
-		slog.Info("autoCreateTaskFromClassifier: auto-accepted task (high confidence)",
+		slog.Info(
+			"autoCreateTaskFromClassifier: auto-accepted task (high confidence)",
 			"task_id", task.ID.String(),
 			"actor", actor,
 			"confidence", confidence,
@@ -498,7 +501,8 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 	if err != nil {
 		return fmt.Errorf("auto-create task: %w", err)
 	}
-	slog.Info("autoCreateTaskFromClassifier: enqueued task proposal",
+	slog.Info(
+		"autoCreateTaskFromClassifier: enqueued task proposal",
 		"proposal_id", row.ID.String(),
 		"actor", actor,
 		"confidence", confidence,

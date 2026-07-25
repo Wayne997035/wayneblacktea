@@ -16,18 +16,21 @@ import (
 )
 
 func (s *Server) registerPlanTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("confirm_plan",
+	ms.AddTool(mcp.NewTool(
+		"confirm_plan",
 		mcp.WithDescription(
 			"CALL THIS when user confirms a plan ('可以','好','go','ok','明天做','start','開始'). "+
 				"Atomically creates GTD tasks for each phase AND logs each decision in one call. "+
 				"Also creates an in_progress work_session linking all phase tasks. "+
 				"Use this INSTEAD of calling add_task + log_decision separately — it is more reliable.",
 		),
-		mcp.WithString("phases",
+		mcp.WithString(
+			"phases",
 			mcp.Description(`JSON array of phases as tasks. Each: {"title":"...","description":"...","priority":2}`),
 			mcp.Required(),
 		),
-		mcp.WithString("decisions",
+		mcp.WithString(
+			"decisions",
 			mcp.Description(`JSON array of decisions. Each: {"title":"...","context":"...","decision":"...","rationale":"...","alternatives":""}`),
 		),
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
@@ -170,6 +173,7 @@ func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput
 			Decision:     d.Decision,
 			Rationale:    d.Rationale,
 			Alternatives: d.Alternatives,
+			Source:       decision.SourceManual,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("logging decision %q: %w", d.Title, err)
@@ -235,7 +239,8 @@ func (s *Server) createWorkSessionForPlan(
 	if err != nil {
 		// ErrAlreadyActive: a session is already in_progress for this repo.
 		// Log a warning; do not block confirm_plan.
-		slog.Warn("confirm_plan: could not create work session",
+		slog.Warn(
+			"confirm_plan: could not create work session",
 			"repo_name", repoName,
 			"err", err,
 		)

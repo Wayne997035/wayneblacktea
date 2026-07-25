@@ -95,6 +95,7 @@ type Decision struct {
 	EmbeddingProvider pgtype.Text        `json:"embedding_provider"`
 	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
 	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
+	Source            string             `json:"source"`
 }
 
 // MCP tool-call audit trail for meta-rule drift detection; 30-day TTL via task discipline-prune

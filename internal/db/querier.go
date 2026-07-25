@@ -51,6 +51,13 @@ type Querier interface {
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
 	ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsByTaskIDParams) ([]Decision, error)
+	// P3.0a Stage B: source-filtered read path for MCP list_decisions.
+	// project_id and repo_name are mutually exclusive at the application layer
+	// (decision.ListParams.Validate) — this query accepts both narg'd so a nil
+	// one is a no-op filter, but callers never pass both non-nil.
+	// Source is filtered BEFORE ORDER/LIMIT so the limit isn't consumed by rows
+	// that get excluded.
+	ListDecisionsFiltered(ctx context.Context, arg ListDecisionsFilteredParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
 	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
 	// All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to

@@ -306,6 +306,7 @@ func TestProposal_Accept_TypeDecision_Roundtrip_SQLite(t *testing.T) {
 		Context:   "auto-proposed by trigger_tool=" + dp.TriggerTool + " session=" + dp.SessionID,
 		Decision:  dp.Decision,
 		Rationale: dp.Rationale,
+		Source:    decision.SourceAuto,
 	}
 	if _, err := decStore.LogTx(ctx, tx, logParams); err != nil {
 		t.Fatalf("LogTx: %v", err)
@@ -399,7 +400,8 @@ func TestProposal_Accept_TypeDecision_Roundtrip_PG(t *testing.T) {
 	// the embedding/cosine paths). Workspace_id NULL = unscoped, matches
 	// the proposal row's workspace.
 	decID := uuid.New()
-	_, err = tx.Exec(ctx, `INSERT INTO decisions (id, title, context, decision, rationale)
+	_, err = tx.Exec(
+		ctx, `INSERT INTO decisions (id, title, context, decision, rationale)
 		VALUES ($1, $2, $3, $4, $5)`,
 		decID, dp.Title,
 		"auto-proposed by trigger_tool="+dp.TriggerTool+" session="+dp.SessionID,
@@ -480,7 +482,7 @@ func TestProposal_Accept_TypeDecision_Roundtrip_SQLite_RollbackOnResolveFail(t *
 	}
 
 	if _, err := decStore.LogTx(ctx, tx, decision.LogParams{
-		Title: roundTripTitle, Decision: "x", Rationale: "y",
+		Title: roundTripTitle, Decision: "x", Rationale: "y", Source: decision.SourceAuto,
 	}); err != nil {
 		t.Fatalf("LogTx: %v", err)
 	}

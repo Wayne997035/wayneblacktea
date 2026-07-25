@@ -73,7 +73,7 @@ func (s *stubReflectionStore) PruneOlderThan(_ context.Context, _ time.Time) (in
 }
 
 // ---------------------------------------------------------------------------
-// Test: Job 6 — proposal_cleanup
+// Test: Job 5 — proposal_cleanup
 // ---------------------------------------------------------------------------
 
 // TestProposalCleanup_SkipsNilPool verifies that runProposalCleanup exits
@@ -156,7 +156,7 @@ VALUES ($1, $2, 'knowledge', '{"title":"t","content":"c"}', 'pending', $3, $4)`
 }
 
 // ---------------------------------------------------------------------------
-// Test: Job 3 — stuck_task_detection (nil pool skip path)
+// Test: Job 2 — stuck_task_detection (nil pool skip path)
 // ---------------------------------------------------------------------------
 
 // TestStuckTaskDetection_SkipsNilPool ensures the job skips gracefully when
@@ -188,58 +188,7 @@ func TestStuckTaskDetection_SkipsNilCognitiveDeps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Job 1 — daily_reflection (nil reflection store skip path)
-// ---------------------------------------------------------------------------
-
-// TestDailyReflection_SkipsNilReflectionStore verifies that runDailyReflectionJob
-// exits gracefully and makes no Create call when the reflection store is nil.
-func TestDailyReflection_SkipsNilReflectionStore(t *testing.T) {
-	propStore := &stubProposalStore{}
-	wsID := uuid.New()
-	sc := &Scheduler{
-		cognitiveDeps: &cognitiveDeps{
-			reflection:  nil, // <-- nil: job must skip
-			proposal:    propStore,
-			workspaceID: &wsID,
-		},
-	}
-	sc.runDailyReflectionJob()
-	if len(propStore.created) != 0 {
-		t.Errorf("expected 0 proposals created, got %d", len(propStore.created))
-	}
-}
-
-// TestDailyReflection_CreatesRecord verifies that runDailyReflectionJob creates
-// a reflection record with type='daily' when the reflection store is non-nil.
-func TestDailyReflection_CreatesRecord(t *testing.T) {
-	reflStore := &stubReflectionStore{}
-	wsID := uuid.New()
-	sc := &Scheduler{
-		cognitiveDeps: &cognitiveDeps{
-			reflection:  reflStore,
-			gtd:         nil, // gtd nil is OK — produces empty summary
-			workspaceID: &wsID,
-		},
-	}
-	sc.runDailyReflectionJob()
-	if len(reflStore.created) == 0 {
-		t.Fatal("expected reflection record to be created, got none")
-	}
-	if reflStore.created[0].Type != "daily" {
-		t.Errorf("expected type='daily', got %q", reflStore.created[0].Type)
-	}
-}
-
-// TestDailyReflection_SkipsNilCognitiveDeps ensures the job skips when
-// cognitiveDeps is nil.
-func TestDailyReflection_SkipsNilCognitiveDeps(t *testing.T) {
-	sc := &Scheduler{cognitiveDeps: nil}
-	// Must not panic.
-	sc.runDailyReflectionJob()
-}
-
-// ---------------------------------------------------------------------------
-// Test: Job 6 PG integration — scheduler proposals are rejected, user skipped
+// Test: Job 5 PG integration — scheduler proposals are rejected, user skipped
 // (duplicate of TestProposalCleanup_SQLBoundary_SchedulerOnly but verifies the
 // proposed_by LIKE guard is in the SQL constant even in short mode by inspecting
 // the JSON-marshalled payload shape).
@@ -295,7 +244,7 @@ func TestWeeklyGoalReview_PayloadShape(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Job 4 — decision_outcome_review (nil pool and nil cognitive deps)
+// Test: Job 3 — decision_outcome_review (nil pool and nil cognitive deps)
 // ---------------------------------------------------------------------------
 
 // TestDecisionOutcomeReview_SkipsNilCognitiveDeps verifies that
@@ -332,7 +281,7 @@ func TestDecisionOutcomeReview_SkipsNilPool(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Job 5 — knowledge_to_skill_candidate (nil pool skip)
+// Test: Job 4 — knowledge_to_skill_candidate (nil pool skip)
 // ---------------------------------------------------------------------------
 
 // TestKnowledgeToSkillCandidate_SkipsNilCognitiveDeps verifies that
@@ -368,7 +317,7 @@ func TestKnowledgeToSkillCandidate_SkipsNilPool(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Job 7 — behavior_rule_candidate (nil cognitive deps)
+// Test: Job 6 — behavior_rule_candidate (nil cognitive deps)
 // ---------------------------------------------------------------------------
 
 // TestBehaviorRuleCandidate_SkipsNilCognitiveDeps verifies that
@@ -433,6 +382,54 @@ func TestBehaviorRuleCandidate_SkipsEmptySummary(t *testing.T) {
 		if !strings.Contains(kp.Content, "user tends to defer decisions on Fridays") &&
 			!strings.Contains(kp.Content, "recurring stuck-task pattern in area X") {
 			t.Errorf("unexpected proposal content (empty-Summary reflection should have been skipped): %q", kp.Content)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: WithCognitiveDeps job registration (P3.0b — daily_reflection retired)
+// ---------------------------------------------------------------------------
+
+// TestWithCognitiveDeps_DoesNotRegisterDailyReflection verifies that a fresh
+// scheduler's cognitive job registration contains exactly the six surviving
+// jobs (weekly_goal_review, stuck_task_detection, decision_outcome_review,
+// knowledge_to_skill_candidate, proposal_cleanup, behavior_rule_candidate)
+// and does NOT register the retired cognitive-daily-reflection job.
+func TestWithCognitiveDeps_DoesNotRegisterDailyReflection(t *testing.T) {
+	store := &stubLearningStore{}
+	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	wsID := uuid.New()
+	deps := NewCognitiveDeps(&stubReflectionStore{}, &stubGTDStore{}, &stubProposalStore{}, &wsID)
+	if err := sc.WithCognitiveDeps(deps); err != nil {
+		t.Fatalf("WithCognitiveDeps() error: %v", err)
+	}
+
+	wantNames := map[string]bool{
+		"cognitive-weekly-goal-review":           false,
+		"cognitive-stuck-task-detection":         false,
+		"cognitive-decision-outcome-review":      false,
+		"cognitive-knowledge-to-skill-candidate": false,
+		"cognitive-proposal-cleanup":             false,
+		"cognitive-behavior-rule-candidate":      false,
+	}
+
+	for _, j := range sc.s.Jobs() {
+		name := j.Name()
+		if name == "cognitive-daily-reflection" {
+			t.Error("retired cognitive-daily-reflection job is still registered")
+		}
+		if _, tracked := wantNames[name]; tracked {
+			wantNames[name] = true
+		}
+	}
+
+	for name, found := range wantNames {
+		if !found {
+			t.Errorf("expected cognitive job %q to be registered, but it was not found", name)
 		}
 	}
 }

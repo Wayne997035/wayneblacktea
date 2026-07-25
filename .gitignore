@@ -65,3 +65,4 @@ migrations/**/*.bak
 
 # Root-level wbt CLI binary (source lives in cmd/wbt/)
 /wbt
+.worktrees/

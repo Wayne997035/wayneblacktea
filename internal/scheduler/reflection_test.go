@@ -181,6 +181,10 @@ func (s *stubDecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int
 	return nil, nil
 }
 
+func (s *stubDecisionStore) List(_ context.Context, _ decision.ListParams) ([]db.Decision, error) {
+	return nil, nil
+}
+
 // stubProposalStore implements the subset of proposal.StoreIface used by reflection.
 type stubProposalStore struct {
 	created     []*db.PendingProposal

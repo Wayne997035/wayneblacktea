@@ -37,6 +37,9 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 // contains tool-call serialization fragments (XML tags leaked from the MCP
 // harness), which are never valid user input.
 func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
+	if !p.Source.Valid() {
+		return nil, ErrInvalidSource
+	}
 	if err := sanitize.ValidateNoTagNoise(p.Title); err != nil {
 		return nil, fmt.Errorf("log_decision: title %w", err)
 	}
@@ -65,6 +68,7 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 		Rationale:    p.Rationale,
 		Alternatives: pgconv.ToText(p.Alternatives),
 		WorkspaceID:  s.workspaceID,
+		Source:       string(p.Source),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("logging decision %q: %w", p.Title, err)
@@ -179,6 +183,26 @@ func (s *Store) ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing decisions for task %s: %w", taskID, err)
+	}
+	return rows, nil
+}
+
+// List returns decisions filtered by p (project XOR repo, plus IncludeAuto).
+// Workspace scoping comes from s.workspaceID (bound at NewStore time), never
+// from p — see ListParams doc.
+func (s *Store) List(ctx context.Context, p ListParams) ([]db.Decision, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListDecisionsFiltered(ctx, db.ListDecisionsFilteredParams{
+		WorkspaceID: s.workspaceID,
+		ProjectID:   pgconv.ToUUID(p.ProjectID),
+		RepoName:    pgconv.ToText(p.RepoName),
+		IncludeAuto: p.IncludeAuto,
+		LimitN:      p.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing filtered decisions: %w", err)
 	}
 	return rows, nil
 }

@@ -900,6 +900,10 @@ func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
 		Context:   fmt.Sprintf("auto-proposed by trigger_tool=%s session=%s", p.TriggerTool, p.SessionID),
 		Decision:  p.Decision,
 		Rationale: rationale,
+		// A human accepting a proposal does NOT change its auto origin — the
+		// decision was inferred by a TypeDecision materialiser, not confirmed
+		// fresh by an operator (P3.0a Step 6).
+		Source: decision.SourceAuto,
 	}, ""
 }
 

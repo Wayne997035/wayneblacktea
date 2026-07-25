@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     task_id            TEXT,         -- cross-domain ref (migration 000048); referential integrity in code (red line #9)
     embedding_provider TEXT,         -- provider tag: 'gemini', 'hashed', 'unknown' (migration 000064)
     embedding_model    TEXT,         -- e.g. 'gemini-embedding-001' (migration 000064)
-    embedding_dim      INTEGER       -- vector length (migration 000064)
+    embedding_dim      INTEGER,      -- vector length (migration 000064)
+    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')) -- decision provenance (migration 000073)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_items (

@@ -851,7 +851,7 @@ func wireScheduler(
 			return nil, fmt.Errorf("wiring atom bridge: %w", err)
 		}
 	}
-	// Wire Memory-7 cognitive jobs. All 7 jobs are nil-safe: if the pool or
+	// Wire Memory-7 cognitive jobs. All 6 jobs are nil-safe: if the pool or
 	// stores are absent (SQLite dev path, missing CLAUDE_API_KEY, etc.) each
 	// job logs an info-level skip and returns without error.
 	if err := sched.WithCognitiveDeps(scheduler.NewCognitiveDeps(

@@ -99,7 +99,8 @@ func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary strin
 			defer func() { <-mcpClassifySem }()
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("maybeClassifyToolCall: panic in background goroutine",
+					slog.Warn(
+						"maybeClassifyToolCall: panic in background goroutine",
 						"tool", toolName,
 						"panic", fmt.Sprintf("%v", r),
 					)
@@ -113,7 +114,8 @@ func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary strin
 				bgCtx, cancel := context.WithTimeout(context.Background(), mcpClassifyTimeout)
 				defer cancel()
 				if err := s.logMCPDecision(bgCtx, result.Title, toolName); err != nil {
-					slog.Warn("maybeClassifyToolCall: log decision failed",
+					slog.Warn(
+						"maybeClassifyToolCall: log decision failed",
 						"tool", toolName,
 						"err", err,
 					)
@@ -132,7 +134,8 @@ func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary strin
 					result.Rationale,
 					result.Confidence,
 				); err != nil {
-					slog.Warn("maybeClassifyToolCall: enqueue task proposal failed",
+					slog.Warn(
+						"maybeClassifyToolCall: enqueue task proposal failed",
 						"tool", toolName,
 						"err", err,
 					)
@@ -170,6 +173,7 @@ func (s *Server) logMCPDecision(ctx context.Context, title, toolName string) err
 		Context:   "auto-extracted from MCP tool call: " + toolName,
 		Decision:  title,
 		Rationale: "implicitly decided via tool invocation",
+		Source:    decision.SourceAuto,
 	})
 	if err != nil {
 		return fmt.Errorf("log mcp decision: %w", err)
@@ -247,7 +251,8 @@ func (s *Server) autoCaptureMCPTask(
 		if terr != nil {
 			return fmt.Errorf("auto-capture mcp task: direct create: %w", terr)
 		}
-		slog.Info("autoCaptureMCPTask: auto-accepted task (high confidence)",
+		slog.Info(
+			"autoCaptureMCPTask: auto-accepted task (high confidence)",
 			"task_id", task.ID.String(),
 			"tool", toolName,
 			"confidence", confidence,
@@ -281,7 +286,8 @@ func (s *Server) autoCaptureMCPTask(
 	if err != nil {
 		return fmt.Errorf("auto-capture mcp task: create proposal: %w", err)
 	}
-	slog.Info("autoCaptureMCPTask: enqueued task proposal",
+	slog.Info(
+		"autoCaptureMCPTask: enqueued task proposal",
 		"proposal_id", row.ID.String(),
 		"tool", toolName,
 		"confidence", confidence,

@@ -20,6 +20,10 @@ type StoreIface interface {
 	// SearchByCosine returns the top-limit decisions most similar to queryEmbedding.
 	// SECURITY: scoped to workspace_id.
 	SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.Decision, error)
+	// List returns decisions filtered by ListParams (project XOR repo, plus
+	// IncludeAuto). Workspace is NOT a ListParams field — it stays
+	// store-scoped. See ListParams.Validate for the rejected combinations.
+	List(ctx context.Context, p ListParams) ([]db.Decision, error)
 }
 
 var _ StoreIface = (*Store)(nil)

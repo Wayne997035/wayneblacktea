@@ -108,6 +108,7 @@ func (h *DecisionHandler) LogDecision(c echo.Context) error {
 		RepoName:     req.RepoName,
 		ProjectID:    req.ProjectID,
 		Alternatives: req.Alternatives,
+		Source:       decision.SourceManual,
 	})
 	if err != nil {
 		c.Logger().Errorf("LogDecision: %v", err)

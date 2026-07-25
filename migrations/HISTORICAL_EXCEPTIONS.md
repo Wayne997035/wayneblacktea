@@ -83,3 +83,78 @@ Known exception:
     `assembleStartWorkContext` comment ("context_pack_id stays NULL always:
     Phase 2 does not persist Packs yet"). Line numbers into Go source drift —
     trust the named function/comment, not the cited line.
+
+- **2026-07-25, E2 (`000073_decision_source` edited AFTER it had already run
+  against production)** — unlike E1, the divergence set here is **NOT empty**:
+  production really did execute the pre-edit body. Read this entry before
+  drawing any conclusion about how a given `decisions.source` value in
+  production was assigned.
+
+  Sequence of events:
+
+  1. `000073_decision_source` shipped on branch
+     `feature/7-25-p3-0-decision-provenance` (commit `91097ca`) with
+     `ALTER TABLE decisions ADD COLUMN IF NOT EXISTS source …` followed by
+     three **unbounded** backfill `UPDATE`s (no `created_at` predicate).
+  2. Team-lead applied that body to production on **2026-07-25 06:49 UTC**
+     (`migrate … up` → `73/u decision_source`), moving Aiven Postgres from
+     `schema_migrations` version 68 → 73, to unblock `qa-seed` (which reads
+     prod with branch code and therefore required the column to exist).
+     Post-apply audit of all 838 rows: **auto=505, manual=333**.
+  3. Round-1 security review then found that **all three** unbounded
+     predicates match `context` / `rationale`, which are caller-supplied on
+     every manual write path — so a replay of that body could silently
+     reclassify a caller-crafted `manual` row as `auto`. (Round-2 review
+     reproduced this on a clean Postgres 17: under the `91097ca` body, crafted
+     rows matching predicate 1, 2 **and** 3 all flipped to `auto`.) Commit
+     `0518eeb` fixed it **in place**, adding
+     `created_at < '2026-07-25T07:00:00Z'` to all three `UPDATE`s and changing
+     `ADD COLUMN IF NOT EXISTS` to plain `ADD COLUMN` so a replay fails loudly.
+     The same fix was applied to the SQLite twin
+     `migrations/sqlite/000073_decision_source.up.sql` in that commit. On the
+     SQLite side the divergence set is **limited to throwaway databases**: no
+     persistent SQLite environment ever ran the pre-edit body (the in-tree dev
+     DB `./wayneblacktea.db` was still at version 72), but the disposable
+     `qa-seed` scratch databases created before the fix (`/var/folders/.../
+     wbt-qa-seed-20260725-0647*.db`, `…-0650*.db`) did reach version 73 on it.
+     Those are per-run temp files used only for browser QA and are discarded,
+     so they carry no forensic weight — but "the SQLite twin never executed
+     anywhere" would be **false**, and this entry should not claim it. Only
+     the Postgres side has a divergence that matters.
+
+  **Therefore the file's current content is NOT what production ran.**
+  Production ran the unbounded version exactly once. Its existing
+  `decisions.source` values were assigned by the three predicates *without*
+  any time bound — which, for the rows **present at apply time**, produces the
+  same result either way. That is not merely an audit result but a structural
+  guarantee: `created_at` is server-assigned (`CreateDecision` never binds it,
+  so it takes `DEFAULT NOW()`) and no production path ever `UPDATE`s it, so a
+  row existing at 06:49 UTC cannot carry a `created_at` at or after 07:00 UTC.
+  The 838-row audit (auto=505 / manual=333) is corroboration, not the load
+  bearing argument.
+
+  One caveat a future investigator should know: the cutoff was rounded **up**
+  from the 06:49 UTC apply time to 07:00 UTC, so rows written in that
+  eleven-minute window came from post-P3.0a code (which binds `Source`
+  explicitly) and were **not** part of prod's original backfill, yet they do
+  fall inside the range the current file would reclassify. This can only bite
+  on a prod `down`+`up` cycle — the one scenario this entry exists to inform.
+  The window is closed and in the past; a row would additionally need
+  predicate-matching text to be affected.
+
+  Why editing in place was chosen over a follow-up `000074`: golang-migrate
+  tracks version numbers, not content hashes (`schema_migrations` holds only
+  `(version, dirty)`), and production is already stamped at 73, so it will
+  never replay this file. A corrective `000074` could carry fix-up `UPDATE`s
+  for already-misclassified rows — what it *cannot* do is change what a
+  **fresh** environment executes at step 73, which would leave the dangerous
+  unbounded version as the one every new install runs. That is the decisive
+  argument for editing in place.
+
+  Process note for next time: when a not-yet-merged migration is applied to a
+  real database ahead of merge, add the entry here **at time of deploy**,
+  not reconstructed afterwards from a review finding. Flagged by round-2
+  `db-inspector` review, which judged the SQL itself sound and this
+  documentation gap the only blocking issue **it found** (round-2 security
+  review separately left non-blocking findings; this line is not a repo-wide
+  all-clear).

@@ -12,9 +12,9 @@ import (
 )
 
 const createDecision = `-- name: CreateDecision :one
-INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim
+INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source
 `
 
 type CreateDecisionParams struct {
@@ -27,6 +27,7 @@ type CreateDecisionParams struct {
 	Alternatives pgtype.Text `json:"alternatives"`
 	WorkspaceID  pgtype.UUID `json:"workspace_id"`
 	TaskID       pgtype.UUID `json:"task_id"`
+	Source       string      `json:"source"`
 }
 
 func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error) {
@@ -40,6 +41,7 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		arg.Alternatives,
 		arg.WorkspaceID,
 		arg.TaskID,
+		arg.Source,
 	)
 	var i Decision
 	err := row.Scan(
@@ -58,12 +60,13 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		&i.EmbeddingProvider,
 		&i.EmbeddingModel,
 		&i.EmbeddingDim,
+		&i.Source,
 	)
 	return i, err
 }
 
 const listAllDecisions = `-- name: ListAllDecisions :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
 LIMIT $2
@@ -99,6 +102,7 @@ func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsPara
 			&i.EmbeddingProvider,
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}
@@ -111,7 +115,7 @@ func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsPara
 }
 
 const listDecisionsByProject = `-- name: ListDecisionsByProject :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
 WHERE project_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -149,6 +153,7 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 			&i.EmbeddingProvider,
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}
@@ -161,7 +166,7 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 }
 
 const listDecisionsByRepo = `-- name: ListDecisionsByRepo :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
 WHERE repo_name = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -199,6 +204,7 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 			&i.EmbeddingProvider,
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}
@@ -211,7 +217,7 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 }
 
 const listDecisionsByTaskID = `-- name: ListDecisionsByTaskID :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
 WHERE task_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -249,6 +255,74 @@ func (q *Queries) ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsBy
 			&i.EmbeddingProvider,
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionsFiltered = `-- name: ListDecisionsFiltered :many
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
+WHERE ($1::uuid IS NULL OR workspace_id = $1)
+  AND ($2::uuid IS NULL OR project_id = $2)
+  AND ($3::text IS NULL OR repo_name = $3)
+  AND ($4::bool OR source = 'manual')
+ORDER BY created_at DESC, id DESC
+LIMIT $5
+`
+
+type ListDecisionsFilteredParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	RepoName    pgtype.Text `json:"repo_name"`
+	IncludeAuto bool        `json:"include_auto"`
+	LimitN      int32       `json:"limit_n"`
+}
+
+// P3.0a Stage B: source-filtered read path for MCP list_decisions.
+// project_id and repo_name are mutually exclusive at the application layer
+// (decision.ListParams.Validate) — this query accepts both narg'd so a nil
+// one is a no-op filter, but callers never pass both non-nil.
+// Source is filtered BEFORE ORDER/LIMIT so the limit isn't consumed by rows
+// that get excluded.
+func (q *Queries) ListDecisionsFiltered(ctx context.Context, arg ListDecisionsFilteredParams) ([]Decision, error) {
+	rows, err := q.db.Query(ctx, listDecisionsFiltered,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.RepoName,
+		arg.IncludeAuto,
+		arg.LimitN,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Decision
+	for rows.Next() {
+		var i Decision
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RepoName,
+			&i.Title,
+			&i.Context,
+			&i.Decision,
+			&i.Rationale,
+			&i.Alternatives,
+			&i.CreatedAt,
+			&i.WorkspaceID,
+			&i.Embedding,
+			&i.TaskID,
+			&i.EmbeddingProvider,
+			&i.EmbeddingModel,
+			&i.EmbeddingDim,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}

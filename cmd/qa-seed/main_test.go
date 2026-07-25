@@ -516,7 +516,7 @@ func TestSeedDecisions(t *testing.T) {
 	projectID := uuid.New()
 	dec := db.Decision{
 		ID: uuid.New(), Title: "d1", Context: "c", Decision: "d", Rationale: "r", ProjectID: pgUUIDVal(projectID),
-		CreatedAt: pgTimeVal(now),
+		CreatedAt: pgTimeVal(now), Source: "manual",
 	}
 
 	t.Run("happy path imports every row and collects referenced project ids", func(t *testing.T) {

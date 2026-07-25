@@ -124,8 +124,8 @@ type Scheduler struct {
 	// governanceDeps bundles the behavior governance weekly job dependencies.
 	// Set via WithBehaviorGovernance after New(); nil skips the job.
 	governanceDeps *governanceDeps
-	// cognitiveDeps bundles the 7 Memory-7 cognitive job dependencies.
-	// Set via WithCognitiveDeps after New(); nil skips all 7 cognitive jobs.
+	// cognitiveDeps bundles the 6 Memory-7 cognitive job dependencies.
+	// Set via WithCognitiveDeps after New(); nil skips all 6 cognitive jobs.
 	cognitiveDeps *cognitiveDeps
 }
 

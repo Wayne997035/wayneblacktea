@@ -1,0 +1,12 @@
+-- 000073_decision_source.down.sql
+-- Plain SQL only — no psql metacommands (backend-security-design.md §6.1).
+--
+-- Provenance-lossy: dropping this column discards the manual/auto
+-- classification. Re-running the up migration recomputes ONLY the 3 exact
+-- legacy predicates against rationale/context (see the up migration) — any
+-- decision that was reclassified some other way is NOT restored, only
+-- whichever of the 3 legacy predicates still match get marked 'auto' again.
+-- Non-source fields (title/context/decision/rationale/alternatives/
+-- project_id/repo_name/task_id/created_at/workspace_id/embedding*) are
+-- unaffected by either direction.
+ALTER TABLE decisions DROP COLUMN IF EXISTS source;
