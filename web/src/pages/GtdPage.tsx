@@ -9,9 +9,7 @@ import { GoalCard } from '../components/gtd/GoalCard'
 import { ProjectList } from '../components/gtd/ProjectList'
 import { TaskList } from '../components/gtd/TaskList'
 import { QuickAddModal } from '../components/gtd/QuickAddModal'
-import { GoalCreateModal } from '../components/goals/GoalCreateModal'
 import { GoalModal } from '../components/goals/GoalModal'
-import { ProjectCreateModal } from '../components/projects/ProjectCreateModal'
 import { ProjectModal } from '../components/projects/ProjectModal'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -222,10 +220,10 @@ export function GtdPage() {
         />
       )}
       {activeModal === 'goal' && (
-        <GoalCreateModal onClose={() => setActiveModal(null)} />
+        <GoalModal onClose={() => setActiveModal(null)} />
       )}
       {activeModal === 'project' && (
-        <ProjectCreateModal
+        <ProjectModal
           goals={goals}
           onClose={() => setActiveModal(null)}
         />

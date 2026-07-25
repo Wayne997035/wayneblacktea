@@ -34,7 +34,7 @@ export function DecisionCreateModal({
 }: DecisionCreateModalProps) {
   const { t } = useTranslation()
   const dialogRef = useRef<HTMLDialogElement>(null)
-  // See GoalCreateModal — capture trigger so we can restore focus on close.
+  // See GoalModal — capture trigger so we can restore focus on close.
   const triggerRef = useRef<HTMLElement | null>(
     typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
       ? document.activeElement
