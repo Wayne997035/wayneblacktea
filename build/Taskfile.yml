@@ -64,6 +64,7 @@ tasks:
       - build-wbt-hook
       - build-wbt-guard
       - build-seed
+      - build-qa-seed
       - build-discordbot
       - build-wbt-eval
 
@@ -180,6 +181,25 @@ tasks:
       - go build -o bin/wbt-seed ./cmd/seed/
     dir: ..
 
+  build-qa-seed:
+    desc: "Build the qa-seed prod-Postgres-to-disposable-SQLite binary to bin/"
+    deps:
+      - go-cache
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/qa-seed ./cmd/qa-seed/
+    dir: ..
+
+  qa-seed:
+    desc: "Copy real prod Postgres data (read-only) into a disposable local SQLite file + write .env.test for QA. Requires .env.local (DATABASE_URL/PGSSLROOTCERT/WORKSPACE_ID). Then: go run ./cmd/server -env .env.test (serves seeded data on :8080). Extra CLI args after -- pass through (e.g. task qa-seed -- --dest ./tmp/qa.db)."
+    dotenv: ['../.env.local']
+    preconditions:
+      - sh: test -n "{{.DATABASE_URL}}"
+        msg: "DATABASE_URL is not set — add it to .env.local (qa-seed's source is always prod Postgres, read-only)"
+    cmds:
+      - go run ./cmd/qa-seed -env .env.local {{.CLI_ARGS}}
+    dir: ..
+
   build-discordbot:
     desc: "Build the wbt-discordbot Discord bot binary to bin/"
     deps:
@@ -206,7 +226,7 @@ tasks:
       - |
         # cmd/server embeds web/dist which requires a prior `npm run build`.
         # Exclude it so lint is not blocked by a missing frontend build artifact.
-        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
+        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
         if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
           GOPROXY=off golangci-lint run --config build/.golangci.yml $PKGS
         else
@@ -231,7 +251,7 @@ tasks:
       # the default gate is *executing the binary* bin/wbt-eval (build-wbt-eval
       # above builds but never runs it); running the package's unit tests is
       # gate-safe and required for new-function test coverage.
-      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/... ./cmd/wbt-eval/...
+      - go test -short -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/... ./cmd/wbt-eval/...
     dir: ..
 
   test-race:
@@ -239,7 +259,7 @@ tasks:
     deps:
       - go-cache
     cmds:
-      - go test -short -race -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -short -race -p 4 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   go-cache:
@@ -253,7 +273,7 @@ tasks:
     cmds:
       # Build tag + no -short: runs testcontainers-based integration tests.
       # -p 1 avoids concurrent Ryuk/container startup races across packages.
-      - go test -tags integration -p 3 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      - go test -tags integration -p 3 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:

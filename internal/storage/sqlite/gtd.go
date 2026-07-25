@@ -20,6 +20,10 @@ import (
 // provided to CreateProject, CreateProjectTx, or UpdateProject.
 const defaultProjectArea = "projects"
 
+// defaultTaskKind is the fallback kind applied when an empty kind is
+// provided to CreateTask, scanTask, or ImportTask.
+const defaultTaskKind = "general"
+
 // GTDStore is the SQLite-backed implementation of gtd.StoreIface.
 type GTDStore struct {
 	db *DB
@@ -87,7 +91,7 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 	t.CreatedAt = parseTimestamptz(createdNS)
 	t.UpdatedAt = parseTimestamptz(updNS)
 	if kindStr == "" {
-		kindStr = "general"
+		kindStr = defaultTaskKind
 	}
 	t.Kind = kindStr
 	t.BranchName = pgtypeText(branchNameNS.String, branchNameNS.Valid)
@@ -313,6 +317,90 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 	}
 	// Re-read so callers see all server defaults populated.
 	return s.projectByID(ctx, id)
+}
+
+// ImportProject inserts a project row using p's own id/created_at/updated_at
+// instead of generating fresh ones, so cross-table references (goal_id,
+// task.project_id) survive a Postgres-to-SQLite copy verbatim. Used by
+// cmd/qa-seed to replicate production data into a disposable local SQLite
+// file for integration-qa. Fails (no upsert) on a duplicate id — callers
+// MUST import into a fresh database, never re-import into one that already
+// has the row.
+func (s *GTDStore) ImportProject(ctx context.Context, p db.Project) error {
+	const q = `INSERT INTO projects
+		(id, workspace_id, goal_id, name, title, description, status, area, priority, repo_name, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+	_, err := s.db.conn.ExecContext(ctx, q,
+		p.ID.String(), pgUUIDToNullString(p.WorkspaceID), pgUUIDToNullString(p.GoalID),
+		p.Name, p.Title, pgTextToNullString(p.Description), p.Status, p.Area, p.Priority,
+		pgTextToNullString(p.RepoName),
+		pgTimestamptzToString(p.CreatedAt), pgTimestamptzToString(p.UpdatedAt))
+	if err != nil {
+		return errWrap("ImportProject", err)
+	}
+	return nil
+}
+
+// ImportGoal inserts a goal row using g's own id/created_at/updated_at/status
+// instead of generating fresh ones. See ImportProject doc comment for the
+// full rationale (cmd/qa-seed fidelity import).
+func (s *GTDStore) ImportGoal(ctx context.Context, g db.Goal) error {
+	const q = `INSERT INTO goals
+		(id, workspace_id, title, description, status, area, due_date, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+	_, err := s.db.conn.ExecContext(ctx, q,
+		g.ID.String(), pgUUIDToNullString(g.WorkspaceID), g.Title,
+		pgTextToNullString(g.Description), g.Status, pgTextToNullString(g.Area),
+		pgTimestamptzToNullString(g.DueDate),
+		pgTimestamptzToString(g.CreatedAt), pgTimestamptzToString(g.UpdatedAt))
+	if err != nil {
+		return errWrap("ImportGoal", err)
+	}
+	return nil
+}
+
+// ImportTask inserts a task row using t's own id/created_at/updated_at/status
+// (plus checklist/vision_item_id, which CreateTask does not set) instead of
+// generating fresh ones. See ImportProject doc comment for the full
+// rationale (cmd/qa-seed fidelity import).
+func (s *GTDStore) ImportTask(ctx context.Context, t db.Task) error {
+	var importance any
+	if t.Importance.Valid {
+		importance = int(t.Importance.Int16)
+	}
+	kind := t.Kind
+	if kind == "" {
+		kind = defaultTaskKind
+	}
+	commitSHAsJSON := "[]"
+	if len(t.CommitSHAs) > 0 {
+		b, err := json.Marshal(t.CommitSHAs)
+		if err != nil {
+			return errWrap("ImportTask marshal commit_shas", err)
+		}
+		commitSHAsJSON = string(b)
+	}
+	checklistJSON := "[]"
+	if len(t.Checklist) > 0 {
+		checklistJSON = string(t.Checklist)
+	}
+	const q = `INSERT INTO tasks
+		(id, workspace_id, project_id, title, description, status, priority, importance,
+		 context, assignee, due_date, artifact, kind, branch_name, pr_url, commit_shas,
+		 checklist, vision_item_id, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)`
+	_, err := s.db.conn.ExecContext(ctx, q,
+		t.ID.String(), pgUUIDToNullString(t.WorkspaceID), pgUUIDToNullString(t.ProjectID),
+		t.Title, pgTextToNullString(t.Description), t.Status, t.Priority, importance,
+		pgTextToNullString(t.Context), pgTextToNullString(t.Assignee),
+		pgTimestamptzToNullString(t.DueDate), pgTextToNullString(t.Artifact),
+		kind, pgTextToNullString(t.BranchName), pgTextToNullString(t.PRUrl), commitSHAsJSON,
+		checklistJSON, pgUUIDToNullString(t.VisionItemID),
+		pgTimestamptzToString(t.CreatedAt), pgTimestamptzToString(t.UpdatedAt))
+	if err != nil {
+		return errWrap("ImportTask", err)
+	}
+	return nil
 }
 
 // CreateGoalTx inserts a new goal within the provided *sql.Tx.
@@ -646,7 +734,7 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	}
 	kind := p.Kind
 	if kind == "" {
-		kind = "general"
+		kind = defaultTaskKind
 	}
 
 	// Domain-layer gate (P6.7, sunk from the MCP-only guard in P6.6): any

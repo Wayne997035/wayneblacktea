@@ -97,6 +97,28 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 	return id, nil
 }
 
+// ImportDecision inserts a decision row using d's own id/created_at instead
+// of generating fresh ones, so decisions that reference a task_id/project_id
+// stay linked to the same rows imported by ImportProject/ImportTask. Used by
+// cmd/qa-seed. Embedding columns are intentionally left NULL (all nullable) —
+// pgvector recall is out of the QA-seed v1 scope; only CRUD-shaped fields
+// used by the frontend are copied. Fails (no upsert) on a duplicate id —
+// callers MUST import into a fresh database.
+func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error {
+	const q = `INSERT INTO decisions
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+	_, err := s.db.conn.ExecContext(ctx, q,
+		d.ID.String(), pgUUIDToNullString(d.WorkspaceID), pgUUIDToNullString(d.ProjectID),
+		pgTextToNullString(d.RepoName), d.Title, d.Context, d.Decision, d.Rationale,
+		pgTextToNullString(d.Alternatives), pgTimestamptzToString(d.CreatedAt),
+		pgUUIDToNullString(d.TaskID))
+	if err != nil {
+		return errWrap("ImportDecision", err)
+	}
+	return nil
+}
+
 // ByRepo returns the most recent decisions for a given repo name.
 func (s *DecisionStore) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error) {
 	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions

@@ -75,6 +75,25 @@ func (s *ProposalStore) Create(ctx context.Context, p proposal.CreateParams) (*d
 	return s.Get(ctx, id)
 }
 
+// ImportProposal inserts a pending_proposals row using p's own
+// id/status/created_at/resolved_at instead of generating fresh ones, so a
+// copy from production preserves resolution history (accepted/rejected
+// proposals, not just pending ones). Used by cmd/qa-seed. Fails (no upsert)
+// on a duplicate id — callers MUST import into a fresh database.
+func (s *ProposalStore) ImportProposal(ctx context.Context, p db.PendingProposal) error {
+	const q = `INSERT INTO pending_proposals
+		(id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+	_, err := s.db.conn.ExecContext(ctx, q,
+		p.ID.String(), pgUUIDToNullString(p.WorkspaceID), p.Type, string(p.Payload), p.Status,
+		pgTextToNullString(p.ProposedBy), pgTimestamptzToString(p.CreatedAt),
+		pgTimestamptzToNullString(p.ResolvedAt), pgTextToNullString(p.Reason))
+	if err != nil {
+		return errWrap("ImportProposal", err)
+	}
+	return nil
+}
+
 // Get returns a single proposal by ID.
 func (s *ProposalStore) Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error) {
 	const q = `SELECT ` + pendingProposalsSelectCols + ` FROM pending_proposals

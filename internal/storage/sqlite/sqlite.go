@@ -16,6 +16,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -75,4 +76,59 @@ func errWrap(op string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("sqlite %s: %w", op, err)
+}
+
+// ----- reverse converters (pgtype -> SQLite bind arg) -----
+//
+// pgtypeUUID/pgtypeText/parseTimestamptz (gtd.go) convert SQLite TEXT columns
+// INTO pgtype so SQLite stores return the same db.* model types the Postgres
+// stores do. The four helpers below are the reverse direction: they convert
+// a pgtype value already carried on a db.* struct (as returned by a Postgres
+// store's List/Get methods) into a bind argument for a SQLite INSERT. They
+// exist for cmd/qa-seed's ImportX methods (gtd.go/proposal.go/decision.go),
+// which copy production Postgres rows verbatim — including their original
+// id/timestamps — into a fresh local SQLite file.
+
+// pgUUIDToNullString returns NULL for an invalid (unset) pgtype.UUID,
+// otherwise the canonical 8-4-4-4-12 string form used by every SQLite UUID
+// column in this package.
+func pgUUIDToNullString(u pgtype.UUID) any {
+	if !u.Valid {
+		return nil
+	}
+	return uuid.UUID(u.Bytes).String()
+}
+
+// pgTextToNullString returns NULL for an invalid (unset) pgtype.Text,
+// otherwise the underlying string.
+func pgTextToNullString(t pgtype.Text) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.String
+}
+
+// sqliteTimestampLayout matches nowRFC3339 (gtd.go) — 3 fractional digits,
+// UTC — so imported rows are byte-for-byte consistent with rows the app
+// itself writes.
+const sqliteTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
+// pgTimestamptzToString formats a required (NOT NULL) timestamp column. An
+// invalid input (should not happen for created_at/updated_at coming from
+// Postgres) falls back to the current time rather than sending SQL NULL
+// into a NOT NULL column and failing the whole import row.
+func pgTimestamptzToString(ts pgtype.Timestamptz) string {
+	if !ts.Valid {
+		return time.Now().UTC().Format(sqliteTimestampLayout)
+	}
+	return ts.Time.UTC().Format(sqliteTimestampLayout)
+}
+
+// pgTimestamptzToNullString formats an optional (nullable) timestamp column
+// (e.g. due_date, resolved_at). Invalid → NULL.
+func pgTimestamptzToNullString(ts pgtype.Timestamptz) any {
+	if !ts.Valid {
+		return nil
+	}
+	return ts.Time.UTC().Format(sqliteTimestampLayout)
 }
