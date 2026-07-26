@@ -366,6 +366,36 @@ func TestStore_TopPendingTask(t *testing.T) {
 // COALESCE ordering is honoured by the Postgres planner, and the default
 // Tasks path stays active-only. Counterpart to the SQLite test — required by
 // backend-security-design.md §6.5 (dual-backend integration parity).
+// TestStore_CreateProject_DuplicateName_ErrConflict proves CreateProject maps
+// projects_name_key's UNIQUE violation (pg 23505) to gtd.ErrConflict. This is
+// a regression test for a bug found while fixing round-2 security review
+// Minor 3 (internal/handler/proposal_handler.go mapping gtd.ErrConflict to
+// HTTP 409): pgx's Query() does not wait for the server's response, so a
+// constraint violation on this INSERT...RETURNING statement surfaces via
+// rows.Err() (after rows.Next() returns false), NOT via the err returned by
+// Query() itself — the original pgErr.Code=="23505" check only guarded the
+// latter and was therefore unreachable for this statement.
+func TestStore_CreateProject_DuplicateName_ErrConflict(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	name := "dup-project-" + uuid.NewString()
+	if _, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: name, Title: "First", Area: "engineering",
+	}); err != nil {
+		t.Fatalf("CreateProject first: %v", err)
+	}
+
+	_, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: name, Title: "Second", Area: "engineering",
+	})
+	if !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("CreateProject duplicate: err = %v, want gtd.ErrConflict", err)
+	}
+}
+
 func TestStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()

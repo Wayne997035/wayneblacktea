@@ -30,10 +30,13 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	apimw "github.com/Wayne997035/wayneblacktea/internal/middleware"
 	"github.com/Wayne997035/wayneblacktea/internal/notion"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/timeline"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echolog "github.com/labstack/echo/v4/middleware"
 	mcphttp "github.com/mark3labs/mcp-go/server"
@@ -578,6 +581,42 @@ type serverHandlers struct {
 	reconcile   *handler.ReconcileHandler
 }
 
+// buildGoalProjectAcceptAdapter returns the factory handler.ProposalHandler
+// uses (via WithGoalProjectAccept) to construct a fresh proposal.AcceptAdapter
+// per TypeGoal/TypeProject accept call, routing HTTP accepts through the same
+// atomic proposal.AcceptOrchestration flow the MCP path already uses for
+// these two types. Backend selection (pg vs sqlite adapter) happens here —
+// the one place in wireHandlers that already knows whether stores is
+// Postgres- or SQLite-backed (mirrors the `if pool := stores.PgxPool(); pool
+// != nil` branch used a few lines below for the AI-cost store) — so
+// ProposalHandler itself stays backend-agnostic and never imports pgx or
+// database/sql types (ADR-0003).
+func buildGoalProjectAcceptAdapter(stores storage.ServerStores) func(uuid.UUID) proposal.AcceptAdapter {
+	if pool := stores.PgxPool(); pool != nil {
+		deps := proposal.PgAcceptDeps{
+			Pool:      pool,
+			Proposal:  stores.PgProposal(),
+			GTD:       stores.PgGTD(),
+			Learning:  stores.PgLearning(),
+			Decision:  stores.PgDecision(),
+			Knowledge: stores.PgKnowledge(),
+		}
+		return func(id uuid.UUID) proposal.AcceptAdapter {
+			return proposal.NewPgAcceptAdapter(id, deps)
+		}
+	}
+	deps := wbtsqlite.AcceptDeps{
+		Proposal:  stores.SqliteProposal(),
+		GTD:       stores.SqliteGTD(),
+		Learning:  stores.SqliteLearning(),
+		Decision:  stores.SqliteDecision(),
+		Knowledge: stores.SqliteKnowledge(),
+	}
+	return func(id uuid.UUID) proposal.AcceptAdapter {
+		return wbtsqlite.NewAcceptAdapter(id, deps)
+	}
+}
+
 // wireHandlers constructs the HTTP handlers run() registers as echo routes.
 // candidateStore / mergedPRsStore / activityStore are built once in run()
 // and passed in rather than rebuilt here (see the buildCandidateStore /
@@ -604,7 +643,8 @@ func wireHandlers(
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
 		WithDecision(stores.Decision()).
 		WithKnowledge(stores.Knowledge()).
-		WithTask(stores.GTD())
+		WithTask(stores.GTD()).
+		WithGoalProjectAccept(buildGoalProjectAcceptAdapter(stores))
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(
 		stores.Learning(),

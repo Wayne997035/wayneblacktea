@@ -308,6 +308,58 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 	}
 }
 
+// TestProposalHandler_ConfirmBatch_TransientGetError_FailsClosed proves M2
+// (round-2 security review): batchProposalMeta's pre-fetch h.proposal.Get
+// call can fail with a transient error unrelated to the proposal's own
+// existence (pgxpool connection reset, statement timeout, pool acquire
+// failure, ...). Before this fix such an id got no meta entry at all and
+// silently fell through to the generic h.proposal.Resolve call at the tail of
+// batchResolveOne — which can succeed on a fresh connection and flip the
+// proposal to accepted with NO backing goal/project row ever materialised.
+// That is permanent data loss: proposal.sql's Resolve query only matches
+// status='pending', so the proposal can never be re-accepted afterwards. The
+// fix must fail closed: report an error, never call Resolve.
+func TestProposalHandler_ConfirmBatch_TransientGetError_FailsClosed(t *testing.T) {
+	goalID := uuid.New()
+	goalProp := makeGoalProposal(goalID)
+	store := newFakeProposalStore(goalProp)
+	store.getErr = errors.New("connection reset by peer") // transient — NOT proposal.ErrNotFound
+
+	e := newEcho()
+	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
+	body := `{"ids":["` + goalID.String() + `"],"action":"accept"}`
+	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 (batch endpoint always 200; per-row error), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Results []struct {
+			ID      string `json:"id"`
+			OK      bool   `json:"ok"`
+			Skipped bool   `json:"skipped"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v (body: %s)", err, rec.Body.String())
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("got %d results, want 1", len(resp.Results))
+	}
+	entry := resp.Results[0]
+	if entry.OK {
+		t.Errorf("entry.OK = true, want false: a transient pre-fetch Get error must not resolve the proposal")
+	}
+	if entry.Error == "" {
+		t.Errorf("entry.Error is empty, want a non-empty error message reporting the failure")
+	}
+	if len(store.resolved) != 0 {
+		t.Errorf("Resolve must NOT be called when the pre-fetch Get failed transiently; got resolved=%v", store.resolved)
+	}
+}
+
 // ---- ConfirmProposal tests (single-accept) ----
 
 func TestProposalHandler_ConfirmProposal_Accept(t *testing.T) {

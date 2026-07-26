@@ -884,6 +884,23 @@ func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
 	if p.Title == "" {
 		return decision.LogParams{}, "decision payload missing title"
 	}
+	if len(p.Title) > 512 {
+		return decision.LogParams{}, "decision title exceeds 512 bytes"
+	}
+	if len(p.Decision) > 65536 {
+		return decision.LogParams{}, "decision text exceeds 64 KB"
+	}
+	if len(p.Rationale) > 65536 {
+		return decision.LogParams{}, "decision rationale exceeds 64 KB"
+	}
+	if len(p.Alternatives) > 50 {
+		return decision.LogParams{}, "too many alternatives (max 50)"
+	}
+	for _, a := range p.Alternatives {
+		if len(a) > 100 {
+			return decision.LogParams{}, "individual alternative exceeds 100 bytes"
+		}
+	}
 	rationale := p.Rationale
 	if len(p.Alternatives) > 0 {
 		// Stash alternatives at the tail of rationale — the decisions table
@@ -914,6 +931,15 @@ func decodeGoalParams(payload []byte) (gtd.CreateGoalParams, string) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return gtd.CreateGoalParams{}, fmt.Sprintf("decoding goal payload: %v", err)
 	}
+	if len(p.Title) > 512 {
+		return gtd.CreateGoalParams{}, "goal title exceeds 512 bytes"
+	}
+	if len(p.Area) > 512 {
+		return gtd.CreateGoalParams{}, "goal area exceeds 512 bytes"
+	}
+	if len(p.Description) > 65536 {
+		return gtd.CreateGoalParams{}, "goal description exceeds 64 KB"
+	}
 	gp := gtd.CreateGoalParams{
 		Title:       p.Title,
 		Area:        p.Area,
@@ -933,6 +959,18 @@ func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
 	var p projectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return gtd.CreateProjectParams{}, fmt.Sprintf("decoding project payload: %v", err)
+	}
+	if len(p.Name) > 512 {
+		return gtd.CreateProjectParams{}, "project name exceeds 512 bytes"
+	}
+	if len(p.Title) > 512 {
+		return gtd.CreateProjectParams{}, "project title exceeds 512 bytes"
+	}
+	if len(p.Area) > 512 {
+		return gtd.CreateProjectParams{}, "project area exceeds 512 bytes"
+	}
+	if len(p.Description) > 65536 {
+		return gtd.CreateProjectParams{}, "project description exceeds 64 KB"
 	}
 	pp := gtd.CreateProjectParams{
 		Name:        p.Name,

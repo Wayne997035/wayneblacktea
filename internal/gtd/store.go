@@ -167,6 +167,20 @@ func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.P
 	defer rows.Close()
 	if !rows.Next() {
 		if rErr := rows.Err(); rErr != nil {
+			// pgx's Query() sends parse/bind/describe/execute but does not wait
+			// for the server's response — a constraint violation on this
+			// INSERT...RETURNING statement surfaces here, via rows.Err() after
+			// rows.Next() fails, NOT via the err returned by Query() above (that
+			// branch only catches connection-level failures). Without this
+			// check the projects_name_key UNIQUE violation this method exists
+			// to detect (see doc comment + the pgErr.Code check a few lines up)
+			// falls through to the generic wrap below and never becomes
+			// ErrConflict — round-2 security review Minor 3 (handler mapping
+			// gtd.ErrConflict → 409) is dead code without this fix.
+			var pgErr *pgconn.PgError
+			if errors.As(rErr, &pgErr) && pgErr.Code == "23505" {
+				return nil, ErrConflict
+			}
 			return nil, fmt.Errorf("iterating create project %q: %w", p.Name, rErr)
 		}
 		return nil, fmt.Errorf("creating project %q: no row returned", p.Name)
