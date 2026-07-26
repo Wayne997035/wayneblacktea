@@ -47,13 +47,18 @@ import (
 // guard with `if pool := stores.PgxPool(); pool != nil { ... }` and provide a
 // non-tx fallback for the SQLite path.
 //
-// Concrete pg Store accessors (PgGTD / PgProposal / PgLearning) return the
-// concrete *Store on the Postgres bundle so that the few code paths that
-// need pgx-typed transactions (proposal materialisation across gtd /
-// learning / proposal) can call WithTx(tx); they return nil on the SQLite
-// bundle. New backend-agnostic transactional code SHOULD NOT add more such
-// accessors — the longer-term direction is a TxCoordinator inside the
-// storage package, not pgx leaking into MCP.
+// Concrete pg Store accessors (PgGTD / PgProposal / PgLearning / PgKnowledge
+// / PgPlaybook) return the concrete *Store on the Postgres bundle so that the
+// few code paths that need pgx-typed transactions (proposal materialisation
+// across gtd / learning / proposal / knowledge / playbook) can call
+// WithTx(tx) or the tx-scoped WriteItemTx/CreateTx-style methods; they return
+// nil on the SQLite bundle. New backend-agnostic transactional code SHOULD
+// NOT add more such accessors — the longer-term direction is a TxCoordinator
+// inside the storage package, not pgx leaking into MCP. PgKnowledge /
+// PgPlaybook / SqliteKnowledge / SqlitePlaybook (added for internal/proposal's
+// accept-seam adapters) are a bounded exception under ADR 0003
+// (docs/adr/0003-dual-backend-orchestration-seam-principle.md), not a
+// reversal of this guidance.
 type ServerStores interface {
 	io.Closer
 
@@ -98,24 +103,33 @@ type ServerStores interface {
 	// paths that legitimately need a pgx-typed transaction.
 	PgxPool() *pgxpool.Pool
 
-	// PgGTD / PgProposal / PgLearning / PgDecision return concrete *Store
-	// handles only when the bundle is Postgres-backed (so callers can
-	// WithTx(tx) on a pgx.Tx). They return nil on the SQLite bundle. See
-	// the type doc for the future migration path.
+	// PgGTD / PgProposal / PgLearning / PgDecision / PgKnowledge / PgPlaybook
+	// return concrete *Store handles only when the bundle is Postgres-backed
+	// (so callers can WithTx(tx) on a pgx.Tx). They return nil on the SQLite
+	// bundle. See the type doc for the future migration path. PgKnowledge /
+	// PgPlaybook back internal/proposal's pgAcceptAdapter (the ADR 0003
+	// accept-seam contract).
 	PgGTD() *gtd.Store
 	PgProposal() *proposal.Store
 	PgLearning() *learning.Store
 	PgDecision() *decision.Store
+	PgKnowledge() *knowledge.Store
+	PgPlaybook() *playbook.Store
 
-	// SqliteGTD / SqliteProposal / SqliteLearning / SqliteDecision return
-	// concrete *Store handles only when the bundle is SQLite-backed, so
-	// callers can use the *Tx transactional helpers for atomic cross-store
-	// writes (e.g. the confirm_proposal accept path for type='decision').
-	// They return nil on the Postgres bundle.
+	// SqliteGTD / SqliteProposal / SqliteLearning / SqliteDecision /
+	// SqliteKnowledge / SqlitePlaybook return concrete *Store handles only
+	// when the bundle is SQLite-backed, so callers can use the *Tx
+	// transactional helpers for atomic cross-store writes (e.g. the
+	// confirm_proposal accept path for type='decision'). They return nil on
+	// the Postgres bundle. SqliteKnowledge / SqlitePlaybook back
+	// internal/storage/sqlite's sqliteAcceptAdapter (the ADR 0003 accept-seam
+	// contract).
 	SqliteGTD() *wbtsqlite.GTDStore
 	SqliteProposal() *wbtsqlite.ProposalStore
 	SqliteLearning() *wbtsqlite.LearningStore
 	SqliteDecision() *wbtsqlite.DecisionStore
+	SqliteKnowledge() *wbtsqlite.KnowledgeStore
+	SqlitePlaybook() *wbtsqlite.PlaybookStore
 
 	// SqliteDB returns the underlying *wbtsqlite.DB when the bundle is
 	// SQLite-backed, or nil for the Postgres bundle. Used by domain stores

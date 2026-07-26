@@ -71,6 +71,54 @@ func scanKnowledgeItem(scan func(...any) error) (db.KnowledgeItem, error) {
 // item is considered a duplicate of an existing one. 0.88 chosen for personal-use recall.
 const dedupSimilarityThreshold = 0.88
 
+// PreparedItem is the out-of-band result of AddItem's pre-write phase — URL
+// exact-match dedup plus embedding generation + cosine-similarity dedup —
+// computed by Prepare strictly before any transaction opens (ADR 0003's G1
+// "先算後寫": docs/adr/0003-dual-backend-orchestration-seam-principle.md —
+// the embedding call is external network I/O and must never run inside an
+// open tx). WriteItemTx consumes a PreparedItem unchanged inside the tx that
+// proposal.AcceptOrchestration's adapter opens via its BeginTx step
+// (internal/proposal/accept_pg.go's pgAcceptAdapter).
+type PreparedItem struct {
+	// Params is the AddItemParams Prepare was called with, threaded through
+	// so WriteItemTx does not require the caller to pass it a second time.
+	Params AddItemParams
+	// Vec is the computed embedding to store alongside the row, or nil when
+	// no embedding was generated — either no embed client is configured or
+	// the Embed call itself failed (both cases set DedupSkipped=true; see
+	// embedAndCheckDupAtLevel's Warn log for which one happened).
+	Vec []float32
+	// DedupSkipped is true when the cosine-similarity dedup check did not
+	// run at all (no embed client, Embed failed, or the similarity query
+	// itself failed), as opposed to running and finding no duplicate at or
+	// above dedupSimilarityThreshold. WriteItemTx does not branch on this
+	// field; it exists so callers/tests can distinguish "no duplicate
+	// found" from "dedup check never ran" without inspecting log output.
+	DedupSkipped bool
+}
+
+// Prepare runs AddItem's out-of-band pre-write phase without writing
+// anything: URL exact-match dedup (top-level items only, mirroring AddItem's
+// existing p.ParentID == nil guard) then embedding generation +
+// cosine-similarity dedup at p.HeadingLevel. Returns ErrDuplicate when either
+// check finds a match. Extracted from AddItem so proposal.AcceptOrchestration
+// (the ADR 0003 dual-backend orchestration seam) can run it strictly before
+// opening the transaction WriteItemTx writes inside.
+func (s *Store) Prepare(ctx context.Context, p AddItemParams) (PreparedItem, error) {
+	// URL dedup only for top-level items.
+	if p.ParentID == nil {
+		if err := s.urlDedupCheck(ctx, p.URL); err != nil {
+			return PreparedItem{}, err
+		}
+	}
+
+	vec, skipped, err := s.embedAndCheckDupAtLevel(ctx, p.Title+" "+p.Content, p.HeadingLevel)
+	if err != nil {
+		return PreparedItem{}, err
+	}
+	return PreparedItem{Params: p, Vec: vec, DedupSkipped: skipped}, nil
+}
+
 // AddItem creates the knowledge item and synchronously generates and stores its embedding.
 // If an embedding client is available:
 //  1. URL exact-match check (fast, no Gemini call needed).
@@ -81,8 +129,48 @@ const dedupSimilarityThreshold = 0.88
 // inserted first, then each heading section is inserted as a child row (fan-out).
 // Any Gemini error or nil vector (no API key) → dedup skipped, item inserted normally.
 //
-//nolint:gocyclo // fan-out+dedup+parent wiring is inherently branchy; extraction would add indirection
+// Delegates steps 1-2 to Prepare and step 3 to writeItemRow (both extracted
+// so proposal.AcceptOrchestration can reuse them split across its
+// PrepareOutOfBand/tx-scoped Materialize steps — see Prepare's doc comment).
 func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem, error) {
+	prep, err := s.Prepare(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	item, err := s.writeItemRow(ctx, s.pool, prep)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fan-out: insert section children for top-level Markdown items.
+	if p.ParentID == nil {
+		if err := s.fanOutSections(ctx, item, p); err != nil {
+			slog.Warn("knowledge fan-out failed", "root_id", item.ID, "err", err)
+		}
+	}
+
+	return item, nil
+}
+
+// WriteItemTx inserts the row described by prep.Params inside the given open
+// tx, writing the embedding computed by Prepare (prep.Vec) in the same tx
+// when present. Companion to Prepare — see PreparedItem's doc comment for the
+// split and ADR 0003 for why the two are separate calls. Used by
+// internal/proposal/accept_pg.go's pgAcceptAdapter.Materialize (wired by the
+// A1-seam task, not this one).
+func (s *Store) WriteItemTx(ctx context.Context, tx pgx.Tx, prep PreparedItem) (*db.KnowledgeItem, error) {
+	return s.writeItemRow(ctx, tx, prep)
+}
+
+// writeItemRow performs the INSERT ... RETURNING plus conditional embedding
+// write shared by AddItem's non-tx path (dbtx = s.pool) and WriteItemTx's
+// tx-scoped path (dbtx = the caller's pgx.Tx). db.DBTX is satisfied by both
+// *pgxpool.Pool and pgx.Tx (identical Exec/Query/QueryRow signatures — see
+// internal/db/db.go), so the same SQL text and scan logic serve both callers
+// without duplicating either.
+func (s *Store) writeItemRow(ctx context.Context, dbtx db.DBTX, prep PreparedItem) (*db.KnowledgeItem, error) {
+	p := prep.Params
 	var itemURL pgtype.Text
 	if p.URL != "" {
 		itemURL = pgtype.Text{String: p.URL, Valid: true}
@@ -98,18 +186,6 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 	var lv pgtype.Int4
 	if p.LearningValue > 0 {
 		lv = pgtype.Int4{Int32: int32(p.LearningValue), Valid: true} //nolint:gosec // G115: LearningValue is bounded 1-5 by caller
-	}
-
-	// URL dedup only for top-level items.
-	if p.ParentID == nil {
-		if err := s.urlDedupCheck(ctx, p.URL); err != nil {
-			return nil, err
-		}
-	}
-
-	vec, err := s.embedAndCheckDupAtLevel(ctx, p.Title+" "+p.Content, p.HeadingLevel)
-	if err != nil {
-		return nil, err
 	}
 
 	// Build hierarchy pgtype values.
@@ -147,7 +223,7 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		RETURNING ` + selectCols
 
 	item, err := scanKnowledgeItem(func(args ...any) error {
-		return s.pool.QueryRow(ctx, q,
+		return dbtx.QueryRow(ctx, q,
 			p.Type, p.Title, p.Content, itemURL, tags, source, lv, s.workspaceID,
 			parentID, headingPath, headingLevel,
 			projectID, taskID, decisionID,
@@ -157,19 +233,12 @@ func (s *Store) AddItem(ctx context.Context, p AddItemParams) (*db.KnowledgeItem
 		return nil, fmt.Errorf("creating knowledge item: %w", err)
 	}
 
-	if vec != nil {
-		if err := s.q.UpdateKnowledgeEmbedding(ctx, db.UpdateKnowledgeEmbeddingParams{
+	if prep.Vec != nil {
+		if err := db.New(dbtx).UpdateKnowledgeEmbedding(ctx, db.UpdateKnowledgeEmbeddingParams{
 			ID:        item.ID,
-			Embedding: pgvector.NewVector(vec),
+			Embedding: pgvector.NewVector(prep.Vec),
 		}); err != nil {
 			slog.Warn("storing embedding failed", "id", item.ID, "err", err)
-		}
-	}
-
-	// Fan-out: insert section children for top-level Markdown items.
-	if p.ParentID == nil {
-		if err := s.fanOutSections(ctx, &item, p); err != nil {
-			slog.Warn("knowledge fan-out failed", "root_id", item.ID, "err", err)
 		}
 	}
 
@@ -226,29 +295,32 @@ func (s *Store) urlDedupCheck(ctx context.Context, url string) error {
 
 // embedAndCheckDupAtLevel computes the embedding for text and checks cosine
 // similarity against existing items at the same heading_level. Dedup only
-// compares same-level rows so section children do not falsely match root docs.
-func (s *Store) embedAndCheckDupAtLevel(ctx context.Context, text string, level int) ([]float32, error) {
+// compares same-level rows so section children do not falsely match root
+// docs. skipped is true whenever the cosine-similarity check did not run to
+// completion (no embed client, Embed failure, or similarity-query failure) —
+// see PreparedItem.DedupSkipped's doc comment.
+func (s *Store) embedAndCheckDupAtLevel(ctx context.Context, text string, level int) (vec []float32, skipped bool, err error) {
 	if s.embed == nil {
-		return nil, nil
+		return nil, true, nil
 	}
 	embedCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
-	vec, err := s.embed.Embed(embedCtx, text)
+	vec, err = s.embed.Embed(embedCtx, text)
 	if err != nil {
 		slog.Warn("embed failed during dedup, skipping similarity check", "err", err)
-		return nil, nil
+		return nil, true, nil
 	}
 
-	existingTitle, similarity, found, err := s.findSimilarAtLevel(ctx, vec, level)
-	if err != nil {
-		slog.Warn("similarity check failed, skipping dedup", "err", err)
-		return vec, nil
+	existingTitle, similarity, found, simErr := s.findSimilarAtLevel(ctx, vec, level)
+	if simErr != nil {
+		slog.Warn("similarity check failed, skipping dedup", "err", simErr)
+		return vec, true, nil
 	}
 	if found && similarity >= dedupSimilarityThreshold {
-		return nil, ErrDuplicate{ExistingTitle: existingTitle, Similarity: similarity}
+		return nil, false, ErrDuplicate{ExistingTitle: existingTitle, Similarity: similarity}
 	}
-	return vec, nil
+	return vec, false, nil
 }
 
 // findSimilarAtLevel returns the title and cosine similarity of the most similar

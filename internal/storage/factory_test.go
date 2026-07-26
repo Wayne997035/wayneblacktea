@@ -4,11 +4,19 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 )
 
+// TestNewServerStores_SQLite_HappyPath verifies the SQLite bundle wires every
+// backend-agnostic accessor to a non-nil store and every Pg-prefixed
+// concrete-store accessor (only meaningful on the Postgres bundle) to nil.
+// Table-driven (rather than one `if` per accessor) so adding accessors —
+// e.g. PgKnowledge/PgPlaybook/SqliteKnowledge/SqlitePlaybook for the ADR 0003
+// accept-seam contract — doesn't keep pushing this function's cyclomatic
+// complexity over the gocyclo threshold.
 func TestNewServerStores_SQLite_HappyPath(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "wbt.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
@@ -24,38 +32,54 @@ func TestNewServerStores_SQLite_HappyPath(t *testing.T) {
 		}
 	}()
 
-	if stores.GTD() == nil {
-		t.Errorf("GTD() returned nil")
+	wantNonNil := map[string]any{
+		"GTD":             stores.GTD(),
+		"Workspace":       stores.Workspace(),
+		"Decision":        stores.Decision(),
+		"Session":         stores.Session(),
+		"Knowledge":       stores.Knowledge(),
+		"Learning":        stores.Learning(),
+		"Proposal":        stores.Proposal(),
+		"SqliteKnowledge": stores.SqliteKnowledge(),
+		"SqlitePlaybook":  stores.SqlitePlaybook(),
 	}
-	if stores.Workspace() == nil {
-		t.Errorf("Workspace() returned nil")
+	for name, v := range wantNonNil {
+		if isNilStore(v) {
+			t.Errorf("%s() returned nil", name)
+		}
 	}
-	if stores.Decision() == nil {
-		t.Errorf("Decision() returned nil")
+
+	// PgGTD / PgProposal / PgLearning / PgKnowledge / PgPlaybook back
+	// pgAcceptAdapter (ADR 0003 accept-seam contract) and other pgx-typed-tx
+	// code paths — all must be nil on the SQLite bundle.
+	wantNil := map[string]any{
+		"PgxPool":     stores.PgxPool(),
+		"PgGTD":       stores.PgGTD(),
+		"PgProposal":  stores.PgProposal(),
+		"PgLearning":  stores.PgLearning(),
+		"PgKnowledge": stores.PgKnowledge(),
+		"PgPlaybook":  stores.PgPlaybook(),
 	}
-	if stores.Session() == nil {
-		t.Errorf("Session() returned nil")
+	for name, v := range wantNil {
+		if !isNilStore(v) {
+			t.Errorf("%s() should be nil for sqlite backend, got %#v", name, v)
+		}
 	}
-	if stores.Knowledge() == nil {
-		t.Errorf("Knowledge() returned nil")
+}
+
+// isNilStore reports whether v holds a nil value, accounting for the typed
+// nil that a `*wbtsqlite.KnowledgeStore(nil)` etc. becomes once boxed into
+// an `any` — a plain `v == nil` comparison would be false for those.
+func isNilStore(v any) bool {
+	if v == nil {
+		return true
 	}
-	if stores.Learning() == nil {
-		t.Errorf("Learning() returned nil")
-	}
-	if stores.Proposal() == nil {
-		t.Errorf("Proposal() returned nil")
-	}
-	if stores.PgxPool() != nil {
-		t.Errorf("PgxPool() should be nil for sqlite backend")
-	}
-	if stores.PgGTD() != nil {
-		t.Errorf("PgGTD() should be nil for sqlite backend")
-	}
-	if stores.PgProposal() != nil {
-		t.Errorf("PgProposal() should be nil for sqlite backend")
-	}
-	if stores.PgLearning() != nil {
-		t.Errorf("PgLearning() should be nil for sqlite backend")
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		return rv.IsNil()
+	default:
+		return false
 	}
 }
 

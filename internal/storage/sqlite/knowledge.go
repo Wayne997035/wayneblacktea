@@ -27,6 +27,12 @@ func NewKnowledgeStore(d *DB) *KnowledgeStore {
 	return &KnowledgeStore{db: d}
 }
 
+// DB returns the underlying *DB, mirroring ProposalStore.DB(). Exported so
+// callers outside this package (e.g. internal/storage's future AcceptSeam,
+// and this package's own tests in package sqlite_test) can open a
+// *sql.Tx via DB().BeginTx(ctx) to drive WriteItemTx.
+func (s *KnowledgeStore) DB() *DB { return s.db }
+
 var _ knowledge.StoreIface = (*KnowledgeStore)(nil)
 
 // knowledgeSelectCols is the explicit column list for all read queries.
@@ -121,20 +127,106 @@ func crossDomainArgs(projectID, taskID, decisionID *[16]byte) (any, any, any) {
 	return p, t, d
 }
 
-// AddItem creates a knowledge item using LIKE/search-only SQLite v2 semantics.
-// When p.Content contains ATX Markdown headings and p.ParentID is nil, it also
-// inserts child rows for each section (fan-out). Fan-out failures are non-fatal.
-func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error) {
+// Prepare runs AddItem's out-of-band pre-write phase for SQLite: URL
+// exact-match dedup only (top-level items, mirroring AddItem's existing
+// p.ParentID == nil guard). SQLite has no embedding client wired up yet — see
+// knowledge.PreparedItem.Vec's doc comment — so no cosine-similarity dedup
+// runs here (that lands with A10-dedup); Vec is always nil and DedupSkipped
+// is always true. Extracted so proposal.AcceptOrchestration (ADR 0003's
+// dual-backend orchestration seam) can run it strictly before BeginTx,
+// mirroring the Postgres knowledge.Store.Prepare.
+func (s *KnowledgeStore) Prepare(ctx context.Context, p knowledge.AddItemParams) (knowledge.PreparedItem, error) {
 	// URL dedup only for top-level items.
 	if p.ParentID == nil {
 		if err := s.urlDedupCheck(ctx, p.URL); err != nil {
-			return nil, err
+			return knowledge.PreparedItem{}, err
+		}
+	}
+	return knowledge.PreparedItem{Params: p, Vec: nil, DedupSkipped: true}, nil
+}
+
+// AddItem creates a knowledge item using LIKE/search-only SQLite v2 semantics.
+// When p.Content contains ATX Markdown headings and p.ParentID is nil, it also
+// inserts child rows for each section (fan-out). Fan-out failures are non-fatal.
+//
+// Delegates the dedup phase to Prepare and the write to insertItemRow (both
+// extracted so proposal.AcceptOrchestration can reuse them split across its
+// PrepareOutOfBand/tx-scoped Materialize steps — see Prepare's doc comment).
+func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error) {
+	prep, err := s.Prepare(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := s.insertItemRow(ctx, s.db.conn, prep.Params)
+	if err != nil {
+		return nil, err
+	}
+	item, err := s.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if prep.Vec != nil {
+		if err := s.UpdateEmbedding(ctx, id, localai.SerializeEmbedding(prep.Vec)); err != nil {
+			slog.Warn("sqlite knowledge: storing embedding failed", "id", id, "err", err)
 		}
 	}
 
-	tagsJSON, err := encodeStringSlice(p.Tags)
+	// Fan-out: insert section children for top-level Markdown items.
+	if p.ParentID == nil {
+		s.fanOutSections(ctx, item, p)
+	}
+
+	return item, nil
+}
+
+// WriteItemTx inserts the row described by prep.Params inside the given open
+// tx, then re-reads it back through the SAME tx. Reading back through
+// s.db.conn while tx is open would deadlock: SQLite serialises all access
+// through a single pooled connection (db.SetMaxOpenConns(1) in Open), and
+// that connection is already held by tx — see the identical constraint
+// documented on sqliteAcceptAdapter.getPendingTx (accept_proposal.go).
+// Writes the embedding via UpdateEmbeddingTx only when prep.Vec is non-nil;
+// SQLite's Prepare never sets one today (see knowledge.PreparedItem.Vec's doc
+// comment), so this branch is presently unreachable in production until
+// A10-dedup wires an embed client, but WriteItemTx honours prep.Vec
+// regardless of who set it — parity with the Postgres
+// knowledge.Store.WriteItemTx. Used by
+// internal/storage/sqlite/accept_proposal.go's sqliteAcceptAdapter.Materialize
+// (wired by the A1-seam task, not this one).
+func (s *KnowledgeStore) WriteItemTx(ctx context.Context, tx *sql.Tx, prep knowledge.PreparedItem) (*db.KnowledgeItem, error) {
+	id, err := s.insertItemRow(ctx, tx, prep.Params)
 	if err != nil {
 		return nil, err
+	}
+	item, err := s.getByIDTx(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if prep.Vec != nil {
+		if err := s.UpdateEmbeddingTx(ctx, tx, id, localai.SerializeEmbedding(prep.Vec)); err != nil {
+			slog.Warn("sqlite knowledge: storing embedding failed (tx)", "id", id, "err", err)
+		}
+	}
+	return item, nil
+}
+
+// rowExecer is satisfied by both *sql.DB (via s.db.conn) and *sql.Tx,
+// letting insertItemRow share the INSERT SQL between AddItem's non-tx path
+// and WriteItemTx's tx-scoped path.
+type rowExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// insertItemRow performs the INSERT (no read-back) shared by AddItem
+// (execer = s.db.conn) and WriteItemTx (execer = the caller's *sql.Tx).
+// Returns the newly generated row ID; callers read the row back through the
+// SAME execer to avoid the single-connection deadlock described on
+// WriteItemTx.
+func (s *KnowledgeStore) insertItemRow(ctx context.Context, execer rowExecer, p knowledge.AddItemParams) (uuid.UUID, error) {
+	tagsJSON, err := encodeStringSlice(p.Tags)
+	if err != nil {
+		return uuid.Nil, err
 	}
 	source := p.Source
 	if source == "" {
@@ -170,26 +262,32 @@ func (s *KnowledgeStore) AddItem(ctx context.Context, p knowledge.AddItemParams)
 		 created_at, updated_at, parent_id, heading_path, heading_level,
 		 project_id, task_id, decision_id)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`
-	_, err = s.db.conn.ExecContext(ctx, q,
+	if _, err := execer.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), p.Type, p.Title, p.Content,
 		nullStringIfEmpty(p.URL), tagsJSON, source, learningValue, now,
 		parentIDArg, headingPathArg, headingLevelArg,
-		projectIDArg, taskIDArg, decisionIDArg)
+		projectIDArg, taskIDArg, decisionIDArg); err != nil {
+		return uuid.Nil, errWrap("AddKnowledgeItem", err)
+	}
+	return id, nil
+}
+
+// getByIDTx re-reads a knowledge_items row via the still-open tx, mirroring
+// GetByID's query but scanning through tx instead of s.db.conn — see
+// WriteItemTx's doc comment for why that distinction matters.
+func (s *KnowledgeStore) getByIDTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (*db.KnowledgeItem, error) {
+	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
+		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	item, err := scanKnowledgeItem(tx.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg()).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, knowledge.ErrNotFound
+	}
 	if err != nil {
-		return nil, errWrap("AddKnowledgeItem", err)
+		return nil, errWrap("GetKnowledgeByIDTx", err)
 	}
-
-	item, err := s.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fan-out: insert section children for top-level Markdown items.
-	if p.ParentID == nil {
-		s.fanOutSections(ctx, item, p)
-	}
-
-	return item, nil
+	return &item, nil
 }
 
 // fanOutSections parses Markdown headings from p.Content and inserts a child
@@ -526,6 +624,21 @@ func (s *KnowledgeStore) UpdateEmbedding(ctx context.Context, id uuid.UUID, embe
 		  AND (?3 IS NULL OR workspace_id = ?3)`
 	if _, err := s.db.conn.ExecContext(ctx, q, embedding, id.String(), s.db.workspaceArg()); err != nil {
 		return errWrap("UpdateKnowledgeEmbedding", err)
+	}
+	return nil
+}
+
+// UpdateEmbeddingTx is the tx-scoped twin of UpdateEmbedding, used by
+// WriteItemTx so the embedding write lands in the same transaction as the
+// row insert instead of racing it as a separate connection acquisition (see
+// WriteItemTx's doc comment for the single-connection deadlock this avoids).
+func (s *KnowledgeStore) UpdateEmbeddingTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, embedding []byte) error {
+	const q = `UPDATE knowledge_items
+		SET embedding = ?1
+		WHERE id = ?2
+		  AND (?3 IS NULL OR workspace_id = ?3)`
+	if _, err := tx.ExecContext(ctx, q, embedding, id.String(), s.db.workspaceArg()); err != nil {
+		return errWrap("UpdateKnowledgeEmbeddingTx", err)
 	}
 	return nil
 }

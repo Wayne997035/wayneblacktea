@@ -262,17 +262,21 @@ func (p *postgresServerStores) LearningPruner() decay.PrunerStore {
 	return nil
 }
 
-func (p *postgresServerStores) WorkspaceID() *uuid.UUID                  { return p.workspaceID }
-func (p *postgresServerStores) PgxPool() *pgxpool.Pool                   { return p.pool }
-func (p *postgresServerStores) PgGTD() *gtd.Store                        { return p.gtd }
-func (p *postgresServerStores) PgProposal() *proposal.Store              { return p.proposal }
-func (p *postgresServerStores) PgLearning() *learning.Store              { return p.learning }
-func (p *postgresServerStores) PgDecision() *decision.Store              { return p.decision }
-func (p *postgresServerStores) SqliteGTD() *wbtsqlite.GTDStore           { return nil }
-func (p *postgresServerStores) SqliteProposal() *wbtsqlite.ProposalStore { return nil }
-func (p *postgresServerStores) SqliteLearning() *wbtsqlite.LearningStore { return nil }
-func (p *postgresServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return nil }
-func (p *postgresServerStores) SqliteDB() *wbtsqlite.DB                  { return nil }
+func (p *postgresServerStores) WorkspaceID() *uuid.UUID                    { return p.workspaceID }
+func (p *postgresServerStores) PgxPool() *pgxpool.Pool                     { return p.pool }
+func (p *postgresServerStores) PgGTD() *gtd.Store                          { return p.gtd }
+func (p *postgresServerStores) PgProposal() *proposal.Store                { return p.proposal }
+func (p *postgresServerStores) PgLearning() *learning.Store                { return p.learning }
+func (p *postgresServerStores) PgDecision() *decision.Store                { return p.decision }
+func (p *postgresServerStores) PgKnowledge() *knowledge.Store              { return p.knowledge }
+func (p *postgresServerStores) PgPlaybook() *playbook.Store                { return p.playbookStore }
+func (p *postgresServerStores) SqliteGTD() *wbtsqlite.GTDStore             { return nil }
+func (p *postgresServerStores) SqliteProposal() *wbtsqlite.ProposalStore   { return nil }
+func (p *postgresServerStores) SqliteLearning() *wbtsqlite.LearningStore   { return nil }
+func (p *postgresServerStores) SqliteDecision() *wbtsqlite.DecisionStore   { return nil }
+func (p *postgresServerStores) SqliteKnowledge() *wbtsqlite.KnowledgeStore { return nil }
+func (p *postgresServerStores) SqlitePlaybook() *wbtsqlite.PlaybookStore   { return nil }
+func (p *postgresServerStores) SqliteDB() *wbtsqlite.DB                    { return nil }
 
 // buildPgxPoolConfig parses the DSN and applies our TLS / pgvector wiring plus
 // the personal-OS pool caps. It opens no connection, so the cap policy is
@@ -466,14 +470,18 @@ func (s *sqliteServerStores) LearningPruner() decay.PrunerStore {
 	return nil
 }
 
-func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                  { return s.workspaceID }
-func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                   { return nil }
-func (s *sqliteServerStores) PgGTD() *gtd.Store                        { return nil }
-func (s *sqliteServerStores) PgProposal() *proposal.Store              { return nil }
-func (s *sqliteServerStores) PgLearning() *learning.Store              { return nil }
-func (s *sqliteServerStores) PgDecision() *decision.Store              { return nil }
-func (s *sqliteServerStores) SqliteGTD() *wbtsqlite.GTDStore           { return s.gtd }
-func (s *sqliteServerStores) SqliteProposal() *wbtsqlite.ProposalStore { return s.proposal }
-func (s *sqliteServerStores) SqliteLearning() *wbtsqlite.LearningStore { return s.learning }
-func (s *sqliteServerStores) SqliteDecision() *wbtsqlite.DecisionStore { return s.decision }
-func (s *sqliteServerStores) SqliteDB() *wbtsqlite.DB                  { return s.db }
+func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                    { return s.workspaceID }
+func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                     { return nil }
+func (s *sqliteServerStores) PgGTD() *gtd.Store                          { return nil }
+func (s *sqliteServerStores) PgProposal() *proposal.Store                { return nil }
+func (s *sqliteServerStores) PgLearning() *learning.Store                { return nil }
+func (s *sqliteServerStores) PgDecision() *decision.Store                { return nil }
+func (s *sqliteServerStores) PgKnowledge() *knowledge.Store              { return nil }
+func (s *sqliteServerStores) PgPlaybook() *playbook.Store                { return nil }
+func (s *sqliteServerStores) SqliteGTD() *wbtsqlite.GTDStore             { return s.gtd }
+func (s *sqliteServerStores) SqliteProposal() *wbtsqlite.ProposalStore   { return s.proposal }
+func (s *sqliteServerStores) SqliteLearning() *wbtsqlite.LearningStore   { return s.learning }
+func (s *sqliteServerStores) SqliteDecision() *wbtsqlite.DecisionStore   { return s.decision }
+func (s *sqliteServerStores) SqliteKnowledge() *wbtsqlite.KnowledgeStore { return s.knowledge }
+func (s *sqliteServerStores) SqlitePlaybook() *wbtsqlite.PlaybookStore   { return s.playbookStore }
+func (s *sqliteServerStores) SqliteDB() *wbtsqlite.DB                    { return s.db }
