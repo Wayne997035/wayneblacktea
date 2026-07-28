@@ -139,6 +139,77 @@ func TestOpen_FileURIModeMemoryDoesNotTouchDisk(t *testing.T) {
 	}
 }
 
+// TestOpen_FileURIPercentEncodedPathIsChmod0600 proves PR149 review round-3
+// Major: SQLite percent-decodes the path portion of a "file:" URI
+// ("file:a%20b.db" opens "a b.db", not the literal "a%20b.db"). A DSN
+// resolver based on string slicing chmods the literal, undecoded name — a
+// decoy that is never the file SQLite actually wrote to, leaving the real
+// file at its driver-created 0644.
+func TestOpen_FileURIPercentEncodedPathIsChmod0600(t *testing.T) {
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "a b.db")
+	dsn := "file:" + filepath.Join(dir, "a%20b.db")
+
+	d, err := sqlite.Open(context.Background(), dsn, "")
+	if err != nil {
+		t.Fatalf("sqlite.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	if _, statErr := os.Stat(realPath); statErr != nil {
+		t.Fatalf("expected SQLite to write the percent-decoded path %q, stat: %v", realPath, statErr)
+	}
+	if perm := permOf(t, realPath); perm != 0o600 {
+		t.Errorf("%s mode = %o, want 0600 (percent-encoded file: URI must resolve to the real, decoded path before chmod)", realPath, perm)
+	}
+}
+
+// TestOpen_FileURIFragmentIsStrippedBeforeChmod proves PR149 review round-3
+// Major: a "#fragment" on a "file:" URI is not part of the path SQLite opens
+// ("file:a.db#z" opens "a.db", not "a.db#z"). A string-slicing resolver
+// chmods a decoy path that includes the fragment, never the real file.
+func TestOpen_FileURIFragmentIsStrippedBeforeChmod(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "frag.db")
+	dsn := "file:" + dbPath + "#zzz"
+
+	d, err := sqlite.Open(context.Background(), dsn, "")
+	if err != nil {
+		t.Fatalf("sqlite.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	if perm := permOf(t, dbPath); perm != 0o600 {
+		t.Errorf("%s mode = %o, want 0600 (file: URI fragment must be stripped before resolving the chmod path)", dbPath, perm)
+	}
+}
+
+// TestOpen_FileURIRepeatedModeParamIsLastWins proves PR149 review round-3
+// Major: SQLite's own URI query parser resolves a repeated key last-wins.
+// "file:pre.db?mode=memory&mode=rw" is a REAL, disk-backed file ("mode=rw"
+// wins), not an in-memory DB. url.Values.Get (first-match) would wrongly
+// treat this as in-memory and skip chmod on a real file left at its
+// driver-created 0644.
+func TestOpen_FileURIRepeatedModeParamIsLastWins(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pre.db")
+	dsn := "file:" + dbPath + "?mode=memory&mode=rw"
+
+	d, err := sqlite.Open(context.Background(), dsn, "")
+	if err != nil {
+		t.Fatalf("sqlite.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		t.Fatalf("expected mode=rw (last-wins over mode=memory) to write a real file at %q, stat: %v", dbPath, statErr)
+	}
+	if perm := permOf(t, dbPath); perm != 0o600 {
+		t.Errorf("%s mode = %o, want 0600 (repeated mode= query param must resolve last-wins, "+
+			"matching SQLite's own parser, not first-match)", dbPath, perm)
+	}
+}
+
 // TestOpen_RefusesToChmodSymlinkTarget proves PR149 review Minor 3: chmod
 // must not follow a symlink. The realistic threat is `wbt mcp` running
 // godotenv.Load() (internal/cli/mcp.go) against an untrusted repo's CWD,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -34,10 +35,16 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	// open fd. This DB holds handoffs/decisions/knowledge — credential-
 	// adjacent personal data (backend-security-design.md §4.1) — so closing
 	// that window matters. A pre-existing file returns EEXIST here and is
-	// left untouched; the chmod pass below re-tightens it instead.
-	if path, ok := sqliteFilePath(dsn); ok {
-		if err := preCreateSecureFile(path); err != nil {
-			return nil, fmt.Errorf("sqlite pre-create %q: %w", path, err)
+	// left untouched; the chmod pass below re-tightens it instead. A dsn
+	// whose "file:" scheme can't be resolved the way SQLite itself would
+	// parse it is a hard error (see sqliteFilePath) — never a silent skip.
+	resolvedPath, hasBackingFile, err := sqliteFilePath(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite resolve dsn %q: %w", dsn, err)
+	}
+	if hasBackingFile {
+		if err := preCreateSecureFile(resolvedPath); err != nil {
+			return nil, fmt.Errorf("sqlite pre-create %q: %w", resolvedPath, err)
 		}
 	}
 	conn, err := sql.Open("sqlite", dsn)
@@ -106,54 +113,80 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	return &DB{conn: conn, workspaceID: workspaceID}, nil
 }
 
-// sqliteFilePath resolves dsn to the real filesystem path SQLite writes to,
-// or ("", false) when dsn has no backing file at all. Two forms report no
-// backing file: the bare ":memory:" DSN, and a "file:"-scheme DSN whose
-// "mode=memory" query parameter selects SQLite's in-memory VFS.
+// sqliteFilePath resolves dsn to the real filesystem path SQLite writes to.
+// Returns ("", false, nil) when dsn definitely has no backing file (the bare
+// ":memory:" DSN, or a "file:"-scheme DSN whose "mode" query parameter
+// resolves to "memory"). Returns a non-nil error when dsn carries the
+// "file:" scheme but can't be parsed the way SQLite's own URI parser would —
+// in that case we genuinely don't know what file (if any) SQLite would
+// touch, and guessing "safe to skip chmod" would reopen exactly the silent
+// bypass this function exists to close; the caller hard-fails instead of
+// guessing.
 //
-// modernc.org/sqlite (internal conn.go newConn, v1.50.0) opens every DSN
-// with SQLITE_OPEN_URI, so "file:" is a first-class accepted scheme — Open's
-// own doc comment lists "file:wbt.db" as an example, and
-// outcome_test.go / gtd_test.go already pass "file:"+absPath through Open.
-// Without resolving the scheme + query string first, os.Chmod("file:/x/y.db")
-// fails with ENOENT and the whole permission-tightening pass silently
-// degrades to a no-op — the exact bypass this function exists to close.
+// modernc.org/sqlite (internal conn.go newConn, v1.50.0) opens every "file:"
+// DSN with SQLITE_OPEN_URI, which hands SQLite's own C-level URI parser the
+// ENTIRE dsn (path + query, untouched). That parser does three things plain
+// string slicing cannot reproduce — verified against this exact driver
+// version across two review rounds:
+//  1. percent-decodes the path ("file:a%20b.db" opens "a b.db", not
+//     the literal "a%20b.db")
+//  2. strips a "#fragment" ("file:a.db#z" opens "a.db", not "a.db#z")
+//  3. resolves a repeated query key last-wins ("file:a.db?mode=memory&mode=rw"
+//     opens the real file "a.db" — NOT memory; "mode=rw" won)
 //
-// The "mode=memory" check is deliberately gated on the dsn actually carrying
-// the "file:" prefix: per the driver's own newConn, the query string is only
-// forwarded to SQLite's URI parser when the dsn starts with "file:" —
-// otherwise the driver strips the query entirely before opening, so
-// "somefile.db?mode=memory" (no "file:" prefix) silently opens a REAL file
-// at "somefile.db" with the query discarded. Treating that case as in-memory
-// would skip chmod on a real, disk-backed file.
-func sqliteFilePath(dsn string) (string, bool) {
+// A prior version of this function used strings.Cut/TrimPrefix/CutPrefix and
+// reproduced none of the three, silently chmod-ing a decoy path while the
+// real, disk-backed file SQLite actually wrote to stayed permissive.
+// net/url.Parse performs the same decoding SQLite does, so it replaces that
+// hand-rolled slicing here.
+//
+// A DSN with no "file:" prefix is opened by the driver completely literally
+// — no percent-decoding, no fragment handling, no query parsing at all (the
+// query, if present, is discarded before opening; see the driver's newConn).
+// dsn is used as-is in that case, so this codepath's behaviour (and its
+// existing test coverage) is unchanged.
+func sqliteFilePath(dsn string) (path string, ok bool, err error) {
 	if dsn == ":memory:" {
-		return "", false
+		return "", false, nil
+	}
+	if !strings.HasPrefix(dsn, "file:") {
+		if dsn == "" {
+			return "", false, nil
+		}
+		return dsn, true, nil
 	}
 
-	isFileURI := strings.HasPrefix(dsn, "file:")
-	path, query, hasQuery := strings.Cut(dsn, "?")
-	path = strings.TrimPrefix(path, "file:")
-	// "file:///abs/path" (empty authority) and "file://localhost/abs/path"
-	// both strip down to a plain absolute path; "file:/abs/path" (single
-	// slash — the form this codebase's Open doc comment and existing tests
-	// use) needs no further stripping.
-	if rest, ok := strings.CutPrefix(path, "//"); ok {
-		if i := strings.IndexByte(rest, '/'); i >= 0 {
-			path = rest[i:]
-		} else {
-			path = rest
+	u, parseErr := url.Parse(dsn)
+	if parseErr != nil {
+		return "", false, fmt.Errorf("parsing %q as a file: URI: %w", dsn, parseErr)
+	}
+	// The "//" authority form ("file:///abs/path", "file://localhost/abs/path")
+	// decodes straight into u.Path. The single-slash / relative form this
+	// codebase actually uses ("file:/abs/path", "file:wbt.db") has no
+	// authority, so net/url stores it in u.Opaque instead — raw, NOT
+	// percent-decoded — so PathUnescape is applied to mirror what SQLite's
+	// own parser does to it.
+	rawPath := u.Path
+	if rawPath == "" && u.Opaque != "" {
+		decoded, unescErr := url.PathUnescape(u.Opaque)
+		if unescErr != nil {
+			return "", false, fmt.Errorf("percent-decoding %q: %w", u.Opaque, unescErr)
 		}
+		rawPath = decoded
 	}
-	if path == "" || path == ":memory:" {
-		return "", false
+	if rawPath == ":memory:" {
+		return "", false, nil // e.g. "file::memory:"
 	}
-	if isFileURI && hasQuery {
-		if q, err := url.ParseQuery(query); err == nil && q.Get("mode") == "memory" {
-			return "", false
-		}
+	// Last-wins, matching SQLite's own resolution of a repeated query key —
+	// url.Values preserves source order, so the final element is the one
+	// that actually took effect.
+	if modes := u.Query()["mode"]; len(modes) > 0 && modes[len(modes)-1] == "memory" {
+		return "", false, nil
 	}
-	return path, true
+	if rawPath == "" {
+		return "", false, fmt.Errorf("%q resolved to an empty path and isn't a recognised in-memory form", dsn)
+	}
+	return rawPath, true, nil
 }
 
 // preCreateSecureFile creates path at 0600 if it doesn't already exist,
@@ -192,7 +225,10 @@ func preCreateSecureFile(path string) error {
 // silently skipped — WAL mode then creates it inheriting the main file's
 // already-tightened mode, so no separate re-check is needed for that case.
 func secureDBFile(dsn string) error {
-	path, ok := sqliteFilePath(dsn)
+	path, ok, err := sqliteFilePath(dsn)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil // in-memory DSN: nothing to chmod
 	}
@@ -231,6 +267,21 @@ func chmodOwnerOnly(path string, skipMissing bool) error {
 		return errors.New("refusing to chmod a symlink")
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
+		// Some filesystems/mounts (exFAT, certain SMB/bind mounts) or a file
+		// owned by a different uid than this process reject chmod outright
+		// (EPERM/ENOTSUP) with no attacker involved at all — a legitimate
+		// availability concern the security fix must not introduce. Only
+		// tolerate that when the file's ALREADY-OBSERVED mode (from the
+		// Lstat above, not re-derived after the failed chmod) has no
+		// group/world bits set; a file that IS actually group/world-readable
+		// and can't be chmod'd is still a hard error — this does not weaken
+		// the fail-closed decision, it only stops it from misfiring on a
+		// file that was already safe.
+		if info.Mode().Perm()&0o077 == 0 {
+			slog.Warn("sqlite: chmod not supported for this file, but it is already owner-only; continuing",
+				"path", path, "mode", fmt.Sprintf("%o", info.Mode().Perm()), "err", err)
+			return nil
+		}
 		return fmt.Errorf("chmod: %w", err)
 	}
 	return nil
