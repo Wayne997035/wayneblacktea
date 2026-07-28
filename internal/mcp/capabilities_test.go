@@ -139,6 +139,117 @@ func TestWireOptionalCapabilities_SQLiteBackendWithClaudeKey(t *testing.T) {
 	}
 }
 
+// TestWireOptionalCapabilities_SkipPaths covers the three conditional
+// skip branches TestWireOptionalCapabilities_SQLiteBackendWithClaudeKey
+// doesn't exercise (PR149 review three-army Major 1): a nil/empty Chain
+// leaving Classifier/DecisionDrafter false, and nil CandidateStore /
+// MergedPRsStore each setting their respective SkipReason field. Each case
+// builds a fresh *Server so wiring in one case can't leak into another.
+func TestWireOptionalCapabilities_SkipPaths(t *testing.T) {
+	stores := sqliteFixture(t)
+	candidateStore := mcpsrv.ResolveCandidateStore(stores)
+	mergedPRsStore := mcpsrv.ResolveMergedPRsStore(stores)
+
+	tests := []struct {
+		name  string
+		in    func(t *testing.T) mcpsrv.CapabilityInputs
+		check func(t *testing.T, report mcpsrv.CapabilityReport)
+	}{
+		{
+			name: "nil Chain leaves Classifier and DecisionDrafter false",
+			in: func(t *testing.T) mcpsrv.CapabilityInputs {
+				t.Helper()
+				return mcpsrv.CapabilityInputs{
+					Chain:          nil,
+					CandidateStore: candidateStore,
+					MergedPRsStore: mergedPRsStore,
+				}
+			},
+			check: func(t *testing.T, report mcpsrv.CapabilityReport) {
+				if report.Classifier {
+					t.Error("expected Classifier=false with a nil Chain")
+				}
+				if report.DecisionDrafter {
+					t.Error("expected DecisionDrafter=false with a nil Chain")
+				}
+			},
+		},
+		{
+			name: "empty Chain (Len()==0) leaves Classifier and DecisionDrafter false",
+			in: func(t *testing.T) mcpsrv.CapabilityInputs {
+				t.Helper()
+				for _, k := range allLLMEnvKeys {
+					t.Setenv(k, "")
+				}
+				chain := llm.BuildChainFromEnv()
+				if chain.Len() != 0 {
+					t.Fatalf("test setup: expected an empty chain with no provider env set, got Len()=%d", chain.Len())
+				}
+				return mcpsrv.CapabilityInputs{
+					Chain:          chain,
+					CandidateStore: candidateStore,
+					MergedPRsStore: mergedPRsStore,
+				}
+			},
+			check: func(t *testing.T, report mcpsrv.CapabilityReport) {
+				if report.Classifier {
+					t.Error("expected Classifier=false with an empty Chain")
+				}
+				if report.DecisionDrafter {
+					t.Error("expected DecisionDrafter=false with an empty Chain")
+				}
+			},
+		},
+		{
+			name: "nil CandidateStore sets CandidatesSkipReason",
+			in: func(t *testing.T) mcpsrv.CapabilityInputs {
+				t.Helper()
+				return mcpsrv.CapabilityInputs{
+					CandidateStore: nil,
+					MergedPRsStore: mergedPRsStore,
+				}
+			},
+			check: func(t *testing.T, report mcpsrv.CapabilityReport) {
+				if report.CompletionCandidates {
+					t.Error("expected CompletionCandidates=false with a nil CandidateStore")
+				}
+				if report.CandidatesSkipReason == "" {
+					t.Error("expected a non-empty CandidatesSkipReason with a nil CandidateStore")
+				}
+			},
+		},
+		{
+			name: "nil MergedPRsStore sets MergedPRsSkipReason",
+			in: func(t *testing.T) mcpsrv.CapabilityInputs {
+				t.Helper()
+				return mcpsrv.CapabilityInputs{
+					CandidateStore: candidateStore,
+					MergedPRsStore: nil,
+				}
+			},
+			check: func(t *testing.T, report mcpsrv.CapabilityReport) {
+				if report.MergedPRsStore {
+					t.Error("expected MergedPRsStore=false with a nil MergedPRsStore")
+				}
+				if report.MergedPRsSkipReason == "" {
+					t.Error("expected a non-empty MergedPRsSkipReason with a nil MergedPRsStore")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := mcpsrv.New(stores)
+			if err != nil {
+				t.Fatalf("mcpsrv.New: %v", err)
+			}
+			report := s.WireOptionalCapabilities(tt.in(t))
+			tt.check(t, report)
+		})
+	}
+}
+
 // TestResolveCandidateAndMergedPRsStore_SQLiteBackend locks the specific
 // acceptance criterion from the A3/G2 dispatch: stdio's own dedicated SQLite
 // connection (internal/mcprunner.buildStores) must be able to resolve both

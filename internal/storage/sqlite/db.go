@@ -3,9 +3,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"log/slog"
+	"io/fs"
+	"net/url"
 	"os"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers "sqlite"
 )
@@ -24,6 +27,19 @@ type DB struct {
 // logic. workspaceID may be empty. schema.sql is no longer the runtime
 // authority — see its header comment.
 func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
+	// Pre-create the file at 0600 *before* the driver ever touches it. The
+	// SQLite driver's own file creation is 0666&~umask (commonly 0644); doing
+	// that first and chmod-ing afterward (the previous implementation) leaves
+	// a real window in which the file exists, group/world-readable, with an
+	// open fd. This DB holds handoffs/decisions/knowledge — credential-
+	// adjacent personal data (backend-security-design.md §4.1) — so closing
+	// that window matters. A pre-existing file returns EEXIST here and is
+	// left untouched; the chmod pass below re-tightens it instead.
+	if path, ok := sqliteFilePath(dsn); ok {
+		if err := preCreateSecureFile(path); err != nil {
+			return nil, fmt.Errorf("sqlite pre-create %q: %w", path, err)
+		}
+	}
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open %q: %w", dsn, err)
@@ -36,19 +52,26 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite ping %q: %w", dsn, err)
 	}
-	// The SQLite driver creates the file at 0666 & ~umask (commonly 0644),
-	// but this DB holds handoffs/decisions/knowledge — credential-adjacent
-	// personal data (backend-security-design.md §4.1). Restrict to owner-only
-	// on every Open (idempotent no-op once already 0600) rather than only
-	// warning, since Open is the single choke point shared by every caller
-	// (the hook, cmd/server, `wbt mcp`, and any future one) — no call site
-	// can forget it. Also re-tightens pre-existing permissive files (e.g. the
-	// three stray 0644 DBs already on disk) on every re-open.
-	// ":memory:" has no backing file to chmod.
-	if dsn != ":memory:" {
-		if err := os.Chmod(dsn, 0o600); err != nil {
-			slog.Warn("sqlite: failed to restrict DB file permissions to 0600", "path", dsn, "err", err)
-		}
+	// Restrict the main DB file, plus its "-wal"/"-shm" WAL-mode siblings, to
+	// 0600 on every Open (idempotent no-op once already 0600) rather than
+	// only warning, since Open is the single choke point shared by every
+	// caller (the hook, cmd/server, `wbt mcp`, and any future one) — no call
+	// site can forget it. Also re-tightens pre-existing permissive files
+	// (e.g. the three stray 0644 DBs already on disk, and — critically — the
+	// -wal/-shm siblings alongside them, which do NOT get fixed retroactively
+	// just because the main file does; a re-opened pre-fix DB's leftover
+	// -wal/-shm keep whatever permissive mode they were created with). A
+	// resolved file-backed DSN that still fails to chmod (or resolves through
+	// a symlink — see chmodOwnerOnly) is now a hard error rather than a warn:
+	// this process is the file's own creator, so a failure here means
+	// something is already wrong (wrong uid, read-only fs, symlink
+	// tampering) worth refusing to start over rather than silently serving a
+	// DB confirmed group/world-readable.
+	// ":memory:" (and a "file:"-scheme DSN with a "mode=memory" query param)
+	// has no backing file to chmod — sqliteFilePath reports that via ok=false.
+	if err := secureDBFile(dsn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sqlite restrict file permissions %q: %w", dsn, err)
 	}
 	// Foreign keys are off by default in SQLite. We keep this PRAGMA ON as
 	// defence-in-depth in case migration 000026.down.sql is rolled back at
@@ -81,6 +104,136 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 		return nil, fmt.Errorf("sqlite fts5 rebuild: %w", err)
 	}
 	return &DB{conn: conn, workspaceID: workspaceID}, nil
+}
+
+// sqliteFilePath resolves dsn to the real filesystem path SQLite writes to,
+// or ("", false) when dsn has no backing file at all. Two forms report no
+// backing file: the bare ":memory:" DSN, and a "file:"-scheme DSN whose
+// "mode=memory" query parameter selects SQLite's in-memory VFS.
+//
+// modernc.org/sqlite (internal conn.go newConn, v1.50.0) opens every DSN
+// with SQLITE_OPEN_URI, so "file:" is a first-class accepted scheme — Open's
+// own doc comment lists "file:wbt.db" as an example, and
+// outcome_test.go / gtd_test.go already pass "file:"+absPath through Open.
+// Without resolving the scheme + query string first, os.Chmod("file:/x/y.db")
+// fails with ENOENT and the whole permission-tightening pass silently
+// degrades to a no-op — the exact bypass this function exists to close.
+//
+// The "mode=memory" check is deliberately gated on the dsn actually carrying
+// the "file:" prefix: per the driver's own newConn, the query string is only
+// forwarded to SQLite's URI parser when the dsn starts with "file:" —
+// otherwise the driver strips the query entirely before opening, so
+// "somefile.db?mode=memory" (no "file:" prefix) silently opens a REAL file
+// at "somefile.db" with the query discarded. Treating that case as in-memory
+// would skip chmod on a real, disk-backed file.
+func sqliteFilePath(dsn string) (string, bool) {
+	if dsn == ":memory:" {
+		return "", false
+	}
+
+	isFileURI := strings.HasPrefix(dsn, "file:")
+	path, query, hasQuery := strings.Cut(dsn, "?")
+	path = strings.TrimPrefix(path, "file:")
+	// "file:///abs/path" (empty authority) and "file://localhost/abs/path"
+	// both strip down to a plain absolute path; "file:/abs/path" (single
+	// slash — the form this codebase's Open doc comment and existing tests
+	// use) needs no further stripping.
+	if rest, ok := strings.CutPrefix(path, "//"); ok {
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			path = rest[i:]
+		} else {
+			path = rest
+		}
+	}
+	if path == "" || path == ":memory:" {
+		return "", false
+	}
+	if isFileURI && hasQuery {
+		if q, err := url.ParseQuery(query); err == nil && q.Get("mode") == "memory" {
+			return "", false
+		}
+	}
+	return path, true
+}
+
+// preCreateSecureFile creates path at 0600 if it doesn't already exist,
+// closing the TOCTOU window between file creation and the chmod pass in
+// secureDBFile — the mode is applied atomically by the OS inside the
+// open(2)/CreateFile syscall itself, so there is no window in which the file
+// exists at a more permissive mode. A pre-existing file (EEXIST) is left
+// untouched; secureDBFile re-tightens it further down in Open.
+//
+// O_EXCL also means a symlinked path fails here with EEXIST rather than
+// silently creating a file at the symlink's target: POSIX guarantees
+// O_CREAT|O_EXCL on a path whose last component is a symlink always reports
+// EEXIST without following it. secureDBFile's symlink guard (chmodOwnerOnly)
+// is what actually refuses to operate on a symlinked dsn.
+func preCreateSecureFile(path string) error {
+	//nolint:gosec // G304: path comes from sqliteFilePath(dsn), i.e. SQLITE_PATH env / caller-supplied
+	// DSN (config, not an HTTP request field), matching the same class of path already accepted
+	// elsewhere in this codebase (e.g. internal/cli/config.go, internal/lifecycle/lock.go).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil // pre-existing file: secureDBFile re-tightens it below
+		}
+		return fmt.Errorf("open %q: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %q: %w", path, err)
+	}
+	return nil
+}
+
+// secureDBFile restricts dsn's backing file, plus its "-wal"/"-shm"
+// WAL-mode siblings, to 0600. Every existing path among the three is
+// chmod'd; a sibling that doesn't exist yet (a brand-new DB hasn't gone
+// through PRAGMA journal_mode=WAL yet at the point Open calls this) is
+// silently skipped — WAL mode then creates it inheriting the main file's
+// already-tightened mode, so no separate re-check is needed for that case.
+func secureDBFile(dsn string) error {
+	path, ok := sqliteFilePath(dsn)
+	if !ok {
+		return nil // in-memory DSN: nothing to chmod
+	}
+	if err := chmodOwnerOnly(path, false); err != nil {
+		return fmt.Errorf("%q: %w", path, err)
+	}
+	for _, sibling := range []string{path + "-wal", path + "-shm"} {
+		if err := chmodOwnerOnly(sibling, true); err != nil {
+			return fmt.Errorf("%q: %w", sibling, err)
+		}
+	}
+	return nil
+}
+
+// chmodOwnerOnly restricts path to 0600 after an os.Lstat symlink check.
+// This deliberately does NOT follow symlinks: an untrusted repo's .env
+// consumed by `wbt mcp`'s godotenv.Load (internal/cli/mcp.go) can steer
+// SQLITE_PATH at a symlink, and this function must not let that redirect a
+// chmod onto an arbitrary file outside this DB's own lifecycle (a confused-
+// deputy primitive to silently narrow permissions on a file wbt neither
+// created nor owns the lifecycle of).
+//
+// skipMissing tolerates a not-exists stat error — used for the -wal/-shm
+// siblings, which legitimately don't exist yet on a brand-new DB. The main
+// file always passes skipMissing=false: Open only reaches this call after a
+// successful PingContext, so the main file existing is not optional.
+func chmodOwnerOnly(path string, skipMissing bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if skipMissing && errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("refusing to chmod a symlink")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+	return nil
 }
 
 // Close releases the underlying connection.
