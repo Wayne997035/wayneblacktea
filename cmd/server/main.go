@@ -125,8 +125,10 @@ func run() error {
 	}()
 
 	// Build snapshot deps early so both the context handler and scheduler
-	// can share the same store.
-	snapStore, snapGen := buildSnapshotDeps(stores)
+	// can share the same store. mcpsrv.Resolve* is the single source of
+	// truth for backend-selection logic — also used by run() below to wire
+	// the same instances into the MCP server via WireOptionalCapabilities.
+	snapStore, snapGen := mcpsrv.ResolveSnapshotStore(stores)
 
 	// Derived stores (completion candidates / merged PRs / activity) are
 	// cheap to construct — each call returns an independent value backed by
@@ -134,8 +136,8 @@ func run() error {
 	// the value into every wiring function that needs it keeps that
 	// convention visible at a single call site instead of re-derived at each
 	// use.
-	candidateStore := buildCandidateStore(stores)
-	mergedPRsStore := buildMergedPRsStore(stores)
+	candidateStore := mcpsrv.ResolveCandidateStore(stores)
+	mergedPRsStore := mcpsrv.ResolveMergedPRsStore(stores)
 	activityStore := buildActivityStore(stores)
 
 	// --- AI collaborators -------------------------------------------------
@@ -311,20 +313,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initializing MCP server: %w", err)
 	}
-	if aiw.chain.Len() > 0 {
-		mcpServer.WithClassifier(ai.NewActivityClassifierFromLLM(aiw.chain))
-		// Auto-decision proposer drafter shares the same chain — Haiku
-		// picks up first via the env-driven priority ordering. nil chain
-		// → drafter is inert and middleware short-circuits.
-		mcpServer.WithDecisionDrafter(ai.NewDecisionDrafter(aiw.chain))
-	}
-	mcpServer.WithSnapshot(snapStore, snapGen)
-	if candidateStore != nil {
-		mcpServer.WithCompletionCandidates(candidateStore)
-	}
-	if mergedPRsStore != nil {
-		mcpServer.WithMergedPRsStore(mergedPRsStore)
-	}
+	// Single shared assembly function for both MCP transports — see
+	// internal/mcp/capabilities.go. stdio (internal/mcprunner.Run) calls the
+	// same function so the two transports cannot silently drift apart again.
+	capReport := mcpServer.WireOptionalCapabilities(mcpsrv.CapabilityInputs{
+		Chain:          aiw.chain,
+		SnapshotStore:  snapStore,
+		SnapshotGen:    snapGen,
+		CandidateStore: candidateStore,
+		MergedPRsStore: mergedPRsStore,
+	})
+	log.Printf("mcp: http transport capabilities = %+v", capReport)
 	handlers.knowledge.WithAtomizer(mcpServer.LaunchAtomize)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
 	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
@@ -474,21 +473,6 @@ func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) 
 	}
 	log.Println("discord bot started")
 	return bot.Stop, nil
-}
-
-// buildSnapshotDeps returns a snapshot store and generator when the Postgres
-// backend is active and CLAUDE_API_KEY is set; otherwise both are nil (feature
-// gracefully disabled).
-func buildSnapshotDeps(stores storage.ServerStores) (snapshot.StoreIface, snapshot.GeneratorIface) {
-	pool := stores.PgxPool()
-	if pool == nil {
-		return nil, nil
-	}
-	claudeKey := os.Getenv("CLAUDE_API_KEY")
-	if claudeKey == "" {
-		return nil, nil
-	}
-	return snapshot.NewStore(pool, stores.WorkspaceID()), snapshot.NewGenerator(claudeKey)
 }
 
 func buildStores(backend storage.Backend) (storage.ServerStores, error) {
@@ -930,37 +914,6 @@ func wireScheduler(
 		}
 	}
 	return sched, nil
-}
-
-// buildCandidateStore returns a completion candidate store for the active backend,
-// or nil when the bundle exposes neither a SQLite DB nor a Postgres pool.
-// The store is cheap to construct (no extra connections opened) and is safe to
-// call multiple times — each call returns an independent value backed by the
-// same shared connection pool. run() calls this once and passes the value to
-// every wiring function that needs it.
-func buildCandidateStore(stores storage.ServerStores) completioncandidate.Store {
-	if sqliteDB := stores.SqliteDB(); sqliteDB != nil {
-		return completioncandidate.NewSQLiteStore(sqliteDB.SqlConn(), sqliteDB.WorkspaceID())
-	}
-	if pool := stores.PgxPool(); pool != nil {
-		return completioncandidate.NewPgStore(pool, stores.WorkspaceID())
-	}
-	return nil
-}
-
-// buildMergedPRsStore returns a merged_prs_observed store for the active
-// backend. Used by the reconcile handler + MCP tool to persist every PR
-// (audit trail) and to power the Phase 2 fuzzy matcher
-// (sprint feature/0519-gtd-reconcile-phase2, GTD-fix 10/12). run() calls this
-// once and passes the value to every wiring function that needs it.
-func buildMergedPRsStore(stores storage.ServerStores) mergedprs.Store {
-	if sqliteDB := stores.SqliteDB(); sqliteDB != nil {
-		return mergedprs.NewSQLiteStore(sqliteDB.SqlConn(), sqliteDB.WorkspaceID())
-	}
-	if pool := stores.PgxPool(); pool != nil {
-		return mergedprs.NewPgStore(pool, stores.WorkspaceID())
-	}
-	return nil
 }
 
 // buildActivityStore returns a handler.dashboardActivityStore for the active
