@@ -119,7 +119,7 @@ Both layers are non-blocking: the HTTP response is not held while classification
 | Backend | When to use | Notes |
 |---------|-------------|-------|
 | PostgreSQL + pgvector | Production, full feature set | ivfflat ANN index backs semantic search and vector dedup |
-| SQLite | Local development, zero infra | No ANN index — `SearchByCosine` brute-force-scans the most recent 200 rows and scores them Go-side with `localai.CosineSimilarity` (`internal/storage/sqlite/knowledge.go:544`) |
+| SQLite | Local development, zero infra | No ANN index — `SearchByCosine` brute-force-scans the most recent 200 rows and scores them Go-side with `localai.CosineSimilarity` (`internal/storage/sqlite/knowledge.go:544`). **Exception: decision semantic search is unsupported on SQLite** — the `decisions` table has no `embedding` column on this backend (migration 000020 added it, 000026's FK-drop table rebuild never carried it into the rebuilt table, and no SQLite writer for it exists — see `migrations/HISTORICAL_EXCEPTIONS.md`). `internal/storage/sqlite.DecisionStore.SearchByCosine` reports this by returning `decision.ErrCosineUnsupported` (`errors.Is`-checkable) instead of issuing SQL against a nonexistent column. |
 
 The backend is selected at startup via `STORAGE_BACKEND`. All domain stores implement the same interface, so the rest of the codebase is backend-agnostic.
 
