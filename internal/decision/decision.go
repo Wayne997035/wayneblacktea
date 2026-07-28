@@ -24,6 +24,21 @@ var ErrConflictingListFilter = errors.New("decision: project_id and repo_name ar
 // before calling List; this is defence-in-depth for direct callers.
 var ErrInvalidListLimit = errors.New("decision: limit must be between 1 and 100")
 
+// ErrCosineUnsupported is returned by SearchByCosine on backends that have
+// no embedding storage for decisions. The SQLite decisions table lost its
+// embedding column in migration 000026's FK-drop table rebuild and never
+// got it back (see migrations/HISTORICAL_EXCEPTIONS.md); rather than issue a
+// SELECT that is guaranteed to fail with "no such column: embedding" (or
+// silently return zero rows forever, which reads as "searched, found
+// nothing" instead of "cannot search"), the SQLite store reports this
+// sentinel so callers can distinguish "capability not supported here" from
+// "no data matched" and degrade deliberately (e.g. skip semantic recall for
+// this source) instead of surfacing a raw SQL error or silently under
+// serving. errors.Is is the intended check — the message intentionally
+// carries no DSN, file path, or schema detail (backend-security-design.md
+// §2 threat surface: capability errors must not leak storage internals).
+var ErrCosineUnsupported = errors.New("decision: cosine search not supported by this backend")
+
 // Source identifies which code path originated a decision: a human-intent
 // path ("manual" — an operator-triggered tool call or HTTP request) or a
 // system-inferred path ("auto" — MCP tool-call classifier, transcript

@@ -291,7 +291,8 @@ func TestDecisionStore_LegacyReaders_UnfilteredBySource(t *testing.T) {
 // the PG twin in internal/decision/list_test.go). SQLite's decisions table
 // lost its `embedding` column in migration 000026's FK-drop table rebuild
 // and never got it back (documented in migrations/HISTORICAL_EXCEPTIONS.md
-// and migrations/sqlite/000064_embedding_provider_marker.up.sql's comment)
-// — DecisionStore.SearchByCosine on SQLite is pre-existing dead code that
-// errors "no such column: embedding" on any invocation. This predates P3.0a
-// Stage B and migrations/** is out of this dispatch's boundary to fix.
+// and migrations/sqlite/000064_embedding_provider_marker.up.sql's comment).
+// DecisionStore.SearchByCosine on SQLite now reports this deliberately via
+// decision.ErrCosineUnsupported instead of erroring "no such column:
+// embedding" on invocation — see decision_cosine_test.go for the capability
+// error's coverage (errors.Is, no-SQL-issued, and no-internal-leak cases).

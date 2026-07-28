@@ -3,10 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"sort"
+	"fmt"
 	"time"
 
-	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/google/uuid"
@@ -200,73 +199,23 @@ func (s *DecisionStore) ByTask(ctx context.Context, taskID uuid.UUID, limit int3
 	return s.list(ctx, "ByTask", q, taskID.String(), s.db.workspaceArg(), limit)
 }
 
-// SearchByCosine returns the top-limit decisions most similar to queryEmbedding.
-// SQLite has no pgvector — brute-force Go-side cosine scan.
+// SearchByCosine always returns decision.ErrCosineUnsupported: the SQLite
+// decisions table has no embedding column (migration 000020 added it,
+// 000026's FK-drop table rebuild never carried it into decisions_new, and it
+// has never been restored — see migrations/HISTORICAL_EXCEPTIONS.md and
+// migrations/sqlite/000064_embedding_provider_marker.up.sql's comment). This
+// method issues no SQL — querying a column that structurally doesn't exist
+// would only ever fail with "no such column: embedding", so the failure is
+// reported directly as a capability error instead of via a doomed round
+// trip to the database. Kept on DecisionStore (rather than removed) because
+// decision.StoreIface requires it — callers use errors.Is to detect the
+// capability gap and degrade deliberately (e.g. skip semantic recall for
+// decisions) rather than treating a nil/empty result as "no data matched".
 //
-// SECURITY: filtered by workspace_id — no cross-workspace data returned.
-func (s *DecisionStore) SearchByCosine(ctx context.Context, queryEmbedding []float32, limit int) ([]db.Decision, error) {
-	if len(queryEmbedding) == 0 || limit <= 0 {
-		return nil, nil
-	}
-	const q = `SELECT ` + decisionsSelectCols + `, embedding FROM decisions
-		WHERE embedding IS NOT NULL
-		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY created_at DESC
-		LIMIT 200`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
-	if err != nil {
-		return nil, errWrap("SearchByCosine", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	type scored struct {
-		d   db.Decision
-		sim float64
-	}
-	var candidates []scored
-	for rows.Next() {
-		var d db.Decision
-		var idStr string
-		var projectIDNS, repoNS, wsNS sql.NullString
-		var alternativesNS, createdNS sql.NullString
-		var taskIDNS sql.NullString
-		var source string
-		var rawEmbed []byte
-		if err := rows.Scan(&idStr, &projectIDNS, &repoNS, &d.Title, &d.Context,
-			&d.Decision, &d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &source, &rawEmbed); err != nil {
-			continue
-		}
-		if id, parseErr := uuid.Parse(idStr); parseErr == nil {
-			d.ID = id
-		}
-		d.ProjectID = pgtypeUUID(nsString(projectIDNS))
-		d.RepoName = pgtypeText(repoNS.String, repoNS.Valid)
-		d.Alternatives = pgtypeText(alternativesNS.String, alternativesNS.Valid)
-		d.CreatedAt = parseTimestamptz(createdNS)
-		d.WorkspaceID = pgtypeUUID(nsString(wsNS))
-		d.TaskID = pgtypeUUID(nsString(taskIDNS))
-		d.Source = source
-
-		vec := localai.DeserializeEmbedding(rawEmbed)
-		if vec == nil {
-			continue
-		}
-		candidates = append(candidates, scored{d: d, sim: localai.CosineSimilarity(queryEmbedding, vec)})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, errWrap("SearchByCosine iter", err)
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].sim > candidates[j].sim
-	})
-	if limit < len(candidates) {
-		candidates = candidates[:limit]
-	}
-	result := make([]db.Decision, 0, len(candidates))
-	for _, c := range candidates {
-		result = append(result, c.d)
-	}
-	return result, nil
+// SECURITY: no query is issued, so there is nothing to scope by
+// workspace_id here — this is intentionally a no-op, not a search.
+func (s *DecisionStore) SearchByCosine(_ context.Context, _ []float32, _ int) ([]db.Decision, error) {
+	return nil, fmt.Errorf("sqlite decision store: %w", decision.ErrCosineUnsupported)
 }
 
 func (s *DecisionStore) list(ctx context.Context, op, q string, args ...any) ([]db.Decision, error) {
