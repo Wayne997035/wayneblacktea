@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"os"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers "sqlite"
 )
@@ -33,6 +35,20 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	if err := conn.PingContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("sqlite ping %q: %w", dsn, err)
+	}
+	// The SQLite driver creates the file at 0666 & ~umask (commonly 0644),
+	// but this DB holds handoffs/decisions/knowledge — credential-adjacent
+	// personal data (backend-security-design.md §4.1). Restrict to owner-only
+	// on every Open (idempotent no-op once already 0600) rather than only
+	// warning, since Open is the single choke point shared by every caller
+	// (the hook, cmd/server, `wbt mcp`, and any future one) — no call site
+	// can forget it. Also re-tightens pre-existing permissive files (e.g. the
+	// three stray 0644 DBs already on disk) on every re-open.
+	// ":memory:" has no backing file to chmod.
+	if dsn != ":memory:" {
+		if err := os.Chmod(dsn, 0o600); err != nil {
+			slog.Warn("sqlite: failed to restrict DB file permissions to 0600", "path", dsn, "err", err)
+		}
 	}
 	// Foreign keys are off by default in SQLite. We keep this PRAGMA ON as
 	// defence-in-depth in case migration 000026.down.sql is rolled back at
