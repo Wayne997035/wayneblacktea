@@ -223,7 +223,8 @@ func (s *Store) writeItemRow(ctx context.Context, dbtx db.DBTX, prep PreparedIte
 		RETURNING ` + selectCols
 
 	item, err := scanKnowledgeItem(func(args ...any) error {
-		return dbtx.QueryRow(ctx, q,
+		return dbtx.QueryRow(
+			ctx, q,
 			p.Type, p.Title, p.Content, itemURL, tags, source, lv, s.workspaceID,
 			parentID, headingPath, headingLevel,
 			projectID, taskID, decisionID,
@@ -234,15 +235,38 @@ func (s *Store) writeItemRow(ctx context.Context, dbtx db.DBTX, prep PreparedIte
 	}
 
 	if prep.Vec != nil {
-		if err := db.New(dbtx).UpdateKnowledgeEmbedding(ctx, db.UpdateKnowledgeEmbeddingParams{
-			ID:        item.ID,
-			Embedding: pgvector.NewVector(prep.Vec),
-		}); err != nil {
-			slog.Warn("storing embedding failed", "id", item.ID, "err", err)
+		if err := s.writeEmbedding(ctx, dbtx, item.ID, prep.Vec); err != nil {
+			return nil, err
 		}
 	}
 
 	return &item, nil
+}
+
+// writeEmbedding stores vec against itemID via dbtx. Extracted out of
+// writeItemRow so the tx-vs-pool error-handling branch below (added to fix
+// the tx path silently swallowing embedding failures) doesn't push
+// writeItemRow's cyclomatic complexity over the gocyclo threshold.
+//
+// Inside an open tx (WriteItemTx's path), a failed statement leaves Postgres
+// in the aborted-transaction state (25P02): every subsequent statement in the
+// same tx fails with the generic "current transaction is aborted" error, and
+// the real cause (this embedding write failure) would otherwise only survive
+// in the log. Propagate it so the caller can roll back with a diagnosable
+// error instead of a dead end. AddItem's non-tx path (dbtx = s.pool) has no
+// such blast radius — the row is already committed standalone — so it keeps
+// the original warn-and-continue behavior.
+func (s *Store) writeEmbedding(ctx context.Context, dbtx db.DBTX, itemID uuid.UUID, vec []float32) error {
+	if err := db.New(dbtx).UpdateKnowledgeEmbedding(ctx, db.UpdateKnowledgeEmbeddingParams{
+		ID:        itemID,
+		Embedding: pgvector.NewVector(vec),
+	}); err != nil {
+		if _, isTx := dbtx.(pgx.Tx); isTx {
+			return fmt.Errorf("storing embedding in tx: %w", err)
+		}
+		slog.Warn("storing embedding failed", "id", itemID, "err", err)
+	}
+	return nil
 }
 
 // fanOutSections parses Markdown headings from p.Content and inserts a child
