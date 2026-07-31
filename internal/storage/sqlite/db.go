@@ -20,8 +20,20 @@ const memoryDSN = ":memory:"
 // the optional workspace UUID (echoing the Postgres stores' Init-time
 // scoping). Stores share this and add their own typed methods on top.
 type DB struct {
-	conn        *sql.DB
-	workspaceID string // empty = legacy unscoped mode
+	conn *sql.DB
+	// modeReference is the owner-only 0600 descriptor prependModeOf pointed
+	// SQLite's modeof URI option at (see secureCreationDSN / openSQLiteConnection).
+	// database/sql keeps the DSN string for the *sql.DB's entire life and
+	// silently re-dials it on every pool reconnect (idle eviction,
+	// SetConnMaxLifetime, a cancelled in-flight query, ...), and SQLite
+	// resolves modeof on EVERY main-db open, not just first creation. So this
+	// descriptor must stay open for as long as conn can still reconnect —
+	// closing it right after the first Ping (the pre-fix behaviour) left
+	// later reconnects stat()ing a dead, possibly fd-recycled, target and
+	// failing with SQLITE_IOERR_FSTAT ("disk I/O error (10)"). Closed only in
+	// Close(). nil for :memory: / non-file DSNs (see secureCreationDSNWith).
+	modeReference *os.File
+	workspaceID   string // empty = legacy unscoped mode
 }
 
 // Open creates a new DB by opening dsn (e.g. "file:wbt.db" or ":memory:") and
@@ -30,7 +42,7 @@ type DB struct {
 // logic. workspaceID may be empty. schema.sql is no longer the runtime
 // authority — see its header comment.
 func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
-	conn, mainPath, err := openSQLiteConnection(ctx, dsn)
+	conn, mainPath, modeReference, err := openSQLiteConnection(ctx, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +66,7 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	// security boundary: no Go-side URI parser gets to guess which path
 	// SQLite opened. In-memory databases report an empty path.
 	if err := secureDBFile(mainPath); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite restrict file permissions %q: %w", mainPath, err)
 	}
 	// Foreign keys are off by default in SQLite. We keep this PRAGMA ON as
@@ -64,27 +76,27 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	// code, not in the DB; see sql/queries/gtd.sql DeleteTask comment and
 	// internal/gtd/store.go DeleteTask).
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite enable FK: %w", err)
 	}
 	// WAL mode lets readers run concurrently with the single writer.
 	// In-memory databases silently stay in "memory" mode (no-op, no error).
 	if _, err := conn.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite WAL mode: %w", err)
 	}
 	// busy_timeout: wait up to 5 s when another OS-level writer holds the lock.
 	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite busy timeout: %w", err)
 	}
 	if err := runMigrations(ctx, conn); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite run migrations: %w", err)
 	}
 	// Rebuilds the FTS5 inverted index unconditionally from knowledge_items; at personal scale completes in <1 ms.
 	if _, err := conn.ExecContext(ctx, `INSERT INTO knowledge_items_fts(knowledge_items_fts) VALUES('rebuild')`); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite fts5 rebuild: %w", err)
 	}
 	// WAL and migrations can create or replace sidecars after the first pass.
@@ -92,60 +104,77 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 	// reporting success.
 	finalMainPath, err := mainDatabasePath(ctx, conn)
 	if err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite resolve final main database: %w", err)
 	}
 	if finalMainPath != mainPath {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite main database path changed during Open from %q to %q", mainPath, finalMainPath)
 	}
 	if err := secureDBFile(finalMainPath); err != nil {
-		_ = conn.Close()
+		closeAbandonedOpen(conn, modeReference)
 		return nil, fmt.Errorf("sqlite re-restrict file permissions %q: %w", finalMainPath, err)
 	}
-	return &DB{conn: conn, workspaceID: workspaceID}, nil
+	return &DB{conn: conn, modeReference: modeReference, workspaceID: workspaceID}, nil
+}
+
+// closeAbandonedOpen releases conn and modeReference together on any Open
+// error path that runs after openSQLiteConnection has already handed
+// ownership of both to Open, but before Open constructs the *DB that would
+// otherwise own them. Close errors are deliberately discarded here — Open is
+// already returning the actionable error from the failed step, matching the
+// pre-existing best-effort discard convention used throughout this function.
+func closeAbandonedOpen(conn *sql.DB, modeReference *os.File) {
+	_ = conn.Close()
+	_ = closeModeReference(modeReference)
 }
 
 // openSQLiteConnection opens dsn, establishes the first physical connection,
 // and asks SQLite which path its main database actually uses. No caller may
 // derive a chmod target from dsn: SQLite's PRAGMA database_list is the sole
 // authority, and reports an empty path for in-memory databases.
-func openSQLiteConnection(ctx context.Context, dsn string) (*sql.DB, string, error) {
+//
+// The returned *os.File (nil for :memory: / non-file DSNs) is the modeof mode
+// reference described on DB.modeReference: on success it is handed to the
+// caller, NOT closed here, because database/sql retains openDSN for the
+// entire life of the resulting *sql.DB and silently re-dials it — modeof and
+// all — on every future reconnect. It is closed on every error path below
+// since no *DB survives to take ownership of it.
+func openSQLiteConnection(ctx context.Context, dsn string) (*sql.DB, string, *os.File, error) {
 	openDSN, modeReference, err := secureCreationDSN(dsn)
 	if err != nil {
-		return nil, "", fmt.Errorf("sqlite secure creation for %q: %w", dsn, err)
+		return nil, "", nil, fmt.Errorf("sqlite secure creation for %q: %w", dsn, err)
 	}
 	conn, err := sql.Open("sqlite", openDSN)
 	if err != nil {
-		return nil, "", errors.Join(fmt.Errorf("sqlite open %q: %w", dsn, err), closeModeReference(modeReference))
+		return nil, "", nil, errors.Join(fmt.Errorf("sqlite open %q: %w", dsn, err), closeModeReference(modeReference))
 	}
 	// Serialise all writes through a single connection. SQLite has no
 	// multi-writer concurrency; a pool > 1 triggers SQLITE_BUSY under concurrent
 	// goroutines. Readers coexist via WAL mode set in Open.
 	conn.SetMaxOpenConns(1)
 	if err := conn.PingContext(ctx); err != nil {
-		return nil, "", errors.Join(
+		return nil, "", nil, errors.Join(
 			fmt.Errorf("sqlite ping %q: %w", dsn, err),
 			closeModeReference(modeReference),
 			conn.Close(),
 		)
 	}
 	mainPath, pathErr := mainDatabasePath(ctx, conn)
-	referenceErr := closeModeReference(modeReference)
 	symlinkErr := refuseSymlinkDSN(dsn)
-	if pathErr != nil || referenceErr != nil || symlinkErr != nil {
+	if pathErr != nil || symlinkErr != nil {
 		var wrappedPathErr error
 		if pathErr != nil {
 			wrappedPathErr = fmt.Errorf("sqlite resolve main database %q: %w", dsn, pathErr)
 		}
-		return nil, "", errors.Join(
+		return nil, "", nil, errors.Join(
 			wrappedPathErr,
-			referenceErr,
 			symlinkErr,
+			closeModeReference(modeReference),
 			conn.Close(),
 		)
 	}
-	return conn, mainPath, nil
+	return conn, mainPath, modeReference, nil
 }
 
 // secureCreationDSN ensures a newly created database is owner-only from its
@@ -473,12 +502,15 @@ func chmodOwnerOnlyWith(path string, skipMissing bool, chmod func(string, os.Fil
 	return nil
 }
 
-// Close releases the underlying connection.
+// Close releases the underlying connection and the modeof mode-reference
+// descriptor (see DB.modeReference) kept open for the DSN's entire life.
+// Safe on a nil *DB or nil modeReference (closeModeReference is a no-op for
+// nil, matching the :memory: / non-file DSN case).
 func (d *DB) Close() error {
 	if d == nil || d.conn == nil {
 		return nil
 	}
-	return d.conn.Close() //nolint:wrapcheck // pass-through
+	return errors.Join(d.conn.Close(), closeModeReference(d.modeReference))
 }
 
 // workspaceArg returns either the configured workspace UUID string or an
