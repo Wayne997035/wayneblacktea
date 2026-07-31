@@ -124,6 +124,9 @@ func (a *pgAcceptAdapter) materializeGoal(ctx context.Context, prop *db.PendingP
 	if err != nil {
 		return nil, err
 	}
+	if a.deps.GTD == nil {
+		return nil, fmt.Errorf("goal proposal materialisation requires PG gtd store")
+	}
 	goal, err := a.deps.GTD.WithTx(a.tx).CreateGoal(ctx, gp)
 	if err != nil {
 		return nil, fmt.Errorf("creating goal: %w", err)
@@ -136,6 +139,9 @@ func (a *pgAcceptAdapter) materializeProject(ctx context.Context, prop *db.Pendi
 	if err != nil {
 		return nil, err
 	}
+	if a.deps.GTD == nil {
+		return nil, fmt.Errorf("project proposal materialisation requires PG gtd store")
+	}
 	project, err := a.deps.GTD.WithTx(a.tx).CreateProject(ctx, pp)
 	if err != nil {
 		return nil, fmt.Errorf("creating project: %w", err)
@@ -147,6 +153,9 @@ func (a *pgAcceptAdapter) materializeConcept(ctx context.Context, prop *db.Pendi
 	cp, err := DecodeConceptPayload(prop.Payload)
 	if err != nil {
 		return nil, err
+	}
+	if a.deps.Learning == nil {
+		return nil, fmt.Errorf("concept proposal materialisation requires PG learning store")
 	}
 	concept, err := a.deps.Learning.WithTx(a.tx).CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
 	if err != nil {

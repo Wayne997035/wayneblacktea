@@ -130,6 +130,9 @@ func (a *sqliteAcceptAdapter) materializeGoal(ctx context.Context, prop *db.Pend
 	if err != nil {
 		return nil, fmt.Errorf("%w", err)
 	}
+	if a.deps.GTD == nil {
+		return nil, fmt.Errorf("goal proposal materialisation requires SQLite gtd store")
+	}
 	goalID, err := a.deps.GTD.CreateGoalTx(ctx, a.tx, gp)
 	if err != nil {
 		return nil, fmt.Errorf("creating goal: %w", err)
@@ -142,6 +145,9 @@ func (a *sqliteAcceptAdapter) materializeProject(ctx context.Context, prop *db.P
 	if err != nil {
 		return nil, fmt.Errorf("%w", err)
 	}
+	if a.deps.GTD == nil {
+		return nil, fmt.Errorf("project proposal materialisation requires SQLite gtd store")
+	}
 	projectID, err := a.deps.GTD.CreateProjectTx(ctx, a.tx, pp)
 	if err != nil {
 		return nil, fmt.Errorf("creating project: %w", err)
@@ -153,6 +159,9 @@ func (a *sqliteAcceptAdapter) materializeConcept(ctx context.Context, prop *db.P
 	cp, err := proposal.DecodeConceptPayload(prop.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("%w", err)
+	}
+	if a.deps.Learning == nil {
+		return nil, fmt.Errorf("concept proposal materialisation requires SQLite learning store")
 	}
 	conceptID, err := a.deps.Learning.CreateConceptTx(ctx, a.tx, cp.Title, cp.Content, cp.Tags)
 	if err != nil {
