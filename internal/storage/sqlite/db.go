@@ -506,11 +506,21 @@ func chmodOwnerOnlyWith(path string, skipMissing bool, chmod func(string, os.Fil
 // descriptor (see DB.modeReference) kept open for the DSN's entire life.
 // Safe on a nil *DB or nil modeReference (closeModeReference is a no-op for
 // nil, matching the :memory: / non-file DSN case).
+//
+// Idempotent: *sql.DB.Close() is documented idempotent (returns nil on every
+// call after the first), but the underlying *os.File modeReference is not —
+// a second os.File.Close() returns an already-closed error. d.modeReference
+// is nilled out after the first Close() attempt so a repeat call's
+// closeModeReference(nil) short-circuits to nil, matching *sql.DB's own
+// idempotent contract instead of surfacing a spurious error on a resource
+// that's already gone.
 func (d *DB) Close() error {
 	if d == nil || d.conn == nil {
 		return nil
 	}
-	return errors.Join(d.conn.Close(), closeModeReference(d.modeReference))
+	err := errors.Join(d.conn.Close(), closeModeReference(d.modeReference))
+	d.modeReference = nil
+	return err
 }
 
 // workspaceArg returns either the configured workspace UUID string or an
