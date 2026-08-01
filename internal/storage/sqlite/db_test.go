@@ -219,7 +219,7 @@ func TestOpenSQLiteConnection_NewFileStartsOwnerOnly(t *testing.T) {
 				}
 			}()
 
-			conn, mainPath, err := openSQLiteConnection(context.Background(), dsn)
+			conn, mainPath, modeReference, err := openSQLiteConnection(context.Background(), dsn)
 			close(stop)
 			badMode := <-observed
 			if err != nil {
@@ -228,6 +228,9 @@ func TestOpenSQLiteConnection_NewFileStartsOwnerOnly(t *testing.T) {
 			t.Cleanup(func() {
 				if err := conn.Close(); err != nil {
 					t.Errorf("Close: %v", err)
+				}
+				if err := closeModeReference(modeReference); err != nil {
+					t.Errorf("closeModeReference: %v", err)
 				}
 			})
 			resolvedExpectedPath, err := filepath.EvalSymlinks(expectedPath)
