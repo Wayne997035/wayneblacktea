@@ -272,12 +272,23 @@ func latestHandoffOrNil(ctx context.Context, s contextpack.SessionReadPort) *db.
 	return h
 }
 
+// packAssembler is the narrow, single-method subset of *contextpack.Assembler
+// that assembleSessionPack calls — same narrow-read-port pattern as
+// internal/contextpack/ports.go. *contextpack.Assembler satisfies this
+// structurally with no adapter needed; the sole reason this seam exists is so
+// tests can inject a fake Assemble() that returns a non-nil error, which the
+// real Assemble() implementation never does today (see this function's doc
+// comment below) and is therefore otherwise unreachable in-process.
+type packAssembler interface {
+	Assemble(ctx context.Context, req contextpack.Request) (*contextpack.Pack, error)
+}
+
 // assembleSessionPack calls Assemble() once with an Objective derived from
 // the latest handoff (Intent + ContextSummary — A5a dispatch §6), returning
 // nil on any Assemble error (fail-soft; Assemble() does not currently return
 // a non-nil error on any path, but this stays defensive against future
 // changes rather than assuming that invariant).
-func assembleSessionPack(ctx context.Context, asm *contextpack.Assembler, handoff *db.SessionHandoff) *contextpack.Pack {
+func assembleSessionPack(ctx context.Context, asm packAssembler, handoff *db.SessionHandoff) *contextpack.Pack {
 	pack, err := asm.Assemble(ctx, contextpack.Request{Objective: objectiveFromHandoff(handoff)})
 	if err != nil {
 		slog.Warn("wbt-context: Assemble failed", "err", err)
@@ -291,13 +302,21 @@ func assembleSessionPack(ctx context.Context, asm *contextpack.Assembler, handof
 // retrieveX source in contextpack.retrieve() degrades gracefully on an empty
 // query (current-task/project retrieval is unaffected by Objective at all;
 // keyword-search sources simply match nothing rather than erroring).
+//
+// Both fields are attacker-influenceable (a handoff is untrusted local-DB
+// content, same threat model as context_render.go's untrustedLocalDBWrap*
+// boundary) so each is truncated at the source with the same
+// handoffFieldTruncateRunes cap context_render.go already applies when
+// rendering these two fields, rather than relying solely on a downstream
+// port (e.g. the SQLite side's toFTS5Query 500-byte cap) to bound it —
+// review round-2 GTD dcdbabee item 4.
 func objectiveFromHandoff(h *db.SessionHandoff) string {
 	if h == nil {
 		return ""
 	}
-	obj := h.Intent
+	obj := truncate(h.Intent, handoffFieldTruncateRunes)
 	if h.ContextSummary.Valid && h.ContextSummary.String != "" {
-		obj += " " + h.ContextSummary.String
+		obj += " " + truncate(h.ContextSummary.String, handoffFieldTruncateRunes)
 	}
 	return obj
 }
