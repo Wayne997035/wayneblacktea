@@ -875,14 +875,24 @@ func wireScheduler(
 			return nil, fmt.Errorf("wiring atom bridge: %w", err)
 		}
 	}
-	// Wire Memory-7 cognitive jobs. All 6 jobs are nil-safe: if the pool or
-	// stores are absent (SQLite dev path, missing CLAUDE_API_KEY, etc.) each
-	// job logs an info-level skip and returns without error.
+	// Wire Memory-7 cognitive jobs. All 6 jobs are nil-safe: if the stores are
+	// absent (missing CLAUDE_API_KEY, etc.) each job logs an info-level skip
+	// and returns without error. Jobs 2/3/4/5 (stuck_task_detection,
+	// decision_outcome_review, knowledge_to_skill_candidate,
+	// proposal_cleanup) have SQLite parity via a narrow adapter (GTD decision
+	// G4, 6ea0b014) — cognitiveSQLite stays a true nil interface (not a
+	// typed-nil pointer boxed into a non-nil interface) when the backend is
+	// Postgres, so the jobs' `deps.sqlite != nil` checks behave correctly.
+	var cognitiveSQLite scheduler.CognitiveSQLiteStore
+	if sqliteDB := stores.SqliteDB(); sqliteDB != nil {
+		cognitiveSQLite = wbtsqlite.NewCognitiveJobsStore(sqliteDB)
+	}
 	if err := sched.WithCognitiveDeps(scheduler.NewCognitiveDeps(
 		stores.Reflection(),
 		stores.GTD(),
 		stores.Proposal(),
 		stores.WorkspaceID(),
+		cognitiveSQLite,
 	)); err != nil {
 		return nil, fmt.Errorf("wiring cognitive deps: %w", err)
 	}

@@ -47,6 +47,25 @@ const (
 	behaviorCandidateDays   = 7 * 24 * time.Hour
 )
 
+// stuckTaskLookback / decisionOutcomeLookback / proposalCleanupLookback are
+// time.Duration equivalents of the PG interval-literal constants above, used
+// by the SQLite adapter path (SQLite has no `NOW() - INTERVAL` syntax — the
+// cutoff is computed in Go and bound as a query parameter instead). Kept in
+// sync with the PG string constants manually; a drift here would only affect
+// the SQLite backend's cutoff window and is caught by the cross-backend
+// same-fixture tests in cognitive_jobs_sqlite_test.go.
+const (
+	stuckTaskLookback       = 7 * 24 * time.Hour
+	decisionOutcomeLookback = 30 * 24 * time.Hour
+	proposalCleanupLookback = 30 * 24 * time.Hour
+)
+
+// knowledgeToSkillMinRecallCount is the recall_count threshold above which a
+// knowledge item is considered a skill candidate (job 4). Mirrors the
+// `recall_count > 3` literal in pgHighRecallKnowledgeItems's raw SQL; kept as
+// a named constant so the SQLite adapter call site stays self-documenting.
+const knowledgeToSkillMinRecallCount = 3
+
 // decisionOutcomeReviewDailyCap bounds how many decisions runDecisionOutcomeReview
 // processes per invocation. Incident 2026-07-19 (Railway prod log): a 613-row
 // no-outcome backlog caused the job to insert 316 pending_proposals (~285 ms
@@ -64,6 +83,46 @@ const (
 // override pattern used elsewhere in this package.
 var decisionOutcomeReviewDailyCap = 200
 
+// CognitiveSQLiteStore is the narrow SQLite-only query surface backing jobs
+// 2/3/4/5 (stuck_task_detection, decision_outcome_review,
+// knowledge_to_skill_candidate, proposal_cleanup) when the scheduler is
+// wired against a SQLite backend. nil under Postgres — disciplinePool raw
+// SQL covers that path instead (unchanged from before this parity work).
+//
+// Deliberately NOT part of gtd/decision/knowledge/proposal.StoreIface
+// (backend-security-design.md domain-ownership rule): these 4 methods are
+// scheduler-local plumbing that only the jobs in this file need a symmetric
+// SQLite counterpart for — mirroring the existing narrow-interface pattern
+// already used in scheduler.go (PrunerStore, candidateRetentionStore, etc.)
+// rather than widening a cross-domain interface every other implementer
+// would have to grow a matching method for. GTD decision G4 (6ea0b014).
+//
+// Exported (capitalised) — not because external callers need to name it
+// (they don't; internal/storage/sqlite.CognitiveJobsStore satisfies it
+// structurally) but so cmd/server can declare a correctly-nil-typed local
+// variable when wiring (see WithCognitiveDeps doc / main.go call site) —
+// an unexported interface type cannot be named outside this package, which
+// would otherwise force main.go to pass a possibly-nil *concrete* pointer
+// into an interface parameter, a classic typed-nil-in-interface footgun.
+type CognitiveSQLiteStore interface {
+	// StuckTasks returns in_progress tasks whose updated_at is older than
+	// olderThan (job 2). See internal/storage/sqlite.CognitiveJobsStore.
+	StuckTasks(ctx context.Context, olderThan time.Duration) ([]db.Task, error)
+	// DecisionsPendingOutcomeReview returns decisions older than olderThan
+	// with no recorded outcome and no existing pending dedup proposal,
+	// oldest-first, capped at limit rows (job 3).
+	DecisionsPendingOutcomeReview(ctx context.Context, olderThan time.Duration, limit int) ([]db.Decision, error)
+	// HighRecallKnowledgeItems returns non-archived knowledge items whose
+	// recall_count exceeds minRecallCount (job 4).
+	HighRecallKnowledgeItems(ctx context.Context, minRecallCount int) ([]db.KnowledgeItem, error)
+	// ExpireStaleScheduledProposals marks scheduler-originated pending
+	// proposals older than olderThan as rejected with reason, returning the
+	// number of rows affected (job 5). SQLite-native reimplementation, NOT a
+	// call-through to the Postgres code path — see
+	// internal/storage/sqlite.CognitiveJobsStore.ExpireStaleScheduledProposals.
+	ExpireStaleScheduledProposals(ctx context.Context, olderThan time.Duration, reason string) (int64, error)
+}
+
 // cognitiveDeps bundles dependencies for the 6 cognitive scheduler jobs.
 // All fields are pointer/interface so the nil-check skip path works without
 // panics.
@@ -72,22 +131,31 @@ type cognitiveDeps struct {
 	gtd         gtd.StoreIface        // jobs 1, 4, 6
 	proposal    proposal.StoreIface   // jobs 1, 2, 3, 4, 6
 	workspaceID *uuid.UUID            // jobs 1, 2, 3, 4, 6
+	// sqlite is the SQLite counterpart to disciplinePool for jobs 2/3/4/5.
+	// nil under Postgres (disciplinePool covers that path) and nil under
+	// SQLite only if the caller failed to wire it — each job's switch falls
+	// through to an explicit "no backend configured" skip in that case
+	// rather than silently doing nothing.
+	sqlite CognitiveSQLiteStore
 }
 
 // NewCognitiveDeps builds a cognitiveDeps bundle from the flat parameters
 // passed by main.go. Any nil argument produces a valid bundle — individual
-// jobs nil-check their required fields and skip gracefully.
+// jobs nil-check their required fields and skip gracefully. sqliteStore is
+// nil when the server is Postgres-backed.
 func NewCognitiveDeps(
 	reflStore reflection.StoreIface,
 	gtdStore gtd.StoreIface,
 	propStore proposal.StoreIface,
 	workspaceID *uuid.UUID,
+	sqliteStore CognitiveSQLiteStore,
 ) *cognitiveDeps {
 	return &cognitiveDeps{
 		reflection:  reflStore,
 		gtd:         gtdStore,
 		proposal:    propStore,
 		workspaceID: workspaceID,
+		sqlite:      sqliteStore,
 	}
 }
 
@@ -272,19 +340,27 @@ func (sc *Scheduler) runWeeklyGoalReview() {
 // Job 2: stuck_task_detection
 // ---------------------------------------------------------------------------
 
-// runStuckTaskDetection fires at 09:00 daily. It executes a raw SQL query
-// against disciplinePool to find in_progress tasks not updated in 7 days, then
-// creates one TypeTask pending_proposal per stuck task. The TaskPayload shape
-// matches confirm_proposal materialisation; do not write KnowledgePayload into
-// TypeTask rows.
+// stuckTask is the minimal id+title projection job 2 needs from either
+// backend. PG produces it via pgStuckTasks's raw-SQL scan; SQLite produces
+// it by projecting cognitiveDeps.sqlite.StuckTasks's []db.Task rows.
+type stuckTask struct {
+	id    uuid.UUID
+	title string
+}
+
+// runStuckTaskDetection fires at 09:00 daily. On Postgres it executes a raw
+// SQL query against disciplinePool; on SQLite it calls the
+// CognitiveSQLiteStore.StuckTasks adapter (GTD decision G4, 6ea0b014 — this
+// job is one of the 4 with mandatory dual-backend parity because stuck-task
+// proposals are user-observable). Either way it finds in_progress tasks not
+// updated in 7 days and creates one TypeTask pending_proposal per stuck
+// task. The TaskPayload shape matches confirm_proposal materialisation; do
+// not write KnowledgePayload into TypeTask rows.
 //
-// Skip path: if disciplinePool is nil, logs info (SQLite dev path).
+// Skip path: if cognitiveDeps is nil/incomplete, or neither backend is
+// wired, logs info and returns without creating proposals.
 func (sc *Scheduler) runStuckTaskDetection() {
 	deps := sc.cognitiveDeps
-	if sc.disciplinePool == nil {
-		slog.Info("cognitive: stuck_task_detection skipped (postgres pool not configured)")
-		return
-	}
 	if deps == nil || deps.proposal == nil || deps.workspaceID == nil {
 		slog.Info("cognitive: stuck_task_detection skipped (cognitive deps not configured)")
 		return
@@ -293,34 +369,27 @@ func (sc *Scheduler) runStuckTaskDetection() {
 	ctx, cancel := context.WithTimeout(context.Background(), cognitiveJobTimeout)
 	defer cancel()
 
-	const q = `SELECT id, title, updated_at FROM tasks
-WHERE workspace_id = $1
-  AND status = 'in_progress'
-  AND updated_at < NOW() - INTERVAL '` + stuckTaskInterval + `'`
-
-	rows, err := sc.disciplinePool.Query(ctx, q, deps.workspaceID)
-	if err != nil {
-		slog.Warn("cognitive: stuck_task_detection: query failed", "err", err)
-		return
-	}
-	defer rows.Close()
-
-	type stuckTask struct {
-		id    uuid.UUID
-		title string
-	}
 	var tasks []stuckTask
-	for rows.Next() {
-		var t stuckTask
-		var updatedAt time.Time
-		if serr := rows.Scan(&t.id, &t.title, &updatedAt); serr != nil {
-			slog.Warn("cognitive: stuck_task_detection: scan failed", "err", serr)
-			continue
+	switch {
+	case sc.disciplinePool != nil:
+		pgTasks, err := sc.pgStuckTasks(ctx, deps.workspaceID)
+		if err != nil {
+			slog.Warn("cognitive: stuck_task_detection: query failed", "err", err)
+			return
 		}
-		tasks = append(tasks, t)
-	}
-	if rerr := rows.Err(); rerr != nil {
-		slog.Warn("cognitive: stuck_task_detection: rows iteration error", "err", rerr)
+		tasks = pgTasks
+	case deps.sqlite != nil:
+		rows, err := deps.sqlite.StuckTasks(ctx, stuckTaskLookback)
+		if err != nil {
+			slog.Warn("cognitive: stuck_task_detection: SQLite query failed", "err", err)
+			return
+		}
+		for _, t := range rows {
+			tasks = append(tasks, stuckTask{id: t.ID, title: t.Title})
+		}
+	default:
+		slog.Info("cognitive: stuck_task_detection skipped (no backend configured)")
+		return
 	}
 
 	runProposalLoop(
@@ -344,33 +413,75 @@ WHERE workspace_id = $1
 	)
 }
 
+// pgStuckTasks runs the Postgres raw-SQL stuck-task query. Behaviour is
+// unchanged from the pre-parity implementation: a scan failure or
+// rows.Err logs a warning and does not abort the batch (only a query-level
+// error aborts, via the returned error).
+func (sc *Scheduler) pgStuckTasks(ctx context.Context, workspaceID *uuid.UUID) ([]stuckTask, error) {
+	const q = `SELECT id, title, updated_at FROM tasks
+WHERE workspace_id = $1
+  AND status = 'in_progress'
+  AND updated_at < NOW() - INTERVAL '` + stuckTaskInterval + `'`
+
+	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []stuckTask
+	for rows.Next() {
+		var t stuckTask
+		var updatedAt time.Time
+		if serr := rows.Scan(&t.id, &t.title, &updatedAt); serr != nil {
+			slog.Warn("cognitive: stuck_task_detection: scan failed", "err", serr)
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("cognitive: stuck_task_detection: rows iteration error", "err", rerr)
+	}
+	return tasks, nil
+}
+
 // ---------------------------------------------------------------------------
 // Job 3: decision_outcome_review
 // ---------------------------------------------------------------------------
 
-// runDecisionOutcomeReview fires at 10:00 daily. It finds decisions older than
-// 30 days without any recorded outcome via a raw SQL query on disciplinePool,
-// then creates one TypeTask pending_proposal per qualifying decision so the
-// user can confirm the follow-up task to record the outcome.
+// decRow is the minimal id+title projection job 3 needs from either
+// backend. PG produces it via pgDecisionsPendingOutcomeReview's raw-SQL
+// scan; SQLite produces it by projecting
+// cognitiveDeps.sqlite.DecisionsPendingOutcomeReview's []db.Decision rows.
+type decRow struct {
+	id    uuid.UUID
+	title string
+}
+
+// runDecisionOutcomeReview fires at 10:00 daily. On Postgres it finds
+// decisions older than 30 days without any recorded outcome via a raw SQL
+// query on disciplinePool; on SQLite it calls
+// CognitiveSQLiteStore.DecisionsPendingOutcomeReview (GTD decision G4,
+// 6ea0b014 — decision-outcome-review proposals are user-observable, so this
+// job is one of the 4 with mandatory dual-backend parity). Either way it
+// creates one TypeTask pending_proposal per qualifying decision so the user
+// can confirm the follow-up task to record the outcome.
 //
 // Dedup + daily cap (fix for 2026-07-19 incident, see decisionOutcomeReviewDailyCap
-// doc comment): the query excludes decisions that already have a pending,
+// doc comment): both backends exclude decisions that already have a pending,
 // scheduler-originated proposal for this job (matched via
 // payload->>'source_entity_id' — see proposal.TaskPayload.SourceEntityID) and
-// caps the result set to decisionOutcomeReviewDailyCap rows, ordered oldest
+// cap the result set to decisionOutcomeReviewDailyCap rows, ordered oldest
 // decision first so consecutive daily runs drain the backlog forward. This
 // does NOT bypass the human-confirm gate — dedup only prevents duplicate
 // *pending* proposals; the user still must accept each one via
 // confirm_proposal before it becomes a real task (Excessive Agency boundary
 // unchanged).
 //
-// Skip path: if disciplinePool is nil, logs info.
+// Skip path: if cognitiveDeps is nil/incomplete, or neither backend is
+// wired, logs info and returns without creating proposals.
 func (sc *Scheduler) runDecisionOutcomeReview() {
 	deps := sc.cognitiveDeps
-	if sc.disciplinePool == nil {
-		slog.Info("cognitive: decision_outcome_review skipped (postgres pool not configured)")
-		return
-	}
 	if deps == nil || deps.proposal == nil || deps.workspaceID == nil {
 		slog.Info("cognitive: decision_outcome_review skipped (cognitive deps not configured)")
 		return
@@ -379,46 +490,27 @@ func (sc *Scheduler) runDecisionOutcomeReview() {
 	ctx, cancel := context.WithTimeout(context.Background(), cognitiveJobTimeout)
 	defer cancel()
 
-	const q = `SELECT d.id, d.title FROM decisions d
-WHERE d.workspace_id = $1
-  AND d.created_at < NOW() - INTERVAL '` + decisionOutcomeInterval + `'
-  AND NOT EXISTS (
-      SELECT 1 FROM outcomes o
-      WHERE o.entity_type = 'decision'
-        AND o.entity_id = d.id
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM pending_proposals p
-      WHERE p.type = 'task'
-        AND p.proposed_by = 'scheduler:decision_outcome_review'
-        AND p.status = 'pending'
-        AND p.payload->>'source_entity_id' = d.id::text
-  )
-ORDER BY d.created_at ASC
-LIMIT $2`
-
-	rows, err := sc.disciplinePool.Query(ctx, q, deps.workspaceID, decisionOutcomeReviewDailyCap)
-	if err != nil {
-		slog.Warn("cognitive: decision_outcome_review: query failed", "err", err)
-		return
-	}
-	defer rows.Close()
-
-	type decRow struct {
-		id    uuid.UUID
-		title string
-	}
 	var decisions []decRow
-	for rows.Next() {
-		var d decRow
-		if serr := rows.Scan(&d.id, &d.title); serr != nil {
-			slog.Warn("cognitive: decision_outcome_review: scan failed", "err", serr)
-			continue
+	switch {
+	case sc.disciplinePool != nil:
+		pgDecisions, err := sc.pgDecisionsPendingOutcomeReview(ctx, deps.workspaceID)
+		if err != nil {
+			slog.Warn("cognitive: decision_outcome_review: query failed", "err", err)
+			return
 		}
-		decisions = append(decisions, d)
-	}
-	if rerr := rows.Err(); rerr != nil {
-		slog.Warn("cognitive: decision_outcome_review: rows iteration error", "err", rerr)
+		decisions = pgDecisions
+	case deps.sqlite != nil:
+		rows, err := deps.sqlite.DecisionsPendingOutcomeReview(ctx, decisionOutcomeLookback, decisionOutcomeReviewDailyCap)
+		if err != nil {
+			slog.Warn("cognitive: decision_outcome_review: SQLite query failed", "err", err)
+			return
+		}
+		for _, d := range rows {
+			decisions = append(decisions, decRow{id: d.ID, title: d.Title})
+		}
+	default:
+		slog.Info("cognitive: decision_outcome_review skipped (no backend configured)")
+		return
 	}
 
 	runProposalLoop(
@@ -443,26 +535,82 @@ LIMIT $2`
 	)
 }
 
+// pgDecisionsPendingOutcomeReview runs the Postgres raw-SQL query, unchanged
+// from the pre-parity implementation including the 2026-07-19-incident dedup
+// + daily-cap guards documented on decisionOutcomeReviewDailyCap. A scan
+// failure or rows.Err logs a warning and does not abort the batch (only a
+// query-level error aborts, via the returned error).
+func (sc *Scheduler) pgDecisionsPendingOutcomeReview(ctx context.Context, workspaceID *uuid.UUID) ([]decRow, error) {
+	const q = `SELECT d.id, d.title FROM decisions d
+WHERE d.workspace_id = $1
+  AND d.created_at < NOW() - INTERVAL '` + decisionOutcomeInterval + `'
+  AND NOT EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.entity_type = 'decision'
+        AND o.entity_id = d.id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM pending_proposals p
+      WHERE p.type = 'task'
+        AND p.proposed_by = 'scheduler:decision_outcome_review'
+        AND p.status = 'pending'
+        AND p.payload->>'source_entity_id' = d.id::text
+  )
+ORDER BY d.created_at ASC
+LIMIT $2`
+
+	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID, decisionOutcomeReviewDailyCap)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var decisions []decRow
+	for rows.Next() {
+		var d decRow
+		if serr := rows.Scan(&d.id, &d.title); serr != nil {
+			slog.Warn("cognitive: decision_outcome_review: scan failed", "err", serr)
+			continue
+		}
+		decisions = append(decisions, d)
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("cognitive: decision_outcome_review: rows iteration error", "err", rerr)
+	}
+	return decisions, nil
+}
+
 // ---------------------------------------------------------------------------
 // Job 4: knowledge_to_skill_candidate
 // ---------------------------------------------------------------------------
 
-// runKnowledgeToSkillCandidate fires at Wednesday 03:30 Asia/Taipei. It uses
-// raw SQL on disciplinePool to find knowledge_items with recall_count > 3
-// (high-recall knowledge is a strong skill candidate), then creates one
-// pending_proposal per item.
+// kiRow is the minimal id+title projection job 4 needs from either backend.
+// PG produces it via pgHighRecallKnowledgeItems's raw-SQL scan; SQLite
+// produces it by projecting
+// cognitiveDeps.sqlite.HighRecallKnowledgeItems's []db.KnowledgeItem rows.
+type kiRow struct {
+	id    uuid.UUID
+	title string
+}
+
+// runKnowledgeToSkillCandidate fires at Wednesday 03:30 Asia/Taipei. On
+// Postgres it uses raw SQL on disciplinePool to find knowledge_items with
+// recall_count > 3 (high-recall knowledge is a strong skill candidate); on
+// SQLite it calls CognitiveSQLiteStore.HighRecallKnowledgeItems (GTD
+// decision G4, 6ea0b014 — skill-candidate proposals are user-observable, so
+// this job is one of the 4 with mandatory dual-backend parity). Either way
+// it creates one pending_proposal per high-recall item.
 //
-// NOTE: This job bypasses knowledge.StoreIface intentionally — the store has
-// no ListByRecallCount method and adding one is outside M7 scope. Raw SQL is
-// an explicitly documented exception (SA risk flag).
+// NOTE: The PG path bypasses knowledge.StoreIface intentionally — the store
+// has no ListByRecallCount method and adding one is outside M7 scope. Raw
+// SQL is an explicitly documented exception (SA risk flag). The SQLite
+// adapter similarly stays outside knowledge.StoreIface — see
+// CognitiveSQLiteStore's doc comment.
 //
-// Skip path: if disciplinePool is nil, logs info.
+// Skip path: if cognitiveDeps is nil/incomplete, or neither backend is
+// wired, logs info and returns without creating proposals.
 func (sc *Scheduler) runKnowledgeToSkillCandidate() {
 	deps := sc.cognitiveDeps
-	if sc.disciplinePool == nil {
-		slog.Info("cognitive: knowledge_to_skill_candidate skipped (postgres pool not configured)")
-		return
-	}
 	if deps == nil || deps.proposal == nil || deps.workspaceID == nil {
 		slog.Info("cognitive: knowledge_to_skill_candidate skipped (cognitive deps not configured)")
 		return
@@ -471,33 +619,27 @@ func (sc *Scheduler) runKnowledgeToSkillCandidate() {
 	ctx, cancel := context.WithTimeout(context.Background(), cognitiveJobTimeout)
 	defer cancel()
 
-	const q = `SELECT id, title FROM knowledge_items
-WHERE workspace_id = $1
-  AND recall_count > 3
-  AND archived_at IS NULL`
-
-	rows, err := sc.disciplinePool.Query(ctx, q, deps.workspaceID)
-	if err != nil {
-		slog.Warn("cognitive: knowledge_to_skill_candidate: query failed", "err", err)
-		return
-	}
-	defer rows.Close()
-
-	type kiRow struct {
-		id    uuid.UUID
-		title string
-	}
 	var items []kiRow
-	for rows.Next() {
-		var ki kiRow
-		if serr := rows.Scan(&ki.id, &ki.title); serr != nil {
-			slog.Warn("cognitive: knowledge_to_skill_candidate: scan failed", "err", serr)
-			continue
+	switch {
+	case sc.disciplinePool != nil:
+		pgItems, err := sc.pgHighRecallKnowledgeItems(ctx, deps.workspaceID)
+		if err != nil {
+			slog.Warn("cognitive: knowledge_to_skill_candidate: query failed", "err", err)
+			return
 		}
-		items = append(items, ki)
-	}
-	if rerr := rows.Err(); rerr != nil {
-		slog.Warn("cognitive: knowledge_to_skill_candidate: rows iteration error", "err", rerr)
+		items = pgItems
+	case deps.sqlite != nil:
+		rows, err := deps.sqlite.HighRecallKnowledgeItems(ctx, knowledgeToSkillMinRecallCount)
+		if err != nil {
+			slog.Warn("cognitive: knowledge_to_skill_candidate: SQLite query failed", "err", err)
+			return
+		}
+		for _, ki := range rows {
+			items = append(items, kiRow{id: ki.ID, title: ki.Title})
+		}
+	default:
+		slog.Info("cognitive: knowledge_to_skill_candidate skipped (no backend configured)")
+		return
 	}
 
 	created := runProposalLoop(
@@ -528,51 +670,100 @@ WHERE workspace_id = $1
 	}
 }
 
+// pgHighRecallKnowledgeItems runs the Postgres raw-SQL query, unchanged from
+// the pre-parity implementation. A scan failure or rows.Err logs a warning
+// and does not abort the batch (only a query-level error aborts, via the
+// returned error).
+func (sc *Scheduler) pgHighRecallKnowledgeItems(ctx context.Context, workspaceID *uuid.UUID) ([]kiRow, error) {
+	const q = `SELECT id, title FROM knowledge_items
+WHERE workspace_id = $1
+  AND recall_count > 3
+  AND archived_at IS NULL`
+
+	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []kiRow
+	for rows.Next() {
+		var ki kiRow
+		if serr := rows.Scan(&ki.id, &ki.title); serr != nil {
+			slog.Warn("cognitive: knowledge_to_skill_candidate: scan failed", "err", serr)
+			continue
+		}
+		items = append(items, ki)
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("cognitive: knowledge_to_skill_candidate: rows iteration error", "err", rerr)
+	}
+	return items, nil
+}
+
 // ---------------------------------------------------------------------------
 // Job 5: proposal_cleanup
 // ---------------------------------------------------------------------------
 
 // runProposalCleanup fires at 02:00 daily. It marks scheduler-originated
 // pending proposals as 'rejected' with reason='expired by scheduler' when they
-// are older than 30 days and still pending.
+// are older than 30 days and still pending. On Postgres this is a raw SQL
+// UPDATE against disciplinePool; on SQLite it calls
+// CognitiveSQLiteStore.ExpireStaleScheduledProposals — a genuine SQLite-native
+// reimplementation of the retention arithmetic (GTD decision G4, 6ea0b014),
+// NOT a call-through to the Postgres code path, since SQLite has no
+// `NOW() - INTERVAL` syntax.
 //
-// IMPORTANT: This job ONLY touches rows WHERE proposed_by LIKE 'scheduler:%'.
-// User-submitted proposals (proposed_by NOT LIKE 'scheduler:%') are NEVER
-// touched. This prevents silently rejecting a proposal the user was about to
-// accept via the UI.
+// IMPORTANT: Both backends ONLY touch rows WHERE proposed_by LIKE
+// 'scheduler:%'. User-submitted proposals (proposed_by NOT LIKE
+// 'scheduler:%') are NEVER touched. This prevents silently rejecting a
+// proposal the user was about to accept via the UI.
 //
 // The UPDATE (not DELETE) ensures the audit trail survives until the
-// runDailyPendingProposalsPrune 90-day resolved-row purge picks them up.
+// runDailyPendingProposalsPrune 90-day resolved-row purge picks them up
+// (Postgres only — see the PG-only prune capability contract in
+// scheduler.go's pgOnlyJobs).
 //
-// Skip path: if disciplinePool is nil, logs info.
+// Skip path: if neither backend is wired, logs info.
 func (sc *Scheduler) runProposalCleanup() {
-	if sc.disciplinePool == nil {
-		slog.Info("cognitive: proposal_cleanup skipped (postgres pool not configured)")
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), cognitiveJobTimeout)
 	defer cancel()
 
-	// Only expire scheduler-originated proposals. The proposed_by LIKE
-	// 'scheduler:%' guard is the critical safety boundary — it MUST NOT
-	// be widened to touch user-submitted proposals.
-	const q = `UPDATE pending_proposals
+	switch {
+	case sc.disciplinePool != nil:
+		// Only expire scheduler-originated proposals. The proposed_by LIKE
+		// 'scheduler:%' guard is the critical safety boundary — it MUST NOT
+		// be widened to touch user-submitted proposals.
+		const q = `UPDATE pending_proposals
 SET status = 'rejected', resolved_at = NOW(), reason = 'expired by scheduler'
 WHERE proposed_by LIKE 'scheduler:%'
   AND status = 'pending'
   AND created_at < NOW() - INTERVAL '` + proposalCleanupInterval + `'`
 
-	tag, err := sc.disciplinePool.Exec(ctx, q)
-	if err != nil {
-		slog.Warn("cognitive: proposal_cleanup: UPDATE failed", "err", err)
-		return
+		tag, err := sc.disciplinePool.Exec(ctx, q)
+		if err != nil {
+			slog.Warn("cognitive: proposal_cleanup: UPDATE failed", "err", err)
+			return
+		}
+		slog.Info(
+			"cognitive: proposal_cleanup: completed",
+			"rows_affected", tag.RowsAffected(),
+			"retention", proposalCleanupInterval,
+		)
+	case sc.cognitiveDeps != nil && sc.cognitiveDeps.sqlite != nil:
+		n, err := sc.cognitiveDeps.sqlite.ExpireStaleScheduledProposals(ctx, proposalCleanupLookback, "expired by scheduler")
+		if err != nil {
+			slog.Warn("cognitive: proposal_cleanup: SQLite UPDATE failed", "err", err)
+			return
+		}
+		slog.Info(
+			"cognitive: proposal_cleanup: completed",
+			"rows_affected", n,
+			"retention", proposalCleanupInterval,
+		)
+	default:
+		slog.Info("cognitive: proposal_cleanup skipped (no backend configured)")
 	}
-	slog.Info(
-		"cognitive: proposal_cleanup: completed",
-		"rows_affected", tag.RowsAffected(),
-		"retention", proposalCleanupInterval,
-	)
 }
 
 // ---------------------------------------------------------------------------
