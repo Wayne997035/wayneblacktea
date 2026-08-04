@@ -12,8 +12,10 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -162,6 +164,31 @@ func TestFetchDueReviews_PostgresSQLiteGoldenParity(t *testing.T) {
 // paths, and asserts the two rendered systemMessage strings are identical.
 // ---------------------------------------------------------------------------
 
+// boundaryTokenPattern matches wrapUntrustedLocalDB's per-call random
+// boundary-token line (context_render.go's C-1 fix, PR #151 second-army
+// review) — boundaryTokenLabel followed by exactly boundaryNonceBytes*2 hex
+// chars. Tied to those two constants (not hardcoded) so a future change to
+// the token's label or length keeps this pattern correct instead of
+// silently under/over-matching.
+var boundaryTokenPattern = regexp.MustCompile(
+	regexp.QuoteMeta(boundaryTokenLabel) + fmt.Sprintf("[0-9a-f]{%d}", boundaryNonceBytes*2),
+)
+
+// normalizeBoundaryToken replaces wrapUntrustedLocalDB's per-call random
+// boundary-token lines with a fixed placeholder, used ONLY for the
+// cross-backend equality check in TestRenderSessionContext_
+// PostgresSQLiteGoldenParity below. The token is crypto-random per call by
+// design (C-1: it must not be derivable from DB content, or an attacker who
+// controls that content could pre-compute a matching value to forge the
+// boundary) — it always differs between the two renderSessionContext calls
+// below even for byte-identical fixture data. This normalization is what
+// lets the test keep verifying "backend rendering logic doesn't diverge"
+// without asserting the two random tokens are equal, which would be both
+// the wrong thing to assert and structurally impossible to satisfy.
+func normalizeBoundaryToken(s string) string {
+	return boundaryTokenPattern.ReplaceAllString(s, boundaryTokenLabel+"<normalized>")
+}
+
 func TestRenderSessionContext_PostgresSQLiteGoldenParity(t *testing.T) {
 	ctx := context.Background()
 	pgPool, pgDSN := newTestPgPoolAndDSN(t)
@@ -232,8 +259,11 @@ func TestRenderSessionContext_PostgresSQLiteGoldenParity(t *testing.T) {
 	if pgRendered == "" || sqliteRendered == "" {
 		t.Fatalf("expected non-empty rendered output on both backends; postgres=%q sqlite=%q", pgRendered, sqliteRendered)
 	}
-	if pgRendered != sqliteRendered {
-		t.Fatalf("rendered systemMessage differs between backends:\n--- postgres ---\n%s\n--- sqlite ---\n%s", pgRendered, sqliteRendered)
+	// Compare with boundary tokens normalized (see normalizeBoundaryToken's
+	// doc comment) — the two calls above legitimately get different
+	// crypto-random tokens by design, that is not a backend divergence.
+	if normalizeBoundaryToken(pgRendered) != normalizeBoundaryToken(sqliteRendered) {
+		t.Fatalf("rendered systemMessage differs between backends (after normalizing per-call boundary tokens):\n--- postgres ---\n%s\n--- sqlite ---\n%s", pgRendered, sqliteRendered)
 	}
 
 	betaIdx := strings.Index(pgRendered, "beta decision")
