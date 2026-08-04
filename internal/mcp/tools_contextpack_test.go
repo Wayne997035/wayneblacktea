@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -157,6 +160,92 @@ func TestHandleAssembleContext_ValidInput_TopLevelKeys(t *testing.T) {
 	}
 	if body["budget_chars"] != float64(8000) {
 		t.Errorf("budget_chars = %v, want 8000", body["budget_chars"])
+	}
+}
+
+// fakeDecisionStoreDistinguishesAllFromScoped is a decision.StoreIface fake
+// used only by TestHandleAssembleContext_UnscopedRequestReachesDecisionAll:
+// it returns a distinct sentinel decision from All() while every scoped
+// method (ByRepo/ByProject/ByTask, inherited as no-ops from
+// noopDecisionStore) stays empty. That asymmetry is what lets the test prove
+// -- through the real MCP handler path, not retrieval_test.go's
+// package-internal fakes -- which of the two branches an objective-only
+// assemble_context call actually reaches.
+type fakeDecisionStoreDistinguishesAllFromScoped struct {
+	noopDecisionStore
+	all []db.Decision
+}
+
+func (f fakeDecisionStoreDistinguishesAllFromScoped) All(context.Context, int32) ([]db.Decision, error) {
+	return f.all, nil
+}
+
+// TestHandleAssembleContext_UnscopedRequestReachesDecisionAll locks in the
+// behavior that ports.go/retrieval.go's doc comments previously
+// mis-described as unreachable: assemble_context's repo_name/project_id/
+// task_id are all mcp.Optional (only objective is mcp.Required, see
+// tools_contextpack.go), so a caller that supplies nothing but objective —
+// the tool's minimum legal call — reaches DecisionReadPort.All, not an empty
+// result. Before the doc-comment fix this branch had no MCP-layer test at
+// all; retrieval_test.go's TestRetrieveDecisionsUnscopedFallsBackToAll only
+// exercised contextpack.Assembler.retrieve directly and said nothing about
+// whether any real caller could produce that Request shape.
+//
+// Mutation self-proof: temporarily reverting retrieval.go's fallback (e.g.
+// changing the `req.RepoName == "" && req.ProjectID == nil && req.TaskID ==
+// nil` guard to `false`, so retrieveDecisions always takes the scoped path)
+// makes this test fail with "expected decision ... to appear in an unscoped
+// assemble_context response" because fakeDecisionStoreDistinguishesAllFromScoped's
+// ByRepo/ByProject/ByTask (inherited no-ops) return nothing. That confirms
+// the test is actually exercising the fallback branch, not passing
+// vacuously.
+func TestHandleAssembleContext_UnscopedRequestReachesDecisionAll(t *testing.T) {
+	allID := uuid.New()
+	assembler, err := contextpack.NewAssembler(
+		noopGTDStore{},
+		fakeDecisionStoreDistinguishesAllFromScoped{
+			all: []db.Decision{
+				{
+					ID: allID, Title: "d", Decision: "do it",
+					CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+				},
+			},
+		},
+		noopKnowledgeStore{}, noopAtomStore{}, noopProceduralStore{}, noopSkillStore{},
+		noopOutcomeStore{}, noopReflectionStore{}, noopBehaviorRuleStore{}, noopSessionStore{},
+		noopWorkSessionStore{},
+	)
+	if err != nil {
+		t.Fatalf("NewAssembler: %v", err)
+	}
+	s := &Server{contextAssembler: assembler}
+
+	// Only "objective" set — repo_name/project_id/task_id all omitted. This
+	// is a legal call: the tool schema does not require any of them.
+	r := callAssembleContext(t, s, map[string]any{
+		"objective": "what have we decided lately",
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(r))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &body); err != nil {
+		t.Fatalf("response is not valid JSON: %v\nbody: %s", err, resultText(r))
+	}
+	items, _ := body["items"].([]any)
+	found := false
+	for _, raw := range items {
+		it, _ := raw.(map[string]any)
+		if it["type"] == "decision" && it["id"] == allID.String() {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf(
+			"expected decision %s from decision.All to appear in an unscoped (objective-only) "+
+				"assemble_context response; items: %+v", allID, items,
+		)
 	}
 }
 

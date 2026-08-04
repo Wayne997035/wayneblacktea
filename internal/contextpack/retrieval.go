@@ -196,11 +196,16 @@ func (a *Assembler) retrieveCurrentTaskProject(ctx context.Context, req Request,
 
 // retrieveDecisions returns decisions relevant to the repo/project/task in
 // scope for req. When req carries no scope signal at all (no RepoName,
-// ProjectID, or TaskID — the session-start hook's case, which has no
-// current-repo signal to pass), it falls back to decision.All: the most
-// recent decisions across every repo/project. Every existing scoped caller
-// (MCP assemble_context always sets at least one of the three) leaves this
-// branch dead — see DecisionReadPort.All's doc comment.
+// ProjectID, or TaskID), it falls back to decision.All: the most recent
+// decisions across every repo/project. The session-start hook (A5a) is one
+// caller of this branch — it has no current-repo signal to pass — but MCP
+// assemble_context reaches it too: repo_name/project_id/task_id are all
+// Optional on that tool's schema (internal/mcp/tools_contextpack.go), so a
+// bare objective-only call also lands here. See DecisionReadPort.All's doc
+// comment for the full caller analysis and
+// TestHandleAssembleContext_UnscopedRequestReachesDecisionAll
+// (internal/mcp/tools_contextpack_test.go) for the test locking this
+// behavior in.
 func (a *Assembler) retrieveDecisions(ctx context.Context, req Request, warnings *[]Warning) []Item {
 	var items []Item
 
