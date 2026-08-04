@@ -372,6 +372,18 @@ func (noopOutcomeStore) ExistsForEntity(context.Context, *uuid.UUID, string, uui
 	return false, nil
 }
 
+func (noopOutcomeStore) GetLatestForEntity(context.Context, *uuid.UUID, string, uuid.UUID) (outcome.Outcome, error) {
+	return outcome.Outcome{}, outcome.ErrNotFound
+}
+
+func (noopOutcomeStore) FinalizeDraft(_ context.Context, id uuid.UUID, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	return outcome.Outcome{ID: id}, nil
+}
+
+func (noopOutcomeStore) SeedDraft(context.Context, *uuid.UUID, string, uuid.UUID) (outcome.Outcome, bool, error) {
+	return outcome.Outcome{}, true, nil
+}
+
 // ---------------------------------------------------------------------------
 // noopReflectionStore
 // ---------------------------------------------------------------------------

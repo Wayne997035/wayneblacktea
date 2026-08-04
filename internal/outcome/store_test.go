@@ -4,11 +4,13 @@ package outcome_test
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -569,4 +571,360 @@ func TestStore_RelatedRuleIDs(t *testing.T) {
 			t.Errorf("expected 0 related rule IDs for nil input, got %d", len(o.RelatedRuleIDs))
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GetLatestForEntity / FinalizeDraft / SeedDraft / RecordExecutionResult
+// (migration 000074, decision 80c1e8ae — outcome lifecycle convergence,
+// arch-r2 A13). Mirrors internal/storage/sqlite/outcome_test.go's coverage
+// against a real Postgres backend (backend-security-design.md §6.5: dual-
+// backend logic MUST have both a SQLite test AND a testcontainers PG test).
+// ---------------------------------------------------------------------------
+
+// TestStore_GetLatestForEntity verifies not-found, found (most recent of
+// several), and workspace-scoping behaviour against real Postgres.
+func TestStore_GetLatestForEntity(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+
+	t.Run("not_found_before_any_outcome", func(t *testing.T) {
+		_, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+		if !errors.Is(err, outcome.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	first, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome first: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	second, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success",
+		SupersedesID: &first.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome second: %v", err)
+	}
+
+	t.Run("returns_most_recent", func(t *testing.T) {
+		got, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("GetLatestForEntity: %v", err)
+		}
+		if got.ID != second.ID {
+			t.Errorf("expected latest ID %s, got %s", second.ID, got.ID)
+		}
+		if got.SupersedesID == nil || *got.SupersedesID != first.ID {
+			t.Errorf("expected SupersedesID %s, got %v", first.ID, got.SupersedesID)
+		}
+	})
+
+	t.Run("wrong_workspace_not_found", func(t *testing.T) {
+		other := uuid.New()
+		_, err := store.GetLatestForEntity(ctx, &other, "task", entityID)
+		if !errors.Is(err, outcome.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound for wrong workspace, got %v", err)
+		}
+	})
+}
+
+// TestStore_FinalizeDraft_HappyPath verifies a draft transitions to a
+// terminal result IN PLACE against real Postgres — same ID, no second row.
+func TestStore_FinalizeDraft_HappyPath(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: "success",
+		Notes:  "shipped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if finalized.ID != draft.ID {
+		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
+	}
+	if finalized.Result != "success" {
+		t.Errorf("Result = %q, want success", finalized.Result)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	count := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 row for the entity after finalize, got %d", count)
+	}
+}
+
+// TestStore_FinalizeDraft_AlreadyFinalized verifies the WHERE result='unknown'
+// guard against real Postgres: finalizing an already-terminal row returns
+// outcome.ErrDraftAlreadyFinalized instead of silently overwriting it.
+func TestStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+	if _, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "success"}); err != nil {
+		t.Fatalf("first FinalizeDraft: %v", err)
+	}
+
+	_, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "failure"})
+	if !errors.Is(err, outcome.ErrDraftAlreadyFinalized) {
+		t.Fatalf("expected ErrDraftAlreadyFinalized, got %v", err)
+	}
+
+	got, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if got.Result != "success" {
+		t.Errorf("result must remain 'success' (first finalize), got %q — second call must not silently overwrite", got.Result)
+	}
+}
+
+// TestStore_SeedDraft_CreatesOnce verifies the sequential happy path against
+// real Postgres: first call creates, second call is a no-op read.
+func TestStore_SeedDraft_CreatesOnce(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	first, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft first: %v", err)
+	}
+	if !created {
+		t.Error("expected created=true on first SeedDraft call")
+	}
+
+	second, created2, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft second: %v", err)
+	}
+	if created2 {
+		t.Error("expected created=false on second SeedDraft call")
+	}
+	if second.ID != first.ID {
+		t.Errorf("second call must return the same draft row: got %s, want %s", second.ID, first.ID)
+	}
+}
+
+// TestStore_SeedDraft_SkipsWhenTerminalOutcomeExists mirrors the SQLite twin
+// (TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists): SeedDraft
+// must not add a redundant unknown draft on top of an already-terminal
+// outcome against real Postgres either.
+func TestStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	terminal, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome terminal: %v", err)
+	}
+
+	got, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if created {
+		t.Error("expected created=false when a terminal outcome already exists")
+	}
+	if got.ID != terminal.ID {
+		t.Errorf("expected the existing terminal row back, got a different ID: %s vs %s", got.ID, terminal.ID)
+	}
+}
+
+// TestSeedDraft_ConcurrentPGConnections_NoDuplicateDraft is the Postgres
+// counterpart of the SQLite concurrency proof
+// (TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft). Unlike SQLite
+// (single-connection, db.go SetMaxOpenConns(1)), pgxpool genuinely runs
+// concurrent connections, so this is the strongest available proof that
+// idx_outcomes_one_open_draft (migration 000074) — not any Go-level lock —
+// is what closes the concurrent complete_task TOCTOU the dispatch named.
+func TestSeedDraft_ConcurrentPGConnections_NoDuplicateDraft(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	createdCount := make([]bool, n)
+	errs := make([]error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+			createdCount[idx] = created
+			errs[idx] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d SeedDraft error: %v", i, err)
+		}
+	}
+
+	trueCount := 0
+	for _, c := range createdCount {
+		if c {
+			trueCount++
+		}
+	}
+	if trueCount != 1 {
+		t.Errorf("expected exactly 1 goroutine to win created=true, got %d", trueCount)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 100)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	rowCount := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			rowCount++
+		}
+	}
+	if rowCount != 1 {
+		t.Errorf("expected exactly 1 outcome row for the entity after %d concurrent SeedDraft calls, got %d — TOCTOU not closed", n, rowCount)
+	}
+}
+
+// TestRecordExecutionResult_PG_Convergence exercises RecordExecutionResult
+// end-to-end against real Postgres, covering all four LifecycleAction
+// branches in one deterministic sequence — mirrors the SQLite-backed MCP
+// handler tests in internal/mcp/tools_outcome_lifecycle_test.go, but at the
+// outcome package's own seam boundary (no MCP layer involved).
+func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+	entityID := uuid.New()
+
+	// 1. No prior outcome -> ActionCreated.
+	created, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (create): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("action = %q, want created", action)
+	}
+
+	// 2. Prior outcome is a draft -> ActionFinalizedDraft, same ID.
+	finalized, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success", Notes: "done",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (finalize): %v", err)
+	}
+	if action != outcome.ActionFinalizedDraft {
+		t.Fatalf("action = %q, want finalized_draft", action)
+	}
+	if finalized.ID != created.ID {
+		t.Fatalf("finalize must reuse draft row ID: got %s, want %s", finalized.ID, created.ID)
+	}
+
+	// 3. Identical replay -> ActionReplayedIdempotent, same ID, no new row.
+	replayed, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success", Notes: "done",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (replay): %v", err)
+	}
+	if action != outcome.ActionReplayedIdempotent {
+		t.Fatalf("action = %q, want replayed_idempotent", action)
+	}
+	if replayed.ID != finalized.ID {
+		t.Fatalf("replay must return the same row ID: got %s, want %s", replayed.ID, finalized.ID)
+	}
+
+	// 4. Different terminal result -> ActionSuperseded, new row, linked back.
+	superseded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "regressed", Notes: "actually broke prod",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (supersede): %v", err)
+	}
+	if action != outcome.ActionSuperseded {
+		t.Fatalf("action = %q, want superseded", action)
+	}
+	if superseded.ID == finalized.ID {
+		t.Fatal("supersede must create a NEW row, not reuse the prior ID")
+	}
+	if superseded.SupersedesID == nil || *superseded.SupersedesID != finalized.ID {
+		t.Fatalf("SupersedesID = %v, want %s", superseded.SupersedesID, finalized.ID)
+	}
+
+	// The prior (superseded) row must remain untouched — audit trail intact.
+	priorStillIntact, err := store.GetOutcomeByID(ctx, finalized.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID(prior): %v", err)
+	}
+	if priorStillIntact.Result != "success" {
+		t.Errorf("prior row's result must remain 'success' (not silently overwritten), got %q", priorStillIntact.Result)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	count := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected exactly 2 rows for the entity (finalized draft + 1 supersession), got %d", count)
+	}
 }

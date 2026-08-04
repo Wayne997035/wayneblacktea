@@ -25,9 +25,10 @@ func NewOutcomeStore(d *DB) *OutcomeStore {
 var _ outcome.StoreIface = (*OutcomeStore)(nil)
 
 const (
-	// outcomeSelectCols includes related_rule_ids added in migration 000063
-	// and work_session_id added in migration 000067.
-	outcomeSelectCols    = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, created_at`
+	// outcomeSelectCols includes related_rule_ids added in migration 000063,
+	// work_session_id added in migration 000067, and supersedes_id added in
+	// migration 000074.
+	outcomeSelectCols    = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at`
 	evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
 )
 
@@ -41,6 +42,7 @@ type outcomeRawRow struct {
 	notesNS        sql.NullString
 	relatedRuleIDs string // JSON array stored as TEXT, e.g. '["uuid1","uuid2"]'
 	workSessionNS  sql.NullString
+	supersedesNS   sql.NullString
 	createdNS      sql.NullString
 }
 
@@ -66,6 +68,7 @@ func scanOutcomeRawRow(scan func(...any) error) (outcomeRawRow, error) {
 		&r.notesNS,
 		&r.relatedRuleIDs,
 		&r.workSessionNS,
+		&r.supersedesNS,
 		&r.createdNS,
 	)
 	return r, err
@@ -96,6 +99,7 @@ func parseOutcomeRow(r outcomeRawRow) outcome.Outcome {
 	// Decode related_rule_ids from JSON TEXT using the shared helper in playbooks.go.
 	o.RelatedRuleIDs = parseUUIDSlice(r.relatedRuleIDs)
 	o.WorkSessionID = nullStringToUUIDPtr(r.workSessionNS)
+	o.SupersedesID = nullStringToUUIDPtr(r.supersedesNS)
 	if t := parseTimestamptz(r.createdNS); t.Valid {
 		o.CreatedAt = t.Time
 	}
@@ -145,8 +149,8 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 	now := nowRFC3339()
 
 	const q = `INSERT INTO outcomes
-		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
 
 	var metricsArg any
 	if len(params.Metrics) > 0 {
@@ -170,6 +174,7 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 		notesArg,
 		relatedRuleIDsStr,
 		nullStringFromUUID(params.WorkSessionID),
+		nullStringFromUUID(params.SupersedesID),
 		now,
 	)
 	if err != nil {
@@ -422,4 +427,128 @@ func (s *OutcomeStore) ExistsForEntity(ctx context.Context, workspaceID *uuid.UU
 		return false, errWrap("OutcomeStore.ExistsForEntity", err)
 	}
 	return exists != 0, nil
+}
+
+// GetLatestForEntity returns the most recently created outcome for the given
+// entity, workspace-scoped when non-nil. Returns outcome.ErrNotFound when no
+// outcome exists yet. Mirrors the outcome.Store (PG) implementation.
+func (s *OutcomeStore) GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (outcome.Outcome, error) {
+	var wsArg any
+	if workspaceID != nil {
+		wsArg = workspaceID.String()
+	}
+	const q = `SELECT ` + outcomeSelectCols + ` FROM outcomes
+		WHERE entity_type = ?1
+		  AND entity_id = ?2
+		  AND (?3 IS NULL OR workspace_id = ?3)
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	row := s.db.conn.QueryRowContext(ctx, q, entityType, entityID.String(), wsArg)
+	r, err := scanOutcomeRawRow(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return outcome.Outcome{}, outcome.ErrNotFound
+	}
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.GetLatestForEntity", err)
+	}
+	return parseOutcomeRow(r), nil
+}
+
+// FinalizeDraft transitions a result='unknown' draft to a terminal result in
+// place. The WHERE result='unknown' guard makes this race-safe: if the row
+// no longer matches (already finalized by a concurrent caller),
+// outcome.ErrDraftAlreadyFinalized is returned. Only Result, Metrics, Notes,
+// RelatedRuleIDs, and WorkSessionID are written.
+func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	const q = `UPDATE outcomes SET
+			result = ?1,
+			metrics = ?2,
+			notes = ?3,
+			related_rule_ids = ?4,
+			work_session_id = ?5
+		WHERE id = ?6 AND result = 'unknown'`
+
+	var metricsArg any
+	if len(params.Metrics) > 0 {
+		metricsArg = string(params.Metrics)
+	}
+	var notesArg any
+	if params.Notes != "" {
+		notesArg = params.Notes
+	}
+	relatedRuleIDsStr := encodeUUIDSlice(params.RelatedRuleIDs)
+
+	res, err := s.db.conn.ExecContext(
+		ctx, q,
+		params.Result,
+		metricsArg,
+		notesArg,
+		relatedRuleIDsStr,
+		nullStringFromUUID(params.WorkSessionID),
+		id.String(),
+	)
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft rows affected", err)
+	}
+	if n == 0 {
+		return outcome.Outcome{}, outcome.ErrDraftAlreadyFinalized
+	}
+	return s.getByID(ctx, id)
+}
+
+// SeedDraft atomically ensures a result='unknown' draft exists for the given
+// entity. See outcome.StoreIface.SeedDraft doc comment for the full
+// semantics. Uses ExecContext + RowsAffected (rather than a RETURNING
+// clause) for the INSERT ... ON CONFLICT DO NOTHING step, consistent with
+// this file's other upsert call sites (e.g. worksession.go's
+// work_session_tasks link insert).
+func (s *OutcomeStore) SeedDraft(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (outcome.Outcome, bool, error) {
+	if latest, err := s.GetLatestForEntity(ctx, workspaceID, entityType, entityID); err == nil {
+		return latest, false, nil
+	} else if !errors.Is(err, outcome.ErrNotFound) {
+		return outcome.Outcome{}, false, errWrap("OutcomeStore.SeedDraft checking existing", err)
+	}
+
+	id := uuid.New()
+	now := nowRFC3339()
+	const insertQ = `INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, created_at)
+		VALUES (?1, ?2, ?3, ?4, 'unknown', ?5)
+		ON CONFLICT (COALESCE(workspace_id, '00000000-0000-0000-0000-000000000000'), entity_type, entity_id)
+		WHERE result = 'unknown'
+		DO NOTHING`
+
+	res, err := s.db.conn.ExecContext(
+		ctx, insertQ,
+		id.String(),
+		nullStringFromUUID(workspaceID),
+		entityType,
+		entityID.String(),
+		now,
+	)
+	if err != nil {
+		return outcome.Outcome{}, false, errWrap("OutcomeStore.SeedDraft insert", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return outcome.Outcome{}, false, errWrap("OutcomeStore.SeedDraft rows affected", err)
+	}
+	if n > 0 {
+		created, err := s.getByID(ctx, id)
+		if err != nil {
+			return outcome.Outcome{}, false, errWrap("OutcomeStore.SeedDraft fetch inserted", err)
+		}
+		return created, true, nil
+	}
+
+	// Lost the race to a concurrent seeder — fetch and return the winner's row.
+	existing, err := s.GetLatestForEntity(ctx, workspaceID, entityType, entityID)
+	if err != nil {
+		return outcome.Outcome{}, false, errWrap("OutcomeStore.SeedDraft fetching post-conflict draft", err)
+	}
+	return existing, false, nil
 }

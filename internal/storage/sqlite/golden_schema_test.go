@@ -324,6 +324,20 @@ var expectedNewEntries = map[string]bool{
 	// PG migration 000041 was entirely missing (numbering gap 000040->000042);
 	// schema.sql never carried this index. Net-new versus the golden baseline.
 	"index|idx_tasks_due_date": true,
+
+	// migrations/sqlite/000074_outcomes_supersession.up.sql (arch-r2 A13,
+	// decision 80c1e8ae, outcome lifecycle convergence): two brand-new
+	// indexes on the outcomes table, added after the legacy schema.sql
+	// baseline was frozen (schema.sql itself is untouched — it is a frozen
+	// pre-E1 historical snapshot per its own header comment, not a live
+	// target). The migration's third change, the supersedes_id column, is
+	// hand-added directly to testdata/schema_golden.sql's "table|outcomes"
+	// line instead — it is a real, intentional new column (not an inert
+	// difference eligible for acceptedDifferences below), and
+	// canonicalTableSignature's alphabetical column sort makes the exact
+	// insertion position in that line comparison-irrelevant.
+	"index|idx_outcomes_supersedes_id":  true,
+	"index|idx_outcomes_one_open_draft": true,
 }
 
 // acceptedDifferences lists schema objects present in BOTH golden and the

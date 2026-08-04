@@ -2,7 +2,9 @@ package sqlite_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -538,4 +540,280 @@ func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
 			t.Errorf("expected 0 related rule IDs for nil input, got %d", len(o.RelatedRuleIDs))
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GetLatestForEntity / FinalizeDraft / SeedDraft (migration 000074, decision
+// 80c1e8ae — outcome lifecycle convergence, arch-r2 A13)
+// ---------------------------------------------------------------------------
+
+// TestSQLiteOutcomeStore_GetLatestForEntity verifies not-found, found (most
+// recent of several), and workspace-scoping behaviour.
+func TestSQLiteOutcomeStore_GetLatestForEntity(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	t.Run("not_found_before_any_outcome", func(t *testing.T) {
+		_, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+		if !errors.Is(err, outcome.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	first, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome first: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // ensure created_at strictly advances
+	second, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success",
+		SupersedesID: &first.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome second: %v", err)
+	}
+
+	t.Run("returns_most_recent", func(t *testing.T) {
+		got, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("GetLatestForEntity: %v", err)
+		}
+		if got.ID != second.ID {
+			t.Errorf("expected latest ID %s, got %s", second.ID, got.ID)
+		}
+		if got.SupersedesID == nil || *got.SupersedesID != first.ID {
+			t.Errorf("expected SupersedesID %s, got %v", first.ID, got.SupersedesID)
+		}
+	})
+
+	t.Run("wrong_workspace_not_found", func(t *testing.T) {
+		other := uuid.New()
+		_, err := store.GetLatestForEntity(ctx, &other, "task", entityID)
+		if !errors.Is(err, outcome.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound for wrong workspace, got %v", err)
+		}
+	})
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_HappyPath verifies a draft transitions
+// to a terminal result IN PLACE — same ID, no second row.
+func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: "success",
+		Notes:  "shipped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if finalized.ID != draft.ID {
+		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
+	}
+	if finalized.Result != "success" {
+		t.Errorf("Result = %q, want success", finalized.Result)
+	}
+	if finalized.Notes != "shipped" {
+		t.Errorf("Notes = %q, want shipped", finalized.Notes)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	count := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 row for the entity after finalize, got %d", count)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized verifies the
+// WHERE result='unknown' guard: finalizing an already-terminal row returns
+// outcome.ErrDraftAlreadyFinalized instead of silently overwriting it.
+func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+	if _, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "success"}); err != nil {
+		t.Fatalf("first FinalizeDraft: %v", err)
+	}
+
+	_, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "failure"})
+	if !errors.Is(err, outcome.ErrDraftAlreadyFinalized) {
+		t.Fatalf("expected ErrDraftAlreadyFinalized, got %v", err)
+	}
+
+	// The first finalize's result must be untouched by the rejected second call.
+	got, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if got.Result != "success" {
+		t.Errorf("result must remain 'success' (first finalize), got %q — second call must not silently overwrite", got.Result)
+	}
+}
+
+// TestSQLiteOutcomeStore_SeedDraft_CreatesOnce verifies the sequential
+// happy path: first call creates, second call is a no-op read returning the
+// same row.
+func TestSQLiteOutcomeStore_SeedDraft_CreatesOnce(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	first, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft first: %v", err)
+	}
+	if !created {
+		t.Error("expected created=true on first SeedDraft call")
+	}
+	if first.Result != "unknown" {
+		t.Errorf("Result = %q, want unknown", first.Result)
+	}
+
+	second, created2, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft second: %v", err)
+	}
+	if created2 {
+		t.Error("expected created=false on second SeedDraft call")
+	}
+	if second.ID != first.ID {
+		t.Errorf("second call must return the same draft row: got %s, want %s", second.ID, first.ID)
+	}
+}
+
+// TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists verifies
+// the pre-existing ExistsForEntity semantics are preserved: SeedDraft must
+// NOT add a redundant unknown draft on top of an already-terminal outcome
+// (this is exactly the production duplication bug — 2 entities found with
+// both an unknown draft AND a terminal outcome coexisting).
+func TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	terminal, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome terminal: %v", err)
+	}
+
+	got, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if created {
+		t.Error("expected created=false when a terminal outcome already exists")
+	}
+	if got.ID != terminal.ID {
+		t.Errorf("expected the existing terminal row back, got a different ID: %s vs %s", got.ID, terminal.ID)
+	}
+	if got.Result != "success" {
+		t.Errorf("must not have altered the existing terminal result, got %q", got.Result)
+	}
+}
+
+// TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft is the direct
+// race-safety proof for the TOCTOU the dispatch named explicitly: concurrent
+// complete_task calls on the same task racing to seed the first draft.
+// GetLatestForEntity and the guarded INSERT are two separate statements
+// (not wrapped in one transaction), so even with SQLite's single-connection
+// serialization (db.go SetMaxOpenConns(1)) goroutines CAN genuinely
+// interleave between the read and the write — each individual statement is
+// atomic, but the two-statement sequence as a whole is not. The correctness
+// guarantee comes from the partial unique index idx_outcomes_one_open_draft
+// rejecting every INSERT past the first for the same entity via
+// ON CONFLICT DO NOTHING, not from any application-level lock.
+func TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	createdCount := make([]bool, n)
+	errs := make([]error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start // release all goroutines together to maximize interleaving
+			_, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+			createdCount[idx] = created
+			errs[idx] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d SeedDraft error: %v", i, err)
+		}
+	}
+
+	trueCount := 0
+	for _, c := range createdCount {
+		if c {
+			trueCount++
+		}
+	}
+	if trueCount != 1 {
+		t.Errorf("expected exactly 1 goroutine to win created=true, got %d", trueCount)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 100)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	rowCount := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			rowCount++
+		}
+	}
+	if rowCount != 1 {
+		t.Errorf("expected exactly 1 outcome row for the entity after %d concurrent SeedDraft calls, got %d — TOCTOU not closed", n, rowCount)
+	}
 }

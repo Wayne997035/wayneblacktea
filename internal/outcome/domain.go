@@ -14,6 +14,13 @@ import (
 // ErrNotFound is returned when a requested outcome does not exist.
 var ErrNotFound = errors.New("outcome: not found")
 
+// ErrDraftAlreadyFinalized is returned by FinalizeDraft when the targeted
+// row's result is no longer "unknown" — a concurrent caller already
+// finalized it. Callers (see RecordExecutionResult in lifecycle.go) treat
+// this as a signal to re-resolve the entity's latest outcome rather than an
+// unrecoverable error.
+var ErrDraftAlreadyFinalized = errors.New("outcome: draft already finalized")
+
 // AllowedEntityTypes is the closed set of entity_type values accepted by the store.
 // Enforcement at the MCP tool layer prevents arbitrary strings from polluting the
 // entity_type column and makes queries predictable.
@@ -52,7 +59,13 @@ type Outcome struct {
 	// row it was recorded from (wbt-2.0 P2.4, migration 000067). NO FK per
 	// CLAUDE.md #9; a stale session_id is tolerated application-side.
 	WorkSessionID *uuid.UUID `json:"work_session_id,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	// SupersedesID optionally links this outcome to the prior outcome row it
+	// explicitly replaces (migration 000074, decision 80c1e8ae). Set only by
+	// RecordExecutionResult's supersede branch (lifecycle.go) when the
+	// entity already has a DIFFERENT terminal result — the prior row is left
+	// untouched, never silently overwritten. NO FK per CLAUDE.md #9.
+	SupersedesID *uuid.UUID `json:"supersedes_id,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 // Evaluation is a structured analysis record attached to an Outcome.
@@ -81,6 +94,11 @@ type CreateOutcomeParams struct {
 	// WorkSessionID optionally links this outcome to the work session it was
 	// recorded from. See Outcome.WorkSessionID doc comment for the no-FK rationale.
 	WorkSessionID *uuid.UUID
+	// SupersedesID optionally marks this outcome as an explicit replacement
+	// for a prior outcome row. Set by RecordExecutionResult (lifecycle.go);
+	// direct StoreIface.CreateOutcome callers outside that seam normally
+	// leave this nil. See Outcome.SupersedesID doc comment.
+	SupersedesID *uuid.UUID
 }
 
 // CreateEvaluationParams holds parameters for evaluating an outcome.

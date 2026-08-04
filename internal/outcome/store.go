@@ -2,6 +2,7 @@ package outcome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,8 +40,9 @@ func uuidFromPgtype(v pgtype.UUID) *uuid.UUID {
 }
 
 // outcomeSelectCols is the canonical column list for outcome SELECT queries.
-// related_rule_ids was added in migration 000063; work_session_id in 000067.
-const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, created_at`
+// related_rule_ids was added in migration 000063; work_session_id in 000067;
+// supersedes_id in 000074.
+const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at`
 
 // evaluationSelectCols is the canonical column list for evaluation SELECT queries.
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
@@ -52,6 +54,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		wsID           pgtype.UUID
 		entityID       pgtype.UUID
 		workSessionID  pgtype.UUID
+		supersedesID   pgtype.UUID
 		createdAt      pgtype.Timestamptz
 		notesText      pgtype.Text
 		relatedRuleIDs []uuid.UUID
@@ -66,6 +69,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		&notesText,
 		&relatedRuleIDs,
 		&workSessionID,
+		&supersedesID,
 		&createdAt,
 	)
 	if err != nil {
@@ -76,6 +80,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		o.EntityID = uuid.UUID(entityID.Bytes)
 	}
 	o.WorkSessionID = uuidFromPgtype(workSessionID)
+	o.SupersedesID = uuidFromPgtype(supersedesID)
 	if createdAt.Valid {
 		o.CreatedAt = createdAt.Time
 	}
@@ -122,8 +127,8 @@ func scanEvaluationRow(rows pgx.Rows) (Evaluation, error) {
 // CreateOutcome inserts a new outcome row and returns the persisted record.
 func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
-		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 		RETURNING ` + outcomeSelectCols
 
 	var notesArg pgtype.Text
@@ -153,6 +158,7 @@ func (s *Store) CreateOutcome(ctx context.Context, params CreateOutcomeParams) (
 		notesArg,
 		relatedRuleIDs,
 		toPgtypeUUID(params.WorkSessionID),
+		toPgtypeUUID(params.SupersedesID),
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("creating outcome: %w", err)
@@ -382,4 +388,138 @@ func (s *Store) ExistsForEntity(ctx context.Context, workspaceID *uuid.UUID, ent
 		return false, fmt.Errorf("checking outcome existence for %s %s: %w", entityType, entityID, err)
 	}
 	return exists, nil
+}
+
+// GetLatestForEntity returns the most recently created outcome for the given
+// entity, workspace-scoped when non-nil. Returns ErrNotFound when no outcome
+// exists yet.
+func (s *Store) GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (Outcome, error) {
+	const q = `SELECT ` + outcomeSelectCols + ` FROM outcomes
+		WHERE entity_type = $1
+		  AND entity_id = $2
+		  AND ($3::uuid IS NULL OR workspace_id = $3)
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	rows, err := s.pool.Query(ctx, q, entityType, entityID, toPgtypeUUID(workspaceID))
+	if err != nil {
+		return Outcome{}, fmt.Errorf("getting latest outcome for %s %s: %w", entityType, entityID, err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Outcome{}, fmt.Errorf("getting latest outcome rows.Err: %w", err)
+		}
+		return Outcome{}, ErrNotFound
+	}
+	o, err := scanOutcomeRow(rows)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("getting latest outcome scan: %w", err)
+	}
+	return o, nil
+}
+
+// FinalizeDraft transitions a result='unknown' draft to a terminal result in
+// place. The WHERE result='unknown' guard makes this race-safe: if the row
+// no longer matches (already finalized by a concurrent caller),
+// ErrDraftAlreadyFinalized is returned. Only Result, Metrics, Notes,
+// RelatedRuleIDs, and WorkSessionID are written — entity identity and
+// workspace scope are left untouched.
+func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
+	const q = `
+		UPDATE outcomes SET
+			result = $1,
+			metrics = $2::jsonb,
+			notes = $3,
+			related_rule_ids = $4,
+			work_session_id = $5
+		WHERE id = $6 AND result = 'unknown'
+		RETURNING ` + outcomeSelectCols
+
+	var notesArg pgtype.Text
+	if params.Notes != "" {
+		notesArg = pgtype.Text{String: params.Notes, Valid: true}
+	}
+	var metricsArg any
+	if len(params.Metrics) > 0 {
+		metricsArg = string(params.Metrics)
+	}
+	relatedRuleIDs := params.RelatedRuleIDs
+	if relatedRuleIDs == nil {
+		relatedRuleIDs = []uuid.UUID{}
+	}
+
+	rows, err := s.pool.Query(
+		ctx, q,
+		params.Result,
+		metricsArg,
+		notesArg,
+		relatedRuleIDs,
+		toPgtypeUUID(params.WorkSessionID),
+		id,
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("finalizing draft outcome %s: %w", id, err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Outcome{}, fmt.Errorf("finalizing draft outcome %s rows.Err: %w", id, err)
+		}
+		return Outcome{}, ErrDraftAlreadyFinalized
+	}
+	o, err := scanOutcomeRow(rows)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("finalizing draft outcome %s scan: %w", id, err)
+	}
+	return o, nil
+}
+
+// SeedDraft atomically ensures a result='unknown' draft exists for the given
+// entity. See StoreIface.SeedDraft doc comment for the full semantics: an
+// existing outcome (draft or terminal) short-circuits to a no-op read;
+// otherwise an INSERT ... ON CONFLICT DO NOTHING against the partial unique
+// index idx_outcomes_one_open_draft (migration 000074) serializes concurrent
+// first-time seeders.
+func (s *Store) SeedDraft(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (Outcome, bool, error) {
+	if latest, err := s.GetLatestForEntity(ctx, workspaceID, entityType, entityID); err == nil {
+		return latest, false, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return Outcome{}, false, fmt.Errorf("seeding draft outcome: checking existing: %w", err)
+	}
+
+	const insertQ = `
+		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result)
+		VALUES ($1, $2, $3, 'unknown')
+		ON CONFLICT (COALESCE(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid), entity_type, entity_id)
+		WHERE result = 'unknown'
+		DO NOTHING
+		RETURNING ` + outcomeSelectCols
+
+	rows, err := s.pool.Query(ctx, insertQ, toPgtypeUUID(workspaceID), entityType, entityID)
+	if err != nil {
+		return Outcome{}, false, fmt.Errorf("seeding draft outcome: %w", err)
+	}
+	if rows.Next() {
+		o, err := scanOutcomeRow(rows)
+		rows.Close()
+		if err != nil {
+			return Outcome{}, false, fmt.Errorf("seeding draft outcome scan: %w", err)
+		}
+		return o, true, nil
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return Outcome{}, false, fmt.Errorf("seeding draft outcome rows.Err: %w", rowsErr)
+	}
+
+	// Lost the race to a concurrent seeder — fetch and return the winner's row.
+	existing, err := s.GetLatestForEntity(ctx, workspaceID, entityType, entityID)
+	if err != nil {
+		return Outcome{}, false, fmt.Errorf("seeding draft outcome: fetching post-conflict draft: %w", err)
+	}
+	return existing, false, nil
 }

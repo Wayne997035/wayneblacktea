@@ -37,6 +37,15 @@ type stubOutcomeStore struct {
 	lastListLimit      int
 	lastFailedLimit    int
 	lastPruneCutoff    time.Time
+	// latestOutcome / latestConfigured drive GetLatestForEntity. Left
+	// unconfigured (the zero value), GetLatestForEntity returns
+	// outcome.ErrNotFound so existing tests exercising CreateOutcome via
+	// RecordExecutionResult's "no prior outcome" branch are unaffected by
+	// this stub's growth to the full 10-method StoreIface.
+	latestOutcome      outcome.Outcome
+	latestConfigured   bool
+	lastFinalizeID     uuid.UUID
+	lastFinalizeParams outcome.CreateOutcomeParams
 }
 
 var _ outcome.StoreIface = (*stubOutcomeStore)(nil)
@@ -81,6 +90,29 @@ func (s *stubOutcomeStore) PruneOlderThan(_ context.Context, cutoff time.Time) (
 
 func (s *stubOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
 	return false, s.returnErr
+}
+
+func (s *stubOutcomeStore) GetLatestForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, error) {
+	if !s.latestConfigured {
+		return outcome.Outcome{}, outcome.ErrNotFound
+	}
+	return s.latestOutcome, nil
+}
+
+func (s *stubOutcomeStore) FinalizeDraft(_ context.Context, id uuid.UUID, p outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	s.lastFinalizeID = id
+	s.lastFinalizeParams = p
+	if s.returnErr != nil {
+		return outcome.Outcome{}, s.returnErr
+	}
+	return s.returnOutcome, nil
+}
+
+func (s *stubOutcomeStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, bool, error) {
+	if s.returnErr != nil {
+		return outcome.Outcome{}, false, s.returnErr
+	}
+	return s.returnOutcome, true, nil
 }
 
 // --- helpers ---
@@ -609,6 +641,18 @@ func (e *evalFailingStore) PruneOlderThan(_ context.Context, _ time.Time) (int64
 
 func (e *evalFailingStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
 	return false, nil
+}
+
+func (e *evalFailingStore) GetLatestForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, error) {
+	return outcome.Outcome{}, outcome.ErrNotFound
+}
+
+func (e *evalFailingStore) FinalizeDraft(_ context.Context, id uuid.UUID, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	return outcome.Outcome{ID: id}, nil
+}
+
+func (e *evalFailingStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, bool, error) {
+	return outcome.Outcome{ID: uuid.New()}, true, nil
 }
 
 // --- isJSONArray / validateJSONArrayArg unit tests ---

@@ -15,7 +15,7 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
-// spyOutcomeStore is a test-local spy implementing all 7 methods of
+// spyOutcomeStore is a test-local spy implementing all 10 methods of
 // outcome.StoreIface. It counts total calls across every method so a test can
 // assert "the outcome layer was never touched" with a single check. Values
 // returned are minimal fixtures — callers of this spy only exercise control
@@ -62,6 +62,21 @@ func (sp *spyOutcomeStore) PruneOlderThan(_ context.Context, _ time.Time) (int64
 func (sp *spyOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
 	sp.calls++
 	return false, nil
+}
+
+func (sp *spyOutcomeStore) GetLatestForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, error) {
+	sp.calls++
+	return outcome.Outcome{}, outcome.ErrNotFound
+}
+
+func (sp *spyOutcomeStore) FinalizeDraft(_ context.Context, id uuid.UUID, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	sp.calls++
+	return outcome.Outcome{ID: id}, nil
+}
+
+func (sp *spyOutcomeStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, bool, error) {
+	sp.calls++
+	return outcome.Outcome{ID: uuid.New()}, true, nil
 }
 
 // Compile-time guarantee that the spy satisfies the full interface.
@@ -788,8 +803,11 @@ func TestHandleCompleteTask_SeedsOutcome(t *testing.T) {
 // TestHandleCompleteTask_SeedsOutcome_Idempotent verifies calling
 // complete_task twice on the same task_id (gtd.CompleteTask itself is
 // idempotent — see sql/queries/gtd.sql CompleteTask, unconditional UPDATE)
-// only ever produces one seeded outcome row, guarded by ExistsForEntity since
-// outcomes has no unique constraint on (entity_type, entity_id).
+// only ever produces one seeded outcome row, guarded by
+// outcome.StoreIface.SeedDraft's atomic INSERT ... ON CONFLICT DO NOTHING
+// against the partial unique index idx_outcomes_one_open_draft (migration
+// 000074) — see TestSeedDraftOutcome_ConcurrentCompleteTask_NoDuplicateDraft
+// in tools_outcome_lifecycle_test.go for the race-safety proof.
 func TestHandleCompleteTask_SeedsOutcome_Idempotent(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()

@@ -182,7 +182,7 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	}
 
 	wsID := s.workspaceUUID()
-	o, err := s.outcome.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+	o, action, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
 		WorkspaceID:    wsID,
 		EntityType:     entityType,
 		EntityID:       entityID,
@@ -194,6 +194,15 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recording outcome: %v", err)), nil
+	}
+
+	// Idempotent replay (decision 80c1e8ae): the entity's latest outcome is
+	// byte-identical to this call — no row was written, so the follow-on
+	// side effects below (SetOutcomeLink, atomize) must not re-fire either,
+	// or a retried record_outcome call would silently duplicate atoms for
+	// notes text that was already atomized on the first call.
+	if action == outcome.ActionReplayedIdempotent {
+		return jsonText(o)
 	}
 
 	// Best-effort: also set work_sessions.outcome_id so the link is

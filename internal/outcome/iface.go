@@ -49,6 +49,37 @@ type StoreIface interface {
 	// callers needing idempotent outcome creation (e.g. complete_task's
 	// draft-outcome seeding) MUST check this first.
 	ExistsForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (bool, error)
+
+	// GetLatestForEntity returns the most recently created outcome for the
+	// given entity, scoped to workspaceID when non-nil. Returns ErrNotFound
+	// when no outcome exists yet. Used by RecordExecutionResult
+	// (lifecycle.go, decision 80c1e8ae) to decide whether a new call must
+	// finalize a draft, supersede a terminal result, replay idempotently, or
+	// create a fresh row.
+	GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (Outcome, error)
+
+	// FinalizeDraft transitions an existing result='unknown' draft outcome
+	// to a terminal result IN PLACE — same row, same ID, never a new row.
+	// The update is guarded by `WHERE result = 'unknown'`, making this
+	// race-safe: if a concurrent caller already finalized the same draft,
+	// ErrDraftAlreadyFinalized is returned so the orchestration layer can
+	// re-resolve and fall through to the terminal-over-terminal branch.
+	// params.EntityType/EntityID/WorkspaceID are not re-applied — only
+	// Result, Notes, Metrics, RelatedRuleIDs, and WorkSessionID are written.
+	FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error)
+
+	// SeedDraft atomically ensures a result='unknown' draft exists for the
+	// given entity: if ANY outcome (draft or terminal) already exists for
+	// the entity, that row is returned unchanged (created=false — mirrors
+	// the pre-existing ExistsForEntity semantics: don't add a redundant
+	// draft on top of a real result). Otherwise it inserts a fresh draft via
+	// INSERT ... ON CONFLICT DO NOTHING against the partial unique index
+	// idx_outcomes_one_open_draft (migration 000074): concurrent callers
+	// racing to seed the very first draft for an entity are serialized by
+	// the database, closing the check-then-insert TOCTOU that the old
+	// ExistsForEntity-then-CreateOutcome pattern had. Used by
+	// complete_task's seedDraftOutcome (internal/mcp/tools_gtd.go).
+	SeedDraft(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (o Outcome, created bool, err error)
 }
 
 // Compile-time assertion: Postgres Store satisfies StoreIface.

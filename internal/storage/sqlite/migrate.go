@@ -18,7 +18,7 @@ import (
 // runMigrations) to Force-stamp a pre-existing full-snapshot DB without
 // replaying history. Update this constant whenever a new
 // migrations/sqlite/NNNNNN_*.up.sql file is added.
-const latestSQLiteSchemaVersion = 73
+const latestSQLiteSchemaVersion = 74
 
 // runMigrations applies migrations/sqlite/*.sql to conn via golang-migrate,
 // reusing the SAME *sql.DB connection Open() already established — never a
