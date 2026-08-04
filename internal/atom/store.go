@@ -403,8 +403,15 @@ func (s *Store) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
 	return tag.RowsAffected(), nil
 }
 
-// SetDigestStatus updates the digest_status and optional error_msg for a single atom.
+// SetDigestStatus updates the digest_status and optional error_msg for a
+// single atom. status is validated against the five-value enum
+// (digest_status.go) before the UPDATE is sent — an invalid value is
+// rejected with ErrInvalidDigestStatus rather than silently written to the
+// column (backend-security-design.md §2: adversarial input handling).
 func (s *Store) SetDigestStatus(ctx context.Context, atomID uuid.UUID, status string, errMsg string) error {
+	if !IsValidDigestStatus(status) {
+		return fmt.Errorf("%w: %q", ErrInvalidDigestStatus, status)
+	}
 	const q = `UPDATE memory_atoms SET digest_status = $1, error_msg = $2 WHERE id = $3`
 	_, err := s.pool.Exec(ctx, q, status, errMsg, atomID)
 	if err != nil {

@@ -36,8 +36,11 @@ type StoreIface interface {
 	PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
 
 	// SetDigestStatus updates the digest_status and error_msg for the given atom.
-	// status must be one of "pending", "done", "failed".
-	// errMsg is stored only when status="failed"; pass "" otherwise.
+	// status must be one of the five DigestStatus* constants in
+	// digest_status.go (Pending, Done, Failed, Consolidated, Promoted); both
+	// backend implementations validate against IsValidDigestStatus before
+	// issuing the UPDATE and return ErrInvalidDigestStatus for anything else.
+	// errMsg is stored only when status=DigestStatusFailed; pass "" otherwise.
 	SetDigestStatus(ctx context.Context, atomID uuid.UUID, status string, errMsg string) error
 
 	// CountByDigestStatus returns the number of atoms with the given digest_status

@@ -489,6 +489,13 @@ func TestSQLiteAtomStore_SetDigestStatus(t *testing.T) {
 			status: "done",
 			errMsg: "",
 		},
+		{
+			name:    "invalid status is rejected before reaching SQL",
+			atomID:  a.ID,
+			status:  "archived",
+			errMsg:  "",
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -497,6 +504,9 @@ func TestSQLiteAtomStore_SetDigestStatus(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
+				}
+				if !errors.Is(err, atom.ErrInvalidDigestStatus) {
+					t.Errorf("expected ErrInvalidDigestStatus, got: %v", err)
 				}
 				return
 			}

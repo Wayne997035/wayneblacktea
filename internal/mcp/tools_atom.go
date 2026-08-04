@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
@@ -22,11 +21,14 @@ func (s *Server) registerAtomTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"promote_atom_to_knowledge",
 		mcp.WithDescription(
-			"Manually promote a consolidated memory atom into a pending knowledge proposal. "+
-				"The atom must have content >= 80 chars and at least 2 tags. "+
-				"The proposal is created with proposed_by='atom_bridge' and requires user "+
-				"confirmation via confirm_proposal before becoming a real knowledge item. "+
-				"Deduplication happens at confirm time (similarity threshold 0.88).",
+			fmt.Sprintf(
+				"Manually promote a consolidated memory atom into a pending knowledge proposal. "+
+					"The atom must have content >= %d chars and at least %d tags. "+
+					"The proposal is created with proposed_by='atom_bridge' and requires user "+
+					"confirmation via confirm_proposal before becoming a real knowledge item. "+
+					"Deduplication happens at confirm time (similarity threshold 0.88).",
+				atom.PromotionMinContentRunes, atom.PromotionMinTags,
+			),
 		),
 		mcp.WithString("atom_id",
 			mcp.Description("UUID of the atom to promote"),
@@ -160,7 +162,7 @@ func atomizeAndPersist(
 			slog.Warn("atomize: persist atom failed", "err", err)
 			continue
 		}
-		if sErr := store.SetDigestStatus(ctx, a.ID, "done", ""); sErr != nil {
+		if sErr := store.SetDigestStatus(ctx, a.ID, atom.DigestStatusDone, ""); sErr != nil {
 			slog.Warn("atomize: set digest status done failed", "atom_id", a.ID, "err", sErr)
 		}
 		atomIDs = append(atomIDs, a.ID)
@@ -268,15 +270,11 @@ func (s *Server) handlePromoteAtomToKnowledge(ctx context.Context, req mcp.CallT
 	return s.promoteSingleAtom(ctx, atomID, a)
 }
 
-// digestStatusConsolidated is the only digest_status value eligible for
-// promotion. Mirrors the scheduler package constant (scheduler.digestStatusConsolidated)
-// to avoid an awkward cross-package import in this tool file.
-const digestStatusConsolidated = "consolidated"
-
 // fetchAtomForPromotion retrieves an atom by ID using Traverse (depth=1)
-// and verifies that its digest_status is "consolidated" before returning it.
-// Only consolidated atoms may be promoted — atoms in any other status (pending,
-// done, failed, promoted) are rejected with a clear error message.
+// and verifies that its digest_status is atom.DigestStatusConsolidated
+// before returning it. Only consolidated atoms may be promoted — atoms in
+// any other status (pending, done, failed, promoted) are rejected with a
+// clear error message.
 // Returns the atom and an error message (non-empty = failure).
 func (s *Server) fetchAtomForPromotion(ctx context.Context, atomID uuid.UUID) (atom.Atom, string) {
 	result, err := s.atom.Traverse(ctx, atomID, 1)
@@ -287,10 +285,10 @@ func (s *Server) fetchAtomForPromotion(ctx context.Context, atomID uuid.UUID) (a
 		return atom.Atom{}, fmt.Sprintf("atom %s not found", atomID)
 	}
 	a := result.Atoms[0]
-	// Guard: nil DigestStatus or any status other than "consolidated" is rejected.
+	// Guard: nil DigestStatus or any status other than consolidated is rejected.
 	// The scheduler's atom-bridge job only promotes consolidated atoms; this MCP
 	// tool must apply the same vetting (security — prevents promoting unreviewed atoms).
-	if a.DigestStatus == nil || *a.DigestStatus != digestStatusConsolidated {
+	if a.DigestStatus == nil || *a.DigestStatus != atom.DigestStatusConsolidated {
 		var statusStr string
 		if a.DigestStatus == nil {
 			statusStr = "<nil>"
@@ -299,23 +297,27 @@ func (s *Server) fetchAtomForPromotion(ctx context.Context, atomID uuid.UUID) (a
 		}
 		return atom.Atom{}, fmt.Sprintf(
 			"atom %s has digest_status=%q; only %q atoms may be promoted to knowledge",
-			atomID, statusStr, digestStatusConsolidated,
+			atomID, statusStr, atom.DigestStatusConsolidated,
 		)
 	}
 	return a, ""
 }
 
 // promoteSingleAtom validates quality gate and creates a knowledge proposal.
+// The eligibility check (content length + tag count) is shared with the
+// weekly atom-bridge cron job (internal/scheduler/atom_bridge.go) via
+// atom.CheckPromotionEligibility so the manual and cron promotion paths
+// cannot silently diverge (G6 decision 8f25c58d).
 func (s *Server) promoteSingleAtom(ctx context.Context, atomID uuid.UUID, a atom.Atom) (*mcp.CallToolResult, error) {
-	// Use rune count (not byte length) so CJK/emoji content is measured correctly.
-	if utf8.RuneCountInString(a.Content) < 80 {
+	elig := atom.CheckPromotionEligibility(a.Content, a.Tags)
+	if !elig.ContentOK {
 		return mcp.NewToolResultError(
-			fmt.Sprintf("atom content too short (%d runes); minimum is 80 runes for promotion", utf8.RuneCountInString(a.Content)),
+			fmt.Sprintf("atom content too short (%d runes); minimum is %d runes for promotion", elig.ContentRunes, atom.PromotionMinContentRunes),
 		), nil
 	}
-	if len(a.Tags) < 2 {
+	if !elig.TagsOK {
 		return mcp.NewToolResultError(
-			fmt.Sprintf("atom has %d tag(s); minimum is 2 tags for promotion", len(a.Tags)),
+			fmt.Sprintf("atom has %d tag(s); minimum is %d tags for promotion", elig.TagCount, atom.PromotionMinTags),
 		), nil
 	}
 	// Rune-aware title truncation prevents panic and invalid UTF-8 on CJK/emoji.
@@ -340,7 +342,7 @@ func (s *Server) promoteSingleAtom(ctx context.Context, atomID uuid.UUID, a atom
 	if createErr != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating knowledge proposal: %v", createErr)), nil
 	}
-	if setErr := s.atom.SetDigestStatus(ctx, atomID, "promoted", ""); setErr != nil {
+	if setErr := s.atom.SetDigestStatus(ctx, atomID, atom.DigestStatusPromoted, ""); setErr != nil {
 		slog.Warn("promote_atom_to_knowledge: setting promoted status failed",
 			"atom_id", atomID, "err", setErr)
 	}

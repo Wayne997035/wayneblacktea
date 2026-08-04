@@ -4,6 +4,7 @@ package atom_test
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -415,10 +416,11 @@ func TestStore_SetDigestStatus(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		atomID uuid.UUID
-		status string
-		errMsg string
+		name    string
+		atomID  uuid.UUID
+		status  string
+		errMsg  string
+		wantErr bool
 	}{
 		{
 			name:   "set to done clears error_msg",
@@ -444,11 +446,28 @@ func TestStore_SetDigestStatus(t *testing.T) {
 			status: "done",
 			errMsg: "",
 		},
+		{
+			name:    "invalid status is rejected before reaching SQL",
+			atomID:  a.ID,
+			status:  "archived",
+			errMsg:  "",
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := store.SetDigestStatus(ctx, tc.atomID, tc.status, tc.errMsg); err != nil {
+			err := store.SetDigestStatus(ctx, tc.atomID, tc.status, tc.errMsg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !errors.Is(err, atom.ErrInvalidDigestStatus) {
+					t.Errorf("expected ErrInvalidDigestStatus, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("SetDigestStatus: %v", err)
 			}
 		})
