@@ -85,7 +85,7 @@ func TestWrapUntrustedLocalDB_TokenDiffersAcrossCalls(t *testing.T) {
 	if tok1 == tok2 {
 		t.Fatalf("boundary token identical across two renderSessionContext calls: %q", tok1)
 	}
-	if tok1 == "rand-unavailable" || tok2 == "rand-unavailable" {
+	if tok1 == boundaryTokenUnavailable || tok2 == boundaryTokenUnavailable {
 		t.Fatalf("newBoundaryToken hit the crypto/rand failure fallback in a test environment "+
 			"where RandomHex should always succeed: tok1=%q tok2=%q", tok1, tok2)
 	}
@@ -137,7 +137,7 @@ func TestWrapUntrustedLocalDB_TokenFormatAndLength(t *testing.T) {
 	if !exactHexTokenPattern.MatchString(tok) {
 		t.Errorf("boundary token %q is not lowercase hex", tok)
 	}
-	if tok == "rand-unavailable" {
+	if tok == boundaryTokenUnavailable {
 		t.Fatalf("newBoundaryToken hit the crypto/rand failure fallback in a test environment " +
 			"where RandomHex should always succeed")
 	}

@@ -55,6 +55,12 @@ const boundaryNonceBytes = 16
 // call's token>" — see wrapUntrustedLocalDB.
 const boundaryTokenLabel = "boundary-token: "
 
+// boundaryTokenUnavailable is the sentinel newBoundaryToken falls back to
+// when the platform CSPRNG is broken. Declared here rather than inlined so
+// tests assert against the same value the implementation emits, instead of
+// duplicating the literal and silently drifting if it ever changes.
+const boundaryTokenUnavailable = "rand-unavailable"
+
 // newBoundaryToken returns a fresh crypto-random hex token via RandomHex
 // (envfile.go). RandomHex failing here would mean the platform CSPRNG
 // itself is broken — realistically unreachable — and this is a
@@ -66,7 +72,7 @@ const boundaryTokenLabel = "boundary-token: "
 func newBoundaryToken() string {
 	token, err := RandomHex(boundaryNonceBytes)
 	if err != nil {
-		return "rand-unavailable"
+		return boundaryTokenUnavailable
 	}
 	return token
 }
