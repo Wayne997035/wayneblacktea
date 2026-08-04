@@ -151,6 +151,10 @@ func (s *stubDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]d
 	return nil, nil
 }
 
+func (s *stubDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // stub contextpack.KnowledgeReadPort — only SearchReadOnly carries fixture
 // state. retrieveKnowledge (contextpack/retrieval.go) calls SearchReadOnly,

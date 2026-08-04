@@ -41,20 +41,24 @@ const (
 // is neither "postgres" nor "sqlite".
 var ErrInvalidBackend = errors.New("STORAGE_BACKEND must be 'postgres' or 'sqlite'")
 
-// BackendFromEnv reads the STORAGE_BACKEND environment variable and returns
-// the resolved Backend.
+// BackendFor resolves the Backend from explicit rawBackend/dsn values,
+// mirroring BackendFromEnv's resolution order without touching process env:
 //
-// Resolution order:
-//  1. STORAGE_BACKEND is set → use its value (postgres|sqlite).
-//  2. STORAGE_BACKEND is unset and DATABASE_URL is set → BackendPostgres.
-//     This lets Railway / Heroku / Docker deployments work without requiring
-//     an extra STORAGE_BACKEND variable when DATABASE_URL is already present.
-//  3. STORAGE_BACKEND is unset and DATABASE_URL is unset → BackendSQLite
-//     (local-first default for zero-infra installs).
-func BackendFromEnv() (Backend, error) {
-	raw := strings.TrimSpace(os.Getenv("STORAGE_BACKEND"))
+//  1. rawBackend is set (after trimming) → use its value (postgres|sqlite).
+//  2. rawBackend is unset and dsn is set → BackendPostgres. This lets
+//     Railway / Heroku / Docker deployments work without requiring an extra
+//     STORAGE_BACKEND variable when a DSN is already present.
+//  3. rawBackend is unset and dsn is unset → BackendSQLite (local-first
+//     default for zero-infra installs).
+//
+// Callers that read from process env directly should prefer BackendFromEnv;
+// BackendFor exists so callers with an explicit DSN (e.g. a fallback-file
+// value that was never written to os.Environ) can resolve the same way
+// without mutating env first. See backend-security-design.md §4.2.
+func BackendFor(rawBackend, dsn string) (Backend, error) {
+	raw := strings.TrimSpace(rawBackend)
 	if raw == "" {
-		if strings.TrimSpace(os.Getenv("DATABASE_URL")) != "" {
+		if strings.TrimSpace(dsn) != "" {
 			return BackendPostgres, nil
 		}
 		return BackendSQLite, nil
@@ -67,6 +71,13 @@ func BackendFromEnv() (Backend, error) {
 	default:
 		return "", fmt.Errorf("%w: got %q", ErrInvalidBackend, raw)
 	}
+}
+
+// BackendFromEnv reads the STORAGE_BACKEND and DATABASE_URL environment
+// variables and returns the resolved Backend. See BackendFor for the
+// resolution order; this is a thin env-reading wrapper around it.
+func BackendFromEnv() (Backend, error) {
+	return BackendFor(os.Getenv("STORAGE_BACKEND"), os.Getenv("DATABASE_URL"))
 }
 
 // EnsureSupported returns nil when the given backend is one we ship a real

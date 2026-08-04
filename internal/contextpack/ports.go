@@ -43,6 +43,23 @@ type DecisionReadPort interface {
 	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
 	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
 	ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error)
+	// All returns the most recent decisions across every repo/project/task —
+	// used only when req has no scope signal at all (RepoName == "" &&
+	// ProjectID == nil && TaskID == nil). The session-start hook (A5a) is one
+	// caller that hits this: it has no current-repo signal to pass — see
+	// retrieveDecisions and backend-security-design.md-adjacent dispatch
+	// notes on why deriveRepoSlug is deliberately not used to manufacture
+	// one. It is NOT the only caller: assemble_context's MCP tool schema
+	// (internal/mcp/tools_contextpack.go) marks repo_name/project_id/task_id
+	// Optional — only objective is Required — so any MCP client that omits
+	// all three (e.g. a bare "what have we decided" query) reaches this
+	// branch too, returning workspace-wide decisions instead of the empty
+	// set a caller of the pre-A5a code path would have seen. Both All()
+	// implementations (Postgres and SQLite) still filter to the caller's own
+	// workspace, so this is a scope-widening within one tenant, not a
+	// cross-tenant leak — see TestHandleAssembleContext_UnscopedRequestReachesDecisionAll
+	// (internal/mcp/tools_contextpack_test.go) for the locked-in contract.
+	All(ctx context.Context, limit int32) ([]db.Decision, error)
 }
 
 // KnowledgeReadPort is the subset of knowledge.StoreIface that
