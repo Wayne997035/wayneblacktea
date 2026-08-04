@@ -285,7 +285,7 @@ func TestHandleAssembleContext_FilesTouchedCapAndLengthGuard(t *testing.T) {
 	// 51 entries, plus one oversized entry — the request must still succeed
 	// (excess/oversized entries are dropped, not rejected).
 	files := make([]any, 0, 52)
-	for i := 0; i < 51; i++ {
+	for range 51 {
 		files = append(files, "file.go")
 	}
 	files = append(files, strings.Repeat("x", maxFileTouchedRune+1))
@@ -305,7 +305,7 @@ func TestHandleAssembleContext_IncludeTypesCapAndLengthGuard(t *testing.T) {
 	// maxIncludeTypesRunes=200) — adversarial LLM-supplied array input must
 	// be bounded, not rejected outright (backend-security-design.md §2.1).
 	types := make([]any, 0, 41)
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		types = append(types, "semantic")
 	}
 	types = append(types, strings.Repeat("x", maxIncludeTypesRunes+1))
