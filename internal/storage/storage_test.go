@@ -79,6 +79,93 @@ func TestBackendFromEnv(t *testing.T) {
 	}
 }
 
+// TestBackendFromEnv_MatchesBackendFor is the A5a equivalence check: for
+// every case in TestBackendFromEnv's table, calling BackendFor directly with
+// the same (STORAGE_BACKEND, DATABASE_URL) pair as explicit arguments MUST
+// produce the byte-identical result to BackendFromEnv reading them from
+// process env — proving BackendFromEnv's extraction into a thin env-reading
+// wrapper changed nothing observable.
+func TestBackendFromEnv_MatchesBackendFor(t *testing.T) {
+	tests := []struct {
+		name        string
+		envVal      string
+		databaseURL string
+		want        storage.Backend
+		wantErr     bool
+		errIs       error
+	}{
+		{
+			name:        "STORAGE_BACKEND=postgres",
+			envVal:      "postgres",
+			databaseURL: "postgres://localhost/testdb",
+			want:        storage.BackendPostgres,
+		},
+		{
+			name:        "STORAGE_BACKEND=sqlite",
+			envVal:      "sqlite",
+			databaseURL: "postgres://localhost/testdb",
+			want:        storage.BackendSQLite,
+		},
+		{
+			name:        "STORAGE_BACKEND=mysql (invalid)",
+			envVal:      "mysql",
+			databaseURL: "",
+			wantErr:     true,
+			errIs:       storage.ErrInvalidBackend,
+		},
+		{
+			name:        "STORAGE_BACKEND empty, DATABASE_URL set → postgres",
+			envVal:      "",
+			databaseURL: "postgres://localhost/testdb",
+			want:        storage.BackendPostgres,
+		},
+		{
+			name:        "STORAGE_BACKEND empty, DATABASE_URL empty → sqlite",
+			envVal:      "",
+			databaseURL: "",
+			want:        storage.BackendSQLite,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("STORAGE_BACKEND", tc.envVal)
+			t.Setenv("DATABASE_URL", tc.databaseURL)
+
+			envGot, envErr := storage.BackendFromEnv()
+			forGot, forErr := storage.BackendFor(tc.envVal, tc.databaseURL)
+
+			if envGot != forGot {
+				t.Errorf("BackendFromEnv() = %q, BackendFor() = %q; want equal", envGot, forGot)
+			}
+			if (envErr == nil) != (forErr == nil) {
+				t.Fatalf("BackendFromEnv() err = %v, BackendFor() err = %v; want both nil or both non-nil", envErr, forErr)
+			}
+
+			if tc.wantErr {
+				if envErr == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errIs != nil {
+					if !errors.Is(envErr, tc.errIs) {
+						t.Errorf("BackendFromEnv() error: expected errors.Is(%v), got %v", tc.errIs, envErr)
+					}
+					if !errors.Is(forErr, tc.errIs) {
+						t.Errorf("BackendFor() error: expected errors.Is(%v), got %v", tc.errIs, forErr)
+					}
+				}
+				return
+			}
+			if envErr != nil {
+				t.Fatalf("unexpected error: %v", envErr)
+			}
+			if envGot != tc.want {
+				t.Errorf("got %q, want %q", envGot, tc.want)
+			}
+		})
+	}
+}
+
 func TestEnsureSupported(t *testing.T) {
 	t.Parallel()
 

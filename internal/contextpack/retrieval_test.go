@@ -84,6 +84,9 @@ type fakeDecisionStore struct {
 
 	byTask    []db.Decision
 	byTaskErr error
+
+	all    []db.Decision
+	allErr error
 }
 
 var _ DecisionReadPort = (*fakeDecisionStore)(nil)
@@ -98,6 +101,10 @@ func (f *fakeDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) (
 
 func (f *fakeDecisionStore) ByTask(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
 	return f.byTask, f.byTaskErr
+}
+
+func (f *fakeDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) {
+	return f.all, f.allErr
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +832,65 @@ func TestRetrieveWorkSessionConverterEndToEnd(t *testing.T) {
 	}
 	if it.Provenance["task_id"] != taskID.String() {
 		t.Errorf("Provenance[task_id] = %q, want %s", it.Provenance["task_id"], taskID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decision.All fallback for unscoped requests (A5a — session-start hook has
+// no current-repo signal). This is a DEDICATED case, kept separate from the
+// pre-existing decision.ByProject/ByTask/dedup tests above, so those keep
+// asserting the byte-for-byte-unchanged scoped behaviour with zero
+// modification while this one covers only the new unscoped branch.
+// ---------------------------------------------------------------------------
+
+func TestRetrieveDecisionsUnscopedFallsBackToAll(t *testing.T) {
+	f := newFakes()
+	allID := uuid.New()
+	f.decision.all = []db.Decision{
+		{ID: allID, Title: "d", Decision: "do it", CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}},
+	}
+
+	// No RepoName, no ProjectID, no TaskID — the session-start hook's shape.
+	items, _ := f.assembler().retrieve(context.Background(), Request{Objective: "test"})
+
+	if findItem(items, "decision", allID) == nil {
+		t.Errorf("expected decision %s from decision.All to be present for an unscoped request", allID)
+	}
+}
+
+func TestRetrieveDecisionsUnscopedAllErrorSurfacedAsWarning(t *testing.T) {
+	f := newFakes()
+	f.decision.allErr = errors.New("decision store unavailable")
+
+	_, warnings := f.assembler().retrieve(context.Background(), Request{Objective: "test"})
+
+	found := false
+	for _, w := range warnings {
+		if w.Type == "store_error" && strings.Contains(w.Summary, "decision.All") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a Warning mentioning decision.All, got %+v", warnings)
+	}
+}
+
+// TestRetrieveDecisionsScopedRequestsNeverCallAll is the equivalence proof:
+// every existing scoped caller (RepoName, ProjectID, or TaskID set) MUST
+// leave decision.All's dead — its results must never leak into a scoped
+// request's output, proving this PR changed nothing observable for any
+// caller that already passes a scope (e.g. MCP assemble_context).
+func TestRetrieveDecisionsScopedRequestsNeverCallAll(t *testing.T) {
+	f := newFakes()
+	allOnlyID := uuid.New()
+	f.decision.all = []db.Decision{
+		{ID: allOnlyID, Title: "should never appear", Decision: "x", CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}},
+	}
+
+	items, _ := f.assembler().retrieve(context.Background(), Request{Objective: "test", RepoName: testRepoName})
+
+	if findItem(items, "decision", allOnlyID) != nil {
+		t.Errorf("decision.All result leaked into a RepoName-scoped request's output; want decision.All never called when a scope is present")
 	}
 }
 

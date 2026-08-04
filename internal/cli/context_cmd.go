@@ -3,6 +3,16 @@
 // "systemMessage" field that Claude Code injects into the first user
 // message of a new session.
 //
+// A5a (architecture-review-wbt-20260724-full.html item 13): this hook no
+// longer hand-rolls its own PG-only retrieval/ranking/budget logic. It is a
+// thin CLI adapter around contextpack.Assemble() — the same engine the
+// assemble_context MCP tool uses — wired to whichever backend
+// storage.BackendFor resolves (Postgres or SQLite), so both backends share
+// one ranking/budget implementation instead of drifting. See
+// internal/contextpack for Assemble()/scorer/budget; this file's job is only
+// to build the right read ports for the resolved backend, call Assemble()
+// once, and render the result (context_render.go).
+//
 // Exit semantics: this function returns nil unconditionally so the wbt
 // dispatcher (and the wbt-context shim) always exit 0 — Claude Code MUST
 // never be blocked by a hook error. All failures are logged via slog to
@@ -12,32 +22,36 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
-	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
+	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
+	"github.com/Wayne997035/wayneblacktea/internal/procedural"
+	"github.com/Wayne997035/wayneblacktea/internal/reflection"
+	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/skill"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pgvector/pgvector-go"
 )
 
-const (
-	// contextCosineSimilarityThreshold is the minimum cosine similarity for a
-	// recalled session to be injected into context. Requires GEMINI_API_KEY to
-	// be set so real semantic embeddings are stored; falls back to showing the
-	// most recent handoff when no embeddings exist.
-	contextCosineSimilarityThreshold = 0.5
-
-	// contextRecallTopK is the number of similar sessions to inject per recall pass.
-	contextRecallTopK = 3
-
-	// contextWindowChars is the approximate char budget for injected recall lines.
-	contextWindowChars = 800
-)
+// dueReviewsLimit matches the pre-A5a hook's fixed cap for the "## Due
+// reviews" section (concepts table has no natural ranking here — see
+// backend-security-design.md-adjacent §8 notes in the A5a dispatch on why
+// this stays a small, unranked CLI-adapter-only query).
+const dueReviewsLimit = 10
 
 // RunContext dispatches `wbt context <subcmd>`. args is os.Args[2:] (subcmd
 // onward). Currently supports only `session-start`. Returns nil so wbt always
@@ -59,12 +73,35 @@ type SessionStartOutput struct {
 	SystemMessage string `json:"systemMessage"`
 }
 
+// runSessionStart resolves the storage backend (dual-backend, matching every
+// other wbt entry point — see storage.ResolveFromEnv doc, whose two steps
+// (BackendFor + EnsureSupported) this inlines so the resolved dsn can be
+// threaded through explicitly instead of round-tripping through os.Environ —
+// backend-security-design.md §4.2) and dispatches to the Postgres or SQLite
+// implementation. Both branches build the same 11 contextpack read ports,
+// call Assemble() once, and hand the result to renderSessionContext.
+// Always calls EmitContext exactly once so the hook's fail-soft, always-exit-0
+// contract holds on every code path.
 func runSessionStart() {
+	// Preserve the historical fallback-DSN lookup (~/.wayneblacktea/.env.local)
+	// used by friend-grade self-host installs that configure Postgres via a
+	// config file instead of process env (hook binaries don't go through
+	// godotenv.Load like cmd/server does). The resolved dsn is threaded
+	// through as an explicit parameter rather than written back into the
+	// process environment.
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = DSNFromFallback()
 	}
-	if dsn == "" {
+
+	backend, err := storage.BackendFor(os.Getenv("STORAGE_BACKEND"), dsn)
+	if err != nil {
+		slog.Warn("wbt-context: resolving storage backend", "err", err)
+		EmitContext("")
+		return
+	}
+	if err := storage.EnsureSupported(backend); err != nil {
+		slog.Warn("wbt-context: resolving storage backend", "err", err)
 		EmitContext("")
 		return
 	}
@@ -72,392 +109,207 @@ func runSessionStart() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	wsID := WorkspaceFromEnv()
+
+	var (
+		pack       *contextpack.Pack
+		handoff    *db.SessionHandoff
+		dueReviews []string
+	)
+	if backend == storage.BackendSQLite {
+		pack, handoff, dueReviews = runSessionStartSQLite(ctx, wsID)
+	} else {
+		pack, handoff, dueReviews = runSessionStartPostgres(ctx, wsID, dsn)
+	}
+
+	EmitContext(renderSessionContext(pack, handoff, dueReviews))
+}
+
+// runSessionStartPostgres builds a hook-tuned pgxpool (MaxConns=2, 30s
+// lifetime — backend-security-design.md §5.3; NOT the generic
+// storage.BuildServerStores pool config, which is sized for the
+// long-running cmd/server process instead), wires the 11 contextpack read
+// ports directly off it (deliberately NOT storage.NewServerStores/
+// ServerStores — that pulls in stores contextpack never uses and enforces a
+// startup-time WORKSPACE_ID requirement this hook has never had), assembles
+// the pack, and fetches due-review titles. Returns (nil, nil, nil) on any
+// fail-soft path.
+func runSessionStartPostgres(ctx context.Context, wsID *uuid.UUID, dsn string) (*contextpack.Pack, *db.SessionHandoff, []string) {
+	if dsn == "" {
+		return nil, nil, nil
+	}
+
+	pool, err := newHookPgxPool(ctx, dsn)
+	if err != nil {
+		slog.Warn("wbt-context: postgres connection failed", "err", err)
+		return nil, nil, nil
+	}
+	defer pool.Close()
+
+	sessionStore := session.NewStore(pool, wsID)
+	handoff := latestHandoffOrNil(ctx, sessionStore)
+
+	asm, err := contextpack.NewAssembler(
+		gtd.NewStore(pool, wsID),
+		decision.NewStore(pool, wsID),
+		// embed=nil: this hook must never call an external embedding API —
+		// A5a dispatch §5 ("hook 路徑不得走網路"). knowledge.Store.SearchReadOnly
+		// degrades to FTS-only when embed==nil (internal/knowledge/store.go
+		// searchCore's `if s.embed == nil` branch), which is exactly the
+		// desired fail-soft-offline behaviour here.
+		knowledge.NewStore(pool, nil, wsID),
+		atom.New(pool, wsID),
+		procedural.New(pool, wsID),
+		skill.New(pool, wsID),
+		outcome.NewStore(pool, wsID),
+		reflection.New(pool, wsID),
+		behaviorrule.New(pool, wsID),
+		sessionStore,
+		worksession.NewStore(pool, wsID),
+	)
+	if err != nil {
+		slog.Warn("wbt-context: building postgres assembler failed", "err", err)
+		return nil, handoff, nil
+	}
+
+	pack := assembleSessionPack(ctx, asm, handoff)
+	dueReviews := fetchDueReviewsPostgres(ctx, pool, wsID, dueReviewsLimit)
+	return pack, handoff, dueReviews
+}
+
+// runSessionStartSQLite opens SQLITE_PATH (storage.SQLitePathFromEnv, same
+// default/env resolution as every other wbt entry point) strictly
+// read-only via wbtsqlite.OpenReadOnly (M-1: never migrates, never writes —
+// see that function's doc comment for the full threat model), wires the
+// same 11 contextpack read ports off it, assembles the pack, and fetches
+// due-review titles. Returns (nil, nil, nil) on any fail-soft path,
+// including a stale/dirty schema (ErrSchemaNotCurrent) or a missing file.
+func runSessionStartSQLite(ctx context.Context, wsID *uuid.UUID) (*contextpack.Pack, *db.SessionHandoff, []string) {
+	path := storage.SQLitePathFromEnv()
+	wsStr := ""
+	if wsID != nil {
+		wsStr = wsID.String()
+	}
+
+	sdb, err := wbtsqlite.OpenReadOnly(ctx, path, wsStr)
+	if err != nil {
+		slog.Warn("wbt-context: opening sqlite read-only failed", "err", err)
+		return nil, nil, nil
+	}
+	defer func() {
+		if cerr := sdb.Close(); cerr != nil {
+			slog.Warn("wbt-context: closing sqlite read-only connection", "err", cerr)
+		}
+	}()
+
+	sessionStore := wbtsqlite.NewSessionStore(sdb)
+	handoff := latestHandoffOrNil(ctx, sessionStore)
+
+	asm, err := contextpack.NewAssembler(
+		wbtsqlite.NewGTDStore(sdb),
+		wbtsqlite.NewDecisionStore(sdb),
+		wbtsqlite.NewKnowledgeStore(sdb),
+		wbtsqlite.NewAtomStore(sdb),
+		wbtsqlite.NewProceduralStore(sdb),
+		wbtsqlite.NewSkillStore(sdb),
+		wbtsqlite.NewOutcomeStore(sdb),
+		wbtsqlite.NewReflectionStore(sdb),
+		wbtsqlite.NewBehaviorRuleStore(sdb),
+		sessionStore,
+		wbtsqlite.NewWorkSessionStore(sdb),
+	)
+	if err != nil {
+		slog.Warn("wbt-context: building sqlite assembler failed", "err", err)
+		return nil, handoff, nil
+	}
+
+	pack := assembleSessionPack(ctx, asm, handoff)
+	dueReviews := fetchDueReviewsSQLite(ctx, sdb, dueReviewsLimit)
+	return pack, handoff, dueReviews
+}
+
+// newHookPgxPool builds a pgxpool tuned for a short-lived, high-frequency
+// hook process (backend-security-design.md §5.3): MaxConns=2, MinConns=0,
+// MaxConnLifetime=30s. Deliberately NOT the same sizing as
+// internal/storage/factory.go's buildPgxPoolConfig, which targets the single
+// long-running cmd/server process.
+func newHookPgxPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		slog.Warn("wbt-context: failed to parse DSN", "err", err)
-		EmitContext("")
-		return
+		return nil, fmt.Errorf("parsing DSN: %w", err)
 	}
 	cfg.MaxConns = 2
 	cfg.MinConns = 0
 	cfg.MaxConnLifetime = 30 * time.Second
-	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
-	if tlsErr != nil {
-		slog.Warn("wbt-context: TLS config error", "err", tlsErr)
-		EmitContext("")
-		return
+	tlsCfg, err := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
+	if err != nil {
+		return nil, fmt.Errorf("TLS config: %w", err)
 	}
 	if tlsCfg != nil {
 		cfg.ConnConfig.TLSConfig = tlsCfg
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		slog.Warn("wbt-context: DB connection failed", "err", err)
-		EmitContext("")
-		return
+		return nil, fmt.Errorf("connecting: %w", err)
 	}
-	defer pool.Close()
-
-	wsID := WorkspaceFromEnv()
-	msg := buildContextMessage(ctx, pool, wsID)
-	EmitContext(msg)
+	return pool, nil
 }
 
-// buildContextMessage queries DB and assembles the context string.
-func buildContextMessage(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
-	var parts []string
-
-	// 1. Latest unresolved handoff.
-	if h := fetchLatestHandoff(ctx, pool, wsID); h != "" {
-		parts = append(parts, "## Last session handoff\n"+h)
-	}
-
-	// 2. Recent decisions (last 5).
-	if d := fetchRecentDecisions(ctx, pool, wsID, 5); d != "" {
-		parts = append(parts, "## Recent decisions\n"+d)
-	}
-
-	// 3. Due reviews (concept titles only, limit 10).
-	if r := fetchDueReviews(ctx, pool, wsID, 10); r != "" {
-		parts = append(parts, "## Due reviews\n"+r)
-	}
-
-	// 4. Semantic recall: top-K similar handoffs, decisions, and knowledge items.
-	// Uses real Gemini 768-dim semantic embeddings (requires GEMINI_API_KEY).
-	// The query embedding is derived from the last session handoff summary text
-	// so the recall is contextualised to the previous session.
-	if recall := fetchSemanticRecall(ctx, pool, wsID); recall != "" {
-		parts = append(parts, "## Relevant past context\n"+recall)
-	}
-
-	if len(parts) == 0 {
-		return ""
-	}
-	return "context:\n\n" + strings.Join(parts, "\n\n")
-}
-
-// fetchSemanticRecall builds a query embedding from the latest handoff summary
-// and returns the top-K similar handoffs, decisions, and knowledge items.
-// Returns "" when no embeddings exist or on any error (best-effort).
-// Uses the real Gemini 768-dim provider (default); falls back to hashed 32-dim
-// when GEMINI_API_KEY is absent (fail-soft from NewEmbeddingProvider).
-// Only rows whose embedding_provider matches the current provider are searched,
-// preventing cross-provider dimension mismatches (CosineSimilarity returns 0).
-func fetchSemanticRecall(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
-	// Build query embedding from the latest unresolved handoff's summary_text.
-	queryText := fetchLatestHandoffSummaryText(ctx, pool, wsID)
-	if strings.TrimSpace(queryText) == "" {
-		return "" // nothing to embed → skip recall
-	}
-
-	// NewEmbeddingProvider defaults to Gemini 768-dim; falls back to hashed with Warn.
-	embedder, err := localai.NewEmbeddingProvider()
+// latestHandoffOrNil fetches the latest unresolved handoff via any
+// contextpack.SessionReadPort implementation (both the Postgres *session.Store
+// and the SQLite *wbtsqlite.SessionStore satisfy it identically). Used both
+// to build req.Objective (assembleSessionPack) and to render the "## Last
+// session handoff" section directly (context_render.go) — session.ErrNotFound
+// (the common "no unresolved handoff" case) is not logged as a warning.
+func latestHandoffOrNil(ctx context.Context, s contextpack.SessionReadPort) *db.SessionHandoff {
+	h, err := s.LatestHandoff(ctx)
 	if err != nil {
-		slog.Warn("wbt-context: unknown embedding provider", "err", err)
-		return ""
-	}
-	queryVec, err := embedder.Embed(queryText)
-	if err != nil || len(queryVec) == 0 {
-		slog.Warn("wbt-context: embedding failed for semantic recall", "err", err)
-		return ""
-	}
-
-	// Determine the active provider tag so recall queries can filter to same-provider rows.
-	activeProvider := localai.ProviderTagFromDim(len(queryVec))
-
-	var lines []string
-	total := 0
-
-	// Top-K similar handoffs (filtered to same provider to prevent dim-mismatch zero scores).
-	for _, h := range fetchCosineSimilarHandoffs(ctx, pool, wsID, queryVec, activeProvider, contextRecallTopK+1) {
-		text := h.intent
-		if h.summaryText != "" {
-			text += ": " + truncate(h.summaryText, 100)
+		if !errors.Is(err, session.ErrNotFound) {
+			slog.Warn("wbt-context: fetching latest handoff", "err", err)
 		}
-		line := "- [handoff] " + text
-		if total+len(line) > contextWindowChars {
-			break
-		}
-		lines = append(lines, line)
-		total += len(line)
-	}
-
-	// Top-K similar decisions.
-	// NOTE: decisions.embedding has no active writer in this sprint (the writer is a follow-up
-	// task). The SearchByCosine path falls back to recency order when no embeddings exist.
-	// Provider filter is still applied so this is ready when the writer ships.
-	for _, d := range fetchCosineSimilarDecisions(ctx, pool, wsID, queryVec, activeProvider, contextRecallTopK) {
-		line := "- [decision] " + d.title + ": " + truncate(d.decision, 100)
-		if total+len(line) > contextWindowChars {
-			break
-		}
-		lines = append(lines, line)
-		total += len(line)
-	}
-
-	// Top-K similar knowledge items via pgvector native cosine. knowledge_items.embedding is
-	// vector(768) written by the real Gemini provider (factory.go:189). No provider filter:
-	// every knowledge row is real Gemini 768-dim, so there is no mixed-space hazard.
-	for _, k := range fetchCosineSimilarKnowledge(ctx, pool, wsID, queryVec, contextRecallTopK) {
-		line := "- [knowledge] " + k.title + ": " + truncate(k.content, 100)
-		if total+len(line) > contextWindowChars {
-			break
-		}
-		lines = append(lines, line)
-		total += len(line)
-	}
-
-	if len(lines) == 0 {
-		return ""
-	}
-	return strings.Join(lines, "\n")
-}
-
-// fetchLatestHandoffSummaryText returns the summary_text of the most recent
-// unresolved handoff.  Returns "" when none exists.
-func fetchLatestHandoffSummaryText(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
-	const q = `SELECT COALESCE(summary_text, '') FROM session_handoffs
-		WHERE resolved_at IS NULL
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		ORDER BY created_at DESC
-		LIMIT 1`
-	var text string
-	if err := pool.QueryRow(ctx, q, uuidArg(wsID)).Scan(&text); err != nil {
-		return ""
-	}
-	return text
-}
-
-type handoffRecallRow struct {
-	intent      string
-	summaryText string
-}
-
-// recallItem is an intermediate type for the cosine recall pipeline.
-type recallItem struct {
-	col1, col2 string // two text columns (e.g. intent+summary, title+decision)
-	embedding  []byte
-}
-
-// queryCosineCandidates executes a raw SQL query that returns (col1, col2, embedding BYTEA),
-// deserializes embeddings, computes cosine similarity, and returns the top-limit results
-// sorted by descending similarity.  The scan expects exactly these 3 columns.
-//
-// SECURITY: query MUST include workspace_id scoping (enforced by each call site).
-func queryCosineCandidates(
-	ctx context.Context, pool *pgxpool.Pool, query string,
-	queryVec []float32, limit int, logWarnMsg string, args ...any,
-) []recallItem {
-	rows, err := pool.Query(ctx, query, args...)
-	if err != nil {
-		slog.Warn(logWarnMsg, "err", err)
 		return nil
 	}
-	defer rows.Close()
-
-	type scored struct {
-		item recallItem
-		sim  float64
-	}
-	var candidates []scored
-	for rows.Next() {
-		var it recallItem
-		if err := rows.Scan(&it.col1, &it.col2, &it.embedding); err != nil {
-			continue
-		}
-		vec := localai.DeserializeEmbedding(it.embedding)
-		if vec == nil {
-			continue
-		}
-		sim := localai.CosineSimilarity(queryVec, vec)
-		if sim < contextCosineSimilarityThreshold {
-			continue
-		}
-		candidates = append(candidates, scored{item: it, sim: sim})
-	}
-
-	SortBySimDesc(candidates, func(c scored) float64 { return c.sim })
-	if limit < len(candidates) {
-		candidates = candidates[:limit]
-	}
-	result := make([]recallItem, 0, len(candidates))
-	for _, c := range candidates {
-		result = append(result, c.item)
-	}
-	return result
+	return h
 }
 
-// fetchCosineSimilarHandoffs fetches up to limit resolved handoffs with non-null
-// embeddings sorted by cosine similarity to queryVec.
-// The most recent unresolved handoff is excluded (already shown above).
-// Only rows with embedding_provider matching activeProvider are searched to prevent
-// cross-provider dimension mismatches that return zero cosine scores.
-//
-// SECURITY: filtered by workspace_id via queryCosineCandidates.
-func fetchCosineSimilarHandoffs(
-	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, activeProvider string, limit int,
-) []handoffRecallRow {
-	// Filter by embedding_provider to exclude legacy 'hashed' rows when real provider is active.
-	const q = `SELECT intent, COALESCE(summary_text, ''), embedding
-		FROM session_handoffs
-		WHERE embedding IS NOT NULL
-		  AND resolved_at IS NOT NULL
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'hashed')
-		ORDER BY created_at DESC
-		LIMIT 200`
-	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: handoff cosine query failed", uuidArg(wsID), activeProvider)
-	result := make([]handoffRecallRow, 0, len(items))
-	for _, it := range items {
-		result = append(result, handoffRecallRow{intent: it.col1, summaryText: it.col2})
-	}
-	return result
-}
-
-type decisionRecallRow struct {
-	title    string
-	decision string
-}
-
-// fetchCosineSimilarDecisions fetches decisions sorted by cosine similarity.
-// Provider-filtered to exclude legacy 'hashed' rows when real provider is active.
-//
-// NOTE: decisions.embedding has no active writer yet (follow-up task). When no
-// embedding rows exist this function returns an empty slice and the caller silently
-// skips decisions from semantic recall (recency-only behaviour is preserved).
-//
-// SECURITY: filtered by workspace_id via queryCosineCandidates.
-func fetchCosineSimilarDecisions(
-	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, queryVec []float32, activeProvider string, limit int,
-) []decisionRecallRow {
-	const q = `SELECT title, decision, embedding
-		FROM decisions
-		WHERE embedding IS NOT NULL
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		  AND (embedding_provider = $2 OR embedding_provider IS NULL AND $2 = 'hashed')
-		ORDER BY created_at DESC
-		LIMIT 200`
-	items := queryCosineCandidates(ctx, pool, q, queryVec, limit, "wbt-context: decision cosine query failed", uuidArg(wsID), activeProvider)
-	result := make([]decisionRecallRow, 0, len(items))
-	for _, it := range items {
-		result = append(result, decisionRecallRow{title: it.col1, decision: it.col2})
-	}
-	return result
-}
-
-type knowledgeRecallRow struct {
-	title   string
-	content string
-}
-
-// fetchCosineSimilarKnowledge fetches knowledge items most similar to queryVec using
-// pgvector's native <=> operator (DB-side cosine + ORDER BY). knowledge_items.embedding is
-// vector(768) written by the real Gemini provider (factory.go:189), so recall works when
-// GEMINI_API_KEY is set. Unlike handoffs/decisions (BYTEA brute-force via
-// queryCosineCandidates), this table is native pgvector and has NO embedding_provider column
-// — every row is real Gemini 768-dim, so no provider filter and no mixed-space hazard.
-//
-// SECURITY: filtered by workspace_id in the query.
-func fetchCosineSimilarKnowledge(
-	ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID,
-	queryVec []float32, limit int,
-) []knowledgeRecallRow {
-	const q = `SELECT title, content
-		FROM knowledge_items
-		WHERE embedding IS NOT NULL
-		  AND ($2::uuid IS NULL OR workspace_id = $2)
-		  AND (1 - (embedding <=> $1::vector)) >= $4
-		ORDER BY embedding <=> $1::vector
-		LIMIT $3`
-	rows, err := pool.Query(ctx, q, pgvector.NewVector(queryVec), uuidArg(wsID), limit, contextCosineSimilarityThreshold)
+// assembleSessionPack calls Assemble() once with an Objective derived from
+// the latest handoff (Intent + ContextSummary — A5a dispatch §6), returning
+// nil on any Assemble error (fail-soft; Assemble() does not currently return
+// a non-nil error on any path, but this stays defensive against future
+// changes rather than assuming that invariant).
+func assembleSessionPack(ctx context.Context, asm *contextpack.Assembler, handoff *db.SessionHandoff) *contextpack.Pack {
+	pack, err := asm.Assemble(ctx, contextpack.Request{Objective: objectiveFromHandoff(handoff)})
 	if err != nil {
-		slog.Warn("wbt-context: knowledge cosine query failed", "err", err)
+		slog.Warn("wbt-context: Assemble failed", "err", err)
 		return nil
 	}
-	defer rows.Close()
-	result := make([]knowledgeRecallRow, 0, limit)
-	for rows.Next() {
-		var r knowledgeRecallRow
-		if err := rows.Scan(&r.title, &r.content); err != nil {
-			continue
-		}
-		result = append(result, r)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("wbt-context: knowledge cosine rows iteration failed", "err", err)
-	}
-	return result
+	return pack
 }
 
-// SortBySimDesc sorts a slice of any type by descending similarity score.
-// Uses a simple insertion-sort-style swap (table sizes <= 200, acceptable).
-// Exported for test access.
-func SortBySimDesc[T any](s []T, score func(T) float64) {
-	for i := 0; i < len(s)-1; i++ {
-		for j := i + 1; j < len(s); j++ {
-			if score(s[j]) > score(s[i]) {
-				s[i], s[j] = s[j], s[i]
-			}
-		}
-	}
-}
-
-type handoffRow struct {
-	Intent      string
-	SummaryText *string
-	CreatedAt   time.Time
-}
-
-func fetchLatestHandoff(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID) string {
-	const q = `SELECT intent, summary_text, created_at FROM session_handoffs
-		WHERE resolved_at IS NULL
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		ORDER BY created_at DESC
-		LIMIT 1`
-	row := pool.QueryRow(ctx, q, uuidArg(wsID))
-	var h handoffRow
-	if err := row.Scan(&h.Intent, &h.SummaryText, &h.CreatedAt); err != nil {
+// objectiveFromHandoff builds req.Objective from the latest handoff's
+// Intent + ContextSummary (A5a §6). "" when there is no handoff — every
+// retrieveX source in contextpack.retrieve() degrades gracefully on an empty
+// query (current-task/project retrieval is unaffected by Objective at all;
+// keyword-search sources simply match nothing rather than erroring).
+func objectiveFromHandoff(h *db.SessionHandoff) string {
+	if h == nil {
 		return ""
 	}
-	out := fmt.Sprintf("- Intent: %s (created %s)", h.Intent, h.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"))
-	if h.SummaryText != nil && *h.SummaryText != "" {
-		out += "\n- Summary: " + *h.SummaryText
+	obj := h.Intent
+	if h.ContextSummary.Valid && h.ContextSummary.String != "" {
+		obj += " " + h.ContextSummary.String
 	}
-	return out
+	return obj
 }
 
-type decisionRow struct {
-	Title    string
-	RepoName *string
-	Decision string
-}
-
-func fetchRecentDecisions(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, limit int) string {
-	const q = `SELECT title, repo_name, decision FROM decisions
-		WHERE ($1::uuid IS NULL OR workspace_id = $1)
-		ORDER BY created_at DESC
-		LIMIT $2`
-	rows, err := pool.Query(ctx, q, uuidArg(wsID), limit)
-	if err != nil {
-		return ""
-	}
-	defer rows.Close()
-	var lines []string
-	for rows.Next() {
-		var d decisionRow
-		if err := rows.Scan(&d.Title, &d.RepoName, &d.Decision); err != nil {
-			continue
-		}
-		repo := ""
-		if d.RepoName != nil && *d.RepoName != "" {
-			repo = " [" + *d.RepoName + "]"
-		}
-		lines = append(lines, fmt.Sprintf("- %s%s: %s", d.Title, repo, truncate(d.Decision, 120)))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func fetchDueReviews(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, limit int) string {
+// fetchDueReviewsPostgres returns due-review concept titles, most-overdue
+// first. contextpack has no concepts/review_schedule read port at all (A5a
+// dispatch §8 — this is the one deliberately-permitted CLI-adapter-only
+// source), so this query — a single JOIN, no ranking/budget — stays in this
+// file exactly as it was pre-A5a; only the return type changed (string →
+// []string) to match renderSessionContext's contract. Untruncated: caps are
+// applied uniformly for both backends in renderDueReviewsSection.
+func fetchDueReviewsPostgres(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, limit int) []string {
 	const q = `SELECT c.title FROM concepts c
 		JOIN review_schedule rs ON rs.concept_id = c.id
 		WHERE rs.due_date <= NOW()
@@ -467,7 +319,8 @@ func fetchDueReviews(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, l
 		LIMIT $2`
 	rows, err := pool.Query(ctx, q, uuidArg(wsID), limit)
 	if err != nil {
-		return ""
+		slog.Warn("wbt-context: postgres due reviews query failed", "err", err)
+		return nil
 	}
 	defer rows.Close()
 	var titles []string
@@ -476,9 +329,51 @@ func fetchDueReviews(ctx context.Context, pool *pgxpool.Pool, wsID *uuid.UUID, l
 		if err := rows.Scan(&title); err != nil {
 			continue
 		}
-		titles = append(titles, "- "+title)
+		titles = append(titles, title)
 	}
-	return strings.Join(titles, "\n")
+	if err := rows.Err(); err != nil {
+		slog.Warn("wbt-context: postgres due reviews rows iteration failed", "err", err)
+	}
+	return titles
+}
+
+// fetchDueReviewsSQLite is fetchDueReviewsPostgres's structural twin (A5a
+// dispatch §8): same JOIN, same predicate shape, same ordering, same limit —
+// only the placeholder syntax and the NOW()-equivalent
+// (strftime('%Y-%m-%dT%H:%M:%fZ','now'), matching every other "current
+// timestamp" comparison in this package's SQLite migrations) differ.
+// Covered by TestFetchDueReviews_PostgresSQLiteGoldenParity for byte-for-byte
+// section-content parity against fetchDueReviewsPostgres.
+func fetchDueReviewsSQLite(ctx context.Context, sdb *wbtsqlite.DB, limit int) []string {
+	var wsArg any
+	if ws := sdb.WorkspaceID(); ws != "" {
+		wsArg = ws
+	}
+	const q = `SELECT c.title FROM concepts c
+		JOIN review_schedule rs ON rs.concept_id = c.id
+		WHERE rs.due_date <= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  AND c.status = 'active'
+		  AND (?1 IS NULL OR c.workspace_id = ?1)
+		ORDER BY rs.due_date ASC
+		LIMIT ?2`
+	rows, err := sdb.SqlConn().QueryContext(ctx, q, wsArg, limit)
+	if err != nil {
+		slog.Warn("wbt-context: sqlite due reviews query failed", "err", err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var titles []string
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			continue
+		}
+		titles = append(titles, title)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("wbt-context: sqlite due reviews rows iteration failed", "err", err)
+	}
+	return titles
 }
 
 // EmitContext writes the SessionStart hook JSON envelope to stdout.

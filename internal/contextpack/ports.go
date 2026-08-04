@@ -43,6 +43,14 @@ type DecisionReadPort interface {
 	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
 	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
 	ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error)
+	// All returns the most recent decisions across every repo/project/task —
+	// used only when req has no scope signal at all (RepoName == "" &&
+	// ProjectID == nil && TaskID == nil), the session-start hook's case (A5a:
+	// it has no current-repo signal to pass — see retrieveDecisions and
+	// backend-security-design.md-adjacent dispatch notes on why
+	// deriveRepoSlug is deliberately not used to manufacture one). Every
+	// existing scoped caller leaves this branch dead.
+	All(ctx context.Context, limit int32) ([]db.Decision, error)
 }
 
 // KnowledgeReadPort is the subset of knowledge.StoreIface that
