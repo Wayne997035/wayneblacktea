@@ -304,7 +304,10 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 //     ID against an already-set draft is never "new" even if the values
 //     differ).
 func isDraftIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
-	return false // MUTATION: never idempotent, always reports new content
+	return !notesHasNewContent(latest.Notes, params.Notes) &&
+		!metricsHasNewKey(latest.Metrics, params.Metrics) &&
+		!relatedRuleIDsHasNew(latest.RelatedRuleIDs, params.RelatedRuleIDs) &&
+		!workSessionIDHasNew(latest.WorkSessionID, params.WorkSessionID)
 }
 
 // notesHasNewContent reports whether appending incoming to existing (per

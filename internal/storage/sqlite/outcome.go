@@ -156,7 +156,8 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 	now := nowRFC3339()
 
 	const q = `INSERT INTO outcomes
-		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at, updated_at)
+		(id, workspace_id, entity_type, entity_id, result, metrics, notes,
+		 related_rule_ids, work_session_id, supersedes_id, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
 
 	var metricsArg any

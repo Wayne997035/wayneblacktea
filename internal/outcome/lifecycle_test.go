@@ -3,6 +3,7 @@ package outcome
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"testing"
 	"time"
 
@@ -160,43 +161,8 @@ func (f *fakeStore) FinalizeDraft(_ context.Context, _ uuid.UUID, params CreateO
 			f.latest.Notes = f.latest.Notes + "\n\n" + params.Notes
 		}
 	}
-	if len(params.Metrics) > 0 {
-		var incoming map[string]json.RawMessage
-		if err := json.Unmarshal(params.Metrics, &incoming); err == nil {
-			merged := make(map[string]json.RawMessage, len(incoming))
-			for k, v := range incoming {
-				merged[k] = v
-			}
-			if len(f.latest.Metrics) > 0 {
-				var existing map[string]json.RawMessage
-				if err := json.Unmarshal(f.latest.Metrics, &existing); err == nil {
-					for k, v := range existing {
-						merged[k] = v // existing wins on conflicting keys
-					}
-				}
-			}
-			if out, err := json.Marshal(merged); err == nil {
-				f.latest.Metrics = out
-			}
-		}
-	}
-	if len(params.RelatedRuleIDs) > 0 {
-		seen := make(map[uuid.UUID]bool, len(f.latest.RelatedRuleIDs)+len(params.RelatedRuleIDs))
-		merged := make([]uuid.UUID, 0, len(f.latest.RelatedRuleIDs)+len(params.RelatedRuleIDs))
-		for _, id := range f.latest.RelatedRuleIDs {
-			if !seen[id] {
-				seen[id] = true
-				merged = append(merged, id)
-			}
-		}
-		for _, id := range params.RelatedRuleIDs {
-			if !seen[id] {
-				seen[id] = true
-				merged = append(merged, id)
-			}
-		}
-		f.latest.RelatedRuleIDs = merged
-	}
+	f.latest.Metrics = mergeMetricsExistingWins(f.latest.Metrics, params.Metrics)
+	f.latest.RelatedRuleIDs = unionRuleIDs(f.latest.RelatedRuleIDs, params.RelatedRuleIDs)
 	if params.WorkSessionID != nil && f.latest.WorkSessionID == nil {
 		f.latest.WorkSessionID = params.WorkSessionID
 	}
@@ -739,4 +705,50 @@ func TestRecordExecutionResult_DraftEnrichRetry_NewRelatedRuleIDsStillWrites(t *
 	if len(got.RelatedRuleIDs) != 1 || got.RelatedRuleIDs[0] != ruleID {
 		t.Errorf("RelatedRuleIDs = %v, want [%s] to have been written", got.RelatedRuleIDs, ruleID)
 	}
+}
+
+// mergeMetricsExistingWins mirrors FinalizeDraft's metrics rule for the fake
+// store: incoming keys are merged in, but a key already present in existing
+// keeps its existing value (append-only — a call can add facts, never rewrite
+// them). Extracted from fakeStore.FinalizeDraft to keep that method under the
+// cyclomatic-complexity gate.
+func mergeMetricsExistingWins(existing, incoming []byte) []byte {
+	if len(incoming) == 0 {
+		return existing
+	}
+	var in map[string]json.RawMessage
+	if err := json.Unmarshal(incoming, &in); err != nil {
+		return existing
+	}
+	merged := make(map[string]json.RawMessage, len(in))
+	maps.Copy(merged, in)
+	if len(existing) > 0 {
+		var ex map[string]json.RawMessage
+		if err := json.Unmarshal(existing, &ex); err == nil {
+			maps.Copy(merged, ex) // existing wins on conflicting keys
+		}
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return existing
+	}
+	return out
+}
+
+// unionRuleIDs mirrors FinalizeDraft's related_rule_ids rule for the fake
+// store: the union of existing and incoming, de-duplicated, existing order
+// preserved first. An empty incoming list leaves existing untouched.
+func unionRuleIDs(existing, incoming []uuid.UUID) []uuid.UUID {
+	if len(incoming) == 0 {
+		return existing
+	}
+	seen := make(map[uuid.UUID]bool, len(existing)+len(incoming))
+	merged := make([]uuid.UUID, 0, len(existing)+len(incoming))
+	for _, id := range append(append([]uuid.UUID{}, existing...), incoming...) {
+		if !seen[id] {
+			seen[id] = true
+			merged = append(merged, id)
+		}
+	}
+	return merged
 }
