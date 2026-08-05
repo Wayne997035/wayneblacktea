@@ -2,6 +2,8 @@ package outcome
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"testing"
 	"time"
 
@@ -136,29 +138,32 @@ func (f *fakeStore) GetLatestForEntity(context.Context, *uuid.UUID, string, uuid
 	return f.latest, nil
 }
 
-// FinalizeDraft mirrors the real stores' COALESCE/whole-array-replace merge
-// semantics (store.go / storage/sqlite/outcome.go), not a blind overwrite:
-// Result is always written; Notes/Metrics/WorkSessionID/RelatedRuleIDs only
-// overwrite f.latest when params supplies a non-empty value, otherwise the
-// existing value is left untouched. Getting this right matters beyond the
-// original M-2a tests below — the draft-retry idempotency tests (PR #152
-// round 3 Major) issue a SECOND FinalizeDraft-eligible call against the
-// result of the first and assert on what actually got merged, so a fake that
-// always overwrote (even with empty params) would silently pass tests that
-// should fail.
+// FinalizeDraft mirrors the real stores' APPEND-ONLY merge semantics
+// (migration 000075 — see store.go / storage/sqlite/outcome.go's
+// FinalizeDraft doc comments for the authoritative per-field rule), not a
+// blind overwrite: Result is always written; Notes appends (direct write
+// only when existing is empty); Metrics only adds keys absent from the
+// existing value; RelatedRuleIDs unions (dedup, existing elements first);
+// WorkSessionID writes only when the existing value is nil. Getting this
+// right matters beyond the original M-2a tests below — the draft-retry
+// idempotency tests (PR #152 round 3 Major, and the append-semantics tests
+// added alongside migration 000075) issue a SECOND FinalizeDraft-eligible
+// call against the result of the first and assert on what actually got
+// merged, so a fake that didn't mirror append semantics precisely could
+// silently pass tests that should fail (or vice versa).
 func (f *fakeStore) FinalizeDraft(_ context.Context, _ uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	f.finalizeCalled = true
 	f.latest.Result = params.Result
 	if params.Notes != "" {
-		f.latest.Notes = params.Notes
+		if f.latest.Notes == "" {
+			f.latest.Notes = params.Notes
+		} else {
+			f.latest.Notes = f.latest.Notes + "\n\n" + params.Notes
+		}
 	}
-	if len(params.Metrics) > 0 {
-		f.latest.Metrics = params.Metrics
-	}
-	if len(params.RelatedRuleIDs) > 0 {
-		f.latest.RelatedRuleIDs = params.RelatedRuleIDs
-	}
-	if params.WorkSessionID != nil {
+	f.latest.Metrics = mergeMetricsExistingWins(f.latest.Metrics, params.Metrics)
+	f.latest.RelatedRuleIDs = unionRuleIDs(f.latest.RelatedRuleIDs, params.RelatedRuleIDs)
+	if params.WorkSessionID != nil && f.latest.WorkSessionID == nil {
 		f.latest.WorkSessionID = params.WorkSessionID
 	}
 	return f.latest, nil
@@ -419,7 +424,12 @@ func TestRecordExecutionResult_TerminalAgainstDraft_StillFinalizes(t *testing.T)
 // TestIsDraftIdempotentReplay covers the pure comparison helper the draft
 // branch uses to distinguish a byte-identical retry (no new information)
 // from a call that carries genuinely new content, mirroring what
-// FinalizeDraft's COALESCE/whole-array-replace UPDATE would actually do.
+// FinalizeDraft's APPEND-ONLY UPDATE (migration 000075) would actually do.
+// Several cases here flipped `want` relative to the pre-append-semantics
+// version of this test (see each case's comment for why) — that's the
+// deliberate, expected consequence of the redesign: "new information" now
+// means "would FinalizeDraft's append/union/set-once merge actually change
+// the stored value", not "differs byte-for-byte from what's already there".
 func TestIsDraftIdempotentReplay(t *testing.T) {
 	sessionA, sessionB := uuid.New(), uuid.New()
 	ruleA, ruleB := uuid.New(), uuid.New()
@@ -462,15 +472,49 @@ func TestIsDraftIdempotentReplay(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "different metrics bytes is new content",
+			name: "notes retry: incoming already the trailing appended block is a replay",
+			// After a real append, latest.Notes == "still investigating\n\nverified in prod".
+			// A retry sending just the appended tail again must be detected
+			// as idempotent (this is exactly the byte-identical-retry shape
+			// TestRecordExecutionResult_DraftEnrichRetry_ByteIdenticalIsIdempotent
+			// exercises at the RecordExecutionResult level).
+			latest: Outcome{Result: resultUnknown, Notes: "still investigating\n\nverified in prod"},
+			params: CreateOutcomeParams{Result: resultUnknown, Notes: "verified in prod"},
+			want:   true,
+		},
+		{
+			// FLIPPED from the pre-append-semantics version (was `want: false`):
+			// under append-only merge, resupplying an ALREADY-PRESENT metrics
+			// key with a different value is NOT new information — FinalizeDraft
+			// will keep the existing value regardless (only ABSENT keys get
+			// added). This call would be a complete no-op write.
+			name:   "same metrics key with a different value is NOT new (existing value can never be overwritten)",
 			latest: base,
 			params: CreateOutcomeParams{Result: resultUnknown, Metrics: []byte(`{"duration_ms":200}`)},
+			want:   true,
+		},
+		{
+			name:   "a genuinely NEW metrics key (alongside an already-present one) is new content",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown, Metrics: []byte(`{"duration_ms":200,"retries":3}`)},
 			want:   false,
 		},
 		{
-			name:   "same notes but NEW work_session_id is new content (reverse-protection: must not be a replay)",
+			// FLIPPED from the pre-append-semantics version (was `want: false`,
+			// framed as "reverse-protection"): once work_session_id is already
+			// set (sessionA here), FinalizeDraft's set-once rule means NO later
+			// call can re-point it, regardless of what ID it supplies — so this
+			// is a no-op write, not new information. The genuine "must still
+			// write" case is covered below, where latest.WorkSessionID is nil.
+			name:   "work_session_id already set: supplying a DIFFERENT id is still NOT new (set-once)",
 			latest: base,
 			params: CreateOutcomeParams{Result: resultUnknown, Notes: "still investigating", WorkSessionID: &sessionB},
+			want:   true,
+		},
+		{
+			name:   "work_session_id unset (nil) on latest: supplying an id IS new content",
+			latest: Outcome{Result: resultUnknown, WorkSessionID: nil},
+			params: CreateOutcomeParams{Result: resultUnknown, WorkSessionID: &sessionB},
 			want:   false,
 		},
 		{
@@ -480,10 +524,16 @@ func TestIsDraftIdempotentReplay(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "same notes, same related_rule_ids but different ORDER is treated as new (mirrors FinalizeDraft's literal array replace)",
+			// FLIPPED from the pre-append-semantics version (was `want: false`,
+			// "mirrors FinalizeDraft's literal array replace"): FinalizeDraft
+			// now UNIONS related_rule_ids instead of replacing the whole array,
+			// so membership — not order — is what determines the stored
+			// result. A differently-ordered resubmission of the exact same ID
+			// set produces an IDENTICAL final array, so it carries no new info.
+			name:   "same related_rule_ids set in a different ORDER is NOT new (union is order-insensitive)",
 			latest: Outcome{Result: resultUnknown, RelatedRuleIDs: []uuid.UUID{ruleA, ruleB}},
 			params: CreateOutcomeParams{Result: resultUnknown, RelatedRuleIDs: []uuid.UUID{ruleB, ruleA}},
-			want:   false,
+			want:   true,
 		},
 		{
 			name:   "nil vs empty-but-non-nil related_rule_ids on latest are equivalent to an empty params slice",
@@ -655,4 +705,50 @@ func TestRecordExecutionResult_DraftEnrichRetry_NewRelatedRuleIDsStillWrites(t *
 	if len(got.RelatedRuleIDs) != 1 || got.RelatedRuleIDs[0] != ruleID {
 		t.Errorf("RelatedRuleIDs = %v, want [%s] to have been written", got.RelatedRuleIDs, ruleID)
 	}
+}
+
+// mergeMetricsExistingWins mirrors FinalizeDraft's metrics rule for the fake
+// store: incoming keys are merged in, but a key already present in existing
+// keeps its existing value (append-only — a call can add facts, never rewrite
+// them). Extracted from fakeStore.FinalizeDraft to keep that method under the
+// cyclomatic-complexity gate.
+func mergeMetricsExistingWins(existing, incoming []byte) []byte {
+	if len(incoming) == 0 {
+		return existing
+	}
+	var in map[string]json.RawMessage
+	if err := json.Unmarshal(incoming, &in); err != nil {
+		return existing
+	}
+	merged := make(map[string]json.RawMessage, len(in))
+	maps.Copy(merged, in)
+	if len(existing) > 0 {
+		var ex map[string]json.RawMessage
+		if err := json.Unmarshal(existing, &ex); err == nil {
+			maps.Copy(merged, ex) // existing wins on conflicting keys
+		}
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return existing
+	}
+	return out
+}
+
+// unionRuleIDs mirrors FinalizeDraft's related_rule_ids rule for the fake
+// store: the union of existing and incoming, de-duplicated, existing order
+// preserved first. An empty incoming list leaves existing untouched.
+func unionRuleIDs(existing, incoming []uuid.UUID) []uuid.UUID {
+	if len(incoming) == 0 {
+		return existing
+	}
+	seen := make(map[uuid.UUID]bool, len(existing)+len(incoming))
+	merged := make([]uuid.UUID, 0, len(existing)+len(incoming))
+	for _, id := range append(append([]uuid.UUID{}, existing...), incoming...) {
+		if !seen[id] {
+			seen[id] = true
+			merged = append(merged, id)
+		}
+	}
+	return merged
 }

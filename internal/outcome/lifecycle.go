@@ -3,8 +3,10 @@ package outcome
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -67,17 +69,20 @@ const (
 	ActionDraftPreserved LifecycleAction = "draft_preserved"
 	// ActionDraftEnriched: the entity's latest outcome is a result='unknown'
 	// draft, this call ALSO requested result='unknown', but this call DOES
-	// carry new content (at least one of Notes/Metrics/RelatedRuleIDs/
-	// WorkSessionID is non-empty). The content is merged into the draft in
-	// place via FinalizeDraft's COALESCE-based UPDATE (store.go /
-	// storage/sqlite/outcome.go) — empty fields on this call leave the
-	// draft's existing values untouched, non-empty fields overwrite them.
-	// Result stays "unknown" (this is not a finalization, hence a distinct
-	// action from ActionFinalizedDraft — a caller that maps action names to
-	// "did this become terminal?" must not conflate the two). See PR #152
-	// finding M-2a: the MCP instructions (server.go) document exactly this
-	// call shape — record_outcome(result="unknown", notes=...) to enrich a
-	// draft seeded by complete_task — so this path MUST write, not no-op.
+	// carry genuinely new content (per isDraftIdempotentReplay — at least
+	// one field would actually change something). The content is merged
+	// into the draft IN PLACE via FinalizeDraft's append-only UPDATE
+	// (store.go / storage/sqlite/outcome.go, migration 000075): existing
+	// notes/metrics/related_rule_ids/work_session_id content is appended
+	// to or added alongside, never overwritten or removed. Result stays
+	// "unknown" (this is not a finalization, hence a distinct action from
+	// ActionFinalizedDraft — a caller that maps action names to "did this
+	// become terminal?" must not conflate the two). See PR #152 finding
+	// M-2a: the MCP instructions (server.go) tell callers to "upgrade" a
+	// complete_task-seeded draft via evaluate_outcome/record_outcome —
+	// they don't pin an exact call shape, but a content-bearing
+	// record_outcome(result="unknown", notes=...) enrich call is the
+	// natural reading of "upgrade it", so this path MUST write, not no-op.
 	ActionDraftEnriched LifecycleAction = "draft_enriched"
 )
 
@@ -156,10 +161,13 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		// M-2a (PR #152): the earlier fix stopped here, checking only
 		// params.Result=="unknown" — which also silently dropped a call that
 		// DOES carry new content (e.g. record_outcome(result="unknown",
-		// notes="...") as the MCP instructions in server.go explicitly
-		// document callers doing to enrich a complete_task-seeded draft).
-		// That case must still reach FinalizeDraft (now merge-only, so it's
-		// safe) so the content actually gets written — see ActionDraftEnriched.
+		// notes="...")). The MCP instructions in server.go tell callers to
+		// "upgrade" a complete_task-seeded draft via evaluate_outcome/
+		// record_outcome once real context is known — they don't pin this
+		// exact call shape, but it's the natural way to carry that upgrade
+		// out. That case must still reach FinalizeDraft (now append-only, so
+		// it's safe — see store.go's FinalizeDraft) so the content actually
+		// gets written — see ActionDraftEnriched.
 		if params.Result == resultUnknown && !hasNewContent(params) {
 			return latest, ActionDraftPreserved, nil
 		}
@@ -248,13 +256,13 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 }
 
 // isDraftIdempotentReplay reports whether params, once merged into latest
-// via FinalizeDraft's COALESCE/whole-array-replace semantics (store.go /
-// storage/sqlite/outcome.go), would leave every written column exactly as it
-// already is — i.e. this call carries zero net-new information over what's
-// already stored. Called only from RecordExecutionResult's draft branch,
-// AFTER hasNewContent has already established params carries SOME content
-// (hasNewContent's "no content at all" case is handled separately by
-// ActionDraftPreserved) — this function answers the narrower question of
+// via FinalizeDraft's APPEND-ONLY semantics (store.go / storage/sqlite/
+// outcome.go, migration 000075), would leave every written column exactly
+// as it already is — i.e. this call carries zero net-new information over
+// what's already stored. Called only from RecordExecutionResult's draft
+// branch, AFTER hasNewContent has already established params carries SOME
+// content (hasNewContent's "no content at all" case is handled separately
+// by ActionDraftPreserved) — this function answers the narrower question of
 // whether that content is actually NEW.
 //
 // Deliberately NOT a reuse of isIdempotentReplay: that function only
@@ -265,57 +273,117 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 // WorkSessionID or RelatedRuleIDs set must NOT be classified as a replay
 // (that would silently drop the new link/rules, reintroducing PR #152
 // finding M-2a for those two fields specifically — see the acceptance
-// criteria on the round-3 Major fix this function closes).
+// criteria on the round-3 Major fix this function closes, and the
+// TestRecordExecutionResult_DraftEnrichRetry_New*StillWrites tests that pin
+// it).
 //
-// Each field mirrors FinalizeDraft's own COALESCE/replace rule exactly:
-//   - Notes / Metrics / WorkSessionID: FinalizeDraft only overwrites when
-//     the param is non-empty/non-nil (COALESCE-guarded). An empty param can
-//     therefore never introduce a diff; a non-empty param must equal
-//     latest's current value for this call to be a no-op.
-//   - RelatedRuleIDs: FinalizeDraft does a WHOLE-ARRAY REPLACE when
-//     non-empty (see FinalizeDraft's doc comment) — never a per-element
-//     union. An empty/nil param never diffs (nothing would be written); a
-//     non-empty param must match latest.RelatedRuleIDs element-for-element,
-//     IN ORDER — relatedRuleIDsEqual treats nil and an empty non-nil slice
-//     as equivalent (both mean "no ids", matching CreateOutcomeParams' own
-//     nil-tolerant doc comment), but does NOT ignore element order: a caller
-//     resubmitting the same IDs in a different order would, if actually
-//     applied, literally replace the stored array with a differently-ordered
-//     one — a real (if cosmetic) write — so it is deliberately NOT treated
-//     as a replay here; it falls through to ActionDraftEnriched instead,
-//     consistent with this function's job of predicting FinalizeDraft's
-//     actual behavior rather than a looser "same set" comparison.
+// Each field mirrors FinalizeDraft's own append-only merge rule exactly —
+// "new" here means "would actually change the stored value", NOT "differs
+// byte-for-byte from what's stored" (that would be over-cautious under
+// append semantics: e.g. resupplying an already-occupied metrics key with a
+// DIFFERENT value is not new information, because FinalizeDraft will
+// silently keep the existing value regardless):
+//   - Notes: no new info if incoming is empty, OR if incoming is already
+//     the trailing block of existing (byte-identical retry after either a
+//     direct write or a previous append — notesHasNewContent's HasSuffix
+//     check), OR incoming equals existing outright (the direct-write case
+//     when existing was originally empty).
+//   - Metrics: no new info if incoming is empty, OR if every key in
+//     incoming is already present in existing — the VALUE doesn't matter,
+//     only key membership, because FinalizeDraft never overwrites an
+//     existing key's value.
+//   - RelatedRuleIDs: no new info if incoming is empty, OR if every ID in
+//     incoming is already present in existing — order-insensitive, because
+//     FinalizeDraft now unions (not replaces), so a differently-ordered
+//     resubmission of the same ID set produces an IDENTICAL stored array,
+//     unlike the old whole-array-replace semantics this function used to
+//     mirror.
+//   - WorkSessionID: no new info if incoming is nil, OR if existing is
+//     already non-nil (set-once: once a session is linked, no later call —
+//     regardless of what ID it supplies — can change it, so supplying any
+//     ID against an already-set draft is never "new" even if the values
+//     differ).
 func isDraftIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
-	if params.Notes != "" && params.Notes != latest.Notes {
-		return false
-	}
-	if len(params.Metrics) > 0 && !bytes.Equal(params.Metrics, latest.Metrics) {
-		return false
-	}
-	if params.WorkSessionID != nil {
-		if latest.WorkSessionID == nil || *params.WorkSessionID != *latest.WorkSessionID {
-			return false
-		}
-	}
-	if len(params.RelatedRuleIDs) > 0 && !relatedRuleIDsEqual(params.RelatedRuleIDs, latest.RelatedRuleIDs) {
-		return false
-	}
-	return true
+	return !notesHasNewContent(latest.Notes, params.Notes) &&
+		!metricsHasNewKey(latest.Metrics, params.Metrics) &&
+		!relatedRuleIDsHasNew(latest.RelatedRuleIDs, params.RelatedRuleIDs) &&
+		!workSessionIDHasNew(latest.WorkSessionID, params.WorkSessionID)
 }
 
-// relatedRuleIDsEqual reports whether a and b contain the same UUIDs in the
-// same order. nil and an empty non-nil slice compare equal (both have
-// len==0). Order-sensitive by design — see isDraftIdempotentReplay's doc
-// comment on why order matters here (it mirrors FinalizeDraft's literal
-// whole-array replace, not a set-equality merge).
-func relatedRuleIDsEqual(a, b []uuid.UUID) bool {
-	if len(a) != len(b) {
+// notesHasNewContent reports whether appending incoming to existing (per
+// FinalizeDraft's appendNotes rule: direct write when existing is empty,
+// "\n\n"-joined append otherwise) would actually change the stored value.
+func notesHasNewContent(existing, incoming string) bool {
+	if incoming == "" {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+	if existing == "" {
+		return true
+	}
+	if existing == incoming {
+		return false
+	}
+	return !strings.HasSuffix(existing, "\n\n"+incoming)
+}
+
+// metricsHasNewKey reports whether incoming (a JSON object) contains at
+// least one top-level key not already present in existing — the
+// append-semantics definition of "new information" for the metrics field
+// (FinalizeDraft only ever ADDS keys the draft doesn't already have;
+// existing key values are never overwritten regardless of what incoming
+// supplies for them, so a differing value for an already-present key is NOT
+// new information). Malformed incoming JSON is conservatively treated as
+// new content, so the call falls through to FinalizeDraft (and its own
+// error handling) rather than this comparison silently swallowing it.
+func metricsHasNewKey(existing, incoming []byte) bool {
+	if len(incoming) == 0 {
+		return false
+	}
+	var incomingMap map[string]json.RawMessage
+	if err := json.Unmarshal(incoming, &incomingMap); err != nil {
+		return true
+	}
+	var existingMap map[string]json.RawMessage
+	if len(existing) > 0 {
+		// Best-effort: a malformed existing value (shouldn't happen — only
+		// ever written by this same merge logic) falls through to a nil
+		// existingMap, which treats every incoming key as new — safe
+		// (over-writes, never under-writes) rather than panicking or
+		// propagating an error from a read-only comparison helper.
+		_ = json.Unmarshal(existing, &existingMap)
+	}
+	for k := range incomingMap {
+		if _, ok := existingMap[k]; !ok {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// relatedRuleIDsHasNew reports whether incoming contains at least one UUID
+// not already present in existing — order-insensitive, since FinalizeDraft
+// now unions (migration 000075) rather than whole-array-replacing.
+func relatedRuleIDsHasNew(existing, incoming []uuid.UUID) bool {
+	if len(incoming) == 0 {
+		return false
+	}
+	existingSet := make(map[uuid.UUID]bool, len(existing))
+	for _, id := range existing {
+		existingSet[id] = true
+	}
+	for _, id := range incoming {
+		if !existingSet[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// workSessionIDHasNew reports whether incoming would actually change the
+// stored work_session_id — only possible when existing is still nil
+// (set-once: FinalizeDraft's `COALESCE(work_session_id, new)` / "only write
+// when existing is NULL" rule means a non-nil existing value can never be
+// changed by ANY later call, regardless of what ID that call supplies).
+func workSessionIDHasNew(existing, incoming *uuid.UUID) bool {
+	return incoming != nil && existing == nil
 }

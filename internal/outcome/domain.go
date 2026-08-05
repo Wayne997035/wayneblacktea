@@ -66,6 +66,16 @@ type Outcome struct {
 	// untouched, never silently overwritten. NO FK per CLAUDE.md #9.
 	SupersedesID *uuid.UUID `json:"supersedes_id,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
+	// UpdatedAt records the last time this row was actually written to in
+	// place by FinalizeDraft (migration 000075, append-semantics redesign).
+	// Backfilled to CreatedAt for rows that predate the migration — see the
+	// migration's comment for why that's the correct value, not a
+	// placeholder. CreateOutcome-inserted rows also start with
+	// UpdatedAt == CreatedAt (never yet modified). No-op FinalizeDraft
+	// paths (ActionDraftPreserved / ActionReplayedIdempotent — see
+	// lifecycle.go) never reach the store layer at all, so this column is
+	// only ever bumped by a genuine write.
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Evaluation is a structured analysis record attached to an Outcome.

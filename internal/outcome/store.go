@@ -41,9 +41,9 @@ func uuidFromPgtype(v pgtype.UUID) *uuid.UUID {
 
 // outcomeSelectCols is the canonical column list for outcome SELECT queries.
 // related_rule_ids was added in migration 000063; work_session_id in 000067;
-// supersedes_id in 000074.
+// supersedes_id in 000074; updated_at in 000075.
 const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, ` +
-	`related_rule_ids, work_session_id, supersedes_id, created_at`
+	`related_rule_ids, work_session_id, supersedes_id, created_at, updated_at`
 
 // evaluationSelectCols is the canonical column list for evaluation SELECT queries.
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
@@ -57,6 +57,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		workSessionID  pgtype.UUID
 		supersedesID   pgtype.UUID
 		createdAt      pgtype.Timestamptz
+		updatedAt      pgtype.Timestamptz
 		notesText      pgtype.Text
 		relatedRuleIDs []uuid.UUID
 	)
@@ -72,6 +73,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		&workSessionID,
 		&supersedesID,
 		&createdAt,
+		&updatedAt,
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("scanning outcome: %w", err)
@@ -84,6 +86,9 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 	o.SupersedesID = uuidFromPgtype(supersedesID)
 	if createdAt.Valid {
 		o.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		o.UpdatedAt = updatedAt.Time
 	}
 	if notesText.Valid {
 		o.Notes = notesText.String
@@ -433,28 +438,79 @@ func (s *Store) GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, 
 	return o, nil
 }
 
+// dedupeUUIDsPreserveOrder returns ids with duplicate UUIDs removed,
+// preserving first-occurrence order. FinalizeDraft's related_rule_ids merge
+// SQL appends elements of this slice that aren't already present in the
+// existing column; pre-deduping the input here (rather than in SQL, where
+// `array_agg(DISTINCT x ORDER BY y)` requires y to be one of the aggregate's
+// own arguments) keeps the query simple.
+func dedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
+	seen := make(map[uuid.UUID]bool, len(ids))
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // FinalizeDraft transitions a result='unknown' draft to (usually) a terminal
 // result in place. The WHERE result='unknown' guard makes this race-safe: if
 // the row no longer matches (already finalized by a concurrent caller),
 // ErrDraftAlreadyFinalized is returned.
 //
-// Merge-only semantics (PR #152 M-1a/M-2a): Result is always overwritten —
-// that's the point of finalizing. Metrics, Notes, and WorkSessionID each use
-// COALESCE, so an empty/absent param value leaves the existing column
-// untouched instead of blanking it; only a non-empty value replaces the
-// draft's existing content. RelatedRuleIDs is field-level "supplied wins,
-// empty preserves" as well, but it's a whole-array replace, not an
-// element-level union: a non-empty params.RelatedRuleIDs REPLACES the
-// existing list entirely (CASE on array_length, not per-element merge).
-// Entity identity and workspace scope are never written.
+// Append-only merge semantics (user-directed redesign, migration 000075):
+// Result and updated_at are always overwritten — that's the point of
+// finalizing, and updated_at is the audit trail for every in-place write.
+// Every other column is append-only, never a destructive replace:
+//   - Notes: if the existing column is empty, the new text is written
+//     directly; otherwise the new text is APPENDED after a "\n\n"
+//     separator. Existing notes content can never be removed by this call.
+//   - Metrics: only keys ABSENT from the existing jsonb are added — this is
+//     `new || existing` (verified empirically: PG's jsonb `||` operator has
+//     the RIGHT operand win on key conflicts, so putting the existing value
+//     on the right makes existing values win while still admitting genuinely
+//     new keys from the left). An existing key's value can never be
+//     overwritten by this call — correcting it requires an explicit
+//     supersede (a new row), not a draft enrich.
+//   - RelatedRuleIDs: element-level UNION, not a whole-array replace —
+//     existing IDs stay first in their original order, then any
+//     caller-supplied IDs not already present are appended in the order
+//     supplied (params pre-deduped in Go via dedupeUUIDsPreserveOrder).
+//   - WorkSessionID: set-once — COALESCE(existing, new) means it can only be
+//     written while still NULL; once set, no later call can re-point it.
+//
+// This closes the audit-trail-loss threat this function used to have: a
+// prompt-injected record_outcome(result="unknown", notes=" ") call could
+// previously overwrite real postmortem content with near-empty text (any
+// non-empty string satisfied the old COALESCE-wins-when-non-empty rule).
+// Under append semantics that same call can only ever ADD a whitespace note
+// after the real content, never remove it.
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
 		UPDATE outcomes SET
 			result = $1,
-			metrics = COALESCE($2::jsonb, metrics),
-			notes = COALESCE($3, notes),
-			related_rule_ids = CASE WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids ELSE $4 END,
-			work_session_id = COALESCE($5, work_session_id)
+			metrics = CASE
+				WHEN $2::jsonb IS NULL THEN metrics
+				ELSE COALESCE($2::jsonb, '{}'::jsonb) || COALESCE(metrics, '{}'::jsonb)
+			END,
+			notes = CASE
+				WHEN $3::text IS NULL THEN notes
+				WHEN notes IS NULL OR notes = '' THEN $3
+				ELSE notes || E'\n\n' || $3
+			END,
+			related_rule_ids = CASE
+				WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids
+				ELSE related_rule_ids || COALESCE((
+					SELECT array_agg(nid ORDER BY ord)
+					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
+					WHERE nid <> ALL(related_rule_ids)
+				), '{}'::uuid[])
+			END,
+			work_session_id = COALESCE(work_session_id, $5),
+			updated_at = NOW()
 		WHERE id = $6 AND result = 'unknown'
 		RETURNING ` + outcomeSelectCols
 
@@ -466,7 +522,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 	if len(params.Metrics) > 0 {
 		metricsArg = string(params.Metrics)
 	}
-	relatedRuleIDs := params.RelatedRuleIDs
+	relatedRuleIDs := dedupeUUIDsPreserveOrder(params.RelatedRuleIDs)
 	if relatedRuleIDs == nil {
 		relatedRuleIDs = []uuid.UUID{}
 	}
