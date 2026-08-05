@@ -458,18 +458,26 @@ func (s *OutcomeStore) GetLatestForEntity(
 	return parseOutcomeRow(r), nil
 }
 
-// FinalizeDraft transitions a result='unknown' draft to a terminal result in
-// place. The WHERE result='unknown' guard makes this race-safe: if the row
-// no longer matches (already finalized by a concurrent caller),
-// outcome.ErrDraftAlreadyFinalized is returned. Only Result, Metrics, Notes,
-// RelatedRuleIDs, and WorkSessionID are written.
+// FinalizeDraft transitions a result='unknown' draft to (usually) a terminal
+// result in place. The WHERE result='unknown' guard makes this race-safe: if
+// the row no longer matches (already finalized by a concurrent caller),
+// outcome.ErrDraftAlreadyFinalized is returned.
+//
+// Merge-only semantics (PR #152 M-1a/M-2a), mirroring outcome.Store (PG):
+// Result is always overwritten. Metrics, Notes, RelatedRuleIDs, and
+// WorkSessionID each use COALESCE, so an empty/absent param value leaves the
+// existing column untouched instead of blanking it. RelatedRuleIDs needs a
+// Go-side nil (not the "[]" empty-array sentinel encodeUUIDSlice normally
+// returns) to make COALESCE see "nothing supplied" — see the comment at the
+// call site below. Like the PG version, a non-empty RelatedRuleIDs REPLACES
+// the existing list wholesale, not an element-level union.
 func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params outcome.CreateOutcomeParams) (outcome.Outcome, error) {
 	const q = `UPDATE outcomes SET
 			result = ?1,
-			metrics = ?2,
-			notes = ?3,
-			related_rule_ids = ?4,
-			work_session_id = ?5
+			metrics = COALESCE(?2, metrics),
+			notes = COALESCE(?3, notes),
+			related_rule_ids = COALESCE(?4, related_rule_ids),
+			work_session_id = COALESCE(?5, work_session_id)
 		WHERE id = ?6 AND result = 'unknown'`
 
 	var metricsArg any
@@ -480,14 +488,22 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 	if params.Notes != "" {
 		notesArg = params.Notes
 	}
-	relatedRuleIDsStr := encodeUUIDSlice(params.RelatedRuleIDs)
+	// encodeUUIDSlice(nil-or-empty) returns the literal string "[]", not a Go
+	// nil — passing that through COALESCE would always win over the existing
+	// column (COALESCE only skips a true NULL). Pass Go nil explicitly when
+	// there's nothing new to merge, so COALESCE falls through to the
+	// existing related_rule_ids value instead of overwriting it with "[]".
+	var relatedRuleIDsArg any
+	if len(params.RelatedRuleIDs) > 0 {
+		relatedRuleIDsArg = encodeUUIDSlice(params.RelatedRuleIDs)
+	}
 
 	res, err := s.db.conn.ExecContext(
 		ctx, q,
 		params.Result,
 		metricsArg,
 		notesArg,
-		relatedRuleIDsStr,
+		relatedRuleIDsArg,
 		nullStringFromUUID(params.WorkSessionID),
 		id.String(),
 	)

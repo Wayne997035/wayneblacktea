@@ -232,10 +232,18 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// notes text that was already atomized on the first call.
 	//
 	// Draft preserved (PR #152 finding M-1): result="unknown" against an
-	// existing draft is also a no-write no-op (see
+	// existing draft with NO new content is also a no-write no-op (see
 	// outcome.ActionDraftPreserved doc comment) — same reasoning applies:
-	// no new content was recorded, so no session link or atomize side effect
-	// should fire either.
+	// nothing was recorded, so no session link or atomize side effect should
+	// fire either.
+	//
+	// Deliberately NOT in this skip list: outcome.ActionDraftEnriched. That
+	// action (PR #152 finding M-2a) is also result="unknown" against an
+	// existing draft, but DOES carry new content that FinalizeDraft merged
+	// into the row — a real write occurred, so SetOutcomeLink and atomize
+	// below must fire exactly as they would for ActionFinalizedDraft or
+	// ActionCreated. Adding it here would resurrect M-2a (silently dropping
+	// the session link / atomization for a legitimate content-bearing write).
 	if action == outcome.ActionReplayedIdempotent || action == outcome.ActionDraftPreserved {
 		return jsonText(o)
 	}

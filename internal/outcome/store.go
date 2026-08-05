@@ -421,20 +421,28 @@ func (s *Store) GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, 
 	return o, nil
 }
 
-// FinalizeDraft transitions a result='unknown' draft to a terminal result in
-// place. The WHERE result='unknown' guard makes this race-safe: if the row
-// no longer matches (already finalized by a concurrent caller),
-// ErrDraftAlreadyFinalized is returned. Only Result, Metrics, Notes,
-// RelatedRuleIDs, and WorkSessionID are written — entity identity and
-// workspace scope are left untouched.
+// FinalizeDraft transitions a result='unknown' draft to (usually) a terminal
+// result in place. The WHERE result='unknown' guard makes this race-safe: if
+// the row no longer matches (already finalized by a concurrent caller),
+// ErrDraftAlreadyFinalized is returned.
+//
+// Merge-only semantics (PR #152 M-1a/M-2a): Result is always overwritten —
+// that's the point of finalizing. Metrics, Notes, and WorkSessionID each use
+// COALESCE, so an empty/absent param value leaves the existing column
+// untouched instead of blanking it; only a non-empty value replaces the
+// draft's existing content. RelatedRuleIDs is field-level "supplied wins,
+// empty preserves" as well, but it's a whole-array replace, not an
+// element-level union: a non-empty params.RelatedRuleIDs REPLACES the
+// existing list entirely (CASE on array_length, not per-element merge).
+// Entity identity and workspace scope are never written.
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
 		UPDATE outcomes SET
 			result = $1,
-			metrics = $2::jsonb,
-			notes = $3,
-			related_rule_ids = $4,
-			work_session_id = $5
+			metrics = COALESCE($2::jsonb, metrics),
+			notes = COALESCE($3, notes),
+			related_rule_ids = CASE WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids ELSE $4 END,
+			work_session_id = COALESCE($5, work_session_id)
 		WHERE id = $6 AND result = 'unknown'
 		RETURNING ` + outcomeSelectCols
 

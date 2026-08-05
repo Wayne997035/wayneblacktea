@@ -687,6 +687,65 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
 	}
 }
 
+// TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty
+// is the SQLite counterpart of the M-1a regression reproduction in
+// internal/outcome/store_test.go (PR #152 second round): a draft carrying
+// real notes/metrics/related_rule_ids/work_session_id, finalized by a call
+// that supplies ONLY entity identity + result, must keep all four existing
+// fields — the old blanket UPDATE would have blanked every one of them.
+// This also exercises the encodeUUIDSlice("[]" vs nil) trap documented on
+// FinalizeDraft: RelatedRuleIDs must survive even though the SQLite column
+// is a TEXT-encoded JSON array, not a native array type like PG's uuid[].
+func TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	sessionID := uuid.New()
+	ruleID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		Notes:          "real postmortem content the attacker wants gone",
+		Metrics:        []byte(`{"duration_ms":4200}`),
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+		WorkSessionID:  &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	// The attack: finalize with a terminal result and NOTHING else.
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if finalized.ID != draft.ID {
+		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
+	}
+	if finalized.Result != outcomeResultSuccess {
+		t.Errorf("Result = %q, want success", finalized.Result)
+	}
+	if finalized.Notes != "real postmortem content the attacker wants gone" {
+		t.Errorf("Notes erased by empty-param finalize: got %q, want preserved", finalized.Notes)
+	}
+	if string(finalized.Metrics) != `{"duration_ms":4200}` {
+		t.Errorf("Metrics erased by empty-param finalize: got %q, want preserved", finalized.Metrics)
+	}
+	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleID {
+		t.Errorf("RelatedRuleIDs erased by empty-param finalize: got %v, want preserved [%s]", finalized.RelatedRuleIDs, ruleID)
+	}
+	if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID erased by empty-param finalize: got %v, want preserved %s", finalized.WorkSessionID, sessionID)
+	}
+}
+
 // TestSQLiteOutcomeStore_SeedDraft_CreatesOnce verifies the sequential
 // happy path: first call creates, second call is a no-op read returning the
 // same row.

@@ -266,6 +266,86 @@ func TestRecordExecutionResult_UnknownAgainstExistingDraft_PreservesContent(t *t
 	}
 }
 
+// TestRecordExecutionResult_UnknownWithContentAgainstExistingDraft_Enriches
+// is the M-2a regression reproduction (PR #152 second round): a call
+// carrying result="unknown" but WITH new content (exactly what the MCP
+// instructions in server.go document callers doing to enrich a
+// complete_task-seeded draft) against an existing 'unknown' draft must
+// still reach FinalizeDraft — not be silently dropped as
+// ActionDraftPreserved. FinalizeDraft is now merge-only (COALESCE), so this
+// is safe: the call's content is written, anything it didn't supply is left
+// alone by the store layer.
+func TestRecordExecutionResult_UnknownWithContentAgainstExistingDraft_Enriches(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         draftID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     "unknown",
+		},
+	}
+
+	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   entityID,
+		Result:     "unknown",
+		Notes:      "still unknown, but here's what I know so far",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionDraftEnriched {
+		t.Errorf("action = %q, want %q", action, ActionDraftEnriched)
+	}
+	if !fs.finalizeCalled {
+		t.Error("FinalizeDraft must be called when an unknown-against-unknown call carries new content (M-2a regression)")
+	}
+	if fs.createCalled {
+		t.Error("CreateOutcome must NOT be called — this stays in place, never a new row")
+	}
+	if got.ID != draftID {
+		t.Errorf("returned ID = %s, want the same draft ID %s", got.ID, draftID)
+	}
+	if got.Result != resultUnknown {
+		t.Errorf("Result = %q, want unknown (ActionDraftEnriched is not a finalization)", got.Result)
+	}
+	if got.Notes != "still unknown, but here's what I know so far" {
+		t.Errorf("Notes = %q, want the newly-supplied content to have been written", got.Notes)
+	}
+}
+
+// TestHasNewContent covers the pure helper RecordExecutionResult uses to
+// decide ActionDraftPreserved vs ActionDraftEnriched for an
+// unknown-against-unknown call.
+func TestHasNewContent(t *testing.T) {
+	sessionID := uuid.New()
+	tests := []struct {
+		name   string
+		params CreateOutcomeParams
+		want   bool
+	}{
+		{"completely empty", CreateOutcomeParams{Result: "unknown"}, false},
+		{"notes only", CreateOutcomeParams{Notes: "x"}, true},
+		{"metrics only", CreateOutcomeParams{Metrics: []byte(`{"a":1}`)}, true},
+		{"related_rule_ids only", CreateOutcomeParams{RelatedRuleIDs: []uuid.UUID{uuid.New()}}, true},
+		{"work_session_id only", CreateOutcomeParams{WorkSessionID: &sessionID}, true},
+		{"empty-but-non-nil metrics does not count", CreateOutcomeParams{Metrics: []byte{}}, false},
+		{"empty-but-non-nil related_rule_ids does not count", CreateOutcomeParams{RelatedRuleIDs: []uuid.UUID{}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasNewContent(tc.params); got != tc.want {
+				t.Errorf("hasNewContent() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRecordExecutionResult_TerminalAgainstDraft_StillFinalizes is a
 // regression guard for the M-1 fix's scope: a call carrying a genuinely
 // terminal result against an existing draft must still finalize it in

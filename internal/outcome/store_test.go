@@ -4,6 +4,7 @@ package outcome_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log"
@@ -712,6 +713,76 @@ func TestStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
 	}
 	if got.Result != "success" {
 		t.Errorf("result must remain 'success' (first finalize), got %q — second call must not silently overwrite", got.Result)
+	}
+}
+
+// TestStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty is
+// the M-1a regression reproduction against real Postgres (PR #152 second
+// round): a draft carrying real notes/metrics/related_rule_ids/
+// work_session_id, finalized by a call that supplies ONLY entity identity +
+// result (exactly what a prompt-injected record_outcome(result="success")
+// with nothing else would send) must keep all four existing fields — the
+// old blanket UPDATE would have blanked every one of them.
+func TestStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	sessionID := uuid.New()
+	ruleID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		Notes:          "real postmortem content the attacker wants gone",
+		Metrics:        []byte(`{"duration_ms":4200}`),
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+		WorkSessionID:  &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	// The attack: finalize with a terminal result and NOTHING else.
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: "success",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if finalized.ID != draft.ID {
+		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
+	}
+	if finalized.Result != "success" {
+		t.Errorf("Result = %q, want success", finalized.Result)
+	}
+	if finalized.Notes != "real postmortem content the attacker wants gone" {
+		t.Errorf("Notes erased by empty-param finalize: got %q, want preserved", finalized.Notes)
+	}
+	// Compare semantically, not byte-for-byte: the column is jsonb, and
+	// Postgres re-serialises it in its own canonical form (`{"duration_ms":
+	// 4200}` — note the space), so the exact bytes that went in are NOT what
+	// comes back out. The requirement here is "the draft's existing metrics
+	// content survived an empty-param finalize", which is a property of the
+	// decoded value; asserting on the encoded bytes would be asserting on
+	// Postgres's formatting choices instead. The SQLite twin of this test can
+	// compare bytes because that column is TEXT and round-trips verbatim.
+	var gotMetrics map[string]any
+	if err := json.Unmarshal(finalized.Metrics, &gotMetrics); err != nil {
+		t.Fatalf("Metrics is not valid JSON after finalize (%q): %v", finalized.Metrics, err)
+	}
+	if v, ok := gotMetrics["duration_ms"]; !ok || v != float64(4200) {
+		t.Errorf("Metrics erased by empty-param finalize: got %q, want the draft's duration_ms=4200 preserved", finalized.Metrics)
+	}
+	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleID {
+		t.Errorf("RelatedRuleIDs erased by empty-param finalize: got %v, want preserved [%s]", finalized.RelatedRuleIDs, ruleID)
+	}
+	if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID erased by empty-param finalize: got %v, want preserved %s", finalized.WorkSessionID, sessionID)
 	}
 }
 

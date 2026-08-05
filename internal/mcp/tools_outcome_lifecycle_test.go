@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/ai"
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -445,5 +448,221 @@ func TestOutcomeLifecycle_RecordOutcomeUnknownAgainstExistingDraft_PreservesCont
 	rows := outcomesForEntity(t, s, entityID)
 	if len(rows) != 1 {
 		t.Fatalf("expected exactly 1 outcome row after unknown-against-unknown call, got %d: %+v", len(rows), rows)
+	}
+}
+
+// TestOutcomeLifecycle_RecordOutcomeUnknownWithContent_EnrichesExistingDraft
+// reproduces PR #152 second army finding M-2a end-to-end through the real
+// record_outcome MCP tool: a result="unknown" call that DOES carry new
+// content (exactly the shape the MCP instructions in server.go document
+// callers using to enrich a complete_task-seeded draft) against an existing
+// 'unknown' draft must actually WRITE that content — the M-1 fix's earlier
+// form silently dropped it (see ActionDraftPreserved / ActionDraftEnriched
+// doc comments). Same row, no new row, result stays unknown, but the new
+// content lands and pre-existing fields the second call didn't touch
+// survive (merge, not overwrite).
+func TestOutcomeLifecycle_RecordOutcomeUnknownWithContent_EnrichesExistingDraft(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+	relatedRuleID := uuid.New()
+
+	seedR := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        entityID.String(),
+		"result":           outcomeResultUnknown,
+		"metrics_json":     `{"duration_ms":4200}`,
+		"related_rule_ids": `["` + relatedRuleID.String() + `"]`,
+	})
+	if seedR.IsError {
+		t.Fatalf("seed record_outcome: %s", resultText(seedR))
+	}
+	var seeded outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(seedR)), &seeded); err != nil {
+		t.Fatalf("unmarshal seeded: %v", err)
+	}
+
+	// Enrich: still result="unknown", but this call supplies notes the seed
+	// call didn't have. metrics/related_rule_ids are omitted here — they
+	// must survive from the seed call (merge, not overwrite).
+	enrichR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+		"notes":       "still unknown, but here's what I know so far",
+	})
+	if enrichR.IsError {
+		t.Fatalf("enrich record_outcome: %s", resultText(enrichR))
+	}
+	var enriched outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(enrichR)), &enriched); err != nil {
+		t.Fatalf("unmarshal enriched: %v", err)
+	}
+
+	if enriched.ID != seeded.ID {
+		t.Errorf("enrich call must return the SAME draft row: got %s, want %s", enriched.ID, seeded.ID)
+	}
+	if enriched.Result != outcomeResultUnknown {
+		t.Errorf("Result = %q, want unknown (enrich is not a finalization)", enriched.Result)
+	}
+	if enriched.Notes != "still unknown, but here's what I know so far" {
+		t.Errorf("Notes = %q, want the newly-supplied content to have been written (M-2a regression)", enriched.Notes)
+	}
+	if string(enriched.Metrics) != `{"duration_ms":4200}` {
+		t.Errorf("Metrics = %q, want preserved from the seed call (merge, not overwrite)", enriched.Metrics)
+	}
+	if len(enriched.RelatedRuleIDs) != 1 || enriched.RelatedRuleIDs[0] != relatedRuleID {
+		t.Errorf("RelatedRuleIDs = %v, want preserved from the seed call [%s]", enriched.RelatedRuleIDs, relatedRuleID)
+	}
+
+	rows := outcomesForEntity(t, s, entityID)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly 1 outcome row after seed->enrich, got %d: %+v", len(rows), rows)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Side-effect gating for ActionDraftPreserved vs ActionDraftEnriched — a gap
+// three-army mutation testing found in the M-1 round: the skip list in
+// handleRecordOutcome (tools_outcome.go) that suppresses SetOutcomeLink /
+// atomize for no-write actions had NO test coverage. Both tests below wire a
+// real SQLite-backed server (workSession + atom stores are real; atomizer is
+// swapped for a fake sentinel + srv.atomizeFn spy, matching
+// newAtomizeServer's pattern in tools_worksession_test.go / tools_atom_test.go).
+// ---------------------------------------------------------------------------
+
+// newAtomizeSpyServer builds a real SQLite-backed *Server (like
+// newTestWorkSessionServer) and additionally wires a fake atomizer sentinel
+// + an atomizeFn spy so tests can observe whether launchAtomize's payload
+// function actually ran.
+func newAtomizeSpyServer(t *testing.T) (*Server, chan uuid.UUID) {
+	t.Helper()
+	s := newTestWorkSessionServer(t)
+	if s.atomizer == nil {
+		// New() sets atomizer to ai.NewAtomizer(), which returns nil when
+		// CLAUDE_API_KEY is absent. We only need a non-nil sentinel to pass
+		// launchAtomize's nil guard — atomizeFn below replaces the real call.
+		s.atomizer = &ai.Atomizer{}
+	}
+	calls := make(chan uuid.UUID, 4)
+	s.atomizeFn = func(_ context.Context, _ *ai.Atomizer, _ atom.StoreIface, _ *uuid.UUID, _ string, parentID uuid.UUID, _ string) {
+		calls <- parentID
+	}
+	return s, calls
+}
+
+// TestHandleRecordOutcome_DraftPreserved_SkipsAtomize verifies the skip-list
+// side of M-2a's fix for atomize: an ActionDraftPreserved call
+// (unknown-against-unknown, NO new content at all) must not trigger
+// atomize — nothing was written, so atomizing would mean atomizing the
+// pre-existing draft's notes again for no reason (duplicate atoms on every
+// no-op poll/retry).
+//
+// NOTE on SetOutcomeLink: this test deliberately does NOT pass session_id
+// on the attack call, and does not assert anything about SetOutcomeLink.
+// Per hasNewContent (lifecycle.go), a non-nil WorkSessionID unconditionally
+// counts as "new content", so a call carrying session_id can never land in
+// ActionDraftPreserved under this fix — it is reclassified to
+// ActionDraftEnriched (covered by
+// TestHandleRecordOutcome_DraftEnriched_TriggersSetOutcomeLinkAndAtomize
+// below) precisely so a caller's session link is never silently dropped.
+// There is therefore no live code path where handleRecordOutcome's
+// SetOutcomeLink call is reachable AND action == ActionDraftPreserved; a
+// test asserting "SetOutcomeLink didn't fire" here would only be exercising
+// the unrelated `in.sessionID != nil` guard (already covered by
+// TestHandleRecordOutcome_NoSessionID_Regression), not the skip-list branch.
+// TestHasNewContent (lifecycle_test.go) is the test that pins down this
+// WorkSessionID-forces-Enriched invariant.
+func TestHandleRecordOutcome_DraftPreserved_SkipsAtomize(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServer(t)
+	entityID := uuid.New()
+
+	// Seed a draft with real notes so the returned draft (o.Notes) is
+	// non-empty — if the skip-list guard were missing, the atomize check
+	// `if o.Notes != ""` below it would fire.
+	seedR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+		"notes":       "seed content",
+	})
+	if seedR.IsError {
+		t.Fatalf("seed record_outcome: %s", resultText(seedR))
+	}
+	// Drain whatever the seed call's own ActionCreated triggered before
+	// isolating the preserved call under test.
+	select {
+	case <-atomizeCalls:
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	attackR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+	})
+	if attackR.IsError {
+		t.Fatalf("attack record_outcome: %s", resultText(attackR))
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		t.Errorf("atomizeFn fired for ActionDraftPreserved (parent_id=%s), want no call", pid)
+	case <-time.After(150 * time.Millisecond):
+		// expected: nothing arrives
+	}
+}
+
+// TestHandleRecordOutcome_DraftEnriched_TriggersSetOutcomeLinkAndAtomize
+// verifies the flip side: an ActionDraftEnriched call (unknown-against-
+// unknown, WITH new content) DOES write, so it must trigger both
+// SetOutcomeLink and atomize exactly like ActionFinalizedDraft/ActionCreated
+// would.
+func TestHandleRecordOutcome_DraftEnriched_TriggersSetOutcomeLinkAndAtomize(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServer(t)
+	entityID := uuid.New()
+
+	seedR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+	})
+	if seedR.IsError {
+		t.Fatalf("seed record_outcome: %s", resultText(seedR))
+	}
+
+	startR := callStartWork(t, s, map[string]any{"repo_name": "draft-enriched-repo", "title": "t", "goal": "g"})
+	sessID := startSessionID(t, startR)
+
+	enrichR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+		"notes":       "enriching with real content",
+		"session_id":  sessID,
+	})
+	if enrichR.IsError {
+		t.Fatalf("enrich record_outcome: %s", resultText(enrichR))
+	}
+	var enriched outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(enrichR)), &enriched); err != nil {
+		t.Fatalf("unmarshal enriched: %v", err)
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		if pid != enriched.ID {
+			t.Errorf("atomizeFn fired with parent_id=%s, want the enriched outcome's ID %s", pid, enriched.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("atomizeFn did not fire for ActionDraftEnriched within timeout, want a call (M-2a regression)")
+	}
+
+	sessIDParsed, _ := uuid.Parse(sessID)
+	got, err := s.workSession.GetByID(context.Background(), s.workspaceUUIDVal(), sessIDParsed)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.OutcomeID == nil || *got.OutcomeID != enriched.ID {
+		t.Errorf("SetOutcomeLink did not fire for ActionDraftEnriched: session.outcome_id = %v, want %s", got.OutcomeID, enriched.ID)
 	}
 }

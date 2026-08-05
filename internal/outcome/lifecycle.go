@@ -13,6 +13,11 @@ import (
 // 80c1e8ae (G7): one logical execution maps to one canonical outcome.
 type LifecycleAction string
 
+// resultUnknown mirrors the "unknown" value of AllowedResults (domain.go) —
+// named here so the repeated draft-state comparisons below (and their test
+// counterparts) satisfy goconst instead of re-typing the literal.
+const resultUnknown = "unknown"
+
 const (
 	// ActionCreated: no prior outcome existed for this entity — a fresh row
 	// was inserted (SupersedesID left nil).
@@ -32,17 +37,33 @@ const (
 	// the existing row is returned unchanged.
 	ActionReplayedIdempotent LifecycleAction = "replayed_idempotent"
 	// ActionDraftPreserved: the entity's latest outcome is a result='unknown'
-	// draft, and this call ALSO requested result='unknown'. "unknown" is
-	// definitionally the non-terminal draft state, so there is never
-	// anything to finalize here — routing this through FinalizeDraft's
-	// blanket UPDATE would silently overwrite the draft's existing
-	// Notes/Metrics/RelatedRuleIDs/WorkSessionID with whatever this call
-	// supplied (frequently empty). No row is written; the draft is returned
+	// draft, this call ALSO requested result='unknown', AND this call carries
+	// no new content at all (Notes/Metrics/RelatedRuleIDs/WorkSessionID all
+	// empty). "unknown" is definitionally the non-terminal draft state and
+	// there is nothing to write, so no row is touched; the draft is returned
 	// unchanged. See PR #152 finding M-1: a prompt-injected
-	// record_outcome(result="unknown") call against a draft carrying real
-	// content (e.g. postmortem notes) could otherwise erase it in place with
-	// no new row and no audit trail.
+	// record_outcome(result="unknown") call carrying no content against a
+	// draft with real content (e.g. postmortem notes) must not silently wipe
+	// it. A result="unknown" call that DOES carry new content takes the
+	// ActionDraftEnriched path instead — see its doc comment and finding
+	// M-2a (an earlier fix that only checked params.Result=="unknown" here,
+	// without also checking for new content, silently dropped legitimate
+	// writes carrying real notes).
 	ActionDraftPreserved LifecycleAction = "draft_preserved"
+	// ActionDraftEnriched: the entity's latest outcome is a result='unknown'
+	// draft, this call ALSO requested result='unknown', but this call DOES
+	// carry new content (at least one of Notes/Metrics/RelatedRuleIDs/
+	// WorkSessionID is non-empty). The content is merged into the draft in
+	// place via FinalizeDraft's COALESCE-based UPDATE (store.go /
+	// storage/sqlite/outcome.go) — empty fields on this call leave the
+	// draft's existing values untouched, non-empty fields overwrite them.
+	// Result stays "unknown" (this is not a finalization, hence a distinct
+	// action from ActionFinalizedDraft — a caller that maps action names to
+	// "did this become terminal?" must not conflate the two). See PR #152
+	// finding M-2a: the MCP instructions (server.go) document exactly this
+	// call shape — record_outcome(result="unknown", notes=...) to enrich a
+	// draft seeded by complete_task — so this path MUST write, not no-op.
+	ActionDraftEnriched LifecycleAction = "draft_enriched"
 )
 
 // RecordExecutionResult is the single convergence point for the outcome-
@@ -56,9 +77,14 @@ const (
 // Decision 80c1e8ae (G7) convergence rule:
 //   - no prior outcome for the entity              -> fresh row (ActionCreated)
 //   - prior outcome is a draft, this call is also
-//     result='unknown'                             -> no-op, draft returned
+//     result='unknown', with NO new content         -> no-op, draft returned
 //     unchanged (ActionDraftPreserved) — "unknown" is never a finalization,
 //     see PR #152 finding M-1
+//   - prior outcome is a draft, this call is also
+//     result='unknown', but DOES carry new content   -> merge that content
+//     into the draft IN PLACE via FinalizeDraft's COALESCE UPDATE
+//     (ActionDraftEnriched) — result stays 'unknown', this is not a
+//     finalization; see PR #152 finding M-2a
 //   - prior outcome is a result='unknown' draft,
 //     this call has a terminal result             -> finalize IN PLACE
 //     (ActionFinalizedDraft) — never a second row for the same draft
@@ -99,16 +125,31 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		return Outcome{}, "", fmt.Errorf("recording execution result: resolving latest outcome: %w", err)
 	}
 
-	if latest.Result == "unknown" {
-		// M-1 (PR #152): a call that ALSO says result="unknown" is never a
-		// legitimate finalization of this draft — "unknown" is definitionally
-		// non-terminal, so there is nothing to finalize. Routing this through
-		// FinalizeDraft would silently overwrite the draft's existing
-		// Notes/Metrics/RelatedRuleIDs/WorkSessionID with whatever this call
-		// supplied (often empty, e.g. a prompt-injected call with no notes).
-		// Return the draft unchanged instead — no write occurs.
-		if params.Result == "unknown" {
+	if latest.Result == resultUnknown {
+		// M-1 (PR #152): a call that ALSO says result="unknown" AND carries no
+		// new content is never a legitimate write — "unknown" is
+		// definitionally non-terminal, so there is nothing to finalize, and
+		// nothing to merge either. Return the draft unchanged — no write
+		// occurs, no side effect fires.
+		//
+		// M-2a (PR #152): the earlier fix stopped here, checking only
+		// params.Result=="unknown" — which also silently dropped a call that
+		// DOES carry new content (e.g. record_outcome(result="unknown",
+		// notes="...") as the MCP instructions in server.go explicitly
+		// document callers doing to enrich a complete_task-seeded draft).
+		// That case must still reach FinalizeDraft (now merge-only, so it's
+		// safe) so the content actually gets written — see ActionDraftEnriched.
+		if params.Result == resultUnknown && !hasNewContent(params) {
 			return latest, ActionDraftPreserved, nil
+		}
+		// Everything below writes. The only thing the result value changes is
+		// which action we report: a terminal result finalizes the draft, an
+		// "unknown" result that got this far carries new content and merely
+		// enriches it (result stays non-terminal). Both go through the same
+		// merge-only FinalizeDraft.
+		action := ActionFinalizedDraft
+		if params.Result == resultUnknown {
+			action = ActionDraftEnriched
 		}
 		finalized, ferr := store.FinalizeDraft(ctx, latest.ID, params)
 		if errors.Is(ferr, ErrDraftAlreadyFinalized) {
@@ -120,7 +161,7 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		if ferr != nil {
 			return Outcome{}, "", fmt.Errorf("recording execution result: finalizing draft: %w", ferr)
 		}
-		return finalized, ActionFinalizedDraft, nil
+		return finalized, action, nil
 	}
 
 	if isIdempotentReplay(latest, params) {
@@ -135,6 +176,18 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		return Outcome{}, "", fmt.Errorf("recording execution result: superseding: %w", err)
 	}
 	return o, ActionSuperseded, nil
+}
+
+// hasNewContent reports whether params carries any payload beyond bare
+// identity + result. Used by RecordExecutionResult's draft branch to decide
+// between ActionDraftPreserved (nothing to write) and ActionDraftEnriched
+// (merge the supplied content into the draft via FinalizeDraft) when the
+// call also specifies result="unknown". See PR #152 finding M-2a.
+func hasNewContent(params CreateOutcomeParams) bool {
+	return params.Notes != "" ||
+		len(params.Metrics) > 0 ||
+		len(params.RelatedRuleIDs) > 0 ||
+		params.WorkSessionID != nil
 }
 
 // isIdempotentReplay reports whether params describes exactly the same
