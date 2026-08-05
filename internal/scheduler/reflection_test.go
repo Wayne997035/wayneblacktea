@@ -200,7 +200,7 @@ func (s *stubProposalStore) Create(_ context.Context, p proposal.CreateParams) (
 		ID:      uuid.New(),
 		Type:    string(p.Type),
 		Payload: p.Payload,
-		Status:  "pending",
+		Status:  pendingStatus,
 	}
 	s.created = append(s.created, row)
 	s.proposedBys = append(s.proposedBys, p.ProposedBy)
@@ -302,7 +302,7 @@ func TestRunReflection_HappyPath(t *testing.T) {
 		if p.Type != string(proposal.TypeKnowledge) {
 			t.Errorf("proposal[%d] type = %q, want %q", i, p.Type, proposal.TypeKnowledge)
 		}
-		if p.Status != "pending" {
+		if p.Status != pendingStatus {
 			t.Errorf("proposal[%d] status = %q, want pending", i, p.Status)
 		}
 	}

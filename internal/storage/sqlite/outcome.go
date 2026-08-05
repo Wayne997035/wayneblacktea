@@ -28,7 +28,8 @@ const (
 	// outcomeSelectCols includes related_rule_ids added in migration 000063,
 	// work_session_id added in migration 000067, and supersedes_id added in
 	// migration 000074.
-	outcomeSelectCols    = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at`
+	outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, ` +
+		`related_rule_ids, work_session_id, supersedes_id, created_at`
 	evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
 )
 
@@ -432,7 +433,9 @@ func (s *OutcomeStore) ExistsForEntity(ctx context.Context, workspaceID *uuid.UU
 // GetLatestForEntity returns the most recently created outcome for the given
 // entity, workspace-scoped when non-nil. Returns outcome.ErrNotFound when no
 // outcome exists yet. Mirrors the outcome.Store (PG) implementation.
-func (s *OutcomeStore) GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (outcome.Outcome, error) {
+func (s *OutcomeStore) GetLatestForEntity(
+	ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID,
+) (outcome.Outcome, error) {
 	var wsArg any
 	if workspaceID != nil {
 		wsArg = workspaceID.String()
@@ -507,7 +510,9 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 // clause) for the INSERT ... ON CONFLICT DO NOTHING step, consistent with
 // this file's other upsert call sites (e.g. worksession.go's
 // work_session_tasks link insert).
-func (s *OutcomeStore) SeedDraft(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (outcome.Outcome, bool, error) {
+func (s *OutcomeStore) SeedDraft(
+	ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID,
+) (outcome.Outcome, bool, error) {
 	if latest, err := s.GetLatestForEntity(ctx, workspaceID, entityType, entityID); err == nil {
 		return latest, false, nil
 	} else if !errors.Is(err, outcome.ErrNotFound) {

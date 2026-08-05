@@ -126,71 +126,100 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 	), s.handleFindFailedPatterns)
 }
 
-// handleRecordOutcome validates input and creates a new outcome.
-func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
+// recordOutcomeInput is the parsed+validated argument set for
+// handleRecordOutcome, produced by parseRecordOutcomeArgs.
+type recordOutcomeInput struct {
+	entityType     string
+	entityID       uuid.UUID
+	result         string
+	notes          string
+	metricsJSON    []byte
+	relatedRuleIDs []uuid.UUID
+	sessionID      *uuid.UUID
+}
 
-	entityType := stringArg(args, "entity_type")
-	if !outcome.AllowedEntityTypes[entityType] {
-		return mcp.NewToolResultError(
-			fmt.Sprintf("invalid entity_type %q: must be one of task, decision, sprint, project", entityType),
-		), nil
+// parseRecordOutcomeArgs validates and parses the record_outcome tool
+// arguments. On validation failure it returns a non-nil errResult that the
+// caller must return directly (with a nil error); errResult is nil on
+// success. Split out of handleRecordOutcome to keep cyclomatic complexity
+// under the gocyclo threshold — this function is pure input validation, the
+// caller retains all side-effecting logic.
+func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallToolResult) {
+	var in recordOutcomeInput
+
+	in.entityType = stringArg(args, "entity_type")
+	if !outcome.AllowedEntityTypes[in.entityType] {
+		return in, mcp.NewToolResultError(
+			fmt.Sprintf("invalid entity_type %q: must be one of task, decision, sprint, project", in.entityType),
+		)
 	}
 
 	rawEntityID := stringArg(args, "entity_id")
 	entityID, err := uuid.Parse(rawEntityID)
 	if err != nil {
-		return mcp.NewToolResultError("invalid entity_id UUID"), nil
+		return in, mcp.NewToolResultError("invalid entity_id UUID")
+	}
+	in.entityID = entityID
+
+	in.result = stringArg(args, "result")
+	if !outcome.AllowedResults[in.result] {
+		return in, mcp.NewToolResultError(
+			fmt.Sprintf("invalid result %q: must be one of success, failure, partial, unknown, regressed", in.result),
+		)
 	}
 
-	result := stringArg(args, "result")
-	if !outcome.AllowedResults[result] {
-		return mcp.NewToolResultError(
-			fmt.Sprintf("invalid result %q: must be one of success, failure, partial, unknown, regressed", result),
-		), nil
+	in.notes = sanitize.Notes(stringArg(args, "notes"))
+	if err := sanitize.ValidateNoTagNoise(in.notes); err != nil {
+		return in, mcp.NewToolResultError(fmt.Sprintf("invalid notes: %v", err))
 	}
 
-	notes := sanitize.Notes(stringArg(args, "notes"))
-	if err := sanitize.ValidateNoTagNoise(notes); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid notes: %v", err)), nil
-	}
-
-	var metricsJSON []byte
 	if raw := stringArg(args, "metrics_json"); raw != "" {
 		if !json.Valid([]byte(raw)) {
-			return mcp.NewToolResultError("metrics_json must be a valid JSON object"), nil
+			return in, mcp.NewToolResultError("metrics_json must be a valid JSON object")
 		}
-		metricsJSON = []byte(raw)
+		in.metricsJSON = []byte(raw)
 	}
 
 	relatedRuleIDs, rridErr := parseRelatedRuleIDs(stringArg(args, "related_rule_ids"))
 	if rridErr != nil {
-		return mcp.NewToolResultError(rridErr.Error()), nil
+		return in, mcp.NewToolResultError(rridErr.Error())
 	}
+	in.relatedRuleIDs = relatedRuleIDs
 
 	// session_id is optional. When present it MUST be a well-formed UUID —
 	// validate the format up front so malformed input is rejected outright,
 	// even though an unknown-but-valid UUID is tolerated below (no-FK design;
 	// backend-security-design.md §6 migration comment on work_session_id).
-	var sessionID *uuid.UUID
 	if raw := stringArg(args, "session_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return mcp.NewToolResultError("invalid session_id UUID"), nil
+			return in, mcp.NewToolResultError("invalid session_id UUID")
 		}
-		sessionID = &id
+		in.sessionID = &id
+	}
+
+	return in, nil
+}
+
+// handleRecordOutcome validates input and creates a new outcome.
+func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	in, errResult := parseRecordOutcomeArgs(args)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	wsID := s.workspaceUUID()
 	o, action, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
 		WorkspaceID:    wsID,
-		EntityType:     entityType,
-		EntityID:       entityID,
-		Result:         result,
-		Notes:          notes,
-		Metrics:        metricsJSON,
-		RelatedRuleIDs: relatedRuleIDs,
-		WorkSessionID:  sessionID,
+		EntityType:     in.entityType,
+		EntityID:       in.entityID,
+		Result:         in.result,
+		Notes:          in.notes,
+		Metrics:        in.metricsJSON,
+		RelatedRuleIDs: in.relatedRuleIDs,
+		WorkSessionID:  in.sessionID,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recording outcome: %v", err)), nil
@@ -208,10 +237,10 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// Best-effort: also set work_sessions.outcome_id so the link is
 	// bidirectional. A stale/unknown session_id (worksession.ErrNotFound) is
 	// tolerated per the no-FK design — record_outcome never fails over this.
-	if sessionID != nil && s.workSession != nil {
-		if linkErr := s.workSession.SetOutcomeLink(ctx, *sessionID, o.ID); linkErr != nil {
+	if in.sessionID != nil && s.workSession != nil {
+		if linkErr := s.workSession.SetOutcomeLink(ctx, *in.sessionID, o.ID); linkErr != nil {
 			slog.Warn("record_outcome: SetOutcomeLink failed (non-fatal)",
-				"outcome_id", o.ID, "session_id", *sessionID, "err", linkErr)
+				"outcome_id", o.ID, "session_id", *in.sessionID, "err", linkErr)
 		}
 	}
 

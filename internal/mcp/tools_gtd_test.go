@@ -15,6 +15,11 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
+// outcomeResultUnknown is the draft result complete_task auto-seeds. Declared
+// in this file (which carries the same build constraints as its only user) so
+// it stays available under every build tag combination.
+const outcomeResultUnknown = "unknown"
+
 // spyOutcomeStore is a test-local spy implementing all 10 methods of
 // outcome.StoreIface. It counts total calls across every method so a test can
 // assert "the outcome layer was never touched" with a single check. Values
@@ -792,7 +797,7 @@ func TestHandleCompleteTask_SeedsOutcome(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected exactly 1 seeded outcome for task %s, got %d", id, len(matches))
 	}
-	if matches[0].Result != "unknown" {
+	if matches[0].Result != outcomeResultUnknown {
 		t.Errorf("seeded outcome Result = %q, want unknown", matches[0].Result)
 	}
 	if matches[0].EntityType != "task" {

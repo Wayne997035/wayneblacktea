@@ -425,7 +425,7 @@ WHERE workspace_id = $1
 
 	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("querying stuck tasks: %w", err)
 	}
 	defer rows.Close()
 
@@ -561,7 +561,7 @@ LIMIT $2`
 
 	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID, decisionOutcomeReviewDailyCap)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("querying decisions pending outcome review: %w", err)
 	}
 	defer rows.Close()
 
@@ -682,7 +682,7 @@ WHERE workspace_id = $1
 
 	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("querying high recall knowledge items: %w", err)
 	}
 	defer rows.Close()
 

@@ -44,16 +44,20 @@ type PGOnlyJob struct {
 // SQLite parity via CognitiveSQLiteStore.
 var pgOnlyJobs = []PGOnlyJob{
 	{
-		Name:   "daily-discipline-prune",
-		Reason: "discipline_events retention is disk-growth-only, not user-observable (backend-security-design.md §1.3); SQLite is dev-local single-tenant with no growth concern",
+		Name: "daily-discipline-prune",
+		Reason: "discipline_events retention is disk-growth-only, not user-observable " +
+			"(backend-security-design.md §1.3); SQLite is dev-local single-tenant with no growth concern",
 	},
 	{
-		Name:   "daily-guard-prune",
-		Reason: "guard_events/guard_bypasses retention is disk-growth-only, not user-observable; SQLite is dev-local single-tenant with no growth concern",
+		Name: "daily-guard-prune",
+		Reason: "guard_events/guard_bypasses retention is disk-growth-only, not user-observable; " +
+			"SQLite is dev-local single-tenant with no growth concern",
 	},
 	{
-		Name:   "daily-pending-proposals-prune",
-		Reason: "pending_proposals TTL cleanup is disk-growth-only — the proposals themselves ARE user-observable via proposal.StoreIface on both backends, but their retention/prune job is not; SQLite is dev-local single-tenant and never accumulates enough rows to matter",
+		Name: "daily-pending-proposals-prune",
+		Reason: "pending_proposals TTL cleanup is disk-growth-only — the proposals themselves ARE " +
+			"user-observable via proposal.StoreIface on both backends, but their retention/prune job is not; " +
+			"SQLite is dev-local single-tenant and never accumulates enough rows to matter",
 	},
 }
 

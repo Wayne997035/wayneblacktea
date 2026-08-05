@@ -301,10 +301,14 @@ func TestProposalCleanup_CrossBackend_SameFixture(t *testing.T) {
 	sqSc.runProposalCleanup()
 
 	var sqSchedStatus, sqUserStatus string
-	if err := sqDB.QueryRowContext(ctx, "SELECT status FROM pending_proposals WHERE id = ?1", sqSchedID.String()).Scan(&sqSchedStatus); err != nil {
+	if err := sqDB.QueryRowContext(
+		ctx, "SELECT status FROM pending_proposals WHERE id = ?1", sqSchedID.String(),
+	).Scan(&sqSchedStatus); err != nil {
 		t.Fatalf("query SQLite scheduler proposal: %v", err)
 	}
-	if err := sqDB.QueryRowContext(ctx, "SELECT status FROM pending_proposals WHERE id = ?1", sqUserID.String()).Scan(&sqUserStatus); err != nil {
+	if err := sqDB.QueryRowContext(
+		ctx, "SELECT status FROM pending_proposals WHERE id = ?1", sqUserID.String(),
+	).Scan(&sqUserStatus); err != nil {
 		t.Fatalf("query SQLite user proposal: %v", err)
 	}
 

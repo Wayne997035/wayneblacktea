@@ -42,7 +42,8 @@ func uuidFromPgtype(v pgtype.UUID) *uuid.UUID {
 // outcomeSelectCols is the canonical column list for outcome SELECT queries.
 // related_rule_ids was added in migration 000063; work_session_id in 000067;
 // supersedes_id in 000074.
-const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at`
+const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, ` +
+	`related_rule_ids, work_session_id, supersedes_id, created_at`
 
 // evaluationSelectCols is the canonical column list for evaluation SELECT queries.
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`

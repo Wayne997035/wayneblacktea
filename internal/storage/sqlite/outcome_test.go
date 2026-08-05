@@ -13,6 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// outcomeResultSuccess is the terminal result these tests assert on. Declared
+// here rather than repeated inline so the value stays in one place.
+const outcomeResultSuccess = "success"
+
 func openOutcomeDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
 	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
@@ -55,7 +59,7 @@ func TestApplyColumnUpgrades_Idempotent(t *testing.T) {
 		WorkspaceID:    &wsID,
 		EntityType:     "task",
 		EntityID:       uuid.New(),
-		Result:         "success",
+		Result:         outcomeResultSuccess,
 		RelatedRuleIDs: []uuid.UUID{rule1},
 	})
 	if err != nil {
@@ -87,7 +91,7 @@ func TestSQLiteOutcomeStore_CreateOutcome(t *testing.T) {
 				WorkspaceID: &wsID,
 				EntityType:  "task",
 				EntityID:    entityID,
-				Result:      "success",
+				Result:      outcomeResultSuccess,
 				Metrics:     []byte(`{"duration_ms":500}`),
 				Notes:       "completed on time",
 			},
@@ -153,7 +157,7 @@ func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
 		WorkspaceID:   &wsID,
 		EntityType:    "task",
 		EntityID:      uuid.New(),
-		Result:        "success",
+		Result:        outcomeResultSuccess,
 		WorkSessionID: &sessionID,
 	})
 	if err != nil {
@@ -176,7 +180,7 @@ func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
 		WorkspaceID: &wsID,
 		EntityType:  "task",
 		EntityID:    uuid.New(),
-		Result:      "success",
+		Result:      outcomeResultSuccess,
 	})
 	if err != nil {
 		t.Fatalf("CreateOutcome without WorkSessionID: %v", err)
@@ -317,7 +321,7 @@ func TestSQLiteOutcomeStore_ListFailedOutcomes(t *testing.T) {
 	wsID := uuid.New()
 	entityID := uuid.New()
 
-	for _, result := range []string{"success", "failure", "regressed", "partial"} {
+	for _, result := range []string{outcomeResultSuccess, "failure", "regressed", "partial"} {
 		_, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
 			WorkspaceID: &wsID,
 			EntityType:  "task",
@@ -357,7 +361,7 @@ func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
 		WorkspaceID: &wsID,
 		EntityType:  "task",
 		EntityID:    entityID,
-		Result:      "success",
+		Result:      outcomeResultSuccess,
 		Notes:       "recent outcome",
 	})
 	if err != nil {
@@ -483,7 +487,7 @@ func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
 			WorkspaceID:    &wsID,
 			EntityType:     "task",
 			EntityID:       entityID,
-			Result:         "success",
+			Result:         outcomeResultSuccess,
 			RelatedRuleIDs: []uuid.UUID{},
 		})
 		if err != nil {
@@ -571,7 +575,7 @@ func TestSQLiteOutcomeStore_GetLatestForEntity(t *testing.T) {
 	}
 	time.Sleep(2 * time.Millisecond) // ensure created_at strictly advances
 	second, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
-		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success",
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: outcomeResultSuccess,
 		SupersedesID: &first.ID,
 	})
 	if err != nil {
@@ -617,7 +621,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {
 	}
 
 	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
-		Result: "success",
+		Result: outcomeResultSuccess,
 		Notes:  "shipped",
 	})
 	if err != nil {
@@ -626,7 +630,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {
 	if finalized.ID != draft.ID {
 		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
 	}
-	if finalized.Result != "success" {
+	if finalized.Result != outcomeResultSuccess {
 		t.Errorf("Result = %q, want success", finalized.Result)
 	}
 	if finalized.Notes != "shipped" {
@@ -664,7 +668,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOutcome draft: %v", err)
 	}
-	if _, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "success"}); err != nil {
+	if _, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: outcomeResultSuccess}); err != nil {
 		t.Fatalf("first FinalizeDraft: %v", err)
 	}
 
@@ -678,7 +682,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOutcomeByID: %v", err)
 	}
-	if got.Result != "success" {
+	if got.Result != outcomeResultSuccess {
 		t.Errorf("result must remain 'success' (first finalize), got %q — second call must not silently overwrite", got.Result)
 	}
 }
@@ -729,7 +733,7 @@ func TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.
 	entityID := uuid.New()
 
 	terminal, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
-		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success",
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: outcomeResultSuccess,
 	})
 	if err != nil {
 		t.Fatalf("CreateOutcome terminal: %v", err)
@@ -745,7 +749,7 @@ func TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.
 	if got.ID != terminal.ID {
 		t.Errorf("expected the existing terminal row back, got a different ID: %s vs %s", got.ID, terminal.ID)
 	}
-	if got.Result != "success" {
+	if got.Result != outcomeResultSuccess {
 		t.Errorf("must not have altered the existing terminal result, got %q", got.Result)
 	}
 }

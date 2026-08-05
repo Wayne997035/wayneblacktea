@@ -67,7 +67,7 @@ func TestOutcomeLifecycle_CompleteTaskThenRecordOutcome_FinalizesDraftInPlace(t 
 	}
 	draftID := draftRows[0].ID
 
-	r := callRecordOutcomeFor(t, s, taskID, "success", "shipped fine")
+	r := callRecordOutcomeFor(t, s, taskID, finalResultSuccess, "shipped fine")
 	if r.IsError {
 		t.Fatalf("record_outcome: %s", resultText(r))
 	}
@@ -83,7 +83,7 @@ func TestOutcomeLifecycle_CompleteTaskThenRecordOutcome_FinalizesDraftInPlace(t 
 	if len(rows) != 1 {
 		t.Fatalf("expected exactly 1 outcome row after complete_task->record_outcome, got %d: %+v", len(rows), rows)
 	}
-	if rows[0].Result != "success" {
+	if rows[0].Result != finalResultSuccess {
 		t.Errorf("Result = %q, want success", rows[0].Result)
 	}
 }
@@ -151,7 +151,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_DifferentResult_Superse
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
-	r1 := callRecordOutcomeFor(t, s, entityID, "success", "looked fine at the time")
+	r1 := callRecordOutcomeFor(t, s, entityID, finalResultSuccess, "looked fine at the time")
 	if r1.IsError {
 		t.Fatalf("first record_outcome: %s", resultText(r1))
 	}
@@ -183,7 +183,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_DifferentResult_Superse
 		t.Fatalf("expected exactly 2 rows (original + supersession), got %d: %+v", len(rows), rows)
 	}
 	for _, o := range rows {
-		if o.ID == first.ID && o.Result != "success" {
+		if o.ID == first.ID && o.Result != finalResultSuccess {
 			t.Errorf("first row's result must remain 'success' (not silently overwritten), got %q", o.Result)
 		}
 	}
@@ -198,7 +198,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_IdenticalReplay_NoSecon
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
-	r1 := callRecordOutcomeFor(t, s, entityID, "success", "idempotent retry test")
+	r1 := callRecordOutcomeFor(t, s, entityID, finalResultSuccess, "idempotent retry test")
 	if r1.IsError {
 		t.Fatalf("first record_outcome: %s", resultText(r1))
 	}
@@ -207,7 +207,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_IdenticalReplay_NoSecon
 		t.Fatalf("unmarshal first: %v", err)
 	}
 
-	r2 := callRecordOutcomeFor(t, s, entityID, "success", "idempotent retry test")
+	r2 := callRecordOutcomeFor(t, s, entityID, finalResultSuccess, "idempotent retry test")
 	if r2.IsError {
 		t.Fatalf("second (retried) record_outcome: %s", resultText(r2))
 	}
@@ -237,7 +237,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenFinishWorkFailure_Supersedes(t *testi
 	insertMCPTestTask(t, db, "", taskID)
 	parsedTaskID, _ := uuid.Parse(taskID)
 
-	r1 := callRecordOutcomeFor(t, s, parsedTaskID, "success", "first pass looked good")
+	r1 := callRecordOutcomeFor(t, s, parsedTaskID, finalResultSuccess, "first pass looked good")
 	if r1.IsError {
 		t.Fatalf("record_outcome: %s", resultText(r1))
 	}
@@ -276,7 +276,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenFinishWorkFailure_Supersedes(t *testi
 		t.Fatalf("expected exactly 2 rows (record_outcome's success + finish_work's supersession), got %d: %+v", len(rows), rows)
 	}
 	for _, o := range rows {
-		if o.ID == first.ID && o.Result != "success" {
+		if o.ID == first.ID && o.Result != finalResultSuccess {
 			t.Errorf("record_outcome's original row must remain 'success', got %q", o.Result)
 		}
 		if o.ID.String() == outcomeIDStr {
