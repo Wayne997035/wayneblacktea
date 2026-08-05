@@ -336,6 +336,28 @@ var expectedNewEntries = map[string]bool{
 	// difference eligible for acceptedDifferences below), and
 	// canonicalTableSignature's alphabetical column sort makes the exact
 	// insertion position in that line comparison-irrelevant.
+	//
+	// KNOWN LIMITATION (flagged during GTD a4fa8f58 / PR #152 fix): this
+	// hand-edit to testdata/schema_golden.sql is not itself derived from any
+	// replay or generator — TestGenerateGoldenSchema only ever regenerates
+	// from schema.sql, never from this hand-typed column — so a future
+	// hand-edit here could drift from what a real legacy DB (and the real
+	// 000074 migration) actually produce, and TestGoldenSchemaEquivalence
+	// would still pass against its own wrong golden. The adoption-path test
+	// (TestRunMigrations_AdoptsPreExistingDB in migrate_test.go) is the
+	// independent check against this: it builds a legacy DB from the real
+	// schemaSQL (not this golden file), runs it through the real adoption +
+	// replay code path, and asserts supersedes_id and both new indexes exist
+	// via a live query against the resulting DB — so it cannot be fooled by
+	// a wrong hand-edit here. That test only covers the specific columns
+	// asserted in it, though; it is not a systematic fix for hand-maintained
+	// golden drift in general. A systematic fix — teaching
+	// TestGenerateGoldenSchema to itself run the adoption+replay path as an
+	// alternate generation mode, so testdata/schema_golden.sql is always
+	// derived from real migration execution rather than typed by hand — is
+	// out of scope here (it would require restructuring how the golden file
+	// is produced, beyond this adoption-path bug fix) and is left as
+	// follow-up.
 	"index|idx_outcomes_supersedes_id":  true,
 	"index|idx_outcomes_one_open_draft": true,
 }
