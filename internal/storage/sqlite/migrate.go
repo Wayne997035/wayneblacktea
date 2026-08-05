@@ -32,11 +32,11 @@ const latestSQLiteSchemaVersion = 74
 // snapshot (testdata/schema_golden.sql); its expectedNewEntries map lists
 // every schema object present in the replay-built schema but absent from
 // the frozen snapshot. As of migration 000074, that map contains exactly
-// idx_outcomes_supersedes_id and idx_outcomes_one_open_draft (both added by
-// 000074_outcomes_supersession) plus the unrelated historical idx_tasks_due_date
-// gap (000041, a documented numbering artifact, not an E1-boundary case) —
-// i.e. every migration up to and including 000073 is already accounted for
-// in the frozen snapshot, and 000074 is the first one that is not.
+// idx_outcomes_one_open_draft (added by 000074_outcomes_supersession) plus
+// the unrelated historical idx_tasks_due_date gap (000041, a documented
+// numbering artifact, not an E1-boundary case) — i.e. every migration up to
+// and including 000073 is already accounted for in the frozen snapshot, and
+// 000074 is the first one that is not.
 //
 // On the adoption path (see runMigrations), Force-stamping a pre-existing DB
 // at this version — rather than at latestSQLiteSchemaVersion — lets m.Up()

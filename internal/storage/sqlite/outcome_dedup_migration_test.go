@@ -151,3 +151,76 @@ func TestMigration000074_Dedup_SQLite(t *testing.T) {
 		t.Error("expected the unique index to reject a second 'unknown' row post-migration")
 	}
 }
+
+// insertLegacyUnknownOutcomeWithID is insertLegacyUnknownOutcome's twin for
+// tests that need to control the row id explicitly instead of accepting
+// uuid.New()'s random id — required for the created_at tie-break test below,
+// where the expected survivor must be knowable ahead of time from the
+// migration's ORDER BY created_at DESC, id DESC contract itself, not from
+// observing which row a run happens to keep.
+func insertLegacyUnknownOutcomeWithID(t *testing.T, conn *sql.DB, id, wsID, entityType, entityID, createdAt, notes string) {
+	t.Helper()
+	_, err := conn.ExecContext(
+		context.Background(),
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, notes, created_at)
+			VALUES (?, ?, ?, ?, 'unknown', ?, ?)`,
+		id, wsID, entityType, entityID, notes, createdAt,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy outcome with explicit id: %v", err)
+	}
+}
+
+// TestMigration000074_Dedup_SQLite_CreatedAtTieBreak covers the case
+// TestMigration000074_Dedup_SQLite above does not: two duplicate 'unknown'
+// drafts for the same (workspace, entity_type, entity_id) whose created_at
+// values are bit-for-bit identical, rather than merely close. When
+// created_at ties, ORDER BY created_at DESC alone cannot pick a winner —
+// migrations/sqlite/000074_outcomes_supersession.up.sql's dedup step
+// resolves this with a second ORDER BY key, id DESC, which this test pins
+// down directly. The expected survivor (the row with the lexicographically
+// GREATER id) is derived from that ORDER BY clause itself, not from
+// observing what one run happens to produce.
+func TestMigration000074_Dedup_SQLite_CreatedAtTieBreak(t *testing.T) {
+	ctx := context.Background()
+	conn, m := openOutcomeMigratorAt73(t)
+
+	wsID := uuid.New().String()
+	entityID := uuid.New().String()
+	const sameCreatedAt = "2026-01-01T00:00:00.000Z"
+
+	// Label the two ids by lexicographic order so the expected survivor
+	// (idGreater) is known before the migration runs, per the id DESC
+	// tie-break contract.
+	idLesser, idGreater := uuid.New().String(), uuid.New().String()
+	if idLesser > idGreater {
+		idLesser, idGreater = idGreater, idLesser
+	}
+
+	insertLegacyUnknownOutcomeWithID(t, conn, idLesser, wsID, "task", entityID, sameCreatedAt, "tie-break loser")
+	insertLegacyUnknownOutcomeWithID(t, conn, idGreater, wsID, "task", entityID, sameCreatedAt, "tie-break winner")
+
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("apply migration 000074 (expected to succeed after dedup): %v", err)
+	}
+
+	var remaining string
+	err := conn.QueryRowContext(ctx,
+		`SELECT id FROM outcomes WHERE entity_id = ? AND result = 'unknown'`, entityID,
+	).Scan(&remaining)
+	if err != nil {
+		t.Fatalf("expected exactly one surviving 'unknown' row for the tied-created_at duplicate: %v", err)
+	}
+	if remaining != idGreater {
+		t.Errorf("expected the row with the greater id (%s) to survive the created_at tie via "+
+			"ORDER BY created_at DESC, id DESC, got %s", idGreater, remaining)
+	}
+
+	var count int
+	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM outcomes WHERE id = ?`, idLesser).Scan(&count); err != nil {
+		t.Fatalf("count tie-break loser: %v", err)
+	}
+	if count != 0 {
+		t.Error("expected the tie-break loser (lesser id, identical created_at) to be deleted by the dedup step")
+	}
+}
