@@ -666,3 +666,77 @@ func TestHandleRecordOutcome_DraftEnriched_TriggersSetOutcomeLinkAndAtomize(t *t
 		t.Errorf("SetOutcomeLink did not fire for ActionDraftEnriched: session.outcome_id = %v, want %s", got.OutcomeID, enriched.ID)
 	}
 }
+
+// TestHandleRecordOutcome_DraftEnrichRetry_ByteIdenticalSkipsSecondAtomize is
+// the PR #152 round 3 Major reproduction end-to-end through the real
+// record_outcome MCP tool against a real SQLite-backed server: a
+// byte-identical retry of a content-bearing enrich call (same notes) must
+// NOT trigger a second atomize call. Before this fix, the retry landed back
+// in RecordExecutionResult's draft branch (result stays "unknown" after the
+// first enrich), found hasNewContent still true, and re-ran FinalizeDraft —
+// reported as ActionDraftEnriched a second time, which is NOT in
+// tools_outcome.go's idempotent-skip list, so atomize fired twice for the
+// same notes text.
+func TestHandleRecordOutcome_DraftEnrichRetry_ByteIdenticalSkipsSecondAtomize(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServer(t)
+	entityID := uuid.New()
+
+	seedR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+	})
+	if seedR.IsError {
+		t.Fatalf("seed record_outcome: %s", resultText(seedR))
+	}
+
+	enrichArgs := map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+		"notes":       "enriching with real content",
+	}
+
+	firstR := callRecordOutcome(t, s, enrichArgs)
+	if firstR.IsError {
+		t.Fatalf("first enrich record_outcome: %s", resultText(firstR))
+	}
+	var first outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(firstR)), &first); err != nil {
+		t.Fatalf("unmarshal first: %v", err)
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		if pid != first.ID {
+			t.Errorf("first call: atomizeFn fired with parent_id=%s, want %s", pid, first.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first call: atomizeFn did not fire within timeout, want a call (this call genuinely wrote new content)")
+	}
+
+	// The retry: identical args, byte-for-byte.
+	secondR := callRecordOutcome(t, s, enrichArgs)
+	if secondR.IsError {
+		t.Fatalf("retry enrich record_outcome: %s", resultText(secondR))
+	}
+	var second outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(secondR)), &second); err != nil {
+		t.Fatalf("unmarshal second: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Errorf("retry must return the SAME row: got %s, want %s", second.ID, first.ID)
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		t.Errorf("atomizeFn fired a SECOND time for a byte-identical retry (parent_id=%s) — Major regression", pid)
+	case <-time.After(150 * time.Millisecond):
+		// expected: nothing arrives
+	}
+
+	rows := outcomesForEntity(t, s, entityID)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly 1 outcome row after seed->enrich->identical-retry, got %d: %+v", len(rows), rows)
+	}
+}

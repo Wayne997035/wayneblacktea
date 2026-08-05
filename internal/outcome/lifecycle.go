@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/google/uuid"
 )
 
 // LifecycleAction reports which branch RecordExecutionResult took, so
@@ -32,9 +34,22 @@ const (
 	// (explicit supersession, never a silent overwrite — see
 	// backend-security-design.md's threat model on audit-trail loss).
 	ActionSuperseded LifecycleAction = "superseded"
-	// ActionReplayedIdempotent: the entity's latest outcome already has the
-	// exact same result+notes+metrics as this call — no row was written;
-	// the existing row is returned unchanged.
+	// ActionReplayedIdempotent: this call carries zero net-new information
+	// relative to the entity's latest outcome — no row was written; the
+	// existing row is returned unchanged. Reached from two different
+	// comparisons depending on where latest sits:
+	//   - latest is already terminal: isIdempotentReplay compares
+	//     Result+Notes+Metrics byte-for-byte (see its doc comment).
+	//   - latest is still a result='unknown' draft AND this call also
+	//     requests result='unknown' WITH new content: isDraftIdempotentReplay
+	//     compares every field FinalizeDraft would actually write (Notes,
+	//     Metrics, RelatedRuleIDs, WorkSessionID) against what COALESCE-ing
+	//     this call's params into latest would produce (see its doc
+	//     comment). See PR #152 round 3 Major: before this branch existed, a
+	//     byte-identical retry of a content-bearing enrich call re-entered
+	//     FinalizeDraft a second time and re-reported ActionDraftEnriched,
+	//     which re-fires SetOutcomeLink/atomize in tools_outcome.go for
+	//     content that was already recorded.
 	ActionReplayedIdempotent LifecycleAction = "replayed_idempotent"
 	// ActionDraftPreserved: the entity's latest outcome is a result='unknown'
 	// draft, this call ALSO requested result='unknown', AND this call carries
@@ -81,8 +96,14 @@ const (
 //     unchanged (ActionDraftPreserved) — "unknown" is never a finalization,
 //     see PR #152 finding M-1
 //   - prior outcome is a draft, this call is also
-//     result='unknown', but DOES carry new content   -> merge that content
-//     into the draft IN PLACE via FinalizeDraft's COALESCE UPDATE
+//     result='unknown', DOES carry new content, but that content is a
+//     byte-identical retry of what's already stored (per
+//     isDraftIdempotentReplay)                        -> no-op replay
+//     (ActionReplayedIdempotent), FinalizeDraft is NOT called a second
+//     time; see PR #152 round 3 Major
+//   - prior outcome is a draft, this call is also
+//     result='unknown', and DOES carry genuinely new content -> merge that
+//     content into the draft IN PLACE via FinalizeDraft's COALESCE UPDATE
 //     (ActionDraftEnriched) — result stays 'unknown', this is not a
 //     finalization; see PR #152 finding M-2a
 //   - prior outcome is a result='unknown' draft,
@@ -142,11 +163,29 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		if params.Result == resultUnknown && !hasNewContent(params) {
 			return latest, ActionDraftPreserved, nil
 		}
+		// PR #152 round 3 Major: hasNewContent only established that params
+		// carries SOME content — it says nothing about whether that content
+		// is NEW relative to what's already stored. Because an enrich call
+		// (params.Result == resultUnknown) never flips latest.Result away
+		// from "unknown", a retried call lands back in THIS branch (not the
+		// terminal-branch isIdempotentReplay below, which is unreachable for
+		// draft rows). Without this check, a byte-identical retry of an
+		// already-applied enrich call would re-invoke FinalizeDraft and
+		// re-report ActionDraftEnriched, re-firing tools_outcome.go's
+		// SetOutcomeLink/atomize side effects for content already recorded.
+		// Scoped to the enrich path only: a terminal params.Result reaching
+		// this branch is always the FIRST finalization of this draft (once
+		// finalized, latest.Result is no longer "unknown" and any further
+		// call goes through the terminal branch's isIdempotentReplay
+		// instead), so there is no equivalent duplicate-finalize case here.
+		if params.Result == resultUnknown && isDraftIdempotentReplay(latest, params) {
+			return latest, ActionReplayedIdempotent, nil
+		}
 		// Everything below writes. The only thing the result value changes is
 		// which action we report: a terminal result finalizes the draft, an
-		// "unknown" result that got this far carries new content and merely
-		// enriches it (result stays non-terminal). Both go through the same
-		// merge-only FinalizeDraft.
+		// "unknown" result that got this far carries genuinely new content
+		// and merely enriches it (result stays non-terminal). Both go
+		// through the same merge-only FinalizeDraft.
 		action := ActionFinalizedDraft
 		if params.Result == resultUnknown {
 			action = ActionDraftEnriched
@@ -206,4 +245,77 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 		return false
 	}
 	return bytes.Equal(latest.Metrics, params.Metrics)
+}
+
+// isDraftIdempotentReplay reports whether params, once merged into latest
+// via FinalizeDraft's COALESCE/whole-array-replace semantics (store.go /
+// storage/sqlite/outcome.go), would leave every written column exactly as it
+// already is — i.e. this call carries zero net-new information over what's
+// already stored. Called only from RecordExecutionResult's draft branch,
+// AFTER hasNewContent has already established params carries SOME content
+// (hasNewContent's "no content at all" case is handled separately by
+// ActionDraftPreserved) — this function answers the narrower question of
+// whether that content is actually NEW.
+//
+// Deliberately NOT a reuse of isIdempotentReplay: that function only
+// compares Result/Notes/Metrics, which is correct for the terminal branch
+// (a full-row CreateOutcome/supersede compare) but is UNDER-inclusive here —
+// FinalizeDraft also conditionally writes RelatedRuleIDs and WorkSessionID,
+// and a call that repeats identical Notes while introducing a new
+// WorkSessionID or RelatedRuleIDs set must NOT be classified as a replay
+// (that would silently drop the new link/rules, reintroducing PR #152
+// finding M-2a for those two fields specifically — see the acceptance
+// criteria on the round-3 Major fix this function closes).
+//
+// Each field mirrors FinalizeDraft's own COALESCE/replace rule exactly:
+//   - Notes / Metrics / WorkSessionID: FinalizeDraft only overwrites when
+//     the param is non-empty/non-nil (COALESCE-guarded). An empty param can
+//     therefore never introduce a diff; a non-empty param must equal
+//     latest's current value for this call to be a no-op.
+//   - RelatedRuleIDs: FinalizeDraft does a WHOLE-ARRAY REPLACE when
+//     non-empty (see FinalizeDraft's doc comment) — never a per-element
+//     union. An empty/nil param never diffs (nothing would be written); a
+//     non-empty param must match latest.RelatedRuleIDs element-for-element,
+//     IN ORDER — relatedRuleIDsEqual treats nil and an empty non-nil slice
+//     as equivalent (both mean "no ids", matching CreateOutcomeParams' own
+//     nil-tolerant doc comment), but does NOT ignore element order: a caller
+//     resubmitting the same IDs in a different order would, if actually
+//     applied, literally replace the stored array with a differently-ordered
+//     one — a real (if cosmetic) write — so it is deliberately NOT treated
+//     as a replay here; it falls through to ActionDraftEnriched instead,
+//     consistent with this function's job of predicting FinalizeDraft's
+//     actual behavior rather than a looser "same set" comparison.
+func isDraftIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
+	if params.Notes != "" && params.Notes != latest.Notes {
+		return false
+	}
+	if len(params.Metrics) > 0 && !bytes.Equal(params.Metrics, latest.Metrics) {
+		return false
+	}
+	if params.WorkSessionID != nil {
+		if latest.WorkSessionID == nil || *params.WorkSessionID != *latest.WorkSessionID {
+			return false
+		}
+	}
+	if len(params.RelatedRuleIDs) > 0 && !relatedRuleIDsEqual(params.RelatedRuleIDs, latest.RelatedRuleIDs) {
+		return false
+	}
+	return true
+}
+
+// relatedRuleIDsEqual reports whether a and b contain the same UUIDs in the
+// same order. nil and an empty non-nil slice compare equal (both have
+// len==0). Order-sensitive by design — see isDraftIdempotentReplay's doc
+// comment on why order matters here (it mirrors FinalizeDraft's literal
+// whole-array replace, not a set-equality merge).
+func relatedRuleIDsEqual(a, b []uuid.UUID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
