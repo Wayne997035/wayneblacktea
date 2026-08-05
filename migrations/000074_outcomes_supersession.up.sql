@@ -41,13 +41,24 @@
 --    group (the old code path was an unconditional INSERT with no
 --    uniqueness rule at all — see PR #152 finding M-2), which would abort
 --    CREATE UNIQUE INDEX mid-migration. The DELETE below dedups first,
---    keeping the most-recently-created 'unknown' row per group. This is a
---    behavior no-op, not just storage cleanup: GetLatestForEntity (and every
---    call path built on it — RecordExecutionResult, SeedDraft, FinalizeDraft)
---    already `ORDER BY created_at DESC LIMIT 1`, so any *older* duplicate
---    'unknown' row for the same entity was already unreachable dead weight
---    before this migration ran — no application code path has ever read it
---    except full-listing views (list_recent_outcomes, find_failed_patterns).
+--    keeping the most-recently-created 'unknown' row per group, breaking
+--    created_at ties by the greater id.
+--
+--    An earlier draft of this comment called the DELETE a behavior no-op, on
+--    the grounds that GetLatestForEntity already ordered by created_at DESC
+--    with LIMIT 1 and therefore no application path could reach an older
+--    duplicate. That premise was false whenever two rows shared a created_at:
+--    GetLatestForEntity carried no tie-break at the time, so which row it
+--    returned was undefined, and it was not guaranteed to be the row this
+--    DELETE keeps. SQLite timestamps are millisecond-precision, which makes
+--    the tie reachable in practice — a security review reproduced it 6 times
+--    out of 8 against the pre-existing code. Both backends' GetLatestForEntity
+--    now carry the same `ORDER BY created_at DESC, id DESC` used here, so the
+--    resolver and this DELETE finally agree on which row is newest. Treat the
+--    DELETE as destructive-but-deliberate: it removes rows that WERE reachable
+--    under the old tie-less resolver, not merely dead weight. Rows are only
+--    ever read by full-listing views (list_recent_outcomes,
+--    find_failed_patterns) besides that resolver.
 --    Evaluations pointing at a row being deleted are removed first (no FK
 --    cascade per CLAUDE.md red-line #9; mirrors internal/outcome/store.go's
 --    PruneOlderThan delete-evaluations-first pattern) so no evaluation is
