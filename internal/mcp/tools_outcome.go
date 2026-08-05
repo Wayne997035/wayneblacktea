@@ -222,7 +222,15 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 		WorkSessionID:  in.sessionID,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("recording outcome: %v", err)), nil
+		// Never surface the raw store error to the MCP caller: it can carry
+		// driver/schema internals (e.g. a UNIQUE constraint violation names
+		// idx_outcomes_one_open_draft literally) — security-review-reproduced
+		// leak. Full detail stays server-side via slog so the failure is still
+		// diagnosable from logs; the caller gets a generic message. Mirrors
+		// the sanitize-then-log pattern in tools_arch.go's store-error paths.
+		slog.Error("record_outcome: store error",
+			"entity_type", in.entityType, "entity_id", in.entityID, "err", err)
+		return mcp.NewToolResultError("failed to record outcome"), nil
 	}
 
 	// Idempotent replay (decision 80c1e8ae): the entity's latest outcome is
