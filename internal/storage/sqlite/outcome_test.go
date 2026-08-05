@@ -746,6 +746,49 @@ func TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFields
 	}
 }
 
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions is
+// the SQLite twin of outcome package's TestStore_FinalizeDraft_
+// RelatedRuleIDs_ReplacesNotUnions (PR #152 round 3 Minor 3): a draft seeded
+// with ruleA, then finalized with ruleB, must end up with EXACTLY [ruleB] —
+// not [ruleA, ruleB]. A three-army mutation on the Postgres SQL changed the
+// CASE...ELSE $4 whole-array replace into an array-concat union and the full
+// PG integration suite still passed, so this pins the same contract on the
+// SQLite backend too (backend-security-design.md §6.5 dual-backend parity).
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft with ruleA: %v", err)
+	}
+	if len(draft.RelatedRuleIDs) != 1 || draft.RelatedRuleIDs[0] != ruleA {
+		t.Fatalf("precondition failed: draft.RelatedRuleIDs = %v, want [%s]", draft.RelatedRuleIDs, ruleA)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleB},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft with ruleB: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want EXACTLY [%s] (replace, not union with ruleA — round 3 Minor 3)",
+			finalized.RelatedRuleIDs, ruleB)
+	}
+}
+
 // TestSQLiteOutcomeStore_SeedDraft_CreatesOnce verifies the sequential
 // happy path: first call creates, second call is a no-op read returning the
 // same row.

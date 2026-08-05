@@ -49,8 +49,8 @@ func buildPreExistingDB(t *testing.T) *sql.DB {
 // buildPreExistingDB's fixture is built from the real, unmodified schemaSQL
 // (schema.sql), which was last hand-updated through migration 000073 (see
 // frozenSnapshotVersion's doc comment) and genuinely lacks 000074's
-// outcomes.supersedes_id column and both of its new indexes — so this test
-// exercises the exact real-world gap, not a synthetic one.
+// outcomes.supersedes_id column and its new index — so this test exercises
+// the exact real-world gap, not a synthetic one.
 func TestRunMigrations_AdoptsPreExistingDB(t *testing.T) {
 	ctx := context.Background()
 	conn := buildPreExistingDB(t)

@@ -786,6 +786,50 @@ func TestStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *
 	}
 }
 
+// TestStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions is a mutation-
+// caught regression guard (PR #152 round 3 Minor 3): a three-army mutation
+// changed FinalizeDraft's `related_rule_ids = CASE ... ELSE $4 END` to
+// `ELSE related_rule_ids || $4` (an array UNION instead of a whole-array
+// REPLACE) and the full PG integration suite still passed — no test pinned
+// the replace-not-union contract FinalizeDraft's own doc comment describes.
+// A draft seeded with ruleA, then finalized/enriched with ruleB, must end up
+// with EXACTLY [ruleB] — not [ruleA, ruleB].
+func TestStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft with ruleA: %v", err)
+	}
+	if len(draft.RelatedRuleIDs) != 1 || draft.RelatedRuleIDs[0] != ruleA {
+		t.Fatalf("precondition failed: draft.RelatedRuleIDs = %v, want [%s]", draft.RelatedRuleIDs, ruleA)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         "success",
+		RelatedRuleIDs: []uuid.UUID{ruleB},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft with ruleB: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want EXACTLY [%s] (replace, not union with ruleA — round 3 Minor 3)",
+			finalized.RelatedRuleIDs, ruleB)
+	}
+}
+
 // TestStore_SeedDraft_CreatesOnce verifies the sequential happy path against
 // real Postgres: first call creates, second call is a no-op read.
 func TestStore_SeedDraft_CreatesOnce(t *testing.T) {
@@ -1228,5 +1272,102 @@ func TestMigration000074_Dedup_Postgres(t *testing.T) {
 	)
 	if err == nil {
 		t.Error("expected the unique index to reject a second 'unknown' row post-migration")
+	}
+}
+
+// insertLegacyUnknownOutcomeWithIDTx is insertLegacyUnknownOutcomeTx's twin
+// for tests that need to control the row id explicitly instead of accepting
+// the column's uuid_generate_v4() default — required for the created_at
+// tie-break test below, where the expected survivor must be knowable ahead
+// of time from the migration's ORDER BY created_at DESC, id DESC contract
+// itself, not from observing which row a run happens to keep. Mirrors
+// internal/storage/sqlite's insertLegacyUnknownOutcomeWithID.
+func insertLegacyUnknownOutcomeWithIDTx(
+	ctx context.Context, t *testing.T, tx pgx.Tx, id, wsID uuid.UUID, entityType string, entityID uuid.UUID, createdAt, notes string,
+) {
+	t.Helper()
+	_, err := tx.Exec(
+		ctx,
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, notes, created_at)
+			VALUES ($1, $2, $3, $4, 'unknown', $5, $6)`,
+		id, wsID, entityType, entityID, notes, createdAt,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy outcome with explicit id: %v", err)
+	}
+}
+
+// TestMigration000074_Dedup_Postgres_CreatedAtTieBreak covers the case
+// TestMigration000074_Dedup_Postgres above does not: two duplicate
+// 'unknown' drafts for the same (workspace, entity_type, entity_id) whose
+// created_at values are bit-for-bit identical, rather than merely close.
+// When created_at ties, ORDER BY created_at DESC alone cannot pick a
+// winner — the migration's dedup step (migrations/000074_outcomes_
+// supersession.up.sql) resolves this with a second ORDER BY key, id DESC,
+// which this test pins down directly. Mirrors the SQLite twin
+// (TestMigration000074_Dedup_SQLite_CreatedAtTieBreak) — backend-security-
+// design.md §6.5 dual-backend parity requires the same tie-break rule to be
+// independently verified on both engines. The expected survivor (the row
+// with the greater id, compared the same way Postgres's uuid type orders —
+// byte-for-byte on the 16-byte value, which a lowercase-hex String()
+// comparison reproduces because every character position is either a fixed
+// hyphen or a same-case hex digit) is derived from that ORDER BY clause
+// itself, not from observing what one run happens to produce.
+func TestMigration000074_Dedup_Postgres_CreatedAtTieBreak(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+
+	upBody, downBody := readMigration000074Bodies(t)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			t.Logf("rollback tx: %v", rbErr)
+		}
+	})
+
+	if _, err := tx.Exec(ctx, string(downBody)); err != nil {
+		t.Fatalf("drop supersession column/index (down.sql): %v", err)
+	}
+
+	wsID := uuid.New()
+	entityID := uuid.New()
+	const sameCreatedAt = "2026-01-01T00:00:00Z"
+
+	// Label the two ids by string (== byte, for a fixed-format lowercase hex
+	// UUID string) order so the expected survivor (idGreater) is known
+	// before the migration runs, per the id DESC tie-break contract.
+	idA, idB := uuid.New(), uuid.New()
+	idLesser, idGreater := idA, idB
+	if idLesser.String() > idGreater.String() {
+		idLesser, idGreater = idGreater, idLesser
+	}
+
+	insertLegacyUnknownOutcomeWithIDTx(ctx, t, tx, idLesser, wsID, "task", entityID, sameCreatedAt, "tie-break loser")
+	insertLegacyUnknownOutcomeWithIDTx(ctx, t, tx, idGreater, wsID, "task", entityID, sameCreatedAt, "tie-break winner")
+
+	if _, err := tx.Exec(ctx, string(upBody)); err != nil {
+		t.Fatalf("re-apply migration 000074 (expected to succeed after dedup): %v", err)
+	}
+
+	var remaining uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM outcomes WHERE entity_id = $1 AND result = 'unknown'`, entityID).Scan(&remaining)
+	if err != nil {
+		t.Fatalf("expected exactly one surviving 'unknown' row for the tied-created_at duplicate: %v", err)
+	}
+	if remaining != idGreater {
+		t.Errorf("expected the row with the greater id (%s) to survive the created_at tie via "+
+			"ORDER BY created_at DESC, id DESC, got %s", idGreater, remaining)
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM outcomes WHERE id = $1`, idLesser).Scan(&count); err != nil {
+		t.Fatalf("count tie-break loser: %v", err)
+	}
+	if count != 0 {
+		t.Error("expected the tie-break loser (lesser id, identical created_at) to be deleted by the dedup step")
 	}
 }

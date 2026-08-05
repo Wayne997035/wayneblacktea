@@ -136,13 +136,31 @@ func (f *fakeStore) GetLatestForEntity(context.Context, *uuid.UUID, string, uuid
 	return f.latest, nil
 }
 
+// FinalizeDraft mirrors the real stores' COALESCE/whole-array-replace merge
+// semantics (store.go / storage/sqlite/outcome.go), not a blind overwrite:
+// Result is always written; Notes/Metrics/WorkSessionID/RelatedRuleIDs only
+// overwrite f.latest when params supplies a non-empty value, otherwise the
+// existing value is left untouched. Getting this right matters beyond the
+// original M-2a tests below — the draft-retry idempotency tests (PR #152
+// round 3 Major) issue a SECOND FinalizeDraft-eligible call against the
+// result of the first and assert on what actually got merged, so a fake that
+// always overwrote (even with empty params) would silently pass tests that
+// should fail.
 func (f *fakeStore) FinalizeDraft(_ context.Context, _ uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	f.finalizeCalled = true
 	f.latest.Result = params.Result
-	f.latest.Notes = params.Notes
-	f.latest.Metrics = params.Metrics
-	f.latest.RelatedRuleIDs = params.RelatedRuleIDs
-	f.latest.WorkSessionID = params.WorkSessionID
+	if params.Notes != "" {
+		f.latest.Notes = params.Notes
+	}
+	if len(params.Metrics) > 0 {
+		f.latest.Metrics = params.Metrics
+	}
+	if len(params.RelatedRuleIDs) > 0 {
+		f.latest.RelatedRuleIDs = params.RelatedRuleIDs
+	}
+	if params.WorkSessionID != nil {
+		f.latest.WorkSessionID = params.WorkSessionID
+	}
 	return f.latest, nil
 }
 
@@ -386,5 +404,255 @@ func TestRecordExecutionResult_TerminalAgainstDraft_StillFinalizes(t *testing.T)
 	}
 	if got.Result != "success" {
 		t.Errorf("Result = %q, want success", got.Result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 3 Major: draft-enrich retry idempotency. Before this fix,
+// RecordExecutionResult's draft branch had no idempotency check reachable
+// for an enrich retry — a byte-identical retry of a content-bearing
+// result="unknown" call re-invoked FinalizeDraft and re-reported
+// ActionDraftEnriched, which tools_outcome.go treats as "a real write
+// occurred" and re-fires SetOutcomeLink/atomize.
+// ---------------------------------------------------------------------------
+
+// TestIsDraftIdempotentReplay covers the pure comparison helper the draft
+// branch uses to distinguish a byte-identical retry (no new information)
+// from a call that carries genuinely new content, mirroring what
+// FinalizeDraft's COALESCE/whole-array-replace UPDATE would actually do.
+func TestIsDraftIdempotentReplay(t *testing.T) {
+	sessionA, sessionB := uuid.New(), uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+	base := Outcome{
+		Result:         resultUnknown,
+		Notes:          "still investigating",
+		Metrics:        []byte(`{"duration_ms":100}`),
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+		WorkSessionID:  &sessionA,
+	}
+
+	tests := []struct {
+		name   string
+		latest Outcome
+		params CreateOutcomeParams
+		want   bool
+	}{
+		{
+			name:   "byte-identical retry: all fields match",
+			latest: base,
+			params: CreateOutcomeParams{
+				Result:         resultUnknown,
+				Notes:          "still investigating",
+				Metrics:        []byte(`{"duration_ms":100}`),
+				RelatedRuleIDs: []uuid.UUID{ruleA},
+				WorkSessionID:  &sessionA,
+			},
+			want: true,
+		},
+		{
+			name:   "empty params against a content-bearing draft: nothing to write, no diff",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown},
+			want:   true,
+		},
+		{
+			name:   "different notes is new content",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown, Notes: "actually it's this"},
+			want:   false,
+		},
+		{
+			name:   "different metrics bytes is new content",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown, Metrics: []byte(`{"duration_ms":200}`)},
+			want:   false,
+		},
+		{
+			name:   "same notes but NEW work_session_id is new content (reverse-protection: must not be a replay)",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown, Notes: "still investigating", WorkSessionID: &sessionB},
+			want:   false,
+		},
+		{
+			name:   "same notes but a DIFFERENT related_rule_ids set is new content",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown, Notes: "still investigating", RelatedRuleIDs: []uuid.UUID{ruleB}},
+			want:   false,
+		},
+		{
+			name:   "same notes, same related_rule_ids but different ORDER is treated as new (mirrors FinalizeDraft's literal array replace)",
+			latest: Outcome{Result: resultUnknown, RelatedRuleIDs: []uuid.UUID{ruleA, ruleB}},
+			params: CreateOutcomeParams{Result: resultUnknown, RelatedRuleIDs: []uuid.UUID{ruleB, ruleA}},
+			want:   false,
+		},
+		{
+			name:   "nil vs empty-but-non-nil related_rule_ids on latest are equivalent to an empty params slice",
+			latest: Outcome{Result: resultUnknown, RelatedRuleIDs: nil},
+			params: CreateOutcomeParams{Result: resultUnknown, RelatedRuleIDs: []uuid.UUID{}},
+			want:   true,
+		},
+		{
+			name:   "work_session_id already set on latest, params repeats the SAME id",
+			latest: base,
+			params: CreateOutcomeParams{Result: resultUnknown, WorkSessionID: &sessionA},
+			want:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isDraftIdempotentReplay(tc.latest, tc.params)
+			if got != tc.want {
+				t.Errorf("isDraftIdempotentReplay() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecordExecutionResult_DraftEnrichRetry_ByteIdenticalIsIdempotent is the
+// PR #152 round 3 Major reproduction: a retry of a content-bearing
+// result="unknown" enrich call, byte-identical to the first, must be
+// detected as a replay (ActionReplayedIdempotent) and must NOT re-invoke
+// FinalizeDraft. The first army's isolated repro (quoted in the dispatch)
+// showed both calls reporting action=draft_enriched with finalizeCalled=true
+// — this test pins the fixed behavior: only the first call writes.
+func TestRecordExecutionResult_DraftEnrichRetry_ByteIdenticalIsIdempotent(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         draftID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     resultUnknown,
+		},
+	}
+
+	params := CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   entityID,
+		Result:     resultUnknown,
+		Notes:      "still investigating",
+	}
+
+	first, action1, err := RecordExecutionResult(context.Background(), fs, params)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if action1 != ActionDraftEnriched {
+		t.Fatalf("first call action = %q, want %q", action1, ActionDraftEnriched)
+	}
+	if !fs.finalizeCalled {
+		t.Fatal("first call must invoke FinalizeDraft")
+	}
+	fs.finalizeCalled = false // reset spy to isolate the retry's own behaviour
+
+	second, action2, err := RecordExecutionResult(context.Background(), fs, params)
+	if err != nil {
+		t.Fatalf("retry call: %v", err)
+	}
+	if action2 != ActionReplayedIdempotent {
+		t.Errorf("retry action = %q, want %q (byte-identical retry — Major regression)", action2, ActionReplayedIdempotent)
+	}
+	if fs.finalizeCalled {
+		t.Error("FinalizeDraft must NOT be called again for a byte-identical retry (Major regression)")
+	}
+	if second.ID != first.ID {
+		t.Errorf("retry must return the SAME row: got %s, want %s", second.ID, first.ID)
+	}
+	if second.Notes != first.Notes {
+		t.Errorf("retry Notes = %q, want unchanged %q", second.Notes, first.Notes)
+	}
+}
+
+// TestRecordExecutionResult_DraftEnrichRetry_NewWorkSessionIDStillWrites is
+// the Major fix's mandatory reverse-protection guard: a retry carrying the
+// SAME notes as the first call but a NEW work_session_id is NOT a
+// byte-identical replay — WorkSessionID is a field FinalizeDraft actually
+// writes (COALESCE), so this call carries genuinely new information and MUST
+// still reach FinalizeDraft, reporting ActionDraftEnriched. A comparison
+// that only checked Notes/Metrics (like the terminal branch's
+// isIdempotentReplay) would wrongly classify this as a replay and silently
+// drop the session link — reintroducing M-2a's failure mode for this field.
+func TestRecordExecutionResult_DraftEnrichRetry_NewWorkSessionIDStillWrites(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+	sessionID := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         draftID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     resultUnknown,
+			Notes:      "still investigating",
+		},
+	}
+
+	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:    "task",
+		EntityID:      entityID,
+		Result:        resultUnknown,
+		Notes:         "still investigating", // identical to what's already stored
+		WorkSessionID: &sessionID,            // NEW — not present on latest
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionDraftEnriched {
+		t.Errorf("action = %q, want %q (new work_session_id must still count as new content)", action, ActionDraftEnriched)
+	}
+	if !fs.finalizeCalled {
+		t.Error("FinalizeDraft must be called — a new work_session_id is genuinely new information")
+	}
+	if got.WorkSessionID == nil || *got.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID = %v, want %s to have been written", got.WorkSessionID, sessionID)
+	}
+}
+
+// TestRecordExecutionResult_DraftEnrichRetry_NewRelatedRuleIDsStillWrites
+// mirrors the WorkSessionID reverse-protection test above for
+// RelatedRuleIDs: identical notes, but a new (non-empty, different)
+// RelatedRuleIDs set must still be treated as new content, not a replay.
+func TestRecordExecutionResult_DraftEnrichRetry_NewRelatedRuleIDsStillWrites(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+	ruleID := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         draftID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     resultUnknown,
+			Notes:      "still investigating",
+		},
+	}
+
+	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         resultUnknown,
+		Notes:          "still investigating",
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionDraftEnriched {
+		t.Errorf("action = %q, want %q (new related_rule_ids must still count as new content)", action, ActionDraftEnriched)
+	}
+	if !fs.finalizeCalled {
+		t.Error("FinalizeDraft must be called — new related_rule_ids is genuinely new information")
+	}
+	if len(got.RelatedRuleIDs) != 1 || got.RelatedRuleIDs[0] != ruleID {
+		t.Errorf("RelatedRuleIDs = %v, want [%s] to have been written", got.RelatedRuleIDs, ruleID)
 	}
 }
