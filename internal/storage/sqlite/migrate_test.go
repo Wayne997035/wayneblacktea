@@ -94,10 +94,13 @@ func TestRunMigrations_AdoptsPreExistingDB(t *testing.T) {
 		t.Fatalf("outcomes.supersedes_id column missing after adoption + replay: %v", err)
 	}
 
-	// Both new 000074 indexes must exist too (Force alone would never have
-	// created them; only a real m.Up() replay of 000074's CREATE INDEX
-	// statements does).
-	for _, idx := range []string{"idx_outcomes_supersedes_id", "idx_outcomes_one_open_draft"} {
+	// 000074's index must exist too (Force alone would never have created it;
+	// only a real m.Up() replay of 000074's CREATE INDEX statement does).
+	// Note: 000074 ships exactly one index. An earlier draft of it also
+	// created idx_outcomes_supersedes_id, which was dropped before merge
+	// because nothing queries supersedes_id yet — asserting on it here would
+	// pin a build-ahead artifact rather than the replay behaviour under test.
+	for _, idx := range []string{"idx_outcomes_one_open_draft"} {
 		var name string
 		if err := conn.QueryRowContext(
 			ctx,
