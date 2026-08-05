@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +357,50 @@ func TestHandleRecordOutcome_StoreError(t *testing.T) {
 	})
 	if !r.IsError {
 		t.Fatalf("expected IsError=true when store returns error")
+	}
+}
+
+// TestHandleRecordOutcome_StoreError_SanitizesInternalDetails is the
+// regression test for the security-review-reproduced leak: a raw SQLite
+// driver error naming an internal index (idx_outcomes_one_open_draft) was
+// returned verbatim to the MCP caller via mcp.NewToolResultError. The
+// MCP-caller-visible message MUST be generic; the original error MUST still
+// be recoverable server-side via slog (see tools_outcome.go's
+// handleRecordOutcome store-error branch, mirroring tools_arch.go's
+// sanitize-then-log pattern).
+func TestHandleRecordOutcome_StoreError_SanitizesInternalDetails(t *testing.T) {
+	rawErr := errors.New(
+		`superseding: sqlite OutcomeStore.CreateOutcome: constraint failed: ` +
+			`UNIQUE constraint failed: index 'idx_outcomes_one_open_draft' (2067)`,
+	)
+	store := &stubOutcomeStore{returnErr: rawErr}
+	s := newOutcomeServer(store)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   uuid.New().String(),
+		"result":      "failure",
+	})
+
+	if !r.IsError {
+		t.Fatalf("expected IsError=true when store returns error")
+	}
+	msg := resultText(r)
+	if strings.Contains(msg, "idx_outcomes_one_open_draft") {
+		t.Errorf("MCP-caller-visible error leaked the internal index name: %q", msg)
+	}
+	if strings.Contains(msg, "constraint failed") {
+		t.Errorf("MCP-caller-visible error leaked raw driver detail: %q", msg)
+	}
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "idx_outcomes_one_open_draft") {
+		t.Errorf("expected server-side log to retain the original error detail, got: %q", logged)
 	}
 }
 

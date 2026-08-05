@@ -604,6 +604,64 @@ func TestSQLiteOutcomeStore_GetLatestForEntity(t *testing.T) {
 	})
 }
 
+// insertOutcomeWithIDAndCreatedAt inserts an outcomes row with an explicit
+// id, result, and created_at, bypassing CreateOutcome (which always assigns
+// its own timestamp) so tests can construct exact created_at ties. Uses
+// DB.ExecContext (exported for exactly this kind of fixture insert — see its
+// doc comment) rather than production write paths.
+func insertOutcomeWithIDAndCreatedAt(
+	t *testing.T, db *wbtsqlite.DB, id, wsID uuid.UUID, entityType string, entityID uuid.UUID, result, createdAt string,
+) {
+	t.Helper()
+	err := db.ExecContext(
+		context.Background(),
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		id.String(), wsID.String(), entityType, entityID.String(), result, createdAt,
+	)
+	if err != nil {
+		t.Fatalf("insert outcome with explicit id and created_at: %v", err)
+	}
+}
+
+// TestSQLiteOutcomeStore_GetLatestForEntity_CreatedAtTieBreak is the SQLite
+// twin of TestStore_GetLatestForEntity_CreatedAtTieBreak (internal/outcome/
+// store_test.go) — see its doc comment for the full failure chain this is a
+// regression test for. The expected winner (idGreater) is derived from the
+// ORDER BY created_at DESC, id DESC contract itself, matching the tie-break
+// rule migrations/sqlite/000074_outcomes_supersession.up.sql's dedup step
+// uses (TestMigration000074_Dedup_SQLite_CreatedAtTieBreak) — not from
+// running the query once and recording what it happened to return.
+func TestSQLiteOutcomeStore_GetLatestForEntity_CreatedAtTieBreak(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	const sameCreatedAt = "2026-01-01T00:00:00.000Z"
+
+	idA, idB := uuid.New(), uuid.New()
+	idLesser, idGreater := idA, idB
+	if idLesser.String() > idGreater.String() {
+		idLesser, idGreater = idGreater, idLesser
+	}
+
+	// Mirrors the actual repro shape (one terminal row, one draft) — but the
+	// tie-break must hold regardless of which result value lands on which id.
+	insertOutcomeWithIDAndCreatedAt(t, db, idLesser, wsID, "task", entityID, outcomeResultSuccess, sameCreatedAt)
+	insertOutcomeWithIDAndCreatedAt(t, db, idGreater, wsID, "task", entityID, "unknown", sameCreatedAt)
+
+	got, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("GetLatestForEntity: %v", err)
+	}
+	if got.ID != idGreater {
+		t.Errorf("expected tie-break winner (greater id) %s, got %s — "+
+			"created_at tie must resolve via ORDER BY created_at DESC, id DESC",
+			idGreater, got.ID)
+	}
+}
+
 // TestSQLiteOutcomeStore_FinalizeDraft_HappyPath verifies a draft transitions
 // to a terminal result IN PLACE — same ID, no second row.
 func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {

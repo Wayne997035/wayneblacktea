@@ -637,6 +637,73 @@ func TestStore_GetLatestForEntity(t *testing.T) {
 	})
 }
 
+// insertOutcomeWithIDAndCreatedAt inserts an outcomes row with an explicit
+// id, result, and created_at, bypassing CreateOutcome (which always assigns
+// its own timestamp) so tests can construct exact created_at ties. Runs
+// directly against the pool, not a transaction — every caller uses a fresh
+// uuid.New() entityID, so there is no cross-test collision to roll back.
+func insertOutcomeWithIDAndCreatedAt(
+	ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	id, wsID uuid.UUID, entityType string, entityID uuid.UUID, result, createdAt string,
+) {
+	t.Helper()
+	_, err := pool.Exec(
+		ctx,
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+		id, wsID, entityType, entityID, result, createdAt,
+	)
+	if err != nil {
+		t.Fatalf("insert outcome with explicit id and created_at: %v", err)
+	}
+}
+
+// TestStore_GetLatestForEntity_CreatedAtTieBreak is the regression test for
+// the security-review-reproduced bug: GetLatestForEntity's ORDER BY had no
+// tie-break, so two rows sharing a bit-identical created_at made "the
+// latest outcome" for an entity non-deterministic. In the reproduced
+// failure chain, that let a newly-seeded 'unknown' draft resolve as older
+// than a prior terminal row, so the draft became permanently unreachable —
+// and every subsequent record_outcome call for the entity then hard-failed
+// against idx_outcomes_one_open_draft with a raw constraint-name leak (see
+// TestHandleRecordOutcome_StoreError_SanitizesInternalDetails for that half
+// of the fix).
+//
+// The expected winner (idGreater) is derived from the ORDER BY created_at
+// DESC, id DESC contract itself — the same tie-break rule migration 000074's
+// dedup step uses (TestMigration000074_Dedup_Postgres_CreatedAtTieBreak) —
+// not from running the query once and recording what it happened to return.
+func TestStore_GetLatestForEntity_CreatedAtTieBreak(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	const sameCreatedAt = "2026-01-01T00:00:00Z"
+
+	idA, idB := uuid.New(), uuid.New()
+	idLesser, idGreater := idA, idB
+	if idLesser.String() > idGreater.String() {
+		idLesser, idGreater = idGreater, idLesser
+	}
+
+	// Mirrors the actual repro shape (one terminal row, one draft) — but the
+	// tie-break must hold regardless of which result value lands on which id,
+	// which is why idLesser/idGreater are picked independently of role.
+	insertOutcomeWithIDAndCreatedAt(ctx, t, pool, idLesser, wsID, "task", entityID, "success", sameCreatedAt)
+	insertOutcomeWithIDAndCreatedAt(ctx, t, pool, idGreater, wsID, "task", entityID, "unknown", sameCreatedAt)
+
+	store := outcome.NewStore(pool, &wsID)
+	got, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("GetLatestForEntity: %v", err)
+	}
+	if got.ID != idGreater {
+		t.Errorf("expected tie-break winner (greater id) %s, got %s — "+
+			"created_at tie must resolve via ORDER BY created_at DESC, id DESC",
+			idGreater, got.ID)
+	}
+}
+
 // TestStore_FinalizeDraft_HappyPath verifies a draft transitions to a
 // terminal result IN PLACE against real Postgres — same ID, no second row.
 func TestStore_FinalizeDraft_HappyPath(t *testing.T) {

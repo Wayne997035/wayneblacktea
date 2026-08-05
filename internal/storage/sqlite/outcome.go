@@ -433,6 +433,17 @@ func (s *OutcomeStore) ExistsForEntity(ctx context.Context, workspaceID *uuid.UU
 // GetLatestForEntity returns the most recently created outcome for the given
 // entity, workspace-scoped when non-nil. Returns outcome.ErrNotFound when no
 // outcome exists yet. Mirrors the outcome.Store (PG) implementation.
+//
+// ORDER BY carries a second key, id DESC, to break ties when two rows share
+// a bit-identical created_at (security-review-reproduced: SQLite's TEXT
+// created_at has millisecond granularity and ties are easy to hit in fast
+// call sequences). Without this, "the latest outcome" was non-deterministic
+// on a tie, which could resolve to an older row and make a newly-seeded
+// draft permanently unreachable — every subsequent record_outcome call for
+// that entity then hard-fails against idx_outcomes_one_open_draft. `id DESC`
+// mirrors the tie-break migrations/sqlite/000074_outcomes_supersession.up.sql's
+// dedup step already uses, so both the one-time dedup and every live read
+// agree on which row wins a tie.
 func (s *OutcomeStore) GetLatestForEntity(
 	ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID,
 ) (outcome.Outcome, error) {
@@ -444,7 +455,7 @@ func (s *OutcomeStore) GetLatestForEntity(
 		WHERE entity_type = ?1
 		  AND entity_id = ?2
 		  AND (?3 IS NULL OR workspace_id = ?3)
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT 1`
 
 	row := s.db.conn.QueryRowContext(ctx, q, entityType, entityID.String(), wsArg)
