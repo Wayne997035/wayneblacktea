@@ -786,15 +786,17 @@ func TestStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *
 	}
 }
 
-// TestStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions is a mutation-
-// caught regression guard (PR #152 round 3 Minor 3): a three-army mutation
-// changed FinalizeDraft's `related_rule_ids = CASE ... ELSE $4 END` to
-// `ELSE related_rule_ids || $4` (an array UNION instead of a whole-array
-// REPLACE) and the full PG integration suite still passed — no test pinned
-// the replace-not-union contract FinalizeDraft's own doc comment describes.
-// A draft seeded with ruleA, then finalized/enriched with ruleB, must end up
-// with EXACTLY [ruleB] — not [ruleA, ruleB].
-func TestStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions(t *testing.T) {
+// TestStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces is the append-
+// semantics redesign's replacement for the old "replace, not union" contract
+// (PR #152 round 3 Minor 3 originally pinned the opposite direction — see
+// this test's SQLite twin and the package-level design note on why the
+// direction flipped: the "replace, not union" property that Minor 3 guarded
+// against a REGRESSION TOWARD is now the deliberately shipped behavior, and
+// what this test guards is the NEW invariant — existing linked rules can
+// never be silently dropped by a later record_outcome/finish_work call).
+// A draft seeded with ruleA, then enriched with ruleB, must end up with
+// EXACTLY [ruleA, ruleB] — existing first, new appended, no duplicates.
+func TestStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
 	store := outcome.NewStore(pool, &wsID)
@@ -817,16 +819,213 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions(t *testing.T) {
 		t.Fatalf("precondition failed: draft.RelatedRuleIDs = %v, want [%s]", draft.RelatedRuleIDs, ruleA)
 	}
 
-	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
-		Result:         "success",
+	// Enrich (Result stays "unknown", so the row is still eligible for a
+	// SECOND FinalizeDraft call afterward — WHERE result='unknown' — unlike
+	// a terminal finalize, which can only ever happen once per row)
+	// supplying ONLY the new ruleB. If this were a whole-array REPLACE
+	// (the pre-redesign contract), the result would become EXACTLY [ruleB],
+	// losing ruleA — that's precisely what distinguishes union from replace
+	// here; a test that resupplied ruleA alongside ruleB would not.
+	enriched, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         "unknown",
 		RelatedRuleIDs: []uuid.UUID{ruleB},
 	})
 	if err != nil {
-		t.Fatalf("FinalizeDraft with ruleB: %v", err)
+		t.Fatalf("FinalizeDraft (enrich) with ruleB: %v", err)
 	}
-	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleB {
-		t.Errorf("RelatedRuleIDs = %v, want EXACTLY [%s] (replace, not union with ruleA — round 3 Minor 3)",
-			finalized.RelatedRuleIDs, ruleB)
+	if len(enriched.RelatedRuleIDs) != 2 || enriched.RelatedRuleIDs[0] != ruleA || enriched.RelatedRuleIDs[1] != ruleB {
+		t.Fatalf("RelatedRuleIDs = %v, want EXACTLY [%s, %s] (union: existing ruleA preserved, ruleB appended)",
+			enriched.RelatedRuleIDs, ruleA, ruleB)
+	}
+
+	// A follow-up finalize resupplying the now-already-present ruleA must
+	// not duplicate it.
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         "success",
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft (finalize) resupplying ruleA: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 2 || finalized.RelatedRuleIDs[0] != ruleA || finalized.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want still EXACTLY [%s, %s] (no duplicate of ruleA)",
+			finalized.RelatedRuleIDs, ruleA, ruleB)
+	}
+}
+
+// TestStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved is the direct
+// reproduction of the M-1/threat-model attack this redesign closes: a call
+// carrying near-empty notes (a single space — passes any "is it non-empty"
+// content check) against a draft with real postmortem content must NOT
+// remove that content. Under append semantics the attack text can only be
+// appended after the real content, never replace it.
+func TestStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	const realPostmortem = "real postmortem: root cause was a missing index"
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		Notes: realPostmortem,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: "success",
+		Notes:  " ", // the attack: a single space, non-empty enough to pass a naive content check
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if !strings.Contains(finalized.Notes, realPostmortem) {
+		t.Fatalf("real postmortem content was REMOVED — got Notes = %q, want it to still contain %q",
+			finalized.Notes, realPostmortem)
+	}
+	if finalized.Notes != realPostmortem+"\n\n " {
+		t.Errorf("Notes = %q, want exactly %q (existing + separator + attack text appended)",
+			finalized.Notes, realPostmortem+"\n\n ")
+	}
+}
+
+// TestStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys verifies
+// the metrics field's append-only merge: an existing key's value can never
+// be overwritten by a later call, even though a genuinely new key is still
+// admitted. Metrics is compared semantically (unmarshal), not byte-for-byte
+// — see TestStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty's
+// comment on why: Postgres re-serialises jsonb in its own canonical form.
+func TestStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		Metrics: []byte(`{"a":9,"b":2}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:  "success",
+		Metrics: []byte(`{"a":1,"c":5}`), // "a" already exists (must be ignored), "c" is new (must be added)
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(finalized.Metrics, &got); err != nil {
+		t.Fatalf("Metrics is not valid JSON (%q): %v", finalized.Metrics, err)
+	}
+	if v, ok := got["a"]; !ok || v != float64(9) {
+		t.Errorf(`Metrics["a"] = %v, want 9 (existing value must survive, new value 1 must be ignored)`, v)
+	}
+	if v, ok := got["b"]; !ok || v != float64(2) {
+		t.Errorf(`Metrics["b"] = %v, want 2 (untouched existing key must survive)`, v)
+	}
+	if v, ok := got["c"]; !ok || v != float64(5) {
+		t.Errorf(`Metrics["c"] = %v, want 5 (genuinely new key must be added)`, v)
+	}
+	if len(got) != 3 {
+		t.Errorf("Metrics has %d keys, want exactly 3 (a, b, c) — got %v", len(got), got)
+	}
+}
+
+// TestStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce verifies the
+// set-once rule from both directions: writable while NULL, immutable once
+// set (no later call — regardless of the ID it supplies — can re-point it).
+func TestStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	t.Run("writes when existing is NULL", func(t *testing.T) {
+		entityID := uuid.New()
+		sessionA := uuid.New()
+		draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome draft: %v", err)
+		}
+		finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result: "success", WorkSessionID: &sessionA,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionA {
+			t.Errorf("WorkSessionID = %v, want %s (first write into a NULL column must succeed)", finalized.WorkSessionID, sessionA)
+		}
+	})
+
+	t.Run("cannot be re-pointed once set", func(t *testing.T) {
+		entityID := uuid.New()
+		sessionA, sessionB := uuid.New(), uuid.New()
+		draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+			WorkSessionID: &sessionA,
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome draft: %v", err)
+		}
+		finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result: "success", WorkSessionID: &sessionB,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionA {
+			t.Errorf("WorkSessionID = %v, want unchanged %s (already-set session must never be re-pointed by a later call)",
+				finalized.WorkSessionID, sessionA)
+		}
+	})
+}
+
+// TestStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite verifies migration
+// 000075's audit-trail invariant directly against the store: a FinalizeDraft
+// call that reaches the store (i.e. genuinely writes) bumps updated_at
+// strictly forward. The complementary half of this invariant — that a no-op
+// RecordExecutionResult path (ActionDraftPreserved / ActionReplayedIdempotent)
+// never even calls the store, so updated_at can't change — is covered by
+// TestRecordExecutionResult_PG_AppendSemantics_ByteIdenticalRetryIsIdempotent
+// below (it isn't observable at the Store level alone, since the store has
+// no way to no-op FinalizeDraft — that decision is lifecycle.go's job).
+func TestStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+	if !draft.UpdatedAt.Equal(draft.CreatedAt) {
+		t.Errorf("freshly-created draft: UpdatedAt = %v, want equal to CreatedAt %v (never modified yet)", draft.UpdatedAt, draft.CreatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond) // ensure a strictly-later timestamp is observable
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: "success", Notes: "shipped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if !finalized.UpdatedAt.After(draft.CreatedAt) {
+		t.Errorf("UpdatedAt = %v, want strictly after CreatedAt %v (a real write must bump it)", finalized.UpdatedAt, draft.CreatedAt)
 	}
 }
 
@@ -1134,6 +1333,136 @@ func assertM1DraftContentUnchanged(t *testing.T, seeded, afterAttack outcome.Out
 	}
 	if afterAttack.WorkSessionID == nil || *afterAttack.WorkSessionID != sessionID {
 		t.Errorf("WorkSessionID erased: got %v, want unchanged %s", afterAttack.WorkSessionID, sessionID)
+	}
+}
+
+// TestRecordExecutionResult_PG_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged
+// is the RecordExecutionResult-level (not just Store-level) proof that a
+// no-op path never touches updated_at, complementing
+// TestStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite's proof that a real
+// write does. A byte-identical retry of a content-bearing enrich call must
+// be classified ActionReplayedIdempotent, never re-invoke FinalizeDraft
+// (so updated_at cannot change), and must not duplicate the notes content.
+func TestRecordExecutionResult_PG_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+	entityID := uuid.New()
+
+	params := outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "still investigating",
+	}
+	first, action, err := outcome.RecordExecutionResult(ctx, store, params)
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed with content): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "verified in prod",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (enrich): %v", err)
+	}
+	if action != outcome.ActionDraftEnriched {
+		t.Fatalf("enrich action = %q, want draft_enriched", action)
+	}
+	if enriched.Notes != "still investigating\n\nverified in prod" {
+		t.Fatalf("Notes = %q, want the append to have happened", enriched.Notes)
+	}
+	if !enriched.UpdatedAt.After(first.UpdatedAt) {
+		t.Fatalf("enrich UpdatedAt = %v, want strictly after seed UpdatedAt %v", enriched.UpdatedAt, first.UpdatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	retried, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "verified in prod", // byte-identical retry of the enrich call
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (retry): %v", err)
+	}
+	if action != outcome.ActionReplayedIdempotent {
+		t.Fatalf("retry action = %q, want replayed_idempotent", action)
+	}
+	if retried.Notes != enriched.Notes {
+		t.Errorf("retry Notes = %q, want unchanged %q (no duplicate append)", retried.Notes, enriched.Notes)
+	}
+	if !retried.UpdatedAt.Equal(enriched.UpdatedAt) {
+		t.Errorf("retry UpdatedAt = %v, want unchanged %v (no-op path must never bump it)", retried.UpdatedAt, enriched.UpdatedAt)
+	}
+}
+
+// TestRecordExecutionResult_PG_AppendSemantics_GenuinelyNewInfoStillWrites is
+// the mandatory reverse-protection guard the dispatch calls out explicitly:
+// after establishing a byte-identical retry is correctly a no-op (previous
+// test), a FOLLOW-UP call carrying genuinely new information in EACH of the
+// four append-only fields must still write and report ActionDraftEnriched —
+// this is what prevents the M-2a regression from being reintroduced by an
+// isDraftIdempotentReplay that's too eager to call something "no new info".
+func TestRecordExecutionResult_PG_AppendSemantics_GenuinelyNewInfoStillWrites(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+	entityID := uuid.New()
+	ruleA := uuid.New()
+
+	seeded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "first note", Metrics: []byte(`{"a":1}`), RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	time.Sleep(2 * time.Millisecond) // ensure UpdatedAt strictly advances past the seed's timestamp
+	sessionID := uuid.New()
+	ruleB := uuid.New()
+	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result:         "unknown",
+		Notes:          "second note",           // genuinely new text
+		Metrics:        []byte(`{"a":9,"b":2}`), // "a" repeats (must be ignored), "b" is new
+		RelatedRuleIDs: []uuid.UUID{ruleB},      // genuinely new id
+		WorkSessionID:  &sessionID,              // was NULL, now set
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (enrich with new info in every field): %v", err)
+	}
+	if action != outcome.ActionDraftEnriched {
+		t.Fatalf("action = %q, want draft_enriched — a call with genuinely new content in every field must write (M-2a guard)", action)
+	}
+	if enriched.Notes != "first note\n\nsecond note" {
+		t.Errorf("Notes = %q, want the second note appended", enriched.Notes)
+	}
+	var gotMetrics map[string]any
+	if err := json.Unmarshal(enriched.Metrics, &gotMetrics); err != nil {
+		t.Fatalf("Metrics not valid JSON: %v", err)
+	}
+	if gotMetrics["a"] != float64(1) {
+		t.Errorf(`Metrics["a"] = %v, want 1 (existing value must survive the repeated key)`, gotMetrics["a"])
+	}
+	if gotMetrics["b"] != float64(2) {
+		t.Errorf(`Metrics["b"] = %v, want 2 (new key must be written)`, gotMetrics["b"])
+	}
+	if len(enriched.RelatedRuleIDs) != 2 || enriched.RelatedRuleIDs[0] != ruleA || enriched.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want [%s, %s]", enriched.RelatedRuleIDs, ruleA, ruleB)
+	}
+	if enriched.WorkSessionID == nil || *enriched.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID = %v, want %s (was NULL, must be written)", enriched.WorkSessionID, sessionID)
+	}
+	if !enriched.UpdatedAt.After(seeded.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want strictly after seed UpdatedAt %v", enriched.UpdatedAt, seeded.UpdatedAt)
 	}
 }
 

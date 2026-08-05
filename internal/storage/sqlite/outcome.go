@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -26,10 +27,10 @@ var _ outcome.StoreIface = (*OutcomeStore)(nil)
 
 const (
 	// outcomeSelectCols includes related_rule_ids added in migration 000063,
-	// work_session_id added in migration 000067, and supersedes_id added in
-	// migration 000074.
+	// work_session_id added in migration 000067, supersedes_id added in
+	// migration 000074, and updated_at added in migration 000075.
 	outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, metrics, notes, ` +
-		`related_rule_ids, work_session_id, supersedes_id, created_at`
+		`related_rule_ids, work_session_id, supersedes_id, created_at, updated_at`
 	evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
 )
 
@@ -45,6 +46,7 @@ type outcomeRawRow struct {
 	workSessionNS  sql.NullString
 	supersedesNS   sql.NullString
 	createdNS      sql.NullString
+	updatedNS      sql.NullString
 }
 
 type evaluationRawRow struct {
@@ -71,6 +73,7 @@ func scanOutcomeRawRow(scan func(...any) error) (outcomeRawRow, error) {
 		&r.workSessionNS,
 		&r.supersedesNS,
 		&r.createdNS,
+		&r.updatedNS,
 	)
 	return r, err
 }
@@ -103,6 +106,9 @@ func parseOutcomeRow(r outcomeRawRow) outcome.Outcome {
 	o.SupersedesID = nullStringToUUIDPtr(r.supersedesNS)
 	if t := parseTimestamptz(r.createdNS); t.Valid {
 		o.CreatedAt = t.Time
+	}
+	if t := parseTimestamptz(r.updatedNS); t.Valid {
+		o.UpdatedAt = t.Time
 	}
 	return o
 }
@@ -150,8 +156,8 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 	now := nowRFC3339()
 
 	const q = `INSERT INTO outcomes
-		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+		(id, workspace_id, entity_type, entity_id, result, metrics, notes, related_rule_ids, work_session_id, supersedes_id, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
 
 	var metricsArg any
 	if len(params.Metrics) > 0 {
@@ -176,6 +182,9 @@ func (s *OutcomeStore) CreateOutcome(ctx context.Context, params outcome.CreateO
 		relatedRuleIDsStr,
 		nullStringFromUUID(params.WorkSessionID),
 		nullStringFromUUID(params.SupersedesID),
+		now,
+		// UpdatedAt starts equal to CreatedAt — a freshly-inserted row has
+		// never been modified in place (migration 000075 doc comment).
 		now,
 	)
 	if err != nil {
@@ -458,66 +467,187 @@ func (s *OutcomeStore) GetLatestForEntity(
 	return parseOutcomeRow(r), nil
 }
 
+// mergeMetricsPreferExisting merges incoming JSON object bytes into existing,
+// adding only keys ABSENT from existing — an existing key's value is never
+// overwritten. Mirrors outcome.Store (PG)'s `new || existing` jsonb merge
+// (existing on the right of `||` wins conflicts; verified empirically — see
+// FinalizeDraft's own doc comment). Returns existing unchanged (nil error)
+// when incoming is empty; json.RawMessage values are used instead of
+// map[string]any so a value is preserved byte-for-byte rather than being
+// lossily round-tripped through Go's float64 number representation.
+func mergeMetricsPreferExisting(existing, incoming []byte) ([]byte, error) {
+	if len(incoming) == 0 {
+		return existing, nil
+	}
+	var incomingMap map[string]json.RawMessage
+	if err := json.Unmarshal(incoming, &incomingMap); err != nil {
+		return nil, fmt.Errorf("unmarshal incoming metrics: %w", err)
+	}
+	merged := make(map[string]json.RawMessage, len(incomingMap))
+	for k, v := range incomingMap {
+		merged[k] = v
+	}
+	if len(existing) > 0 {
+		var existingMap map[string]json.RawMessage
+		if err := json.Unmarshal(existing, &existingMap); err != nil {
+			return nil, fmt.Errorf("unmarshal existing metrics: %w", err)
+		}
+		for k, v := range existingMap {
+			merged[k] = v // existing wins on conflicting keys
+		}
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshal merged metrics: %w", err)
+	}
+	return out, nil
+}
+
+// appendNotes implements the notes append rule: empty existing content is
+// replaced directly (nothing to append to yet); non-empty existing content
+// gets incoming appended after a "\n\n" separator. Existing content can
+// never be removed. Mirrors outcome.Store (PG)'s notes CASE expression.
+func appendNotes(existing, incoming string) string {
+	if incoming == "" {
+		return existing
+	}
+	if existing == "" {
+		return incoming
+	}
+	return existing + "\n\n" + incoming
+}
+
+// unionRelatedRuleIDs returns existing followed by any incoming IDs not
+// already present in existing, deduped, preserving existing's original
+// order first and incoming's supplied order for the appended tail. Mirrors
+// outcome.Store (PG)'s `related_rule_ids || (new IDs not already present)`.
+func unionRelatedRuleIDs(existing, incoming []uuid.UUID) []uuid.UUID {
+	if len(incoming) == 0 {
+		return existing
+	}
+	seen := make(map[uuid.UUID]bool, len(existing)+len(incoming))
+	out := make([]uuid.UUID, 0, len(existing)+len(incoming))
+	for _, id := range existing {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for _, id := range incoming {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // FinalizeDraft transitions a result='unknown' draft to (usually) a terminal
-// result in place. The WHERE result='unknown' guard makes this race-safe: if
-// the row no longer matches (already finalized by a concurrent caller),
-// outcome.ErrDraftAlreadyFinalized is returned.
+// result in place. Mirrors outcome.Store (PG)'s append-only merge semantics
+// (migration 000075, user-directed redesign — see that Store's own doc
+// comment for the full field-by-field rule and threat-model rationale): only
+// Result and UpdatedAt are unconditionally overwritten; Notes/Metrics/
+// RelatedRuleIDs/WorkSessionID are append-only and can never lose existing
+// content.
 //
-// Merge-only semantics (PR #152 M-1a/M-2a), mirroring outcome.Store (PG):
-// Result is always overwritten. Metrics, Notes, RelatedRuleIDs, and
-// WorkSessionID each use COALESCE, so an empty/absent param value leaves the
-// existing column untouched instead of blanking it. RelatedRuleIDs needs a
-// Go-side nil (not the "[]" empty-array sentinel encodeUUIDSlice normally
-// returns) to make COALESCE see "nothing supplied" — see the comment at the
-// call site below. Like the PG version, a non-empty RelatedRuleIDs REPLACES
-// the existing list wholesale, not an element-level union.
+// Unlike the PG version, this merge is computed in Go rather than in SQL
+// (SQLite's metrics/related_rule_ids columns are TEXT-encoded JSON, not
+// native jsonb/array types — modernc.org/sqlite v1.50.0 DOES have JSON1
+// compiled in, including json_patch, verified empirically, but doing the
+// merge in Go keeps this in one place with the transaction below rather than
+// splitting logic between SQL functions and Go transaction control; "兩後端
+// 語意等價,寫法可以不同" — see dispatch). That requires reading the
+// existing row before computing the merged values, which (MIN-2 fix) is
+// wrapped in a single BEGIN IMMEDIATE-equivalent serializable transaction —
+// the same lost-update-prevention pattern already used by
+// gtd.go's AddChecklistItem/UpdateChecklistItem — so no concurrent writer
+// can be observed between the read and the write. The final UPDATE...
+// RETURNING (modernc.org/sqlite supports RETURNING, verified empirically)
+// reads back the committed row in the SAME statement, closing the
+// two-separate-statements race the old Exec-then-getByID pattern had (a
+// concurrent writer's content could previously leak into what this call
+// returned as "what I wrote").
 func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params outcome.CreateOutcomeParams) (outcome.Outcome, error) {
-	const q = `UPDATE outcomes SET
-			result = ?1,
-			metrics = COALESCE(?2, metrics),
-			notes = COALESCE(?3, notes),
-			related_rule_ids = COALESCE(?4, related_rule_ids),
-			work_session_id = COALESCE(?5, work_session_id)
-		WHERE id = ?6 AND result = 'unknown'`
+	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft begin", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	const selectQ = `SELECT ` + outcomeSelectCols + ` FROM outcomes WHERE id = ?1 AND result = 'unknown' LIMIT 1`
+	row := tx.QueryRowContext(ctx, selectQ, id.String())
+	r, err := scanOutcomeRawRow(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return outcome.Outcome{}, outcome.ErrDraftAlreadyFinalized
+	}
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft select", err)
+	}
+	existing := parseOutcomeRow(r)
+
+	mergedMetrics, err := mergeMetricsPreferExisting(existing.Metrics, params.Metrics)
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft merge metrics", err)
+	}
+	mergedNotes := appendNotes(existing.Notes, params.Notes)
+	mergedRelatedRuleIDs := unionRelatedRuleIDs(existing.RelatedRuleIDs, params.RelatedRuleIDs)
+	mergedWorkSessionID := existing.WorkSessionID
+	if mergedWorkSessionID == nil {
+		mergedWorkSessionID = params.WorkSessionID
+	}
+	now := nowRFC3339()
 
 	var metricsArg any
-	if len(params.Metrics) > 0 {
-		metricsArg = string(params.Metrics)
+	if len(mergedMetrics) > 0 {
+		metricsArg = string(mergedMetrics)
 	}
 	var notesArg any
-	if params.Notes != "" {
-		notesArg = params.Notes
-	}
-	// encodeUUIDSlice(nil-or-empty) returns the literal string "[]", not a Go
-	// nil — passing that through COALESCE would always win over the existing
-	// column (COALESCE only skips a true NULL). Pass Go nil explicitly when
-	// there's nothing new to merge, so COALESCE falls through to the
-	// existing related_rule_ids value instead of overwriting it with "[]".
-	var relatedRuleIDsArg any
-	if len(params.RelatedRuleIDs) > 0 {
-		relatedRuleIDsArg = encodeUUIDSlice(params.RelatedRuleIDs)
+	if mergedNotes != "" {
+		notesArg = mergedNotes
 	}
 
-	res, err := s.db.conn.ExecContext(
-		ctx, q,
+	const updateQ = `UPDATE outcomes SET
+			result = ?1,
+			metrics = ?2,
+			notes = ?3,
+			related_rule_ids = ?4,
+			work_session_id = ?5,
+			updated_at = ?6
+		WHERE id = ?7 AND result = 'unknown'
+		RETURNING ` + outcomeSelectCols
+
+	row2 := tx.QueryRowContext(
+		ctx, updateQ,
 		params.Result,
 		metricsArg,
 		notesArg,
-		relatedRuleIDsArg,
-		nullStringFromUUID(params.WorkSessionID),
+		encodeUUIDSlice(mergedRelatedRuleIDs),
+		nullStringFromUUID(mergedWorkSessionID),
+		now,
 		id.String(),
 	)
-	if err != nil {
-		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft rows affected", err)
-	}
-	if n == 0 {
+	r2, err := scanOutcomeRawRow(row2.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Lost a race between the SELECT above and this UPDATE — should be
+		// unreachable given the serializable tx + single-connection pool
+		// (db.go SetMaxOpenConns(1)), but treated defensively as
+		// already-finalized rather than silently returning a stale row.
 		return outcome.Outcome{}, outcome.ErrDraftAlreadyFinalized
 	}
-	return s.getByID(ctx, id)
+	if err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft update", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return outcome.Outcome{}, errWrap("OutcomeStore.FinalizeDraft commit", err)
+	}
+	committed = true
+	return parseOutcomeRow(r2), nil
 }
 
 // SeedDraft atomically ensures a result='unknown' draft exists for the given

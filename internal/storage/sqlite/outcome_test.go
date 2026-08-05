@@ -2,8 +2,10 @@ package sqlite_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -746,15 +748,14 @@ func TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFields
 	}
 }
 
-// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions is
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces is
 // the SQLite twin of outcome package's TestStore_FinalizeDraft_
-// RelatedRuleIDs_ReplacesNotUnions (PR #152 round 3 Minor 3): a draft seeded
-// with ruleA, then finalized with ruleB, must end up with EXACTLY [ruleB] —
-// not [ruleA, ruleB]. A three-army mutation on the Postgres SQL changed the
-// CASE...ELSE $4 whole-array replace into an array-concat union and the full
-// PG integration suite still passed, so this pins the same contract on the
-// SQLite backend too (backend-security-design.md §6.5 dual-backend parity).
-func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions(t *testing.T) {
+// RelatedRuleIDs_UnionsNotReplaces (append-semantics redesign — see that
+// test's comment for why the direction flipped from the old "replace, not
+// union" contract PR #152 round 3 Minor 3 originally pinned). A draft seeded
+// with ruleA, then enriched with ruleB, must end up with EXACTLY
+// [ruleA, ruleB] — existing first, new appended, no duplicates.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *testing.T) {
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -776,16 +777,322 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ReplacesNotUnions(t *te
 		t.Fatalf("precondition failed: draft.RelatedRuleIDs = %v, want [%s]", draft.RelatedRuleIDs, ruleA)
 	}
 
-	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
-		Result:         outcomeResultSuccess,
+	// Enrich (Result stays "unknown", so the row is still eligible for a
+	// SECOND FinalizeDraft call afterward) supplying ONLY the new ruleB. If
+	// this were a whole-array REPLACE (the pre-redesign contract), the
+	// result would become EXACTLY [ruleB], losing ruleA — that's precisely
+	// what distinguishes union from replace here; a test that resupplied
+	// ruleA alongside ruleB would not.
+	enriched, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         "unknown",
 		RelatedRuleIDs: []uuid.UUID{ruleB},
 	})
 	if err != nil {
-		t.Fatalf("FinalizeDraft with ruleB: %v", err)
+		t.Fatalf("FinalizeDraft (enrich) with ruleB: %v", err)
 	}
-	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleB {
-		t.Errorf("RelatedRuleIDs = %v, want EXACTLY [%s] (replace, not union with ruleA — round 3 Minor 3)",
-			finalized.RelatedRuleIDs, ruleB)
+	if len(enriched.RelatedRuleIDs) != 2 || enriched.RelatedRuleIDs[0] != ruleA || enriched.RelatedRuleIDs[1] != ruleB {
+		t.Fatalf("RelatedRuleIDs = %v, want EXACTLY [%s, %s] (union: existing ruleA preserved, ruleB appended)",
+			enriched.RelatedRuleIDs, ruleA, ruleB)
+	}
+
+	// A follow-up finalize resupplying the now-already-present ruleA must
+	// not duplicate it.
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft (finalize) resupplying ruleA: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 2 || finalized.RelatedRuleIDs[0] != ruleA || finalized.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want still EXACTLY [%s, %s] (no duplicate of ruleA)",
+			finalized.RelatedRuleIDs, ruleA, ruleB)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved is
+// the SQLite twin of the direct M-1/threat-model reproduction: a call
+// carrying near-empty notes (a single space) against a draft with real
+// postmortem content must not remove that content — it can only be appended
+// after it.
+func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	const realPostmortem = "real postmortem: root cause was a missing index"
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		Notes: realPostmortem,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess,
+		Notes:  " ", // the attack: a single space
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if !strings.Contains(finalized.Notes, realPostmortem) {
+		t.Fatalf("real postmortem content was REMOVED — got Notes = %q, want it to still contain %q",
+			finalized.Notes, realPostmortem)
+	}
+	if finalized.Notes != realPostmortem+"\n\n " {
+		t.Errorf("Notes = %q, want exactly %q (existing + separator + attack text appended)",
+			finalized.Notes, realPostmortem+"\n\n ")
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys
+// verifies the SQLite Go-side JSON merge: an existing key's value can never
+// be overwritten, but a genuinely new key is still admitted.
+func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		Metrics: []byte(`{"a":9,"b":2}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:  outcomeResultSuccess,
+		Metrics: []byte(`{"a":1,"c":5}`),
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(finalized.Metrics, &got); err != nil {
+		t.Fatalf("Metrics is not valid JSON (%q): %v", finalized.Metrics, err)
+	}
+	if v, ok := got["a"]; !ok || v != float64(9) {
+		t.Errorf(`Metrics["a"] = %v, want 9 (existing value must survive, new value 1 must be ignored)`, v)
+	}
+	if v, ok := got["b"]; !ok || v != float64(2) {
+		t.Errorf(`Metrics["b"] = %v, want 2 (untouched existing key must survive)`, v)
+	}
+	if v, ok := got["c"]; !ok || v != float64(5) {
+		t.Errorf(`Metrics["c"] = %v, want 5 (genuinely new key must be added)`, v)
+	}
+	if len(got) != 3 {
+		t.Errorf("Metrics has %d keys, want exactly 3 (a, b, c) — got %v", len(got), got)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce
+// verifies the SQLite twin of the set-once rule, both directions.
+func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	t.Run("writes when existing is NULL", func(t *testing.T) {
+		entityID := uuid.New()
+		sessionA := uuid.New()
+		draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome draft: %v", err)
+		}
+		finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result: outcomeResultSuccess, WorkSessionID: &sessionA,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionA {
+			t.Errorf("WorkSessionID = %v, want %s (first write into a NULL column must succeed)", finalized.WorkSessionID, sessionA)
+		}
+	})
+
+	t.Run("cannot be re-pointed once set", func(t *testing.T) {
+		entityID := uuid.New()
+		sessionA, sessionB := uuid.New(), uuid.New()
+		draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+			WorkSessionID: &sessionA,
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome draft: %v", err)
+		}
+		finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result: outcomeResultSuccess, WorkSessionID: &sessionB,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionA {
+			t.Errorf("WorkSessionID = %v, want unchanged %s (already-set session must never be re-pointed by a later call)",
+				finalized.WorkSessionID, sessionA)
+		}
+	})
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite is the
+// SQLite twin of the Store-level updated_at proof.
+func TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+	if !draft.UpdatedAt.Equal(draft.CreatedAt) {
+		t.Errorf("freshly-created draft: UpdatedAt = %v, want equal to CreatedAt %v (never modified yet)", draft.UpdatedAt, draft.CreatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess, Notes: "shipped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if !finalized.UpdatedAt.After(draft.CreatedAt) {
+		t.Errorf("UpdatedAt = %v, want strictly after CreatedAt %v (a real write must bump it)", finalized.UpdatedAt, draft.CreatedAt)
+	}
+}
+
+// TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged
+// is the RecordExecutionResult-level (not just Store-level) proof that a
+// no-op path never touches updated_at, on the SQLite backend.
+func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	first, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "still investigating",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed with content): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "verified in prod",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (enrich): %v", err)
+	}
+	if action != outcome.ActionDraftEnriched {
+		t.Fatalf("enrich action = %q, want draft_enriched", action)
+	}
+	if enriched.Notes != "still investigating\n\nverified in prod" {
+		t.Fatalf("Notes = %q, want the append to have happened", enriched.Notes)
+	}
+	if !enriched.UpdatedAt.After(first.UpdatedAt) {
+		t.Fatalf("enrich UpdatedAt = %v, want strictly after seed UpdatedAt %v", enriched.UpdatedAt, first.UpdatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	retried, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "verified in prod", // byte-identical retry
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (retry): %v", err)
+	}
+	if action != outcome.ActionReplayedIdempotent {
+		t.Fatalf("retry action = %q, want replayed_idempotent", action)
+	}
+	if retried.Notes != enriched.Notes {
+		t.Errorf("retry Notes = %q, want unchanged %q (no duplicate append)", retried.Notes, enriched.Notes)
+	}
+	if !retried.UpdatedAt.Equal(enriched.UpdatedAt) {
+		t.Errorf("retry UpdatedAt = %v, want unchanged %v (no-op path must never bump it)", retried.UpdatedAt, enriched.UpdatedAt)
+	}
+}
+
+// TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrites
+// is the SQLite twin of the mandatory reverse-protection guard: after a
+// byte-identical retry is correctly a no-op, a follow-up call carrying
+// genuinely new information in EACH append-only field must still write and
+// report ActionDraftEnriched.
+func TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrites(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	ruleA := uuid.New()
+
+	seeded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "first note", Metrics: []byte(`{"a":1}`), RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	time.Sleep(2 * time.Millisecond) // ensure UpdatedAt strictly advances past the seed's timestamp
+	sessionID := uuid.New()
+	ruleB := uuid.New()
+	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result:         "unknown",
+		Notes:          "second note",
+		Metrics:        []byte(`{"a":9,"b":2}`),
+		RelatedRuleIDs: []uuid.UUID{ruleB},
+		WorkSessionID:  &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (enrich with new info in every field): %v", err)
+	}
+	if action != outcome.ActionDraftEnriched {
+		t.Fatalf("action = %q, want draft_enriched — a call with genuinely new content in every field must write (M-2a guard)", action)
+	}
+	if enriched.Notes != "first note\n\nsecond note" {
+		t.Errorf("Notes = %q, want the second note appended", enriched.Notes)
+	}
+	var gotMetrics map[string]any
+	if err := json.Unmarshal(enriched.Metrics, &gotMetrics); err != nil {
+		t.Fatalf("Metrics not valid JSON: %v", err)
+	}
+	if gotMetrics["a"] != float64(1) {
+		t.Errorf(`Metrics["a"] = %v, want 1 (existing value must survive the repeated key)`, gotMetrics["a"])
+	}
+	if gotMetrics["b"] != float64(2) {
+		t.Errorf(`Metrics["b"] = %v, want 2 (new key must be written)`, gotMetrics["b"])
+	}
+	if len(enriched.RelatedRuleIDs) != 2 || enriched.RelatedRuleIDs[0] != ruleA || enriched.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want [%s, %s]", enriched.RelatedRuleIDs, ruleA, ruleB)
+	}
+	if enriched.WorkSessionID == nil || *enriched.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID = %v, want %s (was NULL, must be written)", enriched.WorkSessionID, sessionID)
+	}
+	if !enriched.UpdatedAt.After(seeded.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want strictly after seed UpdatedAt %v", enriched.UpdatedAt, seeded.UpdatedAt)
 	}
 }
 

@@ -64,8 +64,12 @@ type StoreIface interface {
 	// race-safe: if a concurrent caller already finalized the same draft,
 	// ErrDraftAlreadyFinalized is returned so the orchestration layer can
 	// re-resolve and fall through to the terminal-over-terminal branch.
-	// params.EntityType/EntityID/WorkspaceID are not re-applied — only
-	// Result, Notes, Metrics, RelatedRuleIDs, and WorkSessionID are written.
+	// params.EntityType/EntityID/WorkspaceID are not re-applied. Result and
+	// UpdatedAt are always written; Notes/Metrics/RelatedRuleIDs/
+	// WorkSessionID are append-only (migration 000075) — see the PG/SQLite
+	// implementations' own doc comments for the exact per-field merge rule.
+	// No existing content in any of those four fields can ever be removed
+	// or overwritten by this call.
 	FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error)
 
 	// SeedDraft atomically ensures a result='unknown' draft exists for the
