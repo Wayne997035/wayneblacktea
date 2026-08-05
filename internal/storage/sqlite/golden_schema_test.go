@@ -326,11 +326,16 @@ var expectedNewEntries = map[string]bool{
 	"index|idx_tasks_due_date": true,
 
 	// migrations/sqlite/000074_outcomes_supersession.up.sql (arch-r2 A13,
-	// decision 80c1e8ae, outcome lifecycle convergence): two brand-new
-	// indexes on the outcomes table, added after the legacy schema.sql
+	// decision 80c1e8ae, outcome lifecycle convergence): one brand-new
+	// index on the outcomes table, added after the legacy schema.sql
 	// baseline was frozen (schema.sql itself is untouched — it is a frozen
 	// pre-E1 historical snapshot per its own header comment, not a live
-	// target). The migration's third change, the supersedes_id column, is
+	// target). An earlier draft of the migration also created a second
+	// index, idx_outcomes_supersedes_id, which was dropped before merge
+	// because nothing queries supersedes_id yet (see migrate_test.go's
+	// TestRunMigrations_AdoptsPreExistingDB for the same note) — it never
+	// appears in the replay-built schema, so it has no entry here. The
+	// migration's other change, the supersedes_id column, is
 	// hand-added directly to testdata/schema_golden.sql's "table|outcomes"
 	// line instead — it is a real, intentional new column (not an inert
 	// difference eligible for acceptedDifferences below), and
@@ -347,7 +352,7 @@ var expectedNewEntries = map[string]bool{
 	// (TestRunMigrations_AdoptsPreExistingDB in migrate_test.go) is the
 	// independent check against this: it builds a legacy DB from the real
 	// schemaSQL (not this golden file), runs it through the real adoption +
-	// replay code path, and asserts supersedes_id and both new indexes exist
+	// replay code path, and asserts supersedes_id and the new index exist
 	// via a live query against the resulting DB — so it cannot be fooled by
 	// a wrong hand-edit here. That test only covers the specific columns
 	// asserted in it, though; it is not a systematic fix for hand-maintained
@@ -358,7 +363,6 @@ var expectedNewEntries = map[string]bool{
 	// out of scope here (it would require restructuring how the golden file
 	// is produced, beyond this adoption-path bug fix) and is left as
 	// follow-up.
-	"index|idx_outcomes_supersedes_id":  true,
 	"index|idx_outcomes_one_open_draft": true,
 }
 
