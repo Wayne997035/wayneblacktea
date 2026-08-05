@@ -62,7 +62,7 @@ func TestOutcomeLifecycle_CompleteTaskThenRecordOutcome_FinalizesDraftInPlace(t 
 		t.Fatalf("complete_task: %s", resultText(r))
 	}
 	draftRows := outcomesForEntity(t, s, taskID)
-	if len(draftRows) != 1 || draftRows[0].Result != "unknown" {
+	if len(draftRows) != 1 || draftRows[0].Result != outcomeResultUnknown {
 		t.Fatalf("expected exactly 1 unknown draft after complete_task, got %+v", draftRows)
 	}
 	draftID := draftRows[0].ID
@@ -112,7 +112,7 @@ func TestOutcomeLifecycle_CompleteTaskThenFinishWorkFailure_FinalizesDraftInPlac
 		t.Fatalf("complete_task: %s", resultText(r))
 	}
 	draftRows := outcomesForEntity(t, s, parsedTaskID)
-	if len(draftRows) != 1 || draftRows[0].Result != "unknown" {
+	if len(draftRows) != 1 || draftRows[0].Result != outcomeResultUnknown {
 		t.Fatalf("expected exactly 1 unknown draft after complete_task, got %+v", draftRows)
 	}
 	draftID := draftRows[0].ID
@@ -362,5 +362,88 @@ func TestOutcomeLifecycle_FinishWorkFailureTwice_Supersedes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("second outcome_id %s not found among entity rows", secondOutcomeID)
+	}
+}
+
+// TestOutcomeLifecycle_RecordOutcomeUnknownAgainstExistingDraft_PreservesContent
+// reproduces PR #152 second army finding M-1 end-to-end through the real
+// record_outcome MCP tool (the actual threat surface: a prompt-injected
+// agent calling record_outcome(result="unknown")) against a real
+// SQLite-backed server. Before the fix, RecordExecutionResult routed a
+// result="unknown" call straight into FinalizeDraft's blanket UPDATE
+// whenever the entity already had an 'unknown' draft — silently erasing the
+// draft's notes, metrics, related_rule_ids, and work_session_id with
+// whatever the attacking call supplied (here: nothing). The draft must
+// survive completely unchanged, in the SAME row (no new row, no audit
+// trail loss either way).
+func TestOutcomeLifecycle_RecordOutcomeUnknownAgainstExistingDraft_PreservesContent(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+	sessionID := uuid.New()
+	relatedRuleID := uuid.New()
+
+	// Seed a draft carrying real content directly via record_outcome itself
+	// (result="unknown" is a documented AllowedResults value, not only ever
+	// auto-seeded by complete_task) — mirrors a user recording "still
+	// unknown, but here's what I know so far".
+	seedR := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        entityID.String(),
+		"result":           outcomeResultUnknown,
+		"notes":            "real postmortem content the attacker wants gone",
+		"metrics_json":     `{"duration_ms":4200}`,
+		"related_rule_ids": `["` + relatedRuleID.String() + `"]`,
+		"session_id":       sessionID.String(),
+	})
+	if seedR.IsError {
+		t.Fatalf("seed record_outcome: %s", resultText(seedR))
+	}
+	var seeded outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(seedR)), &seeded); err != nil {
+		t.Fatalf("unmarshal seeded: %v", err)
+	}
+	if seeded.Result != outcomeResultUnknown {
+		t.Fatalf("precondition failed: seeded draft Result = %q, want %s", seeded.Result, outcomeResultUnknown)
+	}
+
+	// The attack: another record_outcome call, still result="unknown", with
+	// NO notes/metrics/related_rule_ids/session_id — exactly what a minimal
+	// prompt-injected tool call would send.
+	attackR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+	})
+	if attackR.IsError {
+		t.Fatalf("attack record_outcome: %s", resultText(attackR))
+	}
+	var afterAttack outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(attackR)), &afterAttack); err != nil {
+		t.Fatalf("unmarshal after attack: %v", err)
+	}
+
+	if afterAttack.ID != seeded.ID {
+		t.Errorf("attack call must return the SAME draft row: got %s, want %s", afterAttack.ID, seeded.ID)
+	}
+	if afterAttack.Notes != seeded.Notes {
+		t.Errorf("Notes erased by unknown-against-unknown call: got %q, want unchanged %q", afterAttack.Notes, seeded.Notes)
+	}
+	if string(afterAttack.Metrics) != string(seeded.Metrics) {
+		t.Errorf("Metrics erased by unknown-against-unknown call: got %q, want unchanged %q", afterAttack.Metrics, seeded.Metrics)
+	}
+	if len(afterAttack.RelatedRuleIDs) != 1 || afterAttack.RelatedRuleIDs[0] != relatedRuleID {
+		t.Errorf("RelatedRuleIDs erased by unknown-against-unknown call: got %v, want unchanged [%s]",
+			afterAttack.RelatedRuleIDs, relatedRuleID)
+	}
+	if afterAttack.WorkSessionID == nil || *afterAttack.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID erased by unknown-against-unknown call: got %v, want unchanged %s",
+			afterAttack.WorkSessionID, sessionID)
+	}
+
+	// No new row and no supersession — this is a pure no-write no-op, not a
+	// second audit entry either.
+	rows := outcomesForEntity(t, s, entityID)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly 1 outcome row after unknown-against-unknown call, got %d: %+v", len(rows), rows)
 	}
 }

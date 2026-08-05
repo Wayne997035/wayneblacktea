@@ -31,6 +31,18 @@ const (
 	// exact same result+notes+metrics as this call — no row was written;
 	// the existing row is returned unchanged.
 	ActionReplayedIdempotent LifecycleAction = "replayed_idempotent"
+	// ActionDraftPreserved: the entity's latest outcome is a result='unknown'
+	// draft, and this call ALSO requested result='unknown'. "unknown" is
+	// definitionally the non-terminal draft state, so there is never
+	// anything to finalize here — routing this through FinalizeDraft's
+	// blanket UPDATE would silently overwrite the draft's existing
+	// Notes/Metrics/RelatedRuleIDs/WorkSessionID with whatever this call
+	// supplied (frequently empty). No row is written; the draft is returned
+	// unchanged. See PR #152 finding M-1: a prompt-injected
+	// record_outcome(result="unknown") call against a draft carrying real
+	// content (e.g. postmortem notes) could otherwise erase it in place with
+	// no new row and no audit trail.
+	ActionDraftPreserved LifecycleAction = "draft_preserved"
 )
 
 // RecordExecutionResult is the single convergence point for the outcome-
@@ -42,12 +54,17 @@ const (
 // comment for why the two have different atomicity requirements).
 //
 // Decision 80c1e8ae (G7) convergence rule:
-//   - no prior outcome for the entity           -> fresh row (ActionCreated)
-//   - prior outcome is a result='unknown' draft -> finalize IN PLACE
+//   - no prior outcome for the entity              -> fresh row (ActionCreated)
+//   - prior outcome is a draft, this call is also
+//     result='unknown'                             -> no-op, draft returned
+//     unchanged (ActionDraftPreserved) — "unknown" is never a finalization,
+//     see PR #152 finding M-1
+//   - prior outcome is a result='unknown' draft,
+//     this call has a terminal result             -> finalize IN PLACE
 //     (ActionFinalizedDraft) — never a second row for the same draft
-//   - prior outcome already terminal, identical -> no-op replay
+//   - prior outcome already terminal, identical    -> no-op replay
 //     (ActionReplayedIdempotent)
-//   - prior outcome already terminal, different -> explicit supersession
+//   - prior outcome already terminal, different     -> explicit supersession
 //     (ActionSuperseded): new row, SupersedesID set, prior row untouched
 //
 // This is ordinary domain-layer orchestration against StoreIface — no SQL,
@@ -83,6 +100,16 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 	}
 
 	if latest.Result == "unknown" {
+		// M-1 (PR #152): a call that ALSO says result="unknown" is never a
+		// legitimate finalization of this draft — "unknown" is definitionally
+		// non-terminal, so there is nothing to finalize. Routing this through
+		// FinalizeDraft would silently overwrite the draft's existing
+		// Notes/Metrics/RelatedRuleIDs/WorkSessionID with whatever this call
+		// supplied (often empty, e.g. a prompt-injected call with no notes).
+		// Return the draft unchanged instead — no write occurs.
+		if params.Result == "unknown" {
+			return latest, ActionDraftPreserved, nil
+		}
 		finalized, ferr := store.FinalizeDraft(ctx, latest.ID, params)
 		if errors.Is(ferr, ErrDraftAlreadyFinalized) {
 			// Lost a race to a concurrent finalizer. Re-resolve: the draft is

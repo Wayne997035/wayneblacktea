@@ -17,6 +17,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	migrationfs "github.com/Wayne997035/wayneblacktea/migrations"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -926,5 +927,235 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected exactly 2 rows for the entity (finalized draft + 1 supersession), got %d", count)
+	}
+}
+
+// TestRecordExecutionResult_PG_M1_UnknownAgainstDraftPreservesContent
+// reproduces PR #152 second army finding M-1 against real Postgres,
+// complementing the fast fake-backed unit test (lifecycle_test.go) and the
+// SQLite-backed MCP-handler end-to-end test
+// (internal/mcp/tools_outcome_lifecycle_test.go). RecordExecutionResult is
+// dialect-agnostic orchestration with no SQL of its own, so this isn't
+// required by backend-security-design.md §6.5 (logic doesn't differ between
+// backends) — added anyway as belt-and-suspenders proof that the fix
+// behaves identically against the real FinalizeDraft SQL on both engines,
+// not just the fake spy.
+func TestRecordExecutionResult_PG_M1_UnknownAgainstDraftPreservesContent(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	sessionID := uuid.New()
+	ruleID := uuid.New()
+
+	seeded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		Notes:          "real postmortem content the attacker wants gone",
+		Metrics:        []byte(`{"duration_ms":4200}`),
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+		WorkSessionID:  &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed draft): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	// The attack: another call, still result="unknown", with none of the
+	// original content.
+	afterAttack, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (attack): %v", err)
+	}
+	if action != outcome.ActionDraftPreserved {
+		t.Errorf("attack action = %q, want draft_preserved", action)
+	}
+	assertM1DraftContentUnchanged(t, seeded, afterAttack, ruleID, sessionID)
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	count := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 row after unknown-against-unknown call, got %d", count)
+	}
+}
+
+// assertM1DraftContentUnchanged asserts the M-1 invariant: the draft
+// returned after the attack call is the SAME row as seeded, with every
+// content field byte-identical to what was seeded — split out of
+// TestRecordExecutionResult_PG_M1_UnknownAgainstDraftPreservesContent to
+// keep that test's cyclomatic complexity under the gocyclo threshold.
+func assertM1DraftContentUnchanged(t *testing.T, seeded, afterAttack outcome.Outcome, ruleID, sessionID uuid.UUID) {
+	t.Helper()
+	if afterAttack.ID != seeded.ID {
+		t.Errorf("attack call must return the SAME draft row: got %s, want %s", afterAttack.ID, seeded.ID)
+	}
+	if afterAttack.Notes != seeded.Notes {
+		t.Errorf("Notes erased: got %q, want unchanged %q", afterAttack.Notes, seeded.Notes)
+	}
+	if string(afterAttack.Metrics) != string(seeded.Metrics) {
+		t.Errorf("Metrics erased: got %q, want unchanged %q", afterAttack.Metrics, seeded.Metrics)
+	}
+	if len(afterAttack.RelatedRuleIDs) != 1 || afterAttack.RelatedRuleIDs[0] != ruleID {
+		t.Errorf("RelatedRuleIDs erased: got %v, want unchanged [%s]", afterAttack.RelatedRuleIDs, ruleID)
+	}
+	if afterAttack.WorkSessionID == nil || *afterAttack.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID erased: got %v, want unchanged %s", afterAttack.WorkSessionID, sessionID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Migration 000074 dedup (PR #152 second army finding M-2). Uses the same
+// down-then-up-inside-a-rolled-back-transaction technique as
+// internal/decision's TestMigration000073_Backfill_Postgres: down.sql drops
+// idx_outcomes_one_open_draft + supersedes_id, the test seeds legacy
+// duplicate rows that could only exist pre-000074 (the old code path
+// unconditionally INSERTed with no uniqueness rule), then up.sql
+// re-applies (dedup + index), all inside a transaction that's always rolled
+// back so the shared pool's outcomes table is never actually mutated
+// outside this test.
+// ---------------------------------------------------------------------------
+
+// readMigration000074Bodies loads both SQL bodies for migration 000074.
+func readMigration000074Bodies(t *testing.T) (up, down []byte) {
+	t.Helper()
+	up, err := migrationfs.FS.ReadFile("000074_outcomes_supersession.up.sql")
+	if err != nil {
+		t.Fatalf("read migration 000074 up.sql: %v", err)
+	}
+	down, err = migrationfs.FS.ReadFile("000074_outcomes_supersession.down.sql")
+	if err != nil {
+		t.Fatalf("read migration 000074 down.sql: %v", err)
+	}
+	return up, down
+}
+
+// insertLegacyUnknownOutcomeTx inserts a pre-000074-shaped outcomes row (no
+// supersedes_id column at that point) inside tx, with an explicit created_at
+// so duplicate-group ordering is deterministic regardless of wall-clock test
+// time. Returns the generated row id.
+func insertLegacyUnknownOutcomeTx(
+	ctx context.Context, t *testing.T, tx pgx.Tx, wsID uuid.UUID, entityType string, entityID uuid.UUID, createdAt, notes string,
+) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	err := tx.QueryRow(
+		ctx,
+		`INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, notes, created_at)
+			VALUES ($1, $2, $3, 'unknown', $4, $5) RETURNING id`,
+		wsID, entityType, entityID, notes, createdAt,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert legacy outcome: %v", err)
+	}
+	return id
+}
+
+// TestMigration000074_Dedup_Postgres reproduces PR #152 second army finding
+// M-2 against real Postgres and proves the fix: pre-existing duplicate
+// result='unknown' rows for the same (workspace, entity_type, entity_id)
+// must not abort CREATE UNIQUE INDEX. Mirrors the SQLite twin coverage
+// (internal/storage/sqlite's TestMigration000074_Dedup_SQLite) —
+// backend-security-design.md §6.5 dual-backend parity requires the same
+// dedup SQL to be independently verified on both engines.
+func TestMigration000074_Dedup_Postgres(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+
+	upBody, downBody := readMigration000074Bodies(t)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			t.Logf("rollback tx: %v", rbErr)
+		}
+	})
+
+	if _, err := tx.Exec(ctx, string(downBody)); err != nil {
+		t.Fatalf("drop supersession column/index (down.sql): %v", err)
+	}
+
+	wsID := uuid.New()
+	entityID := uuid.New()
+	otherEntityID := uuid.New() // control: no duplicates, must survive untouched
+
+	older := insertLegacyUnknownOutcomeTx(ctx, t, tx, wsID, "task", entityID, "2026-01-01T00:00:00Z", "older empty draft")
+	newer := insertLegacyUnknownOutcomeTx(ctx, t, tx, wsID, "task", entityID, "2026-01-02T00:00:00Z", "newer draft with content")
+	single := insertLegacyUnknownOutcomeTx(ctx, t, tx, wsID, "task", otherEntityID, "2026-01-01T00:00:00Z", "no dup")
+
+	if _, err := tx.Exec(
+		ctx, `INSERT INTO evaluations (workspace_id, outcome_id, analysis) VALUES ($1, $2, $3)`,
+		wsID, older, "stale eval on the older dup",
+	); err != nil {
+		t.Fatalf("insert legacy evaluation: %v", err)
+	}
+
+	// Applying 000074 without the dedup step would fail here with a UNIQUE
+	// constraint violation — the exact M-2 production symptom (migration
+	// aborts mid-way, dirty version, server can't start). This re-applies
+	// the FIXED migration body, which dedups first.
+	if _, err := tx.Exec(ctx, string(upBody)); err != nil {
+		t.Fatalf("re-apply migration 000074 (expected to succeed after dedup): %v", err)
+	}
+
+	var remaining uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM outcomes WHERE entity_id = $1 AND result = 'unknown'`, entityID).Scan(&remaining)
+	if err != nil {
+		t.Fatalf("expected exactly one surviving 'unknown' row for the duplicate entity: %v", err)
+	}
+	if remaining != newer {
+		t.Errorf("expected the newer duplicate %s to survive, got %s (older %s should have been deleted)", newer, remaining, older)
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM outcomes WHERE id = $1`, older).Scan(&count); err != nil {
+		t.Fatalf("count older duplicate: %v", err)
+	}
+	if count != 0 {
+		t.Error("expected the older duplicate draft to be deleted by the dedup step")
+	}
+
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM evaluations WHERE outcome_id = $1`, older).Scan(&count); err != nil {
+		t.Fatalf("count stale evaluation: %v", err)
+	}
+	if count != 0 {
+		t.Error("expected the stale evaluation on the deleted duplicate to be cleaned up too")
+	}
+
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM outcomes WHERE id = $1`, single).Scan(&count); err != nil {
+		t.Fatalf("count non-duplicate control row: %v", err)
+	}
+	if count != 1 {
+		t.Error("expected the non-duplicate control row to survive untouched")
+	}
+
+	// The unique index now actually enforces uniqueness going forward.
+	_, err = tx.Exec(
+		ctx, `INSERT INTO outcomes (workspace_id, entity_type, entity_id, result) VALUES ($1, 'task', $2, 'unknown')`,
+		wsID, entityID,
+	)
+	if err == nil {
+		t.Error("expected the unique index to reject a second 'unknown' row post-migration")
 	}
 }

@@ -230,7 +230,13 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// side effects below (SetOutcomeLink, atomize) must not re-fire either,
 	// or a retried record_outcome call would silently duplicate atoms for
 	// notes text that was already atomized on the first call.
-	if action == outcome.ActionReplayedIdempotent {
+	//
+	// Draft preserved (PR #152 finding M-1): result="unknown" against an
+	// existing draft is also a no-write no-op (see
+	// outcome.ActionDraftPreserved doc comment) — same reasoning applies:
+	// no new content was recorded, so no session link or atomize side effect
+	// should fire either.
+	if action == outcome.ActionReplayedIdempotent || action == outcome.ActionDraftPreserved {
 		return jsonText(o)
 	}
 
