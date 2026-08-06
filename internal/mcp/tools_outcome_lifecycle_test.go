@@ -740,3 +740,89 @@ func TestHandleRecordOutcome_DraftEnrichRetry_ByteIdenticalSkipsSecondAtomize(t 
 		t.Fatalf("expected exactly 1 outcome row after seed->enrich->identical-retry, got %d: %+v", len(rows), rows)
 	}
 }
+
+// TestHandleRecordOutcome_DraftEnriched_RelatedRuleIDsOnly_SkipsAtomize is
+// the PR #152 round 5 Major (M-R5-1) guarantee B reproduction: an
+// ActionDraftEnriched call that supplies ONLY new related_rule_ids (notes
+// completely untouched) must NOT trigger atomize. Before this fix,
+// handleRecordOutcome's atomize guard only checked `o.Notes != ""` —
+// o.Notes is the FULL accumulated notes text, unrelated to what THIS call
+// actually wrote, so every enrich call that changed ANY field (including
+// related_rule_ids alone) re-atomized the same notes text. Reproduced by
+// two military review army members as: 5 enrich calls each supplying 20
+// fresh related_rule_ids against a draft with real notes -> atomizeFn fired
+// 5 extra times over identical text, none of it deduped by AddAtom.
+func TestHandleRecordOutcome_DraftEnriched_RelatedRuleIDsOnly_SkipsAtomize(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServer(t)
+	entityID := uuid.New()
+
+	seedR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      outcomeResultUnknown,
+		"notes":       "original postmortem content",
+	})
+	if seedR.IsError {
+		t.Fatalf("seed record_outcome: %s", resultText(seedR))
+	}
+	var seeded outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(seedR)), &seeded); err != nil {
+		t.Fatalf("unmarshal seeded: %v", err)
+	}
+
+	// Seed's own ActionCreated genuinely writes new notes ("" -> real
+	// content), so it correctly triggers atomize — drain that call before
+	// isolating the related_rule_ids-only enrich under test.
+	select {
+	case pid := <-atomizeCalls:
+		if pid != seeded.ID {
+			t.Errorf("seed call: atomizeFn fired with parent_id=%s, want %s", pid, seeded.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("seed call: atomizeFn did not fire within timeout, want a call (seed genuinely wrote new notes)")
+	}
+
+	newRuleID := uuid.New()
+	enrichR := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        entityID.String(),
+		"result":           outcomeResultUnknown,
+		"related_rule_ids": `["` + newRuleID.String() + `"]`,
+		// Deliberately NO "notes" key: this call must be classified as
+		// ActionDraftEnriched (related_rule_ids IS new content per
+		// relatedRuleIDsHasNew) while leaving Notes byte-identical to the
+		// seed's — exactly the case the old `o.Notes != ""` guard mis-fired
+		// atomize for.
+	})
+	if enrichR.IsError {
+		t.Fatalf("enrich record_outcome: %s", resultText(enrichR))
+	}
+	var enriched outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(enrichR)), &enriched); err != nil {
+		t.Fatalf("unmarshal enriched: %v", err)
+	}
+
+	// Sanity: confirm the enrich call genuinely wrote something (related_rule_ids),
+	// otherwise this test would trivially pass for the wrong reason (e.g. if
+	// it were misclassified as a no-op action).
+	if enriched.ID != seeded.ID {
+		t.Fatalf("enrich must return the SAME draft row: got %s, want %s", enriched.ID, seeded.ID)
+	}
+	if len(enriched.RelatedRuleIDs) != 1 || enriched.RelatedRuleIDs[0] != newRuleID {
+		t.Fatalf("RelatedRuleIDs = %v, want [%s] (the enrich call's new content must have been written)",
+			enriched.RelatedRuleIDs, newRuleID)
+	}
+	if enriched.Notes != "original postmortem content" {
+		t.Fatalf("Notes = %q, want unchanged from the seed %q (this call never supplied notes)",
+			enriched.Notes, "original postmortem content")
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		t.Errorf("atomizeFn fired for a related_rule_ids-only enrich call (parent_id=%s), want no call — "+
+			"notes text did not change, so re-atomizing it is a duplicate paid Haiku call over already-atomized "+
+			"text (M-R5-1 guarantee B regression)", pid)
+	case <-time.After(150 * time.Millisecond):
+		// expected: nothing arrives
+	}
+}

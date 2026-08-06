@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
@@ -579,6 +580,12 @@ func unionRelatedRuleIDs(existing, incoming []uuid.UUID) []uuid.UUID {
 // two-separate-statements race the old Exec-then-getByID pattern had (a
 // concurrent writer's content could previously leak into what this call
 // returned as "what I wrote").
+//
+// related_rule_ids is additionally capped at outcome.MaxRelatedRuleIDsTotal
+// AFTER unionRelatedRuleIDs computes the full merge (PR #152 round 5 Major
+// M-R5-1 guarantee A) — see that constant's doc comment and the truncation
+// call site below for the exact rule (existing entries always preserved,
+// only the newly-appended tail is ever dropped).
 func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params outcome.CreateOutcomeParams) (outcome.Outcome, error) {
 	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -608,6 +615,18 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 	}
 	mergedNotes := appendNotes(existing.Notes, params.Notes)
 	mergedRelatedRuleIDs := unionRelatedRuleIDs(existing.RelatedRuleIDs, params.RelatedRuleIDs)
+	// Cap the union at outcome.MaxRelatedRuleIDsTotal (PR #152 round 5 Major
+	// M-R5-1 guarantee A) — mirrors Store.FinalizeDraft (store.go)'s Postgres
+	// array-slice cap using the SAME exported constant, so both backends
+	// truncate at an identical cumulative size. unionRelatedRuleIDs places
+	// existing IDs first, so slicing the front N elements only ever drops
+	// newly-appended IDs, never a previously-recorded link.
+	if len(mergedRelatedRuleIDs) > outcome.MaxRelatedRuleIDsTotal {
+		slog.Warn("OutcomeStore.FinalizeDraft: related_rule_ids exceeded cumulative cap, truncated",
+			"outcome_id", id, "pre_truncate_count", len(mergedRelatedRuleIDs),
+			"cap", outcome.MaxRelatedRuleIDsTotal)
+		mergedRelatedRuleIDs = mergedRelatedRuleIDs[:outcome.MaxRelatedRuleIDsTotal]
+	}
 	mergedWorkSessionID := existing.WorkSessionID
 	if mergedWorkSessionID == nil {
 		mergedWorkSessionID = params.WorkSessionID

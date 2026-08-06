@@ -253,7 +253,7 @@ func TestRecordExecutionResult_UnknownAgainstExistingDraft_PreservesContent(t *t
 		},
 	}
 
-	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
 		EntityType: "task",
 		EntityID:   entityID,
 		Result:     "unknown",
@@ -313,7 +313,7 @@ func TestRecordExecutionResult_UnknownWithContentAgainstExistingDraft_Enriches(t
 		},
 	}
 
-	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
 		EntityType: "task",
 		EntityID:   entityID,
 		Result:     "unknown",
@@ -389,7 +389,7 @@ func TestRecordExecutionResult_TerminalAgainstDraft_StillFinalizes(t *testing.T)
 		},
 	}
 
-	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
 		EntityType: "task",
 		EntityID:   entityID,
 		Result:     "success",
@@ -627,7 +627,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_InterleavedResendDetectedAsRepla
 	}
 
 	// Call 1: AAA against an empty draft — genuinely new, must write.
-	_, action1, err := RecordExecutionResult(context.Background(), fs, paramsFor("AAA"))
+	_, action1, _, err := RecordExecutionResult(context.Background(), fs, paramsFor("AAA"))
 	if err != nil {
 		t.Fatalf("call 1 (AAA): %v", err)
 	}
@@ -640,7 +640,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_InterleavedResendDetectedAsRepla
 
 	// Call 2: BBB — a genuinely new second segment, must write.
 	fs.finalizeCalled = false
-	_, action2, err := RecordExecutionResult(context.Background(), fs, paramsFor("BBB"))
+	_, action2, _, err := RecordExecutionResult(context.Background(), fs, paramsFor("BBB"))
 	if err != nil {
 		t.Fatalf("call 2 (BBB): %v", err)
 	}
@@ -654,7 +654,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_InterleavedResendDetectedAsRepla
 	// Call 3: AAA again — already present as the FIRST (non-trailing)
 	// segment. Must be detected as a replay: no write, no side effect fire.
 	fs.finalizeCalled = false
-	third, action3, err := RecordExecutionResult(context.Background(), fs, paramsFor("AAA"))
+	third, action3, _, err := RecordExecutionResult(context.Background(), fs, paramsFor("AAA"))
 	if err != nil {
 		t.Fatalf("call 3 (AAA again): %v", err)
 	}
@@ -699,7 +699,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_ByteIdenticalIsIdempotent(t *tes
 		Notes:      "still investigating",
 	}
 
-	first, action1, err := RecordExecutionResult(context.Background(), fs, params)
+	first, action1, _, err := RecordExecutionResult(context.Background(), fs, params)
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_ByteIdenticalIsIdempotent(t *tes
 	}
 	fs.finalizeCalled = false // reset spy to isolate the retry's own behaviour
 
-	second, action2, err := RecordExecutionResult(context.Background(), fs, params)
+	second, action2, _, err := RecordExecutionResult(context.Background(), fs, params)
 	if err != nil {
 		t.Fatalf("retry call: %v", err)
 	}
@@ -755,7 +755,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_NewWorkSessionIDStillWrites(t *t
 		},
 	}
 
-	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
 		EntityType:    "task",
 		EntityID:      entityID,
 		Result:        resultUnknown,
@@ -797,7 +797,7 @@ func TestRecordExecutionResult_DraftEnrichRetry_NewRelatedRuleIDsStillWrites(t *
 		},
 	}
 
-	got, action, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
 		EntityType:     "task",
 		EntityID:       entityID,
 		Result:         resultUnknown,

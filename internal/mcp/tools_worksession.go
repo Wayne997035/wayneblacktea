@@ -630,7 +630,10 @@ func (s *Server) autoCreateOutcomeOnFailure(
 		return nil
 	}
 
-	o, action, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
+	// previousNotes is unused here: autoCreateOutcomeOnFailure never calls
+	// launchAtomize (unlike handleRecordOutcome in tools_outcome.go), so the
+	// M-R5-1 guarantee B gate does not apply to this call site.
+	o, action, _, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
 		WorkspaceID: s.workspaceUUID(),
 		EntityType:  "task",
 		EntityID:    taskID,

@@ -15,9 +15,17 @@ import (
 )
 
 // maxRelatedRuleIDs caps the number of behavior rule IDs that may be supplied
-// per outcome. The Wednesday governance job does O(N*M) ApplyOutcome calls
-// where N=outcomes and M=related_rule_ids; an unbounded array turns this into
-// a quadratic CPU/DB amplification attack vector.
+// in a SINGLE record_outcome call — this bounds parse/validation cost for
+// one request, NOT the cumulative size an outcome's related_rule_ids array
+// can grow to across repeated enrich calls (that's a separate guarantee,
+// outcome.MaxRelatedRuleIDsTotal, enforced post-merge inside both backends'
+// FinalizeDraft — see its doc comment for PR #152 round 5 Major M-R5-1). The
+// Wednesday governance job does O(N*M) ApplyOutcome calls where N=outcomes
+// and M=related_rule_ids; an unbounded array turns this into a quadratic
+// CPU/DB amplification attack vector — this constant and
+// outcome.MaxRelatedRuleIDsTotal together close two DIFFERENT ways an
+// attacker could reach that amplification (one huge call vs many small
+// calls that accumulate).
 const maxRelatedRuleIDs = 20
 
 // parseRelatedRuleIDs parses an optional JSON array of UUID strings from the
@@ -238,7 +246,7 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	}
 
 	wsID := s.workspaceUUID()
-	o, action, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
+	o, action, previousNotes, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
 		WorkspaceID:    wsID,
 		EntityType:     in.entityType,
 		EntityID:       in.entityID,
@@ -293,8 +301,23 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 		}
 	}
 
-	// M9: atomize the outcome notes in the background when non-empty.
-	if o.Notes != "" {
+	// M9: atomize the outcome notes in the background when non-empty AND the
+	// notes text actually changed by this call (PR #152 round 5 Major
+	// M-R5-1 guarantee B). Before this guard, ANY write that reached this
+	// point (including ActionDraftEnriched calls carrying ONLY new
+	// related_rule_ids, notes untouched) re-atomized o.Notes unconditionally
+	// — o.Notes is the FULL accumulated notes text, not just what this call
+	// wrote, so a caller retrying record_outcome with fresh related_rule_ids
+	// and no notes change triggered a fresh paid Haiku atomize call over
+	// text already atomized on a prior call, and AddAtom does not dedupe
+	// (internal/mcp/tools_atom.go), so each retry also grew the knowledge
+	// base with duplicate atoms. previousNotes (RecordExecutionResult's new
+	// return value) is the entity's notes value immediately before this
+	// call ran — comparing it against o.Notes is the only classification
+	// that's correct across every LifecycleAction uniformly (see
+	// RecordExecutionResult's doc comment for why gating on the action name
+	// itself is wrong).
+	if o.Notes != "" && o.Notes != previousNotes {
 		s.launchAtomize("outcomes", o.ID, o.Notes)
 	}
 	return jsonText(o)

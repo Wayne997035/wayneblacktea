@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,7 +50,12 @@ const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, met
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
 
 // scanOutcomeRow reads a full outcomes row from pgx.Rows into an Outcome.
-func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
+// extra optionally scans additional trailing RETURNING columns beyond
+// outcomeSelectCols directly into caller-supplied destinations — used by
+// FinalizeDraft to also read back the pre-truncation related_rule_ids count
+// (PR #152 round 5 Major M-R5-1 guarantee A) in the SAME round trip, without
+// duplicating this function's column-order-sensitive scan+convert logic.
+func scanOutcomeRow(rows pgx.Rows, extra ...any) (Outcome, error) {
 	var (
 		o              Outcome
 		wsID           pgtype.UUID
@@ -61,7 +67,7 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		notesText      pgtype.Text
 		relatedRuleIDs []uuid.UUID
 	)
-	err := rows.Scan(
+	dest := []any{
 		&o.ID,
 		&wsID,
 		&o.EntityType,
@@ -74,7 +80,9 @@ func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 		&supersedesID,
 		&createdAt,
 		&updatedAt,
-	)
+	}
+	dest = append(dest, extra...)
+	err := rows.Scan(dest...)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("scanning outcome: %w", err)
 	}
@@ -498,8 +506,33 @@ func DedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
 // non-empty string satisfied the old COALESCE-wins-when-non-empty rule).
 // Under append semantics that same call can only ever ADD a whitespace note
 // after the real content, never remove it.
+//
+// related_rule_ids is additionally capped at MaxRelatedRuleIDsTotal AFTER
+// the union above is computed (PR #152 round 5 Major M-R5-1 guarantee A):
+// the `merged` CTE computes the full existing-union-new array once, and the
+// final assignment slices it to `[1:MaxRelatedRuleIDsTotal]` — Postgres
+// array slicing keeps the FIRST N elements and is a no-op (returns the
+// whole array) when the array already has fewer than N, so this never
+// affects a call that stays under the cap. Because existing IDs sort first
+// in the union (see above), slicing from the front only ever drops
+// newly-appended IDs, never a previously-recorded one — an already-linked
+// rule ID can never be silently removed by a later call exceeding the cap.
+// The CTE is forced MATERIALIZED so it is computed exactly once per
+// statement (both the related_rule_ids assignment and the RETURNING
+// pre-truncation-length column below read the SAME materialized value,
+// rather than each independently re-evaluating the correlated subquery
+// against a table this same statement is concurrently modifying).
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
+		WITH merged AS MATERIALIZED (
+			SELECT COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
+				SELECT array_agg(nid ORDER BY ord)
+				FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
+				WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
+			), '{}'::uuid[]) AS full_ids
+			FROM outcomes
+			WHERE id = $6 AND result = 'unknown'
+		)
 		UPDATE outcomes SET
 			result = $1,
 			metrics = CASE
@@ -513,16 +546,12 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 			END,
 			related_rule_ids = CASE
 				WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids
-				ELSE COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
-					SELECT array_agg(nid ORDER BY ord)
-					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
-					WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
-				), '{}'::uuid[])
+				ELSE (SELECT full_ids FROM merged)[1:$7::int]
 			END,
 			work_session_id = COALESCE(work_session_id, $5),
 			updated_at = NOW()
 		WHERE id = $6 AND result = 'unknown'
-		RETURNING ` + outcomeSelectCols
+		RETURNING ` + outcomeSelectCols + `, (SELECT COALESCE(array_length(full_ids, 1), 0) FROM merged)`
 
 	var notesArg pgtype.Text
 	if params.Notes != "" {
@@ -545,6 +574,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 		relatedRuleIDs,
 		toPgtypeUUID(params.WorkSessionID),
 		id,
+		MaxRelatedRuleIDsTotal,
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("finalizing draft outcome %s: %w", id, err)
@@ -557,9 +587,15 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 		}
 		return Outcome{}, ErrDraftAlreadyFinalized
 	}
-	o, err := scanOutcomeRow(rows)
+	var preTruncateLen int
+	o, err := scanOutcomeRow(rows, &preTruncateLen)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("finalizing draft outcome %s scan: %w", id, err)
+	}
+	if preTruncateLen > MaxRelatedRuleIDsTotal {
+		slog.Warn("Store.FinalizeDraft: related_rule_ids exceeded cumulative cap, truncated",
+			"outcome_id", id, "pre_truncate_count", preTruncateLen,
+			"cap", MaxRelatedRuleIDsTotal, "final_count", len(o.RelatedRuleIDs))
 	}
 	return o, nil
 }

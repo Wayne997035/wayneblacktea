@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1041,7 +1042,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempo
 	wsID := uuid.New()
 	entityID := uuid.New()
 
-	first, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	first, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "still investigating",
 	})
@@ -1053,7 +1054,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempo
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	enriched, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "verified in prod",
 	})
@@ -1071,7 +1072,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempo
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	retried, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	retried, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "verified in prod", // byte-identical retry
 	})
@@ -1102,7 +1103,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrite
 	entityID := uuid.New()
 	ruleA := uuid.New()
 
-	seeded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	seeded, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "first note", Metrics: []byte(`{"a":1}`), RelatedRuleIDs: []uuid.UUID{ruleA},
 	})
@@ -1116,7 +1117,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrite
 	time.Sleep(2 * time.Millisecond) // ensure UpdatedAt strictly advances past the seed's timestamp
 	sessionID := uuid.New()
 	ruleB := uuid.New()
-	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	enriched, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result:         "unknown",
 		Notes:          "second note",
@@ -1450,4 +1451,110 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix(t *testing.
 			}
 		})
 	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates
+// is the SQLite twin of
+// TestStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates
+// (internal/outcome/store_test.go) — PR #152 round 5 Major (M-R5-1)
+// guarantee A. Same scenario, same assertions, against the SQLite backend:
+// 6 batches of 20 fresh distinct UUIDs (120 candidates, deliberately past
+// the 100 cap) applied via repeated FinalizeDraft calls against the SAME
+// draft (Result stays "unknown" throughout) must never let
+// related_rule_ids grow past outcome.MaxRelatedRuleIDsTotal, and batches
+// 1-5 (which fill the cap exactly) must survive intact while batch 6 is
+// entirely dropped.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	const batchSize = 20
+	const numBatches = 6 // 6*20=120 candidates, deliberately past the 100 cap
+	batches := newRuleIDBatches(numBatches, batchSize)
+
+	var last outcome.Outcome
+	for b, batch := range batches {
+		last, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result:         "unknown",
+			RelatedRuleIDs: batch,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft batch %d: %v", b, err)
+		}
+		wantLen := (b + 1) * batchSize
+		if wantLen > outcome.MaxRelatedRuleIDsTotal {
+			wantLen = outcome.MaxRelatedRuleIDsTotal
+		}
+		if len(last.RelatedRuleIDs) != wantLen {
+			t.Fatalf("after batch %d: len(RelatedRuleIDs) = %d, want %d (cap=%d)",
+				b, len(last.RelatedRuleIDs), wantLen, outcome.MaxRelatedRuleIDsTotal)
+		}
+	}
+
+	if len(last.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("final len(RelatedRuleIDs) = %d, want exactly the cap %d — cumulative growth was NOT bounded",
+			len(last.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+
+	want := concatRuleIDBatches(batches[:5])
+	if len(want) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("test bug: want slice has %d entries, expected %d", len(want), outcome.MaxRelatedRuleIDsTotal)
+	}
+	for i, id := range want {
+		if last.RelatedRuleIDs[i] != id {
+			t.Errorf("RelatedRuleIDs[%d] = %s, want %s (batches 1-5 must survive intact, in order)",
+				i, last.RelatedRuleIDs[i], id)
+		}
+	}
+	for _, dropped := range batches[5] {
+		if slices.Contains(last.RelatedRuleIDs, dropped) {
+			t.Errorf("batch 6 entry %s survived truncation, want entirely dropped (cap was already full)", dropped)
+		}
+	}
+
+	reread, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(reread.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Errorf("reread len(RelatedRuleIDs) = %d, want %d (persisted value must match returned value)",
+			len(reread.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+}
+
+// newRuleIDBatches builds n batches of size fresh distinct UUIDs each, for
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates.
+// Extracted to keep that test's cyclomatic complexity under gocyclo's limit.
+func newRuleIDBatches(n, size int) [][]uuid.UUID {
+	batches := make([][]uuid.UUID, n)
+	for b := range batches {
+		batch := make([]uuid.UUID, size)
+		for i := range batch {
+			batch[i] = uuid.New()
+		}
+		batches[b] = batch
+	}
+	return batches
+}
+
+// concatRuleIDBatches flattens batches in order into a single slice.
+func concatRuleIDBatches(batches [][]uuid.UUID) []uuid.UUID {
+	var out []uuid.UUID
+	for _, b := range batches {
+		out = append(out, b...)
+	}
+	return out
 }

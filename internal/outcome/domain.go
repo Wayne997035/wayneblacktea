@@ -41,6 +41,36 @@ var AllowedResults = map[string]bool{
 	"regressed": true,
 }
 
+// MaxRelatedRuleIDsTotal caps the CUMULATIVE size of a single outcome row's
+// related_rule_ids array across its entire append-only lifetime — a
+// different guarantee from internal/mcp/tools_outcome.go's maxRelatedRuleIDs
+// (20), which only bounds how many IDs a SINGLE record_outcome call may
+// supply. Migration 000075's append-only UNION redesign made
+// related_rule_ids grow monotonically across repeated
+// record_outcome(result="unknown", related_rule_ids=[...]) enrich calls
+// against the same draft (FinalizeDraft's element-level union, never a
+// replace) — with no cumulative cap, N enrich calls each carrying
+// maxRelatedRuleIDs distinct UUIDs grow the stored array to N*20 with no
+// upper bound. That is exactly the O(entities * related_rule_ids)
+// amplification maxRelatedRuleIDs's own doc comment already warns about:
+// scheduler/behavior_governance.go's Wednesday job does one ApplyOutcome DB
+// round trip per related_rule_id per outcome. See PR #152 round 5 Major
+// (M-R5-1) guarantee A — reproduced empirically as 20 -> 40 -> 60 -> 80 ->
+// 100 across 5 enrich calls of 20 fresh UUIDs each, with no backend-side
+// limit stopping a 6th, 7th, ... Nth call.
+//
+// Both backends' FinalizeDraft (store.go's Store.FinalizeDraft,
+// storage/sqlite/outcome.go's OutcomeStore.FinalizeDraft) truncate the
+// merged/unioned array to this cap AFTER computing the union — never
+// before — so already-stored entries (which sort first in the union, per
+// FinalizeDraft's own "existing IDs stay first in original order" rule)
+// are preserved; only the newly-appended tail is ever dropped, and a
+// slog.Warn is emitted on the write path when truncation actually removes
+// something. Set to 5x the per-call cap (20*5=100): generous enough for
+// realistic cross-linking, but stops the exact escalation this finding
+// reproduced (5 retries * 20 IDs/retry = 100) from continuing unbounded.
+const MaxRelatedRuleIDsTotal = 100
+
 // Outcome is the domain model for a recorded execution result.
 type Outcome struct {
 	ID          uuid.UUID  `json:"id"`

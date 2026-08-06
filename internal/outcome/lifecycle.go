@@ -139,17 +139,36 @@ const (
 // calls on the SAME task, closed by SeedDraft's atomic upsert). Given
 // personal-scale single-agent usage this is accepted and documented rather
 // than silently ignored.
-func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateOutcomeParams) (Outcome, LifecycleAction, error) {
+//
+// previousNotes is the entity's Notes value as it stood immediately BEFORE
+// this call wrote anything — "" when no prior outcome existed at all
+// (ActionCreated). Every other branch below returns latest.Notes (the row
+// this call read before deciding what to do), which is exactly the
+// pre-write value regardless of whether that branch ends up merging into
+// the same row (FinalizeDraft) or creating a distinct new one (supersede).
+// Added for PR #152 round 5 Major (M-R5-1) guarantee B: callers
+// (tools_outcome.go's handleRecordOutcome) compare previousNotes against
+// the returned Outcome's post-write Notes to decide whether a content-bearing
+// side effect (background atomization) should fire — a call that only
+// supplies new content in some OTHER field (e.g. related_rule_ids) leaves
+// Notes byte-identical to previousNotes, so no re-atomize of already-atomized
+// text should happen. Deliberately NOT keyed off LifecycleAction (e.g. "is
+// this ActionDraftEnriched") — that was the exact classification that
+// caused the bug: ActionDraftEnriched fires for ANY new content, not just
+// new notes, so gating atomize on the action name alone re-fires it for a
+// related_rule_ids-only enrich call. Comparing the actual before/after notes
+// text is the only classification that's correct for every branch uniformly.
+func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateOutcomeParams) (Outcome, LifecycleAction, string, error) {
 	latest, err := store.GetLatestForEntity(ctx, params.WorkspaceID, params.EntityType, params.EntityID)
 	if errors.Is(err, ErrNotFound) {
 		o, cErr := store.CreateOutcome(ctx, params)
 		if cErr != nil {
-			return Outcome{}, "", fmt.Errorf("recording execution result: %w", cErr)
+			return Outcome{}, "", "", fmt.Errorf("recording execution result: %w", cErr)
 		}
-		return o, ActionCreated, nil
+		return o, ActionCreated, "", nil
 	}
 	if err != nil {
-		return Outcome{}, "", fmt.Errorf("recording execution result: resolving latest outcome: %w", err)
+		return Outcome{}, "", "", fmt.Errorf("recording execution result: resolving latest outcome: %w", err)
 	}
 
 	if latest.Result == resultUnknown {
@@ -170,7 +189,7 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		// it's safe — see store.go's FinalizeDraft) so the content actually
 		// gets written — see ActionDraftEnriched.
 		if params.Result == resultUnknown && !hasNewContent(params) {
-			return latest, ActionDraftPreserved, nil
+			return latest, ActionDraftPreserved, latest.Notes, nil
 		}
 		// PR #152 round 3 Major: hasNewContent only established that params
 		// carries SOME content — it says nothing about whether that content
@@ -188,7 +207,7 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		// call goes through the terminal branch's isIdempotentReplay
 		// instead), so there is no equivalent duplicate-finalize case here.
 		if params.Result == resultUnknown && isDraftIdempotentReplay(latest, params) {
-			return latest, ActionReplayedIdempotent, nil
+			return latest, ActionReplayedIdempotent, latest.Notes, nil
 		}
 		// Everything below writes. The only thing the result value changes is
 		// which action we report: a terminal result finalizes the draft, an
@@ -207,13 +226,13 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 			return RecordExecutionResult(ctx, store, params)
 		}
 		if ferr != nil {
-			return Outcome{}, "", fmt.Errorf("recording execution result: finalizing draft: %w", ferr)
+			return Outcome{}, "", "", fmt.Errorf("recording execution result: finalizing draft: %w", ferr)
 		}
-		return finalized, action, nil
+		return finalized, action, latest.Notes, nil
 	}
 
 	if isIdempotentReplay(latest, params) {
-		return latest, ActionReplayedIdempotent, nil
+		return latest, ActionReplayedIdempotent, latest.Notes, nil
 	}
 
 	supersedeParams := params
@@ -221,9 +240,9 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 	supersedeParams.SupersedesID = &latestID
 	o, err := store.CreateOutcome(ctx, supersedeParams)
 	if err != nil {
-		return Outcome{}, "", fmt.Errorf("recording execution result: superseding: %w", err)
+		return Outcome{}, "", "", fmt.Errorf("recording execution result: superseding: %w", err)
 	}
-	return o, ActionSuperseded, nil
+	return o, ActionSuperseded, latest.Notes, nil
 }
 
 // hasNewContent reports whether params carries any payload beyond bare
@@ -328,6 +347,20 @@ func isDraftIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 // regardless of resend order, matching what FinalizeDraft's appendNotes
 // would actually change: appending a segment ALREADY present anywhere in
 // existing produces string-different-but-not-semantically-new content.
+//
+// Correctness precondition (PR #152 round 5 Minor s-R5-3): splitting on the
+// literal "\n\n" separator is only a safe segment boundary because every
+// current caller of RecordExecutionResult passes params.Notes through
+// sanitize.Notes (internal/sanitize/notes.go) first, which strips every
+// control character below 0x20 EXCEPT '\t' — including '\n' itself. A
+// caller that supplied incoming containing a raw "\n\n" WITHOUT going
+// through that sanitizer could smuggle a payload that collides with an
+// existing segment boundary and gets misclassified as "not new". Both
+// current callers (internal/mcp/tools_outcome.go's parseRecordOutcomeArgs,
+// tools_worksession.go's autoCreateOutcomeOnFailure) sanitize before this
+// function ever sees the value — this comment exists so a FUTURE caller of
+// RecordExecutionResult that skips sanitize.Notes is not silently exposed
+// to that gap.
 func notesHasNewContent(existing, incoming string) bool {
 	if incoming == "" {
 		return false

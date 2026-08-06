@@ -9,6 +9,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -274,6 +275,40 @@ func TestStore_GetOutcomeByID(t *testing.T) {
 			t.Fatal("expected ErrNotFound for wrong workspace, got nil")
 		}
 	})
+}
+
+// TestStore_GetOutcomeByID_NullRelatedRuleIDs_ScansAsEmptySlice is the PR
+// #152 round 5 Minor (3rd army) regression test for scanOutcomeRow's nil ->
+// []uuid.UUID{} conversion (store.go, "if relatedRuleIDs == nil {
+// relatedRuleIDs = []uuid.UUID{} }"): before this test existed, deleting
+// that entire branch left the full PG test suite green, meaning the
+// conversion had zero coverage. Uses insertDraftWithRelatedRuleIDs's
+// includeColumn=false path (already defined below for the NullAndDedupMatrix
+// test) to construct a row with a genuinely NULL related_rule_ids column —
+// bypassing CreateOutcome/FinalizeDraft, which both always write an
+// explicit '{}' and so can never reproduce NULL — reproducing rows written
+// by any pre-fix or legacy path.
+func TestStore_GetOutcomeByID_NullRelatedRuleIDs_ScansAsEmptySlice(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	id := uuid.New()
+	entityID := uuid.New()
+	insertDraftWithRelatedRuleIDs(ctx, t, pool, id, wsID, entityID, "task", nil, false)
+
+	got, err := store.GetOutcomeByID(ctx, id, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if got.RelatedRuleIDs == nil {
+		t.Error("RelatedRuleIDs = nil, want a non-nil empty slice (NULL column must scan as [], not nil — " +
+			"omitempty serializes both identically, but a nil-unsafe consumer using range/append is still at risk)")
+	}
+	if len(got.RelatedRuleIDs) != 0 {
+		t.Errorf("RelatedRuleIDs = %v, want empty", got.RelatedRuleIDs)
+	}
 }
 
 // TestStore_CreateAndListEvaluation verifies evaluation creation and listing.
@@ -1262,7 +1297,7 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	entityID := uuid.New()
 
 	// 1. No prior outcome -> ActionCreated.
-	created, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	created, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
 	})
 	if err != nil {
@@ -1273,7 +1308,7 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	}
 
 	// 2. Prior outcome is a draft -> ActionFinalizedDraft, same ID.
-	finalized, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	finalized, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success", Notes: "done",
 	})
 	if err != nil {
@@ -1287,7 +1322,7 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	}
 
 	// 3. Identical replay -> ActionReplayedIdempotent, same ID, no new row.
-	replayed, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	replayed, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success", Notes: "done",
 	})
 	if err != nil {
@@ -1301,7 +1336,7 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	}
 
 	// 4. Different terminal result -> ActionSuperseded, new row, linked back.
-	superseded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	superseded, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "regressed", Notes: "actually broke prod",
 	})
 	if err != nil {
@@ -1361,7 +1396,7 @@ func TestRecordExecutionResult_PG_M1_UnknownAgainstDraftPreservesContent(t *test
 	sessionID := uuid.New()
 	ruleID := uuid.New()
 
-	seeded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	seeded, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID:    &wsID,
 		EntityType:     "task",
 		EntityID:       entityID,
@@ -1380,7 +1415,7 @@ func TestRecordExecutionResult_PG_M1_UnknownAgainstDraftPreservesContent(t *test
 
 	// The attack: another call, still result="unknown", with none of the
 	// original content.
-	afterAttack, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	afterAttack, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID,
 		EntityType:  "task",
 		EntityID:    entityID,
@@ -1451,7 +1486,7 @@ func TestRecordExecutionResult_PG_AppendSemantics_ByteIdenticalRetryIsIdempotent
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "still investigating",
 	}
-	first, action, err := outcome.RecordExecutionResult(ctx, store, params)
+	first, action, _, err := outcome.RecordExecutionResult(ctx, store, params)
 	if err != nil {
 		t.Fatalf("RecordExecutionResult (seed with content): %v", err)
 	}
@@ -1460,7 +1495,7 @@ func TestRecordExecutionResult_PG_AppendSemantics_ByteIdenticalRetryIsIdempotent
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	enriched, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "verified in prod",
 	})
@@ -1478,7 +1513,7 @@ func TestRecordExecutionResult_PG_AppendSemantics_ByteIdenticalRetryIsIdempotent
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	retried, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	retried, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "verified in prod", // byte-identical retry of the enrich call
 	})
@@ -1511,7 +1546,7 @@ func TestRecordExecutionResult_PG_AppendSemantics_GenuinelyNewInfoStillWrites(t 
 	entityID := uuid.New()
 	ruleA := uuid.New()
 
-	seeded, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	seeded, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result: "unknown", Notes: "first note", Metrics: []byte(`{"a":1}`), RelatedRuleIDs: []uuid.UUID{ruleA},
 	})
@@ -1525,7 +1560,7 @@ func TestRecordExecutionResult_PG_AppendSemantics_GenuinelyNewInfoStillWrites(t 
 	time.Sleep(2 * time.Millisecond) // ensure UpdatedAt strictly advances past the seed's timestamp
 	sessionID := uuid.New()
 	ruleB := uuid.New()
-	enriched, action, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+	enriched, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
 		Result:         "unknown",
 		Notes:          "second note",           // genuinely new text
@@ -1896,7 +1931,8 @@ func insertDraftWithRelatedRuleIDs(
 ) {
 	t.Helper()
 	if !includeColumn {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(
+			ctx,
 			`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result) VALUES ($1, $2, $3, $4, 'unknown')`,
 			id, wsID, entityType, entityID,
 		)
@@ -1905,7 +1941,8 @@ func insertDraftWithRelatedRuleIDs(
 		}
 		return
 	}
-	_, err := pool.Exec(ctx,
+	_, err := pool.Exec(
+		ctx,
 		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, related_rule_ids) VALUES ($1, $2, $3, $4, 'unknown', $5)`,
 		id, wsID, entityType, entityID, relatedRuleIDs,
 	)
@@ -2002,5 +2039,105 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_NullAndDedupMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates reproduces
+// PR #152 round 5 Major (M-R5-1) guarantee A end-to-end against a real
+// Postgres backend: a draft enriched with maxRelatedRuleIDs-sized batches of
+// FRESH distinct UUIDs across repeated FinalizeDraft calls (mirroring N
+// separate record_outcome(result="unknown", related_rule_ids=[...20 new...])
+// MCP calls against the SAME draft — Result stays "unknown" so the row
+// remains eligible for a further FinalizeDraft each time) must never grow
+// related_rule_ids past outcome.MaxRelatedRuleIDsTotal, no matter how many
+// enrich calls arrive.
+//
+// 6 batches of 20 fresh UUIDs each (120 distinct candidates total) are
+// applied — deliberately past the cap (100), not stopping AT the boundary,
+// per the dispatch's "測試要真的堆到超過上限,不要只測邊界值" requirement.
+// After 5 batches the union sits exactly at the cap (5*20=100); the 6th
+// batch's 20 IDs must be entirely rejected by the truncation (existing
+// entries always sort first in the union — see MaxRelatedRuleIDsTotal's doc
+// comment — so once the cap is full there is no room left for ANY new
+// entry, not even a partial slice of batch 6).
+func TestStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	const batchSize = 20
+	const numBatches = 6 // 6*20=120 candidates, deliberately past the 100 cap
+	batches := make([][]uuid.UUID, numBatches)
+	for b := range numBatches {
+		batch := make([]uuid.UUID, batchSize)
+		for i := range batchSize {
+			batch[i] = uuid.New()
+		}
+		batches[b] = batch
+	}
+
+	var last outcome.Outcome
+	for b, batch := range batches {
+		last, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result:         "unknown",
+			RelatedRuleIDs: batch,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft batch %d: %v", b, err)
+		}
+		wantLen := min((b+1)*batchSize, outcome.MaxRelatedRuleIDsTotal)
+		if len(last.RelatedRuleIDs) != wantLen {
+			t.Fatalf("after batch %d: len(RelatedRuleIDs) = %d, want %d (cap=%d)",
+				b, len(last.RelatedRuleIDs), wantLen, outcome.MaxRelatedRuleIDsTotal)
+		}
+	}
+
+	if len(last.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("final len(RelatedRuleIDs) = %d, want exactly the cap %d — cumulative growth was NOT bounded",
+			len(last.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+
+	// The surviving 100 entries must be EXACTLY batches 1-5 concatenated in
+	// order — batch 6 (the one that pushed past the cap) must be entirely
+	// absent, and no earlier batch's entries may have been silently dropped
+	// to make room for it.
+	want := append(append(append(append(batches[0], batches[1]...), batches[2]...), batches[3]...), batches[4]...)
+	if len(want) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("test bug: want slice has %d entries, expected %d", len(want), outcome.MaxRelatedRuleIDsTotal)
+	}
+	for i, id := range want {
+		if last.RelatedRuleIDs[i] != id {
+			t.Errorf("RelatedRuleIDs[%d] = %s, want %s (batches 1-5 must survive intact, in order)",
+				i, last.RelatedRuleIDs[i], id)
+		}
+	}
+	for _, dropped := range batches[5] {
+		if slices.Contains(last.RelatedRuleIDs, dropped) {
+			t.Errorf("batch 6 entry %s survived truncation, want entirely dropped (cap was already full)", dropped)
+		}
+	}
+
+	// Re-read from a fresh query, not just the RETURNING clause, to rule out
+	// a bug where RETURNING reflects a value the actual committed row
+	// doesn't have.
+	reread, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(reread.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Errorf("reread len(RelatedRuleIDs) = %d, want %d (persisted value must match RETURNING)",
+			len(reread.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
 	}
 }
