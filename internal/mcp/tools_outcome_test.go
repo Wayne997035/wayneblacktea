@@ -922,3 +922,58 @@ func TestHandleRecordOutcome_RelatedRuleIDsExceedsMax(t *testing.T) {
 		t.Errorf("error should mention maximum, got: %s", resultText(r))
 	}
 }
+
+// TestNotesDelta covers the pure helper handleRecordOutcome uses to extract
+// ONLY the newly-added segment for launchAtomize — PR #152 round 6 Major
+// M-R6-2a. See its doc comment for the full rationale; this pins the
+// algorithm itself in isolation, complementing the slower end-to-end
+// atomize-spy tests in tools_outcome_lifecycle_test.go.
+func TestNotesDelta(t *testing.T) {
+	tests := []struct {
+		name          string
+		oNotes        string
+		previousNotes string
+		want          string
+	}{
+		{
+			name:          "fresh row (previousNotes empty): entire text is new",
+			oNotes:        "first postmortem notes",
+			previousNotes: "",
+			want:          "first postmortem notes",
+		},
+		{
+			name:          "normal enrich append: only the newly-appended segment",
+			oNotes:        "first segment\n\nsecond segment",
+			previousNotes: "first segment",
+			want:          "second segment",
+		},
+		{
+			name:          "chained enrich: only the THIRD segment, not the accumulated prefix",
+			oNotes:        "first\n\nsecond\n\nthird",
+			previousNotes: "first\n\nsecond",
+			want:          "third",
+		},
+		{
+			name:          "no actual change (o.Notes == previousNotes): empty delta",
+			oNotes:        "unchanged",
+			previousNotes: "unchanged",
+			want:          "",
+		},
+		{
+			name: "defensive fallback: oNotes does not start with previousNotes+separator " +
+				"(e.g. cap truncation consumed previousNotes itself) — returns empty rather than guessing",
+			oNotes:        "trunc",
+			previousNotes: "truncated-existing-longer-than-oNotes",
+			want:          "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := notesDelta(tc.oNotes, tc.previousNotes)
+			if got != tc.want {
+				t.Errorf("notesDelta(%q, %q) = %q, want %q", tc.oNotes, tc.previousNotes, got, tc.want)
+			}
+		})
+	}
+}

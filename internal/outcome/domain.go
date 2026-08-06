@@ -51,25 +51,88 @@ var AllowedResults = map[string]bool{
 // against the same draft (FinalizeDraft's element-level union, never a
 // replace) — with no cumulative cap, N enrich calls each carrying
 // maxRelatedRuleIDs distinct UUIDs grow the stored array to N*20 with no
-// upper bound. That is exactly the O(entities * related_rule_ids)
-// amplification maxRelatedRuleIDs's own doc comment already warns about:
-// scheduler/behavior_governance.go's Wednesday job does one ApplyOutcome DB
-// round trip per related_rule_id per outcome. See PR #152 round 5 Major
-// (M-R5-1) guarantee A — reproduced empirically as 20 -> 40 -> 60 -> 80 ->
-// 100 across 5 enrich calls of 20 fresh UUIDs each, with no backend-side
-// limit stopping a 6th, 7th, ... Nth call.
+// upper bound. Reproduced empirically as 20 -> 40 -> 60 -> 80 -> 100 across
+// 5 enrich calls of 20 fresh UUIDs each, with no backend-side limit
+// stopping a 6th, 7th, ... Nth call (PR #152 round 5 Major, M-R5-1).
+//
+// What this actually protects against (corrected, PR #152 round 6 Minor —
+// the PREVIOUS version of this comment mis-attributed the risk to
+// scheduler/behavior_governance.go's Wednesday O(N*M) ApplyOutcome job:
+// that job's `switch o.Result` treats "unknown" as `default: continue`
+// (behavior_governance.go), so a draft accumulating related_rule_ids via
+// repeated enrich calls is NEVER scanned by that job while it stays a
+// draft — the enrich-accumulation phase itself contributes ZERO cost to
+// that job, so it cannot be the thing this cap defends). The real risk this
+// cap bounds is unbounded per-ROW storage growth and unbounded MCP response
+// payload size: list_recent_outcomes / find_failed_patterns
+// (tools_outcome.go's maxOutcomeLimit=100) return the full related_rule_ids
+// array for every returned row, so a single uncapped array inflates every
+// subsequent list/find call's response size (and the context an agent
+// consuming that response pays for) indefinitely. As a secondary,
+// incidental effect: IF a draft that accumulated related_rule_ids is
+// eventually finalized to a terminal result, this same cap also bounds
+// that row's contribution to the Wednesday job's O(N*M) cost once it
+// becomes eligible for scanning — but that is not why this cap exists; it
+// exists to bound row/array size and response payload.
 //
 // Both backends' FinalizeDraft (store.go's Store.FinalizeDraft,
-// storage/sqlite/outcome.go's OutcomeStore.FinalizeDraft) truncate the
-// merged/unioned array to this cap AFTER computing the union — never
-// before — so already-stored entries (which sort first in the union, per
-// FinalizeDraft's own "existing IDs stay first in original order" rule)
-// are preserved; only the newly-appended tail is ever dropped, and a
-// slog.Warn is emitted on the write path when truncation actually removes
-// something. Set to 5x the per-call cap (20*5=100): generous enough for
-// realistic cross-linking, but stops the exact escalation this finding
-// reproduced (5 retries * 20 IDs/retry = 100) from continuing unbounded.
+// storage/sqlite/outcome.go's OutcomeStore.FinalizeDraft) apply
+// CapRelatedRuleIDs (store.go) to the merged/unioned array — see that
+// function's doc comment for the exact "an already-linked rule ID can
+// never be silently removed, even if existing already exceeds the cap"
+// rule (PR #152 round 6 Major, m-R6-3) — and a slog.Warn is emitted on the
+// write path only when truncation actually removed something.
+//
+// Derivation-quality note: 100 is NOT derived from a storage-cost or
+// response-payload budget. It is a round, generous ceiling set at 5x the
+// per-call cap (20*5=100) — chosen to comfortably exceed any realistic
+// cross-linking workflow while still being finite, and it happens to match
+// the exact shape of the M-R5-1 attack repro (5 retries * 20 IDs/retry).
+// Treat it as a deliberately conservative "stop unbounded growth" number,
+// not a tightly reasoned capacity limit.
 const MaxRelatedRuleIDsTotal = 100
+
+// MaxNotesTotalRunes caps the CUMULATIVE size (in runes) of a single outcome
+// row's Notes field across its entire append-only enrich lifetime
+// (FinalizeDraft's "\n\n"-joined append, migration 000075) — a different
+// guarantee from sanitize.Notes's per-call 500-rune cap
+// (backend-security-design.md §5.4), which only bounds what ONE
+// record_outcome/finish_work call may contribute. Without this cap, N
+// enrich calls against the same draft (each carrying up to 500 runes) grow
+// the stored Notes column by up to 500*N runes with no upper bound — the
+// same unbounded-accumulation shape as MaxRelatedRuleIDsTotal above, and
+// the direct cause of PR #152 round 6 Major finding M-R6-2's O(N^2) atomize
+// amplification (reproduced empirically as 30 enrich calls -> a
+// 15,058-rune final Notes field -> 233,370 CUMULATIVE runes sent to the
+// atomizer across those 30 calls, ~15.5x the final document size, because
+// every call re-atomized the FULL accumulated Notes text instead of just
+// what it added).
+//
+// This cap and the O(N^2) atomize fix are two SEPARATE, complementary
+// closes for the same underlying defect: tools_outcome.go's notesDelta now
+// ensures each call only ever sends its OWN newly-added segment to the
+// atomizer (bounding atomize cost independent of this cap), while
+// MaxNotesTotalRunes independently bounds the stored field's own size (row
+// storage, and list_recent_outcomes/find_failed_patterns response payload —
+// see MaxRelatedRuleIDsTotal's doc comment above for the identical
+// response-payload argument, which applies to Notes exactly the same way).
+// Both backends' FinalizeDraft apply CapNotesTotal (store.go) to the
+// merged/appended Notes value, mirroring CapRelatedRuleIDs's "existing
+// content is never silently removed, even if it already exceeds the cap"
+// rule.
+//
+// Derivation: chosen as 10x the per-call cap (500*10=5,000 runes). Ten
+// enrich calls against the SAME draft before it is finalized is already
+// well beyond any realistic personal-scale postmortem workflow — this
+// codebase's own production usage pattern (and its test suite) tops out at
+// 2-3 enrich calls per outcome: an initial record_outcome, maybe one
+// correction, then finalize. 5,000 runes (~800-1,000 words) comfortably
+// fits a genuine multi-paragraph audit trail with headroom to spare. This
+// is not a tightly reasoned capacity limit derived from a hard cost model
+// (mirroring MaxRelatedRuleIDsTotal's own derivation-quality caveat above)
+// — it is a deliberately generous, round ceiling chosen to be far above any
+// legitimate single-outcome usage while still being finite.
+const MaxNotesTotalRunes = 5000
 
 // Outcome is the domain model for a recorded execution result.
 type Outcome struct {

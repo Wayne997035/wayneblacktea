@@ -35,7 +35,20 @@ const (
 	// result different from this call's — a NEW row was created with
 	// SupersedesID pointing at the prior row, which is left unmodified
 	// (explicit supersession, never a silent overwrite — see
-	// backend-security-design.md's threat model on audit-trail loss).
+	// backend-security-design.md's threat model on audit-trail loss). This
+	// new row's own Notes (params.Notes, whatever this call supplied — may
+	// be byte-identical to the prior row's Notes, e.g. a re-evaluation that
+	// keeps the same summary but reaches a different Result) has NEVER been
+	// atomized before: it lives on a DIFFERENT outcome_id than the row it
+	// supersedes, so it must be treated exactly like ActionCreated for the
+	// purpose of the atomize side effect — see RecordExecutionResult's
+	// previousNotes doc comment and PR #152 round 6 Major finding M-R6-1
+	// (before this fix, this branch returned the PRIOR row's Notes as
+	// previousNotes, so a supersede call whose own notes happened to be
+	// byte-identical to the row it supersedes — a common shape: "same
+	// summary, different verdict" — compared equal to that unrelated prior
+	// row's Notes and silently skipped atomize for content that had never
+	// actually been atomized under THIS row's outcome_id).
 	ActionSuperseded LifecycleAction = "superseded"
 	// ActionReplayedIdempotent: this call carries zero net-new information
 	// relative to the entity's latest outcome — no row was written; the
@@ -140,12 +153,18 @@ const (
 // personal-scale single-agent usage this is accepted and documented rather
 // than silently ignored.
 //
-// previousNotes is the entity's Notes value as it stood immediately BEFORE
-// this call wrote anything — "" when no prior outcome existed at all
-// (ActionCreated). Every other branch below returns latest.Notes (the row
-// this call read before deciding what to do), which is exactly the
-// pre-write value regardless of whether that branch ends up merging into
-// the same row (FinalizeDraft) or creating a distinct new one (supersede).
+// previousNotes is "" for every branch that returns a row whose Notes has
+// NEVER been atomized under that row's own outcome_id — ActionCreated (no
+// prior row existed at all) AND ActionSuperseded (a NEW row, see its own
+// doc comment for why PR #152 round 6 Major M-R6-1 moved it into this
+// group: a supersede row's Notes lives under a fresh outcome_id regardless
+// of whether its text happens to match the row it supersedes). For every
+// OTHER branch — the ones that merge INTO the same pre-existing row via
+// FinalizeDraft (ActionFinalizedDraft, ActionDraftEnriched, and the no-op
+// replays ActionReplayedIdempotent/ActionDraftPreserved, which never reach
+// the atomize call site anyway) — previousNotes is latest.Notes, the exact
+// pre-write value of that SAME row.
+//
 // Added for PR #152 round 5 Major (M-R5-1) guarantee B: callers
 // (tools_outcome.go's handleRecordOutcome) compare previousNotes against
 // the returned Outcome's post-write Notes to decide whether a content-bearing
@@ -242,7 +261,17 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 	if err != nil {
 		return Outcome{}, "", "", fmt.Errorf("recording execution result: superseding: %w", err)
 	}
-	return o, ActionSuperseded, latest.Notes, nil
+	// PR #152 round 6 Major M-R6-1: return "" here, NOT latest.Notes. This is
+	// a brand-new row (a fresh outcome_id, never atomized before) — exactly
+	// like ActionCreated below the ErrNotFound branch, not a merge into an
+	// existing row. Returning latest.Notes (the PRIOR row's Notes) let a
+	// supersede call whose own Notes happened to be byte-identical to the
+	// row it supersedes (e.g. "same summary, different verdict":
+	// result="success" then result="regressed" with unchanged notes) compare
+	// equal at tools_outcome.go's `o.Notes != previousNotes` gate and
+	// silently skip atomize for content that had never been atomized under
+	// THIS row's outcome_id. See ActionSuperseded's doc comment above.
+	return o, ActionSuperseded, "", nil
 }
 
 // hasNewContent reports whether params carries any payload beyond bare

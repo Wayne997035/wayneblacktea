@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -474,6 +475,90 @@ func DedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
 	return out
 }
 
+// CapRelatedRuleIDs bounds merged (existing followed by newly-unioned IDs,
+// per unionRelatedRuleIDs in the SQLite backend / the equivalent union in
+// FinalizeDraft's PG SQL below) to at most cap entries, WITHOUT EVER
+// dropping any element of existing — the absolute guarantee this package's
+// FinalizeDraft doc comments make: "an already-linked rule ID can never be
+// silently removed by a later call".
+//
+// PR #152 round 6 Major (m-R6-3): the PREVIOUS implementation (both
+// backends, independently) sliced the merged array to exactly `cap`
+// elements whenever it exceeded the cap — correct as long as
+// len(existing) <= cap (always true under normal forward operation, since
+// every write enforces the cap), but WRONG the moment existing already
+// exceeded the cap for any reason (legacy data written before this cap
+// existed is the realistic case; the round 6 second-army repro used
+// existing=150, cap=100 to demonstrate it): slicing to `cap` in that state
+// silently dropped 50 already-linked IDs, on a call that may not even have
+// supplied any new ones. Two-army reproduction additionally found the two
+// backends DISAGREED on a notes-only/zero-new-IDs call in that same
+// over-cap state — PG happened to skip the slice entirely (its SQL CASE
+// short-circuits when no new IDs are supplied) while SQLite applied the
+// slice unconditionally — so the same input produced different stored
+// state depending on backend, violating this project's dual-backend parity
+// requirement.
+//
+// This function's rule instead keeps at least max(cap, len(existing))
+// elements from the front of merged: when existing already fits within
+// cap (the normal case), that is just `cap` — identical behaviour to the
+// old code, so no regression for any call whose existing state is already
+// within bounds. When existing already exceeds cap, existing is returned
+// completely untouched and EVERY newly-appended candidate is dropped
+// instead of letting an ordinary-looking enrich call quietly truncate
+// pre-existing links. Both backends now compute this SAME rule (PG in SQL
+// via `GREATEST(cap, existing_len)`, verified to produce byte-identical
+// results to this function — see store_test.go /
+// storage/sqlite/outcome_test.go's parity tests), closing both the
+// silent-removal gap and the cross-backend disagreement in the same fix.
+func CapRelatedRuleIDs(existing, merged []uuid.UUID, capLimit int) []uuid.UUID {
+	if len(merged) <= capLimit {
+		return merged
+	}
+	keep := capLimit
+	if len(existing) > keep {
+		keep = len(existing)
+	}
+	if keep >= len(merged) {
+		return merged
+	}
+	return merged[:keep]
+}
+
+// CapNotesTotal applies the identical "never drop existing content, even if
+// existing already exceeds the cap" rule as CapRelatedRuleIDs above, to the
+// Notes field's cumulative-size cap (MaxNotesTotalRunes, PR #152 round 6
+// Major M-R6-2 guarantee B). merged is the full appended value (existing +
+// "\n\n" + incoming, or just incoming when existing is empty — see
+// appendNotes / the PG notes CASE expression); existing is the pre-write
+// Notes value. Operates on runes (not bytes), matching sanitize.Notes's own
+// per-call cap semantics.
+//
+// Returns (merged, false) unchanged when merged already fits within cap —
+// the overwhelmingly common case, since MaxNotesTotalRunes is enforced on
+// every write from the moment it shipped, so existing can only ever exceed
+// it via data that predates this cap (a smaller theoretical exposure than
+// CapRelatedRuleIDs's, which had years of unbounded-growth history before
+// this fix; still handled identically for defence-in-depth and cross-field
+// design consistency). Returns (truncated, true) otherwise, where truncated
+// keeps at least the first len(existing) runes intact (so appended-but-cut
+// text is always the NEWLY-supplied tail, never a bite out of existing
+// content) and reports true so the caller can log the truncation.
+func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
+	mergedRunes := []rune(merged)
+	if len(mergedRunes) <= capLimit {
+		return merged, false
+	}
+	keep := capLimit
+	if existingLen := len([]rune(existing)); existingLen > keep {
+		keep = existingLen
+	}
+	if keep >= len(mergedRunes) {
+		return merged, false
+	}
+	return string(mergedRunes[:keep]), true
+}
+
 // FinalizeDraft transitions a result='unknown' draft to (usually) a terminal
 // result in place. The WHERE result='unknown' guard makes this race-safe: if
 // the row no longer matches (already finalized by a concurrent caller),
@@ -508,28 +593,56 @@ func DedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
 // after the real content, never remove it.
 //
 // related_rule_ids is additionally capped at MaxRelatedRuleIDsTotal AFTER
-// the union above is computed (PR #152 round 5 Major M-R5-1 guarantee A):
-// the `merged` CTE computes the full existing-union-new array once, and the
-// final assignment slices it to `[1:MaxRelatedRuleIDsTotal]` — Postgres
-// array slicing keeps the FIRST N elements and is a no-op (returns the
-// whole array) when the array already has fewer than N, so this never
-// affects a call that stays under the cap. Because existing IDs sort first
-// in the union (see above), slicing from the front only ever drops
-// newly-appended IDs, never a previously-recorded one — an already-linked
-// rule ID can never be silently removed by a later call exceeding the cap.
-// The CTE is forced MATERIALIZED so it is computed exactly once per
-// statement (both the related_rule_ids assignment and the RETURNING
-// pre-truncation-length column below read the SAME materialized value,
-// rather than each independently re-evaluating the correlated subquery
-// against a table this same statement is concurrently modifying).
+// the union above is computed (PR #152 round 5 Major M-R5-1 guarantee A;
+// widened in round 6 Major m-R6-3 — see below): the `merged` CTE computes
+// the full existing-union-new array once, and the final assignment slices
+// it to `[1:GREATEST(MaxRelatedRuleIDsTotal, existing_ids_len)]`. Because
+// existing IDs sort first in the union (see above) and the slice never
+// keeps FEWER than existing_ids_len elements, an already-linked rule ID can
+// NEVER be silently removed by this call, even in the (data-predates-the-
+// cap) case where existing already exceeds the cap — see CapRelatedRuleIDs
+// (above) for the Go-side equivalent of this exact algorithm, which this
+// SQL is written to match byte-for-byte (verified by
+// store_test.go/storage/sqlite/outcome_test.go's cross-backend parity
+// tests). Similarly, notes is capped at MaxNotesTotalRunes via
+// `LEFT(full_notes, GREATEST(MaxNotesTotalRunes, existing_notes_len))` —
+// the same rule, applied to a rune-counted string instead of an array
+// (PR #152 round 6 Major M-R6-2 guarantee B; CapNotesTotal above is its Go
+// equivalent for SQLite).
+//
+// Notes and related_rule_ids's cap logic ONLY runs when this call actually
+// supplies new content in that field ($3 non-NULL / $4 non-empty
+// respectively) — the CASE's WHEN-NULL/WHEN-empty branch above leaves the
+// column completely untouched otherwise, so a call that never touches a
+// field can never trigger that field's cap logic either.
+//
+// The CTE is forced MATERIALIZED purely for query-plan shape/performance,
+// NOT correctness: a single UPDATE statement's several sub-reads of
+// `merged` (the notes and related_rule_ids assignments, plus the two
+// RETURNING pre-truncation-length columns below) already all execute
+// against the SAME pre-statement MVCC snapshot regardless of
+// materialization — verified empirically (PR #152 round 6 Minor doc
+// correction: AS MATERIALIZED vs AS NOT MATERIALIZED produced
+// byte-identical results in every case tested). Forcing MATERIALIZED
+// instead avoids Postgres inlining `merged` and re-evaluating the
+// unnest+array_agg correlated subquery separately for each of its several
+// references in this one statement.
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
 		WITH merged AS MATERIALIZED (
-			SELECT COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
-				SELECT array_agg(nid ORDER BY ord)
-				FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
-				WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
-			), '{}'::uuid[]) AS full_ids
+			SELECT
+				COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
+					SELECT array_agg(nid ORDER BY ord)
+					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
+					WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
+				), '{}'::uuid[]) AS full_ids,
+				COALESCE(array_length(related_rule_ids, 1), 0) AS existing_ids_len,
+				CASE
+					WHEN $3::text IS NULL THEN notes
+					WHEN notes IS NULL OR notes = '' THEN $3
+					ELSE notes || E'\n\n' || $3
+				END AS full_notes,
+				COALESCE(char_length(notes), 0) AS existing_notes_len
 			FROM outcomes
 			WHERE id = $6 AND result = 'unknown'
 		)
@@ -541,17 +654,18 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 			END,
 			notes = CASE
 				WHEN $3::text IS NULL THEN notes
-				WHEN notes IS NULL OR notes = '' THEN $3
-				ELSE notes || E'\n\n' || $3
+				ELSE LEFT((SELECT full_notes FROM merged), GREATEST($8::int, (SELECT existing_notes_len FROM merged)))
 			END,
 			related_rule_ids = CASE
 				WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids
-				ELSE (SELECT full_ids FROM merged)[1:$7::int]
+				ELSE (SELECT full_ids FROM merged)[1 : GREATEST($7::int, (SELECT existing_ids_len FROM merged))]
 			END,
 			work_session_id = COALESCE(work_session_id, $5),
 			updated_at = NOW()
 		WHERE id = $6 AND result = 'unknown'
-		RETURNING ` + outcomeSelectCols + `, (SELECT COALESCE(array_length(full_ids, 1), 0) FROM merged)`
+		RETURNING ` + outcomeSelectCols + `,
+			(SELECT COALESCE(array_length(full_ids, 1), 0) FROM merged),
+			(SELECT COALESCE(char_length(full_notes), 0) FROM merged)`
 
 	var notesArg pgtype.Text
 	if params.Notes != "" {
@@ -575,6 +689,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 		toPgtypeUUID(params.WorkSessionID),
 		id,
 		MaxRelatedRuleIDsTotal,
+		MaxNotesTotalRunes,
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("finalizing draft outcome %s: %w", id, err)
@@ -587,15 +702,32 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 		}
 		return Outcome{}, ErrDraftAlreadyFinalized
 	}
-	var preTruncateLen int
-	o, err := scanOutcomeRow(rows, &preTruncateLen)
+	var preTruncateLen, preTruncateNotesLen int
+	o, err := scanOutcomeRow(rows, &preTruncateLen, &preTruncateNotesLen)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("finalizing draft outcome %s scan: %w", id, err)
 	}
-	if preTruncateLen > MaxRelatedRuleIDsTotal {
+	// PR #152 round 6 Major (m-R6-4): the pre-truncate-count check alone is
+	// NOT sufficient to know truncation actually happened — preTruncateLen
+	// reflects the CTE's full_ids/full_notes value REGARDLESS of which
+	// branch of the UPDATE's CASE was taken (e.g. a notes-only enrich call
+	// against a row whose related_rule_ids already exceeded the cap took
+	// the "WHEN array_length($4) IS NULL THEN related_rule_ids" passthrough
+	// branch — the column was never touched — yet preTruncateLen still
+	// reported the existing over-cap length, so the old
+	// `preTruncateLen > cap` check alone fired a "truncated" warning for a
+	// call that truncated nothing). Comparing the FINAL returned length
+	// against preTruncateLen catches only genuine truncation, regardless of
+	// which CASE branch produced it.
+	if preTruncateLen > MaxRelatedRuleIDsTotal && len(o.RelatedRuleIDs) < preTruncateLen {
 		slog.Warn("Store.FinalizeDraft: related_rule_ids exceeded cumulative cap, truncated",
 			"outcome_id", id, "pre_truncate_count", preTruncateLen,
 			"cap", MaxRelatedRuleIDsTotal, "final_count", len(o.RelatedRuleIDs))
+	}
+	if finalNotesLen := utf8.RuneCountInString(o.Notes); preTruncateNotesLen > MaxNotesTotalRunes && finalNotesLen < preTruncateNotesLen {
+		slog.Warn("Store.FinalizeDraft: notes exceeded cumulative cap, truncated",
+			"outcome_id", id, "pre_truncate_rune_count", preTruncateNotesLen,
+			"cap", MaxNotesTotalRunes, "final_rune_count", finalNotesLen)
 	}
 	return o, nil
 }

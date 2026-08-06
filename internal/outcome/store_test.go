@@ -3,11 +3,13 @@
 package outcome_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"slices"
 	"sort"
@@ -2139,5 +2141,279 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates(t *testing.T)
 	if len(reread.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
 		t.Errorf("reread len(RelatedRuleIDs) = %d, want %d (persisted value must match RETURNING)",
 			len(reread.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+}
+
+// captureSlogWarn temporarily redirects the default slog logger to a buffer
+// and returns it plus a restore func, so tests can assert on the EXACT
+// warn-or-not behaviour of a call without depending on log level defaults.
+func captureSlogWarn(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// insertDraftWithNotesAndRelatedRuleIDs inserts an 'unknown' draft row
+// directly via SQL, letting tests seed a pre-existing related_rule_ids array
+// that already exceeds outcome.MaxRelatedRuleIDsTotal — a state only
+// reachable via data written before that cap existed (see
+// outcome.CapRelatedRuleIDs's doc comment) — reproducing PR #152 round 6
+// Major finding m-R6-3's exact repro shape (existing=150, cap=100).
+func insertDraftWithNotesAndRelatedRuleIDs(
+	ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	id, wsID, entityID uuid.UUID, entityType string, relatedRuleIDs []uuid.UUID,
+) {
+	t.Helper()
+	_, err := pool.Exec(
+		ctx,
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, related_rule_ids) VALUES ($1, $2, $3, $4, 'unknown', $5)`,
+		id, wsID, entityType, entityID, relatedRuleIDs,
+	)
+	if err != nil {
+		t.Fatalf("insert draft with related_rule_ids: %v", err)
+	}
+}
+
+// newDistinctRuleIDs returns n freshly generated, guaranteed-distinct UUIDs.
+func newDistinctRuleIDs(n int) []uuid.UUID {
+	out := make([]uuid.UUID, n)
+	for i := range n {
+		out[i] = uuid.New()
+	}
+	return out
+}
+
+// TestStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting
+// is PR #152 round 6 Major finding m-R6-3's fix verification: doc claims
+// "an already-linked rule ID can never be silently removed by a later call
+// exceeding the cap" — the second-army round 6 repro found this FALSE in a
+// state only reachable via legacy data (existing already over the cap,
+// 150 > 100). Two sub-cases, both against SEPARATELY seeded draft rows so
+// each starts from the identical existing=150 state:
+//   - a call supplying 1 new ID: before this fix, PG dropped 50 of the 150
+//     existing entries to make room; after the fix, ALL 150 existing survive
+//     and the 1 new ID is rejected instead.
+//   - a notes-only call supplying ZERO new IDs: PG already got this right
+//     (its CASE short-circuits when array_length($4) IS NULL) — pinned here
+//     so a future change can't silently regress it.
+//
+// Also verifies m-R6-4 (the slog.Warn accuracy fix) in the same run: the
+// "1 new ID" sub-case DID truncate something (the new ID got dropped) and
+// must warn; the notes-only sub-case truncated NOTHING (existing untouched)
+// and must NOT warn — reproducing the second-army finding that the OLD
+// `preTruncateLen > cap` check alone fired a false "truncated" warning for
+// the notes-only call even though final_count == pre_truncate_count.
+func TestStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	existing := newDistinctRuleIDs(outcome.MaxRelatedRuleIDsTotal + 50) // 150, cap=100
+
+	t.Run("one new ID: all 150 existing survive, new ID dropped, warns", func(t *testing.T) {
+		buf := captureSlogWarn(t)
+		draftID := uuid.New()
+		entityID := uuid.New()
+		insertDraftWithNotesAndRelatedRuleIDs(ctx, t, pool, draftID, wsID, entityID, "task", existing)
+
+		newID := uuid.New()
+		got, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+			Result:         "success",
+			RelatedRuleIDs: []uuid.UUID{newID},
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if len(got.RelatedRuleIDs) != len(existing) {
+			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (ALL existing must survive)", len(got.RelatedRuleIDs), len(existing))
+		}
+		for i, id := range existing {
+			if got.RelatedRuleIDs[i] != id {
+				t.Fatalf("RelatedRuleIDs[%d] = %s, want %s — existing entry silently altered/reordered", i, got.RelatedRuleIDs[i], id)
+			}
+		}
+		if slices.Contains(got.RelatedRuleIDs, newID) {
+			t.Errorf("new ID %s survived even though the cap was already full by existing alone — want it dropped", newID)
+		}
+		if !strings.Contains(buf.String(), "related_rule_ids exceeded cumulative cap") {
+			t.Errorf("expected a truncation warn (the new ID WAS dropped), got none: log=%q", buf.String())
+		}
+	})
+
+	t.Run("notes-only, zero new IDs: all 150 existing survive, no warn", func(t *testing.T) {
+		buf := captureSlogWarn(t)
+		draftID := uuid.New()
+		entityID := uuid.New()
+		insertDraftWithNotesAndRelatedRuleIDs(ctx, t, pool, draftID, wsID, entityID, "task", existing)
+
+		got, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+			Result: "success",
+			Notes:  "wrapping up, no new rule links this time",
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if len(got.RelatedRuleIDs) != len(existing) {
+			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (a notes-only call must never touch related_rule_ids)", len(got.RelatedRuleIDs), len(existing))
+		}
+		for i, id := range existing {
+			if got.RelatedRuleIDs[i] != id {
+				t.Fatalf("RelatedRuleIDs[%d] = %s, want %s — existing entry silently altered/reordered", i, got.RelatedRuleIDs[i], id)
+			}
+		}
+		if strings.Contains(buf.String(), "related_rule_ids exceeded cumulative cap") {
+			t.Errorf("m-R6-4 regression: warned about truncation even though final_count == pre_truncate_count (nothing was dropped): log=%q", buf.String())
+		}
+	})
+}
+
+// TestStore_FinalizeDraft_Notes_CumulativeCapTruncates is PR #152 round 6
+// Major finding M-R6-2 guarantee B's verification: repeated enrich calls
+// against the SAME draft must never grow Notes past
+// outcome.MaxNotesTotalRunes, existing content must survive intact, and
+// slog.Warn must fire exactly when — and only when — real truncation
+// happens (mirrors TestStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates's
+// pattern for the analogous related_rule_ids cap).
+func TestStore_FinalizeDraft_Notes_CumulativeCapTruncates(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	chunk := strings.Repeat("a", 2000)
+
+	// Call 1: existing empty -> direct write, 2000 runes, well under the
+	// 5,000-rune cap. Must not warn.
+	buf := captureSlogWarn(t)
+	got, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "unknown", Notes: chunk})
+	if err != nil {
+		t.Fatalf("FinalizeDraft call 1: %v", err)
+	}
+	if got.Notes != chunk {
+		t.Fatalf("call 1: Notes = %d runes, want the chunk written directly (existing was empty)", len([]rune(got.Notes)))
+	}
+	if strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Fatalf("call 1: unexpected truncation warn under the cap: log=%q", buf.String())
+	}
+
+	// Call 2: existing=2000, +separator(2)+2000 = 4002, still under the cap.
+	buf = captureSlogWarn(t)
+	got, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "unknown", Notes: chunk})
+	if err != nil {
+		t.Fatalf("FinalizeDraft call 2: %v", err)
+	}
+	wantAfter2 := chunk + "\n\n" + chunk
+	if got.Notes != wantAfter2 {
+		t.Fatalf("call 2: Notes mismatch, got %d runes want %d runes", len([]rune(got.Notes)), len([]rune(wantAfter2)))
+	}
+	if strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Fatalf("call 2: unexpected truncation warn under the cap: log=%q", buf.String())
+	}
+
+	// Call 3: existing=4002, +separator(2)+2000 = 6004, EXCEEDS the 5,000
+	// cap. Both prior chunks (4002 runes) plus their separator must survive
+	// completely intact; only part of the third chunk is admitted.
+	buf = captureSlogWarn(t)
+	got, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "unknown", Notes: chunk})
+	if err != nil {
+		t.Fatalf("FinalizeDraft call 3: %v", err)
+	}
+	if len([]rune(got.Notes)) != outcome.MaxNotesTotalRunes {
+		t.Fatalf("call 3: len(Notes) = %d, want exactly the cap %d — cumulative growth was NOT bounded",
+			len([]rune(got.Notes)), outcome.MaxNotesTotalRunes)
+	}
+	wantPrefix := wantAfter2 + "\n\n"
+	if !strings.HasPrefix(got.Notes, wantPrefix) {
+		t.Fatalf("call 3: existing content + separator must survive completely intact as a prefix; got %q", got.Notes)
+	}
+	remaining := outcome.MaxNotesTotalRunes - len([]rune(wantPrefix))
+	wantThirdChunkPrefix := chunk[:remaining]
+	if !strings.HasSuffix(got.Notes, wantThirdChunkPrefix) {
+		t.Errorf("call 3: want the surviving suffix to be exactly the first %d runes of the third chunk", remaining)
+	}
+	if !strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Errorf("call 3: expected a truncation warn (the merge WAS truncated), got none: log=%q", buf.String())
+	}
+
+	// Re-read from a fresh query, not just the RETURNING clause.
+	reread, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len([]rune(reread.Notes)) != outcome.MaxNotesTotalRunes {
+		t.Errorf("reread len(Notes) = %d, want %d (persisted value must match RETURNING)",
+			len([]rune(reread.Notes)), outcome.MaxNotesTotalRunes)
+	}
+}
+
+// insertDraftWithNotes inserts an 'unknown' draft row directly via SQL,
+// letting tests seed a pre-existing Notes value that already exceeds
+// outcome.MaxNotesTotalRunes — a state only reachable via data written
+// before that cap existed (see outcome.CapNotesTotal's doc comment),
+// mirroring insertDraftWithNotesAndRelatedRuleIDs's role for
+// related_rule_ids above.
+func insertDraftWithNotes(
+	ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	id, wsID, entityID uuid.UUID, entityType, notes string,
+) {
+	t.Helper()
+	_, err := pool.Exec(
+		ctx,
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, notes) VALUES ($1, $2, $3, $4, 'unknown', $5)`,
+		id, wsID, entityType, entityID, notes,
+	)
+	if err != nil {
+		t.Fatalf("insert draft with notes: %v", err)
+	}
+}
+
+// TestStore_FinalizeDraft_Notes_ExistingOverCap_NeverDropsExisting is the
+// Notes-field twin of
+// TestStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting
+// above, exercising outcome.CapNotesTotal's "existing already over cap"
+// branch through the REAL Postgres SQL (the pure-function equivalent is
+// already covered by TestCapNotesTotal, internal/outcome/cap_test.go — this
+// proves the SQL glue calls it correctly end to end).
+func TestStore_FinalizeDraft_Notes_ExistingOverCap_NeverDropsExisting(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	existingNotes := strings.Repeat("x", outcome.MaxNotesTotalRunes+500) // 5,500 > cap 5,000
+
+	buf := captureSlogWarn(t)
+	draftID := uuid.New()
+	entityID := uuid.New()
+	insertDraftWithNotes(ctx, t, pool, draftID, wsID, entityID, "task", existingNotes)
+
+	got, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+		Result: "success",
+		Notes:  "a fresh enrich call that should be entirely dropped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if got.Notes != existingNotes {
+		t.Fatalf("Notes = %d runes, want the existing %d runes preserved EXACTLY, with the new segment dropped entirely",
+			len([]rune(got.Notes)), len([]rune(existingNotes)))
+	}
+	if !strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Errorf("expected a truncation warn (the new segment WAS dropped), got none: log=%q", buf.String())
 	}
 }

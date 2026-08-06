@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -548,6 +549,220 @@ func newAtomizeSpyServer(t *testing.T) (*Server, chan uuid.UUID) {
 		calls <- parentID
 	}
 	return s, calls
+}
+
+// atomizeCall pairs the parent_id and text payload launchAtomize's
+// atomizeFn was invoked with — used by newAtomizeSpyServerWithText below,
+// where (unlike newAtomizeSpyServer) tests need to inspect WHAT text was
+// sent, not just whether a call happened (PR #152 round 6 Major M-R6-2a:
+// the delta-only atomize fix is only actually verified by checking the
+// TEXT, not merely counting calls).
+type atomizeCall struct {
+	ParentID uuid.UUID
+	Text     string
+}
+
+// newAtomizeSpyServerWithText is newAtomizeSpyServer's text-capturing
+// twin — identical wiring, but the spy channel also carries the exact text
+// payload each launchAtomize call received.
+func newAtomizeSpyServerWithText(t *testing.T) (*Server, chan atomizeCall) {
+	t.Helper()
+	s := newTestWorkSessionServer(t)
+	if s.atomizer == nil {
+		s.atomizer = &ai.Atomizer{}
+	}
+	calls := make(chan atomizeCall, 8)
+	s.atomizeFn = func(_ context.Context, _ *ai.Atomizer, _ atom.StoreIface, _ *uuid.UUID, _ string, parentID uuid.UUID, text string) {
+		calls <- atomizeCall{ParentID: parentID, Text: text}
+	}
+	return s, calls
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 6 Major M-R6-1: a supersede call's Notes must be eligible
+// for atomize even when byte-identical to the row it supersedes — see
+// ActionSuperseded's doc comment (lifecycle.go) for the full rationale.
+// ---------------------------------------------------------------------------
+
+// TestHandleRecordOutcome_Supersede_SameNotesDifferentResult_TriggersAtomize
+// is the direct M-R6-1 reproduction through the real MCP handler: record a
+// terminal outcome with real notes, then record a DIFFERENT terminal result
+// against the SAME entity carrying BYTE-IDENTICAL notes (a "same summary,
+// different verdict" re-evaluation). Before the fix, RecordExecutionResult
+// returned the PRIOR row's Notes as previousNotes for the supersede branch,
+// so it compared equal to the new row's identical Notes at
+// handleRecordOutcome's atomize gate and silently skipped atomize for
+// content that had never been atomized under the NEW row's outcome_id.
+func TestHandleRecordOutcome_Supersede_SameNotesDifferentResult_TriggersAtomize(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServer(t)
+	entityID := uuid.New()
+	sameNotes := "looked fine at review time"
+
+	firstR := callRecordOutcomeFor(t, s, entityID, finalResultSuccess, sameNotes)
+	if firstR.IsError {
+		t.Fatalf("first record_outcome: %s", resultText(firstR))
+	}
+	var first outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(firstR)), &first); err != nil {
+		t.Fatalf("unmarshal first: %v", err)
+	}
+	// Drain the first call's own (legitimate) atomize before isolating the
+	// supersede call under test.
+	select {
+	case pid := <-atomizeCalls:
+		if pid != first.ID {
+			t.Errorf("first call: atomizeFn fired with parent_id=%s, want %s", pid, first.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first call: atomizeFn did not fire within timeout, want a call (fresh row, real notes)")
+	}
+
+	secondR := callRecordOutcomeFor(t, s, entityID, "regressed", sameNotes)
+	if secondR.IsError {
+		t.Fatalf("second (supersede) record_outcome: %s", resultText(secondR))
+	}
+	var second outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(secondR)), &second); err != nil {
+		t.Fatalf("unmarshal second: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("a genuinely different result must create a NEW row, not reuse the first")
+	}
+	if second.SupersedesID == nil || *second.SupersedesID != first.ID {
+		t.Errorf("SupersedesID = %v, want %s", second.SupersedesID, first.ID)
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		if pid != second.ID {
+			t.Errorf("atomizeFn fired with parent_id=%s, want the NEW superseding row's ID %s", pid, second.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("supersede call: atomizeFn did not fire within timeout, want a call " +
+			"(M-R6-1 regression: a new row's notes must always be eligible for atomize, " +
+			"even when byte-identical to the row it supersedes)")
+	}
+}
+
+// TestHandleRecordOutcome_Supersede_EmptyNotes_SkipsAtomize is M-R6-1's
+// reverse case: a supersede call that supplies NO notes at all must not
+// trigger atomize — there is nothing to atomize (o.Notes == ""), and this
+// must hold regardless of whether the row it supersedes had real notes.
+func TestHandleRecordOutcome_Supersede_EmptyNotes_SkipsAtomize(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServer(t)
+	entityID := uuid.New()
+
+	firstR := callRecordOutcomeFor(t, s, entityID, finalResultSuccess, "the original postmortem")
+	if firstR.IsError {
+		t.Fatalf("first record_outcome: %s", resultText(firstR))
+	}
+	var first outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(firstR)), &first); err != nil {
+		t.Fatalf("unmarshal first: %v", err)
+	}
+	select {
+	case pid := <-atomizeCalls:
+		if pid != first.ID {
+			t.Errorf("first call: atomizeFn fired with parent_id=%s, want %s", pid, first.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first call: atomizeFn did not fire within timeout, want a call")
+	}
+
+	secondR := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      "regressed",
+		// Deliberately no "notes" key.
+	})
+	if secondR.IsError {
+		t.Fatalf("second (supersede) record_outcome: %s", resultText(secondR))
+	}
+	var second outcome.Outcome
+	if err := json.Unmarshal([]byte(resultText(secondR)), &second); err != nil {
+		t.Fatalf("unmarshal second: %v", err)
+	}
+	if second.Notes != "" {
+		t.Fatalf("second row's Notes = %q, want empty", second.Notes)
+	}
+
+	select {
+	case pid := <-atomizeCalls:
+		t.Errorf("atomizeFn fired for a supersede with empty notes (parent_id=%s), want no call", pid)
+	case <-time.After(150 * time.Millisecond):
+		// expected: nothing arrives
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 6 Major M-R6-2a: launchAtomize must receive ONLY the newly-
+// added segment of Notes each call, never the full accumulated field —
+// otherwise total characters sent to the (paid) atomizer over a draft's
+// enrich lifetime grow O(N^2) with the number of enrich calls (reproduced
+// empirically as 30 enrich calls / 233,370 cumulative runes sent, ~15.5x
+// the final document size).
+// ---------------------------------------------------------------------------
+
+// TestHandleRecordOutcome_EnrichThreeTimes_AtomizeOnlyGetsNewSegmentEachTime
+// enriches the SAME draft three times, each with a distinct notes segment,
+// and asserts atomizeFn received EXACTLY that call's own segment each time —
+// never the growing accumulated prefix.
+func TestHandleRecordOutcome_EnrichThreeTimes_AtomizeOnlyGetsNewSegmentEachTime(t *testing.T) {
+	s, atomizeCalls := newAtomizeSpyServerWithText(t)
+	entityID := uuid.New()
+
+	segments := []string{"first observation", "second observation", "third observation"}
+	var lastID uuid.UUID
+
+	for i, seg := range segments {
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type": entityTypeTask,
+			"entity_id":   entityID.String(),
+			"result":      outcomeResultUnknown,
+			"notes":       seg,
+		})
+		if r.IsError {
+			t.Fatalf("enrich call %d: %s", i, resultText(r))
+		}
+		var got outcome.Outcome
+		if err := json.Unmarshal([]byte(resultText(r)), &got); err != nil {
+			t.Fatalf("unmarshal call %d: %v", i, err)
+		}
+		lastID = got.ID
+
+		select {
+		case call := <-atomizeCalls:
+			if call.ParentID != got.ID {
+				t.Errorf("call %d: atomizeFn fired with parent_id=%s, want %s", i, call.ParentID, got.ID)
+			}
+			if call.Text != seg {
+				t.Errorf("call %d: atomizeFn received text %q, want ONLY this call's own segment %q "+
+					"(M-R6-2a regression: sending the accumulated field instead of the delta)", i, call.Text, seg)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("call %d: atomizeFn did not fire within timeout, want a call", i)
+		}
+	}
+
+	// Sanity: the final row's Notes is the full "\n\n"-joined accumulation
+	// of all three segments, in order — confirms the delta-only atomize
+	// payload was narrower than the actual stored field, not that the field
+	// itself failed to accumulate.
+	rows := outcomesForEntity(t, s, entityID)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly 1 row after 3 enrich calls against the same draft, got %d", len(rows))
+	}
+	wantFull := strings.Join(segments, "\n\n")
+	if rows[0].Notes != wantFull || rows[0].ID != lastID {
+		t.Fatalf("final accumulated Notes = %q, want %q", rows[0].Notes, wantFull)
+	}
+
+	select {
+	case call := <-atomizeCalls:
+		t.Errorf("unexpected extra atomizeFn call: %+v", call)
+	case <-time.After(150 * time.Millisecond):
+		// expected: nothing further arrives
+	}
 }
 
 // TestHandleRecordOutcome_DraftPreserved_SkipsAtomize verifies the skip-list

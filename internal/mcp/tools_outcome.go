@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -317,10 +318,65 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// that's correct across every LifecycleAction uniformly (see
 	// RecordExecutionResult's doc comment for why gating on the action name
 	// itself is wrong).
+	//
+	// PR #152 round 6 Major M-R6-2a: this guard alone only decided WHETHER
+	// to atomize — it still atomized the FULL o.Notes (the entire
+	// accumulated field), not just what THIS call added. Against a draft
+	// enriched N times, call k re-sent the ENTIRE text accumulated through
+	// call k (not just call k's own new segment) to the atomizer, making
+	// total characters sent across the draft's lifetime grow O(N^2) with
+	// the number of enrich calls — reproduced empirically as 30 enrich
+	// calls / a 15,058-rune final notes field / 233,370 CUMULATIVE runes
+	// sent to the (paid) Haiku atomizer, ~15.5x the final document size.
+	// notesDelta extracts only the segment THIS call actually added,
+	// relative to previousNotes, so atomize cost scales with what was
+	// written, not with the field's accumulated size.
 	if o.Notes != "" && o.Notes != previousNotes {
-		s.launchAtomize("outcomes", o.ID, o.Notes)
+		if delta := notesDelta(o.Notes, previousNotes); delta != "" {
+			s.launchAtomize("outcomes", o.ID, delta)
+		}
 	}
 	return jsonText(o)
+}
+
+// notesDelta returns the text THIS call actually added to Notes, relative to
+// previousNotes — the entity's Notes value immediately before this call
+// wrote anything (RecordExecutionResult's previousNotes return value, see
+// its doc comment). launchAtomize must only ever receive the NEW segment,
+// never the full accumulated o.Notes: see handleRecordOutcome's M-R6-2a
+// comment for the O(N^2) amplification this closes.
+//
+// previousNotes == "" covers both a genuinely fresh row (ActionCreated,
+// and — since PR #152 round 6 Major M-R6-1 — ActionSuperseded, see its own
+// doc comment for why supersede is treated like a fresh row here) and the
+// first enrich of a draft whose Notes started empty: in both cases the
+// entirety of oNotes is new, so the full text is returned.
+//
+// Otherwise oNotes is expected to be exactly previousNotes + "\n\n" + <new
+// segment> (FinalizeDraft's appendNotes rule, both backends) — UNLESS the
+// cumulative notes cap (outcome.MaxNotesTotalRunes, M-R6-2 guarantee B)
+// truncated the merge before the new segment could be told apart from
+// previousNotes. That can only happen when previousNotes itself already
+// sits at or past the cap (only reachable via data written before the cap
+// existed — the cap is enforced on every write going forward, so
+// previousNotes can never newly reach that state under normal operation),
+// in which case oNotes ends up being a byte-for-byte prefix of previousNotes
+// itself, and the outer `o.Notes != previousNotes` gate at the call site
+// already prevents this function from being reached at all (oNotes would
+// equal previousNotes exactly). The HasPrefix check below is defence in
+// depth against that invariant ever being violated by a future change:
+// rather than guess at a partial suffix, it returns "" — skipping atomize
+// for that one call is a far smaller cost than risking a duplicate atomize
+// of text already atomized on a prior call.
+func notesDelta(oNotes, previousNotes string) string {
+	if previousNotes == "" {
+		return oNotes
+	}
+	sep := previousNotes + "\n\n"
+	if !strings.HasPrefix(oNotes, sep) {
+		return ""
+	}
+	return oNotes[len(sep):]
 }
 
 // handleEvaluateOutcome validates input, verifies the outcome exists, and

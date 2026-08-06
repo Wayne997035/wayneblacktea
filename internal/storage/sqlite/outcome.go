@@ -582,10 +582,16 @@ func unionRelatedRuleIDs(existing, incoming []uuid.UUID) []uuid.UUID {
 // returned as "what I wrote").
 //
 // related_rule_ids is additionally capped at outcome.MaxRelatedRuleIDsTotal
-// AFTER unionRelatedRuleIDs computes the full merge (PR #152 round 5 Major
-// M-R5-1 guarantee A) — see that constant's doc comment and the truncation
-// call site below for the exact rule (existing entries always preserved,
-// only the newly-appended tail is ever dropped).
+// via outcome.CapRelatedRuleIDs AFTER unionRelatedRuleIDs computes the full
+// merge (PR #152 round 5 Major M-R5-1 guarantee A; widened in round 6 Major
+// m-R6-3 to also cover the case where existing already exceeds the cap —
+// see CapRelatedRuleIDs's doc comment for the full rule and the
+// cross-backend-disagreement bug this closes). Notes is likewise capped at
+// outcome.MaxNotesTotalRunes via outcome.CapNotesTotal (PR #152 round 6
+// Major M-R6-2 guarantee B) — both cap helpers live in
+// internal/outcome/store.go so the SAME algorithm backs both this Go
+// implementation and Store (PG)'s SQL equivalent, verified byte-identical
+// by this file's and store_test.go's parity tests.
 func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params outcome.CreateOutcomeParams) (outcome.Outcome, error) {
 	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -615,17 +621,39 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 	}
 	mergedNotes := appendNotes(existing.Notes, params.Notes)
 	mergedRelatedRuleIDs := unionRelatedRuleIDs(existing.RelatedRuleIDs, params.RelatedRuleIDs)
-	// Cap the union at outcome.MaxRelatedRuleIDsTotal (PR #152 round 5 Major
-	// M-R5-1 guarantee A) — mirrors Store.FinalizeDraft (store.go)'s Postgres
-	// array-slice cap using the SAME exported constant, so both backends
-	// truncate at an identical cumulative size. unionRelatedRuleIDs places
-	// existing IDs first, so slicing the front N elements only ever drops
-	// newly-appended IDs, never a previously-recorded link.
-	if len(mergedRelatedRuleIDs) > outcome.MaxRelatedRuleIDsTotal {
+
+	// Cap related_rule_ids at outcome.MaxRelatedRuleIDsTotal via
+	// CapRelatedRuleIDs (PR #152 round 5 Major M-R5-1 guarantee A; round 6
+	// Major m-R6-3): unlike the old unconditional
+	// `if len(merged) > cap { merged = merged[:cap] }`, CapRelatedRuleIDs
+	// never drops any element of existing.RelatedRuleIDs even when existing
+	// already exceeds the cap (legacy data) — see its doc comment. This is
+	// also what closes m-R6-3's cross-backend disagreement: Store (PG)'s SQL
+	// already skipped truncation entirely for a notes-only/zero-new-IDs
+	// call in that state, while this file's old unconditional truncation
+	// did not — CapRelatedRuleIDs is called unconditionally here too (no
+	// `len(params.RelatedRuleIDs) > 0` guard needed) because it already
+	// no-ops correctly by itself when merged == existing (the zero-new-IDs
+	// case, per unionRelatedRuleIDs's own early return above).
+	cappedRelatedRuleIDs := outcome.CapRelatedRuleIDs(existing.RelatedRuleIDs, mergedRelatedRuleIDs, outcome.MaxRelatedRuleIDsTotal)
+	if len(cappedRelatedRuleIDs) < len(mergedRelatedRuleIDs) {
 		slog.Warn("OutcomeStore.FinalizeDraft: related_rule_ids exceeded cumulative cap, truncated",
 			"outcome_id", id, "pre_truncate_count", len(mergedRelatedRuleIDs),
-			"cap", outcome.MaxRelatedRuleIDsTotal)
-		mergedRelatedRuleIDs = mergedRelatedRuleIDs[:outcome.MaxRelatedRuleIDsTotal]
+			"cap", outcome.MaxRelatedRuleIDsTotal, "final_count", len(cappedRelatedRuleIDs))
+	}
+	mergedRelatedRuleIDs = cappedRelatedRuleIDs
+
+	// Cap Notes at outcome.MaxNotesTotalRunes via CapNotesTotal (PR #152
+	// round 6 Major M-R6-2 guarantee B) — same "never drop existing content"
+	// rule as CapRelatedRuleIDs above, applied to the rune-counted string.
+	// Called unconditionally for the same reason: it no-ops correctly when
+	// params.Notes == "" (mergedNotes == existing.Notes, per appendNotes's
+	// own early return).
+	if cappedNotes, truncated := outcome.CapNotesTotal(existing.Notes, mergedNotes, outcome.MaxNotesTotalRunes); truncated {
+		slog.Warn("OutcomeStore.FinalizeDraft: notes exceeded cumulative cap, truncated",
+			"outcome_id", id, "pre_truncate_rune_count", len([]rune(mergedNotes)),
+			"cap", outcome.MaxNotesTotalRunes, "final_rune_count", len([]rune(cappedNotes)))
+		mergedNotes = cappedNotes
 	}
 	mergedWorkSessionID := existing.WorkSessionID
 	if mergedWorkSessionID == nil {

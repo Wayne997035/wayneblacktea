@@ -413,6 +413,116 @@ func TestRecordExecutionResult_TerminalAgainstDraft_StillFinalizes(t *testing.T)
 }
 
 // ---------------------------------------------------------------------------
+// PR #152 round 6 Major M-R6-1: a supersede call's previousNotes must be ""
+// (treated like a fresh row), never the PRIOR row's Notes — see
+// ActionSuperseded's doc comment for the full rationale. fakeStore's
+// CreateOutcome (above) returns a NEW row (fresh uuid.New() ID) carrying
+// params.Notes verbatim, mirroring both real backends' supersede path
+// exactly enough to exercise RecordExecutionResult's own branch selection
+// and return value in isolation from any DB.
+// ---------------------------------------------------------------------------
+
+// TestRecordExecutionResult_Supersede_ReturnsEmptyPreviousNotes is the
+// direct reproduction: latest is a TERMINAL outcome ("success") with real
+// Notes; this call supplies a DIFFERENT terminal result ("regressed") but
+// BYTE-IDENTICAL Notes — the "same summary, different verdict" shape a
+// re-evaluation naturally produces. Before the fix, previousNotes was
+// latest.Notes, so it compared equal to the new row's (identical) Notes at
+// tools_outcome.go's atomize gate and silently skipped atomize for content
+// that had never been atomized under the NEW row's outcome_id.
+func TestRecordExecutionResult_Supersede_ReturnsEmptyPreviousNotes(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+	sameNotes := "looked fine at review time"
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         priorID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     "success",
+			Notes:      sameNotes,
+		},
+	}
+
+	got, action, previousNotes, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   entityID,
+		Result:     "regressed",
+		Notes:      sameNotes,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionSuperseded {
+		t.Fatalf("action = %q, want %q", action, ActionSuperseded)
+	}
+	if got.ID == priorID {
+		t.Fatalf("supersede must create a NEW row, got the same ID as the prior row")
+	}
+	if !fs.createCalled || fs.finalizeCalled {
+		t.Errorf("expected CreateOutcome (not FinalizeDraft) to be called for a supersede")
+	}
+	if got.Notes != sameNotes {
+		t.Fatalf("new row's Notes = %q, want %q (the call's own supplied notes)", got.Notes, sameNotes)
+	}
+	if previousNotes != "" {
+		t.Errorf("previousNotes = %q, want \"\" (M-R6-1 regression: a supersede row must be treated "+
+			"like a fresh row for the atomize gate, never compared against the PRIOR row's Notes)", previousNotes)
+	}
+}
+
+// TestRecordExecutionResult_Supersede_EmptyNotes_PreviousNotesStillEmpty is
+// M-R6-1's reverse case: a supersede call that supplies NO notes at all must
+// still report previousNotes == "" (consistent with ActionCreated), and the
+// new row's own Notes is empty — so tools_outcome.go's
+// `o.Notes != "" && o.Notes != previousNotes` gate correctly skips atomize
+// on the FIRST condition (nothing to atomize), not because previousNotes
+// happened to match.
+func TestRecordExecutionResult_Supersede_EmptyNotes_PreviousNotesStillEmpty(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         priorID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     "success",
+			Notes:      "the original postmortem, must not be touched",
+		},
+	}
+
+	got, action, previousNotes, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   entityID,
+		Result:     "regressed",
+		// Notes deliberately empty.
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionSuperseded {
+		t.Fatalf("action = %q, want %q", action, ActionSuperseded)
+	}
+	if got.Notes != "" {
+		t.Fatalf("new row's Notes = %q, want empty (this call supplied none)", got.Notes)
+	}
+	if previousNotes != "" {
+		t.Errorf("previousNotes = %q, want \"\"", previousNotes)
+	}
+	// The prior row's real content must remain completely untouched — a
+	// supersede never mutates the row it supersedes.
+	if fs.latest.Notes != "the original postmortem, must not be touched" {
+		t.Errorf("prior row's Notes was mutated: %q", fs.latest.Notes)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // PR #152 round 3 Major: draft-enrich retry idempotency. Before this fix,
 // RecordExecutionResult's draft branch had no idempotency check reachable
 // for an enrich retry — a byte-identical retry of a content-bearing
