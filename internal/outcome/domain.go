@@ -103,17 +103,32 @@ const MaxRelatedRuleIDsTotal = 100
 // same unbounded-accumulation shape as MaxRelatedRuleIDsTotal above, and
 // the direct cause of PR #152 round 6 Major finding M-R6-2's O(N^2) atomize
 // amplification (reproduced empirically as 30 enrich calls -> a
-// 15,058-rune final Notes field -> 233,370 CUMULATIVE runes sent to the
-// atomizer across those 30 calls, ~15.5x the final document size, because
-// every call re-atomized the FULL accumulated Notes text instead of just
-// what it added).
+// 15,058-rune final Notes field -> 233,370 CUMULATIVE runes HANDED TO
+// launchAtomize across those 30 calls, ~15.5x the final document size,
+// because every call re-atomized the FULL accumulated Notes text instead of
+// just what it added). Correction (PR #152 round 7 Minor s-R7-3): that
+// 233,370 figure is the volume passed as INPUT to internal/ai.Atomizer's
+// Atomize method, NOT the volume that actually reached the paid Haiku
+// model — Atomize caps its own input to maxAtomizeInputChars (4,000 runes,
+// internal/ai/atomizer.go) before ever calling the Anthropic API, so no
+// single call's API spend could exceed that regardless of how large its
+// input was. The more serious defect the O(N^2) shape actually caused
+// wasn't API cost — it was silent knowledge loss: once accumulated Notes
+// passed 4,000 runes, re-sending the FULL text on every call meant
+// Atomize's own 4,000-rune truncation always cut off the END of the
+// string — exactly where the newest, not-yet-atomized segment lives — so
+// any enrich past that point was NEVER atomized, forever, with no signal
+// that it had been dropped.
 //
 // This cap and the O(N^2) atomize fix are two SEPARATE, complementary
 // closes for the same underlying defect: tools_outcome.go's notesDelta now
-// ensures each call only ever sends its OWN newly-added segment to the
-// atomizer (bounding atomize cost independent of this cap), while
-// MaxNotesTotalRunes independently bounds the stored field's own size (row
-// storage, and list_recent_outcomes/find_failed_patterns response payload —
+// ensures each call only ever sends its OWN newly-added segment (at most
+// sanitize.Notes's 500-rune per-call cap) to the atomizer — comfortably
+// inside Atomize's 4,000-rune input window on every single call, which is
+// what actually closes the silent-knowledge-loss bug above, not merely the
+// API-cost amplification. MaxNotesTotalRunes independently bounds the
+// stored field's own size (row storage, and
+// list_recent_outcomes/find_failed_patterns response payload —
 // see MaxRelatedRuleIDsTotal's doc comment above for the identical
 // response-payload argument, which applies to Notes exactly the same way).
 // Both backends' FinalizeDraft apply CapNotesTotal (store.go) to the

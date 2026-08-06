@@ -95,11 +95,25 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			mcp.Description("Execution result: success | failure | partial | unknown | regressed"),
 			mcp.Required()),
 		mcp.WithString("notes",
-			mcp.Description("Free-text notes about the outcome (max 500 runes)")),
+			mcp.Description(fmt.Sprintf(
+				"Free-text notes about the outcome (max 500 runes per call). Notes ACCUMULATE "+
+					"across repeated calls against the same open draft (result=\"unknown\") up to a "+
+					"CUMULATIVE cap of %d runes total. Once the cumulative cap is reached, further "+
+					"calls' notes text is NOT written and the response includes notes_truncated=true "+
+					"(the write itself still succeeds — only the new text is dropped; existing notes "+
+					"are never lost).", outcome.MaxNotesTotalRunes,
+			))),
 		mcp.WithString("metrics_json",
 			mcp.Description("Optional JSON object with numeric metrics, e.g. {\"duration_ms\": 1200}")),
 		mcp.WithString("related_rule_ids",
-			mcp.Description("Optional JSON array of behavior rule UUIDs to link, e.g. [\"uuid1\",\"uuid2\"]. Absent or empty = no linked rules.")),
+			mcp.Description(fmt.Sprintf(
+				"Optional JSON array of behavior rule UUIDs to link, e.g. [\"uuid1\",\"uuid2\"] "+
+					"(max %d per call). Absent or empty = no linked rules. IDs ACCUMULATE across "+
+					"repeated calls against the same open draft up to a CUMULATIVE cap of %d total. "+
+					"Once the cumulative cap is reached, further calls' new IDs are NOT added and the "+
+					"response includes related_rule_ids_truncated=true (existing links are never "+
+					"lost).", maxRelatedRuleIDs, outcome.MaxRelatedRuleIDsTotal,
+			))),
 		mcp.WithString("session_id",
 			mcp.Description("Optional work session UUID this outcome was recorded from — "+
 				"best-effort linked back onto the session via SetOutcomeLink.")),
@@ -237,6 +251,69 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 	return in, nil
 }
 
+// recordOutcomeResponse wraps outcome.Outcome with truncation signals for
+// the record_outcome MCP response — added PR #152 round 7 Major m-R7-1.
+// Before this, once a draft's cumulative Notes/RelatedRuleIDs hit their
+// respective caps (outcome.MaxNotesTotalRunes / outcome.MaxRelatedRuleIDsTotal,
+// enforced inside FinalizeDraft), a call whose content got silently dropped
+// still returned IsError=false with a complete-looking Outcome JSON body —
+// the caller (an LLM) had no way to tell its content never landed. The
+// struct embeds outcome.Outcome so its fields are promoted to the top level
+// of the JSON body (identical shape to the old `jsonText(o)` response); the
+// two *Truncated fields are `omitempty` so the common, non-truncated case
+// produces byte-identical output to before this change.
+//
+// This is deliberately NOT surfaced as an error: the write itself succeeded
+// (the row WAS updated) — only part of its content didn't make it in. See
+// handleRecordOutcome's dispatch note: a partial write is still a write.
+type recordOutcomeResponse struct {
+	outcome.Outcome
+	// NotesTruncated is true when this call's notes text was NOT fully
+	// appended onto the stored Notes field because the cumulative cap
+	// (outcome.MaxNotesTotalRunes) was already at or past capacity.
+	NotesTruncated bool `json:"notes_truncated,omitempty"`
+	// RelatedRuleIDsTruncated is true when one or more of this call's
+	// related_rule_ids were NOT added to the stored array because the
+	// cumulative cap (outcome.MaxRelatedRuleIDsTotal) was already at or past
+	// capacity.
+	RelatedRuleIDsTruncated bool `json:"related_rule_ids_truncated,omitempty"`
+	// TruncationNote is a human-readable explanation of what got dropped,
+	// populated only when either flag above is true — callers are LLMs, they
+	// read prose, not just booleans.
+	TruncationNote string `json:"truncation_note,omitempty"`
+}
+
+// buildTruncationNote returns the human-readable explanation for
+// recordOutcomeResponse.TruncationNote. Only called when at least one of
+// notesTruncated/idsTruncated is true.
+func buildTruncationNote(notesTruncated, idsTruncated bool) string {
+	switch {
+	case notesTruncated && idsTruncated:
+		return fmt.Sprintf(
+			"This call's notes and related_rule_ids were only partially recorded: the outcome's "+
+				"cumulative notes (%d runes) and related_rule_ids (%d entries) caps were already "+
+				"reached, so the new content this call supplied was not written. Existing content "+
+				"was NOT lost — only what THIS call tried to add.",
+			outcome.MaxNotesTotalRunes, outcome.MaxRelatedRuleIDsTotal,
+		)
+	case notesTruncated:
+		return fmt.Sprintf(
+			"This call's notes were NOT fully recorded: the outcome's cumulative notes cap (%d runes) "+
+				"was already reached, so some or all of the new text this call supplied was not "+
+				"written. Existing notes were NOT lost — only what THIS call tried to add.",
+			outcome.MaxNotesTotalRunes,
+		)
+	default:
+		return fmt.Sprintf(
+			"This call's related_rule_ids were NOT fully recorded: the outcome's cumulative "+
+				"related_rule_ids cap (%d entries) was already reached, so one or more of the new "+
+				"IDs this call supplied were not added. Existing links were NOT lost — only what "+
+				"THIS call tried to add.",
+			outcome.MaxRelatedRuleIDsTotal,
+		)
+	}
+}
+
 // handleRecordOutcome validates input and creates a new outcome.
 func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
@@ -324,19 +401,51 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// accumulated field), not just what THIS call added. Against a draft
 	// enriched N times, call k re-sent the ENTIRE text accumulated through
 	// call k (not just call k's own new segment) to the atomizer, making
-	// total characters sent across the draft's lifetime grow O(N^2) with
-	// the number of enrich calls — reproduced empirically as 30 enrich
-	// calls / a 15,058-rune final notes field / 233,370 CUMULATIVE runes
-	// sent to the (paid) Haiku atomizer, ~15.5x the final document size.
-	// notesDelta extracts only the segment THIS call actually added,
-	// relative to previousNotes, so atomize cost scales with what was
-	// written, not with the field's accumulated size.
+	// total characters HANDED TO launchAtomize across the draft's lifetime
+	// grow O(N^2) with the number of enrich calls — reproduced empirically
+	// as 30 enrich calls / a 15,058-rune final notes field / 233,370
+	// CUMULATIVE runes handed to launchAtomize, ~15.5x the final document
+	// size. Correction (PR #152 round 7 Minor s-R7-3): that 233,370 figure
+	// is the volume passed as ai.Atomizer.Atomize's INPUT, not the volume
+	// that actually reached the paid Haiku model — Atomize caps its own
+	// input to 4,000 runes (internal/ai/atomizer.go's maxAtomizeInputChars)
+	// before calling the Anthropic API. The real defect this fixed was
+	// worse than extra API spend: past 4,000 accumulated runes, resending
+	// the FULL text every call meant Atomize's own truncation always cut
+	// off the newest (trailing) segment, so it was NEVER atomized — silent,
+	// permanent knowledge loss with no signal. notesDelta extracts only the
+	// segment THIS call actually added, relative to previousNotes (at most
+	// sanitize.Notes's 500-rune per-call cap, always well inside Atomize's
+	// 4,000-rune window), so atomize cost scales with what was written, not
+	// the field's accumulated size — and, as a direct consequence, the
+	// newest segment can no longer be truncated away by Atomize's own cap.
 	if o.Notes != "" && o.Notes != previousNotes {
 		if delta := notesDelta(o.Notes, previousNotes); delta != "" {
 			s.launchAtomize("outcomes", o.ID, delta)
 		}
 	}
-	return jsonText(o)
+
+	// PR #152 round 7 Major m-R7-1: signal to the caller when its OWN
+	// supplied content didn't fully land, because FinalizeDraft's cumulative
+	// caps (outcome.MaxNotesTotalRunes / outcome.MaxRelatedRuleIDsTotal) were
+	// already at or past capacity. outcome.NotesTruncated / RelatedRuleIDsTruncated
+	// compare in.notes/in.relatedRuleIDs (what THIS call asked to write)
+	// against o.Notes/o.RelatedRuleIDs (what actually landed) — see their doc
+	// comments (internal/outcome/store.go) for why that comparison is exact.
+	// Deliberately computed here, AFTER the early idempotent-replay/
+	// draft-preserved return above (line ~292): a replay that resubmits an
+	// EARLIER (non-trailing) notes segment is legitimately not a suffix of
+	// o.Notes even though nothing was truncated — see
+	// lifecycle.go's notesHasNewContent doc comment on interleaved resends —
+	// so running this check against a no-write no-op response would produce
+	// a false positive.
+	resp := recordOutcomeResponse{Outcome: o}
+	resp.NotesTruncated = outcome.NotesTruncated(o.Notes, in.notes)
+	resp.RelatedRuleIDsTruncated = outcome.RelatedRuleIDsTruncated(o.RelatedRuleIDs, in.relatedRuleIDs)
+	if resp.NotesTruncated || resp.RelatedRuleIDsTruncated {
+		resp.TruncationNote = buildTruncationNote(resp.NotesTruncated, resp.RelatedRuleIDsTruncated)
+	}
+	return jsonText(resp)
 }
 
 // notesDelta returns the text THIS call actually added to Notes, relative to

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -975,5 +976,153 @@ func TestNotesDelta(t *testing.T) {
 				t.Errorf("notesDelta(%q, %q) = %q, want %q", tc.oNotes, tc.previousNotes, got, tc.want)
 			}
 		})
+	}
+}
+
+// notesFillChunk returns a distinct 500-rune (sanitize.Notes's own per-call
+// max) notes payload, prefixed with marker so repeated calls in a fill loop
+// are never byte-identical to each other (a byte-identical resend would be
+// classified as an idempotent replay by isDraftIdempotentReplay and skip
+// FinalizeDraft's cap logic entirely — see lifecycle.go's
+// notesHasNewContent doc comment).
+func notesFillChunk(marker string) string {
+	return marker + strings.Repeat("a", 500-len(marker))
+}
+
+// TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached is
+// PR #152 round 7 Major m-R7-1's regression test for the Notes half of the
+// finding: before this fix, once a draft's cumulative Notes reached
+// outcome.MaxNotesTotalRunes, every subsequent record_outcome(notes=...)
+// call against it returned IsError=false with the caller's content silently
+// dropped and ZERO signal in the response body — the caller (an LLM) had no
+// way to know its content never landed. Runs through the REAL handler
+// against a real SQLite-backed server (not a stub), because the cap is
+// enforced inside FinalizeDraft's store-layer merge, not at the MCP
+// argument-parsing layer.
+func TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+
+	// Fill the draft's cumulative Notes up to (and past) the cap. Each call
+	// supplies sanitize.Notes's own per-call max (500 runes); with the
+	// "\n\n" separator overhead each enrich adds, 11 calls comfortably
+	// exceeds outcome.MaxNotesTotalRunes (5,000).
+	for i := 0; i < 11; i++ {
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type": entityTypeTask,
+			"entity_id":   entityID.String(),
+			"result":      "unknown",
+			"notes":       notesFillChunk(fmt.Sprintf("[fill-%02d]", i)),
+		})
+		if r.IsError {
+			t.Fatalf("fill call %d: unexpected error: %s", i, resultText(r))
+		}
+	}
+
+	// This call's notes land against an already-at/over-cap draft — none of
+	// it can be appended.
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      "unknown",
+		"notes":       "this content must be silently dropped by the cumulative cap",
+	})
+	if r.IsError {
+		t.Fatalf("expected IsError=false (the write itself is not an error, only part of its content was dropped): %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	truncated, _ := resp["notes_truncated"].(bool)
+	if !truncated {
+		t.Fatalf("expected notes_truncated=true once the cumulative cap is reached, got response: %s", resultText(r))
+	}
+	note, _ := resp["truncation_note"].(string)
+	if note == "" {
+		t.Errorf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
+	}
+}
+
+// TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapReached
+// is m-R7-1's regression test for the related_rule_ids half of the finding
+// (the dispatch's "⚠ check related_rule_ids too" instruction) — same shape
+// as the Notes test above: fill the cumulative cap
+// (outcome.MaxRelatedRuleIDsTotal=100) exactly using maxRelatedRuleIDs (20)
+// IDs per call, then verify one more distinct ID against the full draft
+// signals related_rule_ids_truncated=true instead of silently vanishing.
+func TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapReached(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+
+	for i := 0; i < 5; i++ {
+		ids := make([]string, maxRelatedRuleIDs)
+		for j := range ids {
+			ids[j] = `"` + uuid.New().String() + `"`
+		}
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type":      entityTypeTask,
+			"entity_id":        entityID.String(),
+			"result":           "unknown",
+			"related_rule_ids": "[" + strings.Join(ids, ",") + "]",
+		})
+		if r.IsError {
+			t.Fatalf("fill call %d: unexpected error: %s", i, resultText(r))
+		}
+	}
+
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        entityID.String(),
+		"result":           "unknown",
+		"related_rule_ids": `["` + uuid.New().String() + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("expected IsError=false: %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	truncated, _ := resp["related_rule_ids_truncated"].(bool)
+	if !truncated {
+		t.Fatalf("expected related_rule_ids_truncated=true once the cumulative cap is reached, got response: %s", resultText(r))
+	}
+	note, _ := resp["truncation_note"].(string)
+	if note == "" {
+		t.Errorf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
+	}
+}
+
+// TestHandleRecordOutcome_TruncationSignals_AbsentWhenNothingTruncated pins
+// the `omitempty` shape of recordOutcomeResponse: an ordinary call, nowhere
+// near either cumulative cap, must produce a response byte-shape identical
+// to the pre-fix `jsonText(o)` — no notes_truncated / related_rule_ids_truncated
+// / truncation_note keys present at all (not merely false/empty), so
+// existing callers that don't know about these new fields see no change.
+func TestHandleRecordOutcome_TruncationSignals_AbsentWhenNothingTruncated(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        uuid.New().String(),
+		"result":           "success",
+		"notes":            "an ordinary short note, nowhere near either cap",
+		"related_rule_ids": `["` + uuid.New().String() + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := resp["notes_truncated"]; present {
+		t.Errorf("notes_truncated must be OMITTED (omitempty) when nothing was truncated, got response: %s", resultText(r))
+	}
+	if _, present := resp["related_rule_ids_truncated"]; present {
+		t.Errorf("related_rule_ids_truncated must be OMITTED when nothing was truncated, got response: %s", resultText(r))
+	}
+	if _, present := resp["truncation_note"]; present {
+		t.Errorf("truncation_note must be OMITTED when nothing was truncated, got response: %s", resultText(r))
 	}
 }

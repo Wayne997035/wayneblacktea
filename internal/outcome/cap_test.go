@@ -159,3 +159,112 @@ func TestCapNotesTotal(t *testing.T) {
 		})
 	}
 }
+
+// TestNotesTruncated covers the pure helper PR #152 round 7 Major m-R7-1/
+// m-R7-2 introduced to REPLACE FinalizeDraft's removed self-join diagnostic:
+// it compares only the caller's own supplied text against the final
+// RETURNING value, with no separate table read. Isolated, fast pin of the
+// algorithm; store_test.go's DB-backed tests cover it end-to-end (including
+// under real concurrency).
+func TestNotesTruncated(t *testing.T) {
+	tests := []struct {
+		name       string
+		finalNotes string
+		newNotes   string
+		wantTrunc  bool
+	}{
+		{
+			name:       "fresh row, direct write: not truncated",
+			finalNotes: "hello world",
+			newNotes:   "hello world",
+			wantTrunc:  false,
+		},
+		{
+			name:       "enrich append landed in full: final ends with the new segment",
+			finalNotes: "existing content\n\nnewly appended segment",
+			newNotes:   "newly appended segment",
+			wantTrunc:  false,
+		},
+		{
+			name:       "nothing supplied: never truncated regardless of final value",
+			finalNotes: "aaaaaaaaaa",
+			newNotes:   "",
+			wantTrunc:  false,
+		},
+		{
+			name:       "cap cut the new segment's tail off: final does NOT end with the full new text",
+			finalNotes: "existing\n\npartial-of-n",
+			newNotes:   "partial-of-new-segment-that-got-cut",
+			wantTrunc:  true,
+		},
+		{
+			name:       "cap dropped the new segment entirely: final == existing only",
+			finalNotes: "existing content, unchanged",
+			newNotes:   "this whole segment got dropped",
+			wantTrunc:  true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NotesTruncated(tc.finalNotes, tc.newNotes)
+			if got != tc.wantTrunc {
+				t.Errorf("NotesTruncated(%q, %q) = %v, want %v", tc.finalNotes, tc.newNotes, got, tc.wantTrunc)
+			}
+		})
+	}
+}
+
+// TestRelatedRuleIDsTruncated is TestNotesTruncated's twin for
+// related_rule_ids.
+func TestRelatedRuleIDsTruncated(t *testing.T) {
+	ids := make([]uuid.UUID, 5)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+
+	tests := []struct {
+		name      string
+		finalIDs  []uuid.UUID
+		newIDs    []uuid.UUID
+		wantTrunc bool
+	}{
+		{
+			name:      "fresh row: every supplied ID present in final",
+			finalIDs:  ids[0:2],
+			newIDs:    ids[0:2],
+			wantTrunc: false,
+		},
+		{
+			name:      "enrich union landed in full: all new IDs present alongside existing",
+			finalIDs:  ids[0:3],
+			newIDs:    ids[2:3],
+			wantTrunc: false,
+		},
+		{
+			name:      "nothing supplied: never truncated regardless of final value",
+			finalIDs:  ids[0:2],
+			newIDs:    nil,
+			wantTrunc: false,
+		},
+		{
+			name:      "cap dropped the one new ID: it's missing from final",
+			finalIDs:  ids[0:3], // existing only, new ID never made it in
+			newIDs:    ids[3:4],
+			wantTrunc: true,
+		},
+		{
+			name:      "cap dropped SOME but not all new IDs: any missing ID counts as truncated",
+			finalIDs:  ids[0:4], // 3 existing + 1 of the 2 new IDs survived
+			newIDs:    ids[3:5], // 2 new IDs supplied, only ids[3] made it into finalIDs
+			wantTrunc: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RelatedRuleIDsTruncated(tc.finalIDs, tc.newIDs)
+			if got != tc.wantTrunc {
+				t.Errorf("RelatedRuleIDsTruncated(%v, %v) = %v, want %v", tc.finalIDs, tc.newIDs, got, tc.wantTrunc)
+			}
+		})
+	}
+}

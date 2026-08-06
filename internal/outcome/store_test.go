@@ -1039,6 +1039,100 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive(t *test
 	}
 }
 
+// TestStore_FinalizeDraftTruncated_ConcurrentEnrich_DetectsPerCallTruncationCorrectly
+// is PR #152 round 7 Major finding m-R7-2's regression test. The diagnostic
+// FinalizeDraft used to compute via a `FROM outcomes pre WHERE pre.id = $6`
+// self-join (removed by this fix — see FinalizeDraft's doc comment) read a
+// snapshot taken BEFORE this statement's own concurrency wait, independent
+// of Postgres's EvalPlanQual re-fetch — under concurrent writers landing on
+// the same over-cap boundary, five/two-army reproduction found that
+// self-join could report a WRONG truncation verdict (a decisive attack
+// reproduced `warn_fired=false` while a caller's content was genuinely
+// dropped). outcome.RelatedRuleIDsTruncated instead compares ONLY a call's
+// own supplied IDs against that SAME call's own RETURNING row — no separate
+// table scan, so it cannot be stale relative to what that transaction
+// itself just committed.
+//
+// This test seeds existing content exactly 5 IDs short of the cap and fires
+// 10 concurrent single-ID enrich calls, so exactly 5 must be truncated and 5
+// must survive. Every goroutine's own per-call verdict (computed from ITS
+// OWN FinalizeDraft return value) is checked against ground truth: whether
+// that goroutine's own ID actually ended up in the FINAL committed row.
+// Ground truth never changes retroactively — a later-committing transaction
+// can only ever APPEND to related_rule_ids, never drop an already-committed
+// entry (see TestStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive
+// above and CapRelatedRuleIDs's "never drop existing" doc comment) — so a
+// per-goroutine verdict computed at commit time is permanently correct, not
+// just correct "at that instant".
+func TestStore_FinalizeDraftTruncated_ConcurrentEnrich_DetectsPerCallTruncationCorrectly(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draftID := uuid.New()
+	existing := newDistinctRuleIDs(outcome.MaxRelatedRuleIDsTotal - 5) // 95, cap=100: room for exactly 5 more
+	insertDraftWithNotesAndRelatedRuleIDs(ctx, t, pool, draftID, wsID, entityID, "task", existing)
+
+	const n = 10
+	newIDs := newDistinctRuleIDs(n)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	truncated := make([]bool, n)
+	callErrs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			supplied := []uuid.UUID{newIDs[idx]}
+			o, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+				Result:         "unknown",
+				RelatedRuleIDs: supplied,
+			})
+			callErrs[idx] = err
+			if err == nil {
+				truncated[idx] = outcome.RelatedRuleIDsTruncated(o.RelatedRuleIDs, supplied)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range callErrs {
+		if err != nil {
+			t.Fatalf("goroutine %d FinalizeDraft error: %v", i, err)
+		}
+	}
+
+	// Ground truth: re-read from a fresh query, not any single goroutine's
+	// own RETURNING value.
+	final, err := store.GetOutcomeByID(ctx, draftID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(final.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("final RelatedRuleIDs has %d entries, want exactly the cap %d", len(final.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+
+	truncatedCount := 0
+	for i, id := range newIDs {
+		survived := slices.Contains(final.RelatedRuleIDs, id)
+		if truncated[i] == survived {
+			t.Errorf("goroutine %d: RelatedRuleIDsTruncated reported %v but id %s's survival in the final row is %v — verdict disagrees with ground truth",
+				i, truncated[i], id, survived)
+		}
+		if truncated[i] {
+			truncatedCount++
+		}
+	}
+	if truncatedCount != 5 {
+		t.Fatalf("truncatedCount = %d, want exactly 5 (10 new IDs supplied - 5 slots available under the cap)", truncatedCount)
+	}
+}
+
 // TestStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved is the direct
 // reproduction of the M-1/threat-model attack this redesign closes: a call
 // carrying near-empty notes (a single space — passes any "is it non-empty"

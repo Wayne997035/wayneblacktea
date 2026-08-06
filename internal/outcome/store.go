@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -51,12 +52,7 @@ const outcomeSelectCols = `id, workspace_id, entity_type, entity_id, result, met
 const evaluationSelectCols = `id, workspace_id, outcome_id, analysis, lessons, improvement_suggestions, created_at`
 
 // scanOutcomeRow reads a full outcomes row from pgx.Rows into an Outcome.
-// extra optionally scans additional trailing RETURNING columns beyond
-// outcomeSelectCols directly into caller-supplied destinations — used by
-// FinalizeDraft to also read back the pre-truncation related_rule_ids count
-// (PR #152 round 5 Major M-R5-1 guarantee A) in the SAME round trip, without
-// duplicating this function's column-order-sensitive scan+convert logic.
-func scanOutcomeRow(rows pgx.Rows, extra ...any) (Outcome, error) {
+func scanOutcomeRow(rows pgx.Rows) (Outcome, error) {
 	var (
 		o              Outcome
 		wsID           pgtype.UUID
@@ -82,7 +78,6 @@ func scanOutcomeRow(rows pgx.Rows, extra ...any) (Outcome, error) {
 		&createdAt,
 		&updatedAt,
 	}
-	dest = append(dest, extra...)
 	err := rows.Scan(dest...)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("scanning outcome: %w", err)
@@ -559,6 +554,78 @@ func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
 	return string(mergedRunes[:keep]), true
 }
 
+// NotesTruncated reports whether newNotes — the notes text a SINGLE caller
+// supplied to one record_outcome/FinalizeDraft call — failed to land in its
+// entirety in finalNotes, the resulting (post-write, already-capped) Notes
+// value. Because FinalizeDraft's merge is always `<prior> + "\n\n" +
+// newNotes` (or newNotes alone when prior was empty — see appendNotes / the
+// PG notes CASE expression below), newNotes landed in full if and only if
+// finalNotes ends with it: if the cumulative cap (MaxNotesTotalRunes) cut
+// the merge short, finalNotes's tail is at best a byte-for-byte PREFIX of
+// newNotes, never a suffix, so the HasSuffix check below correctly fails.
+//
+// newNotes == "" (nothing supplied) always returns false — there is nothing
+// that could have been dropped.
+//
+// Deliberately reads nothing but its own two arguments — no table scan, no
+// pre-write snapshot. PR #152 round 7 Major (m-R7-2): this REPLACES a
+// `FROM outcomes pre WHERE pre.id = $6` self-join FinalizeDraft used to run
+// inside its own RETURNING clause to answer this same question; that
+// self-join read a snapshot taken BEFORE the statement's own concurrency
+// wait (independent of Postgres's EvalPlanQual re-fetch, which only
+// refreshes bare-column references to the target relation), so under
+// concurrent writers it could report a stale verdict — five/two-army
+// reproduction: `warn_fired=false` while a caller's content was genuinely
+// dropped. Comparing only this call's own supplied text against this call's
+// own RETURNING row cannot be stale relative to anything, because it never
+// reads outside those two values.
+//
+// Reused verbatim by two call sites that must never disagree (PR #152 round
+// 7 Major m-R7-1): tools_outcome.go's handleRecordOutcome calls this to
+// decide whether the MCP response needs a notes_truncated signal for the
+// CALLER (an LLM, which otherwise has zero way to know its content was
+// silently dropped); Store.FinalizeDraft (below) calls the identical check
+// to decide whether to slog.Warn server-side. One algorithm, two consumers —
+// see DedupeUUIDsPreserveOrder's doc comment above for why that matters.
+func NotesTruncated(finalNotes, newNotes string) bool {
+	if newNotes == "" {
+		return false
+	}
+	return !strings.HasSuffix(finalNotes, newNotes)
+}
+
+// RelatedRuleIDsTruncated is NotesTruncated's twin for related_rule_ids: it
+// reports whether any ID in newIDs — the IDs a SINGLE caller supplied to one
+// record_outcome/FinalizeDraft call — is missing from finalIDs, the
+// resulting (post-write, already-capped) RelatedRuleIDs value. Because
+// FinalizeDraft's merge is a strict UNION (existing IDs first, then any
+// caller-supplied IDs not already present, appended in supplied order —
+// never a whole-array replace, see FinalizeDraft's own doc comment below),
+// every supplied ID landed if and only if it appears somewhere in finalIDs;
+// the cumulative cap (MaxRelatedRuleIDsTotal) can only ever drop elements
+// off the TAIL of that union, so a missing supplied ID unambiguously means
+// it was capped away.
+//
+// newIDs empty always returns false. See NotesTruncated's doc comment
+// (immediately above) for why this is safe under concurrency and why it is
+// shared, unmodified, between the MCP-response signal (tools_outcome.go)
+// and the server-side slog.Warn (Store.FinalizeDraft, below).
+func RelatedRuleIDsTruncated(finalIDs, newIDs []uuid.UUID) bool {
+	if len(newIDs) == 0 {
+		return false
+	}
+	final := make(map[uuid.UUID]bool, len(finalIDs))
+	for _, id := range finalIDs {
+		final[id] = true
+	}
+	for _, id := range newIDs {
+		if !final[id] {
+			return true
+		}
+	}
+	return false
+}
+
 // FinalizeDraft transitions a result='unknown' draft to (usually) a terminal
 // result in place. The WHERE result='unknown' guard makes this race-safe: if
 // the row no longer matches (already finalized by a concurrent caller),
@@ -643,23 +710,23 @@ func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
 // column completely untouched otherwise, so a call that never touches a
 // field can never trigger that field's cap logic either.
 //
-// RETURNING's two trailing pre-truncation-length columns (used only to
-// decide whether the slog.Warn below should fire) deliberately DO use a
-// `FROM outcomes pre WHERE pre.id = $6` self-join instead of a bare
-// reference: RETURNING for UPDATE always sees the NEW (post-assignment,
-// already-capped) value for a bare `related_rule_ids`/`notes` reference —
-// verified empirically — so the only way to read a not-yet-capped "would
-// this call's merge have exceeded the cap" length inside RETURNING is a
-// separate correlated read. This reintroduces the same "separate scan, not
-// EPQ-refreshed" characteristic the SET clause fix above deliberately
-// avoids, but ONLY for this diagnostic pair — it cannot cause data loss
-// (the SET clause never reads from it), and it is no less precise under
-// concurrent contention than this function's own pre-fix behaviour (which
-// computed these same lengths from an equally non-EPQ-safe CTE). Under
-// concurrent contention, the resulting slog.Warn may occasionally
-// under/over-fire; it is documentation-grade diagnostics, not a
-// correctness guarantee, and none of this function's acceptance
-// guarantees depend on it.
+// PR #152 round 7 Major (m-R7-2): this function used to also RETURN a pair
+// of pre-truncation-length columns, computed via a
+// `FROM outcomes pre WHERE pre.id = $6` self-join, specifically because
+// RETURNING for UPDATE always sees the NEW (post-assignment, already-capped)
+// value for a bare `related_rule_ids`/`notes` reference, and reading the
+// not-yet-capped length needed a separate correlated read. That self-join
+// reintroduced the exact "separate scan, not EPQ-refreshed" hazard the
+// bare-column SET clause above was written to avoid — five/two-army
+// reproduction confirmed it: the self-join reads a snapshot taken BEFORE
+// this statement's own concurrency wait, so under concurrent writers
+// landing on the same over-cap boundary it could report a stale (sometimes
+// flatly wrong) pre-truncation length, silently suppressing the slog.Warn
+// below for a call that genuinely got truncated. The self-join and its two
+// RETURNING columns are gone entirely now: the truncation checks after the
+// scan below (NotesTruncated / RelatedRuleIDsTruncated, this file) derive
+// the same answer from ONLY this call's own bound parameters and its own
+// RETURNING row, so there is nothing left that can go stale.
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
 		UPDATE outcomes SET
@@ -691,27 +758,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 			work_session_id = COALESCE(work_session_id, $5),
 			updated_at = NOW()
 		WHERE id = $6 AND result = 'unknown'
-		RETURNING ` + outcomeSelectCols + `,
-			-- Diagnostic-only (see doc comment above): pre-truncation full
-			-- union length, read via a self-join because RETURNING would
-			-- otherwise show the already-capped NEW value for a bare
-			-- related_rule_ids reference.
-			(SELECT COALESCE(array_length(
-				COALESCE(pre.related_rule_ids, '{}'::uuid[]) || COALESCE((
-					SELECT array_agg(nid ORDER BY ord)
-					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
-					WHERE nid <> ALL(COALESCE(pre.related_rule_ids, '{}'::uuid[]))
-				), '{}'::uuid[])
-			, 1), 0) FROM outcomes pre WHERE pre.id = $6),
-			-- Diagnostic-only: pre-truncation full notes length, same
-			-- self-join rationale as above.
-			(SELECT COALESCE(char_length(
-				CASE
-					WHEN $3::text IS NULL THEN pre.notes
-					WHEN pre.notes IS NULL OR pre.notes = '' THEN $3
-					ELSE pre.notes || E'\n\n' || $3
-				END
-			), 0) FROM outcomes pre WHERE pre.id = $6)`
+		RETURNING ` + outcomeSelectCols
 
 	var notesArg pgtype.Text
 	if params.Notes != "" {
@@ -748,32 +795,28 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 		}
 		return Outcome{}, ErrDraftAlreadyFinalized
 	}
-	var preTruncateLen, preTruncateNotesLen int
-	o, err := scanOutcomeRow(rows, &preTruncateLen, &preTruncateNotesLen)
+	o, err := scanOutcomeRow(rows)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("finalizing draft outcome %s scan: %w", id, err)
 	}
-	// PR #152 round 6 Major (m-R6-4): the pre-truncate-count check alone is
-	// NOT sufficient to know truncation actually happened — preTruncateLen
-	// reflects the CTE's full_ids/full_notes value REGARDLESS of which
-	// branch of the UPDATE's CASE was taken (e.g. a notes-only enrich call
-	// against a row whose related_rule_ids already exceeded the cap took
-	// the "WHEN array_length($4) IS NULL THEN related_rule_ids" passthrough
-	// branch — the column was never touched — yet preTruncateLen still
-	// reported the existing over-cap length, so the old
-	// `preTruncateLen > cap` check alone fired a "truncated" warning for a
-	// call that truncated nothing). Comparing the FINAL returned length
-	// against preTruncateLen catches only genuine truncation, regardless of
-	// which CASE branch produced it.
-	if preTruncateLen > MaxRelatedRuleIDsTotal && len(o.RelatedRuleIDs) < preTruncateLen {
+	// PR #152 round 7 Major (m-R7-2): truncation is derived purely by
+	// comparing what THIS call supplied (relatedRuleIDs / params.Notes, both
+	// bound above) against what THIS call's own RETURNING row shows landed —
+	// see RelatedRuleIDsTruncated / NotesTruncated's doc comments (above,
+	// next to CapRelatedRuleIDs/CapNotesTotal) for why that is both simpler
+	// (no extra table scan) and correct under concurrency (nothing here can
+	// be stale — it never reads outside this statement's own bound inputs
+	// and its own RETURNING row).
+	if RelatedRuleIDsTruncated(o.RelatedRuleIDs, relatedRuleIDs) {
 		slog.Warn("Store.FinalizeDraft: related_rule_ids exceeded cumulative cap, truncated",
-			"outcome_id", id, "pre_truncate_count", preTruncateLen,
-			"cap", MaxRelatedRuleIDsTotal, "final_count", len(o.RelatedRuleIDs))
+			"outcome_id", id, "cap", MaxRelatedRuleIDsTotal,
+			"supplied_count", len(relatedRuleIDs), "final_count", len(o.RelatedRuleIDs))
 	}
-	if finalNotesLen := utf8.RuneCountInString(o.Notes); preTruncateNotesLen > MaxNotesTotalRunes && finalNotesLen < preTruncateNotesLen {
+	if NotesTruncated(o.Notes, params.Notes) {
 		slog.Warn("Store.FinalizeDraft: notes exceeded cumulative cap, truncated",
-			"outcome_id", id, "pre_truncate_rune_count", preTruncateNotesLen,
-			"cap", MaxNotesTotalRunes, "final_rune_count", finalNotesLen)
+			"outcome_id", id, "cap", MaxNotesTotalRunes,
+			"supplied_rune_count", utf8.RuneCountInString(params.Notes),
+			"final_rune_count", utf8.RuneCountInString(o.Notes))
 	}
 	return o, nil
 }
