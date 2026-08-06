@@ -957,6 +957,88 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *testing.T) {
 	}
 }
 
+// TestStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive is the
+// regression test for 🔴 C-DBI-1 (five-army repro): two concurrent enrich
+// calls (Result stays "unknown" on every call so WHERE result='unknown'
+// keeps matching for both, mirroring the real record_outcome enrich
+// workflow) against the SAME draft, each supplying a DISJOINT set of
+// related_rule_ids, must both survive — Postgres serializes the two
+// UPDATEs via the row lock, so whichever goroutine loses the race gets its
+// SET clause re-evaluated by EvalPlanQual against the winner's
+// already-committed row. Before the fix (a WITH CTE reading the same
+// table), the loser's union computed against a STALE pre-commit snapshot
+// of related_rule_ids and its final assignment silently overwrote the
+// winner's entire array instead of unioning with it. See the fix's
+// mutation self-proof below (flip the SET clause back to the CTE form and
+// this test goes red) and the FinalizeDraft doc comment in store.go for
+// the EPQ mechanism.
+func TestStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	const n = 10
+	ids := make([]uuid.UUID, n)
+	for i := range n {
+		ids[i] = uuid.New()
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+				Result:         "unknown",
+				RelatedRuleIDs: []uuid.UUID{ids[idx]},
+			})
+			errs[idx] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d FinalizeDraft error: %v", i, err)
+		}
+	}
+
+	// Re-read from a fresh query rather than trusting any single goroutine's
+	// RETURNING value — the whole point of this test is that a losing
+	// goroutine's own RETURNING could (pre-fix) show a truncated array while
+	// a DIFFERENT concurrent writer's commit is what actually landed.
+	final, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+
+	if len(final.RelatedRuleIDs) != n {
+		t.Fatalf("final RelatedRuleIDs has %d entries, want exactly %d (one per concurrent caller) — a concurrent write was lost",
+			len(final.RelatedRuleIDs), n)
+	}
+	for _, id := range ids {
+		if !slices.Contains(final.RelatedRuleIDs, id) {
+			t.Errorf("related_rule_id %s from a concurrent call is missing from the final row — overwritten by another concurrent writer", id)
+		}
+	}
+}
+
 // TestStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved is the direct
 // reproduction of the M-1/threat-model attack this redesign closes: a call
 // carrying near-empty notes (a single space — passes any "is it non-empty"
@@ -2258,7 +2340,8 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting(t
 			t.Fatalf("FinalizeDraft: %v", err)
 		}
 		if len(got.RelatedRuleIDs) != len(existing) {
-			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (a notes-only call must never touch related_rule_ids)", len(got.RelatedRuleIDs), len(existing))
+			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (a notes-only call must never touch related_rule_ids)",
+				len(got.RelatedRuleIDs), len(existing))
 		}
 		for i, id := range existing {
 			if got.RelatedRuleIDs[i] != id {
@@ -2266,7 +2349,8 @@ func TestStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting(t
 			}
 		}
 		if strings.Contains(buf.String(), "related_rule_ids exceeded cumulative cap") {
-			t.Errorf("m-R6-4 regression: warned about truncation even though final_count == pre_truncate_count (nothing was dropped): log=%q", buf.String())
+			t.Errorf("m-R6-4 regression: warned about truncation even though final_count == pre_truncate_count (nothing was dropped): log=%q",
+				buf.String())
 		}
 	})
 }

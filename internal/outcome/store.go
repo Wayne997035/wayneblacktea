@@ -564,6 +564,31 @@ func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
 // the row no longer matches (already finalized by a concurrent caller),
 // ErrDraftAlreadyFinalized is returned.
 //
+// related_rule_ids / notes merge computation MUST be inline bare-column
+// expressions in the SET clause, NEVER a WITH CTE (or any other subquery
+// with its own FROM outcomes scan) that reads the same row (five-army
+// repro, 🔴 C-DBI-1): under READ COMMITTED, when a second concurrent
+// FinalizeDraft call is blocked on this row's lock and the first commits,
+// Postgres's EvalPlanQual (EPQ) re-fetches the now-committed row and
+// re-evaluates the UPDATE's own target-list expressions against it — but
+// ONLY for expressions built directly from the target relation's own Vars
+// (bare `related_rule_ids`, `notes`, etc., referenced with no separate FROM
+// clause). A WITH CTE (or any subquery with `FROM outcomes ...`) is a
+// SEPARATE plan node whose result was computed ONCE against the
+// pre-wait snapshot and is NOT re-executed by EPQ, so the blocked writer's
+// UPDATE silently unions against a stale (sometimes empty) array/notes
+// value instead of the just-committed one — the other writer's
+// already-committed related_rule_ids/notes are then overwritten outright,
+// not just their newest tail. Reproduced with `postgres:16-alpine`, two
+// concurrent sessions, and confirmed with both `MATERIALIZED` and
+// `NOT MATERIALIZED` hints (byte-identical, wrong, result) — the hint is
+// not the cause; "separate re-scan of the same table" is. Verified fixed
+// (both `related_rule_ids` int[]-shaped and `notes` text-shaped append
+// patterns) against a real two-session concurrent UPDATE before landing
+// this rewrite. See TestStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_
+// BothSurvive below for the regression test; flipping this SET clause back
+// to a CTE reproduces the failure.
+//
 // Append-only merge semantics (user-directed redesign, migration 000075):
 // Result and updated_at are always overwritten — that's the point of
 // finalizing, and updated_at is the audit trail for every in-place write.
@@ -594,19 +619,21 @@ func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
 //
 // related_rule_ids is additionally capped at MaxRelatedRuleIDsTotal AFTER
 // the union above is computed (PR #152 round 5 Major M-R5-1 guarantee A;
-// widened in round 6 Major m-R6-3 — see below): the `merged` CTE computes
-// the full existing-union-new array once, and the final assignment slices
-// it to `[1:GREATEST(MaxRelatedRuleIDsTotal, existing_ids_len)]`. Because
-// existing IDs sort first in the union (see above) and the slice never
-// keeps FEWER than existing_ids_len elements, an already-linked rule ID can
-// NEVER be silently removed by this call, even in the (data-predates-the-
-// cap) case where existing already exceeds the cap — see CapRelatedRuleIDs
-// (above) for the Go-side equivalent of this exact algorithm, which this
-// SQL is written to match byte-for-byte (verified by
+// widened in round 6 Major m-R6-3 — see below): the SET clause's inline
+// union expression is sliced to
+// `[1:GREATEST(MaxRelatedRuleIDsTotal, existing_ids_len)]`, where
+// existing_ids_len is itself read inline (`COALESCE(array_length(
+// related_rule_ids, 1), 0)` — a bare reference, same EPQ-safety rule as
+// above). Because existing IDs sort first in the union (see above) and the
+// slice never keeps FEWER than existing_ids_len elements, an already-linked
+// rule ID can NEVER be silently removed by this call, even in the
+// (data-predates-the-cap) case where existing already exceeds the cap — see
+// CapRelatedRuleIDs (above) for the Go-side equivalent of this exact
+// algorithm, which this SQL is written to match byte-for-byte (verified by
 // store_test.go/storage/sqlite/outcome_test.go's cross-backend parity
 // tests). Similarly, notes is capped at MaxNotesTotalRunes via
-// `LEFT(full_notes, GREATEST(MaxNotesTotalRunes, existing_notes_len))` —
-// the same rule, applied to a rune-counted string instead of an array
+// `LEFT(<appended text>, GREATEST(MaxNotesTotalRunes, existing_notes_len))`
+// — the same rule, applied to a rune-counted string instead of an array
 // (PR #152 round 6 Major M-R6-2 guarantee B; CapNotesTotal above is its Go
 // equivalent for SQLite).
 //
@@ -616,36 +643,25 @@ func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
 // column completely untouched otherwise, so a call that never touches a
 // field can never trigger that field's cap logic either.
 //
-// The CTE is forced MATERIALIZED purely for query-plan shape/performance,
-// NOT correctness: a single UPDATE statement's several sub-reads of
-// `merged` (the notes and related_rule_ids assignments, plus the two
-// RETURNING pre-truncation-length columns below) already all execute
-// against the SAME pre-statement MVCC snapshot regardless of
-// materialization — verified empirically (PR #152 round 6 Minor doc
-// correction: AS MATERIALIZED vs AS NOT MATERIALIZED produced
-// byte-identical results in every case tested). Forcing MATERIALIZED
-// instead avoids Postgres inlining `merged` and re-evaluating the
-// unnest+array_agg correlated subquery separately for each of its several
-// references in this one statement.
+// RETURNING's two trailing pre-truncation-length columns (used only to
+// decide whether the slog.Warn below should fire) deliberately DO use a
+// `FROM outcomes pre WHERE pre.id = $6` self-join instead of a bare
+// reference: RETURNING for UPDATE always sees the NEW (post-assignment,
+// already-capped) value for a bare `related_rule_ids`/`notes` reference —
+// verified empirically — so the only way to read a not-yet-capped "would
+// this call's merge have exceeded the cap" length inside RETURNING is a
+// separate correlated read. This reintroduces the same "separate scan, not
+// EPQ-refreshed" characteristic the SET clause fix above deliberately
+// avoids, but ONLY for this diagnostic pair — it cannot cause data loss
+// (the SET clause never reads from it), and it is no less precise under
+// concurrent contention than this function's own pre-fix behaviour (which
+// computed these same lengths from an equally non-EPQ-safe CTE). Under
+// concurrent contention, the resulting slog.Warn may occasionally
+// under/over-fire; it is documentation-grade diagnostics, not a
+// correctness guarantee, and none of this function's acceptance
+// guarantees depend on it.
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
-		WITH merged AS MATERIALIZED (
-			SELECT
-				COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
-					SELECT array_agg(nid ORDER BY ord)
-					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
-					WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
-				), '{}'::uuid[]) AS full_ids,
-				COALESCE(array_length(related_rule_ids, 1), 0) AS existing_ids_len,
-				CASE
-					WHEN $3::text IS NULL THEN notes
-					WHEN notes IS NULL OR notes = '' THEN $3
-					ELSE notes || E'\n\n' || $3
-				END AS full_notes,
-				COALESCE(char_length(notes), 0) AS existing_notes_len
-			FROM outcomes
-			WHERE id = $6 AND result = 'unknown'
-		)
 		UPDATE outcomes SET
 			result = $1,
 			metrics = CASE
@@ -654,18 +670,48 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 			END,
 			notes = CASE
 				WHEN $3::text IS NULL THEN notes
-				ELSE LEFT((SELECT full_notes FROM merged), GREATEST($8::int, (SELECT existing_notes_len FROM merged)))
+				ELSE LEFT(
+					CASE
+						WHEN notes IS NULL OR notes = '' THEN $3
+						ELSE notes || E'\n\n' || $3
+					END,
+					GREATEST($8::int, COALESCE(char_length(notes), 0))
+				)
 			END,
 			related_rule_ids = CASE
 				WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids
-				ELSE (SELECT full_ids FROM merged)[1 : GREATEST($7::int, (SELECT existing_ids_len FROM merged))]
+				ELSE (
+					COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
+						SELECT array_agg(nid ORDER BY ord)
+						FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
+						WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
+					), '{}'::uuid[])
+				)[1 : GREATEST($7::int, COALESCE(array_length(related_rule_ids, 1), 0))]
 			END,
 			work_session_id = COALESCE(work_session_id, $5),
 			updated_at = NOW()
 		WHERE id = $6 AND result = 'unknown'
 		RETURNING ` + outcomeSelectCols + `,
-			(SELECT COALESCE(array_length(full_ids, 1), 0) FROM merged),
-			(SELECT COALESCE(char_length(full_notes), 0) FROM merged)`
+			-- Diagnostic-only (see doc comment above): pre-truncation full
+			-- union length, read via a self-join because RETURNING would
+			-- otherwise show the already-capped NEW value for a bare
+			-- related_rule_ids reference.
+			(SELECT COALESCE(array_length(
+				COALESCE(pre.related_rule_ids, '{}'::uuid[]) || COALESCE((
+					SELECT array_agg(nid ORDER BY ord)
+					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
+					WHERE nid <> ALL(COALESCE(pre.related_rule_ids, '{}'::uuid[]))
+				), '{}'::uuid[])
+			, 1), 0) FROM outcomes pre WHERE pre.id = $6),
+			-- Diagnostic-only: pre-truncation full notes length, same
+			-- self-join rationale as above.
+			(SELECT COALESCE(char_length(
+				CASE
+					WHEN $3::text IS NULL THEN pre.notes
+					WHEN pre.notes IS NULL OR pre.notes = '' THEN $3
+					ELSE pre.notes || E'\n\n' || $3
+				END
+			), 0) FROM outcomes pre WHERE pre.id = $6)`
 
 	var notesArg pgtype.Text
 	if params.Notes != "" {

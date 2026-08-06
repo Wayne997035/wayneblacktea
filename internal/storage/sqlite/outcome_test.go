@@ -871,6 +871,88 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *te
 	}
 }
 
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive
+// is the SQLite twin of the PG concurrency regression test for 🔴 C-DBI-1
+// (outcome/store_test.go's TestStore_FinalizeDraft_RelatedRuleIDs_
+// ConcurrentEnrich_BothSurvive): N goroutines concurrently enrich the SAME
+// draft with disjoint related_rule_ids, and all N must survive in the final
+// row. Unlike PG, this backend's FinalizeDraft was NEVER shown to lose data
+// under this test — it is race-safe today, but for a reason external to
+// FinalizeDraft's own SQL: db.go's SetMaxOpenConns(1) serializes every
+// statement through a single connection, so no two FinalizeDraft calls can
+// ever be genuinely concurrent inside Postgres-style row-lock contention;
+// FinalizeDraft additionally wraps its SELECT+UPDATE in a SERIALIZABLE
+// transaction (see FinalizeDraft's own doc comment in outcome.go), which
+// would independently prevent the lost-update even with more connections.
+// This test pins that guarantee (dispatch-required: "SQLite 目前僥倖安全，
+// 連線池設定將來被改就會炸，需要一個會 catch 的測試") — it is expected to
+// stay green even if a mutation test reverts PG's fix (this file's SQL
+// never had a CTE-based union), and would only be expected to catch a
+// regression if SetMaxOpenConns(1) or the transaction-wrapping were removed
+// (NEVER do so per the dispatch boundary; if either changes, THIS test is
+// the tripwire).
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	const n = 10
+	ids := make([]uuid.UUID, n)
+	for i := range n {
+		ids[i] = uuid.New()
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+				Result:         "unknown",
+				RelatedRuleIDs: []uuid.UUID{ids[idx]},
+			})
+			errs[idx] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d FinalizeDraft error: %v", i, err)
+		}
+	}
+
+	final, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(final.RelatedRuleIDs) != n {
+		t.Fatalf("final RelatedRuleIDs has %d entries, want exactly %d (one per concurrent caller) — a concurrent write was lost",
+			len(final.RelatedRuleIDs), n)
+	}
+	for _, id := range ids {
+		if !slices.Contains(final.RelatedRuleIDs, id) {
+			t.Errorf("related_rule_id %s from a concurrent call is missing from the final row — overwritten by another concurrent writer", id)
+		}
+	}
+}
+
 // TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved is
 // the SQLite twin of the direct M-1/threat-model reproduction: a call
 // carrying near-empty notes (a single space) against a draft with real
@@ -1580,7 +1662,9 @@ func captureSlogWarn(t *testing.T) *bytes.Buffer {
 // comment) — reproducing PR #152 round 6 Major finding m-R6-3's exact repro
 // shape (existing=150, cap=100). The PG twin of this fixture is
 // insertDraftWithNotesAndRelatedRuleIDs (internal/outcome/store_test.go).
-func insertDraftWithRelatedRuleIDs(t *testing.T, db *wbtsqlite.DB, id, wsID, entityID uuid.UUID, entityType string, relatedRuleIDs []uuid.UUID) {
+func insertDraftWithRelatedRuleIDs(
+	t *testing.T, db *wbtsqlite.DB, id, wsID, entityID uuid.UUID, entityType string, relatedRuleIDs []uuid.UUID,
+) {
 	t.Helper()
 	strs := make([]string, len(relatedRuleIDs))
 	for i, rid := range relatedRuleIDs {
@@ -1663,7 +1747,8 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDr
 			t.Fatalf("FinalizeDraft: %v", err)
 		}
 		if len(got.RelatedRuleIDs) != len(existing) {
-			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (a notes-only call must never touch related_rule_ids)", len(got.RelatedRuleIDs), len(existing))
+			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (a notes-only call must never touch related_rule_ids)",
+				len(got.RelatedRuleIDs), len(existing))
 		}
 		for i, id := range existing {
 			if got.RelatedRuleIDs[i] != id {
