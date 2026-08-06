@@ -1288,3 +1288,166 @@ func TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft(t *testing.T) {
 		t.Errorf("expected exactly 1 outcome row for the entity after %d concurrent SeedDraft calls, got %d — TOCTOU not closed", n, rowCount)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PR #152 round 4 Major (finding F3) + Critical/Major (F1/F6 parity). SQLite
+// never had F1's NULL bug: migrations/sqlite/000063_outcomes_rule_link.up.sql
+// declares `related_rule_ids TEXT NOT NULL DEFAULT '[]'`, unlike PG's
+// nullable UUID[] with no DEFAULT — so this backend structurally cannot
+// reproduce F1. F3 (SeedDraft leaving updated_at unset) and F6 (dedup
+// coverage) DO apply here and are pinned below for backend-security-
+// design.md §6.5 parity.
+// ---------------------------------------------------------------------------
+
+// TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt is F3's fix
+// reproduction: before this fix, SeedDraft's INSERT omitted updated_at
+// entirely, and — because migrations/sqlite/000075's column is nullable at
+// the SQLite schema level (ALTER TABLE cannot retroactively add a NOT NULL
+// DEFAULT without a full table rebuild) — every seeded draft's updated_at
+// scanned back as the Go zero time.Time (0001-01-01), not CreatedAt.
+func TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for a fresh entity")
+	}
+	if draft.UpdatedAt.IsZero() {
+		t.Fatal("seeded draft: UpdatedAt is the zero time — SeedDraft's INSERT did not supply a value")
+	}
+	if !draft.UpdatedAt.Equal(draft.CreatedAt) {
+		t.Errorf("seeded draft: UpdatedAt = %v, want equal to CreatedAt %v (never modified yet)",
+			draft.UpdatedAt, draft.CreatedAt)
+	}
+}
+
+// TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath
+// mirrors the PG production-path test (TestStore_SeedDraft_FinalizeDraft_
+// RelatedRuleIDs_ProductionPath) for backend-security-design.md §6.5 parity:
+// the actual complete_task -> record_outcome call sequence, starting from
+// SeedDraft rather than CreateOutcome, must round-trip related_rule_ids
+// correctly. SQLite never had F1's bug, but every other FinalizeDraft test
+// in this file also happens to seed via CreateOutcome, so this closes the
+// same "SeedDraft path specifically" coverage gap the PG twin does.
+func TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	draft, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for a fresh entity")
+	}
+	if len(draft.RelatedRuleIDs) != 0 {
+		t.Fatalf("precondition: freshly-seeded draft.RelatedRuleIDs = %v, want empty", draft.RelatedRuleIDs)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleA, ruleB},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 2 || finalized.RelatedRuleIDs[0] != ruleA || finalized.RelatedRuleIDs[1] != ruleB {
+		t.Fatalf("RelatedRuleIDs = %v, want EXACTLY [%s, %s]", finalized.RelatedRuleIDs, ruleA, ruleB)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix is F6's
+// SQLite-side half of the combined test matrix (existing empty / existing
+// has-value crossed with incoming has-a-duplicate / incoming has-none). No
+// "existing NULL" case: unlike PG, this column is `NOT NULL DEFAULT '[]'`
+// (migrations/sqlite/000063), so a NULL existing value is not reachable
+// through any write path this store exposes. unionRelatedRuleIDs
+// (outcome.go) already dedupes both operands via a `seen` map, so every
+// case here is expected to pass without a code change — the point is
+// closing the zero-coverage gap the dispatch flagged (a no-op dedup
+// passthrough left the suite green), mirroring the PG matrix's structure.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	ruleX := uuid.New()
+	ruleY, ruleZ := uuid.New(), uuid.New()
+
+	tests := []struct {
+		name        string
+		existingIDs []uuid.UUID
+		incoming    []uuid.UUID
+		want        []uuid.UUID
+	}{
+		{
+			name:        "existing empty array, incoming has an internal duplicate",
+			existingIDs: []uuid.UUID{},
+			incoming:    []uuid.UUID{ruleY, ruleY, ruleZ},
+			want:        []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:        "existing empty array, incoming has no duplicates",
+			existingIDs: []uuid.UUID{},
+			incoming:    []uuid.UUID{ruleY, ruleZ},
+			want:        []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:        "existing already has a value, incoming has an internal duplicate",
+			existingIDs: []uuid.UUID{ruleX},
+			incoming:    []uuid.UUID{ruleY, ruleY},
+			want:        []uuid.UUID{ruleX, ruleY},
+		},
+		{
+			name:        "existing already has a value, incoming has no duplicates",
+			existingIDs: []uuid.UUID{ruleX},
+			incoming:    []uuid.UUID{ruleY, ruleZ},
+			want:        []uuid.UUID{ruleX, ruleY, ruleZ},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entityID := uuid.New()
+			draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+				WorkspaceID:    &wsID,
+				EntityType:     "task",
+				EntityID:       entityID,
+				Result:         "unknown",
+				RelatedRuleIDs: tc.existingIDs,
+			})
+			if err != nil {
+				t.Fatalf("CreateOutcome (seed existing state): %v", err)
+			}
+
+			finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+				Result:         outcomeResultSuccess,
+				RelatedRuleIDs: tc.incoming,
+			})
+			if err != nil {
+				t.Fatalf("FinalizeDraft: %v", err)
+			}
+			if len(finalized.RelatedRuleIDs) != len(tc.want) {
+				t.Fatalf("RelatedRuleIDs = %v, want %v", finalized.RelatedRuleIDs, tc.want)
+			}
+			for i, id := range tc.want {
+				if finalized.RelatedRuleIDs[i] != id {
+					t.Errorf("RelatedRuleIDs[%d] = %s, want %s (full: got %v, want %v)",
+						i, finalized.RelatedRuleIDs[i], id, finalized.RelatedRuleIDs, tc.want)
+				}
+			}
+		})
+	}
+}

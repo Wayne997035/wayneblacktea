@@ -1096,6 +1096,36 @@ func TestStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite(t *testing.T) {
 	}
 }
 
+// TestStore_SeedDraft_UpdatedAtEqualsCreatedAt is F3's PG-side pin: a
+// freshly-seeded draft's UpdatedAt must equal its CreatedAt (never yet
+// modified in place — migration 000075's invariant, see domain.go's
+// UpdatedAt doc comment). PG's SeedDraft INSERT relies on the column's
+// `DEFAULT NOW()` (migration 000075) rather than an explicit value, unlike
+// SQLite (which cannot add a NOT NULL DEFAULT retroactively and so must
+// supply updated_at on every INSERT — see F3's SQLite-side fix and its own
+// twin of this test). This test exists so a future DEFAULT NOW() removal on
+// the PG column would be caught here, not just observed as a symptom in the
+// SQLite backend.
+func TestStore_SeedDraft_UpdatedAtEqualsCreatedAt(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	draft, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for a fresh entity")
+	}
+	if !draft.UpdatedAt.Equal(draft.CreatedAt) {
+		t.Errorf("seeded draft: UpdatedAt = %v, want equal to CreatedAt %v (never modified yet)",
+			draft.UpdatedAt, draft.CreatedAt)
+	}
+}
+
 // TestStore_SeedDraft_CreatesOnce verifies the sequential happy path against
 // real Postgres: first call creates, second call is a no-op read.
 func TestStore_SeedDraft_CreatesOnce(t *testing.T) {
@@ -1765,5 +1795,212 @@ func TestMigration000074_Dedup_Postgres_CreatedAtTieBreak(t *testing.T) {
 	}
 	if count != 0 {
 		t.Error("expected the tie-break loser (lesser id, identical created_at) to be deleted by the dedup step")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 4 Critical (finding F1) + Major (finding F6): FinalizeDraft's
+// related_rule_ids union SQL evaluated `nid <> ALL(related_rule_ids)` against
+// a NULL existing column — SQL three-valued logic makes `x <> ALL(NULL)`
+// NULL, not true, so array_agg returned NULL and the ENTIRE caller-supplied
+// payload silently vanished. SeedDraft (the production complete_task ->
+// record_outcome entry point) left related_rule_ids unset on INSERT, which
+// defaults to NULL (migration 000063 has no DEFAULT), so every draft it
+// seeded hit this exactly. Separately, F6: the SQL only filters ids already
+// PRESENT in the existing column — it never deduplicates the caller-supplied
+// array against ITSELF, a gap dedupeUUIDsPreserveOrder (store.go) closes but
+// which had zero test coverage (swapping it for a no-op passthrough left the
+// full integration suite green).
+// ---------------------------------------------------------------------------
+
+// TestStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath is F1's
+// primary acceptance criterion: the actual production call sequence
+// (complete_task's SeedDraft, then a later record_outcome's FinalizeDraft
+// carrying related_rule_ids) against real Postgres. Every existing
+// FinalizeDraft test in this file seeds its draft via CreateOutcome, which
+// already writes related_rule_ids = '{}' explicitly — that path never
+// exercised the NULL the SeedDraft-created row actually has. This test
+// starts from SeedDraft specifically to close that gap.
+func TestStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	draft, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for a fresh entity")
+	}
+	if len(draft.RelatedRuleIDs) != 0 {
+		t.Fatalf("precondition: freshly-seeded draft.RelatedRuleIDs = %v, want empty", draft.RelatedRuleIDs)
+	}
+
+	// Direct raw-SQL check (not just the Go-layer view, which normalizes a
+	// NULL scan to an empty slice either way — see scanOutcomeRow's `if
+	// relatedRuleIDs == nil { relatedRuleIDs = []uuid.UUID{} }`, which would
+	// mask this check if it only looked at draft.RelatedRuleIDs). This
+	// directly verifies SeedDraft's INSERT wrote '{}'::uuid[], not left the
+	// column NULL — the specific defense-in-depth line this PR added
+	// alongside FinalizeDraft's COALESCE (SQL fix would mask a regression
+	// here too, since it now tolerates NULL — this check isolates the
+	// SeedDraft-side fix specifically).
+	var isNull bool
+	if err := pool.QueryRow(ctx, `SELECT related_rule_ids IS NULL FROM outcomes WHERE id = $1`, draft.ID).Scan(&isNull); err != nil {
+		t.Fatalf("raw related_rule_ids NULL check: %v", err)
+	}
+	if isNull {
+		t.Fatal("SeedDraft left related_rule_ids as SQL NULL — must write '{}'::uuid[] explicitly")
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         "success",
+		RelatedRuleIDs: []uuid.UUID{ruleA, ruleB},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 2 || finalized.RelatedRuleIDs[0] != ruleA || finalized.RelatedRuleIDs[1] != ruleB {
+		t.Fatalf("RelatedRuleIDs = %v, want EXACTLY [%s, %s] — the SeedDraft->FinalizeDraft production "+
+			"path must not silently drop caller-supplied rule links", finalized.RelatedRuleIDs, ruleA, ruleB)
+	}
+
+	// Re-read from a fresh query too, not just the RETURNING clause, to rule
+	// out a bug where RETURNING reflects the pre-commit value.
+	reread, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(reread.RelatedRuleIDs) != 2 || reread.RelatedRuleIDs[0] != ruleA || reread.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("reread RelatedRuleIDs = %v, want EXACTLY [%s, %s]", reread.RelatedRuleIDs, ruleA, ruleB)
+	}
+}
+
+// insertDraftWithRelatedRuleIDs inserts an 'unknown' draft row directly via
+// SQL, bypassing both CreateOutcome (which always writes an explicit '{}'
+// for a nil slice — see store.go's CreateOutcome comment — and so can never
+// reproduce a NULL column) and SeedDraft (fixed by this PR to also write
+// '{}'). includeColumn=false omits related_rule_ids from the INSERT
+// entirely, which — per migration 000063's `UUID[]` with no DEFAULT —
+// leaves it genuinely NULL, reproducing rows written by the pre-fix
+// SeedDraft and any other legacy write path.
+func insertDraftWithRelatedRuleIDs(
+	ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	id, wsID, entityID uuid.UUID, entityType string,
+	relatedRuleIDs []uuid.UUID, includeColumn bool,
+) {
+	t.Helper()
+	if !includeColumn {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result) VALUES ($1, $2, $3, $4, 'unknown')`,
+			id, wsID, entityType, entityID,
+		)
+		if err != nil {
+			t.Fatalf("insert draft with NULL related_rule_ids: %v", err)
+		}
+		return
+	}
+	_, err := pool.Exec(ctx,
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, related_rule_ids) VALUES ($1, $2, $3, $4, 'unknown', $5)`,
+		id, wsID, entityType, entityID, relatedRuleIDs,
+	)
+	if err != nil {
+		t.Fatalf("insert draft with explicit related_rule_ids %v: %v", relatedRuleIDs, err)
+	}
+}
+
+// TestStore_FinalizeDraft_RelatedRuleIDs_NullAndDedupMatrix is the combined
+// F1 + F6 test matrix the dispatch asked for in one place: existing column
+// state (NULL / empty array / already has a value) crossed with whether the
+// caller-supplied incoming array carries an internal duplicate. Every case
+// asserts the exact expected union so both blind spots (NULL swallowing the
+// whole payload, and an unduplicated incoming array producing a duplicate
+// entry) are pinned by the same table.
+func TestStore_FinalizeDraft_RelatedRuleIDs_NullAndDedupMatrix(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := outcome.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	ruleX := uuid.New() // pre-existing value, used only by the "has-value" cases
+	ruleY, ruleZ := uuid.New(), uuid.New()
+
+	tests := []struct {
+		name               string
+		existingIncludeCol bool        // false = column omitted from INSERT => genuinely NULL
+		existingIDs        []uuid.UUID // ignored when existingIncludeCol is false
+		incoming           []uuid.UUID
+		want               []uuid.UUID
+	}{
+		{
+			name:               "existing NULL, incoming has an internal duplicate",
+			existingIncludeCol: false,
+			incoming:           []uuid.UUID{ruleY, ruleY},
+			want:               []uuid.UUID{ruleY},
+		},
+		{
+			name:               "existing NULL, incoming has no duplicates",
+			existingIncludeCol: false,
+			incoming:           []uuid.UUID{ruleY, ruleZ},
+			want:               []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:               "existing empty array, incoming has an internal duplicate",
+			existingIncludeCol: true,
+			existingIDs:        []uuid.UUID{},
+			incoming:           []uuid.UUID{ruleY, ruleY, ruleZ},
+			want:               []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:               "existing empty array, incoming has no duplicates",
+			existingIncludeCol: true,
+			existingIDs:        []uuid.UUID{},
+			incoming:           []uuid.UUID{ruleY, ruleZ},
+			want:               []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:               "existing already has a value, incoming has an internal duplicate",
+			existingIncludeCol: true,
+			existingIDs:        []uuid.UUID{ruleX},
+			incoming:           []uuid.UUID{ruleY, ruleY},
+			want:               []uuid.UUID{ruleX, ruleY},
+		},
+		{
+			name:               "existing already has a value, incoming has no duplicates",
+			existingIncludeCol: true,
+			existingIDs:        []uuid.UUID{ruleX},
+			incoming:           []uuid.UUID{ruleY, ruleZ},
+			want:               []uuid.UUID{ruleX, ruleY, ruleZ},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := uuid.New()
+			entityID := uuid.New()
+			insertDraftWithRelatedRuleIDs(ctx, t, pool, id, wsID, entityID, "task", tc.existingIDs, tc.existingIncludeCol)
+
+			finalized, err := store.FinalizeDraft(ctx, id, outcome.CreateOutcomeParams{
+				Result:         "success",
+				RelatedRuleIDs: tc.incoming,
+			})
+			if err != nil {
+				t.Fatalf("FinalizeDraft: %v", err)
+			}
+			if len(finalized.RelatedRuleIDs) != len(tc.want) {
+				t.Fatalf("RelatedRuleIDs = %v, want %v", finalized.RelatedRuleIDs, tc.want)
+			}
+			for i, id := range tc.want {
+				if finalized.RelatedRuleIDs[i] != id {
+					t.Errorf("RelatedRuleIDs[%d] = %s, want %s (full: got %v, want %v)",
+						i, finalized.RelatedRuleIDs[i], id, finalized.RelatedRuleIDs, tc.want)
+				}
+			}
+		})
 	}
 }

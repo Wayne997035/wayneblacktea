@@ -559,6 +559,117 @@ func TestIsDraftIdempotentReplay(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// PR #152 round 4 Major (finding F4): notesHasNewContent used to compare
+// incoming only against the TRAILING "\n\n"-delimited segment of existing
+// (strings.HasSuffix), so an earlier segment resubmitted out of order —
+// e.g. an interleaved AAA, BBB, AAA resend sequence — was never recognized
+// as a replay, letting the caller re-append duplicate content and re-fire
+// FinalizeDraft's side effects indefinitely. slices.Contains against every
+// segment fixes this regardless of resend order.
+// ---------------------------------------------------------------------------
+
+// TestNotesHasNewContent_InterleavedSegments is the direct unit-level
+// reproduction: existing already contains both "AAA" and "BBB" as separate
+// "\n\n"-delimited segments (not just the trailing one), and every
+// already-present segment — not only the last — must be recognized as
+// carrying no new content.
+func TestNotesHasNewContent_InterleavedSegments(t *testing.T) {
+	const existing = "AAA\n\nBBB"
+
+	tests := []struct {
+		name     string
+		incoming string
+		want     bool
+	}{
+		{"trailing segment resent is a replay", "BBB", false},
+		{"NON-trailing (first) segment resent is ALSO a replay", "AAA", false},
+		{"genuinely new content is not a replay", "CCC", true},
+		{"empty incoming carries no content", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := notesHasNewContent(existing, tc.incoming)
+			if got != tc.want {
+				t.Errorf("notesHasNewContent(%q, %q) = %v, want %v", existing, tc.incoming, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecordExecutionResult_DraftEnrichRetry_InterleavedResendDetectedAsReplay
+// is the RecordExecutionResult-level reproduction pinned by the dispatch
+// acceptance criteria: AAA -> BBB -> AAA must classify the THIRD call as
+// ActionReplayedIdempotent (not a third ActionDraftEnriched re-write). Before
+// the fix, this sequence reported draft_enriched on every call because the
+// second AAA is not the trailing segment of "AAA\n\nBBB".
+func TestRecordExecutionResult_DraftEnrichRetry_InterleavedResendDetectedAsReplay(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         draftID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     resultUnknown,
+		},
+	}
+	paramsFor := func(notes string) CreateOutcomeParams {
+		return CreateOutcomeParams{
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     resultUnknown,
+			Notes:      notes,
+		}
+	}
+
+	// Call 1: AAA against an empty draft — genuinely new, must write.
+	_, action1, err := RecordExecutionResult(context.Background(), fs, paramsFor("AAA"))
+	if err != nil {
+		t.Fatalf("call 1 (AAA): %v", err)
+	}
+	if action1 != ActionDraftEnriched {
+		t.Fatalf("call 1 action = %q, want %q", action1, ActionDraftEnriched)
+	}
+	if fs.latest.Notes != "AAA" {
+		t.Fatalf("after call 1, latest.Notes = %q, want %q", fs.latest.Notes, "AAA")
+	}
+
+	// Call 2: BBB — a genuinely new second segment, must write.
+	fs.finalizeCalled = false
+	_, action2, err := RecordExecutionResult(context.Background(), fs, paramsFor("BBB"))
+	if err != nil {
+		t.Fatalf("call 2 (BBB): %v", err)
+	}
+	if action2 != ActionDraftEnriched {
+		t.Fatalf("call 2 action = %q, want %q", action2, ActionDraftEnriched)
+	}
+	if fs.latest.Notes != "AAA\n\nBBB" {
+		t.Fatalf("after call 2, latest.Notes = %q, want %q", fs.latest.Notes, "AAA\n\nBBB")
+	}
+
+	// Call 3: AAA again — already present as the FIRST (non-trailing)
+	// segment. Must be detected as a replay: no write, no side effect fire.
+	fs.finalizeCalled = false
+	third, action3, err := RecordExecutionResult(context.Background(), fs, paramsFor("AAA"))
+	if err != nil {
+		t.Fatalf("call 3 (AAA again): %v", err)
+	}
+	if action3 != ActionReplayedIdempotent {
+		t.Errorf("call 3 action = %q, want %q (interleaved resend of a non-trailing segment must be idempotent)",
+			action3, ActionReplayedIdempotent)
+	}
+	if fs.finalizeCalled {
+		t.Error("FinalizeDraft must NOT be called a third time — the resent segment carries no new information")
+	}
+	if third.Notes != "AAA\n\nBBB" {
+		t.Errorf("call 3 must not alter stored Notes: got %q, want unchanged %q", third.Notes, "AAA\n\nBBB")
+	}
+}
+
 // TestRecordExecutionResult_DraftEnrichRetry_ByteIdenticalIsIdempotent is the
 // PR #152 round 3 Major reproduction: a retry of a content-bearing
 // result="unknown" enrich call, byte-identical to the first, must be

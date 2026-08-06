@@ -347,6 +347,49 @@ func TestHandleRecordOutcome_InvalidMetricsJSON(t *testing.T) {
 	}
 }
 
+// TestHandleRecordOutcome_MetricsJSON_MustBeObject is the PR #152 round 4
+// Major reproduction: the old check was bare json.Valid, which accepts ANY
+// valid JSON value — arrays, numbers, strings, null — despite the error
+// message already promising "must be a valid JSON object". A non-object
+// left operand breaks PG's jsonb `||` merge in FinalizeDraft (concatenates
+// instead of merging) and, via metricsHasNewKey's fail-open-to-true default
+// on unmarshal failure, lets a repeated record_outcome(metrics_json="[1]")
+// grow the column without bound while re-firing draft_enriched side effects
+// on every retry.
+func TestHandleRecordOutcome_MetricsJSON_MustBeObject(t *testing.T) {
+	tests := []struct {
+		name        string
+		metricsJSON string
+		wantErr     bool
+	}{
+		{"array is rejected", `[1]`, true},
+		{"null literal is rejected", `null`, true},
+		{"bare string is rejected", `"str"`, true},
+		{"bare number is rejected", `0`, true},
+		{"malformed JSON is rejected", `{not valid`, true},
+		{"empty object is accepted", `{}`, false},
+		{"object with a key is accepted", `{"a":1}`, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &stubOutcomeStore{
+				returnOutcome: outcome.Outcome{ID: uuid.New(), EntityType: entityTypeTask, Result: "partial"},
+			}
+			s := newOutcomeServer(store)
+			r := callRecordOutcome(t, s, map[string]any{
+				"entity_type":  entityTypeTask,
+				"entity_id":    uuid.New().String(),
+				"result":       "partial",
+				"metrics_json": tc.metricsJSON,
+			})
+			if r.IsError != tc.wantErr {
+				t.Errorf("metrics_json=%q: IsError = %v, want %v (%s)", tc.metricsJSON, r.IsError, tc.wantErr, resultText(r))
+			}
+		})
+	}
+}
+
 func TestHandleRecordOutcome_StoreError(t *testing.T) {
 	store := &stubOutcomeStore{returnErr: errors.New("db down")}
 	s := newOutcomeServer(store)
@@ -782,6 +825,41 @@ func TestParseRelatedRuleIDs_ValidUUIDs(t *testing.T) {
 	}
 	if len(ids) != 2 {
 		t.Fatalf("expected 2 IDs, got %d", len(ids))
+	}
+}
+
+// TestParseRelatedRuleIDs_DedupesDuplicates is F6's MCP-boundary half: a
+// caller-supplied duplicate ID must be deduped here, order preserved,
+// before it ever reaches CreateOutcome's fresh-row path (which — unlike
+// FinalizeDraft — never applies outcome.DedupeUUIDsPreserveOrder itself).
+func TestParseRelatedRuleIDs_DedupesDuplicates(t *testing.T) {
+	id1, id2 := uuid.New(), uuid.New()
+	raw := `["` + id1.String() + `","` + id2.String() + `","` + id1.String() + `"]`
+	ids, err := parseRelatedRuleIDs(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != id1 || ids[1] != id2 {
+		t.Fatalf("ids = %v, want EXACTLY [%s, %s] (duplicate id1 removed, first-occurrence order preserved)", ids, id1, id2)
+	}
+}
+
+// TestParseRelatedRuleIDs_MaxCheckAgainstRawCountNotDeduped verifies the max
+// check runs against the RAW parsed count, not the post-dedup count — a
+// caller cannot smuggle more than maxRelatedRuleIDs distinct IDs past the
+// cap by padding the array with a repeated ID (which would deduplicate down
+// under the limit) if the check ran after dedup instead of before.
+func TestParseRelatedRuleIDs_MaxCheckAgainstRawCountNotDeduped(t *testing.T) {
+	repeated := uuid.New()
+	strs := make([]string, maxRelatedRuleIDs+1)
+	for i := range strs {
+		strs[i] = `"` + repeated.String() + `"` // all the SAME id — dedups to 1
+	}
+	raw := "[" + strings.Join(strs, ",") + "]"
+	_, err := parseRelatedRuleIDs(raw)
+	if err == nil {
+		t.Fatalf("expected error: raw count (%d) exceeds maxRelatedRuleIDs=%d even though the deduped count is 1",
+			maxRelatedRuleIDs+1, maxRelatedRuleIDs)
 	}
 }
 

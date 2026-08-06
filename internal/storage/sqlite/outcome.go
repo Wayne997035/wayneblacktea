@@ -679,8 +679,16 @@ func (s *OutcomeStore) SeedDraft(
 
 	id := uuid.New()
 	now := nowRFC3339()
-	const insertQ = `INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, created_at)
-		VALUES (?1, ?2, ?3, ?4, 'unknown', ?5)
+	// updated_at is supplied explicitly, equal to created_at (mirrors
+	// CreateOutcome's own "UpdatedAt starts equal to CreatedAt" rule above).
+	// PR #152 round 4 Major: SeedDraft is a THIRD writer of this table besides
+	// CreateOutcome and FinalizeDraft — the migrations/sqlite/000075 comment
+	// claiming those two "always supply an explicit value on every write" (so
+	// the column is "never actually NULL in practice") was wrong; SeedDraft
+	// left it unset, producing a zero-value time.Time (SQLite NULL, parsed as
+	// Go's zero time) on every seeded draft until this fix.
+	const insertQ = `INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, 'unknown', ?5, ?6)
 		ON CONFLICT (COALESCE(workspace_id, '00000000-0000-0000-0000-000000000000'), entity_type, entity_id)
 		WHERE result = 'unknown'
 		DO NOTHING`
@@ -691,6 +699,7 @@ func (s *OutcomeStore) SeedDraft(
 		nullStringFromUUID(workspaceID),
 		entityType,
 		entityID.String(),
+		now,
 		now,
 	)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -283,11 +284,13 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 // append semantics: e.g. resupplying an already-occupied metrics key with a
 // DIFFERENT value is not new information, because FinalizeDraft will
 // silently keep the existing value regardless):
-//   - Notes: no new info if incoming is empty, OR if incoming is already
-//     the trailing block of existing (byte-identical retry after either a
-//     direct write or a previous append — notesHasNewContent's HasSuffix
-//     check), OR incoming equals existing outright (the direct-write case
-//     when existing was originally empty).
+//   - Notes: no new info if incoming is empty, OR if incoming already
+//     matches ANY "\n\n"-delimited block of existing — not just the
+//     trailing one (PR #152 round 4 Major: an interleaved resend that
+//     repeats an earlier block must also be recognized as a replay, see
+//     notesHasNewContent's slices.Contains check), OR incoming equals
+//     existing outright (the direct-write case when existing was
+//     originally empty).
 //   - Metrics: no new info if incoming is empty, OR if every key in
 //     incoming is already present in existing — the VALUE doesn't matter,
 //     only key membership, because FinalizeDraft never overwrites an
@@ -313,6 +316,18 @@ func isDraftIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 // notesHasNewContent reports whether appending incoming to existing (per
 // FinalizeDraft's appendNotes rule: direct write when existing is empty,
 // "\n\n"-joined append otherwise) would actually change the stored value.
+//
+// Checks every "\n\n"-delimited segment of existing, not just the trailing
+// one (PR #152 round 4 Major): the old HasSuffix-only check only recognized
+// a byte-identical retry of the MOST RECENT enrich call as a replay. Any
+// earlier segment resubmitted out of order — e.g. an interleaved AAA, BBB,
+// AAA, BBB, AAA resend sequence — passed this check as "new" every time,
+// because it was never the trailing segment, so each resend appended a
+// fresh duplicate AND re-fired ActionDraftEnriched's SetOutcomeLink/atomize
+// side effects. slices.Contains against the full split gives idempotency
+// regardless of resend order, matching what FinalizeDraft's appendNotes
+// would actually change: appending a segment ALREADY present anywhere in
+// existing produces string-different-but-not-semantically-new content.
 func notesHasNewContent(existing, incoming string) bool {
 	if incoming == "" {
 		return false
@@ -323,7 +338,7 @@ func notesHasNewContent(existing, incoming string) bool {
 	if existing == incoming {
 		return false
 	}
-	return !strings.HasSuffix(existing, "\n\n"+incoming)
+	return !slices.Contains(strings.Split(existing, "\n\n"), incoming)
 }
 
 // metricsHasNewKey reports whether incoming (a JSON object) contains at

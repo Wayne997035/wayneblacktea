@@ -23,7 +23,20 @@ const maxRelatedRuleIDs = 20
 // parseRelatedRuleIDs parses an optional JSON array of UUID strings from the
 // MCP tool arguments. Returns an empty slice when the argument is absent or
 // empty; returns an error when any element is not a valid UUID or when the
-// array exceeds maxRelatedRuleIDs (20).
+// array exceeds maxRelatedRuleIDs (20). The max-length check is against the
+// RAW parsed count (before dedup), so repeating one ID cannot be used to
+// smuggle more than maxRelatedRuleIDs distinct entries past the cap.
+//
+// De-duped before returning (PR #152 round 4 Major, finding F6): neither
+// backend's CreateOutcome deduped related_rule_ids on the FRESH-row path
+// (ActionCreated — no prior draft/outcome exists yet for the entity, so
+// FinalizeDraft's own dedup — outcome.DedupeUUIDsPreserveOrder — never
+// runs). A caller-supplied duplicate on that path would have been stored
+// verbatim and, per maxRelatedRuleIDs's own doc comment, double the
+// Wednesday governance job's O(N*M) ApplyOutcome calls for that rule.
+// outcome.DedupeUUIDsPreserveOrder is reused (not reimplemented) here
+// specifically so the MCP-boundary dedup and the store-layer dedup never
+// drift into two different order semantics.
 func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 	if raw == "" || raw == "[]" {
 		return []uuid.UUID{}, nil
@@ -46,7 +59,7 @@ func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 		}
 		out = append(out, id)
 	}
-	return out, nil
+	return outcome.DedupeUUIDsPreserveOrder(out), nil
 }
 
 const maxOutcomeLimit = 100
@@ -174,7 +187,21 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 	}
 
 	if raw := stringArg(args, "metrics_json"); raw != "" {
-		if !json.Valid([]byte(raw)) {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &obj); err != nil || obj == nil {
+			// json.Valid alone accepted ANY valid JSON value — arrays, numbers,
+			// strings, null — despite the error message already promising "must
+			// be a valid JSON object" (PR #152 round 4 Major). PG's jsonb `||`
+			// merge in FinalizeDraft only behaves correctly when both operands
+			// are objects: a non-object left operand (e.g. `[1]`) silently
+			// concatenates instead of merging, letting a repeated
+			// record_outcome(metrics_json="[1]") grow the column without bound
+			// and, via metricsHasNewKey's fail-open-to-true default on
+			// unmarshal-into-map failure, re-fire draft_enriched (SetOutcomeLink
+			// / atomize) on every single retry. Unmarshalling into
+			// map[string]json.RawMessage rejects arrays/scalars/null outright;
+			// `obj == nil` additionally rejects the literal `null` (which
+			// unmarshals into a nil map with no error).
 			return in, mcp.NewToolResultError("metrics_json must be a valid JSON object")
 		}
 		in.metricsJSON = []byte(raw)

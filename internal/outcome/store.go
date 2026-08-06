@@ -438,13 +438,23 @@ func (s *Store) GetLatestForEntity(ctx context.Context, workspaceID *uuid.UUID, 
 	return o, nil
 }
 
-// dedupeUUIDsPreserveOrder returns ids with duplicate UUIDs removed,
+// DedupeUUIDsPreserveOrder returns ids with duplicate UUIDs removed,
 // preserving first-occurrence order. FinalizeDraft's related_rule_ids merge
 // SQL appends elements of this slice that aren't already present in the
 // existing column; pre-deduping the input here (rather than in SQL, where
 // `array_agg(DISTINCT x ORDER BY y)` requires y to be one of the aggregate's
 // own arguments) keeps the query simple.
-func dedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
+//
+// Exported (PR #152 round 4 Major, finding F6): the MCP layer's
+// parseRelatedRuleIDs (internal/mcp/tools_outcome.go) also calls this so a
+// caller-supplied duplicate is deduped even on the FRESH-row CreateOutcome
+// path (ActionCreated — no prior draft to union against), which neither
+// backend's CreateOutcome ever deduped on its own. Calling it again here in
+// FinalizeDraft is deliberate defense-in-depth, not redundancy: StoreIface
+// is the actual interface contract, and any other current or future caller
+// of FinalizeDraft that does NOT go through parseRelatedRuleIDs must not be
+// able to reintroduce a duplicate into the stored array.
+func DedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
 	seen := make(map[uuid.UUID]bool, len(ids))
 	out := make([]uuid.UUID, 0, len(ids))
 	for _, id := range ids {
@@ -478,7 +488,7 @@ func dedupeUUIDsPreserveOrder(ids []uuid.UUID) []uuid.UUID {
 //   - RelatedRuleIDs: element-level UNION, not a whole-array replace —
 //     existing IDs stay first in their original order, then any
 //     caller-supplied IDs not already present are appended in the order
-//     supplied (params pre-deduped in Go via dedupeUUIDsPreserveOrder).
+//     supplied (params pre-deduped in Go via DedupeUUIDsPreserveOrder).
 //   - WorkSessionID: set-once — COALESCE(existing, new) means it can only be
 //     written while still NULL; once set, no later call can re-point it.
 //
@@ -503,10 +513,10 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 			END,
 			related_rule_ids = CASE
 				WHEN array_length($4::uuid[], 1) IS NULL THEN related_rule_ids
-				ELSE related_rule_ids || COALESCE((
+				ELSE COALESCE(related_rule_ids, '{}'::uuid[]) || COALESCE((
 					SELECT array_agg(nid ORDER BY ord)
 					FROM unnest($4::uuid[]) WITH ORDINALITY AS u(nid, ord)
-					WHERE nid <> ALL(related_rule_ids)
+					WHERE nid <> ALL(COALESCE(related_rule_ids, '{}'::uuid[]))
 				), '{}'::uuid[])
 			END,
 			work_session_id = COALESCE(work_session_id, $5),
@@ -522,7 +532,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 	if len(params.Metrics) > 0 {
 		metricsArg = string(params.Metrics)
 	}
-	relatedRuleIDs := dedupeUUIDsPreserveOrder(params.RelatedRuleIDs)
+	relatedRuleIDs := DedupeUUIDsPreserveOrder(params.RelatedRuleIDs)
 	if relatedRuleIDs == nil {
 		relatedRuleIDs = []uuid.UUID{}
 	}
@@ -560,6 +570,20 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 // otherwise an INSERT ... ON CONFLICT DO NOTHING against the partial unique
 // index idx_outcomes_one_open_draft (migration 000074) serializes concurrent
 // first-time seeders.
+//
+// related_rule_ids is explicitly inserted as '{}'::uuid[] rather than left to
+// default to NULL (migration 000063 leaves the column nullable with no
+// DEFAULT). PR #152 round 4 Critical: FinalizeDraft's union SQL evaluates
+// `nid <> ALL(related_rule_ids)` against the existing column — under SQL
+// three-valued logic, `x <> ALL(NULL)` is NULL, not true, so every
+// caller-supplied ID got filtered out and array_agg returned NULL, silently
+// dropping the entire related_rule_ids payload on the FIRST finalize of any
+// SeedDraft-seeded row (the production complete_task -> record_outcome path).
+// CreateOutcome (this file, above) already avoids the same trap by writing
+// '{}' instead of nil; SeedDraft now does too, so no NEW NULL is ever
+// produced. FinalizeDraft's SQL additionally wraps every read of
+// related_rule_ids in COALESCE(..., '{}'::uuid[]) as defence-in-depth against
+// rows that predate this fix.
 func (s *Store) SeedDraft(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID) (Outcome, bool, error) {
 	if latest, err := s.GetLatestForEntity(ctx, workspaceID, entityType, entityID); err == nil {
 		return latest, false, nil
@@ -568,8 +592,8 @@ func (s *Store) SeedDraft(ctx context.Context, workspaceID *uuid.UUID, entityTyp
 	}
 
 	const insertQ = `
-		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result)
-		VALUES ($1, $2, $3, 'unknown')
+		INSERT INTO outcomes (workspace_id, entity_type, entity_id, result, related_rule_ids)
+		VALUES ($1, $2, $3, 'unknown', '{}'::uuid[])
 		ON CONFLICT (COALESCE(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid), entity_type, entity_id)
 		WHERE result = 'unknown'
 		DO NOTHING
