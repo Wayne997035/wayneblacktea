@@ -138,12 +138,12 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 
 	seeds := []seed{
 		{uuid.New(), "decision", "accepted", resolved100Days, &rt100, false, "accepted decision >90d"},
-		{uuid.New(), "concept", "rejected", resolved100Days, &rt100, false, "rejected concept >90d"},
+		{uuid.New(), "concept", rejectedStatus, resolved100Days, &rt100, false, "rejected concept >90d"},
 		{uuid.New(), "decision", "accepted", resolved10Days, &rt10, true, "accepted decision <90d"},
-		{uuid.New(), "decision", "pending", pendingDecision200, nil, false, "pending decision >180d"},
-		{uuid.New(), "decision", "pending", pendingDecision30, nil, true, "pending decision <180d"},
-		{uuid.New(), "goal", "pending", pendingGoal400, nil, true, "pending goal >180d (user intent)"},
-		{uuid.New(), "concept", "pending", pendingGoal400, nil, true, "pending concept >180d (user intent)"},
+		{uuid.New(), "decision", pendingStatus, pendingDecision200, nil, false, "pending decision >180d"},
+		{uuid.New(), "decision", pendingStatus, pendingDecision30, nil, true, "pending decision <180d"},
+		{uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, "pending goal >180d (user intent)"},
+		{uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, "pending concept >180d (user intent)"},
 	}
 
 	for _, s := range seeds {
@@ -219,8 +219,8 @@ func TestRunDailyPendingProposalsPrune_TypeTaskTTL(t *testing.T) {
 		})
 	}
 
-	insert(freshID, "pending", freshCreated, nil)
-	insert(staleID, "pending", staleCreated, nil)
+	insert(freshID, pendingStatus, freshCreated, nil)
+	insert(staleID, pendingStatus, staleCreated, nil)
 	rt := staleAcceptedRes
 	insert(staleAcceptedID, "accepted", staleAccepted, &rt)
 
@@ -239,8 +239,8 @@ func TestRunDailyPendingProposalsPrune_TypeTaskTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query staleID: %v", err)
 	}
-	if gotStatus != "rejected" {
-		t.Errorf("stale TypeTask: status = %q, want %q", gotStatus, "rejected")
+	if gotStatus != rejectedStatus {
+		t.Errorf("stale TypeTask: status = %q, want %q", gotStatus, rejectedStatus)
 	}
 	if gotReason == nil || *gotReason != "ttl-expired-30d" {
 		t.Errorf("stale TypeTask: reason = %v, want %q", gotReason, "ttl-expired-30d")
@@ -257,8 +257,8 @@ func TestRunDailyPendingProposalsPrune_TypeTaskTTL(t *testing.T) {
 		freshID).Scan(&freshStatus, &freshReason); err != nil {
 		t.Fatalf("query freshID: %v", err)
 	}
-	if freshStatus != "pending" {
-		t.Errorf("fresh TypeTask: status = %q, want %q", freshStatus, "pending")
+	if freshStatus != pendingStatus {
+		t.Errorf("fresh TypeTask: status = %q, want %q", freshStatus, pendingStatus)
 	}
 	if freshReason != nil {
 		t.Errorf("fresh TypeTask: reason = %q, want nil", *freshReason)
@@ -447,8 +447,8 @@ func TestRunDailyPendingProposalsPrune_PartialSuccess_LogsWarn(t *testing.T) {
 		staleID).Scan(&status, &reason); err != nil {
 		t.Fatalf("query staleID: %v", err)
 	}
-	if status != "rejected" {
-		t.Errorf("stale row: status = %q, want %q (mark step must have succeeded)", status, "rejected")
+	if status != rejectedStatus {
+		t.Errorf("stale row: status = %q, want %q (mark step must have succeeded)", status, rejectedStatus)
 	}
 	if reason == nil || *reason != "ttl-expired-30d" {
 		t.Errorf("stale row: reason = %v, want %q", reason, "ttl-expired-30d")

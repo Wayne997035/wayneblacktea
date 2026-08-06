@@ -120,7 +120,8 @@ VALUES ($1, $2, 'knowledge', '{"title":"t","content":"c"}', 'pending', $3, $4)`
 		t.Fatalf("seed user proposal: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = testPgPool.Exec(ctx,
+		_, _ = testPgPool.Exec(
+			ctx,
 			"DELETE FROM pending_proposals WHERE id = ANY($1::uuid[])",
 			[]uuid.UUID{schedulerID, userID},
 		)
@@ -131,7 +132,8 @@ VALUES ($1, $2, 'knowledge', '{"title":"t","content":"c"}', 'pending', $3, $4)`
 
 	// scheduler-owned: must be rejected.
 	var schedStatus, schedReason string
-	if err := testPgPool.QueryRow(ctx,
+	if err := testPgPool.QueryRow(
+		ctx,
 		"SELECT status, reason FROM pending_proposals WHERE id = $1", schedulerID,
 	).Scan(&schedStatus, &schedReason); err != nil {
 		t.Fatalf("query scheduler proposal: %v", err)
@@ -145,7 +147,8 @@ VALUES ($1, $2, 'knowledge', '{"title":"t","content":"c"}', 'pending', $3, $4)`
 
 	// user-owned: must remain pending and untouched.
 	var userStatus string
-	if err := testPgPool.QueryRow(ctx,
+	if err := testPgPool.QueryRow(
+		ctx,
 		"SELECT status FROM pending_proposals WHERE id = $1", userID,
 	).Scan(&userStatus); err != nil {
 		t.Fatalf("query user proposal: %v", err)
@@ -403,7 +406,7 @@ func TestWithCognitiveDeps_DoesNotRegisterDailyReflection(t *testing.T) {
 	}
 
 	wsID := uuid.New()
-	deps := NewCognitiveDeps(&stubReflectionStore{}, &stubGTDStore{}, &stubProposalStore{}, &wsID)
+	deps := NewCognitiveDeps(&stubReflectionStore{}, &stubGTDStore{}, &stubProposalStore{}, &wsID, nil)
 	if err := sc.WithCognitiveDeps(deps); err != nil {
 		t.Fatalf("WithCognitiveDeps() error: %v", err)
 	}

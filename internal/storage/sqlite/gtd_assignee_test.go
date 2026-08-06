@@ -82,7 +82,7 @@ func TestGTDStore_BeginTask_RequiresAssignee_SQLite(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("GetTaskByID: %v", rerr)
 	}
-	if reread.Status != "pending" {
+	if reread.Status != taskStatusPending {
 		t.Errorf("status changed to %q despite rejected BeginTask", reread.Status)
 	}
 }

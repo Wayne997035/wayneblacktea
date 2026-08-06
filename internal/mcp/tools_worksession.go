@@ -597,15 +597,24 @@ var negativeFinalResults = map[string]bool{
 	"regressed": true,
 }
 
-// autoCreateOutcomeOnFailure best-effort creates an outcome row when
+// autoCreateOutcomeOnFailure best-effort records an outcome row when
 // finalResult indicates failure/partial/regressed and an outcome store is
 // configured, then links it back onto the session via SetOutcomeLink. Both
 // steps are non-fatal: a failure here must never fail finish_work, since the
 // session UPDATE has already committed by the time this runs.
 //
-// Returns the created outcome's ID, or nil when no outcome was created
-// (nil finalResult, nil outcome store, non-matching final_result, or no task
-// ID available on the session).
+// Goes through outcome.RecordExecutionResult (decision 80c1e8ae) rather than
+// a raw CreateOutcome: the task this finish_work call reports on very often
+// already has a result="unknown" draft seeded by an earlier complete_task
+// call (resolveAutoOutcomeTaskID's first candidate is exactly the task(s)
+// completed within this same session) — RecordExecutionResult finalizes that
+// draft in place instead of adding an unrelated second row, which is the
+// production duplication bug this unit was scoped to fix.
+//
+// Returns the outcome's ID, or nil when no outcome was recorded (nil
+// finalResult, nil outcome store, non-matching final_result, no task ID
+// available on the session, or an idempotent replay of the entity's already-
+// recorded latest outcome).
 func (s *Server) autoCreateOutcomeOnFailure(
 	ctx context.Context, sessID uuid.UUID, sess *worksession.Session,
 	completedTaskIDs, deferredTaskIDs []uuid.UUID, finalResult *string, summary string,
@@ -621,7 +630,10 @@ func (s *Server) autoCreateOutcomeOnFailure(
 		return nil
 	}
 
-	o, err := s.outcome.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+	// previousNotes is unused here: autoCreateOutcomeOnFailure never calls
+	// launchAtomize (unlike handleRecordOutcome in tools_outcome.go), so the
+	// M-R5-1 guarantee B gate does not apply to this call site.
+	o, action, _, err := outcome.RecordExecutionResult(ctx, s.outcome, outcome.CreateOutcomeParams{
 		WorkspaceID: s.workspaceUUID(),
 		EntityType:  "task",
 		EntityID:    taskID,
@@ -631,6 +643,15 @@ func (s *Server) autoCreateOutcomeOnFailure(
 	if err != nil {
 		slog.Warn("finish_work: auto-outcome creation failed (non-fatal)", "session_id", sessID, "err", err)
 		return nil
+	}
+
+	// Idempotent replay: nothing new was written, so don't re-link a session
+	// that (by definition of finish_work only running once per session, see
+	// handleFinishWork) has never been linked to this outcome before —
+	// SetOutcomeLink is itself idempotent (plain UPDATE), but skipping keeps
+	// this branch's side effects symmetric with record_outcome's.
+	if action == outcome.ActionReplayedIdempotent {
+		return &o.ID
 	}
 
 	if linkErr := s.workSession.SetOutcomeLink(ctx, sessID, o.ID); linkErr != nil {

@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +40,15 @@ type stubOutcomeStore struct {
 	lastListLimit      int
 	lastFailedLimit    int
 	lastPruneCutoff    time.Time
+	// latestOutcome / latestConfigured drive GetLatestForEntity. Left
+	// unconfigured (the zero value), GetLatestForEntity returns
+	// outcome.ErrNotFound so existing tests exercising CreateOutcome via
+	// RecordExecutionResult's "no prior outcome" branch are unaffected by
+	// this stub's growth to the full 10-method StoreIface.
+	latestOutcome      outcome.Outcome
+	latestConfigured   bool
+	lastFinalizeID     uuid.UUID
+	lastFinalizeParams outcome.CreateOutcomeParams
 }
 
 var _ outcome.StoreIface = (*stubOutcomeStore)(nil)
@@ -81,6 +93,29 @@ func (s *stubOutcomeStore) PruneOlderThan(_ context.Context, cutoff time.Time) (
 
 func (s *stubOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (bool, error) {
 	return false, s.returnErr
+}
+
+func (s *stubOutcomeStore) GetLatestForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, error) {
+	if !s.latestConfigured {
+		return outcome.Outcome{}, outcome.ErrNotFound
+	}
+	return s.latestOutcome, nil
+}
+
+func (s *stubOutcomeStore) FinalizeDraft(_ context.Context, id uuid.UUID, p outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	s.lastFinalizeID = id
+	s.lastFinalizeParams = p
+	if s.returnErr != nil {
+		return outcome.Outcome{}, s.returnErr
+	}
+	return s.returnOutcome, nil
+}
+
+func (s *stubOutcomeStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, bool, error) {
+	if s.returnErr != nil {
+		return outcome.Outcome{}, false, s.returnErr
+	}
+	return s.returnOutcome, true, nil
 }
 
 // --- helpers ---
@@ -313,6 +348,49 @@ func TestHandleRecordOutcome_InvalidMetricsJSON(t *testing.T) {
 	}
 }
 
+// TestHandleRecordOutcome_MetricsJSON_MustBeObject is the PR #152 round 4
+// Major reproduction: the old check was bare json.Valid, which accepts ANY
+// valid JSON value — arrays, numbers, strings, null — despite the error
+// message already promising "must be a valid JSON object". A non-object
+// left operand breaks PG's jsonb `||` merge in FinalizeDraft (concatenates
+// instead of merging) and, via metricsHasNewKey's fail-open-to-true default
+// on unmarshal failure, lets a repeated record_outcome(metrics_json="[1]")
+// grow the column without bound while re-firing draft_enriched side effects
+// on every retry.
+func TestHandleRecordOutcome_MetricsJSON_MustBeObject(t *testing.T) {
+	tests := []struct {
+		name        string
+		metricsJSON string
+		wantErr     bool
+	}{
+		{"array is rejected", `[1]`, true},
+		{"null literal is rejected", `null`, true},
+		{"bare string is rejected", `"str"`, true},
+		{"bare number is rejected", `0`, true},
+		{"malformed JSON is rejected", `{not valid`, true},
+		{"empty object is accepted", `{}`, false},
+		{"object with a key is accepted", `{"a":1}`, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &stubOutcomeStore{
+				returnOutcome: outcome.Outcome{ID: uuid.New(), EntityType: entityTypeTask, Result: "partial"},
+			}
+			s := newOutcomeServer(store)
+			r := callRecordOutcome(t, s, map[string]any{
+				"entity_type":  entityTypeTask,
+				"entity_id":    uuid.New().String(),
+				"result":       "partial",
+				"metrics_json": tc.metricsJSON,
+			})
+			if r.IsError != tc.wantErr {
+				t.Errorf("metrics_json=%q: IsError = %v, want %v (%s)", tc.metricsJSON, r.IsError, tc.wantErr, resultText(r))
+			}
+		})
+	}
+}
+
 func TestHandleRecordOutcome_StoreError(t *testing.T) {
 	store := &stubOutcomeStore{returnErr: errors.New("db down")}
 	s := newOutcomeServer(store)
@@ -323,6 +401,50 @@ func TestHandleRecordOutcome_StoreError(t *testing.T) {
 	})
 	if !r.IsError {
 		t.Fatalf("expected IsError=true when store returns error")
+	}
+}
+
+// TestHandleRecordOutcome_StoreError_SanitizesInternalDetails is the
+// regression test for the security-review-reproduced leak: a raw SQLite
+// driver error naming an internal index (idx_outcomes_one_open_draft) was
+// returned verbatim to the MCP caller via mcp.NewToolResultError. The
+// MCP-caller-visible message MUST be generic; the original error MUST still
+// be recoverable server-side via slog (see tools_outcome.go's
+// handleRecordOutcome store-error branch, mirroring tools_arch.go's
+// sanitize-then-log pattern).
+func TestHandleRecordOutcome_StoreError_SanitizesInternalDetails(t *testing.T) {
+	rawErr := errors.New(
+		`superseding: sqlite OutcomeStore.CreateOutcome: constraint failed: ` +
+			`UNIQUE constraint failed: index 'idx_outcomes_one_open_draft' (2067)`,
+	)
+	store := &stubOutcomeStore{returnErr: rawErr}
+	s := newOutcomeServer(store)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   uuid.New().String(),
+		"result":      "failure",
+	})
+
+	if !r.IsError {
+		t.Fatalf("expected IsError=true when store returns error")
+	}
+	msg := resultText(r)
+	if strings.Contains(msg, "idx_outcomes_one_open_draft") {
+		t.Errorf("MCP-caller-visible error leaked the internal index name: %q", msg)
+	}
+	if strings.Contains(msg, "constraint failed") {
+		t.Errorf("MCP-caller-visible error leaked raw driver detail: %q", msg)
+	}
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "idx_outcomes_one_open_draft") {
+		t.Errorf("expected server-side log to retain the original error detail, got: %q", logged)
 	}
 }
 
@@ -611,6 +733,18 @@ func (e *evalFailingStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ st
 	return false, nil
 }
 
+func (e *evalFailingStore) GetLatestForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, error) {
+	return outcome.Outcome{}, outcome.ErrNotFound
+}
+
+func (e *evalFailingStore) FinalizeDraft(_ context.Context, id uuid.UUID, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	return outcome.Outcome{ID: id}, nil
+}
+
+func (e *evalFailingStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, bool, error) {
+	return outcome.Outcome{ID: uuid.New()}, true, nil
+}
+
 // --- isJSONArray / validateJSONArrayArg unit tests ---
 
 func TestIsJSONArray(t *testing.T) {
@@ -695,6 +829,41 @@ func TestParseRelatedRuleIDs_ValidUUIDs(t *testing.T) {
 	}
 }
 
+// TestParseRelatedRuleIDs_DedupesDuplicates is F6's MCP-boundary half: a
+// caller-supplied duplicate ID must be deduped here, order preserved,
+// before it ever reaches CreateOutcome's fresh-row path (which — unlike
+// FinalizeDraft — never applies outcome.DedupeUUIDsPreserveOrder itself).
+func TestParseRelatedRuleIDs_DedupesDuplicates(t *testing.T) {
+	id1, id2 := uuid.New(), uuid.New()
+	raw := `["` + id1.String() + `","` + id2.String() + `","` + id1.String() + `"]`
+	ids, err := parseRelatedRuleIDs(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != id1 || ids[1] != id2 {
+		t.Fatalf("ids = %v, want EXACTLY [%s, %s] (duplicate id1 removed, first-occurrence order preserved)", ids, id1, id2)
+	}
+}
+
+// TestParseRelatedRuleIDs_MaxCheckAgainstRawCountNotDeduped verifies the max
+// check runs against the RAW parsed count, not the post-dedup count — a
+// caller cannot smuggle more than maxRelatedRuleIDs distinct IDs past the
+// cap by padding the array with a repeated ID (which would deduplicate down
+// under the limit) if the check ran after dedup instead of before.
+func TestParseRelatedRuleIDs_MaxCheckAgainstRawCountNotDeduped(t *testing.T) {
+	repeated := uuid.New()
+	strs := make([]string, maxRelatedRuleIDs+1)
+	for i := range strs {
+		strs[i] = `"` + repeated.String() + `"` // all the SAME id — dedups to 1
+	}
+	raw := "[" + strings.Join(strs, ",") + "]"
+	_, err := parseRelatedRuleIDs(raw)
+	if err == nil {
+		t.Fatalf("expected error: raw count (%d) exceeds maxRelatedRuleIDs=%d even though the deduped count is 1",
+			maxRelatedRuleIDs+1, maxRelatedRuleIDs)
+	}
+}
+
 func TestParseRelatedRuleIDs_InvalidUUID(t *testing.T) {
 	_, err := parseRelatedRuleIDs(`["not-a-uuid"]`)
 	if err == nil {
@@ -752,5 +921,208 @@ func TestHandleRecordOutcome_RelatedRuleIDsExceedsMax(t *testing.T) {
 	}
 	if !strings.Contains(resultText(r), "maximum is") {
 		t.Errorf("error should mention maximum, got: %s", resultText(r))
+	}
+}
+
+// TestNotesDelta covers the pure helper handleRecordOutcome uses to extract
+// ONLY the newly-added segment for launchAtomize — PR #152 round 6 Major
+// M-R6-2a. See its doc comment for the full rationale; this pins the
+// algorithm itself in isolation, complementing the slower end-to-end
+// atomize-spy tests in tools_outcome_lifecycle_test.go.
+func TestNotesDelta(t *testing.T) {
+	tests := []struct {
+		name          string
+		oNotes        string
+		previousNotes string
+		want          string
+	}{
+		{
+			name:          "fresh row (previousNotes empty): entire text is new",
+			oNotes:        "first postmortem notes",
+			previousNotes: "",
+			want:          "first postmortem notes",
+		},
+		{
+			name:          "normal enrich append: only the newly-appended segment",
+			oNotes:        "first segment\n\nsecond segment",
+			previousNotes: "first segment",
+			want:          "second segment",
+		},
+		{
+			name:          "chained enrich: only the THIRD segment, not the accumulated prefix",
+			oNotes:        "first\n\nsecond\n\nthird",
+			previousNotes: "first\n\nsecond",
+			want:          "third",
+		},
+		{
+			name:          "no actual change (o.Notes == previousNotes): empty delta",
+			oNotes:        "unchanged",
+			previousNotes: "unchanged",
+			want:          "",
+		},
+		{
+			name: "defensive fallback: oNotes does not start with previousNotes+separator " +
+				"(e.g. cap truncation consumed previousNotes itself) — returns empty rather than guessing",
+			oNotes:        "trunc",
+			previousNotes: "truncated-existing-longer-than-oNotes",
+			want:          "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := notesDelta(tc.oNotes, tc.previousNotes)
+			if got != tc.want {
+				t.Errorf("notesDelta(%q, %q) = %q, want %q", tc.oNotes, tc.previousNotes, got, tc.want)
+			}
+		})
+	}
+}
+
+// notesFillChunk returns a distinct 500-rune (sanitize.Notes's own per-call
+// max) notes payload, prefixed with marker so repeated calls in a fill loop
+// are never byte-identical to each other (a byte-identical resend would be
+// classified as an idempotent replay by isDraftIdempotentReplay and skip
+// FinalizeDraft's cap logic entirely — see lifecycle.go's
+// notesHasNewContent doc comment).
+func notesFillChunk(marker string) string {
+	return marker + strings.Repeat("a", 500-len(marker))
+}
+
+// TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached is
+// PR #152 round 7 Major m-R7-1's regression test for the Notes half of the
+// finding: before this fix, once a draft's cumulative Notes reached
+// outcome.MaxNotesTotalRunes, every subsequent record_outcome(notes=...)
+// call against it returned IsError=false with the caller's content silently
+// dropped and ZERO signal in the response body — the caller (an LLM) had no
+// way to know its content never landed. Runs through the REAL handler
+// against a real SQLite-backed server (not a stub), because the cap is
+// enforced inside FinalizeDraft's store-layer merge, not at the MCP
+// argument-parsing layer.
+func TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+
+	// Fill the draft's cumulative Notes up to (and past) the cap. Each call
+	// supplies sanitize.Notes's own per-call max (500 runes); with the
+	// "\n\n" separator overhead each enrich adds, 11 calls comfortably
+	// exceeds outcome.MaxNotesTotalRunes (5,000).
+	for i := 0; i < 11; i++ {
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type": entityTypeTask,
+			"entity_id":   entityID.String(),
+			"result":      "unknown",
+			"notes":       notesFillChunk(fmt.Sprintf("[fill-%02d]", i)),
+		})
+		if r.IsError {
+			t.Fatalf("fill call %d: unexpected error: %s", i, resultText(r))
+		}
+	}
+
+	// This call's notes land against an already-at/over-cap draft — none of
+	// it can be appended.
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type": entityTypeTask,
+		"entity_id":   entityID.String(),
+		"result":      "unknown",
+		"notes":       "this content must be silently dropped by the cumulative cap",
+	})
+	if r.IsError {
+		t.Fatalf("expected IsError=false (the write itself is not an error, only part of its content was dropped): %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	truncated, _ := resp["notes_truncated"].(bool)
+	if !truncated {
+		t.Fatalf("expected notes_truncated=true once the cumulative cap is reached, got response: %s", resultText(r))
+	}
+	note, _ := resp["truncation_note"].(string)
+	if note == "" {
+		t.Errorf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
+	}
+}
+
+// TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapReached
+// is m-R7-1's regression test for the related_rule_ids half of the finding
+// (the dispatch's "⚠ check related_rule_ids too" instruction) — same shape
+// as the Notes test above: fill the cumulative cap
+// (outcome.MaxRelatedRuleIDsTotal=100) exactly using maxRelatedRuleIDs (20)
+// IDs per call, then verify one more distinct ID against the full draft
+// signals related_rule_ids_truncated=true instead of silently vanishing.
+func TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapReached(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+
+	for i := 0; i < 5; i++ {
+		ids := make([]string, maxRelatedRuleIDs)
+		for j := range ids {
+			ids[j] = `"` + uuid.New().String() + `"`
+		}
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type":      entityTypeTask,
+			"entity_id":        entityID.String(),
+			"result":           "unknown",
+			"related_rule_ids": "[" + strings.Join(ids, ",") + "]",
+		})
+		if r.IsError {
+			t.Fatalf("fill call %d: unexpected error: %s", i, resultText(r))
+		}
+	}
+
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        entityID.String(),
+		"result":           "unknown",
+		"related_rule_ids": `["` + uuid.New().String() + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("expected IsError=false: %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	truncated, _ := resp["related_rule_ids_truncated"].(bool)
+	if !truncated {
+		t.Fatalf("expected related_rule_ids_truncated=true once the cumulative cap is reached, got response: %s", resultText(r))
+	}
+	note, _ := resp["truncation_note"].(string)
+	if note == "" {
+		t.Errorf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
+	}
+}
+
+// TestHandleRecordOutcome_TruncationSignals_AbsentWhenNothingTruncated pins
+// the `omitempty` shape of recordOutcomeResponse: an ordinary call, nowhere
+// near either cumulative cap, must produce a response byte-shape identical
+// to the pre-fix `jsonText(o)` — no notes_truncated / related_rule_ids_truncated
+// / truncation_note keys present at all (not merely false/empty), so
+// existing callers that don't know about these new fields see no change.
+func TestHandleRecordOutcome_TruncationSignals_AbsentWhenNothingTruncated(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        uuid.New().String(),
+		"result":           "success",
+		"notes":            "an ordinary short note, nowhere near either cap",
+		"related_rule_ids": `["` + uuid.New().String() + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := resp["notes_truncated"]; present {
+		t.Errorf("notes_truncated must be OMITTED (omitempty) when nothing was truncated, got response: %s", resultText(r))
+	}
+	if _, present := resp["related_rule_ids_truncated"]; present {
+		t.Errorf("related_rule_ids_truncated must be OMITTED when nothing was truncated, got response: %s", resultText(r))
+	}
+	if _, present := resp["truncation_note"]; present {
+		t.Errorf("truncation_note must be OMITTED when nothing was truncated, got response: %s", resultText(r))
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -32,14 +33,6 @@ const (
 	taskStatusCompleted  = "completed"
 	taskStatusCancelled  = "cancelled"
 )
-
-// digestStatusPending is memory_atoms.digest_status' "pending" value — a
-// distinct enum namespace from db.Task.Status above (atom digestion pipeline
-// state, not a GTD task lifecycle state). Reviewer finding:
-// collectKnowledgeDigestHealth previously reused taskStatusPending for this,
-// which happened to have the same string value but was the wrong constant —
-// the two enums have no semantic relationship and could diverge silently.
-const digestStatusPending = "pending"
 
 func (s *Server) registerHealthTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
@@ -305,7 +298,13 @@ func (s *Server) collectKnowledgeDigestHealth(ctx context.Context) knowledgeDige
 	var h knowledgeDigestHealth
 	if s.atom != nil {
 		wsID := s.workspaceUUID()
-		for _, status := range []string{digestStatusPending, "done", "failed"} {
+		// atom.DigestStatusPending is a distinct enum namespace from
+		// taskStatusPending above (atom digestion pipeline state, not a GTD
+		// task lifecycle state) — do not conflate the two even though they
+		// happen to share the string value "pending" (reviewer finding:
+		// collectKnowledgeDigestHealth previously reused taskStatusPending
+		// here by mistake).
+		for _, status := range []string{atom.DigestStatusPending, atom.DigestStatusDone, atom.DigestStatusFailed} {
 			n, err := s.atom.CountByDigestStatus(ctx, wsID, status)
 			if err != nil {
 				slog.Warn("collectKnowledgeDigestHealth: CountByDigestStatus failed",
@@ -313,11 +312,11 @@ func (s *Server) collectKnowledgeDigestHealth(ctx context.Context) knowledgeDige
 				continue
 			}
 			switch status {
-			case digestStatusPending:
+			case atom.DigestStatusPending:
 				h.PendingAtoms = int(n)
-			case "done":
+			case atom.DigestStatusDone:
 				h.DoneAtoms = int(n)
-			case "failed":
+			case atom.DigestStatusFailed:
 				h.FailedAtoms = int(n)
 			}
 		}

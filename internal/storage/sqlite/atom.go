@@ -267,8 +267,15 @@ func (s *AtomStore) Search(ctx context.Context, workspaceID *uuid.UUID, query st
 	return out, errWrap("AtomStore.Search iter", rows.Err())
 }
 
-// SetDigestStatus updates the digest_status and optional error_msg for a single atom.
+// SetDigestStatus updates the digest_status and optional error_msg for a
+// single atom. status is validated against the five-value enum
+// (internal/atom/digest_status.go) before the UPDATE is sent — mirrors the
+// Postgres Store's validation so both backends reject the same invalid
+// values identically (backend-security-design.md §2, §6.3 PG/SQLite parity).
 func (s *AtomStore) SetDigestStatus(ctx context.Context, id uuid.UUID, status string, errMsg string) error {
+	if !atom.IsValidDigestStatus(status) {
+		return fmt.Errorf("%w: %q", atom.ErrInvalidDigestStatus, status)
+	}
 	const q = `UPDATE memory_atoms SET digest_status = ?, error_msg = ? WHERE id = ?`
 	_, err := s.db.conn.ExecContext(ctx, q, status, errMsg, id.String())
 	if err != nil {

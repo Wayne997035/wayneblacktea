@@ -1,8 +1,15 @@
 package sqlite_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +17,10 @@ import (
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/google/uuid"
 )
+
+// outcomeResultSuccess is the terminal result these tests assert on. Declared
+// here rather than repeated inline so the value stays in one place.
+const outcomeResultSuccess = "success"
 
 func openOutcomeDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
@@ -53,7 +64,7 @@ func TestApplyColumnUpgrades_Idempotent(t *testing.T) {
 		WorkspaceID:    &wsID,
 		EntityType:     "task",
 		EntityID:       uuid.New(),
-		Result:         "success",
+		Result:         outcomeResultSuccess,
 		RelatedRuleIDs: []uuid.UUID{rule1},
 	})
 	if err != nil {
@@ -85,7 +96,7 @@ func TestSQLiteOutcomeStore_CreateOutcome(t *testing.T) {
 				WorkspaceID: &wsID,
 				EntityType:  "task",
 				EntityID:    entityID,
-				Result:      "success",
+				Result:      outcomeResultSuccess,
 				Metrics:     []byte(`{"duration_ms":500}`),
 				Notes:       "completed on time",
 			},
@@ -151,7 +162,7 @@ func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
 		WorkspaceID:   &wsID,
 		EntityType:    "task",
 		EntityID:      uuid.New(),
-		Result:        "success",
+		Result:        outcomeResultSuccess,
 		WorkSessionID: &sessionID,
 	})
 	if err != nil {
@@ -174,7 +185,7 @@ func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
 		WorkspaceID: &wsID,
 		EntityType:  "task",
 		EntityID:    uuid.New(),
-		Result:      "success",
+		Result:      outcomeResultSuccess,
 	})
 	if err != nil {
 		t.Fatalf("CreateOutcome without WorkSessionID: %v", err)
@@ -315,7 +326,7 @@ func TestSQLiteOutcomeStore_ListFailedOutcomes(t *testing.T) {
 	wsID := uuid.New()
 	entityID := uuid.New()
 
-	for _, result := range []string{"success", "failure", "regressed", "partial"} {
+	for _, result := range []string{outcomeResultSuccess, "failure", "regressed", "partial"} {
 		_, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
 			WorkspaceID: &wsID,
 			EntityType:  "task",
@@ -355,7 +366,7 @@ func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
 		WorkspaceID: &wsID,
 		EntityType:  "task",
 		EntityID:    entityID,
-		Result:      "success",
+		Result:      outcomeResultSuccess,
 		Notes:       "recent outcome",
 	})
 	if err != nil {
@@ -481,7 +492,7 @@ func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
 			WorkspaceID:    &wsID,
 			EntityType:     "task",
 			EntityID:       entityID,
-			Result:         "success",
+			Result:         outcomeResultSuccess,
 			RelatedRuleIDs: []uuid.UUID{},
 		})
 		if err != nil {
@@ -538,4 +549,1345 @@ func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
 			t.Errorf("expected 0 related rule IDs for nil input, got %d", len(o.RelatedRuleIDs))
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GetLatestForEntity / FinalizeDraft / SeedDraft (migration 000074, decision
+// 80c1e8ae — outcome lifecycle convergence, arch-r2 A13)
+// ---------------------------------------------------------------------------
+
+// TestSQLiteOutcomeStore_GetLatestForEntity verifies not-found, found (most
+// recent of several), and workspace-scoping behaviour.
+func TestSQLiteOutcomeStore_GetLatestForEntity(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	t.Run("not_found_before_any_outcome", func(t *testing.T) {
+		_, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+		if !errors.Is(err, outcome.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	first, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome first: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // ensure created_at strictly advances
+	second, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: outcomeResultSuccess,
+		SupersedesID: &first.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome second: %v", err)
+	}
+
+	t.Run("returns_most_recent", func(t *testing.T) {
+		got, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+		if err != nil {
+			t.Fatalf("GetLatestForEntity: %v", err)
+		}
+		if got.ID != second.ID {
+			t.Errorf("expected latest ID %s, got %s", second.ID, got.ID)
+		}
+		if got.SupersedesID == nil || *got.SupersedesID != first.ID {
+			t.Errorf("expected SupersedesID %s, got %v", first.ID, got.SupersedesID)
+		}
+	})
+
+	t.Run("wrong_workspace_not_found", func(t *testing.T) {
+		other := uuid.New()
+		_, err := store.GetLatestForEntity(ctx, &other, "task", entityID)
+		if !errors.Is(err, outcome.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound for wrong workspace, got %v", err)
+		}
+	})
+}
+
+// insertOutcomeWithIDAndCreatedAt inserts an outcomes row with an explicit
+// id, result, and created_at, bypassing CreateOutcome (which always assigns
+// its own timestamp) so tests can construct exact created_at ties. Uses
+// DB.ExecContext (exported for exactly this kind of fixture insert — see its
+// doc comment) rather than production write paths.
+func insertOutcomeWithIDAndCreatedAt(
+	t *testing.T, db *wbtsqlite.DB, id, wsID uuid.UUID, entityType string, entityID uuid.UUID, result, createdAt string,
+) {
+	t.Helper()
+	err := db.ExecContext(
+		context.Background(),
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+		id.String(), wsID.String(), entityType, entityID.String(), result, createdAt,
+	)
+	if err != nil {
+		t.Fatalf("insert outcome with explicit id and created_at: %v", err)
+	}
+}
+
+// TestSQLiteOutcomeStore_GetLatestForEntity_CreatedAtTieBreak is the SQLite
+// twin of TestStore_GetLatestForEntity_CreatedAtTieBreak (internal/outcome/
+// store_test.go) — see its doc comment for the full failure chain this is a
+// regression test for. The expected winner (idGreater) is derived from the
+// ORDER BY created_at DESC, id DESC contract itself, matching the tie-break
+// rule migrations/sqlite/000074_outcomes_supersession.up.sql's dedup step
+// uses (TestMigration000074_Dedup_SQLite_CreatedAtTieBreak) — not from
+// running the query once and recording what it happened to return.
+func TestSQLiteOutcomeStore_GetLatestForEntity_CreatedAtTieBreak(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	const sameCreatedAt = "2026-01-01T00:00:00.000Z"
+
+	idA, idB := uuid.New(), uuid.New()
+	idLesser, idGreater := idA, idB
+	if idLesser.String() > idGreater.String() {
+		idLesser, idGreater = idGreater, idLesser
+	}
+
+	// Mirrors the actual repro shape (one terminal row, one draft) — but the
+	// tie-break must hold regardless of which result value lands on which id.
+	insertOutcomeWithIDAndCreatedAt(t, db, idLesser, wsID, "task", entityID, outcomeResultSuccess, sameCreatedAt)
+	insertOutcomeWithIDAndCreatedAt(t, db, idGreater, wsID, "task", entityID, "unknown", sameCreatedAt)
+
+	got, err := store.GetLatestForEntity(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("GetLatestForEntity: %v", err)
+	}
+	if got.ID != idGreater {
+		t.Errorf("expected tie-break winner (greater id) %s, got %s — "+
+			"created_at tie must resolve via ORDER BY created_at DESC, id DESC",
+			idGreater, got.ID)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_HappyPath verifies a draft transitions
+// to a terminal result IN PLACE — same ID, no second row.
+func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess,
+		Notes:  "shipped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if finalized.ID != draft.ID {
+		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
+	}
+	if finalized.Result != outcomeResultSuccess {
+		t.Errorf("Result = %q, want success", finalized.Result)
+	}
+	if finalized.Notes != "shipped" {
+		t.Errorf("Notes = %q, want shipped", finalized.Notes)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 10)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	count := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 row for the entity after finalize, got %d", count)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized verifies the
+// WHERE result='unknown' guard: finalizing an already-terminal row returns
+// outcome.ErrDraftAlreadyFinalized instead of silently overwriting it.
+func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+	if _, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: outcomeResultSuccess}); err != nil {
+		t.Fatalf("first FinalizeDraft: %v", err)
+	}
+
+	_, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "failure"})
+	if !errors.Is(err, outcome.ErrDraftAlreadyFinalized) {
+		t.Fatalf("expected ErrDraftAlreadyFinalized, got %v", err)
+	}
+
+	// The first finalize's result must be untouched by the rejected second call.
+	got, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if got.Result != outcomeResultSuccess {
+		t.Errorf("result must remain 'success' (first finalize), got %q — second call must not silently overwrite", got.Result)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty
+// is the SQLite counterpart of the M-1a regression reproduction in
+// internal/outcome/store_test.go (PR #152 second round): a draft carrying
+// real notes/metrics/related_rule_ids/work_session_id, finalized by a call
+// that supplies ONLY entity identity + result, must keep all four existing
+// fields — the old blanket UPDATE would have blanked every one of them.
+// This also exercises the encodeUUIDSlice("[]" vs nil) trap documented on
+// FinalizeDraft: RelatedRuleIDs must survive even though the SQLite column
+// is a TEXT-encoded JSON array, not a native array type like PG's uuid[].
+func TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	sessionID := uuid.New()
+	ruleID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		Notes:          "real postmortem content the attacker wants gone",
+		Metrics:        []byte(`{"duration_ms":4200}`),
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+		WorkSessionID:  &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	// The attack: finalize with a terminal result and NOTHING else.
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if finalized.ID != draft.ID {
+		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
+	}
+	if finalized.Result != outcomeResultSuccess {
+		t.Errorf("Result = %q, want success", finalized.Result)
+	}
+	if finalized.Notes != "real postmortem content the attacker wants gone" {
+		t.Errorf("Notes erased by empty-param finalize: got %q, want preserved", finalized.Notes)
+	}
+	if string(finalized.Metrics) != `{"duration_ms":4200}` {
+		t.Errorf("Metrics erased by empty-param finalize: got %q, want preserved", finalized.Metrics)
+	}
+	if len(finalized.RelatedRuleIDs) != 1 || finalized.RelatedRuleIDs[0] != ruleID {
+		t.Errorf("RelatedRuleIDs erased by empty-param finalize: got %v, want preserved [%s]", finalized.RelatedRuleIDs, ruleID)
+	}
+	if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID erased by empty-param finalize: got %v, want preserved %s", finalized.WorkSessionID, sessionID)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces is
+// the SQLite twin of outcome package's TestStore_FinalizeDraft_
+// RelatedRuleIDs_UnionsNotReplaces (append-semantics redesign — see that
+// test's comment for why the direction flipped from the old "replace, not
+// union" contract PR #152 round 3 Minor 3 originally pinned). A draft seeded
+// with ruleA, then enriched with ruleB, must end up with EXACTLY
+// [ruleA, ruleB] — existing first, new appended, no duplicates.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID:    &wsID,
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "unknown",
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft with ruleA: %v", err)
+	}
+	if len(draft.RelatedRuleIDs) != 1 || draft.RelatedRuleIDs[0] != ruleA {
+		t.Fatalf("precondition failed: draft.RelatedRuleIDs = %v, want [%s]", draft.RelatedRuleIDs, ruleA)
+	}
+
+	// Enrich (Result stays "unknown", so the row is still eligible for a
+	// SECOND FinalizeDraft call afterward) supplying ONLY the new ruleB. If
+	// this were a whole-array REPLACE (the pre-redesign contract), the
+	// result would become EXACTLY [ruleB], losing ruleA — that's precisely
+	// what distinguishes union from replace here; a test that resupplied
+	// ruleA alongside ruleB would not.
+	enriched, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         "unknown",
+		RelatedRuleIDs: []uuid.UUID{ruleB},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft (enrich) with ruleB: %v", err)
+	}
+	if len(enriched.RelatedRuleIDs) != 2 || enriched.RelatedRuleIDs[0] != ruleA || enriched.RelatedRuleIDs[1] != ruleB {
+		t.Fatalf("RelatedRuleIDs = %v, want EXACTLY [%s, %s] (union: existing ruleA preserved, ruleB appended)",
+			enriched.RelatedRuleIDs, ruleA, ruleB)
+	}
+
+	// A follow-up finalize resupplying the now-already-present ruleA must
+	// not duplicate it.
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft (finalize) resupplying ruleA: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 2 || finalized.RelatedRuleIDs[0] != ruleA || finalized.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want still EXACTLY [%s, %s] (no duplicate of ruleA)",
+			finalized.RelatedRuleIDs, ruleA, ruleB)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive
+// is the SQLite twin of the PG concurrency regression test for 🔴 C-DBI-1
+// (outcome/store_test.go's TestStore_FinalizeDraft_RelatedRuleIDs_
+// ConcurrentEnrich_BothSurvive): N goroutines concurrently enrich the SAME
+// draft with disjoint related_rule_ids, and all N must survive in the final
+// row. Unlike PG, this backend's FinalizeDraft was NEVER shown to lose data
+// under this test — it is race-safe today, but for a reason external to
+// FinalizeDraft's own SQL: db.go's SetMaxOpenConns(1) serializes every
+// statement through a single connection, so no two FinalizeDraft calls can
+// ever be genuinely concurrent inside Postgres-style row-lock contention;
+// FinalizeDraft additionally wraps its SELECT+UPDATE in a SERIALIZABLE
+// transaction (see FinalizeDraft's own doc comment in outcome.go), which
+// would independently prevent the lost-update even with more connections.
+// This test pins that guarantee (dispatch-required: "SQLite 目前僥倖安全，
+// 連線池設定將來被改就會炸，需要一個會 catch 的測試") — it is expected to
+// stay green even if a mutation test reverts PG's fix (this file's SQL
+// never had a CTE-based union), and would only be expected to catch a
+// regression if SetMaxOpenConns(1) or the transaction-wrapping were removed
+// (NEVER do so per the dispatch boundary; if either changes, THIS test is
+// the tripwire).
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	const n = 10
+	ids := make([]uuid.UUID, n)
+	for i := range n {
+		ids[i] = uuid.New()
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+				Result:         "unknown",
+				RelatedRuleIDs: []uuid.UUID{ids[idx]},
+			})
+			errs[idx] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d FinalizeDraft error: %v", i, err)
+		}
+	}
+
+	final, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(final.RelatedRuleIDs) != n {
+		t.Fatalf("final RelatedRuleIDs has %d entries, want exactly %d (one per concurrent caller) — a concurrent write was lost",
+			len(final.RelatedRuleIDs), n)
+	}
+	for _, id := range ids {
+		if !slices.Contains(final.RelatedRuleIDs, id) {
+			t.Errorf("related_rule_id %s from a concurrent call is missing from the final row — overwritten by another concurrent writer", id)
+		}
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved is
+// the SQLite twin of the direct M-1/threat-model reproduction: a call
+// carrying near-empty notes (a single space) against a draft with real
+// postmortem content must not remove that content — it can only be appended
+// after it.
+func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	const realPostmortem = "real postmortem: root cause was a missing index"
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		Notes: realPostmortem,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess,
+		Notes:  " ", // the attack: a single space
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if !strings.Contains(finalized.Notes, realPostmortem) {
+		t.Fatalf("real postmortem content was REMOVED — got Notes = %q, want it to still contain %q",
+			finalized.Notes, realPostmortem)
+	}
+	if finalized.Notes != realPostmortem+"\n\n " {
+		t.Errorf("Notes = %q, want exactly %q (existing + separator + attack text appended)",
+			finalized.Notes, realPostmortem+"\n\n ")
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys
+// verifies the SQLite Go-side JSON merge: an existing key's value can never
+// be overwritten, but a genuinely new key is still admitted.
+func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		Metrics: []byte(`{"a":9,"b":2}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:  outcomeResultSuccess,
+		Metrics: []byte(`{"a":1,"c":5}`),
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(finalized.Metrics, &got); err != nil {
+		t.Fatalf("Metrics is not valid JSON (%q): %v", finalized.Metrics, err)
+	}
+	if v, ok := got["a"]; !ok || v != float64(9) {
+		t.Errorf(`Metrics["a"] = %v, want 9 (existing value must survive, new value 1 must be ignored)`, v)
+	}
+	if v, ok := got["b"]; !ok || v != float64(2) {
+		t.Errorf(`Metrics["b"] = %v, want 2 (untouched existing key must survive)`, v)
+	}
+	if v, ok := got["c"]; !ok || v != float64(5) {
+		t.Errorf(`Metrics["c"] = %v, want 5 (genuinely new key must be added)`, v)
+	}
+	if len(got) != 3 {
+		t.Errorf("Metrics has %d keys, want exactly 3 (a, b, c) — got %v", len(got), got)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce
+// verifies the SQLite twin of the set-once rule, both directions.
+func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	t.Run("writes when existing is NULL", func(t *testing.T) {
+		entityID := uuid.New()
+		sessionA := uuid.New()
+		draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome draft: %v", err)
+		}
+		finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result: outcomeResultSuccess, WorkSessionID: &sessionA,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionA {
+			t.Errorf("WorkSessionID = %v, want %s (first write into a NULL column must succeed)", finalized.WorkSessionID, sessionA)
+		}
+	})
+
+	t.Run("cannot be re-pointed once set", func(t *testing.T) {
+		entityID := uuid.New()
+		sessionA, sessionB := uuid.New(), uuid.New()
+		draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+			WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+			WorkSessionID: &sessionA,
+		})
+		if err != nil {
+			t.Fatalf("CreateOutcome draft: %v", err)
+		}
+		finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result: outcomeResultSuccess, WorkSessionID: &sessionB,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if finalized.WorkSessionID == nil || *finalized.WorkSessionID != sessionA {
+			t.Errorf("WorkSessionID = %v, want unchanged %s (already-set session must never be re-pointed by a later call)",
+				finalized.WorkSessionID, sessionA)
+		}
+	})
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite is the
+// SQLite twin of the Store-level updated_at proof.
+func TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+	if !draft.UpdatedAt.Equal(draft.CreatedAt) {
+		t.Errorf("freshly-created draft: UpdatedAt = %v, want equal to CreatedAt %v (never modified yet)", draft.UpdatedAt, draft.CreatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result: outcomeResultSuccess, Notes: "shipped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if !finalized.UpdatedAt.After(draft.CreatedAt) {
+		t.Errorf("UpdatedAt = %v, want strictly after CreatedAt %v (a real write must bump it)", finalized.UpdatedAt, draft.CreatedAt)
+	}
+}
+
+// TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged
+// is the RecordExecutionResult-level (not just Store-level) proof that a
+// no-op path never touches updated_at, on the SQLite backend.
+func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	first, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "still investigating",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed with content): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	enriched, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "verified in prod",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (enrich): %v", err)
+	}
+	if action != outcome.ActionDraftEnriched {
+		t.Fatalf("enrich action = %q, want draft_enriched", action)
+	}
+	if enriched.Notes != "still investigating\n\nverified in prod" {
+		t.Fatalf("Notes = %q, want the append to have happened", enriched.Notes)
+	}
+	if !enriched.UpdatedAt.After(first.UpdatedAt) {
+		t.Fatalf("enrich UpdatedAt = %v, want strictly after seed UpdatedAt %v", enriched.UpdatedAt, first.UpdatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	retried, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "verified in prod", // byte-identical retry
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (retry): %v", err)
+	}
+	if action != outcome.ActionReplayedIdempotent {
+		t.Fatalf("retry action = %q, want replayed_idempotent", action)
+	}
+	if retried.Notes != enriched.Notes {
+		t.Errorf("retry Notes = %q, want unchanged %q (no duplicate append)", retried.Notes, enriched.Notes)
+	}
+	if !retried.UpdatedAt.Equal(enriched.UpdatedAt) {
+		t.Errorf("retry UpdatedAt = %v, want unchanged %v (no-op path must never bump it)", retried.UpdatedAt, enriched.UpdatedAt)
+	}
+}
+
+// TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrites
+// is the SQLite twin of the mandatory reverse-protection guard: after a
+// byte-identical retry is correctly a no-op, a follow-up call carrying
+// genuinely new information in EACH append-only field must still write and
+// report ActionDraftEnriched.
+func TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrites(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	ruleA := uuid.New()
+
+	seeded, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result: "unknown", Notes: "first note", Metrics: []byte(`{"a":1}`), RelatedRuleIDs: []uuid.UUID{ruleA},
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (seed): %v", err)
+	}
+	if action != outcome.ActionCreated {
+		t.Fatalf("seed action = %q, want created", action)
+	}
+
+	time.Sleep(2 * time.Millisecond) // ensure UpdatedAt strictly advances past the seed's timestamp
+	sessionID := uuid.New()
+	ruleB := uuid.New()
+	enriched, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID,
+		Result:         "unknown",
+		Notes:          "second note",
+		Metrics:        []byte(`{"a":9,"b":2}`),
+		RelatedRuleIDs: []uuid.UUID{ruleB},
+		WorkSessionID:  &sessionID,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult (enrich with new info in every field): %v", err)
+	}
+	if action != outcome.ActionDraftEnriched {
+		t.Fatalf("action = %q, want draft_enriched — a call with genuinely new content in every field must write (M-2a guard)", action)
+	}
+	if enriched.Notes != "first note\n\nsecond note" {
+		t.Errorf("Notes = %q, want the second note appended", enriched.Notes)
+	}
+	var gotMetrics map[string]any
+	if err := json.Unmarshal(enriched.Metrics, &gotMetrics); err != nil {
+		t.Fatalf("Metrics not valid JSON: %v", err)
+	}
+	if gotMetrics["a"] != float64(1) {
+		t.Errorf(`Metrics["a"] = %v, want 1 (existing value must survive the repeated key)`, gotMetrics["a"])
+	}
+	if gotMetrics["b"] != float64(2) {
+		t.Errorf(`Metrics["b"] = %v, want 2 (new key must be written)`, gotMetrics["b"])
+	}
+	if len(enriched.RelatedRuleIDs) != 2 || enriched.RelatedRuleIDs[0] != ruleA || enriched.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want [%s, %s]", enriched.RelatedRuleIDs, ruleA, ruleB)
+	}
+	if enriched.WorkSessionID == nil || *enriched.WorkSessionID != sessionID {
+		t.Errorf("WorkSessionID = %v, want %s (was NULL, must be written)", enriched.WorkSessionID, sessionID)
+	}
+	if !enriched.UpdatedAt.After(seeded.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want strictly after seed UpdatedAt %v", enriched.UpdatedAt, seeded.UpdatedAt)
+	}
+}
+
+// TestSQLiteOutcomeStore_SeedDraft_CreatesOnce verifies the sequential
+// happy path: first call creates, second call is a no-op read returning the
+// same row.
+func TestSQLiteOutcomeStore_SeedDraft_CreatesOnce(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	first, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft first: %v", err)
+	}
+	if !created {
+		t.Error("expected created=true on first SeedDraft call")
+	}
+	if first.Result != "unknown" {
+		t.Errorf("Result = %q, want unknown", first.Result)
+	}
+
+	second, created2, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft second: %v", err)
+	}
+	if created2 {
+		t.Error("expected created=false on second SeedDraft call")
+	}
+	if second.ID != first.ID {
+		t.Errorf("second call must return the same draft row: got %s, want %s", second.ID, first.ID)
+	}
+}
+
+// TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists verifies
+// the pre-existing ExistsForEntity semantics are preserved: SeedDraft must
+// NOT add a redundant unknown draft on top of an already-terminal outcome
+// (this is exactly the production duplication bug — 2 entities found with
+// both an unknown draft AND a terminal outcome coexisting).
+func TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	terminal, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: outcomeResultSuccess,
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome terminal: %v", err)
+	}
+
+	got, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if created {
+		t.Error("expected created=false when a terminal outcome already exists")
+	}
+	if got.ID != terminal.ID {
+		t.Errorf("expected the existing terminal row back, got a different ID: %s vs %s", got.ID, terminal.ID)
+	}
+	if got.Result != outcomeResultSuccess {
+		t.Errorf("must not have altered the existing terminal result, got %q", got.Result)
+	}
+}
+
+// TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft is the direct
+// race-safety proof for the TOCTOU the dispatch named explicitly: concurrent
+// complete_task calls on the same task racing to seed the first draft.
+// GetLatestForEntity and the guarded INSERT are two separate statements
+// (not wrapped in one transaction), so even with SQLite's single-connection
+// serialization (db.go SetMaxOpenConns(1)) goroutines CAN genuinely
+// interleave between the read and the write — each individual statement is
+// atomic, but the two-statement sequence as a whole is not. The correctness
+// guarantee comes from the partial unique index idx_outcomes_one_open_draft
+// rejecting every INSERT past the first for the same entity via
+// ON CONFLICT DO NOTHING, not from any application-level lock.
+func TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	createdCount := make([]bool, n)
+	errs := make([]error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start // release all goroutines together to maximize interleaving
+			_, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+			createdCount[idx] = created
+			errs[idx] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d SeedDraft error: %v", i, err)
+		}
+	}
+
+	trueCount := 0
+	for _, c := range createdCount {
+		if c {
+			trueCount++
+		}
+	}
+	if trueCount != 1 {
+		t.Errorf("expected exactly 1 goroutine to win created=true, got %d", trueCount)
+	}
+
+	all, err := store.ListRecentOutcomes(ctx, &wsID, "task", 100)
+	if err != nil {
+		t.Fatalf("ListRecentOutcomes: %v", err)
+	}
+	rowCount := 0
+	for _, o := range all {
+		if o.EntityID == entityID {
+			rowCount++
+		}
+	}
+	if rowCount != 1 {
+		t.Errorf("expected exactly 1 outcome row for the entity after %d concurrent SeedDraft calls, got %d — TOCTOU not closed", n, rowCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 4 Major (finding F3) + Critical/Major (F1/F6 parity). SQLite
+// never had F1's NULL bug: migrations/sqlite/000063_outcomes_rule_link.up.sql
+// declares `related_rule_ids TEXT NOT NULL DEFAULT '[]'`, unlike PG's
+// nullable UUID[] with no DEFAULT — so this backend structurally cannot
+// reproduce F1. F3 (SeedDraft leaving updated_at unset) and F6 (dedup
+// coverage) DO apply here and are pinned below for backend-security-
+// design.md §6.5 parity.
+// ---------------------------------------------------------------------------
+
+// TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt is F3's fix
+// reproduction: before this fix, SeedDraft's INSERT omitted updated_at
+// entirely, and — because migrations/sqlite/000075's column is nullable at
+// the SQLite schema level (ALTER TABLE cannot retroactively add a NOT NULL
+// DEFAULT without a full table rebuild) — every seeded draft's updated_at
+// scanned back as the Go zero time.Time (0001-01-01), not CreatedAt.
+func TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for a fresh entity")
+	}
+	if draft.UpdatedAt.IsZero() {
+		t.Fatal("seeded draft: UpdatedAt is the zero time — SeedDraft's INSERT did not supply a value")
+	}
+	if !draft.UpdatedAt.Equal(draft.CreatedAt) {
+		t.Errorf("seeded draft: UpdatedAt = %v, want equal to CreatedAt %v (never modified yet)",
+			draft.UpdatedAt, draft.CreatedAt)
+	}
+}
+
+// TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath
+// mirrors the PG production-path test (TestStore_SeedDraft_FinalizeDraft_
+// RelatedRuleIDs_ProductionPath) for backend-security-design.md §6.5 parity:
+// the actual complete_task -> record_outcome call sequence, starting from
+// SeedDraft rather than CreateOutcome, must round-trip related_rule_ids
+// correctly. SQLite never had F1's bug, but every other FinalizeDraft test
+// in this file also happens to seed via CreateOutcome, so this closes the
+// same "SeedDraft path specifically" coverage gap the PG twin does.
+func TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	draft, created, err := store.SeedDraft(ctx, &wsID, "task", entityID)
+	if err != nil {
+		t.Fatalf("SeedDraft: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for a fresh entity")
+	}
+	if len(draft.RelatedRuleIDs) != 0 {
+		t.Fatalf("precondition: freshly-seeded draft.RelatedRuleIDs = %v, want empty", draft.RelatedRuleIDs)
+	}
+
+	finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleA, ruleB},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if len(finalized.RelatedRuleIDs) != 2 || finalized.RelatedRuleIDs[0] != ruleA || finalized.RelatedRuleIDs[1] != ruleB {
+		t.Fatalf("RelatedRuleIDs = %v, want EXACTLY [%s, %s]", finalized.RelatedRuleIDs, ruleA, ruleB)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix is F6's
+// SQLite-side half of the combined test matrix (existing empty / existing
+// has-value crossed with incoming has-a-duplicate / incoming has-none). No
+// "existing NULL" case: unlike PG, this column is `NOT NULL DEFAULT '[]'`
+// (migrations/sqlite/000063), so a NULL existing value is not reachable
+// through any write path this store exposes. unionRelatedRuleIDs
+// (outcome.go) already dedupes both operands via a `seen` map, so every
+// case here is expected to pass without a code change — the point is
+// closing the zero-coverage gap the dispatch flagged (a no-op dedup
+// passthrough left the suite green), mirroring the PG matrix's structure.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	ruleX := uuid.New()
+	ruleY, ruleZ := uuid.New(), uuid.New()
+
+	tests := []struct {
+		name        string
+		existingIDs []uuid.UUID
+		incoming    []uuid.UUID
+		want        []uuid.UUID
+	}{
+		{
+			name:        "existing empty array, incoming has an internal duplicate",
+			existingIDs: []uuid.UUID{},
+			incoming:    []uuid.UUID{ruleY, ruleY, ruleZ},
+			want:        []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:        "existing empty array, incoming has no duplicates",
+			existingIDs: []uuid.UUID{},
+			incoming:    []uuid.UUID{ruleY, ruleZ},
+			want:        []uuid.UUID{ruleY, ruleZ},
+		},
+		{
+			name:        "existing already has a value, incoming has an internal duplicate",
+			existingIDs: []uuid.UUID{ruleX},
+			incoming:    []uuid.UUID{ruleY, ruleY},
+			want:        []uuid.UUID{ruleX, ruleY},
+		},
+		{
+			name:        "existing already has a value, incoming has no duplicates",
+			existingIDs: []uuid.UUID{ruleX},
+			incoming:    []uuid.UUID{ruleY, ruleZ},
+			want:        []uuid.UUID{ruleX, ruleY, ruleZ},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entityID := uuid.New()
+			draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+				WorkspaceID:    &wsID,
+				EntityType:     "task",
+				EntityID:       entityID,
+				Result:         "unknown",
+				RelatedRuleIDs: tc.existingIDs,
+			})
+			if err != nil {
+				t.Fatalf("CreateOutcome (seed existing state): %v", err)
+			}
+
+			finalized, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+				Result:         outcomeResultSuccess,
+				RelatedRuleIDs: tc.incoming,
+			})
+			if err != nil {
+				t.Fatalf("FinalizeDraft: %v", err)
+			}
+			if len(finalized.RelatedRuleIDs) != len(tc.want) {
+				t.Fatalf("RelatedRuleIDs = %v, want %v", finalized.RelatedRuleIDs, tc.want)
+			}
+			for i, id := range tc.want {
+				if finalized.RelatedRuleIDs[i] != id {
+					t.Errorf("RelatedRuleIDs[%d] = %s, want %s (full: got %v, want %v)",
+						i, finalized.RelatedRuleIDs[i], id, finalized.RelatedRuleIDs, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates
+// is the SQLite twin of
+// TestStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates
+// (internal/outcome/store_test.go) — PR #152 round 5 Major (M-R5-1)
+// guarantee A. Same scenario, same assertions, against the SQLite backend:
+// 6 batches of 20 fresh distinct UUIDs (120 candidates, deliberately past
+// the 100 cap) applied via repeated FinalizeDraft calls against the SAME
+// draft (Result stays "unknown" throughout) must never let
+// related_rule_ids grow past outcome.MaxRelatedRuleIDsTotal, and batches
+// 1-5 (which fill the cap exactly) must survive intact while batch 6 is
+// entirely dropped.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	const batchSize = 20
+	const numBatches = 6 // 6*20=120 candidates, deliberately past the 100 cap
+	batches := newRuleIDBatches(numBatches, batchSize)
+
+	var last outcome.Outcome
+	for b, batch := range batches {
+		last, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{
+			Result:         "unknown",
+			RelatedRuleIDs: batch,
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft batch %d: %v", b, err)
+		}
+		wantLen := (b + 1) * batchSize
+		if wantLen > outcome.MaxRelatedRuleIDsTotal {
+			wantLen = outcome.MaxRelatedRuleIDsTotal
+		}
+		if len(last.RelatedRuleIDs) != wantLen {
+			t.Fatalf("after batch %d: len(RelatedRuleIDs) = %d, want %d (cap=%d)",
+				b, len(last.RelatedRuleIDs), wantLen, outcome.MaxRelatedRuleIDsTotal)
+		}
+	}
+
+	if len(last.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("final len(RelatedRuleIDs) = %d, want exactly the cap %d — cumulative growth was NOT bounded",
+			len(last.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+
+	want := concatRuleIDBatches(batches[:5])
+	if len(want) != outcome.MaxRelatedRuleIDsTotal {
+		t.Fatalf("test bug: want slice has %d entries, expected %d", len(want), outcome.MaxRelatedRuleIDsTotal)
+	}
+	for i, id := range want {
+		if last.RelatedRuleIDs[i] != id {
+			t.Errorf("RelatedRuleIDs[%d] = %s, want %s (batches 1-5 must survive intact, in order)",
+				i, last.RelatedRuleIDs[i], id)
+		}
+	}
+	for _, dropped := range batches[5] {
+		if slices.Contains(last.RelatedRuleIDs, dropped) {
+			t.Errorf("batch 6 entry %s survived truncation, want entirely dropped (cap was already full)", dropped)
+		}
+	}
+
+	reread, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len(reread.RelatedRuleIDs) != outcome.MaxRelatedRuleIDsTotal {
+		t.Errorf("reread len(RelatedRuleIDs) = %d, want %d (persisted value must match returned value)",
+			len(reread.RelatedRuleIDs), outcome.MaxRelatedRuleIDsTotal)
+	}
+}
+
+// newRuleIDBatches builds n batches of size fresh distinct UUIDs each, for
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates.
+// Extracted to keep that test's cyclomatic complexity under gocyclo's limit.
+func newRuleIDBatches(n, size int) [][]uuid.UUID {
+	batches := make([][]uuid.UUID, n)
+	for b := range batches {
+		batch := make([]uuid.UUID, size)
+		for i := range batch {
+			batch[i] = uuid.New()
+		}
+		batches[b] = batch
+	}
+	return batches
+}
+
+// concatRuleIDBatches flattens batches in order into a single slice.
+func concatRuleIDBatches(batches [][]uuid.UUID) []uuid.UUID {
+	var out []uuid.UUID
+	for _, b := range batches {
+		out = append(out, b...)
+	}
+	return out
+}
+
+// captureSlogWarn temporarily redirects the default slog logger to a buffer
+// and returns it, so tests can assert on the EXACT warn-or-not behaviour of
+// a call without depending on log level defaults.
+func captureSlogWarn(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// insertDraftWithRelatedRuleIDs inserts an 'unknown' draft row directly via
+// SQL, letting tests seed a pre-existing related_rule_ids array that already
+// exceeds outcome.MaxRelatedRuleIDsTotal — a state only reachable via data
+// written before that cap existed (see outcome.CapRelatedRuleIDs's doc
+// comment) — reproducing PR #152 round 6 Major finding m-R6-3's exact repro
+// shape (existing=150, cap=100). The PG twin of this fixture is
+// insertDraftWithNotesAndRelatedRuleIDs (internal/outcome/store_test.go).
+func insertDraftWithRelatedRuleIDs(
+	t *testing.T, db *wbtsqlite.DB, id, wsID, entityID uuid.UUID, entityType string, relatedRuleIDs []uuid.UUID,
+) {
+	t.Helper()
+	strs := make([]string, len(relatedRuleIDs))
+	for i, rid := range relatedRuleIDs {
+		strs[i] = rid.String()
+	}
+	encoded, err := json.Marshal(strs)
+	if err != nil {
+		t.Fatalf("marshal related_rule_ids fixture: %v", err)
+	}
+	err = db.ExecContext(
+		context.Background(),
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, related_rule_ids) VALUES (?, ?, ?, ?, 'unknown', ?)`,
+		id.String(), wsID.String(), entityType, entityID.String(), string(encoded),
+	)
+	if err != nil {
+		t.Fatalf("insert draft with related_rule_ids: %v", err)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting
+// is the SQLite twin of
+// TestStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting
+// (internal/outcome/store_test.go) — PR #152 round 6 Major finding m-R6-3.
+// See that test's doc comment for the full scenario; this asserts the SAME
+// two sub-cases (1 new ID / notes-only zero new IDs) produce IDENTICAL
+// results on SQLite, closing the cross-backend disagreement the second-army
+// round 6 repro found (PG happened to already skip truncation for the
+// notes-only case; SQLite's old unconditional `merged[:cap]` did not).
+// Also verifies the SQLite side of the m-R6-4 warn-accuracy fix in the same
+// run.
+func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	existing := newRuleIDBatches(1, outcome.MaxRelatedRuleIDsTotal+50)[0] // 150, cap=100
+
+	t.Run("one new ID: all 150 existing survive, new ID dropped, warns", func(t *testing.T) {
+		buf := captureSlogWarn(t)
+		draftID := uuid.New()
+		entityID := uuid.New()
+		insertDraftWithRelatedRuleIDs(t, db, draftID, wsID, entityID, "task", existing)
+
+		newID := uuid.New()
+		got, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+			Result:         "success",
+			RelatedRuleIDs: []uuid.UUID{newID},
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if len(got.RelatedRuleIDs) != len(existing) {
+			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (ALL existing must survive)", len(got.RelatedRuleIDs), len(existing))
+		}
+		for i, id := range existing {
+			if got.RelatedRuleIDs[i] != id {
+				t.Fatalf("RelatedRuleIDs[%d] = %s, want %s — existing entry silently altered/reordered", i, got.RelatedRuleIDs[i], id)
+			}
+		}
+		if slices.Contains(got.RelatedRuleIDs, newID) {
+			t.Errorf("new ID %s survived even though the cap was already full by existing alone — want it dropped", newID)
+		}
+		if !strings.Contains(buf.String(), "related_rule_ids exceeded cumulative cap") {
+			t.Errorf("expected a truncation warn (the new ID WAS dropped), got none: log=%q", buf.String())
+		}
+	})
+
+	t.Run("notes-only, zero new IDs: all 150 existing survive, no warn", func(t *testing.T) {
+		buf := captureSlogWarn(t)
+		draftID := uuid.New()
+		entityID := uuid.New()
+		insertDraftWithRelatedRuleIDs(t, db, draftID, wsID, entityID, "task", existing)
+
+		got, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+			Result: "success",
+			Notes:  "wrapping up, no new rule links this time",
+		})
+		if err != nil {
+			t.Fatalf("FinalizeDraft: %v", err)
+		}
+		if len(got.RelatedRuleIDs) != len(existing) {
+			t.Fatalf("len(RelatedRuleIDs) = %d, want %d (a notes-only call must never touch related_rule_ids)",
+				len(got.RelatedRuleIDs), len(existing))
+		}
+		for i, id := range existing {
+			if got.RelatedRuleIDs[i] != id {
+				t.Fatalf("RelatedRuleIDs[%d] = %s, want %s — existing entry silently altered/reordered", i, got.RelatedRuleIDs[i], id)
+			}
+		}
+		if strings.Contains(buf.String(), "related_rule_ids exceeded cumulative cap") {
+			t.Errorf("m-R6-4 regression: warned about truncation even though nothing was dropped: log=%q", buf.String())
+		}
+	})
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_Notes_CumulativeCapTruncates is the
+// SQLite twin of TestStore_FinalizeDraft_Notes_CumulativeCapTruncates
+// (internal/outcome/store_test.go) — PR #152 round 6 Major M-R6-2 guarantee
+// B. Same scenario, same assertions, against the SQLite backend.
+func TestSQLiteOutcomeStore_FinalizeDraft_Notes_CumulativeCapTruncates(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+	entityID := uuid.New()
+
+	draft, err := store.CreateOutcome(ctx, outcome.CreateOutcomeParams{
+		WorkspaceID: &wsID,
+		EntityType:  "task",
+		EntityID:    entityID,
+		Result:      "unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateOutcome draft: %v", err)
+	}
+
+	chunk := strings.Repeat("a", 2000)
+
+	buf := captureSlogWarn(t)
+	got, err := store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "unknown", Notes: chunk})
+	if err != nil {
+		t.Fatalf("FinalizeDraft call 1: %v", err)
+	}
+	if got.Notes != chunk {
+		t.Fatalf("call 1: Notes = %d runes, want the chunk written directly (existing was empty)", len([]rune(got.Notes)))
+	}
+	if strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Fatalf("call 1: unexpected truncation warn under the cap: log=%q", buf.String())
+	}
+
+	buf = captureSlogWarn(t)
+	got, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "unknown", Notes: chunk})
+	if err != nil {
+		t.Fatalf("FinalizeDraft call 2: %v", err)
+	}
+	wantAfter2 := chunk + "\n\n" + chunk
+	if got.Notes != wantAfter2 {
+		t.Fatalf("call 2: Notes mismatch, got %d runes want %d runes", len([]rune(got.Notes)), len([]rune(wantAfter2)))
+	}
+	if strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Fatalf("call 2: unexpected truncation warn under the cap: log=%q", buf.String())
+	}
+
+	buf = captureSlogWarn(t)
+	got, err = store.FinalizeDraft(ctx, draft.ID, outcome.CreateOutcomeParams{Result: "unknown", Notes: chunk})
+	if err != nil {
+		t.Fatalf("FinalizeDraft call 3: %v", err)
+	}
+	if len([]rune(got.Notes)) != outcome.MaxNotesTotalRunes {
+		t.Fatalf("call 3: len(Notes) = %d, want exactly the cap %d — cumulative growth was NOT bounded",
+			len([]rune(got.Notes)), outcome.MaxNotesTotalRunes)
+	}
+	wantPrefix := wantAfter2 + "\n\n"
+	if !strings.HasPrefix(got.Notes, wantPrefix) {
+		t.Fatalf("call 3: existing content + separator must survive completely intact as a prefix; got %q", got.Notes)
+	}
+	remaining := outcome.MaxNotesTotalRunes - len([]rune(wantPrefix))
+	wantThirdChunkPrefix := chunk[:remaining]
+	if !strings.HasSuffix(got.Notes, wantThirdChunkPrefix) {
+		t.Errorf("call 3: want the surviving suffix to be exactly the first %d runes of the third chunk", remaining)
+	}
+	if !strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Errorf("call 3: expected a truncation warn (the merge WAS truncated), got none: log=%q", buf.String())
+	}
+
+	reread, err := store.GetOutcomeByID(ctx, draft.ID, &wsID)
+	if err != nil {
+		t.Fatalf("GetOutcomeByID: %v", err)
+	}
+	if len([]rune(reread.Notes)) != outcome.MaxNotesTotalRunes {
+		t.Errorf("reread len(Notes) = %d, want %d (persisted value must match RETURNING)",
+			len([]rune(reread.Notes)), outcome.MaxNotesTotalRunes)
+	}
+}
+
+// insertDraftWithNotes inserts an 'unknown' draft row directly via SQL,
+// letting tests seed a pre-existing Notes value that already exceeds
+// outcome.MaxNotesTotalRunes — a state only reachable via data written
+// before that cap existed (see outcome.CapNotesTotal's doc comment). PG
+// twin: insertDraftWithNotes (internal/outcome/store_test.go).
+func insertDraftWithNotes(t *testing.T, db *wbtsqlite.DB, id, wsID, entityID uuid.UUID, entityType, notes string) {
+	t.Helper()
+	err := db.ExecContext(
+		context.Background(),
+		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result, notes) VALUES (?, ?, ?, ?, 'unknown', ?)`,
+		id.String(), wsID.String(), entityType, entityID.String(), notes,
+	)
+	if err != nil {
+		t.Fatalf("insert draft with notes: %v", err)
+	}
+}
+
+// TestSQLiteOutcomeStore_FinalizeDraft_Notes_ExistingOverCap_NeverDropsExisting
+// is the SQLite twin of
+// TestStore_FinalizeDraft_Notes_ExistingOverCap_NeverDropsExisting
+// (internal/outcome/store_test.go) — exercising outcome.CapNotesTotal's
+// "existing already over cap" branch through the SQLite backend's Go glue.
+func TestSQLiteOutcomeStore_FinalizeDraft_Notes_ExistingOverCap_NeverDropsExisting(t *testing.T) {
+	db := openOutcomeDB(t)
+	store := wbtsqlite.NewOutcomeStore(db)
+	ctx := context.Background()
+	wsID := uuid.New()
+
+	existingNotes := strings.Repeat("x", outcome.MaxNotesTotalRunes+500) // 5,500 > cap 5,000
+
+	buf := captureSlogWarn(t)
+	draftID := uuid.New()
+	entityID := uuid.New()
+	insertDraftWithNotes(t, db, draftID, wsID, entityID, "task", existingNotes)
+
+	got, err := store.FinalizeDraft(ctx, draftID, outcome.CreateOutcomeParams{
+		Result: "success",
+		Notes:  "a fresh enrich call that should be entirely dropped",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeDraft: %v", err)
+	}
+	if got.Notes != existingNotes {
+		t.Fatalf("Notes = %d runes, want the existing %d runes preserved EXACTLY, with the new segment dropped entirely",
+			len([]rune(got.Notes)), len([]rune(existingNotes)))
+	}
+	if !strings.Contains(buf.String(), "notes exceeded cumulative cap") {
+		t.Errorf("expected a truncation warn (the new segment WAS dropped), got none: log=%q", buf.String())
+	}
 }

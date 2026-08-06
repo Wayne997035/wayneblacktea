@@ -54,6 +54,22 @@ func (s *stubOutcomeStore) ExistsForEntity(_ context.Context, _ *uuid.UUID, _ st
 	return false, nil
 }
 
+// GetLatestForEntity / FinalizeDraft / SeedDraft: added mechanically to keep
+// this stub satisfying outcome.StoreIface after migration 000074 / decision
+// 80c1e8ae (arch-r2 A13, outcome lifecycle convergence) extended the
+// interface. This package's own tests never exercise these three methods.
+func (s *stubOutcomeStore) GetLatestForEntity(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, error) {
+	return outcome.Outcome{}, outcome.ErrNotFound
+}
+
+func (s *stubOutcomeStore) FinalizeDraft(_ context.Context, id uuid.UUID, _ outcome.CreateOutcomeParams) (outcome.Outcome, error) {
+	return outcome.Outcome{ID: id}, nil
+}
+
+func (s *stubOutcomeStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, _ uuid.UUID) (outcome.Outcome, bool, error) {
+	return outcome.Outcome{}, true, nil
+}
+
 // ---------------------------------------------------------------------------
 // stub behaviorrule.StoreIface
 // ---------------------------------------------------------------------------

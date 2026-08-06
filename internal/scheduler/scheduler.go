@@ -22,6 +22,57 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// PGOnlyJob is a code-level (not merely a comment) capability-contract
+// record for a scheduler job whose only backend implementation is Postgres.
+// Queried via IsPGOnlyJob so operators/tests can assert that an SQLite skip
+// is an intentional design boundary, not a silently-broken dependency.
+type PGOnlyJob struct {
+	// Name is the gocron job name, e.g. "daily-discipline-prune".
+	Name string
+	// Reason documents why this job has no SQLite implementation.
+	Reason string
+}
+
+// pgOnlyJobs is the closed set of scheduler jobs with no SQLite
+// implementation, per GTD decision G4 (6ea0b014): a job stays Postgres-only
+// when its only externally observable effect is disk growth on an
+// observability table — SQLite is dev-local single-tenant and never
+// accumulates enough rows for that growth to matter. Contrast with the 4
+// cognitive jobs in cognitive_jobs.go (stuck_task_detection,
+// decision_outcome_review, knowledge_to_skill_candidate, proposal_cleanup):
+// those produce user-observable pending_proposals rows, so they DO have
+// SQLite parity via CognitiveSQLiteStore.
+var pgOnlyJobs = []PGOnlyJob{
+	{
+		Name: "daily-discipline-prune",
+		Reason: "discipline_events retention is disk-growth-only, not user-observable " +
+			"(backend-security-design.md §1.3); SQLite is dev-local single-tenant with no growth concern",
+	},
+	{
+		Name: "daily-guard-prune",
+		Reason: "guard_events/guard_bypasses retention is disk-growth-only, not user-observable; " +
+			"SQLite is dev-local single-tenant with no growth concern",
+	},
+	{
+		Name: "daily-pending-proposals-prune",
+		Reason: "pending_proposals TTL cleanup is disk-growth-only — the proposals themselves ARE " +
+			"user-observable via proposal.StoreIface on both backends, but their retention/prune job is not; " +
+			"SQLite is dev-local single-tenant and never accumulates enough rows to matter",
+	},
+}
+
+// IsPGOnlyJob reports whether name is a documented Postgres-only scheduler
+// job and returns its design reason. ok=false means name is either a
+// dual-backend job or not a recognised job name at all.
+func IsPGOnlyJob(name string) (reason string, ok bool) {
+	for _, j := range pgOnlyJobs {
+		if j.Name == name {
+			return j.Reason, true
+		}
+	}
+	return "", false
+}
+
 // disciplinePruneTimeout caps the daily discipline_events DELETE. The query
 // is index-supported (idx_discipline_events_observed_at) and finishes well
 // under 5 s on personal-OS scale; the 60 s ceiling leaves room for a
@@ -815,6 +866,8 @@ func (s *Scheduler) runDailyDecayPrune() {
 // other jobs regardless of a single DB hiccup.
 func (s *Scheduler) runDailyDisciplinePrune() {
 	if s.disciplinePool == nil {
+		reason, _ := IsPGOnlyJob("daily-discipline-prune")
+		slog.Info("daily discipline prune: unsupported on this backend (by design)", "reason", reason)
 		return
 	}
 	// Independent timeout — MUST NOT inherit any request context (none
@@ -839,6 +892,8 @@ func (s *Scheduler) runDailyDisciplinePrune() {
 
 func (s *Scheduler) runDailyGuardPrune() {
 	if s.disciplinePool == nil {
+		reason, _ := IsPGOnlyJob("daily-guard-prune")
+		slog.Info("daily guard prune: unsupported on this backend (by design)", "reason", reason)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), guardPruneTimeout)
@@ -887,6 +942,8 @@ DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAg
 // resolved-row cleanup.
 func (s *Scheduler) runDailyPendingProposalsPrune() {
 	if s.disciplinePool == nil {
+		reason, _ := IsPGOnlyJob("daily-pending-proposals-prune")
+		slog.Info("daily pending_proposals prune: unsupported on this backend (by design)", "reason", reason)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pendingProposalsPruneTimeout)

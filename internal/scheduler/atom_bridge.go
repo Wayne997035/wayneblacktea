@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -27,23 +26,6 @@ const atomBridgeMinConsolidated = 10
 // atomBridgeLimit is the maximum number of consolidated atoms fetched per
 // cron run to bound DB load and proposal volume at personal scale.
 const atomBridgeLimit = 50
-
-// digestStatusConsolidated is the digest_status value written by the atom
-// consolidation cron (atom_consolidation.go) and read by the atom-bridge job.
-// Defined as a package-level constant to satisfy the goconst linter rule.
-const digestStatusConsolidated = "consolidated"
-
-// atomBridgeMinContentLen is the minimum content length (in runes) an atom
-// must have to be eligible for knowledge promotion. Short atoms rarely carry
-// enough context for a standalone knowledge item. Rune-based to handle CJK/emoji
-// correctly — see MAJOR-3 fix (utf8.RuneCountInString in quality gate below).
-// Note: atom.Atom has no confidence field (confirmed against atom/atom.go:17-27),
-// so quality gating is based on content length and tag count only.
-const atomBridgeMinContentLen = 80
-
-// atomBridgeMinTags is the minimum number of tags an atom must have to be
-// eligible for knowledge promotion.
-const atomBridgeMinTags = 2
 
 // atomBridgeDeps bundles dependencies for the weekly atom-bridge cron job.
 // All fields are required when the struct is non-nil.
@@ -114,7 +96,7 @@ func runAtomBridge(deps atomBridgeDeps) {
 	}
 
 	// Step 1: count 'consolidated' atoms.
-	count, err := deps.store.CountByDigestStatus(ctx, deps.workspaceID, digestStatusConsolidated)
+	count, err := deps.store.CountByDigestStatus(ctx, deps.workspaceID, atom.DigestStatusConsolidated)
 	if err != nil {
 		slog.Warn("atom_bridge: counting consolidated atoms failed", "err", err)
 		return
@@ -126,7 +108,7 @@ func runAtomBridge(deps atomBridgeDeps) {
 	}
 
 	// Step 2: list consolidated atoms.
-	atoms, err := deps.store.ListByDigestStatus(ctx, deps.workspaceID, digestStatusConsolidated, atomBridgeLimit)
+	atoms, err := deps.store.ListByDigestStatus(ctx, deps.workspaceID, atom.DigestStatusConsolidated, atomBridgeLimit)
 	if err != nil {
 		slog.Warn("atom_bridge: listing consolidated atoms failed", "err", err)
 		return
@@ -135,13 +117,12 @@ func runAtomBridge(deps atomBridgeDeps) {
 	promoted := 0
 	skipped := 0
 	for _, a := range atoms {
-		// Step 3: quality gate (no confidence field on atom.Atom).
-		// Use rune count (not byte length) so CJK/emoji content is measured correctly.
-		if utf8.RuneCountInString(a.Content) < atomBridgeMinContentLen {
-			skipped++
-			continue
-		}
-		if len(a.Tags) < atomBridgeMinTags {
+		// Step 3: quality gate — shared with promote_atom_to_knowledge
+		// (internal/mcp/tools_atom.go) via atom.CheckPromotionEligibility so
+		// the manual and cron promotion paths cannot silently diverge (G6
+		// decision 8f25c58d). No confidence field on atom.Atom, so gating is
+		// content length + tag count only.
+		if !atom.CheckPromotionEligibility(a.Content, a.Tags).Eligible() {
 			skipped++
 			continue
 		}
@@ -179,7 +160,7 @@ func runAtomBridge(deps atomBridgeDeps) {
 		}
 
 		// Step 5: mark atom as promoted.
-		if setErr := deps.store.SetDigestStatus(ctx, a.ID, "promoted", ""); setErr != nil {
+		if setErr := deps.store.SetDigestStatus(ctx, a.ID, atom.DigestStatusPromoted, ""); setErr != nil {
 			slog.Warn("atom_bridge: setting atom digest_status='promoted' failed",
 				"atom_id", a.ID, "err", setErr)
 		}
