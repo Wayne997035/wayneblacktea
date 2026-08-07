@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// sampleText is the fixture value shared by sanitizeTags test cases below,
+// hoisted to a const so goconst does not flag the repeated literal.
+const sampleText = "hello"
+
 // TestNoiseFilterWrappers_DelegateToValidator is a smoke test confirming the
 // package-local wrappers in noise_filter.go actually reach
 // internal/validator's implementation rather than re-implementing the logic.
@@ -53,8 +57,8 @@ func TestNoiseFilterWrappers_DelegateToValidator(t *testing.T) {
 		if reason != "" {
 			t.Fatalf("unexpected rejection: %q", reason)
 		}
-		if len(got) != 1 || got[0] != "hello" {
-			t.Errorf("got %v, want [\"hello\"]", got)
+		if len(got) != 1 || got[0] != sampleText {
+			t.Errorf("got %v, want [%q]", got, sampleText)
 		}
 	})
 

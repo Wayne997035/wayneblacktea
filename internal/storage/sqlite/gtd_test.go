@@ -1763,13 +1763,13 @@ func TestGTDStore_CreateProject_ValidRepoName_StillWorks(t *testing.T) {
 
 	p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
 		Name: "good-repo-name-proj", Title: "t", Area: "a",
-		RepoName: "wayneblacktea",
+		RepoName: sqliteSeedRepoName,
 	})
 	if err != nil {
 		t.Fatalf("CreateProject with valid repo_name: %v", err)
 	}
-	if !p.RepoName.Valid || p.RepoName.String != "wayneblacktea" {
-		t.Errorf("repo_name = %+v, want valid %q", p.RepoName, "wayneblacktea")
+	if !p.RepoName.Valid || p.RepoName.String != sqliteSeedRepoName {
+		t.Errorf("repo_name = %+v, want valid %q", p.RepoName, sqliteSeedRepoName)
 	}
 }
 

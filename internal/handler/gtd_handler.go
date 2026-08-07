@@ -499,6 +499,22 @@ func updateTaskRequestIsEmpty(req *updateTaskRequest) bool {
 		req.BranchName == nil && req.PRUrl == nil
 }
 
+// validateUpdateTaskGitFields validates the branch_name/pr_url pair used for
+// git-integration bookkeeping (migration 000047). Extracted verbatim out of
+// validateUpdateTaskFields to keep that function under the gocyclo budget;
+// the branching logic is unchanged.
+func validateUpdateTaskGitFields(req *updateTaskRequest) string {
+	if req.BranchName != nil {
+		if msg := validateBranchName(*req.BranchName); msg != "" {
+			return msg
+		}
+	}
+	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
+		return errMsgInvalidPRURL
+	}
+	return ""
+}
+
 // validateUpdateTaskFields validates individual field values in the request,
 // assuming the at-least-one-field check has already passed.
 func validateUpdateTaskFields(req *updateTaskRequest) string {
@@ -523,15 +539,7 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 	if req.Kind != nil && !validator.IsValidKind(*req.Kind) {
 		return "kind must be one of: general, fix-pr, feature, refactor, research, chore"
 	}
-	if req.BranchName != nil {
-		if msg := validateBranchName(*req.BranchName); msg != "" {
-			return msg
-		}
-	}
-	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
-		return errMsgInvalidPRURL
-	}
-	return ""
+	return validateUpdateTaskGitFields(req)
 }
 
 // validateUpdateTaskRequest validates the update request and returns a user-facing
