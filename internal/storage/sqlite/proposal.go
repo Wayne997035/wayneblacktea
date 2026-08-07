@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -249,4 +250,69 @@ func (s *ProposalStore) AutoProposeConceptFromKnowledge(
 		Payload:    payload,
 		ProposedBy: proposedBy,
 	})
+}
+
+// MarkAndDeleteStaleProposals is the SQLite-native counterpart to
+// scheduler.go's Postgres two-step runDailyPendingProposalsPrune logic
+// (internal/scheduler/scheduler.go): (1) mark pending type='task' proposals
+// older than taskRetention as status='rejected' with reason markReason, then
+// (2) delete resolved (accepted/rejected) rows older than resolvedRetention
+// and pending type='decision' rows older than decisionRetention. Other
+// pending types (goal/project/concept/knowledge/playbook) are NEVER touched
+// by either step — same "unresolved user intent" boundary the Postgres job
+// documents.
+//
+// SQLite has no `NOW() - INTERVAL` syntax (GTD decision G4, 6ea0b014 — same
+// rationale as every other SQLite cognitive-job adapter in this package), so
+// all three cutoffs are computed in Go from time.Now().UTC() and bound as
+// parameters instead of interval literals.
+//
+// Deliberately NOT workspace-scoped, matching the Postgres job's actual
+// behaviour (it prunes stale scheduler proposals across every workspace, not
+// just one).
+//
+// A mark-step failure does NOT block the delete step (mirrors the Postgres
+// job: "the mark step's outcome does not gate the delete step" — a
+// transient mark failure shouldn't block the resolved-row cleanup). Returns
+// (markedRows, deletedRows, err); err is errors.Join(markErr, delErr) so a
+// caller can log both failures if both steps fail independently.
+func (s *ProposalStore) MarkAndDeleteStaleProposals(
+	ctx context.Context, taskRetention, decisionRetention, resolvedRetention time.Duration, markReason string,
+) (markedRows, deletedRows int64, err error) {
+	now := time.Now().UTC()
+	taskCutoff := now.Add(-taskRetention).Format(sqliteMillisLayout)
+	decisionCutoff := now.Add(-decisionRetention).Format(sqliteMillisLayout)
+	resolvedCutoff := now.Add(-resolvedRetention).Format(sqliteMillisLayout)
+	markedAt := sqliteNowMillis()
+
+	const markQ = `UPDATE pending_proposals
+		SET status = 'rejected', resolved_at = ?1, reason = ?2
+		WHERE status = 'pending' AND type = 'task'
+		  AND created_at < ?3`
+	var markErr error
+	markRes, markExecErr := s.db.conn.ExecContext(ctx, markQ, markedAt, markReason, taskCutoff)
+	if markExecErr != nil {
+		markErr = errWrap("MarkAndDeleteStaleProposals mark", markExecErr)
+	} else if n, raErr := markRes.RowsAffected(); raErr != nil {
+		markErr = errWrap("MarkAndDeleteStaleProposals mark rows affected", raErr)
+	} else {
+		markedRows = n
+	}
+
+	// resolved_at IS NULL on still-pending rows, so the first arm can never
+	// match a pending row — same invariant the Postgres query's comment
+	// documents.
+	const deleteQ = `DELETE FROM pending_proposals
+		WHERE (status IN ('accepted', 'rejected') AND resolved_at < ?1)
+		   OR (status = 'pending' AND type = 'decision' AND created_at < ?2)`
+	delRes, delExecErr := s.db.conn.ExecContext(ctx, deleteQ, resolvedCutoff, decisionCutoff)
+	if delExecErr != nil {
+		return markedRows, 0, errors.Join(markErr, errWrap("MarkAndDeleteStaleProposals delete", delExecErr))
+	}
+	n, raErr := delRes.RowsAffected()
+	if raErr != nil {
+		return markedRows, 0, errors.Join(markErr, errWrap("MarkAndDeleteStaleProposals delete rows affected", raErr))
+	}
+	deletedRows = n
+	return markedRows, deletedRows, markErr
 }

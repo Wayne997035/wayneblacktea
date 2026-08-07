@@ -3,6 +3,7 @@ package outcome
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ import (
 // uses to decide ActionReplayedIdempotent vs ActionSuperseded.
 func TestIsIdempotentReplay(t *testing.T) {
 	entityID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+	sessionA, sessionB := uuid.New(), uuid.New()
 	base := Outcome{
 		EntityType: "task",
 		EntityID:   entityID,
@@ -89,6 +92,57 @@ func TestIsIdempotentReplay(t *testing.T) {
 				Metrics: []byte{},
 			},
 			want: true,
+		},
+		// PR #152 round 8 Major M-R8-1: identical result/notes/metrics but a
+		// genuinely NEW related_rule_id or work_session_id must no longer be
+		// misclassified as idempotent — both directions pinned below.
+		{
+			name: "same result/notes/metrics but a genuinely new related_rule_id -> NOT idempotent",
+			latest: Outcome{
+				EntityType: "task", EntityID: entityID, Result: "success",
+				Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				RelatedRuleIDs: []uuid.UUID{ruleA},
+			},
+			params: CreateOutcomeParams{
+				Result: "success", Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				RelatedRuleIDs: []uuid.UUID{ruleA, ruleB},
+			},
+			want: false,
+		},
+		{
+			name: "same related_rule_ids set (no new IDs) -> still idempotent",
+			latest: Outcome{
+				EntityType: "task", EntityID: entityID, Result: "success",
+				Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				RelatedRuleIDs: []uuid.UUID{ruleA},
+			},
+			params: CreateOutcomeParams{
+				Result: "success", Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				RelatedRuleIDs: []uuid.UUID{ruleA},
+			},
+			want: true,
+		},
+		{
+			name:   "same result/notes/metrics but a genuinely new work_session_id (was unset) -> NOT idempotent",
+			latest: base,
+			params: CreateOutcomeParams{
+				Result: "success", Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				WorkSessionID: &sessionA,
+			},
+			want: false,
+		},
+		{
+			name: "work_session_id already set on latest, params supplies a DIFFERENT id -> NOT idempotent (terminal branch has no set-once)",
+			latest: Outcome{
+				EntityType: "task", EntityID: entityID, Result: "success",
+				Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				WorkSessionID: &sessionA,
+			},
+			params: CreateOutcomeParams{
+				Result: "success", Notes: "done on time", Metrics: []byte(`{"duration_ms":100}`),
+				WorkSessionID: &sessionB,
+			},
+			want: false,
 		},
 	}
 
@@ -409,6 +463,344 @@ func TestRecordExecutionResult_TerminalAgainstDraft_StillFinalizes(t *testing.T)
 	}
 	if got.Result != "success" {
 		t.Errorf("Result = %q, want success", got.Result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 8 Major M-R8-1: a retry against a TERMINAL outcome that
+// repeats the same result/notes/metrics but supplies a genuinely new
+// related_rule_id or work_session_id must fall through to the supersede
+// branch instead of being misclassified as ActionReplayedIdempotent — see
+// isIdempotentReplay's doc comment for the full rationale.
+// ---------------------------------------------------------------------------
+
+// TestRecordExecutionResult_TerminalRetry_NewRelatedRuleIDs_Supersedes is
+// M-R8-1's direct reproduction: latest is a TERMINAL outcome with
+// related_rule_ids=[A]; a retry carrying the SAME result/notes/metrics but
+// related_rule_ids=[A,B] must create a NEW row (SupersedesID set) carrying
+// this call's own related_rule_ids verbatim — CreateOutcome for a supersede
+// copies params as-is, it does not merge with the row it supersedes (that
+// merge-on-retry semantics belongs only to the draft branch's
+// FinalizeDraft). Before this fix, isIdempotentReplay ignored
+// RelatedRuleIDs entirely, so this call was wrongly classified as a no-op
+// replay and the new rule ID B was silently dropped — behavior_governance.go
+// reads RelatedRuleIDs to compute rule confidence, so a lost link means a
+// bad rule's confidence is never decremented.
+func TestRecordExecutionResult_TerminalRetry_NewRelatedRuleIDs_Supersedes(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+	ruleA, ruleB := uuid.New(), uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:             priorID,
+			EntityType:     "task",
+			EntityID:       entityID,
+			Result:         "success",
+			Notes:          "shipped fine",
+			RelatedRuleIDs: []uuid.UUID{ruleA},
+		},
+	}
+
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "success",
+		Notes:          "shipped fine",
+		RelatedRuleIDs: []uuid.UUID{ruleA, ruleB},
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionSuperseded {
+		t.Fatalf("action = %q, want %q (M-R8-1 regression: a genuinely new related_rule_id must not be "+
+			"silently dropped as an idempotent replay)", action, ActionSuperseded)
+	}
+	if got.ID == priorID {
+		t.Fatal("a call carrying a genuinely new related_rule_id must create a NEW row, not reuse the prior terminal row")
+	}
+	if !fs.createCalled || fs.finalizeCalled {
+		t.Errorf("expected CreateOutcome (not FinalizeDraft) to be called for a terminal supersede")
+	}
+	if got.SupersedesID == nil || *got.SupersedesID != priorID {
+		t.Errorf("SupersedesID = %v, want %s", got.SupersedesID, priorID)
+	}
+	if len(got.RelatedRuleIDs) != 2 || got.RelatedRuleIDs[0] != ruleA || got.RelatedRuleIDs[1] != ruleB {
+		t.Errorf("RelatedRuleIDs = %v, want [%s %s]", got.RelatedRuleIDs, ruleA, ruleB)
+	}
+	// The prior row must remain untouched with its original single ID —
+	// fakeStore.CreateOutcome never mutates f.latest, mirroring both real
+	// backends' supersede path (the prior row is never written to).
+	if len(fs.latest.RelatedRuleIDs) != 1 || fs.latest.RelatedRuleIDs[0] != ruleA {
+		t.Errorf("prior row's RelatedRuleIDs was mutated: %v", fs.latest.RelatedRuleIDs)
+	}
+}
+
+// TestRecordExecutionResult_TerminalRetry_DifferentWorkSessionID_Supersedes
+// is round 9 Critical C-1's direct reproduction: latest is a TERMINAL outcome
+// already linked to sessionA; a retry carrying the SAME result/notes/metrics
+// but a DIFFERENT work_session_id (sessionB — e.g. a second agent or a
+// Claude Code restart re-recording the same verdict) must create a NEW row
+// (SupersedesID set) carrying THIS call's session ID verbatim — not be
+// misclassified as ActionReplayedIdempotent. Before the fix,
+// isIdempotentReplay reused workSessionIDHasNew's nil-only "new" rule (only
+// correct for the draft branch's COALESCE semantics — see
+// isIdempotentReplay's doc comment), so a differing already-set session ID
+// was wrongly treated as "no new info": no row was written, SetOutcomeLink
+// was skipped by the caller (internal/mcp/tools_outcome.go:368, gated on
+// exactly this action), and work_sessions.outcome_id for sessionB stayed
+// NULL while the response echoed sessionA's row with no error. Asserting
+// action == ActionSuperseded here is what makes that downstream skip NOT
+// fire — tools_outcome.go's skip-list only covers ActionReplayedIdempotent
+// and ActionDraftPreserved.
+func TestRecordExecutionResult_TerminalRetry_DifferentWorkSessionID_Supersedes(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+	sessionA, sessionB := uuid.New(), uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:            priorID,
+			EntityType:    "task",
+			EntityID:      entityID,
+			Result:        "success",
+			Notes:         "shipped fine",
+			WorkSessionID: &sessionA,
+		},
+	}
+
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:    "task",
+		EntityID:      entityID,
+		Result:        "success",
+		Notes:         "shipped fine",
+		WorkSessionID: &sessionB,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionSuperseded {
+		t.Fatalf("action = %q, want %q (round 9 C-1 regression: a differing already-set work_session_id "+
+			"must not be silently dropped as an idempotent replay)", action, ActionSuperseded)
+	}
+	if got.ID == priorID {
+		t.Fatal("a call carrying a genuinely different work_session_id must create a NEW row, not reuse the prior terminal row")
+	}
+	if !fs.createCalled || fs.finalizeCalled {
+		t.Errorf("expected CreateOutcome (not FinalizeDraft) to be called for a terminal supersede")
+	}
+	if got.WorkSessionID == nil || *got.WorkSessionID != sessionB {
+		t.Errorf("new row's WorkSessionID = %v, want %s (this call's own session, "+
+			"written verbatim by CreateOutcome's plain INSERT)", got.WorkSessionID, sessionB)
+	}
+	// The prior row must remain untouched, still linked to sessionA —
+	// fakeStore.CreateOutcome never mutates f.latest, mirroring both real
+	// backends' supersede path (the prior row is never written to, so
+	// sessionA's link is never silently repointed).
+	if fs.latest.WorkSessionID == nil || *fs.latest.WorkSessionID != sessionA {
+		t.Errorf("prior row's WorkSessionID was mutated: %v", fs.latest.WorkSessionID)
+	}
+}
+
+// TestRecordExecutionResult_TerminalRetry_SameWorkSessionID_StillIdempotent
+// is the non-regression companion to the test above: a retry carrying the
+// IDENTICAL work_session_id (byte-for-byte, same UUID as latest's) alongside
+// identical result/notes/metrics genuinely carries zero new information —
+// workSessionIDDiffers must return false for equal UUIDs (not just for nil),
+// so this must still take the no-write replay path.
+func TestRecordExecutionResult_TerminalRetry_SameWorkSessionID_StillIdempotent(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+	session := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:            priorID,
+			EntityType:    "task",
+			EntityID:      entityID,
+			Result:        "success",
+			Notes:         "shipped fine",
+			WorkSessionID: &session,
+		},
+	}
+
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:    "task",
+		EntityID:      entityID,
+		Result:        "success",
+		Notes:         "shipped fine",
+		WorkSessionID: &session,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionReplayedIdempotent {
+		t.Fatalf("action = %q, want %q (identical session ID carries no new info)", action, ActionReplayedIdempotent)
+	}
+	if got.ID != priorID {
+		t.Errorf("got.ID = %s, want the same prior row %s (no-op replay must not create a new row)", got.ID, priorID)
+	}
+	if fs.createCalled || fs.finalizeCalled {
+		t.Error("neither CreateOutcome nor FinalizeDraft must be called for an idempotent replay")
+	}
+}
+
+// TestRecordExecutionResult_TerminalRetry_NilToSetWorkSessionID_Supersedes
+// pins the pre-existing (unchanged by round 9 C-1) nil-to-non-nil case: a
+// retry that supplies a work_session_id where latest had none must still
+// supersede exactly as it did before this fix — workSessionIDDiffers's
+// `existing == nil` arm preserves this behaviour, it did not only add the
+// differing-non-nil case.
+func TestRecordExecutionResult_TerminalRetry_NilToSetWorkSessionID_Supersedes(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+	session := uuid.New()
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:         priorID,
+			EntityType: "task",
+			EntityID:   entityID,
+			Result:     "success",
+			Notes:      "shipped fine",
+			// WorkSessionID deliberately nil — latest was recorded with no
+			// session link at all.
+		},
+	}
+
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:    "task",
+		EntityID:      entityID,
+		Result:        "success",
+		Notes:         "shipped fine",
+		WorkSessionID: &session,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionSuperseded {
+		t.Fatalf("action = %q, want %q (nil-to-set must still be treated as new info, preserved behaviour)", action, ActionSuperseded)
+	}
+	if got.ID == priorID {
+		t.Fatal("a call attaching a session ID where latest had none must create a NEW row")
+	}
+	if got.WorkSessionID == nil || *got.WorkSessionID != session {
+		t.Errorf("new row's WorkSessionID = %v, want %s", got.WorkSessionID, session)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #152 round 8 Major (80cf80b6 finding 2): RecordExecutionResult's
+// ErrDraftAlreadyFinalized retry loop must be bounded as a WHOLE function,
+// not merely "a draft can only be finalized once" — each re-resolve may
+// land on a DIFFERENT new draft row under adversarial concurrency.
+// retryCapStore embeds *fakeStore (inheriting its "unexpected call fails
+// loudly" behaviour for every method RecordExecutionResult should never
+// reach) and overrides only GetLatestForEntity/FinalizeDraft to control the
+// race-loss count.
+// ---------------------------------------------------------------------------
+
+// retryCapStore is a StoreIface spy for the retry-cap tests: GetLatestForEntity
+// always reports the SAME 'unknown' draft; FinalizeDraft fails with
+// ErrDraftAlreadyFinalized exactly failTimes times before succeeding.
+type retryCapStore struct {
+	*fakeStore
+
+	draftID   uuid.UUID
+	failTimes int
+
+	getCalls      int
+	finalizeCalls int
+}
+
+func newRetryCapStore(t *testing.T, draftID uuid.UUID, failTimes int) *retryCapStore {
+	return &retryCapStore{fakeStore: &fakeStore{t: t}, draftID: draftID, failTimes: failTimes}
+}
+
+func (r *retryCapStore) GetLatestForEntity(context.Context, *uuid.UUID, string, uuid.UUID) (Outcome, error) {
+	r.getCalls++
+	return Outcome{ID: r.draftID, Result: resultUnknown}, nil
+}
+
+func (r *retryCapStore) FinalizeDraft(_ context.Context, _ uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
+	r.finalizeCalls++
+	if r.finalizeCalls <= r.failTimes {
+		return Outcome{}, ErrDraftAlreadyFinalized
+	}
+	return Outcome{ID: r.draftID, Result: params.Result, Notes: params.Notes}, nil
+}
+
+var _ StoreIface = (*retryCapStore)(nil)
+
+// TestRecordExecutionResult_FinalizeDraftRetryCap_ExceededReturnsWrappedError
+// is the direct reproduction: a store whose FinalizeDraft NEVER stops
+// returning ErrDraftAlreadyFinalized must not recurse/loop forever — after
+// exactly maxFinalizeDraftRetries (3) attempts, RecordExecutionResult must
+// return a wrapped error instead of continuing.
+func TestRecordExecutionResult_FinalizeDraftRetryCap_ExceededReturnsWrappedError(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+	store := newRetryCapStore(t, draftID, 99) // always fails, far more than the cap
+
+	_, _, _, err := RecordExecutionResult(context.Background(), store, CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   entityID,
+		Result:     "success",
+	})
+	if err == nil {
+		t.Fatal("expected an error after exceeding the retry cap, got nil")
+	}
+	if !errors.Is(err, ErrDraftAlreadyFinalized) {
+		t.Errorf("err = %v, want it to wrap ErrDraftAlreadyFinalized (the actual cause of every retry)", err)
+	}
+	if store.finalizeCalls != maxFinalizeDraftRetries {
+		t.Errorf("finalizeCalls = %d, want exactly %d (the retry cap)", store.finalizeCalls, maxFinalizeDraftRetries)
+	}
+	if store.getCalls != maxFinalizeDraftRetries {
+		t.Errorf("getCalls = %d, want exactly %d (one re-resolve per attempt)", store.getCalls, maxFinalizeDraftRetries)
+	}
+}
+
+// TestRecordExecutionResult_FinalizeDraftRetryCap_SucceedsAfterOneRetry is
+// the well-behaved case: a store that loses the race exactly once, then
+// succeeds, must behave identically to today — a normal ActionFinalizedDraft
+// result, well within the retry cap.
+func TestRecordExecutionResult_FinalizeDraftRetryCap_SucceedsAfterOneRetry(t *testing.T) {
+	entityID := uuid.New()
+	draftID := uuid.New()
+	store := newRetryCapStore(t, draftID, 1) // fails once, then succeeds
+
+	got, action, _, err := RecordExecutionResult(context.Background(), store, CreateOutcomeParams{
+		EntityType: "task",
+		EntityID:   entityID,
+		Result:     "success",
+		Notes:      "shipped after one retry",
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionFinalizedDraft {
+		t.Errorf("action = %q, want %q", action, ActionFinalizedDraft)
+	}
+	if got.ID != draftID {
+		t.Errorf("ID = %s, want %s", got.ID, draftID)
+	}
+	if got.Notes != "shipped after one retry" {
+		t.Errorf("Notes = %q, want the successful call's own notes", got.Notes)
+	}
+	if store.finalizeCalls != 2 {
+		t.Errorf("finalizeCalls = %d, want exactly 2 (one failed race, one success)", store.finalizeCalls)
+	}
+	if store.getCalls != 2 {
+		t.Errorf("getCalls = %d, want exactly 2 (one re-resolve per attempt)", store.getCalls)
 	}
 }
 

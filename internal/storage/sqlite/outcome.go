@@ -592,6 +592,16 @@ func unionRelatedRuleIDs(existing, incoming []uuid.UUID) []uuid.UUID {
 // internal/outcome/store.go so the SAME algorithm backs both this Go
 // implementation and Store (PG)'s SQL equivalent, verified byte-identical
 // by this file's and store_test.go's parity tests.
+//
+// Workspace-scoped (PR #152 round 8, 80cf80b6 finding 3): mirrors
+// outcome.Store.FinalizeDraft's PG fix — the SELECT and UPDATE below both
+// now carry `(?N IS NULL OR workspace_id = ?N)` alongside `id = ...`, the
+// same unscoped-when-nil pattern GetLatestForEntity already uses elsewhere
+// in this file. params.WorkspaceID == nil (every pre-existing FinalizeDraft
+// test in outcome_test.go) still matches any row, unchanged from before; a
+// mismatched non-nil WorkspaceID now makes both statements match zero rows,
+// surfacing as ErrDraftAlreadyFinalized instead of writing into another
+// workspace's draft.
 func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params outcome.CreateOutcomeParams) (outcome.Outcome, error) {
 	tx, err := s.db.conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -604,8 +614,13 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 		}
 	}()
 
-	const selectQ = `SELECT ` + outcomeSelectCols + ` FROM outcomes WHERE id = ?1 AND result = 'unknown' LIMIT 1`
-	row := tx.QueryRowContext(ctx, selectQ, id.String())
+	wsArg := nullStringFromUUID(params.WorkspaceID)
+
+	const selectQ = `SELECT ` + outcomeSelectCols + ` FROM outcomes
+		WHERE id = ?1 AND result = 'unknown'
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	row := tx.QueryRowContext(ctx, selectQ, id.String(), wsArg)
 	r, err := scanOutcomeRawRow(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return outcome.Outcome{}, outcome.ErrDraftAlreadyFinalized
@@ -638,7 +653,7 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 	cappedRelatedRuleIDs := outcome.CapRelatedRuleIDs(existing.RelatedRuleIDs, mergedRelatedRuleIDs, outcome.MaxRelatedRuleIDsTotal)
 	if len(cappedRelatedRuleIDs) < len(mergedRelatedRuleIDs) {
 		slog.Warn("OutcomeStore.FinalizeDraft: related_rule_ids exceeded cumulative cap, truncated",
-			"outcome_id", id, "pre_truncate_count", len(mergedRelatedRuleIDs),
+			"outcome_id", id, "supplied_count", len(mergedRelatedRuleIDs),
 			"cap", outcome.MaxRelatedRuleIDsTotal, "final_count", len(cappedRelatedRuleIDs))
 	}
 	mergedRelatedRuleIDs = cappedRelatedRuleIDs
@@ -651,7 +666,7 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 	// own early return).
 	if cappedNotes, truncated := outcome.CapNotesTotal(existing.Notes, mergedNotes, outcome.MaxNotesTotalRunes); truncated {
 		slog.Warn("OutcomeStore.FinalizeDraft: notes exceeded cumulative cap, truncated",
-			"outcome_id", id, "pre_truncate_rune_count", len([]rune(mergedNotes)),
+			"outcome_id", id, "supplied_rune_count", len([]rune(mergedNotes)),
 			"cap", outcome.MaxNotesTotalRunes, "final_rune_count", len([]rune(cappedNotes)))
 		mergedNotes = cappedNotes
 	}
@@ -678,6 +693,7 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 			work_session_id = ?5,
 			updated_at = ?6
 		WHERE id = ?7 AND result = 'unknown'
+		  AND (?8 IS NULL OR workspace_id = ?8)
 		RETURNING ` + outcomeSelectCols
 
 	row2 := tx.QueryRowContext(
@@ -689,6 +705,7 @@ func (s *OutcomeStore) FinalizeDraft(ctx context.Context, id uuid.UUID, params o
 		nullStringFromUUID(mergedWorkSessionID),
 		now,
 		id.String(),
+		wsArg,
 	)
 	r2, err := scanOutcomeRawRow(row2.Scan)
 	if errors.Is(err, sql.ErrNoRows) {

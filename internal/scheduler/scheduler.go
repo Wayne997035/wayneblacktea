@@ -36,12 +36,22 @@ type PGOnlyJob struct {
 // pgOnlyJobs is the closed set of scheduler jobs with no SQLite
 // implementation, per GTD decision G4 (6ea0b014): a job stays Postgres-only
 // when its only externally observable effect is disk growth on an
-// observability table — SQLite is dev-local single-tenant and never
-// accumulates enough rows for that growth to matter. Contrast with the 4
-// cognitive jobs in cognitive_jobs.go (stuck_task_detection,
-// decision_outcome_review, knowledge_to_skill_candidate, proposal_cleanup):
-// those produce user-observable pending_proposals rows, so they DO have
-// SQLite parity via CognitiveSQLiteStore.
+// observability table that has NO user-facing listing surface on either
+// backend — a maintainer has no way to observe discipline_events or
+// guard_events/guard_bypasses except direct DB access, so leaving their
+// retention job Postgres-only is genuinely invisible, not merely
+// inconvenient to implement, and SQLite is dev-local single-tenant with no
+// growth concern regardless.
+//
+// Contrast with the 4 cognitive jobs in cognitive_jobs.go
+// (stuck_task_detection, decision_outcome_review, knowledge_to_skill_candidate,
+// proposal_cleanup) AND daily-pending-proposals-prune (this file): all 5
+// produce or prune pending_proposals rows, which ARE user-observable — via
+// proposal.StoreIface on both backends AND via the proposal-review HTTP
+// surface (internal/handler/proposal_handler.go:199 ListPendingProposals,
+// `GET /api/proposals/pending`) — so all 5 DO have SQLite parity (the first
+// 4 via CognitiveSQLiteStore; daily-pending-proposals-prune via
+// PendingProposalsPruneStore, below).
 var pgOnlyJobs = []PGOnlyJob{
 	{
 		Name: "daily-discipline-prune",
@@ -52,12 +62,6 @@ var pgOnlyJobs = []PGOnlyJob{
 		Name: "daily-guard-prune",
 		Reason: "guard_events/guard_bypasses retention is disk-growth-only, not user-observable; " +
 			"SQLite is dev-local single-tenant with no growth concern",
-	},
-	{
-		Name: "daily-pending-proposals-prune",
-		Reason: "pending_proposals TTL cleanup is disk-growth-only — the proposals themselves ARE " +
-			"user-observable via proposal.StoreIface on both backends, but their retention/prune job is not; " +
-			"SQLite is dev-local single-tenant and never accumulates enough rows to matter",
 	},
 }
 
@@ -137,6 +141,60 @@ const (
 	pendingProposalsPendingTaskRetention     = "30 days"
 )
 
+// pendingProposalsResolvedRetentionDuration / *DecisionRetentionDuration /
+// *TaskRetentionDuration are time.Duration equivalents of the 3 PG
+// interval-literal constants above, used by the SQLite adapter path (SQLite
+// has no `NOW() - INTERVAL` syntax — cutoffs are computed in Go and bound as
+// query parameters instead). Kept in sync with the PG string constants
+// manually, matching the existing stuckTaskLookback-style pattern in
+// cognitive_jobs.go; a drift here would only affect the SQLite backend's
+// cutoff window and is caught by TestPendingProposalsPrune_SQLite_*.
+const (
+	pendingProposalsResolvedRetentionDuration        = 90 * 24 * time.Hour
+	pendingProposalsPendingDecisionRetentionDuration = 180 * 24 * time.Hour
+	pendingProposalsPendingTaskRetentionDuration     = 30 * 24 * time.Hour
+)
+
+// dailyPendingProposalsPruneJobName is the gocron job name shared by BOTH
+// backend registrations of this job (registerDailyJobs's Postgres branch and
+// WithPendingProposalsPruneSQLite's SQLite branch) — the two are mutually
+// exclusive at runtime (see WithPendingProposalsPruneSQLite's doc comment),
+// but must still resolve to the identical name so operator tooling /
+// dashboards that key off gocron job names see one logical job regardless of
+// backend.
+const dailyPendingProposalsPruneJobName = "daily-pending-proposals-prune"
+
+// pendingProposalsTaskTTLReason is the audit `reason` value written to a
+// pending TypeTask proposal's row when the mark step rejects it for TTL
+// staleness (mirrors the literal embedded in runDailyPendingProposalsPrunePG's
+// markStaleTaskProposals SQL constant). Named here so the SQLite call site
+// (runDailyPendingProposalsPruneSQLite) and its tests share one value instead
+// of independently-drifting literals (goconst min-occurrences 3).
+const pendingProposalsTaskTTLReason = "ttl-expired-30d"
+
+// PendingProposalsPruneStore is the narrow SQLite-only query surface backing
+// the daily-pending-proposals-prune job when the scheduler is wired against
+// a SQLite backend. nil under Postgres (disciplinePool covers that path
+// instead). Deliberately NOT part of proposal.StoreIface — mirrors
+// CognitiveSQLiteStore's domain-ownership rationale documented in
+// cognitive_jobs.go (backend-security-design.md): this one method is
+// scheduler-local plumbing, not a cross-domain proposal operation every
+// other StoreIface implementer would have to grow a matching method for.
+//
+// Exported (capitalised) for the same typed-nil-in-interface reason
+// CognitiveSQLiteStore is exported — see its doc comment in
+// cognitive_jobs.go. cmd/server/main.go declares a correctly-nil-typed local
+// variable of this interface type when wiring.
+type PendingProposalsPruneStore interface {
+	// MarkAndDeleteStaleProposals mirrors runDailyPendingProposalsPrunePG's
+	// two-step logic in SQLite dialect. See
+	// storage/sqlite.ProposalStore.MarkAndDeleteStaleProposals's doc comment
+	// for the full semantics.
+	MarkAndDeleteStaleProposals(
+		ctx context.Context, taskRetention, decisionRetention, resolvedRetention time.Duration, markReason string,
+	) (markedRows, deletedRows int64, err error)
+}
+
 // dailyBriefingTimeout caps each Notion morning briefing run. The aggregate
 // query + Notion upsert finishes well under 10 s in practice; we pick 60 s
 // to leave room for occasional Notion API slowness without letting a stuck
@@ -178,6 +236,13 @@ type Scheduler struct {
 	// cognitiveDeps bundles the 6 Memory-7 cognitive job dependencies.
 	// Set via WithCognitiveDeps after New(); nil skips all 6 cognitive jobs.
 	cognitiveDeps *cognitiveDeps
+	// pendingProposalsPruneSQLite is the SQLite counterpart to disciplinePool
+	// for the daily-pending-proposals-prune job. nil under Postgres
+	// (disciplinePool covers that path) and nil under SQLite only if the
+	// caller failed to wire it via WithPendingProposalsPruneSQLite — in that
+	// case runDailyPendingProposalsPrune's "no backend configured" default
+	// branch fires rather than silently doing nothing.
+	pendingProposalsPruneSQLite PendingProposalsPruneStore
 }
 
 // DiscordSender is the small Discord webhook surface used by scheduled jobs.
@@ -591,7 +656,7 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		_, err = s.NewJob(
 			gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 0, 0))),
 			gocron.NewTask(sc.runDailyPendingProposalsPrune),
-			gocron.WithName("daily-pending-proposals-prune"),
+			gocron.WithName(dailyPendingProposalsPruneJobName),
 			// LimitModeReschedule: a stuck DELETE shouldn't pile up nightly
 			// triggers. Same singleton policy as decay/discipline prune.
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
@@ -601,7 +666,15 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		}
 		slog.Info("scheduler: DailyPendingProposalsPrune scheduled at 03:00 Asia/Taipei")
 	} else {
-		slog.Info("scheduler: DailyPendingProposalsPrune skipped (postgres pool not configured; SQLite has no growth concern)")
+		// NOT "SQLite has no growth concern" — this PR is what gave SQLite
+		// the growth problem (pending_proposals accumulates on every
+		// backend). The SQLite registration happens separately via
+		// WithPendingProposalsPruneSQLite (called after New(), see its own
+		// doc comment), which logs its own "scheduled at 03:00" line — an
+		// operator grepping for "skipped" here must not conclude no prune
+		// runs at all; only the Postgres registration was skipped.
+		slog.Info("scheduler: DailyPendingProposalsPrune Postgres registration skipped " +
+			"(postgres pool not configured); SQLite registration handled separately by WithPendingProposalsPruneSQLite")
 	}
 
 	return nil
@@ -914,7 +987,60 @@ DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAg
 	)
 }
 
-// runDailyPendingProposalsPrune marks stale TypeTask pending proposals as
+// WithPendingProposalsPruneSQLite wires the SQLite-only counterpart to the
+// daily-pending-proposals-prune job and registers its cron entry. Call after
+// New() (so disciplinePool has already been resolved) and before Start().
+//
+// A no-op when disciplinePool is already set: registerDailyJobs already owns
+// that job's Postgres registration (New() calls it before any With* method
+// runs), and a Scheduler is only ever backed by ONE storage backend at a
+// time (storage.ResolveFromEnv) — this guard exists purely as a caller-bug
+// safety net, not an expected runtime path.
+func (sc *Scheduler) WithPendingProposalsPruneSQLite(store PendingProposalsPruneStore) error {
+	if store == nil {
+		slog.Info("scheduler: DailyPendingProposalsPrune (SQLite) skipped (store not configured)")
+		return nil
+	}
+	if sc.disciplinePool != nil {
+		return nil
+	}
+	sc.pendingProposalsPruneSQLite = store
+	_, err := sc.s.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 0, 0))),
+		gocron.NewTask(sc.runDailyPendingProposalsPrune),
+		gocron.WithName(dailyPendingProposalsPruneJobName),
+		// LimitModeReschedule: a stuck DELETE shouldn't pile up nightly
+		// triggers. Same singleton policy as the Postgres registration.
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return fmt.Errorf("registering daily pending proposals prune job (SQLite): %w", err)
+	}
+	slog.Info("scheduler: DailyPendingProposalsPrune (SQLite) scheduled at 03:00 Asia/Taipei")
+	return nil
+}
+
+// runDailyPendingProposalsPrune dispatches to the Postgres or SQLite
+// implementation depending on which backend is wired, or logs a skip when
+// neither is configured. See runDailyPendingProposalsPrunePG and
+// runDailyPendingProposalsPruneSQLite for the per-backend retention logic —
+// both apply the identical per-status policy documented on the PG function.
+func (s *Scheduler) runDailyPendingProposalsPrune() {
+	switch {
+	case s.disciplinePool != nil:
+		ctx, cancel := context.WithTimeout(context.Background(), pendingProposalsPruneTimeout)
+		defer cancel()
+		s.runDailyPendingProposalsPrunePG(ctx)
+	case s.pendingProposalsPruneSQLite != nil:
+		ctx, cancel := context.WithTimeout(context.Background(), pendingProposalsPruneTimeout)
+		defer cancel()
+		s.runDailyPendingProposalsPruneSQLite(ctx)
+	default:
+		slog.Info("daily pending_proposals prune: skipped (no backend configured)")
+	}
+}
+
+// runDailyPendingProposalsPrunePG marks stale TypeTask pending proposals as
 // rejected (with reason='ttl-expired-30d'), then deletes long-resolved rows
 // according to the per-status retention policy:
 //
@@ -940,15 +1066,7 @@ DELETE FROM guard_bypasses WHERE created_at < NOW() - INTERVAL '` + guardPruneAg
 // jobs regardless of a single DB hiccup. The mark step's outcome does NOT
 // gate the delete step: a transient mark failure shouldn't block the 90-day
 // resolved-row cleanup.
-func (s *Scheduler) runDailyPendingProposalsPrune() {
-	if s.disciplinePool == nil {
-		reason, _ := IsPGOnlyJob("daily-pending-proposals-prune")
-		slog.Info("daily pending_proposals prune: unsupported on this backend (by design)", "reason", reason)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), pendingProposalsPruneTimeout)
-	defer cancel()
-
+func (s *Scheduler) runDailyPendingProposalsPrunePG(ctx context.Context) {
 	// Mark stale TypeTask pending proposals as rejected with an audit
 	// reason. Run BEFORE the DELETE so newly-marked rows enter the resolved
 	// retention window (90d) instead of being silently dropped.
@@ -1010,6 +1128,48 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 	slog.Info(
 		"daily pending_proposals prune: completed",
 		"rows_deleted", tag.RowsAffected(),
+		"resolved_retention", pendingProposalsResolvedRetention,
+		"pending_decision_retention", pendingProposalsPendingDecisionRetention,
+		"pending_task_retention", pendingProposalsPendingTaskRetention,
+	)
+}
+
+// runDailyPendingProposalsPruneSQLite is the SQLite-native counterpart to
+// runDailyPendingProposalsPrunePG — a genuine reimplementation of the same
+// mark+delete retention policy in SQLite dialect (GTD decision G4,
+// 6ea0b014), NOT a call-through to the Postgres code path. See
+// PendingProposalsPruneStore and storage/sqlite.ProposalStore.
+// MarkAndDeleteStaleProposals for why the cutoffs are Go-computed durations
+// instead of PG interval literals.
+//
+// No partial-success ctx-deadline telemetry here (contrast with the PG
+// function's DeadlineExceeded branch): SQLite is a local single-connection
+// file/:memory: DB with no network round-trip, so the mark+delete pair
+// finishes in low single-digit milliseconds even at personal-OS scale —
+// there is no realistic timeout-pressure scenario for this branch to detect.
+func (s *Scheduler) runDailyPendingProposalsPruneSQLite(ctx context.Context) {
+	markedRows, deletedRows, err := s.pendingProposalsPruneSQLite.MarkAndDeleteStaleProposals(
+		ctx,
+		pendingProposalsPendingTaskRetentionDuration,
+		pendingProposalsPendingDecisionRetentionDuration,
+		pendingProposalsResolvedRetentionDuration,
+		pendingProposalsTaskTTLReason,
+	)
+	if err != nil {
+		// rows_deleted included even on error: MarkAndDeleteStaleProposals
+		// runs the DELETE step regardless of whether the mark step failed
+		// (see its own doc comment — a mark failure does not gate delete),
+		// so a mark-only error can still carry a real, non-zero deletedRows.
+		// Omitting it here would leave no record of how many rows this
+		// destructive DELETE actually removed.
+		slog.Warn("daily pending_proposals prune (SQLite): mark/delete failed",
+			"err", err, "marked_rows", markedRows, "rows_deleted", deletedRows)
+		return
+	}
+	slog.Info(
+		"daily pending_proposals prune (SQLite): completed",
+		"rows_marked", markedRows,
+		"rows_deleted", deletedRows,
 		"resolved_retention", pendingProposalsResolvedRetention,
 		"pending_decision_retention", pendingProposalsPendingDecisionRetention,
 		"pending_task_retention", pendingProposalsPendingTaskRetention,

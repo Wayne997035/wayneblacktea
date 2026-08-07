@@ -46,6 +46,13 @@ const behaviorGovernanceMinActiveDays = 30
 // per governance run.
 const behaviorGovernanceActiveRuleLimit = 100
 
+// outcomeResultSuccess mirrors the "success" value of outcome.AllowedResults
+// (internal/outcome/domain.go). Declared here (not in the outcome package,
+// which this PR does not own — see cross-worktree boundary in the dispatch)
+// so the repeated literal in this file's result-mapping switch and its test
+// fixtures satisfies goconst (min-occurrences 3).
+const outcomeResultSuccess = "success"
+
 // governanceDeps bundles dependencies for the weekly behavior governance job.
 type governanceDeps struct {
 	outcomeStore      outcome.StoreIface
@@ -117,9 +124,36 @@ func runBehaviorGovernance(deps governanceDeps) {
 		return
 	}
 
+	// Client-side supersession filter (PR #152 2nd-army finding, GTD
+	// 80cf80b6): ListRecentOutcomes itself stays unfiltered — it also backs
+	// tools_watchdog.go's analyze_agent_behavior and the user-facing
+	// list_recent_outcomes MCP tool (internal/mcp/tools_outcome.go), and
+	// ActionSuperseded's own doc comment (internal/outcome/lifecycle.go)
+	// states the prior row is deliberately left unmodified so the audit
+	// trail survives — hiding it from either of those consumers would be a
+	// regression. Filtering happens here instead: a row is "superseded" for
+	// THIS job's purposes when some OTHER row also present in this fetch
+	// points back at it via SupersedesID. Only ever suppresses a vote when
+	// the newer row is inside the same behaviorGovernanceOutcomeLimit-row
+	// fetch — a superseded row whose successor fell outside that window (or
+	// outside the 7-day lookback below) still casts its own vote, which is
+	// the same fail-open trade-off ListRecentOutcomes' own limit/lookback
+	// already makes everywhere else in this job.
+	superseded := make(map[uuid.UUID]bool, len(outcomes))
+	for _, o := range outcomes {
+		if o.SupersedesID != nil {
+			superseded[*o.SupersedesID] = true
+		}
+	}
+
 	cutoff := time.Now().AddDate(0, 0, -behaviorGovernanceLookbackDays)
 	applyCount := 0
+	supersededSkipped := 0
 	for _, o := range outcomes {
+		if superseded[o.ID] {
+			supersededSkipped++
+			continue
+		}
 		if o.CreatedAt.Before(cutoff) {
 			continue
 		}
@@ -132,8 +166,8 @@ func runBehaviorGovernance(deps governanceDeps) {
 		// partial + unknown → SKIP (ApplyOutcome errors on other values).
 		var brOutcome string
 		switch o.Result {
-		case "success":
-			brOutcome = "success"
+		case outcomeResultSuccess:
+			brOutcome = outcomeResultSuccess
 		case "failure", "regressed":
 			brOutcome = "failure"
 		default:
@@ -157,9 +191,11 @@ func runBehaviorGovernance(deps governanceDeps) {
 		}
 	}
 
-	slog.Info("behavior_governance: outcome→rule confidence updates applied",
+	slog.Info(
+		"behavior_governance: outcome→rule confidence updates applied",
 		"outcomes_scanned", len(outcomes),
 		"apply_calls", applyCount,
+		"superseded_skipped", supersededSkipped,
 	)
 
 	// ----------------------------------------------------------------
@@ -202,13 +238,15 @@ func autoDeprecateStaleLowConfidenceRules(ctx context.Context, deps governanceDe
 			continue
 		}
 		deprecated++
-		slog.Info("behavior_governance: deprecated low-confidence stale rule",
+		slog.Info(
+			"behavior_governance: deprecated low-confidence stale rule",
 			"rule_id", rule.ID, "confidence", rule.Confidence,
 			"created_at", rule.CreatedAt.Format(time.RFC3339),
 		)
 	}
 
-	slog.Info("behavior_governance: auto-deprecation completed",
+	slog.Info(
+		"behavior_governance: auto-deprecation completed",
 		"active_rules_scanned", len(activeRules),
 		"deprecated", deprecated,
 	)

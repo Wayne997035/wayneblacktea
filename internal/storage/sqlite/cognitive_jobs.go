@@ -44,7 +44,13 @@ func NewCognitiveJobsStore(d *DB) *CognitiveJobsStore {
 
 // StuckTasks returns in_progress tasks whose updated_at is older than
 // olderThan, scoped to the configured workspace and ordered oldest-first.
-// Mirrors the Postgres query in cognitive_jobs.go's pgStuckTasks (job 2).
+// Mirrors the Postgres query in cognitive_jobs.go's pgStuckTasks (job 2),
+// including its dedup guard: a task already carrying a pending
+// scheduler:stuck_task proposal (matched via
+// json_extract(payload,'$.source_entity_id'), the SQLite twin of Postgres's
+// payload->>'source_entity_id' — pending_proposals.payload is TEXT JSON in
+// SQLite, not JSONB, so `->>` isn't available; modernc.org/sqlite ships
+// JSON1 built in) is excluded so a follow-up run doesn't re-propose it.
 // Reuses tasksSelectCols/scanTask (gtd.go) so the returned db.Task rows are
 // identical in shape to every other SQLite task read.
 func (s *CognitiveJobsStore) StuckTasks(ctx context.Context, olderThan time.Duration) ([]db.Task, error) {
@@ -53,6 +59,13 @@ func (s *CognitiveJobsStore) StuckTasks(ctx context.Context, olderThan time.Dura
 		WHERE (?1 IS NULL OR workspace_id = ?1)
 		  AND status = 'in_progress'
 		  AND updated_at < ?2
+		  AND NOT EXISTS (
+		      SELECT 1 FROM pending_proposals p
+		      WHERE p.type = 'task'
+		        AND p.proposed_by = 'scheduler:stuck_task'
+		        AND p.status = 'pending'
+		        AND json_extract(p.payload, '$.source_entity_id') = tasks.id
+		  )
 		ORDER BY updated_at ASC`
 	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), cutoff)
 	if err != nil {
@@ -120,13 +133,23 @@ func (s *CognitiveJobsStore) DecisionsPendingOutcomeReview(
 // HighRecallKnowledgeItems returns non-archived knowledge items whose
 // recall_count exceeds minRecallCount, scoped to the configured workspace,
 // ordered by recall_count descending. Mirrors the Postgres query in
-// cognitive_jobs.go's pgHighRecallKnowledgeItems (job 4). Reuses
+// cognitive_jobs.go's pgHighRecallKnowledgeItems (job 4), including its
+// dedup guard: an item already carrying a pending scheduler:knowledge_to_skill
+// proposal (matched via json_extract, same SQLite/JSONB dialect split
+// documented on StuckTasks above) is excluded. Reuses
 // knowledgeSelectCols/scanKnowledgeItem (knowledge.go).
 func (s *CognitiveJobsStore) HighRecallKnowledgeItems(ctx context.Context, minRecallCount int) ([]db.KnowledgeItem, error) {
 	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
 		WHERE (?1 IS NULL OR workspace_id = ?1)
 		  AND recall_count > ?2
 		  AND archived_at IS NULL
+		  AND NOT EXISTS (
+		      SELECT 1 FROM pending_proposals p
+		      WHERE p.type = 'knowledge'
+		        AND p.proposed_by = 'scheduler:knowledge_to_skill'
+		        AND p.status = 'pending'
+		        AND json_extract(p.payload, '$.source_entity_id') = knowledge_items.id
+		  )
 		ORDER BY recall_count DESC`
 	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(), minRecallCount)
 	if err != nil {

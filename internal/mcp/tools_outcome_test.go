@@ -1042,6 +1042,15 @@ func TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached(t *t
 	if note == "" {
 		t.Errorf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
 	}
+	// Keyword assertions (not full-string equality — wording tweaks must not
+	// turn this red): the message must mention the field AND the correct
+	// cumulative cap, derived from the constant, not a literal.
+	if !strings.Contains(note, "notes") {
+		t.Errorf("truncation_note must mention 'notes', got: %q", note)
+	}
+	if !strings.Contains(note, fmt.Sprintf("%d", outcome.MaxNotesTotalRunes)) {
+		t.Errorf("truncation_note must mention the notes cap %d, got: %q", outcome.MaxNotesTotalRunes, note)
+	}
 }
 
 // TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapReached
@@ -1091,6 +1100,92 @@ func TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapRea
 	note, _ := resp["truncation_note"].(string)
 	if note == "" {
 		t.Errorf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
+	}
+	// Keyword assertions (not full-string equality — wording tweaks must not
+	// turn this red): the message must mention the field AND the correct
+	// cumulative cap, derived from the constant, not a literal.
+	if !strings.Contains(note, "related_rule_ids") {
+		t.Errorf("truncation_note must mention 'related_rule_ids', got: %q", note)
+	}
+	if !strings.Contains(note, fmt.Sprintf("%d", outcome.MaxRelatedRuleIDsTotal)) {
+		t.Errorf("truncation_note must mention the related_rule_ids cap %d, got: %q", outcome.MaxRelatedRuleIDsTotal, note)
+	}
+}
+
+// TestHandleRecordOutcome_BothNotesAndRelatedRuleIDsTruncated_SignalsWhenBothCumulativeCapsReached
+// covers buildTruncationNote's THIRD branch (notesTruncated && idsTruncated,
+// tools_outcome.go:291-298), which had zero test coverage before this PR:
+// fill BOTH cumulative caps against the same draft, then supply new content
+// for BOTH fields in one call — neither can land, so both flags must be
+// true and the note must mention both fields and both caps.
+func TestHandleRecordOutcome_BothNotesAndRelatedRuleIDsTruncated_SignalsWhenBothCumulativeCapsReached(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	entityID := uuid.New()
+
+	for i := 0; i < 11; i++ {
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type": entityTypeTask,
+			"entity_id":   entityID.String(),
+			"result":      "unknown",
+			"notes":       notesFillChunk(fmt.Sprintf("[fill-%02d]", i)),
+		})
+		if r.IsError {
+			t.Fatalf("notes fill call %d: unexpected error: %s", i, resultText(r))
+		}
+	}
+
+	for i := 0; i < 5; i++ {
+		ids := make([]string, maxRelatedRuleIDs)
+		for j := range ids {
+			ids[j] = `"` + uuid.New().String() + `"`
+		}
+		r := callRecordOutcome(t, s, map[string]any{
+			"entity_type":      entityTypeTask,
+			"entity_id":        entityID.String(),
+			"result":           "unknown",
+			"related_rule_ids": "[" + strings.Join(ids, ",") + "]",
+		})
+		if r.IsError {
+			t.Fatalf("related_rule_ids fill call %d: unexpected error: %s", i, resultText(r))
+		}
+	}
+
+	// One more call supplying BOTH new notes and new related_rule_ids against
+	// a draft already at/over cap on both fields — neither can land.
+	r := callRecordOutcome(t, s, map[string]any{
+		"entity_type":      entityTypeTask,
+		"entity_id":        entityID.String(),
+		"result":           "unknown",
+		"notes":            "this content must be silently dropped by the cumulative cap",
+		"related_rule_ids": `["` + uuid.New().String() + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("expected IsError=false: %s", resultText(r))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	notesTruncated, _ := resp["notes_truncated"].(bool)
+	idsTruncated, _ := resp["related_rule_ids_truncated"].(bool)
+	if !notesTruncated || !idsTruncated {
+		t.Fatalf("expected BOTH notes_truncated and related_rule_ids_truncated=true, got response: %s", resultText(r))
+	}
+	note, _ := resp["truncation_note"].(string)
+	if note == "" {
+		t.Fatalf("expected a non-empty human-readable truncation_note, got response: %s", resultText(r))
+	}
+	if !strings.Contains(note, "notes") {
+		t.Errorf("truncation_note must mention 'notes', got: %q", note)
+	}
+	if !strings.Contains(note, "related_rule_ids") {
+		t.Errorf("truncation_note must mention 'related_rule_ids', got: %q", note)
+	}
+	if !strings.Contains(note, fmt.Sprintf("%d", outcome.MaxNotesTotalRunes)) {
+		t.Errorf("truncation_note must mention the notes cap %d, got: %q", outcome.MaxNotesTotalRunes, note)
+	}
+	if !strings.Contains(note, fmt.Sprintf("%d", outcome.MaxRelatedRuleIDsTotal)) {
+		t.Errorf("truncation_note must mention the related_rule_ids cap %d, got: %q", outcome.MaxRelatedRuleIDsTotal, note)
 	}
 }
 

@@ -177,101 +177,130 @@ const (
 // new notes, so gating atomize on the action name alone re-fires it for a
 // related_rule_ids-only enrich call. Comparing the actual before/after notes
 // text is the only classification that's correct for every branch uniformly.
-func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateOutcomeParams) (Outcome, LifecycleAction, string, error) {
-	latest, err := store.GetLatestForEntity(ctx, params.WorkspaceID, params.EntityType, params.EntityID)
-	if errors.Is(err, ErrNotFound) {
-		o, cErr := store.CreateOutcome(ctx, params)
-		if cErr != nil {
-			return Outcome{}, "", "", fmt.Errorf("recording execution result: %w", cErr)
-		}
-		return o, ActionCreated, "", nil
-	}
-	if err != nil {
-		return Outcome{}, "", "", fmt.Errorf("recording execution result: resolving latest outcome: %w", err)
-	}
 
-	if latest.Result == resultUnknown {
-		// M-1 (PR #152): a call that ALSO says result="unknown" AND carries no
-		// new content is never a legitimate write — "unknown" is
-		// definitionally non-terminal, so there is nothing to finalize, and
-		// nothing to merge either. Return the draft unchanged — no write
-		// occurs, no side effect fires.
-		//
-		// M-2a (PR #152): the earlier fix stopped here, checking only
-		// params.Result=="unknown" — which also silently dropped a call that
-		// DOES carry new content (e.g. record_outcome(result="unknown",
-		// notes="...")). The MCP instructions in server.go tell callers to
-		// "upgrade" a complete_task-seeded draft via evaluate_outcome/
-		// record_outcome once real context is known — they don't pin this
-		// exact call shape, but it's the natural way to carry that upgrade
-		// out. That case must still reach FinalizeDraft (now append-only, so
-		// it's safe — see store.go's FinalizeDraft) so the content actually
-		// gets written — see ActionDraftEnriched.
-		if params.Result == resultUnknown && !hasNewContent(params) {
-			return latest, ActionDraftPreserved, latest.Notes, nil
+// maxFinalizeDraftRetries bounds RecordExecutionResult's re-resolve loop when
+// FinalizeDraft loses a race to a concurrent finalizer (ErrDraftAlreadyFinalized).
+// See the loop's own comment (below) for why "a draft can only be finalized
+// once" alone does NOT bound this as a whole function — each re-resolve calls
+// GetLatestForEntity fresh and may land on a DIFFERENT draft row under
+// adversarial concurrency, not just re-observe the same one now-terminal.
+const maxFinalizeDraftRetries = 3
+
+func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateOutcomeParams) (Outcome, LifecycleAction, string, error) {
+	// PR #152 round 8 Major (80cf80b6 finding 2): this used to recurse once
+	// per ErrDraftAlreadyFinalized race loss, with a comment claiming the
+	// recursion was bounded because "a draft can only be finalized once" —
+	// true PER ROW, but each iteration's GetLatestForEntity re-resolves the
+	// entity's CURRENT latest outcome, which under adversarial concurrency
+	// (repeated finalize races on the same entity) may be a DIFFERENT new
+	// draft row each time, not the same row observed a second time. An
+	// explicit bounded `for` loop closes that: both the draft branch (which
+	// may itself loop via `continue`) and the terminal branch sit inside it,
+	// because a retry's re-fetch can land in either.
+	for attempt := 0; attempt < maxFinalizeDraftRetries; attempt++ {
+		latest, err := store.GetLatestForEntity(ctx, params.WorkspaceID, params.EntityType, params.EntityID)
+		if errors.Is(err, ErrNotFound) {
+			o, cErr := store.CreateOutcome(ctx, params)
+			if cErr != nil {
+				return Outcome{}, "", "", fmt.Errorf("recording execution result: %w", cErr)
+			}
+			return o, ActionCreated, "", nil
 		}
-		// PR #152 round 3 Major: hasNewContent only established that params
-		// carries SOME content — it says nothing about whether that content
-		// is NEW relative to what's already stored. Because an enrich call
-		// (params.Result == resultUnknown) never flips latest.Result away
-		// from "unknown", a retried call lands back in THIS branch (not the
-		// terminal-branch isIdempotentReplay below, which is unreachable for
-		// draft rows). Without this check, a byte-identical retry of an
-		// already-applied enrich call would re-invoke FinalizeDraft and
-		// re-report ActionDraftEnriched, re-firing tools_outcome.go's
-		// SetOutcomeLink/atomize side effects for content already recorded.
-		// Scoped to the enrich path only: a terminal params.Result reaching
-		// this branch is always the FIRST finalization of this draft (once
-		// finalized, latest.Result is no longer "unknown" and any further
-		// call goes through the terminal branch's isIdempotentReplay
-		// instead), so there is no equivalent duplicate-finalize case here.
-		if params.Result == resultUnknown && isDraftIdempotentReplay(latest, params) {
+		if err != nil {
+			return Outcome{}, "", "", fmt.Errorf("recording execution result: resolving latest outcome: %w", err)
+		}
+
+		if latest.Result == resultUnknown {
+			// M-1 (PR #152): a call that ALSO says result="unknown" AND carries no
+			// new content is never a legitimate write — "unknown" is
+			// definitionally non-terminal, so there is nothing to finalize, and
+			// nothing to merge either. Return the draft unchanged — no write
+			// occurs, no side effect fires.
+			//
+			// M-2a (PR #152): the earlier fix stopped here, checking only
+			// params.Result=="unknown" — which also silently dropped a call that
+			// DOES carry new content (e.g. record_outcome(result="unknown",
+			// notes="...")). The MCP instructions in server.go tell callers to
+			// "upgrade" a complete_task-seeded draft via evaluate_outcome/
+			// record_outcome once real context is known — they don't pin this
+			// exact call shape, but it's the natural way to carry that upgrade
+			// out. That case must still reach FinalizeDraft (now append-only, so
+			// it's safe — see store.go's FinalizeDraft) so the content actually
+			// gets written — see ActionDraftEnriched.
+			if params.Result == resultUnknown && !hasNewContent(params) {
+				return latest, ActionDraftPreserved, latest.Notes, nil
+			}
+			// PR #152 round 3 Major: hasNewContent only established that params
+			// carries SOME content — it says nothing about whether that content
+			// is NEW relative to what's already stored. Because an enrich call
+			// (params.Result == resultUnknown) never flips latest.Result away
+			// from "unknown", a retried call lands back in THIS branch (not the
+			// terminal-branch isIdempotentReplay below, which is unreachable for
+			// draft rows). Without this check, a byte-identical retry of an
+			// already-applied enrich call would re-invoke FinalizeDraft and
+			// re-report ActionDraftEnriched, re-firing tools_outcome.go's
+			// SetOutcomeLink/atomize side effects for content already recorded.
+			// Scoped to the enrich path only: a terminal params.Result reaching
+			// this branch is always the FIRST finalization of this draft (once
+			// finalized, latest.Result is no longer "unknown" and any further
+			// call goes through the terminal branch's isIdempotentReplay
+			// instead), so there is no equivalent duplicate-finalize case here.
+			if params.Result == resultUnknown && isDraftIdempotentReplay(latest, params) {
+				return latest, ActionReplayedIdempotent, latest.Notes, nil
+			}
+			// Everything below writes. The only thing the result value changes is
+			// which action we report: a terminal result finalizes the draft, an
+			// "unknown" result that got this far carries genuinely new content
+			// and merely enriches it (result stays non-terminal). Both go
+			// through the same merge-only FinalizeDraft.
+			action := ActionFinalizedDraft
+			if params.Result == resultUnknown {
+				action = ActionDraftEnriched
+			}
+			finalized, ferr := store.FinalizeDraft(ctx, latest.ID, params)
+			if errors.Is(ferr, ErrDraftAlreadyFinalized) {
+				// Lost a race to a concurrent finalizer. Re-resolve on the next
+				// loop iteration: the draft is now terminal, so the common case
+				// lands in the terminal branch below on the retry -- but that is
+				// NOT guaranteed (a fast concurrent SeedDraft/complete_task could
+				// have opened a NEW draft for the same entity by the time we
+				// re-fetch), so `continue` re-enters the top of the loop instead
+				// of jumping straight there.
+				continue
+			}
+			if ferr != nil {
+				return Outcome{}, "", "", fmt.Errorf("recording execution result: finalizing draft: %w", ferr)
+			}
+			return finalized, action, latest.Notes, nil
+		}
+
+		if isIdempotentReplay(latest, params) {
 			return latest, ActionReplayedIdempotent, latest.Notes, nil
 		}
-		// Everything below writes. The only thing the result value changes is
-		// which action we report: a terminal result finalizes the draft, an
-		// "unknown" result that got this far carries genuinely new content
-		// and merely enriches it (result stays non-terminal). Both go
-		// through the same merge-only FinalizeDraft.
-		action := ActionFinalizedDraft
-		if params.Result == resultUnknown {
-			action = ActionDraftEnriched
-		}
-		finalized, ferr := store.FinalizeDraft(ctx, latest.ID, params)
-		if errors.Is(ferr, ErrDraftAlreadyFinalized) {
-			// Lost a race to a concurrent finalizer. Re-resolve: the draft is
-			// now terminal, so this recursion lands in the terminal branch
-			// below (bounded — a draft can only be finalized once).
-			return RecordExecutionResult(ctx, store, params)
-		}
-		if ferr != nil {
-			return Outcome{}, "", "", fmt.Errorf("recording execution result: finalizing draft: %w", ferr)
-		}
-		return finalized, action, latest.Notes, nil
-	}
 
-	if isIdempotentReplay(latest, params) {
-		return latest, ActionReplayedIdempotent, latest.Notes, nil
+		supersedeParams := params
+		latestID := latest.ID
+		supersedeParams.SupersedesID = &latestID
+		o, err := store.CreateOutcome(ctx, supersedeParams)
+		if err != nil {
+			return Outcome{}, "", "", fmt.Errorf("recording execution result: superseding: %w", err)
+		}
+		// PR #152 round 6 Major M-R6-1: return "" here, NOT latest.Notes. This is
+		// a brand-new row (a fresh outcome_id, never atomized before) — exactly
+		// like ActionCreated below the ErrNotFound branch, not a merge into an
+		// existing row. Returning latest.Notes (the PRIOR row's Notes) let a
+		// supersede call whose own Notes happened to be byte-identical to the
+		// row it supersedes (e.g. "same summary, different verdict":
+		// result="success" then result="regressed" with unchanged notes) compare
+		// equal at tools_outcome.go's `o.Notes != previousNotes` gate and
+		// silently skip atomize for content that had never been atomized under
+		// THIS row's outcome_id. See ActionSuperseded's doc comment above.
+		return o, ActionSuperseded, "", nil
 	}
-
-	supersedeParams := params
-	latestID := latest.ID
-	supersedeParams.SupersedesID = &latestID
-	o, err := store.CreateOutcome(ctx, supersedeParams)
-	if err != nil {
-		return Outcome{}, "", "", fmt.Errorf("recording execution result: superseding: %w", err)
-	}
-	// PR #152 round 6 Major M-R6-1: return "" here, NOT latest.Notes. This is
-	// a brand-new row (a fresh outcome_id, never atomized before) — exactly
-	// like ActionCreated below the ErrNotFound branch, not a merge into an
-	// existing row. Returning latest.Notes (the PRIOR row's Notes) let a
-	// supersede call whose own Notes happened to be byte-identical to the
-	// row it supersedes (e.g. "same summary, different verdict":
-	// result="success" then result="regressed" with unchanged notes) compare
-	// equal at tools_outcome.go's `o.Notes != previousNotes` gate and
-	// silently skip atomize for content that had never been atomized under
-	// THIS row's outcome_id. See ActionSuperseded's doc comment above.
-	return o, ActionSuperseded, "", nil
+	return Outcome{}, "", "", fmt.Errorf(
+		"recording execution result: exceeded %d retries resolving concurrent draft finalization for %s %s: %w",
+		maxFinalizeDraftRetries, params.EntityType, params.EntityID, ErrDraftAlreadyFinalized,
+	)
 }
 
 // hasNewContent reports whether params carries any payload beyond bare
@@ -287,13 +316,46 @@ func hasNewContent(params CreateOutcomeParams) bool {
 }
 
 // isIdempotentReplay reports whether params describes exactly the same
-// operation as latest — same result, notes, and metrics payload — so a
-// retried call returns the existing row instead of writing a semantically
-// duplicate one. Metrics is compared byte-for-byte against what round-tripped
-// from the store; a caller resubmitting differently-formatted-but-equivalent
-// JSON (e.g. different key order) fails this check and falls through to the
-// supersede branch — an extra explicit audit row, never a silent skip, so
-// this is a conservative (fail-open-to-audit) heuristic.
+// operation as latest against a TERMINAL outcome — same result, notes, and
+// metrics payload, AND no genuinely new related_rule_ids/work_session_id —
+// so a retried call returns the existing row instead of writing a
+// semantically duplicate one. Metrics is compared byte-for-byte against what
+// round-tripped from the store; a caller resubmitting
+// differently-formatted-but-equivalent JSON (e.g. different key order) fails
+// this check and falls through to the supersede branch — an extra explicit
+// audit row, never a silent skip, so this is a conservative
+// (fail-open-to-audit) heuristic.
+//
+// related_rule_ids / work_session_id (PR #152 round 8 Major M-R8-1): before
+// this fix, this function ONLY compared Result/Notes/Metrics — a retry that
+// repeated an identical result/notes/metrics but supplied a genuinely NEW
+// related_rule_id or work_session_id (e.g. scheduler/behavior_governance.go
+// reads RelatedRuleIDs to compute rule confidence) was misclassified as
+// ActionReplayedIdempotent: no row was written, so the new link was silently
+// dropped with zero signal to the caller. related_rule_ids reuses
+// relatedRuleIDsHasNew (below) — CreateOutcome for a supersede copies
+// params verbatim (see RecordExecutionResult), so the new row's
+// related_rule_ids is exactly what THIS call supplied, matching
+// relatedRuleIDsHasNew's "any ID not already present" definition of new
+// regardless of which branch it's evaluated from.
+//
+// work_session_id (round 9 Critical C-1, corrected): this branch does
+// NOT reuse workSessionIDHasNew, unlike the draft branch's
+// isDraftIdempotentReplay below. workSessionIDHasNew's nil-only semantics
+// ("new" only if existing is nil") is correct ONLY for the draft branch,
+// because FinalizeDraft writes `work_session_id = COALESCE(work_session_id,
+// $5)` (store.go) — a differing already-set ID genuinely CANNOT be written
+// there, so treating it as "no new info" is right for THAT SQL. This
+// terminal branch has no such mechanism: a supersede goes through
+// CreateOutcome, a plain INSERT with no COALESCE (store.go), which writes
+// params.WorkSessionID verbatim. So here, ANY session ID that differs from
+// latest.WorkSessionID — not just nil-to-non-nil — is genuinely new
+// information that a byte-identical-replay classification would silently
+// discard: session B's record_outcome retry (same result/notes/metrics,
+// different session_id) would return ActionReplayedIdempotent, skip
+// SetOutcomeLink, and leave work_sessions.outcome_id NULL for session B
+// while the response echoes session A's outcome — no error, no signal.
+// workSessionIDDiffers (below) captures the correct, branch-specific rule.
 func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 	if latest.Result != params.Result {
 		return false
@@ -301,7 +363,27 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 	if latest.Notes != params.Notes {
 		return false
 	}
-	return bytes.Equal(latest.Metrics, params.Metrics)
+	if !bytes.Equal(latest.Metrics, params.Metrics) {
+		return false
+	}
+	if relatedRuleIDsHasNew(latest.RelatedRuleIDs, params.RelatedRuleIDs) {
+		return false
+	}
+	return !workSessionIDDiffers(latest.WorkSessionID, params.WorkSessionID)
+}
+
+// workSessionIDDiffers reports whether params supplies a WorkSessionID that
+// differs from latest's — the terminal branch's own "is this genuinely new
+// information" rule, distinct from workSessionIDHasNew's draft-branch,
+// COALESCE-aware, nil-only rule (see isIdempotentReplay's doc comment above
+// for why the two branches cannot share one predicate). incoming == nil
+// never differs (nothing supplied, so nothing to compare); otherwise it
+// differs when existing is nil OR the two IDs are not equal.
+func workSessionIDDiffers(existing, incoming *uuid.UUID) bool {
+	if incoming == nil {
+		return false
+	}
+	return existing == nil || *existing != *incoming
 }
 
 // isDraftIdempotentReplay reports whether params, once merged into latest

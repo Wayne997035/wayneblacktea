@@ -36,7 +36,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_sched_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -242,8 +243,8 @@ func TestRunDailyPendingProposalsPrune_TypeTaskTTL(t *testing.T) {
 	if gotStatus != rejectedStatus {
 		t.Errorf("stale TypeTask: status = %q, want %q", gotStatus, rejectedStatus)
 	}
-	if gotReason == nil || *gotReason != "ttl-expired-30d" {
-		t.Errorf("stale TypeTask: reason = %v, want %q", gotReason, "ttl-expired-30d")
+	if gotReason == nil || *gotReason != pendingProposalsTaskTTLReason {
+		t.Errorf("stale TypeTask: reason = %v, want %q", gotReason, pendingProposalsTaskTTLReason)
 	}
 	if gotRes == nil {
 		t.Errorf("stale TypeTask: resolved_at = nil, want NOW()-ish")
@@ -450,7 +451,7 @@ func TestRunDailyPendingProposalsPrune_PartialSuccess_LogsWarn(t *testing.T) {
 	if status != rejectedStatus {
 		t.Errorf("stale row: status = %q, want %q (mark step must have succeeded)", status, rejectedStatus)
 	}
-	if reason == nil || *reason != "ttl-expired-30d" {
-		t.Errorf("stale row: reason = %v, want %q", reason, "ttl-expired-30d")
+	if reason == nil || *reason != pendingProposalsTaskTTLReason {
+		t.Errorf("stale row: reason = %v, want %q", reason, pendingProposalsTaskTTLReason)
 	}
 }
