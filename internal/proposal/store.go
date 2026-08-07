@@ -89,6 +89,12 @@ func (s *Store) ListPending(ctx context.Context) ([]db.PendingProposal, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing pending proposals: %w", err)
 	}
+	if rows == nil {
+		// list endpoints MUST return [] not null — MCP's list_pending_proposals
+		// (tools_proposal.go handleListPendingProposals) serializes this slice
+		// directly with no handler-level guard of its own.
+		rows = []db.PendingProposal{}
+	}
 	return rows, nil
 }
 

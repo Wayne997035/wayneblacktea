@@ -155,7 +155,15 @@ func (s *ProposalStore) ListPending(ctx context.Context) ([]db.PendingProposal, 
 		}
 		out = append(out, p)
 	}
-	return out, errWrap("ListPendingProposals iter", rows.Err())
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("ListPendingProposals iter", err)
+	}
+	if out == nil {
+		// list endpoints MUST return [] not null — MCP's list_pending_proposals
+		// serializes this slice directly with no handler-level guard of its own.
+		out = []db.PendingProposal{}
+	}
+	return out, nil
 }
 
 // Resolve marks a pending proposal as accepted or rejected.
