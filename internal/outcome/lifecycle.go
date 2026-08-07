@@ -281,6 +281,34 @@ func RecordExecutionResult(ctx context.Context, store StoreIface, params CreateO
 		supersedeParams := params
 		latestID := latest.ID
 		supersedeParams.SupersedesID = &latestID
+
+		// GTD 35d42906: union latest's RelatedRuleIDs into the new supersede
+		// row so a rule ID that was only ever linked on the row being
+		// superseded doesn't lose its governance vote forever —
+		// behavior_governance.go's supersession filter
+		// (internal/scheduler/behavior_governance.go) skips every row that
+		// something else supersedes, so if the new row didn't inherit
+		// latest's IDs here, those IDs' votes for THIS terminal outcome
+		// would never be counted by any row. latest first, supersedeParams
+		// second — mirrors FinalizeDraft's own existing-then-new union
+		// order (see store.go:614-617). Capped by
+		// CapRelatedRuleIDs/MaxRelatedRuleIDsTotal for the same reason
+		// FinalizeDraft caps its own union
+		// (internal/mcp/tools_outcome.go:19-29): the Wednesday governance
+		// job is O(N*M) over ApplyOutcome calls, so an unbounded array here
+		// would open a THIRD amplification path alongside the two
+		// CapRelatedRuleIDs already closes for FinalizeDraft. Built via
+		// a fresh make + two appends, never by appending directly onto
+		// latest's own RelatedRuleIDs slice in place — that slice may carry
+		// spare capacity from its DB scan, and growing it in place would
+		// alias and mutate its backing array, corrupting the caller's
+		// still-referenced latest value.
+		merged := make([]uuid.UUID, 0, len(latest.RelatedRuleIDs)+len(supersedeParams.RelatedRuleIDs))
+		merged = append(merged, latest.RelatedRuleIDs...)
+		merged = append(merged, supersedeParams.RelatedRuleIDs...)
+		merged = DedupeUUIDsPreserveOrder(merged)
+		supersedeParams.RelatedRuleIDs = CapRelatedRuleIDs(latest.RelatedRuleIDs, merged, MaxRelatedRuleIDsTotal)
+
 		o, err := store.CreateOutcome(ctx, supersedeParams)
 		if err != nil {
 			return Outcome{}, "", "", fmt.Errorf("recording execution result: superseding: %w", err)
@@ -333,11 +361,15 @@ func hasNewContent(params CreateOutcomeParams) bool {
 // reads RelatedRuleIDs to compute rule confidence) was misclassified as
 // ActionReplayedIdempotent: no row was written, so the new link was silently
 // dropped with zero signal to the caller. related_rule_ids reuses
-// relatedRuleIDsHasNew (below) — CreateOutcome for a supersede copies
-// params verbatim (see RecordExecutionResult), so the new row's
-// related_rule_ids is exactly what THIS call supplied, matching
-// relatedRuleIDsHasNew's "any ID not already present" definition of new
-// regardless of which branch it's evaluated from.
+// relatedRuleIDsHasNew (below), evaluated here against the ORIGINAL latest
+// and params — this predicate runs BEFORE RecordExecutionResult's supersede
+// branch unions latest.RelatedRuleIDs into supersedeParams (GTD 35d42906: a
+// terminal supersede's new row now carries the union of the row it
+// supersedes and this call's own IDs, capped by CapRelatedRuleIDs, so a
+// superseded row's rule links are never silently dropped from governance
+// voting — see the supersede branch below). What counts as "new" for THIS
+// gate is fixed at the moment the gate runs and is unaffected by what gets
+// unioned into supersedeParams afterward.
 //
 // work_session_id (round 9 Critical C-1, corrected): this branch does
 // NOT reuse workSessionIDHasNew, unlike the draft branch's
