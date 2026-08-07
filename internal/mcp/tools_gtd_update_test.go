@@ -209,6 +209,75 @@ func TestUpdateTask_Kind_InvalidValue(t *testing.T) {
 	}
 }
 
+// TestParseUpdateTaskArgs_InvalidKind exercises parseUpdateTaskArgs directly
+// (no DB, no seam, no tool dispatch) and pins the exact Go-layer error
+// message for an out-of-enum kind.
+//
+// Why this exists, given TestUpdateTask_Kind_InvalidValue already covers
+// "bogus kind is rejected end-to-end": that end-to-end test cannot
+// discriminate the Go-layer check (parseUpdateTaskArgs's
+// `!validator.IsValidKind(args.Kind)` branch, tools_gtd.go:1032) from the
+// database's own enforcement. Both migrations/000044_task_kind.up.sql
+// (Postgres) and migrations/sqlite/000044_task_kind.up.sql (SQLite) declare
+// `CHECK (kind IN ('general','fix-pr','feature','refactor','research',
+// 'chore'))` on the tasks table (mirrored in
+// internal/storage/sqlite/schema.sql:76). A mutation test confirmed this
+// concretely: deleting the Go-layer check (replacing the `if
+// !validator.IsValidKind(args.Kind)` condition with `if false`) still leaves
+// TestUpdateTask_Kind_InvalidValue green — the bogus value flows through to
+// the UPDATE statement, gets rejected by the CHECK constraint instead, and
+// produces an equally-IsError, equally-kind-unchanged result. That test is
+// still worth keeping (it is a valid end-to-end regression guard covering
+// "the request is rejected and the row doesn't change" regardless of which
+// layer enforces it), but it is not sufficient on its own to prove the Go
+// layer is doing its job.
+//
+// This test calls parseUpdateTaskArgs directly — no DB involved at all — and
+// asserts the *exact* error string that only the Go-layer branch produces.
+// If that branch is ever removed or short-circuited, parseUpdateTaskArgs
+// returns "" (no error) here and this test fails immediately, independent of
+// what any CHECK constraint would later do. Do not delete this test as
+// "redundant" with TestUpdateTask_Kind_InvalidValue — the two tests
+// discriminate different layers on purpose.
+func TestParseUpdateTaskArgs_InvalidKind(t *testing.T) {
+	const wantValidKind = "feature"
+	tests := []struct {
+		name string
+		kind string
+		want string
+	}{
+		{
+			name: "bogus kind rejected with exact Go-layer message",
+			kind: "bogus",
+			want: "kind must be one of: general, fix-pr, feature, refactor, research, chore",
+		},
+		{
+			name: "empty kind is treated as not-provided, no error",
+			kind: "",
+			want: "",
+		},
+		{
+			name: "valid kind passes with no error",
+			kind: wantValidKind,
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, msg := parseUpdateTaskArgs(UpdateTaskArgs{Kind: tt.kind})
+			if msg != tt.want {
+				t.Fatalf("parseUpdateTaskArgs(Kind=%q) msg = %q, want %q", tt.kind, msg, tt.want)
+			}
+			if tt.kind == "bogus" && p.Kind != nil {
+				t.Errorf("rejected kind must not be set on params, got: %v", *p.Kind)
+			}
+			if tt.kind == wantValidKind && (p.Kind == nil || *p.Kind != wantValidKind) {
+				t.Errorf("valid kind must be propagated to params, got: %v", p.Kind)
+			}
+		})
+	}
+}
+
 // TestUpdateTask_Kind_OmittedPreservesExisting verifies that updating an
 // unrelated field without touching kind leaves the existing kind value
 // untouched (preserve-on-omit, matching every other update_task field).
