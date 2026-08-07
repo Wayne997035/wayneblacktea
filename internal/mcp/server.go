@@ -365,7 +365,7 @@ Call list_decisions with the relevant repo_name before answering. Always verify 
 
 | Situation | Tool |
 |-----------|------|
-| Multi-phase plan confirmed ("好"/"go"/"衝"/"開始"/option pick) | confirm_plan — creates phases + decisions; failure reports what succeeded |
+| Multi-phase plan confirmed ("好"/"go"/"衝"/"開始"/option pick) | confirm_plan — phases+decisions atomic; work_session separate best-effort |
 | User confirms a single decision | log_decision BEFORE implementation |
 | **Start a task** (dispatch agent OR begin Lead-direct) | **update_task → in_progress immediately, no user reminder** |
 | Build passes / PR merged / task done | complete_task with artifact URL |

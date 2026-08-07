@@ -20,12 +20,16 @@ func (s *Server) registerPlanTools(ms *server.MCPServer) {
 		"confirm_plan",
 		mcp.WithDescription(
 			"CALL THIS when user confirms a plan ('可以','好','go','ok','明天做','start','開始'). "+
-				"Creates GTD tasks for each phase AND logs each decision in one call, in sequence "+
-				"(NOT atomic in this build -- a later failure does not roll back earlier writes; "+
-				"the response always lists exactly which tasks/decisions were created before any "+
-				"failure so the caller can verify or retry instead of guessing). "+
-				"Also creates an in_progress work_session linking all phase tasks (best-effort -- a "+
-				"work session failure does not block the tasks/decisions result). "+
+				"Atomically creates GTD tasks for each phase AND logs each decision: on this "+
+				"server's two shipped backends (Postgres, SQLite) all phase tasks and decisions "+
+				"commit together or none do, in one transaction. Two exceptions are NOT covered "+
+				"by that guarantee: (1) a server run with neither backend wired falls back to a "+
+				"non-atomic sequential path (not a real deployment configuration); (2) the "+
+				"in_progress work_session linking the phase tasks is created separately, "+
+				"best-effort, AFTER the transaction commits -- a work-session failure never rolls "+
+				"back the already-committed tasks/decisions. ALWAYS check the response text/"+
+				"is_error rather than assuming success: a failure means no phase task or decision "+
+				"was written; a success response lists every task/decision actually created. "+
 				"Use this INSTEAD of calling add_task + log_decision separately — it is more reliable.",
 		),
 		mcp.WithString(
@@ -103,13 +107,10 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 		return mcp.NewToolResultError(assigneeErrMsg), nil
 	}
 
-	// Create phase tasks and collect their UUIDs for the work session link.
-	createdTasks, taskIDs, err := s.createPhaseTasksWithIDs(ctx, phases, projectID)
-	if err != nil {
-		return mcp.NewToolResultError(planResultText(createdTasks, nil, nil, err)), nil
-	}
-
-	loggedDecisions, err := s.logPlanDecisions(ctx, decisions, projectID, repoName)
+	// Create phase tasks + log decisions. materializePlan dispatches to a
+	// real-transaction path on both shipped backends (PG/SQLite) — see its
+	// doc comment for the two documented exceptions to the atomicity claim.
+	createdTasks, taskIDs, loggedDecisions, err := s.materializePlan(ctx, phases, decisions, projectID, repoName)
 	if err != nil {
 		return mcp.NewToolResultError(planResultText(createdTasks, loggedDecisions, nil, err)), nil
 	}
@@ -163,10 +164,189 @@ func planResultText(createdTasks, loggedDecisions []string, sessionID *string, p
 	return sb.String()
 }
 
+// materializePlan creates confirm_plan's phase tasks + decisions, dispatching
+// to a real-transaction path on whichever backend is wired (mirrors the
+// s.pool != nil / s.sqliteGTD != nil / else pattern in acceptProposal,
+// tools_proposal.go:337-345). Returns (created task titles, created task
+// UUIDs, logged decision titles, error).
+//
+// On the PG and SQLite paths a mid-loop failure returns nil/nil/nil — the
+// whole transaction rolled back, so there is nothing "already created" to
+// report; the error text itself says so. On the sequential fallback path
+// (neither backend wired — not a real deployment) a mid-loop failure returns
+// whatever was actually written, matching materializePlanSequential's
+// non-transactional semantics.
+func (s *Server) materializePlan(
+	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
+) ([]string, []uuid.UUID, []string, error) {
+	if s.pool != nil {
+		return s.materializePlanPg(ctx, phases, decisions, projectID, repoName)
+	}
+	if s.sqliteGTD != nil {
+		return s.materializePlanSQLite(ctx, phases, decisions, projectID, repoName)
+	}
+	return s.materializePlanSequential(ctx, phases, decisions, projectID, repoName)
+}
+
+// materializePlanPg runs the phase-task-creation + decision-logging loops
+// inside a single pgx.Tx so a mid-loop failure rolls back everything written
+// so far in this call — the Postgres half of confirm_plan's atomicity claim.
+// Mirrors acceptProposalPg's tx shape (tools_proposal.go:350-382).
+func (s *Server) materializePlanPg(
+	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
+) ([]string, []uuid.UUID, []string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("beginning plan transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // safe: no-op if already committed
+
+	gtdTx := s.pgGTD.WithTx(tx)
+	var created []string
+	var ids []uuid.UUID
+	for _, phase := range phases {
+		if phase.Title == "" {
+			continue
+		}
+		priority := phase.Priority
+		if priority == 0 {
+			priority = 2
+		}
+		task, terr := gtdTx.CreateTask(ctx, gtd.CreateTaskParams{
+			ProjectID:   projectID,
+			Title:       phase.Title,
+			Description: phase.Description,
+			Priority:    priority,
+		})
+		if terr != nil {
+			return nil, nil, nil, fmt.Errorf("creating task %q (transaction rolled back, no changes made): %w", phase.Title, terr)
+		}
+		created = append(created, task.Title)
+		ids = append(ids, task.ID)
+	}
+
+	decTx := s.pgDecision.WithTx(tx)
+	var logged []string
+	for _, d := range decisions {
+		if d.Title == "" || d.Decision == "" {
+			continue
+		}
+		dec, derr := decTx.Log(ctx, decision.LogParams{
+			ProjectID:    projectID,
+			RepoName:     repoName,
+			Title:        d.Title,
+			Context:      d.Context,
+			Decision:     d.Decision,
+			Rationale:    d.Rationale,
+			Alternatives: d.Alternatives,
+			Source:       decision.SourceManual,
+		})
+		if derr != nil {
+			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
+		}
+		logged = append(logged, dec.Title)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, nil, fmt.Errorf("committing plan transaction: %w", err)
+	}
+	return created, ids, logged, nil
+}
+
+// materializePlanSQLite is the SQLite counterpart of materializePlanPg. It
+// opens one *sql.Tx via s.sqliteGTD.DB().BeginTx and passes it to both
+// CreateTaskTx and DecisionStore.LogTx so tasks and decisions commit or roll
+// back together — SQLite is single-writer, so this MUST be one tx shared
+// across both stores, not two separate BeginTx calls (that would deadlock on
+// the single pooled connection; see gtd.go's ResolveGuardBlocked doc
+// comment for the same constraint on a different call path).
+func (s *Server) materializePlanSQLite(
+	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
+) ([]string, []uuid.UUID, []string, error) {
+	tx, err := s.sqliteGTD.DB().BeginTx(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("beginning plan transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	var created []string
+	var ids []uuid.UUID
+	for _, phase := range phases {
+		if phase.Title == "" {
+			continue
+		}
+		priority := phase.Priority
+		if priority == 0 {
+			priority = 2
+		}
+		taskID, terr := s.sqliteGTD.CreateTaskTx(ctx, tx, gtd.CreateTaskParams{
+			ProjectID:   projectID,
+			Title:       phase.Title,
+			Description: phase.Description,
+			Priority:    priority,
+		})
+		if terr != nil {
+			return nil, nil, nil, fmt.Errorf("creating task %q (transaction rolled back, no changes made): %w", phase.Title, terr)
+		}
+		created = append(created, phase.Title)
+		ids = append(ids, taskID)
+	}
+
+	if len(decisions) > 0 && s.sqliteDecision == nil {
+		return nil, nil, nil, fmt.Errorf("logging decisions (transaction rolled back, no changes made): sqlite decision store not wired")
+	}
+	var logged []string
+	for _, d := range decisions {
+		if d.Title == "" || d.Decision == "" {
+			continue
+		}
+		if _, derr := s.sqliteDecision.LogTx(ctx, tx, decision.LogParams{
+			ProjectID:    projectID,
+			RepoName:     repoName,
+			Title:        d.Title,
+			Context:      d.Context,
+			Decision:     d.Decision,
+			Rationale:    d.Rationale,
+			Alternatives: d.Alternatives,
+			Source:       decision.SourceManual,
+		}); derr != nil {
+			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
+		}
+		logged = append(logged, d.Title)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, nil, fmt.Errorf("committing plan transaction: %w", err)
+	}
+	return created, ids, logged, nil
+}
+
+// materializePlanSequential is the non-atomic fallback used only when the
+// server is wired with neither a Postgres pool nor a SQLite GTD store (not a
+// real deployment configuration — storage.NewServerStores only ever produces
+// one or the other). Delegates to the pre-transaction createPhaseTasksWithIDs
+// / logPlanDecisions pair, which preserve partial results on a mid-loop
+// failure instead of discarding them.
+func (s *Server) materializePlanSequential(
+	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
+) ([]string, []uuid.UUID, []string, error) {
+	created, ids, err := s.createPhaseTasksWithIDs(ctx, phases, projectID)
+	if err != nil {
+		return created, ids, nil, err
+	}
+	logged, err := s.logPlanDecisions(ctx, decisions, projectID, repoName)
+	if err != nil {
+		return created, ids, logged, err
+	}
+	return created, ids, logged, nil
+}
+
 // createPhaseTasksWithIDs creates tasks for each phase and returns both the
 // title list (for the text response) and the UUID list (for work session
 // linking). On a mid-loop failure it returns whatever was created BEFORE the
-// failing phase (not nil) — see planResultText's doc comment.
+// failing phase (not nil) — see planResultText's doc comment. Used only by
+// materializePlanSequential (the non-atomic fallback path); the PG/SQLite
+// paths have their own tx-scoped loops above.
 func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInput, projectID *uuid.UUID) ([]string, []uuid.UUID, error) {
 	var created []string
 	var ids []uuid.UUID
@@ -194,7 +374,8 @@ func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInpu
 }
 
 // logPlanDecisions returns whatever was logged BEFORE a mid-loop failure
-// (not nil) — see planResultText's doc comment.
+// (not nil) — see planResultText's doc comment. Used only by
+// materializePlanSequential (the non-atomic fallback path).
 func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput, projectID *uuid.UUID, repoName string) ([]string, error) {
 	var logged []string
 	for _, d := range decisions {

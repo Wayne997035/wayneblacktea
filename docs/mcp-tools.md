@@ -295,7 +295,7 @@ Call when user says tomorrow / later. `intent` required. Optional `repo_name`, `
 
 ### `confirm_plan`
 
-Call when user confirms a plan ("可以" "好" "go" "開始"). Creates tasks + logs decisions in one call; not atomic in this build — a mid-call failure response lists exactly what was already created so the caller can verify or retry instead of guessing.
+Call when user confirms a plan ("可以" "好" "go" "開始"). Atomically creates tasks + logs decisions (Postgres/SQLite: one transaction, all-or-nothing). The linked `work_session` is created separately, best-effort, after the transaction commits — a work-session failure never rolls back the tasks/decisions. Always check the response for `is_error` / what was actually created rather than assuming success.
 
 `phases` (JSON array, required): `[{"title":"...","description":"...","priority":2}]`
 
