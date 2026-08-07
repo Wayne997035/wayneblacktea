@@ -66,3 +66,6 @@ migrations/**/*.bak
 # Root-level wbt CLI binary (source lives in cmd/wbt/)
 /wbt
 .worktrees/
+
+# Review-army reports (local working artifacts, never pushed)
+.reviews/
