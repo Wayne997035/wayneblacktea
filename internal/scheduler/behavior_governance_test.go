@@ -157,7 +157,7 @@ func TestRunBehaviorGovernance_ResultMapping(t *testing.T) {
 		wantApplyCalls int
 		wantOutcome    string
 	}{
-		{"success maps to success", "success", 1, "success"},
+		{"success maps to success", outcomeResultSuccess, 1, outcomeResultSuccess},
 		{"failure maps to failure", "failure", 1, "failure"},
 		{"regressed maps to failure", "regressed", 1, "failure"},
 		{"partial is skipped", "partial", 0, ""},
@@ -189,7 +189,7 @@ func TestRunBehaviorGovernance_ResultMapping(t *testing.T) {
 // multiple linked rules triggers one ApplyOutcome call per rule.
 func TestRunBehaviorGovernance_PerRuleCallCount(t *testing.T) {
 	rule1, rule2, rule3 := uuid.New(), uuid.New(), uuid.New()
-	o := recentOutcomeWithRules("success", []uuid.UUID{rule1, rule2, rule3})
+	o := recentOutcomeWithRules(outcomeResultSuccess, []uuid.UUID{rule1, rule2, rule3})
 
 	brStore := &stubBehaviorRuleStore{}
 	deps := governanceDeps{
@@ -207,7 +207,7 @@ func TestRunBehaviorGovernance_PerRuleCallCount(t *testing.T) {
 // TestRunBehaviorGovernance_ErrNotFoundTolerated verifies that ErrNotFound
 // from ApplyOutcome is tolerated (stale link) without stopping the run.
 func TestRunBehaviorGovernance_ErrNotFoundTolerated(t *testing.T) {
-	o := recentOutcomeWithRules("success", []uuid.UUID{uuid.New()})
+	o := recentOutcomeWithRules(outcomeResultSuccess, []uuid.UUID{uuid.New()})
 
 	brStore := &stubBehaviorRuleStore{applyOutcomeErr: behaviorrule.ErrNotFound}
 	deps := governanceDeps{
@@ -250,7 +250,7 @@ func TestRunBehaviorGovernance_OldOutcomeSkipped(t *testing.T) {
 	ruleID := uuid.New()
 	old := outcome.Outcome{
 		ID:             uuid.New(),
-		Result:         "success",
+		Result:         outcomeResultSuccess,
 		RelatedRuleIDs: []uuid.UUID{ruleID},
 		// 8 days ago — outside the 7-day lookback window.
 		CreatedAt: time.Now().AddDate(0, 0, -8),
@@ -284,6 +284,120 @@ func TestRunBehaviorGovernance_DeprecateErrNotFoundTolerated(t *testing.T) {
 	}
 	// Must not panic.
 	runBehaviorGovernance(deps)
+}
+
+// ---------------------------------------------------------------------------
+// Supersession filter (GTD 80cf80b6, PR #152 2nd-army finding): a superseded
+// outcome row must not double-vote alongside the row that supersedes it.
+// ---------------------------------------------------------------------------
+
+// TestRunBehaviorGovernance_SupersededOutcome_VotesOnce is the primary
+// regression test: two outcome rows for the same entity — an older row
+// superseded by a newer one, both inside the 7-day lookback window — must
+// cast exactly ONE ApplyOutcome vote (from the newer, non-superseded row),
+// not two.
+func TestRunBehaviorGovernance_SupersededOutcome_VotesOnce(t *testing.T) {
+	ruleID := uuid.New()
+	oldID := uuid.New()
+
+	old := outcome.Outcome{
+		ID:             oldID,
+		Result:         "failure",
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+		CreatedAt:      time.Now().Add(-2 * time.Hour),
+	}
+	newer := outcome.Outcome{
+		ID:             uuid.New(),
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleID},
+		SupersedesID:   &oldID,
+		CreatedAt:      time.Now().Add(-1 * time.Hour),
+	}
+
+	brStore := &stubBehaviorRuleStore{}
+	deps := governanceDeps{
+		outcomeStore:      &stubOutcomeStore{recentOutcomes: []outcome.Outcome{old, newer}},
+		behaviorRuleStore: brStore,
+		workspaceID:       nil,
+	}
+	runBehaviorGovernance(deps)
+
+	if len(brStore.applyOutcomeCalls) != 1 {
+		t.Fatalf("expected exactly 1 ApplyOutcome call (superseded row must not vote), got %d: %+v",
+			len(brStore.applyOutcomeCalls), brStore.applyOutcomeCalls)
+	}
+	if brStore.applyOutcomeCalls[0].outcome != outcomeResultSuccess {
+		t.Errorf("expected the vote to come from the newer (non-superseded) row, got outcome=%q",
+			brStore.applyOutcomeCalls[0].outcome)
+	}
+}
+
+// TestRunBehaviorGovernance_NonSupersededOutcome_StillVotesOnce is the
+// over-filtering guard the threat model calls out explicitly: a single,
+// ordinary (non-superseded) outcome row must still cast exactly one vote.
+// If the supersession filter were implemented wrong (e.g. treating every row
+// with a nil SupersedesID as "superseded", or matching on the wrong field),
+// this test would catch a fail-open regression where rules silently stop
+// being scored.
+func TestRunBehaviorGovernance_NonSupersededOutcome_StillVotesOnce(t *testing.T) {
+	o := recentOutcomeWithRules(outcomeResultSuccess, []uuid.UUID{uuid.New()})
+	// Explicitly confirm the fixture has no supersession relationship, since
+	// this test's entire point is the "ordinary row" baseline.
+	if o.SupersedesID != nil {
+		t.Fatalf("test fixture bug: recentOutcomeWithRules must not set SupersedesID")
+	}
+
+	brStore := &stubBehaviorRuleStore{}
+	deps := governanceDeps{
+		outcomeStore:      &stubOutcomeStore{recentOutcomes: []outcome.Outcome{o}},
+		behaviorRuleStore: brStore,
+		workspaceID:       nil,
+	}
+	runBehaviorGovernance(deps)
+
+	if len(brStore.applyOutcomeCalls) != 1 {
+		t.Errorf("expected exactly 1 ApplyOutcome call for a single non-superseded row, got %d",
+			len(brStore.applyOutcomeCalls))
+	}
+}
+
+// TestRunBehaviorGovernance_SupersededOutsideWindow_SuccessorAloneVotes
+// verifies chained supersession (A superseded by B superseded by C, all
+// present in the same fetch): only C — the row nothing else supersedes —
+// casts a vote.
+func TestRunBehaviorGovernance_SupersededOutsideWindow_SuccessorAloneVotes(t *testing.T) {
+	ruleID := uuid.New()
+	aID, bID := uuid.New(), uuid.New()
+
+	a := outcome.Outcome{
+		ID: aID, Result: "failure", RelatedRuleIDs: []uuid.UUID{ruleID},
+		CreatedAt: time.Now().Add(-3 * time.Hour),
+	}
+	b := outcome.Outcome{
+		ID: bID, Result: "failure", RelatedRuleIDs: []uuid.UUID{ruleID}, SupersedesID: &aID,
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	}
+	c := outcome.Outcome{
+		ID: uuid.New(), Result: outcomeResultSuccess, RelatedRuleIDs: []uuid.UUID{ruleID}, SupersedesID: &bID,
+		CreatedAt: time.Now().Add(-1 * time.Hour),
+	}
+
+	brStore := &stubBehaviorRuleStore{}
+	deps := governanceDeps{
+		outcomeStore:      &stubOutcomeStore{recentOutcomes: []outcome.Outcome{a, b, c}},
+		behaviorRuleStore: brStore,
+		workspaceID:       nil,
+	}
+	runBehaviorGovernance(deps)
+
+	if len(brStore.applyOutcomeCalls) != 1 {
+		t.Fatalf("expected exactly 1 ApplyOutcome call (only the un-superseded tail votes), got %d: %+v",
+			len(brStore.applyOutcomeCalls), brStore.applyOutcomeCalls)
+	}
+	if brStore.applyOutcomeCalls[0].outcome != outcomeResultSuccess {
+		t.Errorf("expected the vote to come from C (the final row in the chain), got outcome=%q",
+			brStore.applyOutcomeCalls[0].outcome)
+	}
 }
 
 // TestRunBehaviorGovernance_ListRecentError verifies graceful handling of

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -134,7 +135,7 @@ func TestResolveIPExtractor_DefaultIgnoresSpoofedXFF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveIPExtractor: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "198.51.100.10:12345"
 	req.Header.Set("X-Forwarded-For", "203.0.113.99")
 
@@ -148,7 +149,7 @@ func TestResolveIPExtractor_TrustedProxyCIDRUsesXFF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveIPExtractor: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "198.51.100.10:12345"
 	req.Header.Set("X-Forwarded-For", "203.0.113.99, 198.51.100.10")
 

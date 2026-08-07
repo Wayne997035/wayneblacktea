@@ -391,7 +391,7 @@ func TestRegisterDailyPendingProposalsPrune_NilPool_JobNotRegistered(t *testing.
 		t.Fatalf("New() error: %v", err)
 	}
 	for _, j := range sc.s.Jobs() {
-		if j.Name() == "daily-pending-proposals-prune" {
+		if j.Name() == dailyPendingProposalsPruneJobName {
 			t.Errorf("daily-pending-proposals-prune was registered with nil pool; expected skip")
 		}
 	}

@@ -84,6 +84,23 @@ func seedCJPendingTaskProposal(t *testing.T, d *sqlite.DB, wsID uuid.UUID, propo
 	}
 }
 
+// seedCJPendingKnowledgeProposal seeds a pending_proposals row of
+// type='knowledge' with a KnowledgePayload-shaped JSON payload carrying
+// source_entity_id, mirroring what knowledge_to_skill_candidate itself would
+// have written on a prior run. Used to exercise HighRecallKnowledgeItems's
+// dedup NOT EXISTS guard (job 4's twin of seedCJPendingTaskProposal above).
+func seedCJPendingKnowledgeProposal(t *testing.T, d *sqlite.DB, wsID uuid.UUID, proposedBy, sourceEntityID string) {
+	t.Helper()
+	payload := `{"title":"t","content":"c","source_entity_id":"` + sourceEntityID + `"}`
+	err := d.ExecContext(context.Background(), `INSERT INTO pending_proposals
+		(id, workspace_id, type, payload, status, proposed_by, created_at)
+		VALUES (?1, ?2, 'knowledge', ?3, 'pending', ?4, ?5)`,
+		uuid.New().String(), wsID.String(), payload, proposedBy, rfc3339Millis(time.Now()))
+	if err != nil {
+		t.Fatalf("seed pending knowledge proposal: %v", err)
+	}
+}
+
 func seedCJKnowledgeItem(t *testing.T, d *sqlite.DB, wsID uuid.UUID, id uuid.UUID, title string, recallCount int, archived bool) {
 	t.Helper()
 	var archivedAt any
@@ -135,7 +152,7 @@ func TestCognitiveJobsStore_StuckTasks(t *testing.T) {
 	seedCJTask(t, d, wsID, freshID, "fresh in-progress task", "in_progress", now.AddDate(0, 0, -1))
 
 	pendingOldID := uuid.New()
-	seedCJTask(t, d, wsID, pendingOldID, "old pending task", "pending", now.AddDate(0, 0, -10))
+	seedCJTask(t, d, wsID, pendingOldID, "old pending task", taskStatusPending, now.AddDate(0, 0, -10))
 
 	otherWsID := uuid.New()
 	otherWsTaskID := uuid.New()
@@ -150,6 +167,63 @@ func TestCognitiveJobsStore_StuckTasks(t *testing.T) {
 	}
 	if got[0].ID != stuckID || got[0].Title != "stuck task" {
 		t.Errorf("unexpected stuck task returned: %+v", got[0])
+	}
+}
+
+// TestCognitiveJobsStore_StuckTasks_Dedup is the mutation candidate for job
+// 2's dedup NOT EXISTS guard (GTD 80cf80b6, PR #152 2nd-army finding): a
+// stuck task that already has a pending scheduler:stuck_task proposal
+// referencing it via payload.source_entity_id must NOT be returned again.
+// Mirrors TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup (job 3)
+// above.
+func TestCognitiveJobsStore_StuckTasks_Dedup(t *testing.T) {
+	wsID := uuid.New()
+	d, store := openCognitiveJobsDB(t, wsID.String())
+	old := time.Now().UTC().AddDate(0, 0, -10)
+
+	qualifyingID := uuid.New()
+	seedCJTask(t, d, wsID, qualifyingID, "qualifying stuck task", "in_progress", old)
+
+	alreadyProposedID := uuid.New()
+	seedCJTask(t, d, wsID, alreadyProposedID, "already proposed stuck task", "in_progress", old)
+	seedCJPendingTaskProposal(t, d, wsID, "scheduler:stuck_task", alreadyProposedID.String())
+
+	got, err := store.StuckTasks(context.Background(), 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("StuckTasks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 stuck task (dedup excludes the already-proposed one), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != qualifyingID {
+		t.Errorf("expected qualifying task %s, got %s", qualifyingID, got[0].ID)
+	}
+}
+
+// TestCognitiveJobsStore_StuckTasks_DedupIgnoresOtherJobsProposals verifies
+// the dedup guard is scoped to proposed_by='scheduler:stuck_task' only — a
+// pending proposal from a DIFFERENT job (even one that happens to reference
+// the same source_entity_id, e.g. decision_outcome_review) must NOT suppress
+// job 2's own proposal. Regression guard for the threat-surface question in
+// GTD 80cf80b6: the dedup predicate is scoped by proposed_by AND type AND
+// status, not by source_entity_id alone.
+func TestCognitiveJobsStore_StuckTasks_DedupIgnoresOtherJobsProposals(t *testing.T) {
+	wsID := uuid.New()
+	d, store := openCognitiveJobsDB(t, wsID.String())
+	old := time.Now().UTC().AddDate(0, 0, -10)
+
+	taskID := uuid.New()
+	seedCJTask(t, d, wsID, taskID, "stuck task", "in_progress", old)
+	// A different job's proposal happens to carry the same source_entity_id —
+	// must NOT suppress job 2's own proposal for this task.
+	seedCJPendingTaskProposal(t, d, wsID, "scheduler:decision_outcome_review", taskID.String())
+
+	got, err := store.StuckTasks(context.Background(), 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("StuckTasks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 stuck task (a different job's proposal must not dedup-suppress this one), got %d: %+v", len(got), got)
 	}
 }
 
@@ -289,6 +363,34 @@ func TestCognitiveJobsStore_HighRecallKnowledgeItems(t *testing.T) {
 	}
 }
 
+// TestCognitiveJobsStore_HighRecallKnowledgeItems_Dedup is the mutation
+// candidate for job 4's dedup NOT EXISTS guard (GTD 80cf80b6, PR #152
+// 2nd-army finding): a high-recall item that already has a pending
+// scheduler:knowledge_to_skill proposal referencing it via
+// payload.source_entity_id must NOT be returned again.
+func TestCognitiveJobsStore_HighRecallKnowledgeItems_Dedup(t *testing.T) {
+	wsID := uuid.New()
+	d, store := openCognitiveJobsDB(t, wsID.String())
+
+	qualifyingID := uuid.New()
+	seedCJKnowledgeItem(t, d, wsID, qualifyingID, "qualifying high recall item", 5, false)
+
+	alreadyProposedID := uuid.New()
+	seedCJKnowledgeItem(t, d, wsID, alreadyProposedID, "already proposed high recall item", 8, false)
+	seedCJPendingKnowledgeProposal(t, d, wsID, "scheduler:knowledge_to_skill", alreadyProposedID.String())
+
+	got, err := store.HighRecallKnowledgeItems(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("HighRecallKnowledgeItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 item (dedup excludes the already-proposed one), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != qualifyingID {
+		t.Errorf("expected qualifying item %s, got %s", qualifyingID, got[0].ID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ExpireStaleScheduledProposals (job 5)
 // ---------------------------------------------------------------------------
@@ -317,16 +419,16 @@ func TestCognitiveJobsStore_ExpireStaleScheduledProposals_SchedulerOnlyGuard(t *
 	}
 
 	schedStatus, schedReason := pendingProposalStatus(t, d, schedulerID)
-	if schedStatus != "rejected" {
-		t.Errorf("scheduler proposal: status = %q, want %q", schedStatus, "rejected")
+	if schedStatus != proposalStatusRejected {
+		t.Errorf("scheduler proposal: status = %q, want %q", schedStatus, proposalStatusRejected)
 	}
 	if schedReason == nil || *schedReason != "expired by scheduler" {
 		t.Errorf("scheduler proposal: reason = %v, want %q", schedReason, "expired by scheduler")
 	}
 
 	userStatus, userReason := pendingProposalStatus(t, d, userID)
-	if userStatus != "pending" {
-		t.Errorf("user proposal: status = %q, want %q (must NOT be touched)", userStatus, "pending")
+	if userStatus != taskStatusPending {
+		t.Errorf("user proposal: status = %q, want %q (must NOT be touched)", userStatus, taskStatusPending)
 	}
 	if userReason != nil {
 		t.Errorf("user proposal: reason = %q, want nil (must NOT be touched)", *userReason)
@@ -351,8 +453,8 @@ func TestCognitiveJobsStore_ExpireStaleScheduledProposals_RespectsRetentionWindo
 		t.Fatalf("expected exactly 1 row affected (only the stale one), got %d", n)
 	}
 
-	if status, _ := pendingProposalStatus(t, d, freshID); status != "pending" {
-		t.Errorf("fresh proposal: status = %q, want %q (inside retention window)", status, "pending")
+	if status, _ := pendingProposalStatus(t, d, freshID); status != taskStatusPending {
+		t.Errorf("fresh proposal: status = %q, want %q (inside retention window)", status, taskStatusPending)
 	}
 }
 

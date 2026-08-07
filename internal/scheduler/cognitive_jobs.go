@@ -403,10 +403,11 @@ func (sc *Scheduler) runStuckTaskDetection() {
 				t.title,
 			)
 			return proposal.TypeTask, proposal.TaskPayload{
-				Title:         fmt.Sprintf("Unblock stuck task: %s", t.title),
-				SourceTool:    "scheduler:stuck_task",
-				Description:   content,
-				SuggestedKind: "general",
+				Title:          fmt.Sprintf("Unblock stuck task: %s", t.title),
+				SourceTool:     "scheduler:stuck_task",
+				Description:    content,
+				SuggestedKind:  "general",
+				SourceEntityID: t.id.String(),
 			}, true
 		},
 		func(t stuckTask) string { return t.id.String() },
@@ -417,11 +418,30 @@ func (sc *Scheduler) runStuckTaskDetection() {
 // unchanged from the pre-parity implementation: a scan failure or
 // rows.Err logs a warning and does not abort the batch (only a query-level
 // error aborts, via the returned error).
+//
+// Dedup guard (matches job 3's shape, cognitive_jobs.go's
+// pgDecisionsPendingOutcomeReview): excludes tasks that already have a
+// pending, scheduler:stuck_task-originated proposal, matched via
+// payload->>'source_entity_id' (see proposal.TaskPayload.SourceEntityID).
+// Without this, every run re-proposed the same still-in_progress task
+// indefinitely — same failure mode as the 2026-07-19 decision_outcome_review
+// incident (decisionOutcomeReviewDailyCap's doc comment), just without a
+// context-deadline symptom since stuck-task counts stay small at personal
+// scale. Dedup only suppresses duplicate *pending* proposals — the user
+// still must accept each one via confirm_proposal (Excessive Agency boundary
+// unchanged).
 func (sc *Scheduler) pgStuckTasks(ctx context.Context, workspaceID *uuid.UUID) ([]stuckTask, error) {
-	const q = `SELECT id, title, updated_at FROM tasks
-WHERE workspace_id = $1
-  AND status = 'in_progress'
-  AND updated_at < NOW() - INTERVAL '` + stuckTaskInterval + `'`
+	const q = `SELECT t.id, t.title, t.updated_at FROM tasks t
+WHERE t.workspace_id = $1
+  AND t.status = 'in_progress'
+  AND t.updated_at < NOW() - INTERVAL '` + stuckTaskInterval + `'
+  AND NOT EXISTS (
+      SELECT 1 FROM pending_proposals p
+      WHERE p.type = 'task'
+        AND p.proposed_by = 'scheduler:stuck_task'
+        AND p.status = 'pending'
+        AND p.payload->>'source_entity_id' = t.id::text
+  )`
 
 	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID)
 	if err != nil {
@@ -653,6 +673,7 @@ func (sc *Scheduler) runKnowledgeToSkillCandidate() {
 					"Knowledge item '%s' has been recalled more than 3 times. Consider promoting it to a skill or playbook.",
 					ki.title,
 				),
+				SourceEntityID: ki.id.String(),
 			}, true
 		},
 		func(ki kiRow) string { return ki.id.String() },
@@ -670,15 +691,30 @@ func (sc *Scheduler) runKnowledgeToSkillCandidate() {
 	}
 }
 
-// pgHighRecallKnowledgeItems runs the Postgres raw-SQL query, unchanged from
-// the pre-parity implementation. A scan failure or rows.Err logs a warning
-// and does not abort the batch (only a query-level error aborts, via the
-// returned error).
+// pgHighRecallKnowledgeItems runs the Postgres raw-SQL query. A scan failure
+// or rows.Err logs a warning and does not abort the batch (only a
+// query-level error aborts, via the returned error).
+//
+// Dedup guard (matches job 3's shape, cognitive_jobs.go's
+// pgDecisionsPendingOutcomeReview): excludes knowledge items that already
+// have a pending, scheduler:knowledge_to_skill-originated proposal, matched
+// via payload->>'source_entity_id' (see
+// proposal.KnowledgePayload.SourceEntityID). Without this, every weekly run
+// re-proposed the same still-high-recall item indefinitely. Dedup only
+// suppresses duplicate *pending* proposals — the user still must accept each
+// one via confirm_proposal (Excessive Agency boundary unchanged).
 func (sc *Scheduler) pgHighRecallKnowledgeItems(ctx context.Context, workspaceID *uuid.UUID) ([]kiRow, error) {
-	const q = `SELECT id, title FROM knowledge_items
-WHERE workspace_id = $1
-  AND recall_count > 3
-  AND archived_at IS NULL`
+	const q = `SELECT ki.id, ki.title FROM knowledge_items ki
+WHERE ki.workspace_id = $1
+  AND ki.recall_count > 3
+  AND ki.archived_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM pending_proposals p
+      WHERE p.type = 'knowledge'
+        AND p.proposed_by = 'scheduler:knowledge_to_skill'
+        AND p.status = 'pending'
+        AND p.payload->>'source_entity_id' = ki.id::text
+  )`
 
 	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID)
 	if err != nil {

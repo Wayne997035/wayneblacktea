@@ -340,7 +340,9 @@ func run() error {
 	briefingStores := notion.NewBriefingStores(stores)
 	pruner := buildPruner(stores)
 
-	sched, err := wireScheduler(stores, aiw, discordClient, notionClient, briefingStores, snapStore, snapGen, pruner, candidateStore, mergedPRsStore)
+	sched, err := wireScheduler(
+		stores, aiw, discordClient, notionClient, briefingStores, snapStore, snapGen, pruner, candidateStore, mergedPRsStore,
+	)
 	if err != nil {
 		return err
 	}
@@ -896,6 +898,17 @@ func wireScheduler(
 	)); err != nil {
 		return nil, fmt.Errorf("wiring cognitive deps: %w", err)
 	}
+	// Wire the SQLite-only counterpart to daily-pending-proposals-prune (GTD
+	// 80cf80b6 — PR #152 2nd-army finding). Extracted to its own function
+	// (rather than inlined here) purely to keep wireScheduler's cyclomatic
+	// complexity from growing further — wireScheduler was already over the
+	// gocyclo threshold before this PR; this extraction keeps this PR's own
+	// contribution net-zero on that metric rather than adding to a
+	// pre-existing, out-of-scope debt. Mirrors the buildKnowledgeConsolidDeps
+	// extraction precedent in internal/scheduler/scheduler.go.
+	if err := wirePendingProposalsPruneSQLite(sched, stores); err != nil {
+		return nil, err
+	}
 	// Wire discipline_events_m8 pruner — both backends, 90-day TTL per §1.3.
 	// 03:50 avoids overlap with the 03:00 pending_proposals cluster and the
 	// 03:30 outcome pruner slot.
@@ -924,6 +937,29 @@ func wireScheduler(
 		}
 	}
 	return sched, nil
+}
+
+// wirePendingProposalsPruneSQLite wires the SQLite-only counterpart to
+// daily-pending-proposals-prune (GTD 80cf80b6 — PR #152 2nd-army finding:
+// SQLite had no prune/delete path for pending_proposals at all). Extracted
+// out of wireScheduler solely to bound wireScheduler's own cyclomatic
+// complexity (see its call site's comment).
+//
+// scheduler.WithPendingProposalsPruneSQLite itself is a no-op when
+// disciplinePool is already set — registerDailyJobs owns that job's
+// Postgres registration. pendingProposalsPruneSQLite stays a true nil
+// interface (not a typed-nil pointer boxed into a non-nil interface) when
+// the backend is Postgres, matching the cognitiveSQLite pattern in
+// wireScheduler.
+func wirePendingProposalsPruneSQLite(sched *scheduler.Scheduler, stores storage.ServerStores) error {
+	var pendingProposalsPruneSQLite scheduler.PendingProposalsPruneStore
+	if sqliteDB := stores.SqliteDB(); sqliteDB != nil {
+		pendingProposalsPruneSQLite = wbtsqlite.NewProposalStore(sqliteDB)
+	}
+	if err := sched.WithPendingProposalsPruneSQLite(pendingProposalsPruneSQLite); err != nil {
+		return fmt.Errorf("wiring pending proposals prune (SQLite): %w", err)
+	}
+	return nil
 }
 
 // buildActivityStore returns a handler.dashboardActivityStore for the active

@@ -29,6 +29,17 @@ type KnowledgePayload struct {
 	Title   string   `json:"title"`
 	Content string   `json:"content"`
 	Tags    []string `json:"tags,omitempty"`
+	// SourceEntityID is an opaque foreign entity UUID (as string; NEVER a real
+	// FK per CLAUDE.md red-line #9) that scheduler jobs stamp so a follow-up
+	// run can SQL-dedup against it via payload->>'source_entity_id' instead of
+	// re-scanning application-side. Mirrors TaskPayload.SourceEntityID's same
+	// rationale — see its doc comment. Written by
+	// scheduler.runKnowledgeToSkillCandidate (keyed on knowledge_items.id) to
+	// prevent the job from re-proposing the same high-recall item every run.
+	// Empty for non-scheduler producers (weekly_goal_review,
+	// behavior_rule_candidate, reflection/consolidation crons — none of those
+	// dedup on a source entity today).
+	SourceEntityID string `json:"source_entity_id,omitempty"`
 }
 
 // TaskPayload is the JSONB shape stored in pending_proposals.payload when
