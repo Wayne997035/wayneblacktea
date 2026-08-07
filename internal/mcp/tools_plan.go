@@ -20,8 +20,12 @@ func (s *Server) registerPlanTools(ms *server.MCPServer) {
 		"confirm_plan",
 		mcp.WithDescription(
 			"CALL THIS when user confirms a plan ('可以','好','go','ok','明天做','start','開始'). "+
-				"Atomically creates GTD tasks for each phase AND logs each decision in one call. "+
-				"Also creates an in_progress work_session linking all phase tasks. "+
+				"Creates GTD tasks for each phase AND logs each decision in one call, in sequence "+
+				"(NOT atomic in this build -- a later failure does not roll back earlier writes; "+
+				"the response always lists exactly which tasks/decisions were created before any "+
+				"failure so the caller can verify or retry instead of guessing). "+
+				"Also creates an in_progress work_session linking all phase tasks (best-effort -- a "+
+				"work session failure does not block the tasks/decisions result). "+
 				"Use this INSTEAD of calling add_task + log_decision separately — it is more reliable.",
 		),
 		mcp.WithString(
@@ -102,25 +106,53 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	// Create phase tasks and collect their UUIDs for the work session link.
 	createdTasks, taskIDs, err := s.createPhaseTasksWithIDs(ctx, phases, projectID)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return mcp.NewToolResultError(planResultText(createdTasks, nil, nil, err)), nil
 	}
 
 	loggedDecisions, err := s.logPlanDecisions(ctx, decisions, projectID, repoName)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return mcp.NewToolResultError(planResultText(createdTasks, loggedDecisions, nil, err)), nil
 	}
 
 	// Always create an in_progress work session (D2: no bool flag).
 	// Best-effort: work session failure must not block the tasks/decisions result.
 	sessionID := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs, assignee)
 
+	return mcp.NewToolResultText(planResultText(createdTasks, loggedDecisions, sessionID, nil)), nil
+}
+
+// planResultText renders confirm_plan's response text for both the success
+// path (planErr == nil) and the partial-failure path (planErr != nil).
+//
+// P-atomicity-honesty: createPhaseTasksWithIDs / logPlanDecisions return
+// whatever was successfully created BEFORE an error instead of discarding it
+// (the old behavior threw the partial slices away on error, so the caller
+// had no way to learn which tasks/decisions — if any — actually exist after
+// a mid-loop failure; it had to re-list everything to find out). When
+// planErr is non-nil but nothing was created yet (createdTasks and
+// loggedDecisions both empty — e.g. the very first phase task fails, or an
+// atomic backend rolled the whole transaction back), the plain error message
+// is returned without the empty "already created" headers.
+func planResultText(createdTasks, loggedDecisions []string, sessionID *string, planErr error) string {
+	if planErr != nil && len(createdTasks) == 0 && len(loggedDecisions) == 0 {
+		return fmt.Sprintf("Plan confirmation failed: %v", planErr)
+	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plan confirmed. Tasks created (%d):\n", len(createdTasks))
+	if planErr != nil {
+		fmt.Fprintf(&sb, "Plan confirmation failed: %v\n", planErr)
+		fmt.Fprintf(&sb, "Already created before the failure — tasks (%d):\n", len(createdTasks))
+	} else {
+		fmt.Fprintf(&sb, "Plan confirmed. Tasks created (%d):\n", len(createdTasks))
+	}
 	for _, t := range createdTasks {
 		fmt.Fprintf(&sb, "  • %s\n", t)
 	}
 	if len(loggedDecisions) > 0 {
-		fmt.Fprintf(&sb, "\nDecisions logged (%d):\n", len(loggedDecisions))
+		label := "Decisions logged"
+		if planErr != nil {
+			label = "Decisions logged before the failure"
+		}
+		fmt.Fprintf(&sb, "\n%s (%d):\n", label, len(loggedDecisions))
 		for _, d := range loggedDecisions {
 			fmt.Fprintf(&sb, "  • %s\n", d)
 		}
@@ -128,11 +160,13 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	if sessionID != nil {
 		fmt.Fprintf(&sb, "\nWork session started: %s\n", *sessionID)
 	}
-	return mcp.NewToolResultText(sb.String()), nil
+	return sb.String()
 }
 
 // createPhaseTasksWithIDs creates tasks for each phase and returns both the
-// title list (for the text response) and the UUID list (for work session linking).
+// title list (for the text response) and the UUID list (for work session
+// linking). On a mid-loop failure it returns whatever was created BEFORE the
+// failing phase (not nil) — see planResultText's doc comment.
 func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInput, projectID *uuid.UUID) ([]string, []uuid.UUID, error) {
 	var created []string
 	var ids []uuid.UUID
@@ -151,7 +185,7 @@ func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInpu
 			Priority:    priority,
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("creating task %q: %w", phase.Title, err)
+			return created, ids, fmt.Errorf("creating task %q (%d already created): %w", phase.Title, len(created), err)
 		}
 		created = append(created, task.Title)
 		ids = append(ids, task.ID)
@@ -159,6 +193,8 @@ func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInpu
 	return created, ids, nil
 }
 
+// logPlanDecisions returns whatever was logged BEFORE a mid-loop failure
+// (not nil) — see planResultText's doc comment.
 func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput, projectID *uuid.UUID, repoName string) ([]string, error) {
 	var logged []string
 	for _, d := range decisions {
@@ -176,7 +212,7 @@ func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput
 			Source:       decision.SourceManual,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("logging decision %q: %w", d.Title, err)
+			return logged, fmt.Errorf("logging decision %q (%d already logged): %w", d.Title, len(logged), err)
 		}
 		logged = append(logged, dec.Title)
 	}

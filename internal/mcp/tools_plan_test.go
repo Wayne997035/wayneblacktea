@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -282,5 +285,96 @@ func TestHandleConfirmPlan_StampsAssigneeOntoPhaseTask(t *testing.T) {
 	}
 	if got := queryMCPTaskAssignee(t, db, taskID); got != "human" {
 		t.Errorf("phase task assignee: got %q, want stamped \"human\"", got)
+	}
+}
+
+// ---- P-atomicity-honesty: partial results are surfaced, not discarded ----
+
+// failingDecisionStore is a minimal decision.StoreIface stub used to force a
+// deterministic mid-loop Log failure. confirm_plan hardcodes
+// Source=SourceManual on every decision it logs, so there is no
+// confirm_plan-reachable input that makes either backend's REAL decision
+// store fail on one specific item in a multi-decision call (SQLite's Log
+// only validates Source; Postgres's Log additionally runs
+// sanitize.ValidateNoTagNoise, but that's not backend-selectable from a
+// SQLite-backed test). A hand-rolled stub of the 7-method StoreIface is the
+// direct way to exercise this contract; it substitutes only Log, so calls to
+// any other embedded (nil) method would panic — none of the paths under test
+// reach them.
+type failingDecisionStore struct {
+	decision.StoreIface
+	failAfter int
+	calls     int
+}
+
+func (f *failingDecisionStore) Log(_ context.Context, p decision.LogParams) (*db.Decision, error) {
+	f.calls++
+	if f.calls > f.failAfter {
+		return nil, fmt.Errorf("stub failure logging decision %q (call %d)", p.Title, f.calls)
+	}
+	return &db.Decision{Title: p.Title}, nil
+}
+
+func TestHandleConfirmPlan_PartialTaskFailure_CreatedTasksSurfaced(t *testing.T) {
+	s := newMinimalPlanServer(t)
+	// priority=99 violates the `priority BETWEEN 1 AND 5` CHECK constraint
+	// (migrations/sqlite/000012_sqlite_baseline.up.sql) on the SECOND phase,
+	// forcing a real mid-loop store failure after the first phase succeeded.
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases": `[
+			{"title":"Do A","description":"A","priority":1},
+			{"title":"Do B","description":"B","priority":99}
+		]`,
+	})
+	if !r.IsError {
+		t.Fatalf("expected error for out-of-range priority, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "Do A") {
+		t.Errorf("already-created task title must be surfaced on partial failure, got: %s", text)
+	}
+	if !strings.Contains(text, "1 already created") {
+		t.Errorf("error should note exactly 1 task was already created before the failure, got: %s", text)
+	}
+}
+
+func TestLogPlanDecisions_PartialFailure_ReturnsAlreadyLogged(t *testing.T) {
+	s := &Server{decision: &failingDecisionStore{failAfter: 1}}
+	decisions := []decisionInput{
+		{Title: "Decision 1", Decision: "Use X"},
+		{Title: "Decision 2", Decision: "Use Y"},
+	}
+	logged, err := s.logPlanDecisions(context.Background(), decisions, nil, "")
+	if err == nil {
+		t.Fatal("expected error on second decision")
+	}
+	if len(logged) != 1 || logged[0] != "Decision 1" {
+		t.Errorf("expected first decision preserved in partial result, got: %v", logged)
+	}
+	if !strings.Contains(err.Error(), "1 already logged") {
+		t.Errorf("error should note 1 decision was already logged before the failure, got: %v", err)
+	}
+}
+
+func TestHandleConfirmPlan_PartialDecisionFailure_TasksAndPriorDecisionsSurfaced(t *testing.T) {
+	s := newMinimalPlanServer(t)
+	s.decision = &failingDecisionStore{failAfter: 1}
+
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"Do A","description":"A","priority":1}]`,
+		"decisions": `[{"title":"Decision 1","decision":"Use X"},{"title":"Decision 2","decision":"Use Y"}]`,
+	})
+	if !r.IsError {
+		t.Fatalf("expected error from stub decision failure, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "Do A") {
+		t.Errorf("task created before the decision failure must still be reported, got: %s", text)
+	}
+	if !strings.Contains(text, "Decision 1") {
+		t.Errorf("decision logged before the failure must still be reported, got: %s", text)
+	}
+	if strings.Contains(text, "• Decision 2") {
+		t.Errorf("decision that failed to log must not appear in the logged-decisions list, got: %s", text)
 	}
 }

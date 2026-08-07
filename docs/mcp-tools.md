@@ -295,7 +295,7 @@ Call when user says tomorrow / later. `intent` required. Optional `repo_name`, `
 
 ### `confirm_plan`
 
-Call when user confirms a plan ("可以" "好" "go" "開始"). Atomically creates tasks + logs decisions.
+Call when user confirms a plan ("可以" "好" "go" "開始"). Creates tasks + logs decisions in one call; not atomic in this build — a mid-call failure response lists exactly what was already created so the caller can verify or retry instead of guessing.
 
 `phases` (JSON array, required): `[{"title":"...","description":"...","priority":2}]`
 
