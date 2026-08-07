@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -134,6 +135,9 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 	decisions, err := s.decision.List(ctx, p)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+	}
+	if decisions == nil {
+		decisions = []db.Decision{} // list tools MUST return [] not null — a nil slice serializes to JSON null
 	}
 	return jsonText(decisions)
 }

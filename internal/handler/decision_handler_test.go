@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -41,6 +42,40 @@ func (f *fakeDecisionHandlerStore) Log(_ context.Context, p decision.LogParams) 
 	}
 	f.logged = append(f.logged, p)
 	return &db.Decision{ID: uuid.New(), Title: p.Title}, nil
+}
+
+// TestListDecisions_NilStoreResultReturnsEmptyArrayNotNull verifies the
+// nil-slice-vs-JSON-null gap across all three ListDecisions return points
+// (All / ByRepo / ByProject). json.Unmarshal([]byte("null"), &slice) leaves
+// slice nil with len==0 — the exact same shape as unmarshaling "[]" — so a
+// test that unmarshals the response and checks len() cannot distinguish the
+// two. This asserts the raw response body string instead.
+func TestListDecisions_NilStoreResultReturnsEmptyArrayNotNull(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{name: "All (no filter)", query: ""},
+		{name: "ByRepo", query: "?repo_name=wayneblacktea"},
+		{name: "ByProject", query: "?project_id=" + uuid.New().String()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeDecisionHandlerStore{} // all list fields left nil
+			e := newEcho()
+			h := handler.NewDecisionHandler(store)
+			e.GET("/api/decisions", h.ListDecisions)
+			rec := performRequest(e, http.MethodGet, "/api/decisions"+tc.query, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+			got := strings.TrimSpace(rec.Body.String())
+			if got != "[]" {
+				t.Errorf("body = %q, want exactly %q (nil slice must not serialize to JSON null)", got, "[]")
+			}
+		})
+	}
 }
 
 // TestLogDecision_HTTP is a table-driven pass over POST /api/decisions
