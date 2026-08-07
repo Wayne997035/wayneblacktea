@@ -12,6 +12,8 @@ export function useDecisions(projectId?: string, options?: { enabled?: boolean }
       return apiFetch<Decision[]>(url)
     },
     enabled: options?.enabled ?? true,
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 

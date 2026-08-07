@@ -6,6 +6,8 @@ export function useKnowledge() {
   return useQuery<KnowledgeItem[]>({
     queryKey: ['knowledge'],
     queryFn: () => apiFetch<KnowledgeItem[]>('/api/knowledge?limit=20'),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 
@@ -14,6 +16,8 @@ export function useKnowledgeSearch(query: string) {
     queryKey: ['knowledge', 'search', query],
     queryFn: () => apiFetch<KnowledgeItem[]>(`/api/knowledge/search?q=${encodeURIComponent(query)}&limit=10`),
     enabled: query.trim().length > 0,
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 

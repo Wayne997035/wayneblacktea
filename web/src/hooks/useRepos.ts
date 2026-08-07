@@ -6,6 +6,8 @@ export function useRepos() {
   return useQuery<Repo[]>({
     queryKey: ['workspace', 'repos'],
     queryFn: () => apiFetch<Repo[]>('/api/workspace/repos'),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 

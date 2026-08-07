@@ -6,6 +6,8 @@ export function useGoals() {
   return useQuery<Goal[]>({
     queryKey: ['goals'],
     queryFn: () => apiFetch<Goal[]>('/api/goals'),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 
