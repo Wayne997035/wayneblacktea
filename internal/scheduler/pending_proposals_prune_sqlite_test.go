@@ -9,6 +9,8 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,6 +59,35 @@ func TestRunDailyPendingProposalsPrune_SQLite_Dispatches(t *testing.T) {
 	}
 	if store.gotReason != pendingProposalsTaskTTLReason {
 		t.Errorf("mark reason = %q, want %q", store.gotReason, pendingProposalsTaskTTLReason)
+	}
+}
+
+// TestRunDailyPendingProposalsPrune_SQLite_MarkErrors_LogsRowsDeleted is
+// item 3's regression reproduction: MarkAndDeleteStaleProposals's own doc
+// comment (internal/storage/sqlite/proposal.go) says a mark-step failure
+// does NOT gate the delete step — the DELETE still runs and can genuinely
+// remove rows even when the function's overall err is non-nil. Before this
+// fix, the caller's `if err != nil` branch logged only marked_rows, so a
+// destructive DELETE that actually ran left no record of how much it
+// destroyed. The stub below returns a non-nil err together with a non-zero
+// deleted count — exactly the shape MarkAndDeleteStaleProposals produces
+// when mark fails but delete succeeds — and asserts rows_deleted appears in
+// the resulting slog.Warn.
+func TestRunDailyPendingProposalsPrune_SQLite_MarkErrors_LogsRowsDeleted(t *testing.T) {
+	buf := captureSlog(t)
+	store := &stubPendingProposalsPruneStore{
+		marked: 0, deleted: 9,
+		err: errors.New("stub mark step failure"),
+	}
+	sc := &Scheduler{pendingProposalsPruneSQLite: store}
+	sc.runDailyPendingProposalsPrune()
+
+	logOut := buf.String()
+	if !strings.Contains(logOut, "mark/delete failed") {
+		t.Fatalf("expected mark/delete failed warn, got log:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "rows_deleted=9") {
+		t.Errorf("expected rows_deleted=9 in warn (delete succeeded despite mark error), got log:\n%s", logOut)
 	}
 }
 
@@ -124,6 +155,36 @@ func TestWithPendingProposalsPruneSQLite_RegistersJob(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected \"daily-pending-proposals-prune\" job to be registered")
+	}
+}
+
+// TestRegisterDailyJobs_PendingProposalsPrune_SkipLogDoesNotClaimNoPrune is
+// item 4's regression reproduction: with disciplinePool nil,
+// registerDailyJobs's else-branch used to log "DailyPendingProposalsPrune
+// skipped (postgres pool not configured; SQLite has no growth concern)" —
+// an operator grepping for "skipped" would conclude no prune runs at all,
+// contradicting the "scheduled at 03:00" line WithPendingProposalsPruneSQLite
+// logs moments later once the SQLite store is wired. The "no growth concern"
+// claim was also stale: this PR (pending_proposals's own TTL retention
+// feature) is what gave SQLite pending_proposals a growth problem in the
+// first place. The reworded message must name what was actually skipped
+// (the Postgres registration only) and point at the SQLite counterpart.
+func TestRegisterDailyJobs_PendingProposalsPrune_SkipLogDoesNotClaimNoPrune(t *testing.T) {
+	buf := captureSlog(t)
+	learningStore := &stubLearningStore{}
+	if _, err := New(learningStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	logOut := buf.String()
+	if !strings.Contains(logOut, "DailyPendingProposalsPrune Postgres registration skipped") {
+		t.Errorf("expected the reworded Postgres-only skip message, got log:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "WithPendingProposalsPruneSQLite") {
+		t.Errorf("expected the skip message to point at the SQLite counterpart, got log:\n%s", logOut)
+	}
+	if strings.Contains(logOut, "DailyPendingProposalsPrune skipped (postgres pool not configured; SQLite has no growth concern)") {
+		t.Errorf("stale message must not appear: it falsely implies no prune runs at all, got log:\n%s", logOut)
 	}
 }
 

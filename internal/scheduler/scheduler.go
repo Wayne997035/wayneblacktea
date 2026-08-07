@@ -666,7 +666,15 @@ func (sc *Scheduler) registerDailyJobs(s gocron.Scheduler) error {
 		}
 		slog.Info("scheduler: DailyPendingProposalsPrune scheduled at 03:00 Asia/Taipei")
 	} else {
-		slog.Info("scheduler: DailyPendingProposalsPrune skipped (postgres pool not configured; SQLite has no growth concern)")
+		// NOT "SQLite has no growth concern" — this PR is what gave SQLite
+		// the growth problem (pending_proposals accumulates on every
+		// backend). The SQLite registration happens separately via
+		// WithPendingProposalsPruneSQLite (called after New(), see its own
+		// doc comment), which logs its own "scheduled at 03:00" line — an
+		// operator grepping for "skipped" here must not conclude no prune
+		// runs at all; only the Postgres registration was skipped.
+		slog.Info("scheduler: DailyPendingProposalsPrune Postgres registration skipped " +
+			"(postgres pool not configured); SQLite registration handled separately by WithPendingProposalsPruneSQLite")
 	}
 
 	return nil
@@ -1148,7 +1156,14 @@ func (s *Scheduler) runDailyPendingProposalsPruneSQLite(ctx context.Context) {
 		pendingProposalsTaskTTLReason,
 	)
 	if err != nil {
-		slog.Warn("daily pending_proposals prune (SQLite): mark/delete failed", "err", err, "marked_rows", markedRows)
+		// rows_deleted included even on error: MarkAndDeleteStaleProposals
+		// runs the DELETE step regardless of whether the mark step failed
+		// (see its own doc comment — a mark failure does not gate delete),
+		// so a mark-only error can still carry a real, non-zero deletedRows.
+		// Omitting it here would leave no record of how many rows this
+		// destructive DELETE actually removed.
+		slog.Warn("daily pending_proposals prune (SQLite): mark/delete failed",
+			"err", err, "marked_rows", markedRows, "rows_deleted", deletedRows)
 		return
 	}
 	slog.Info(

@@ -332,16 +332,30 @@ func hasNewContent(params CreateOutcomeParams) bool {
 // related_rule_id or work_session_id (e.g. scheduler/behavior_governance.go
 // reads RelatedRuleIDs to compute rule confidence) was misclassified as
 // ActionReplayedIdempotent: no row was written, so the new link was silently
-// dropped with zero signal to the caller. relatedRuleIDsHasNew /
-// workSessionIDHasNew (below) are the SAME "would this actually add
-// information" helpers isDraftIdempotentReplay already uses for the draft
-// branch — reused here, not reimplemented, so both branches agree on what
-// counts as new. A genuinely new ID/session now correctly falls through to
-// the supersede branch below: CreateOutcome for a supersede copies params
-// verbatim (see RecordExecutionResult), so the new row's related_rule_ids is
-// exactly what THIS call supplied — there is no merge-with-the-row-it-
-// supersedes semantics on the terminal branch; only the draft branch's
-// FinalizeDraft merges.
+// dropped with zero signal to the caller. related_rule_ids reuses
+// relatedRuleIDsHasNew (below) — CreateOutcome for a supersede copies
+// params verbatim (see RecordExecutionResult), so the new row's
+// related_rule_ids is exactly what THIS call supplied, matching
+// relatedRuleIDsHasNew's "any ID not already present" definition of new
+// regardless of which branch it's evaluated from.
+//
+// work_session_id (round 9 Critical C-1, corrected): this branch does
+// NOT reuse workSessionIDHasNew, unlike the draft branch's
+// isDraftIdempotentReplay below. workSessionIDHasNew's nil-only semantics
+// ("new" only if existing is nil") is correct ONLY for the draft branch,
+// because FinalizeDraft writes `work_session_id = COALESCE(work_session_id,
+// $5)` (store.go) — a differing already-set ID genuinely CANNOT be written
+// there, so treating it as "no new info" is right for THAT SQL. This
+// terminal branch has no such mechanism: a supersede goes through
+// CreateOutcome, a plain INSERT with no COALESCE (store.go), which writes
+// params.WorkSessionID verbatim. So here, ANY session ID that differs from
+// latest.WorkSessionID — not just nil-to-non-nil — is genuinely new
+// information that a byte-identical-replay classification would silently
+// discard: session B's record_outcome retry (same result/notes/metrics,
+// different session_id) would return ActionReplayedIdempotent, skip
+// SetOutcomeLink, and leave work_sessions.outcome_id NULL for session B
+// while the response echoes session A's outcome — no error, no signal.
+// workSessionIDDiffers (below) captures the correct, branch-specific rule.
 func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 	if latest.Result != params.Result {
 		return false
@@ -355,7 +369,21 @@ func isIdempotentReplay(latest Outcome, params CreateOutcomeParams) bool {
 	if relatedRuleIDsHasNew(latest.RelatedRuleIDs, params.RelatedRuleIDs) {
 		return false
 	}
-	return !workSessionIDHasNew(latest.WorkSessionID, params.WorkSessionID)
+	return !workSessionIDDiffers(latest.WorkSessionID, params.WorkSessionID)
+}
+
+// workSessionIDDiffers reports whether params supplies a WorkSessionID that
+// differs from latest's — the terminal branch's own "is this genuinely new
+// information" rule, distinct from workSessionIDHasNew's draft-branch,
+// COALESCE-aware, nil-only rule (see isIdempotentReplay's doc comment above
+// for why the two branches cannot share one predicate). incoming == nil
+// never differs (nothing supplied, so nothing to compare); otherwise it
+// differs when existing is nil OR the two IDs are not equal.
+func workSessionIDDiffers(existing, incoming *uuid.UUID) bool {
+	if incoming == nil {
+		return false
+	}
+	return existing == nil || *existing != *incoming
 }
 
 // isDraftIdempotentReplay reports whether params, once merged into latest

@@ -10,9 +10,13 @@ package outcome_test
 // could be finalized in place by a caller supplying a DIFFERENT (or no)
 // workspace's params.WorkspaceID. The tests below pin the fix on the
 // Postgres backend: a mismatched non-nil WorkspaceID must be a no-op/
-// not-found (ErrDraftAlreadyFinalized), and the pre-existing legacy
-// nil-WorkspaceID calling shape (every other FinalizeDraft test in
-// store_test.go) must keep matching any row exactly as before.
+// not-found (ErrDraftAlreadyFinalized) — this is the guard's real coverage,
+// see TestStore_FinalizeDraft_CrossWorkspace_NotFound's doc comment — and
+// the pre-existing legacy nil-WorkspaceID calling shape (every other
+// FinalizeDraft test in store_test.go) must keep matching any row exactly
+// as before, which is a separate, guard-independent guarantee (see
+// TestStore_FinalizeDraft_NilWorkspaceParam_LegacyCallingShapeUnaffected's
+// own scope note).
 // ---------------------------------------------------------------------------
 
 import (
@@ -65,13 +69,31 @@ func TestStore_FinalizeDraft_CrossWorkspace_NotFound(t *testing.T) {
 	}
 }
 
-// TestStore_FinalizeDraft_LegacyNilWorkspace_StillMatchesAnyRow pins the
-// preserved-behaviour guarantee explicitly: a FinalizeDraft call whose
+// TestStore_FinalizeDraft_NilWorkspaceParam_LegacyCallingShapeUnaffected pins
+// the preserved-behaviour guarantee explicitly: a FinalizeDraft call whose
 // params.WorkspaceID is nil (the calling shape every pre-existing
 // FinalizeDraft test in store_test.go already uses) must keep matching the
 // target row regardless of that row's own workspace_id — the new predicate
 // only excludes an EXPLICIT workspace mismatch, never an absent one.
-func TestStore_FinalizeDraft_LegacyNilWorkspace_StillMatchesAnyRow(t *testing.T) {
+//
+// Scope note (round 9, coverage audit): this test does NOT exercise the
+// guard's actual comparison arm — with params.WorkspaceID == nil, the
+// predicate's first disjunct (`$9::uuid IS NULL`) is unconditionally true,
+// so the whole `($9::uuid IS NULL OR workspace_id = $9)` clause holds
+// identically whether or not the `workspace_id = $9` arm — or the guard as a
+// whole — exists at all. Mutation-proven: replacing the predicate with
+// `(1=1 OR $9::uuid IS NULL OR workspace_id = $9)` (i.e. deleting the guard)
+// leaves this test green. This test's real job is guarding the LEGACY
+// nil-workspace calling path specifically (so a future change to the nil
+// branch doesn't regress every pre-existing single-tenant caller) — it is
+// NOT coverage for the workspace-scoping guard itself. That guard's actual
+// enforcement (the `workspace_id = $9` arm, evaluated with a real non-nil
+// $9) is exercised and mutation-proven by
+// TestStore_FinalizeDraft_CrossWorkspace_NotFound above, which supplies a
+// non-nil, MISMATCHED WorkspaceID and — same mutation applied — correctly
+// goes red (verified by re-running both tests against the `1=1 OR` variant:
+// only CrossWorkspace_NotFound fails).
+func TestStore_FinalizeDraft_NilWorkspaceParam_LegacyCallingShapeUnaffected(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
 	store := outcome.NewStore(pool, &wsID)
