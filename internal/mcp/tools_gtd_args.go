@@ -104,12 +104,15 @@ type CreateGoalArgs struct {
 }
 
 // UpdateTaskArgs — update_task. Status/Title/Description/Priority/
-// Importance/Assignee/DueDate/Context are plain values: parseUpdateTaskArgs
+// Importance/Assignee/DueDate/Context/Kind are plain values: parseUpdateTaskArgs
 // already treats an empty/zero value as "not provided" for these fields
-// (non-presence-based, matching the legacy stringArg/numberArg checks).
-// BranchName/PRUrl are *string: applyBranchAndPRUpdate distinguishes "key
-// absent" (leave unchanged) from "key present as empty string" (clear the
-// field) — genuine presence-based business logic.
+// (non-presence-based, matching the legacy stringArg/numberArg checks). Kind
+// stays a plain string rather than being seam-absorbed for the same reason
+// AddTaskArgs.Kind does (see that doc comment): kind has default-then-validate
+// business logic (validator.IsValidKind) distinct from the schema's advisory
+// enum. BranchName/PRUrl are *string: applyBranchAndPRUpdate distinguishes
+// "key absent" (leave unchanged) from "key present as empty string" (clear
+// the field) — genuine presence-based business logic.
 type UpdateTaskArgs struct {
 	TaskID      uuid.UUID `mcp:"task_id"`
 	Status      string    `mcp:"status"`
@@ -120,6 +123,7 @@ type UpdateTaskArgs struct {
 	Assignee    string    `mcp:"assignee"`
 	DueDate     string    `mcp:"due_date"`
 	Context     string    `mcp:"context"`
+	Kind        string    `mcp:"kind"`
 	BranchName  *string   `mcp:"branch_name"`
 	PRUrl       *string   `mcp:"pr_url"`
 }

@@ -279,6 +279,77 @@ func TestGTDHandler_ListGoals(t *testing.T) {
 	}
 }
 
+// TestGTDHandler_ListGoals_NilSliceReturnsEmptyArrayNotNull covers the
+// nil-guard added for GTD c282cc04 item #3. A nil goals slice (the
+// fakeGTDStore zero value — distinct from the pre-existing "empty list"
+// case above which explicitly seeds []db.Goal{}) must still serialize as
+// "[]", never "null" — asserted on the raw body string since json decode of
+// "null" into a slice looks identical to json decode of "[]".
+func TestGTDHandler_ListGoals_NilSliceReturnsEmptyArrayNotNull(t *testing.T) {
+	e := newEcho()
+	h := handler.NewGTDHandler(&fakeGTDStore{}) // goals field left nil
+	e.GET("/api/goals", h.ListGoals)
+	rec := performRequest(e, http.MethodGet, "/api/goals", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Errorf("raw body = %q, want exactly %q", got, "[]")
+	}
+}
+
+func TestGTDHandler_ListProjects(t *testing.T) {
+	projID := uuid.New()
+	cases := []struct {
+		name     string
+		store    *fakeGTDStore
+		wantCode int
+	}{
+		{
+			name:     "returns active projects",
+			store:    &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "store error → 500",
+			store:    &fakeGTDStore{err: errors.New("db down")},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:     "empty list → 200 with empty array",
+			store:    &fakeGTDStore{projects: []db.Project{}},
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewGTDHandler(tc.store)
+			e.GET("/api/projects", h.ListProjects)
+			rec := performRequest(e, http.MethodGet, "/api/projects", "")
+			if rec.Code != tc.wantCode {
+				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestGTDHandler_ListProjects_NilSliceReturnsEmptyArrayNotNull is the
+// ListProjects counterpart to TestGTDHandler_ListGoals_NilSliceReturnsEmptyArrayNotNull.
+func TestGTDHandler_ListProjects_NilSliceReturnsEmptyArrayNotNull(t *testing.T) {
+	e := newEcho()
+	h := handler.NewGTDHandler(&fakeGTDStore{}) // projects field left nil
+	e.GET("/api/projects", h.ListProjects)
+	rec := performRequest(e, http.MethodGet, "/api/projects", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Errorf("raw body = %q, want exactly %q", got, "[]")
+	}
+}
+
 func TestGTDHandler_CreateGoal(t *testing.T) {
 	newGoal := &db.Goal{ID: uuid.New(), Title: "Launch v1"}
 	cases := []struct {
@@ -288,14 +359,34 @@ func TestGTDHandler_CreateGoal(t *testing.T) {
 		wantCode int
 	}{
 		{
+			// area is now required at the HTTP boundary too (GTD c282cc04
+			// item #2: validation sinks so MCP and HTTP get the same
+			// guarantee — MCP's create_goal already required area via
+			// requiredMsg). Body updated from the pre-existing
+			// {"title":"Launch v1"} to include area so this happy-path case
+			// still exercises 201, not the new 400.
 			name:     "creates goal",
-			body:     `{"title":"Launch v1"}`,
+			body:     `{"title":"Launch v1","area":"work"}`,
 			store:    &fakeGTDStore{createdGoal: newGoal},
 			wantCode: http.StatusCreated,
 		},
 		{
 			name:     "missing title → 400",
 			body:     `{"area":"work"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			// New case for GTD c282cc04 item #2: area is required, mirroring
+			// the MCP create_goal tool's existing requiredMsg("area", ...).
+			name:     "missing area → 400",
+			body:     `{"title":"Launch v1"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "blank area → 400",
+			body:     `{"title":"Launch v1","area":"   "}`,
 			store:    &fakeGTDStore{},
 			wantCode: http.StatusBadRequest,
 		},
@@ -307,7 +398,7 @@ func TestGTDHandler_CreateGoal(t *testing.T) {
 		},
 		{
 			name:     "store error → 500",
-			body:     `{"title":"Launch v1"}`,
+			body:     `{"title":"Launch v1","area":"work"}`,
 			store:    &fakeGTDStore{err: errors.New("db write fail")},
 			wantCode: http.StatusInternalServerError,
 		},
@@ -541,6 +632,28 @@ func TestGTDHandler_CreateProject(t *testing.T) {
 			store:    &fakeGTDStore{err: gtd.ErrConflict},
 			wantCode: http.StatusConflict,
 		},
+		// repo_name validation (GTD c282cc04 item #2: validation sinks so
+		// HTTP gets the same guarantee create_project's MCP tool already had).
+		{
+			name:     "invalid repo_name → 400",
+			body:     `{"name":"wayneblacktea","title":"Personal OS","repo_name":"bad repo name!"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "valid repo_name → 201",
+			body:     `{"name":"wayneblacktea","title":"Personal OS","repo_name":"wayneblacktea"}`,
+			store:    &fakeGTDStore{createdProj: newProj},
+			wantCode: http.StatusCreated,
+		},
+		{
+			// store-level ErrInvalidRepoName backstop mapped to 400, not the
+			// generic 500 every other store error maps to.
+			name:     "store rejects repo_name → 400",
+			body:     `{"name":"wayneblacktea","title":"Personal OS"}`,
+			store:    &fakeGTDStore{err: gtd.ErrInvalidRepoName},
+			wantCode: http.StatusBadRequest,
+		},
 	}
 
 	for _, tc := range cases {
@@ -765,6 +878,36 @@ func TestGTDHandler_UpdateProject(t *testing.T) {
 			body:     `{"title":"Title"}`,
 			store:    &fakeGTDStore{err: errors.New("db down")},
 			wantCode: http.StatusInternalServerError,
+		},
+		// repo_name validation (GTD c282cc04 item #2).
+		{
+			name:     "invalid repo_name → 400",
+			paramID:  id.String(),
+			body:     `{"title":"T","repo_name":"bad repo name!"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "valid repo_name → 200",
+			paramID:  id.String(),
+			body:     `{"title":"T","repo_name":"wayneblacktea"}`,
+			store:    &fakeGTDStore{updatedProj: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "explicit empty repo_name (clear) → 200",
+			paramID:  id.String(),
+			body:     `{"title":"T","repo_name":""}`,
+			store:    &fakeGTDStore{updatedProj: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			// store-level ErrInvalidRepoName backstop mapped to 400.
+			name:     "store rejects repo_name → 400",
+			paramID:  id.String(),
+			body:     `{"title":"T"}`,
+			store:    &fakeGTDStore{err: gtd.ErrInvalidRepoName},
+			wantCode: http.StatusBadRequest,
 		},
 	}
 
@@ -1161,6 +1304,21 @@ func TestGTDHandler_UpdateTask(t *testing.T) {
 			store:    &fakeGTDStore{updatedTask: updated},
 			wantCode: http.StatusOK,
 		},
+		// kind field (GTD c282cc04 item #1).
+		{
+			name:     "valid kind → 200",
+			paramID:  id.String(),
+			body:     `{"kind":"chore"}`,
+			store:    &fakeGTDStore{updatedTask: updated},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "invalid kind → 400",
+			paramID:  id.String(),
+			body:     `{"kind":"bogus"}`,
+			store:    &fakeGTDStore{},
+			wantCode: http.StatusBadRequest,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1173,6 +1331,28 @@ func TestGTDHandler_UpdateTask(t *testing.T) {
 				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestGTDHandler_UpdateTask_KindWiredToParams verifies that a PATCH body's
+// "kind" field actually reaches gtd.UpdateTaskParams.Kind (not just that the
+// HTTP response is 200) — the capturedUpdateTaskParams field on fakeGTDStore
+// records exactly what the handler passed to the store.
+func TestGTDHandler_UpdateTask_KindWiredToParams(t *testing.T) {
+	id := uuid.New()
+	store := &fakeGTDStore{updatedTask: &db.Task{ID: id, Kind: "chore"}}
+	e := newEcho()
+	h := handler.NewGTDHandler(store)
+	e.PATCH("/api/tasks/:id", h.UpdateTask)
+	rec := performRequest(e, http.MethodPatch, "/api/tasks/"+id.String(), `{"kind":"chore"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if store.capturedUpdateTaskParams == nil || store.capturedUpdateTaskParams.Kind == nil {
+		t.Fatal("capturedUpdateTaskParams.Kind was not set")
+	}
+	if got := *store.capturedUpdateTaskParams.Kind; got != "chore" {
+		t.Errorf("capturedUpdateTaskParams.Kind = %q, want %q", got, "chore")
 	}
 }
 

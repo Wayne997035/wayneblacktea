@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -290,6 +291,9 @@ func (s *GTDStore) ProjectsByRepoName(ctx context.Context, repoName string) ([]d
 // repo_name is persisted when non-empty; empty string stores NULL (parity with
 // migration 000037 which added the nullable TEXT column).
 func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams) (*db.Project, error) {
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("creating project %q: %w", p.Name, gtd.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	area := p.Area
 	if area == "" {
@@ -1242,6 +1246,7 @@ type mergedTaskFields struct {
 	dueDate        any
 	taskCtx        any
 	status         string
+	kind           string
 	branchName     any
 	prURL          any
 	commitSHAsJSON string
@@ -1263,6 +1268,7 @@ func mergeTaskBaseFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFi
 		title:    existing.Title,
 		priority: existing.Priority,
 		status:   existing.Status,
+		kind:     existing.Kind,
 	}
 	if p.Title != nil {
 		m.title = *p.Title
@@ -1272,6 +1278,9 @@ func mergeTaskBaseFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFi
 	}
 	if p.Status != nil {
 		m.status = *p.Status
+	}
+	if p.Kind != nil {
+		m.kind = *p.Kind
 	}
 	if p.Description != nil {
 		m.desc = nullStringIfEmpty(*p.Description)
@@ -1383,16 +1392,17 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		    due_date    = ?7,
 		    context     = ?8,
 		    status      = ?9,
-		    branch_name = ?10,
-		    pr_url      = ?11,
-		    commit_shas = ?12,
-		    updated_at  = ?13
+		    kind        = ?10,
+		    branch_name = ?11,
+		    pr_url      = ?12,
+		    commit_shas = ?13,
+		    updated_at  = ?14
 		WHERE id = ?1
-		  AND (?14 IS NULL OR workspace_id = ?14)`
+		  AND (?15 IS NULL OR workspace_id = ?15)`
 	now := nowRFC3339()
 	res, err := s.db.conn.ExecContext(
 		ctx, q,
-		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status,
+		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status, m.kind,
 		m.branchName, m.prURL, m.commitSHAsJSON,
 		now, s.db.workspaceArg(),
 	)

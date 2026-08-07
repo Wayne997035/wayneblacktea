@@ -157,6 +157,85 @@ func TestUpdateTask_StatusToInProgress(t *testing.T) {
 	}
 }
 
+// --- update_task kind field (GTD c282cc04) ---
+
+// TestUpdateTask_Kind_AllValidValues verifies that every kind in
+// validator.ValidTaskKinds is accepted by update_task and actually persists,
+// end-to-end through the MCP seam.
+func TestUpdateTask_Kind_AllValidValues(t *testing.T) {
+	for _, k := range []string{"general", "fix-pr", "feature", "refactor", "research", "chore"} {
+		t.Run(k, func(t *testing.T) {
+			s := newTestWorkSessionServer(t)
+			id := seedTask(t, s)
+			r := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "kind": k})
+			if r.IsError {
+				t.Fatalf("update_task kind=%q should succeed, got: %s", k, resultText(r))
+			}
+			task, err := s.gtd.GetTaskByID(context.Background(), id)
+			if err != nil {
+				t.Fatalf("GetTaskByID: %v", err)
+			}
+			if task.Kind != k {
+				t.Errorf("task.Kind = %q, want %q", task.Kind, k)
+			}
+		})
+	}
+}
+
+// TestUpdateTask_Kind_InvalidValue verifies that an out-of-enum kind is
+// rejected with an explicit error and does NOT silently fall back to
+// "general" — the task's kind must be left unchanged.
+func TestUpdateTask_Kind_InvalidValue(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	// seedTask leaves kind at its CreateTaskParams zero value, which
+	// CreateTask defaults to "general" — capture that as the baseline.
+	before, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID (before): %v", err)
+	}
+
+	r := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "kind": "bogus"})
+	if !r.IsError {
+		t.Fatalf("update_task with bogus kind must error, got: %s", resultText(r))
+	}
+
+	after, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID (after): %v", err)
+	}
+	if after.Kind != before.Kind {
+		t.Errorf("kind must not change on rejected update: before=%q after=%q", before.Kind, after.Kind)
+	}
+}
+
+// TestUpdateTask_Kind_OmittedPreservesExisting verifies that updating an
+// unrelated field without touching kind leaves the existing kind value
+// untouched (preserve-on-omit, matching every other update_task field).
+func TestUpdateTask_Kind_OmittedPreservesExisting(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	set := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "kind": "feature"})
+	if set.IsError {
+		t.Fatalf("setting kind=feature should succeed, got: %s", resultText(set))
+	}
+
+	// Now patch an unrelated field without kind.
+	r := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "priority": float64(1)})
+	if r.IsError {
+		t.Fatalf("update_task (priority only) should succeed, got: %s", resultText(r))
+	}
+
+	task, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if task.Kind != "feature" {
+		t.Errorf("kind should be preserved when omitted: got %q, want %q", task.Kind, "feature")
+	}
+}
+
 // --- handleGetUpcomingWork ---
 
 func TestGetUpcomingWork_EmptyDB(t *testing.T) {

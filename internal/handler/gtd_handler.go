@@ -81,6 +81,9 @@ func (h *GTDHandler) ListGoals(c echo.Context) error {
 		c.Logger().Errorf("ListGoals: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
+	if goals == nil {
+		goals = []db.Goal{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
+	}
 	return c.JSON(http.StatusOK, goals)
 }
 
@@ -97,8 +100,8 @@ func (h *GTDHandler) CreateGoal(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
 	}
-	if req.Title == "" {
-		return c.JSON(http.StatusBadRequest, errResp("title is required"))
+	if req.Title == "" || strings.TrimSpace(req.Area) == "" {
+		return c.JSON(http.StatusBadRequest, errResp("title and area are required"))
 	}
 
 	goal, err := h.store.CreateGoal(c.Request().Context(), gtd.CreateGoalParams{
@@ -120,6 +123,9 @@ func (h *GTDHandler) ListProjects(c echo.Context) error {
 	if err != nil {
 		c.Logger().Errorf("ListProjects: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if projects == nil {
+		projects = []db.Project{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
 	}
 	return c.JSON(http.StatusOK, projects)
 }
@@ -143,6 +149,9 @@ func (h *GTDHandler) CreateProject(c echo.Context) error {
 	if req.Name == "" || req.Title == "" {
 		return c.JSON(http.StatusBadRequest, errResp("name and title are required"))
 	}
+	if !validator.IsValidRepoName(req.RepoName) {
+		return c.JSON(http.StatusBadRequest, errResp("repo_name must match [a-zA-Z0-9_.-]{1,100}"))
+	}
 
 	project, err := h.store.CreateProject(c.Request().Context(), gtd.CreateProjectParams{
 		Name:        req.Name,
@@ -156,6 +165,9 @@ func (h *GTDHandler) CreateProject(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, gtd.ErrConflict) {
 			return c.JSON(http.StatusConflict, errResp("project name already exists"))
+		}
+		if errors.Is(err, gtd.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
 		}
 		c.Logger().Errorf("CreateProject: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -418,6 +430,9 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	if req.Priority != 0 && (req.Priority < 1 || req.Priority > 5) {
 		return c.JSON(http.StatusBadRequest, errResp("priority must be between 1 and 5"))
 	}
+	if req.RepoName != nil && !validator.IsValidRepoName(*req.RepoName) {
+		return c.JSON(http.StatusBadRequest, errResp("repo_name must match [a-zA-Z0-9_.-]{1,100}"))
+	}
 
 	project, err := h.store.UpdateProject(c.Request().Context(), id, gtd.UpdateProjectParams{
 		Title:       strings.TrimSpace(req.Title),
@@ -431,6 +446,9 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, gtd.ErrNotFound) {
 			return c.JSON(http.StatusNotFound, errResp("project not found"))
+		}
+		if errors.Is(err, gtd.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
 		}
 		c.Logger().Errorf("UpdateProject: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -447,6 +465,7 @@ type updateTaskRequest struct {
 	DueDate     *time.Time `json:"due_date"`
 	Context     *string    `json:"context"`
 	Status      *string    `json:"status"`
+	Kind        *string    `json:"kind"`        // nil → preserve; must be a validator.ValidTaskKinds value when present (GTD-c282cc04)
 	BranchName  *string    `json:"branch_name"` // nil → preserve; empty string → clear to NULL
 	PRUrl       *string    `json:"pr_url"`      // nil → preserve; empty string → clear to NULL
 }
@@ -455,7 +474,7 @@ type updateTaskRequest struct {
 func updateTaskRequestIsEmpty(req *updateTaskRequest) bool {
 	return req.Title == nil && req.Description == nil && req.Priority == nil &&
 		req.Importance == nil && req.Assignee == nil && req.DueDate == nil &&
-		req.Context == nil && req.Status == nil &&
+		req.Context == nil && req.Status == nil && req.Kind == nil &&
 		req.BranchName == nil && req.PRUrl == nil
 }
 
@@ -479,6 +498,9 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 		if msg := validateTaskStatus(*req.Status); msg != "" {
 			return msg
 		}
+	}
+	if req.Kind != nil && !validator.IsValidKind(*req.Kind) {
+		return "kind must be one of: general, fix-pr, feature, refactor, research, chore"
 	}
 	if req.BranchName != nil {
 		if msg := validateBranchName(*req.BranchName); msg != "" {
@@ -517,6 +539,7 @@ func updateTaskParamsFromRequest(req *updateTaskRequest) gtd.UpdateTaskParams {
 		DueDate:     req.DueDate,
 		Context:     req.Context,
 		Status:      req.Status,
+		Kind:        req.Kind,
 		BranchName:  req.BranchName,
 		PRUrl:       req.PRUrl,
 	}

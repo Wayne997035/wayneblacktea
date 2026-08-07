@@ -1684,6 +1684,95 @@ func TestGTDStore_UpdateTask_NotFound(t *testing.T) {
 	}
 }
 
+// TestGTDStore_UpdateTask_Kind_AllValidValues verifies that every kind in
+// validator.ValidTaskKinds round-trips through UpdateTask on the SQLite
+// backend (GTD c282cc04 item #1). Paired with
+// TestGTDStore_UpdateTask_PG_Kind_AllValidValues per backend-security-design.md §6.5.
+func TestGTDStore_UpdateTask_Kind_AllValidValues(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	for _, k := range []string{"general", "fix-pr", "feature", "refactor", "research", "chore"} {
+		t.Run(k, func(t *testing.T) {
+			task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "kind-" + k})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			kind := k
+			updated, err := s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Kind: &kind})
+			if err != nil {
+				t.Fatalf("UpdateTask kind=%q: %v", k, err)
+			}
+			if updated.Kind != k {
+				t.Errorf("kind = %q, want %q", updated.Kind, k)
+			}
+		})
+	}
+}
+
+// TestGTDStore_UpdateTask_Kind_OmittedPreservesExisting verifies that
+// updating an unrelated field (priority) without touching Kind leaves the
+// existing kind value untouched — the "preserve-on-omit" contract shared by
+// every other UpdateTaskParams field.
+func TestGTDStore_UpdateTask_Kind_OmittedPreservesExisting(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "kind-preserve", Kind: "feature"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if task.Kind != "feature" {
+		t.Fatalf("seed kind = %q, want %q", task.Kind, "feature")
+	}
+
+	newPrio := int32(1)
+	updated, err := s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Priority: &newPrio})
+	if err != nil {
+		t.Fatalf("UpdateTask (priority only): %v", err)
+	}
+	if updated.Kind != "feature" {
+		t.Errorf("kind should be preserved when omitted: got %q, want %q", updated.Kind, "feature")
+	}
+}
+
+// TestGTDStore_CreateProject_InvalidRepoName verifies the store-layer
+// backstop added for GTD c282cc04 item #2: CreateProject rejects a
+// non-empty repo_name that fails validator.IsValidRepoName, even when the
+// caller bypassed MCP/HTTP-layer validation.
+func TestGTDStore_CreateProject_InvalidRepoName(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	_, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "bad-repo-name-proj", Title: "t", Area: "a",
+		RepoName: "bad repo name!",
+	})
+	if !errors.Is(err, gtd.ErrInvalidRepoName) {
+		t.Errorf("expected gtd.ErrInvalidRepoName, got: %v", err)
+	}
+}
+
+// TestGTDStore_CreateProject_ValidRepoName_StillWorks is the mutation-proof
+// counterpart to TestGTDStore_CreateProject_InvalidRepoName: a well-formed
+// repo_name must still be accepted after the store-layer validation was
+// added, so the new check cannot have accidentally tightened past legal data.
+func TestGTDStore_CreateProject_ValidRepoName_StillWorks(t *testing.T) {
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "good-repo-name-proj", Title: "t", Area: "a",
+		RepoName: "wayneblacktea",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject with valid repo_name: %v", err)
+	}
+	if !p.RepoName.Valid || p.RepoName.String != "wayneblacktea" {
+		t.Errorf("repo_name = %+v, want valid %q", p.RepoName, "wayneblacktea")
+	}
+}
+
 // TestGTDStore_UpcomingTasks_WithinWindow verifies that pending tasks within
 // the window and all no-due-date pending tasks are returned, while
 // beyond-window and completed tasks are excluded.

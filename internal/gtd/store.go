@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -139,6 +140,9 @@ func (s *Store) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.P
 // column added in migration 000037 is included without requiring a sqlc
 // regen on every contributor's machine.
 func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error) {
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("creating project %q: %w", p.Name, ErrInvalidRepoName)
+	}
 	area := p.Area
 	if area == "" {
 		area = "projects"
@@ -1011,6 +1015,11 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		return nil, fmt.Errorf("updating task %s: %w", id, err)
 	}
 
+	kind := existing.Kind
+	if p.Kind != nil {
+		kind = *p.Kind
+	}
+
 	var branchName pgtype.Text
 	if p.BranchName != nil {
 		branchName = pgconv.ToText(*p.BranchName)
@@ -1039,18 +1048,19 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		    due_date    = $6,
 		    context     = $7,
 		    status      = $8,
-		    branch_name = $9,
-		    pr_url      = $10,
-		    commit_shas = $11,
+		    kind        = $9,
+		    branch_name = $10,
+		    pr_url      = $11,
+		    commit_shas = $12,
 		    updated_at  = NOW()
-		WHERE id = $12
-		  AND ($13::uuid IS NULL OR workspace_id = $13)
+		WHERE id = $13
+		  AND ($14::uuid IS NULL OR workspace_id = $14)
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
 		          branch_name, pr_url, commit_shas`
 	rows, err := s.dbtx.Query(
 		ctx, q,
-		title, description, priority, importance, assignee, dueDate, taskContext, status,
+		title, description, priority, importance, assignee, dueDate, taskContext, status, kind,
 		branchName, prURL, commitSHAs,
 		id, s.workspaceID,
 	)
@@ -1102,6 +1112,9 @@ func (s *Store) UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams
 // RepoName semantics: nil → preserve existing DB value; non-nil → overwrite
 // (empty string clears to NULL).
 func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error) {
+	if p.RepoName != nil && !validator.IsValidRepoName(*p.RepoName) {
+		return nil, fmt.Errorf("updating project %s: %w", id, ErrInvalidRepoName)
+	}
 	area := p.Area
 	if area == "" {
 		area = "projects"
