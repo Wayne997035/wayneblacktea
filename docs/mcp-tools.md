@@ -613,7 +613,7 @@ Record the result of an executed task, decision, sprint, or project. Closes the 
 | Arg | Required |
 |-----|----------|
 | `entity_type` (`task`/`decision`/`sprint`/`project`) `entity_id` (UUID) `result` (`success`/`failure`/`partial`/`unknown`/`regressed`) | Yes |
-| `notes` (max 500 runes) `metrics_json` `related_rule_ids` (JSON array of UUIDs, max 20) | No |
+| `notes` (max 500 runes per call, 5000 cumulative across enrich calls on the same draft) `metrics_json` `related_rule_ids` (JSON array of UUIDs, max 20 per call, 100 cumulative) `session_id` (UUID, best-effort linked via `SetOutcomeLink`) | No |
 
 ### `evaluate_outcome`
 

@@ -555,14 +555,27 @@ func CapNotesTotal(existing, merged string, capLimit int) (string, bool) {
 }
 
 // NotesTruncated reports whether newNotes — the notes text a SINGLE caller
-// supplied to one record_outcome/FinalizeDraft call — failed to land in its
-// entirety in finalNotes, the resulting (post-write, already-capped) Notes
+// supplied to one record_outcome/FinalizeDraft call — landed-or-was-already-
+// present in finalNotes, the resulting (post-write, already-capped) Notes
 // value. Because FinalizeDraft's merge is always `<prior> + "\n\n" +
 // newNotes` (or newNotes alone when prior was empty — see appendNotes / the
-// PG notes CASE expression below), newNotes landed in full if and only if
-// finalNotes ends with it: if the cumulative cap (MaxNotesTotalRunes) cut
+// PG notes CASE expression below), the HasSuffix check below is precise in
+// the "truncated" direction: if the cumulative cap (MaxNotesTotalRunes) cut
 // the merge short, finalNotes's tail is at best a byte-for-byte PREFIX of
-// newNotes, never a suffix, so the HasSuffix check below correctly fails.
+// newNotes, never a suffix, so HasSuffix correctly reports truncated=true
+// whenever content was actually dropped. It is deliberately looser in the
+// other direction — HasSuffix succeeding does NOT strictly prove THIS call's
+// own write is what appended newNotes: a resend byte-identical to whatever
+// is already finalNotes's trailing "\n\n"-delimited segment also satisfies
+// HasSuffix, even when this call's own merge attempt was a no-op (see
+// isDraftIdempotentReplay / notesHasNewContent in lifecycle.go, which
+// classify that exact shape as a replay before FinalizeDraft is even
+// invoked, so in practice this collision case is rare). This is not a
+// caller-facing bug: in that collision case nothing was ever lost either
+// way — newNotes's content is already present in finalNotes — so reporting
+// truncated=false is still the semantically correct signal, it just isn't
+// deducible as "if and only if THIS call wrote it" the way the name might
+// suggest.
 //
 // newNotes == "" (nothing supplied) always returns false — there is nothing
 // that could have been dropped.
@@ -727,6 +740,20 @@ func RelatedRuleIDsTruncated(finalIDs, newIDs []uuid.UUID) bool {
 // scan below (NotesTruncated / RelatedRuleIDsTruncated, this file) derive
 // the same answer from ONLY this call's own bound parameters and its own
 // RETURNING row, so there is nothing left that can go stale.
+//
+// Workspace-scoped (PR #152 round 8, 80cf80b6 finding 3): GetLatestForEntity
+// was already workspace-scoped, but this WHERE clause historically was not —
+// a caller supplying a NON-NIL params.WorkspaceID that did not match the
+// target row's own workspace_id could still finalize it in place. The added
+// `($9::uuid IS NULL OR workspace_id = $9)` clause mirrors the same
+// unscoped-when-nil pattern GetLatestForEntity/ListRecentOutcomes/etc. use
+// elsewhere in this file: params.WorkspaceID == nil (legacy single-tenant
+// callers, including every pre-existing FinalizeDraft test in
+// store_test.go, which never sets it) still matches any row exactly as
+// before; a mismatched non-nil WorkspaceID now makes the WHERE clause match
+// zero rows, so this returns ErrDraftAlreadyFinalized (the same "row didn't
+// satisfy my predicate" signal already used for a concurrently-finalized
+// row) instead of writing into another workspace's draft.
 func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOutcomeParams) (Outcome, error) {
 	const q = `
 		UPDATE outcomes SET
@@ -758,6 +785,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 			work_session_id = COALESCE(work_session_id, $5),
 			updated_at = NOW()
 		WHERE id = $6 AND result = 'unknown'
+		  AND ($9::uuid IS NULL OR workspace_id = $9)
 		RETURNING ` + outcomeSelectCols
 
 	var notesArg pgtype.Text
@@ -783,6 +811,7 @@ func (s *Store) FinalizeDraft(ctx context.Context, id uuid.UUID, params CreateOu
 		id,
 		MaxRelatedRuleIDsTotal,
 		MaxNotesTotalRunes,
+		toPgtypeUUID(params.WorkspaceID),
 	)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("finalizing draft outcome %s: %w", id, err)
