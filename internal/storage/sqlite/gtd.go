@@ -431,7 +431,16 @@ func (s *GTDStore) CreateGoalTx(ctx context.Context, tx *sql.Tx, p gtd.CreateGoa
 // CreateProjectTx inserts a new project within the provided *sql.Tx.
 // It is the transactional counterpart of CreateProject and is used by the
 // confirm_proposal accept path for atomic cross-store writes.
+//
+// repo_name validation was previously missing here even though the sibling
+// non-Tx CreateProject (above) validates it and the Postgres equivalent
+// (internal/gtd/store.go's Store.CreateProject, reused unmodified via
+// WithTx(tx)) validates it too — a SQLite-only backend asymmetry in the
+// confirm_proposal materialisation path (sprint 8-7 gap G).
 func (s *GTDStore) CreateProjectTx(ctx context.Context, tx *sql.Tx, p gtd.CreateProjectParams) (uuid.UUID, error) {
+	if !validator.IsValidRepoName(p.RepoName) {
+		return uuid.UUID{}, fmt.Errorf("creating project %q: %w", p.Name, gtd.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	area := p.Area
 	if area == "" {

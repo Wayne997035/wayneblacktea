@@ -273,6 +273,14 @@ func checkArgConstraints(name, sv string, a *argSpec) *mcp.CallToolResult {
 // matching every legacy `if x == "" { return "x is required" }` check this
 // seam replaces) plus basic JSON-type correctness for a single required,
 // non-UUID argument.
+//
+// Non-emptiness is checked against the trimmed value (strings.TrimSpace), not
+// the raw value: a whitespace-only string like "   " is not "provided" in any
+// meaningful sense and previously slipped past this seam's `sv == ""` check
+// while the HTTP layer's equivalent handlers (CreateGoal, UpdateGoal,
+// UpdateProject, …) already trimmed first — sprint 8-7 gap F. The stored
+// value itself is untouched (decodeToolArgs still decodes the raw string);
+// only the required/empty decision uses the trimmed form.
 func checkRequiredPresent(args map[string]any, a *argSpec) *mcp.CallToolResult {
 	raw, present := args[a.name]
 	empty := !present
@@ -283,7 +291,7 @@ func checkRequiredPresent(args map[string]any, a *argSpec) *mcp.CallToolResult {
 			if !ok {
 				return mcp.NewToolResultError(a.name + " must be a string")
 			}
-			empty = sv == ""
+			empty = strings.TrimSpace(sv) == ""
 		case "boolean":
 			if _, ok := raw.(bool); !ok {
 				return mcp.NewToolResultError(a.name + " must be a boolean")

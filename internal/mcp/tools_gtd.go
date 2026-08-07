@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -26,19 +25,6 @@ var (
 	githubPRURLRe = validator.GitHubPRURLRe
 	commitSHARe   = gtd.CommitSHARe
 )
-
-// branchNameHasControlChars returns true if s contains characters invalid in
-// git branch names: ASCII control chars (< 0x20), DEL (0x7F), or Unicode
-// "Other" characters (Cc control, Cf format like U+200B zero-width space /
-// U+FEFF BOM, Co private-use, Cs surrogates).
-func branchNameHasControlChars(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
-			return true
-		}
-	}
-	return false
-}
 
 // resolveAssignee resolves a raw "assignee" value to a canonical actor via
 // gtd.NormalizeActor. Empty input is allowed (many tasks start unowned) and
@@ -79,26 +65,21 @@ func parseImportance(raw int32) (*int16, string) {
 	return &v, ""
 }
 
-// errMsgBranchNameTooLong, errMsgBranchNameControlChars and errMsgInvalidPRURL
-// are the shared validation messages for branch_name/pr_url, hoisted to
-// package-level constants because add_task (applyBranchAndPR), update_task
+// errMsgInvalidPRURL is the shared validation message for pr_url, hoisted to
+// a package-level constant because add_task (applyBranchAndPR), update_task
 // (applyBranchAndPRUpdate), and begin_task (validateBeginTaskLinkageArgs)
-// all enforce the identical rule (goconst).
-const (
-	errMsgBranchNameTooLong      = "branch_name must not exceed 255 characters"
-	errMsgBranchNameControlChars = "branch_name must not contain control characters"
-	errMsgInvalidPRURL           = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
-)
+// all enforce the identical rule (goconst). branch_name's own error messages
+// come straight from validator.ValidateBranchName — the single shared
+// implementation with the HTTP path (gtd_handler.go) — rather than being
+// hand-duplicated as constants here (sprint 8-7 gap E).
+const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 
 // applyBranchAndPR validates and sets branch_name and pr_url on a CreateTaskParams.
 // Returns a non-empty error message on validation failure.
 func applyBranchAndPR(branchName, prURL string, p *gtd.CreateTaskParams) string {
 	if branchName != "" {
-		if len(branchName) > 255 {
-			return errMsgBranchNameTooLong
-		}
-		if branchNameHasControlChars(branchName) {
-			return errMsgBranchNameControlChars
+		if msg := validator.ValidateBranchName(branchName); msg != "" {
+			return msg
 		}
 		p.BranchName = &branchName
 	}
@@ -119,11 +100,8 @@ func applyBranchAndPRUpdate(branchName, prURL *string, p *gtd.UpdateTaskParams) 
 	if branchName != nil {
 		bn := *branchName
 		if bn != "" {
-			if len(bn) > 255 {
-				return errMsgBranchNameTooLong
-			}
-			if branchNameHasControlChars(bn) {
-				return errMsgBranchNameControlChars
+			if msg := validator.ValidateBranchName(bn); msg != "" {
+				return msg
 			}
 		}
 		p.BranchName = branchName
@@ -1335,11 +1313,8 @@ func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistComp
 // validation failure.
 func validateBeginTaskLinkageArgs(branchName, prURL string) string {
 	if branchName != "" {
-		if len(branchName) > 255 {
-			return errMsgBranchNameTooLong
-		}
-		if branchNameHasControlChars(branchName) {
-			return errMsgBranchNameControlChars
+		if msg := validator.ValidateBranchName(branchName); msg != "" {
+			return msg
 		}
 	}
 	if prURL != "" && !githubPRURLRe.MatchString(prURL) {

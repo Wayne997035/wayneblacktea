@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -26,19 +25,14 @@ var githubPRURLRe = validator.GitHubPRURLRe
 // (and the goconst linter stays happy).
 const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 
+// validateBranchName delegates to the shared internal/validator implementation
+// so the HTTP and MCP (tools_gtd.go) entry points enforce byte-identical
+// branch_name invariants — see validator.ValidateBranchName's doc comment
+// (sprint 8-7 gap E: this used to be a hand-duplicated byte-counting check
+// here that disagreed with MCP's own byte-counting check on CJK input; both
+// are now rune-counted and both call this single function).
 func validateBranchName(s string) string {
-	// Count characters by rune, not byte: a 255-character CJK branch name
-	// is well within git's branch-name limits but trips a byte-length check
-	// because each char is 2-3 bytes in UTF-8.
-	if len([]rune(s)) > 255 {
-		return "branch_name must not exceed 255 characters"
-	}
-	for _, r := range s {
-		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
-			return "branch_name must not contain control characters"
-		}
-	}
-	return ""
+	return validator.ValidateBranchName(s)
 }
 
 func validateTaskStatus(s string) string {
@@ -60,6 +54,30 @@ func validatePriority(n int32) string {
 func validateImportance(n int16) string {
 	if n < 1 || n > 3 {
 		return "importance must be between 1 and 3"
+	}
+	return ""
+}
+
+// updateProjectMaxTitleLen and updateProjectMaxDescriptionLen mirror the
+// update_project MCP tool's rune-based mcp.MaxLength(500)/mcp.MaxLength(5000)
+// seam constraints (internal/mcp/tools_gtd.go registerGTDTools). Sprint 8-7
+// gap D: the HTTP PATCH endpoint previously had no upper bound on either
+// field, so a caller could store an unbounded title/description that the MCP
+// path would have rejected outright.
+const (
+	updateProjectMaxTitleLen       = 500
+	updateProjectMaxDescriptionLen = 5000
+)
+
+// validateUpdateProjectLengths applies the same rune-counted caps the
+// update_project MCP tool enforces via its seam. Returns a non-empty
+// user-facing error message on violation.
+func validateUpdateProjectLengths(title, description string) string {
+	if n := len([]rune(title)); n > updateProjectMaxTitleLen {
+		return "title exceeds 500 characters"
+	}
+	if n := len([]rune(description)); n > updateProjectMaxDescriptionLen {
+		return "description exceeds 5000 characters"
 	}
 	return ""
 }
@@ -418,6 +436,9 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	}
 	if strings.TrimSpace(req.Title) == "" {
 		return c.JSON(http.StatusBadRequest, errResp("title is required"))
+	}
+	if msg := validateUpdateProjectLengths(req.Title, req.Description); msg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(msg))
 	}
 
 	status := gtd.ProjectStatus(req.Status)
