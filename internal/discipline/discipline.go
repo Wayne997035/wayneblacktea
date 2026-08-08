@@ -146,9 +146,15 @@ var DeliberatelyExcludedTools = map[string]bool{
 	// explicit allowlist (not just "absent from MutatingTools") so the
 	// structural parity test forces a deliberate classification decision for
 	// any newly-registered tool instead of silently passing it through.
-	"analyze_recent_patterns":   true,
-	"assemble_context":          true, // tools_contextpack.go — Assembler.Assemble is retrieval-only, no Store writes.
-	"detect_unclosed_loops":     true,
+	"analyze_recent_patterns": true,
+	"assemble_context":        true, // tools_contextpack.go — Assembler.Assemble is retrieval-only, no Store writes.
+	"detect_unclosed_loops":   true,
+	// expand_tools mutates only process-local, per-session tools/list
+	// visibility (internal/mcp/tools_expand.go) — no Store, no DB row, nothing
+	// a drift signal could protect. Deliberately NOT in MutatingTools: putting
+	// it there would demand a preceding log_decision/confirm_plan for what is
+	// effectively a catalogue paging call.
+	"expand_tools":              true,
 	"find_failed_patterns":      true,
 	"get_active_work":           true,
 	"get_due_reviews":           true,

@@ -4,11 +4,43 @@ The MCP server (`wbt mcp` stdio, or the HTTP transport at `/mcp`) connects Claud
 
 ---
 
+## Tool-list visibility (progressive disclosure)
+
+`tools/list` advertises only an 18-tool **core set**; the other 74 tools are revealed
+on demand by `expand_tools`. This cuts the connect-time catalogue from ~67 KB to ~16 KB
+(~21 400 tokens down to ~4 900).
+
+**Hiding a tool never makes it uncallable.** mcp-go applies tool filters only inside
+`handleListTools` (`server/server.go:1523-1530`); `handleToolCall` (`:1556-1605`) looks the
+name up in the global registry and never consults a filter. Every one of the 92 registered
+tools can be invoked by name at any time, expanded or not — pinned by
+`TestAllTools_CallableWhenHidden` (`internal/mcp/tools_expand_test.go`).
+
+- **Core set** — `internal/mcp/toolgroups.go` `coreToolNames`. Membership is pinned to the
+  injected protocol string by a semantic-closure test: every tool named in `mcpInstructions`
+  must be core, and every core tool must be named there.
+- **Groups** — `toolGroups`, named after the `register*Tools` call sites in
+  `internal/mcp/server.go`. The groups are an exhaustive, duplicate-free partition of every
+  registered tool except `expand_tools`, enforced by
+  `TestToolGroups_PartitionAllRegisteredTools`.
+- **Session scope** — expansion is tracked per MCP session ID, in process memory, capped at
+  512 sessions with a 24 h TTL (the streamable-HTTP session-ID manager accepts any ID, so an
+  unbounded map would be a memory-exhaustion vector). Expanding in one session never affects
+  another.
+- **Fail open** — a connection with no client session (stdio before session registration,
+  in-process callers) gets the full list, exactly as before the feature.
+- **Kill switch** — `WBT_DISABLE_PROGRESSIVE_DISCLOSURE=1` (also `true`/`yes`/`on`) skips the
+  filter entirely; `tools/list` then returns all 92 tools. `expand_tools` stays registered
+  either way.
+
+---
+
 ## Permissions matrix
 
 | Tool | Domain | R/W | Significant? | Confirm gate? |
 |------|--------|-----|--------------|---------------|
 | `initial_instructions` | Onboarding | R | No | No |
+| `expand_tools` | Onboarding | R (session-local visibility only) | No | No |
 | `get_today_context` | Context | R | No | No |
 | `list_active_repos` | Context | R | No | No |
 | `sync_repo` | Context | W | Yes | No |
@@ -108,7 +140,36 @@ The MCP server (`wbt mcp` stdio, or the HTTP transport at `/mcp`) connects Claud
 ## Tool details
 
 ### `initial_instructions`
-Returns the full usage protocol. No args. Call after `get_today_context` at session start.
+Returns the full usage protocol — `mcpProtocolFull`, i.e. the injected `mcpInstructions`
+plus `mcpProtocolAppendix` (full routing table, trigger vocabularies, per-tool detail).
+No args. Call after `get_today_context` at session start.
+
+`mcpInstructions` (`internal/mcp/server.go`) is the budgeted subset injected into every
+`initialize` response: ≤ 2 000 runes, enforced by `TestMCPInstructions_WithinRuneBudget`.
+`mcpProtocolFull` is defined as a concatenation expression, never a second literal, so the
+two can never drift apart.
+
+---
+
+### `expand_tools`
+
+| Arg | Required | Values |
+|-----|----------|--------|
+| `group` | No | any group name from the catalogue, or `all` / `reset`. Omit for the catalogue. |
+
+- **No argument** — returns the group catalogue (name, tool count, member names) plus the
+  core tool list and this session's currently expanded groups. Changes nothing: no state
+  written, no notification sent.
+- **`group="<name>"`** — marks the group expanded for *this session* and returns the complete
+  `mcp.Tool` JSON, input schemas included, for every newly revealed tool. Idempotent.
+- **`group="all"`** — reveals every registered tool (the response then carries all 74
+  schemas, ~50 KB; that is the caller's explicit choice).
+- **`group="reset"`** — drops the session back to the core set.
+
+After a state-changing call the server sends `notifications/tools/list_changed` to that one
+client (never to all clients). The response is nevertheless self-sufficient: whether a client
+re-issues `tools/list` on that notification is client behaviour this server cannot guarantee,
+so the schemas ship in the tool response itself rather than relying on a re-fetch.
 
 ---
 

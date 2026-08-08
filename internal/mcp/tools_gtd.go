@@ -181,6 +181,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		uuidArgs("project_id"),
 	)
 
+	// Description budget: add_task is in the always-visible core tool set
+	// (toolgroups.go), so every param description here is paid by every client
+	// on every tools/list. Field semantics (priority-vs-importance, kind
+	// values, the assignee allowlist) moved to mcpProtocolAppendix ("Per-tool
+	// detail", tools_onboarding.go) — keep only the imperative trigger and the
+	// bare field meanings here.
 	s.addTool(
 		ms, mcp.NewTool(
 			"add_task",
@@ -201,16 +207,16 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			// tools_worksession.go's established pattern) still fails closed.
 			// noMaxLength("assignee") below keeps the seam from enforcing this
 			// hint server-side, preserving that established pattern.
-			mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(100)),
-			mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
-			mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low) — distinct from priority")),
-			mcp.WithString("context", mcp.Description("Free-form discussion background — why this task came up")),
+			mcp.WithString("assignee", mcp.Description("Owner: claude | codex | human"), mcp.MaxLength(100)),
+			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower runs first")),
+			mcp.WithNumber("importance", mcp.Description("Importance 1-3, 1=high")),
+			mcp.WithString("context", mcp.Description("Why this task came up")),
 			mcp.WithString("kind",
-				mcp.Description("Task kind: general, fix-pr, feature, refactor, research, or chore. Defaults to 'general'."),
+				mcp.Description("Task kind, default general"),
 				mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
-			mcp.WithString("branch_name", mcp.Description("Git branch name associated with this task (e.g. feature/my-feature)")),
-			mcp.WithString("pr_url", mcp.Description("GitHub PR URL for this task (e.g. https://github.com/org/repo/pull/123)")),
-			mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (required, e.g. 2026-12-31T00:00:00Z)")),
+			mcp.WithString("branch_name", mcp.Description("Git branch name")),
+			mcp.WithString("pr_url", mcp.Description("GitHub PR URL")),
+			mcp.WithString("due_date", mcp.Description("Required. RFC3339, e.g. 2026-12-31T00:00:00Z")),
 		), seam("add_task", s.handleAddTask),
 		uuidArgs("project_id"),
 		noMaxLength("assignee"),
@@ -248,27 +254,32 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		requiredMsg("area", "title and area are required"),
 	)
 
+	// Description budget: update_task is in the always-visible core tool set
+	// (toolgroups.go) — same rule as add_task above. Omitted-field semantics
+	// and the empty-string-clears convention moved to mcpProtocolAppendix
+	// ("Per-tool detail", tools_onboarding.go).
 	s.addTool(
 		ms, mcp.NewTool(
 			"update_task",
-			mcp.WithDescription("Updates one or more mutable fields of a task. All params except task_id are optional. "+
-				"Use complete_task to mark a task completed."),
+			mcp.WithDescription("Updates mutable fields of a task; all params except task_id are optional "+
+				"and omitted ones keep their value. MUST call with status=\"in_progress\" the moment work "+
+				"starts. Use complete_task, NEVER update_task, to mark a task completed."),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithString("status",
-				mcp.Description("New status: pending, in_progress, or cancelled"),
+				mcp.Description("pending | in_progress | cancelled"),
 				mcp.Enum("pending", "in_progress", "cancelled")),
-			mcp.WithString("title", mcp.Description("Updated task title"), mcp.MaxLength(2000)),
-			mcp.WithString("description", mcp.Description("Updated task details"), mcp.MaxLength(10000)),
-			mcp.WithNumber("priority", mcp.Description("Priority 1-5 (execution order, lower runs first)")),
-			mcp.WithNumber("importance", mcp.Description("Importance 1-3 (1=high, 2=med, 3=low)")),
-			mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(200)),
-			mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
-			mcp.WithString("context", mcp.Description("Free-form discussion background"), mcp.MaxLength(10000)),
+			mcp.WithString("title", mcp.Description("Updated title"), mcp.MaxLength(2000)),
+			mcp.WithString("description", mcp.Description("Updated details"), mcp.MaxLength(10000)),
+			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower runs first")),
+			mcp.WithNumber("importance", mcp.Description("Importance 1-3, 1=high")),
+			mcp.WithString("assignee", mcp.Description("Owner: claude | codex | human"), mcp.MaxLength(200)),
+			mcp.WithString("due_date", mcp.Description("RFC3339, e.g. 2026-12-31T00:00:00Z")),
+			mcp.WithString("context", mcp.Description("Discussion background"), mcp.MaxLength(10000)),
 			mcp.WithString("kind",
-				mcp.Description("Task kind: general, fix-pr, feature, refactor, research, or chore."),
+				mcp.Description("Task kind"),
 				mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
-			mcp.WithString("branch_name", mcp.Description("Git branch name (empty string clears the field)")),
-			mcp.WithString("pr_url", mcp.Description("GitHub PR URL (empty string clears the field)")),
+			mcp.WithString("branch_name", mcp.Description("Git branch name, empty clears")),
+			mcp.WithString("pr_url", mcp.Description("GitHub PR URL, empty clears")),
 		), seam("update_task", s.handleUpdateTask),
 		uuidArgs("task_id"),
 		// assignee's MaxLength(200) is advisory-only (see add_task's

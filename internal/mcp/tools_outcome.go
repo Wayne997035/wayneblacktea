@@ -75,48 +75,44 @@ const maxOutcomeLimit = 100
 
 // registerOutcomeTools registers the 4 outcome/evaluation MCP tools.
 func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
+	// Description budget: record_outcome is in the always-visible core tool
+	// set (toolgroups.go), so every byte here is paid by every client on every
+	// tools/list. The accumulation-cap / truncation-flag semantics that used
+	// to live in these param descriptions now live in mcpProtocolAppendix
+	// ("Per-tool detail", tools_onboarding.go), served on demand by
+	// initial_instructions. Keep the imperative MUST/NEVER wording here; move
+	// explanation and examples there.
 	ms.AddTool(mcp.NewTool(
 		"record_outcome",
 		mcp.WithDescription(
-			"Record the result of an executed task, decision, sprint, or project. "+
-				"Closes the Action→Result loop by capturing what actually happened. "+
-				"entity_type must be one of: task, decision, sprint, project. "+
-				"result must be one of: success, failure, partial, unknown, regressed. "+
-				"Optionally link to behavior rules via related_rule_ids so the behavior "+
-				"governance scheduler can update their confidence scores.",
+			"MUST call to close the Action→Result loop after an executed task, decision, "+
+				"sprint, or project. Captures what actually happened. See initial_instructions "+
+				"(Per-tool detail) for accumulation caps and truncation flags.",
 		),
 		mcp.WithString("entity_type",
-			mcp.Description("Type of entity: task | decision | sprint | project"),
+			mcp.Description("task | decision | sprint | project"),
 			mcp.Required()),
 		mcp.WithString("entity_id",
-			mcp.Description("UUID of the entity (task_id, decision_id, etc.)"),
+			mcp.Description("UUID of the entity"),
 			mcp.Required()),
 		mcp.WithString("result",
-			mcp.Description("Execution result: success | failure | partial | unknown | regressed"),
+			mcp.Description("success | failure | partial | unknown | regressed"),
 			mcp.Required()),
 		mcp.WithString("notes",
 			mcp.Description(fmt.Sprintf(
-				"Free-text notes about the outcome (max 500 runes per call). Notes ACCUMULATE "+
-					"across repeated calls against the same open draft (result=\"unknown\") up to a "+
-					"CUMULATIVE cap of %d runes total. Once the cumulative cap is reached, further "+
-					"calls' notes text is NOT written and the response includes notes_truncated=true "+
-					"(the write itself still succeeds — only the new text is dropped; existing notes "+
-					"are never lost).", outcome.MaxNotesTotalRunes,
+				"Notes, max 500 runes per call; accumulate to %d runes per draft, "+
+					"then notes_truncated=true.", outcome.MaxNotesTotalRunes,
 			))),
 		mcp.WithString("metrics_json",
-			mcp.Description("Optional JSON object with numeric metrics, e.g. {\"duration_ms\": 1200}")),
+			mcp.Description("JSON object of numeric metrics")),
 		mcp.WithString("related_rule_ids",
 			mcp.Description(fmt.Sprintf(
-				"Optional JSON array of behavior rule UUIDs to link, e.g. [\"uuid1\",\"uuid2\"] "+
-					"(max %d per call). Absent or empty = no linked rules. IDs ACCUMULATE across "+
-					"repeated calls against the same open draft up to a CUMULATIVE cap of %d total. "+
-					"Once the cumulative cap is reached, further calls' new IDs are NOT added and the "+
-					"response includes related_rule_ids_truncated=true (existing links are never "+
-					"lost).", maxRelatedRuleIDs, outcome.MaxRelatedRuleIDsTotal,
+				"JSON array of behavior rule UUIDs, max %d per call; accumulate to %d "+
+					"per draft, then related_rule_ids_truncated=true.",
+				maxRelatedRuleIDs, outcome.MaxRelatedRuleIDsTotal,
 			))),
 		mcp.WithString("session_id",
-			mcp.Description("Optional work session UUID this outcome was recorded from — "+
-				"best-effort linked back onto the session via SetOutcomeLink.")),
+			mcp.Description("Work session UUID to link this outcome back to")),
 	), s.handleRecordOutcome)
 
 	ms.AddTool(mcp.NewTool(

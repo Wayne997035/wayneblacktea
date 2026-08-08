@@ -16,41 +16,37 @@ import (
 )
 
 func (s *Server) registerPlanTools(ms *server.MCPServer) {
+	// Description budget: confirm_plan is in the always-visible core tool set
+	// (toolgroups.go). The atomicity carve-outs, response-shape contract and
+	// JSON field examples moved to mcpProtocolAppendix ("Per-tool detail",
+	// tools_onboarding.go); what stays here is only what changes behaviour at
+	// call time — the trigger, the "use this instead" rule, and the
+	// do-NOT-re-send rule, which is a correctness hazard, not commentary.
 	ms.AddTool(mcp.NewTool(
 		"confirm_plan",
 		mcp.WithDescription(
-			"CALL THIS when user confirms a plan ('可以','好','go','ok','明天做','start','開始'). "+
-				"Atomically creates GTD tasks for each phase AND logs each decision: on this "+
-				"server's two shipped backends (Postgres, SQLite) all phase tasks and decisions "+
-				"commit together or none do, in one transaction. Two exceptions are NOT covered "+
-				"by that guarantee: (1) a server run with neither backend wired falls back to a "+
-				"non-atomic sequential path (not a real deployment configuration); (2) the "+
-				"in_progress work_session linking the phase tasks is created separately, "+
-				"best-effort, AFTER the transaction commits -- a work-session failure never rolls "+
-				"back the already-committed tasks/decisions. ALWAYS check the response text/"+
-				"is_error rather than assuming success: a success response lists every "+
-				"task/decision actually created, and a failure response states exactly what was "+
-				"written. A failure whose message says OUTCOME UNKNOWN means the plan MAY already "+
-				"be stored -- do NOT re-send it; call list_tasks/list_decisions first and only "+
-				"retry what is genuinely missing. "+
-				"Use this INSTEAD of calling add_task + log_decision separately — it is more reliable.",
+			"CALL THIS when the user confirms a multi-phase plan ('可以','好','go','ok','開始'). "+
+				"Atomically creates one GTD task per phase AND logs each decision. Use this "+
+				"INSTEAD of add_task + log_decision separately. ALWAYS read the response instead "+
+				"of assuming success; on a failure saying OUTCOME UNKNOWN the plan MAY already be "+
+				"stored — do NOT re-send it, check list_tasks/list_decisions and retry only what "+
+				"is missing. See initial_instructions (Per-tool detail) for the field shapes and "+
+				"the two atomicity carve-outs.",
 		),
 		mcp.WithString(
 			"phases",
-			mcp.Description(`JSON array of phases as tasks. Each: {"title":"...","description":"...","priority":2}`),
+			mcp.Description(`JSON array of tasks: {"title","description","priority"}`),
 			mcp.Required(),
 		),
 		mcp.WithString(
 			"decisions",
-			mcp.Description(`JSON array of decisions. Each: {"title":"...","context":"...","decision":"...","rationale":"...","alternatives":""}`),
+			mcp.Description(`JSON array: {"title","context","decision","rationale","alternatives"}`),
 		),
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 		mcp.WithString("repo_name", mcp.Description("Repository name (optional)")),
 		mcp.WithString("assignee", mcp.Description(
-			"Canonical actor confirming/executing this plan (one of: claude, codex, human — or a recognized "+
-				"alias). Stamped onto any phase task that currently has no assignee when it flips to in_progress "+
-				"via the created work session. Optional, but a phase task with neither an existing assignee nor "+
-				"this value stays pending instead of flipping (P6.8 assignee gate).",
+			"Canonical actor: claude | codex | human (or a recognised alias). A phase task with "+
+				"no assignee and no value here stays pending instead of flipping to in_progress.",
 		)),
 	), s.handleConfirmPlan)
 }
