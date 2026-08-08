@@ -322,8 +322,43 @@ func buildPgxPoolConfig(dsn, appEnv, pgsslrootcert string) (*pgxpool.Config, err
 	// Guards match the param name with a trailing "=" so a longer param that
 	// shares the prefix (e.g. pool_max_conn_lifetime_jitter) does not suppress
 	// our cap.
+	//
+	// MaxConns = 8, raised from 4 (PR #156 security review M-2). The driver is
+	// mcp.fetchTodayContext: get_today_context fans out to 6 concurrent store
+	// lookups, so at 4 a SINGLE session-start request saturated the entire pool
+	// and every other HTTP handler and MCP tool queued behind it. 8 = that
+	// 6-way fan-out plus 2 spare, so one get_today_context can never fully
+	// starve a concurrent caller.
+	//
+	// Why not more: the connection budget is shared and much tighter than the
+	// "10 is the ceiling" figure this comment used to assert without checking.
+	// Measured against the live Aiven instance:
+	//
+	//	max_connections                 = 20
+	//	superuser_reserved_connections  =  3   -> 17 for ordinary roles
+	//	Aiven's own client backends     =  2   -> ~15 actually available to us
+	//
+	// A Railway redeploy briefly runs two server instances (railway.toml sets
+	// healthcheckPath with healthcheckTimeout=300, so the old instance is only
+	// torn down after the new one passes health checks — the overlap is real
+	// and can last minutes). The server's own worst case is therefore
+	// 2 × MaxConns, on top of the MaxConns=2 pools in cmd/wbt-context,
+	// cmd/doctor, cmd/wbt reembed and internal/guard.
+	//
+	// At MaxConns=8 that worst case is 16+2 = 18, which EXCEEDS the ~15 we
+	// actually have. During a redeploy the pool can therefore hit
+	// SQLSTATE 53300 (remaining connection slots are reserved) and every GTD
+	// write fails. This is a known, accepted risk — see the GTD task on the
+	// redeploy connection budget. Do not raise MaxConns further without
+	// re-measuring max_connections first; do not lower it below 6 either,
+	// since 6 is what the fan-out above needs.
+	//
+	// Two concurrent get_today_context calls (12 goroutines) still exceed the
+	// pool. Accepted: pgxpool queues on Acquire rather than erroring, and no
+	// goroutine holds two connections at once (WeeklyProgress runs its two
+	// queries serially), so the result is added latency, not deadlock.
 	if !strings.Contains(dsn, "pool_max_conns=") {
-		pgcfg.MaxConns = 4
+		pgcfg.MaxConns = 8
 	}
 	if !strings.Contains(dsn, "pool_min_conns=") {
 		pgcfg.MinConns = 0

@@ -171,6 +171,14 @@ type Server struct {
 	// nowFn is overridable in tests so deletion-token expiry can be tested
 	// deterministically without time.Sleep. Defaults to time.Now.
 	nowFn func() time.Time
+
+	// expansions tracks, per MCP session, which tool groups that session has
+	// revealed via expand_tools (tools_expand.go). Bounded + TTL'd. Accessed
+	// through toolExpansions(), which lazily builds the default store so a
+	// hand-constructed &Server{} in a test behaves like a New()'d one; a test
+	// may pre-set this field to inject a clock or a smaller cap.
+	expansions     *expansionStore
+	expansionsOnce sync.Once
 }
 
 // deletionToken records a pending delete_task confirmation. The token is
@@ -351,93 +359,69 @@ func (s *Server) WithMergedPRsStore(store mergedprs.Store) *Server {
 	return s
 }
 
-const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — USAGE PROTOCOL
+// mcpInstructions is the protocol text injected into every `initialize`
+// response (server.WithInstructions below). It is on the critical context
+// path: every connecting client pays for it before doing any work, so it is
+// budgeted to <= mcpInstructionsMaxRunes and carries only rules that change
+// behaviour. The exhaustive routing table, full trigger vocabularies and
+// per-tool guidance live in mcpProtocolAppendix (tools_onboarding.go) and are
+// served on demand by initial_instructions, which returns mcpProtocolFull =
+// this string + that appendix. Every tool named here MUST be in
+// coreToolNames and vice versa (toolgroups.go, semantic-closure invariant).
+const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — CORE PROTOCOL
 
-## Session Start
-Call get_today_context first. If there is a pending handoff, resolve_handoff after reading it.
-pulled_forward in the response holds important (importance=1) tasks that aren't due yet —
-treat these as real candidate work for today, not just FYI noise.
+tools/list = core set only; hidden tools stay callable by name, and
+expand_tools reveals more. Call initial_instructions once per session for the
+full routing table.
 
-## Architecture / past decisions
-Call list_decisions with the relevant repo_name before answering. Always verify in code too.
+## Session start
+get_today_context (pulled_forward = important not-yet-due tasks = real
+candidate work, not FYI) -> resolve_handoff if one is pending ->
+get_project_arch; if last_commit_sha != HEAD, re-read changed files and
+upsert_project_arch.
 
-## Tool routing
+## Mandatory
+- Architecture / past decisions -> list_decisions(repo_name) BEFORE answering;
+  verify in code too.
+- Dispatch an agent OR start Lead-direct work -> MUST update_task(task_id,
+  status="in_progress") for EVERY task worked, unprompted.
+- Build passes / PR merged / commit pushed -> MUST complete_task(task_id,
+  artifact="<PR URL or SHA>") now.
+- NEVER ask "should I update the GTD?" — just call it; a missing call is a bug.
+- complete_task seeds a draft outcome (result="unknown"); upgrade via
+  evaluate_outcome / record_outcome when the real result is known.
+- Read 3+ internal/ files of a repo -> MUST upsert_project_arch (slug=repo,
+  summary, file_map=path->purpose).
+- Auto-log + Stop-hook snapshots are a safety net, NOT a replacement — still
+  call the tools.
+- NEVER store these rules in agent memory; they ship with the binary. Change
+  by PR to internal/mcp/server.go.
 
-| Situation | Tool |
-|-----------|------|
-| Multi-phase plan confirmed ("好"/"go"/"衝"/"開始"/option pick) | confirm_plan — phases+decisions atomic; work_session separate best-effort |
-| User confirms a single decision | log_decision BEFORE implementation |
-| **Start a task** (dispatch agent OR begin Lead-direct) | **update_task → in_progress immediately, no user reminder** |
-| Build passes / PR merged / task done | complete_task with artifact URL |
-| "收工" / "下班" / "later" / "good night" | set_session_handoff (Stop hook also fires; call this too for richer context) |
-| Scope/priority changes mid-session | log_decision + update_task + set_session_handoff |
-| New follow-up discovered | add_task immediately |
-| Question about saved knowledge | search_knowledge first |
-| "未來想做" / "之後再說" / "現在還不能" / "等 X 完成才能做" / "記一下以後" | add_vision_item immediately |
-| "Before complex task" / finding relevant patterns | list_playbooks — returns procedural rules from past decisions |
-| Recording a new how-to / reusable approach from this session | add_procedural — saves title, when_to_use, approach_md |
-| Retrieving how-to / procedural approach | query_procedural with keywords |
-| Marking a procedural memory as successfully used | mark_procedural_used with id |
-| Cross-type memory search (episodic + semantic + procedural) | recall with query |
-
-## MANDATORY GTD DISCIPLINE (enforced on every task)
-
-Before dispatching any engineer/agent OR starting any Lead-direct implementation:
-→ MUST call update_task(task_id, status="in_progress") for EVERY task being worked
-
-When a task is done (build passes, PR merged, or Lead-direct commit pushed):
-→ MUST call complete_task(task_id, artifact="<PR URL or commit SHA>") immediately
-
-NEVER ask "should I update the GTD?" — just do it. Missing these calls = process bug.
-Triggers:
-- "dispatch engineer" → update_task in_progress first
-- "PR merged" → complete_task with PR URL
-- "commit SHA" → complete_task with SHA
-- "task check passes" → complete_task if this was the acceptance criterion
-
-## confirm_plan triggers
-"可以" "好" "OK" "yes" "go" "對" "衝" "開工" "開始" "執行" "按這個" — or any single letter/number picking from a list the assistant just proposed.
-After confirm_plan fires: assess each task immediately — Lead-direct tasks start now,
-complex tasks dispatch engineer now. Both in parallel. **At dispatch (or Lead-direct start),
-MUST call update_task → in_progress for every task being worked. No user prompt needed.**
-
-## update_task triggers (in_progress)
-Mandatory the moment work begins on a task — dispatch engineer/codex/frontend-engineer,
-or Lead-direct execution starts. For multi-phase plans just created via confirm_plan,
-mark every phase task being worked in parallel as in_progress. Skipping this is a process
-bug; user should not have to remind. Pair with complete_task at finish.
-
-## log_decision scope
-Architecture, API design, deployment config, third-party service choice, scope pivot,
-mid-session course correction, rule-source changes (CLAUDE.md / mcpInstructions / .mcp.json).
-
-## complete_task triggers
-"好了" "搞定" "done" "ship it" "looks good" "讚" "漂亮" — only when a task is currently in_progress and the assistant just reported completion.
-complete_task auto-seeds a draft outcome (result="unknown") — upgrade it with evaluate_outcome/record_outcome once real context is known.
-
-## Note on auto-logging
-High-signal tools (complete_task, confirm_plan, add_task, log_decision, set_session_handoff)
-are auto-logged server-side. Stop hook auto-creates a session snapshot. These tools are still
-required — auto-log is a safety net, not a replacement.
-
-## Architecture snapshots
-After reading 3+ internal/ files from a project, MUST call upsert_project_arch to store the
-architecture snapshot (slug = repo name, summary = one-paragraph description, file_map = path→purpose).
-At session start, call get_project_arch first — if stale (last_commit_sha differs from git rev-parse HEAD),
-re-read changed files and call upsert_project_arch again.
-
-## Behavior rules live here, not in private memory
-Do not store wayneblacktea protocol rules in agent memory. Rules ship with the binary so
-all MCP clients get identical behavior. To change a rule, propose a PR to internal/mcp/server.go.`
+## Routing
+- Multi-phase plan confirmed ("好"/"go"/"開始" or any equivalent affirmative) ->
+  confirm_plan (phases+decisions atomic; use instead of add_task +
+  log_decision).
+- One decision confirmed -> log_decision BEFORE implementation. Scope:
+  architecture, API, deploy config, 3rd-party choice, scope pivot, course
+  correction, rule-source (CLAUDE.md / mcpInstructions / .mcp.json).
+- New follow-up -> add_task immediately (list_tasks first if it may exist).
+- "未來想做"/"之後再說" or equivalent later-intent -> add_vision_item.
+- "收工"/"下班" or equivalent sign-off -> set_session_handoff.
+- Saved-knowledge question -> search_knowledge first.`
 
 // MCPServer returns a configured MCP server with all tools registered.
 //
 // The watchdog middleware records every tool invocation in process memory so
 // the system_health tool can surface "stuck" patterns (Claude updated a task
 // to in_progress but never called complete_task, etc.).
+// Progressive tool disclosure (tools_expand.go) is installed here as a
+// tools/list filter. mcp-go applies filters only in handleListTools; tool
+// CALLS bypass them entirely, so a filtered-out tool stays invocable by name —
+// that asymmetry is the feature's safety net, and TestAllTools_CallableWhenHidden
+// pins it. Both transports (HTTP at cmd/server/main.go and stdio via
+// internal/mcprunner) go through this one constructor, so both get it.
 func (s *Server) MCPServer() *server.MCPServer {
-	ms := server.NewMCPServer(
-		"wayneblacktea", "0.1.0",
+	opts := []server.ServerOption{
 		server.WithInstructions(mcpInstructions),
 		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 		server.WithToolHandlerMiddleware(s.autoLogMiddleware()),
@@ -451,8 +435,16 @@ func (s *Server) MCPServer() *server.MCPServer {
 		// listChanged=false — static read-only resources/prompts only).
 		server.WithResourceCapabilities(false, false),
 		server.WithPromptCapabilities(false),
-	)
+	}
+	// Kill switch: WBT_DISABLE_PROGRESSIVE_DISCLOSURE=1 skips the filter
+	// entirely, so tools/list returns every tool exactly as it did before the
+	// feature. expand_tools stays registered either way.
+	if progressiveDisclosureEnabled() {
+		opts = append(opts, server.WithToolFilter(s.filterToolsForSession))
+	}
+	ms := server.NewMCPServer("wayneblacktea", "0.1.0", opts...)
 	s.registerOnboardingTools(ms)
+	s.registerExpandTools(ms)
 	s.registerContextTools(ms)
 	s.registerGTDTools(ms)
 	s.registerDecisionTools(ms)

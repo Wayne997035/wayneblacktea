@@ -19,7 +19,8 @@ const (
 )
 
 func (s *Server) registerArchTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("upsert_project_arch",
+	ms.AddTool(mcp.NewTool(
+		"upsert_project_arch",
 		mcp.WithDescription(
 			"Store or refresh the architecture snapshot for a project. "+
 				"Call after reading 3+ internal/ files from a project. "+
@@ -34,7 +35,8 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 		mcp.WithString("last_commit_sha", mcp.Description("Current git HEAD SHA (run git rev-parse HEAD)")),
 	), s.handleUpsertProjectArch)
 
-	ms.AddTool(mcp.NewTool("get_project_arch",
+	ms.AddTool(mcp.NewTool(
+		"get_project_arch",
 		mcp.WithDescription(
 			"Retrieve the stored architecture snapshot for a project. "+
 				"Returns the snapshot with a stale field; compare last_commit_sha "+
@@ -111,5 +113,38 @@ func (s *Server) handleGetProjectArch(ctx context.Context, req mcp.CallToolReque
 	// snap.last_commit_sha with `git rev-parse HEAD` themselves.
 	snap.Stale = false
 
-	return jsonText(snap)
+	return jsonText(wrapUntrustedArchSnapshot(snap))
+}
+
+// wrapUntrustedArchSnapshot returns a copy of snap with its untrusted free
+// text made safe to read back into an LLM context:
+//
+//   - Summary is neutralised against forged boundary markers AND fenced. It is
+//     an assistant's prose description of a repository, so a payload planted
+//     in any file that assistant read (a README, a vendored dependency, an
+//     outside contributor's PR) can reach it through upsert_project_arch,
+//     which stores the text with no injection filtering.
+//   - FileMap keys and values are neutralised but NOT fenced: they are short
+//     path -> purpose pairs, and fencing each of up to 128 KB worth of entries
+//     would bury the map in markers. Stripping the marker text is what stops
+//     one of them faking a boundary for the fenced Summary above.
+//
+// The core protocol asks for get_project_arch at session start, so this is on
+// the automatic path — the same reason the identically-worded fence existed
+// while the snapshot was embedded in get_today_context (PR #156 reviewer M1 /
+// security review M-3). A nil snapshot is returned unchanged.
+func wrapUntrustedArchSnapshot(snap *arch.Snapshot) *arch.Snapshot {
+	if snap == nil {
+		return nil
+	}
+	out := *snap
+	out.Summary = fenceArchSummary(snap.Summary)
+	if len(snap.FileMap) > 0 {
+		fileMap := make(map[string]string, len(snap.FileMap))
+		for path, purpose := range snap.FileMap {
+			fileMap[neutralizeBoundaryMarkers(path)] = neutralizeBoundaryMarkers(purpose)
+		}
+		out.FileMap = fileMap
+	}
+	return &out
 }
