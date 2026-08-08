@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -65,10 +66,14 @@ func TestMCPInstructions_WithinRuneBudget(t *testing.T) {
 	}
 }
 
-// TestMCPInstructions_PreservesDisciplines pins the 15 behavioural rules the
+// TestMCPInstructions_PreservesDisciplines pins the 17 behavioural rules the
 // protocol text existed to enforce. Wording may change; a rule disappearing
 // may not. Each case asserts every listed fragment is present, so a rewrite
 // that quietly drops "MUST" or drops a tool from a rule fails here.
+//
+// The count is asserted below, not just stated here: a comment claiming "15"
+// while the table held 17 is what shipped in PR #156 and made the third
+// review army's count disagree with the report's.
 func TestMCPInstructions_PreservesDisciplines(t *testing.T) {
 	cases := []struct {
 		discipline string
@@ -113,6 +118,11 @@ func TestMCPInstructions_PreservesDisciplines(t *testing.T) {
 		{"knowledge questions search first", []string{"search_knowledge"}},
 		{"full protocol is one call away", []string{"initial_instructions", "expand_tools"}},
 	}
+	const wantDisciplines = 17
+	if len(cases) != wantDisciplines {
+		t.Errorf("discipline table has %d cases, the doc comment says %d — "+
+			"update both together", len(cases), wantDisciplines)
+	}
 	for _, tc := range cases {
 		t.Run(tc.discipline, func(t *testing.T) {
 			for _, frag := range tc.fragments {
@@ -146,6 +156,60 @@ func TestCoreToolSet_MatchesInstructions(t *testing.T) {
 		if mentionsTool(mcpInstructions, name) {
 			t.Errorf("mcpInstructions names %q but it is not in coreToolNames — "+
 				"the client cannot see it in tools/list until expand_tools runs", name)
+		}
+	}
+}
+
+// sentenceBoundary splits a tool description into sentences: a terminator
+// followed by whitespace or end of string. Rough by design — the invariant
+// below only needs "is the pointer to expand_tools next to the tool it is
+// pointing at", not linguistic accuracy.
+var sentenceBoundary = regexp.MustCompile(`[.!?](?:\s|$)`)
+
+// TestCoreToolDescriptions_RouteHiddenToolsThroughExpandTools is the second
+// half of the semantic-closure invariant TestCoreToolSet_MatchesInstructions
+// starts. That test covers the protocol text; this one covers the DESCRIPTIONS
+// of the core tools, which are advertised in exactly the same breath.
+//
+// The rule: a core tool's description may name a non-core tool only in a
+// sentence that also names expand_tools. A new session's tools/list carries
+// the core set only, so "call get_task(task_id) for the full text" — the
+// wording PR #156 shipped — sends the model after a tool that is not in the
+// catalogue it was handed, with no hint that a call is needed to reveal it.
+// Server-side routing still accepts hidden tools by name
+// (TestAllTools_CallableWhenHidden), but that proves the server would answer,
+// not that a client will ask.
+func TestCoreToolDescriptions_RouteHiddenToolsThroughExpandTools(t *testing.T) {
+	_, ms := newTestMCPServer(t)
+	registered := ms.ListTools()
+
+	hidden := make([]string, 0, len(registered))
+	for name := range registered {
+		if !coreToolSet[name] {
+			hidden = append(hidden, name)
+		}
+	}
+	sort.Strings(hidden)
+	if len(hidden) == 0 {
+		t.Fatal("no non-core tools registered — this invariant would be vacuous")
+	}
+
+	for _, name := range coreToolNames {
+		st, ok := registered[name]
+		if !ok {
+			t.Fatalf("core tool %q is not registered on the server", name)
+		}
+		for _, sentence := range sentenceBoundary.Split(st.Tool.Description, -1) {
+			if mentionsTool(sentence, expandToolsName) {
+				continue
+			}
+			for _, other := range hidden {
+				if mentionsTool(sentence, other) {
+					t.Errorf("core tool %q describes %q, which a fresh session cannot see in "+
+						"tools/list, without naming %s in the same sentence: %q",
+						name, other, expandToolsName, strings.TrimSpace(sentence))
+				}
+			}
 		}
 	}
 }

@@ -322,8 +322,29 @@ func buildPgxPoolConfig(dsn, appEnv, pgsslrootcert string) (*pgxpool.Config, err
 	// Guards match the param name with a trailing "=" so a longer param that
 	// shares the prefix (e.g. pool_max_conn_lifetime_jitter) does not suppress
 	// our cap.
+	//
+	// MaxConns = 8, raised from 4 (PR #156 security review M-2). The driver is
+	// mcp.fetchTodayContext: get_today_context fans out to 6 concurrent store
+	// lookups, so at 4 a SINGLE session-start request saturated the entire pool
+	// and every other HTTP handler and MCP tool queued behind it. 8 = that
+	// 6-way fan-out plus 2 spare, so one get_today_context can never fully
+	// starve a concurrent caller.
+	//
+	// Why not more: 10 is the hard ceiling for this deployment's connection
+	// budget, and that budget is shared. A Railway redeploy briefly runs two
+	// server instances, so the server's own worst case is 2 × MaxConns, on top
+	// of the MaxConns=2 pools in cmd/wbt-context, cmd/doctor, cmd/wbt reembed
+	// and internal/guard. This raise is NOT free at that scale — the redeploy
+	// worst case goes from 8+2 to 16+2 — which is exactly why it stops at the
+	// smallest value that covers the fan-out instead of going to the ceiling
+	// (10 would make it 20+2).
+	//
+	// Two concurrent get_today_context calls (12 goroutines) still exceed the
+	// pool. Accepted: pgxpool queues on Acquire rather than erroring, and no
+	// goroutine holds two connections at once (WeeklyProgress runs its two
+	// queries serially), so the result is added latency, not deadlock.
 	if !strings.Contains(dsn, "pool_max_conns=") {
-		pgcfg.MaxConns = 4
+		pgcfg.MaxConns = 8
 	}
 	if !strings.Contains(dsn, "pool_min_conns=") {
 		pgcfg.MinConns = 0

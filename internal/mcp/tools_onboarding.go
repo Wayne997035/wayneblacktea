@@ -14,8 +14,8 @@ import (
 // initial_instructions return its own literal copy of the protocol; two
 // literals holding "the same" rules is a guaranteed drift bug the moment one
 // side is edited. Deriving the full text from mcpInstructions makes drift
-// structurally impossible, and TestInitialInstructions_DerivesFromInstructions
-// pins the derivation.
+// structurally impossible, and TestHandleInitialInstructions_ReturnsProtocolFull
+// pins the derivation (prefix, suffix and strictly-greater length).
 const mcpProtocolFull = mcpInstructions + "\n\n" + mcpProtocolAppendix
 
 // mcpProtocolAppendix holds the on-demand half of the protocol: the routing

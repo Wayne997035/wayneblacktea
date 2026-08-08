@@ -1295,11 +1295,11 @@ func TestHandleGetWorkSessionTrace_WrapsVerificationOutputExcerptWithUntrustedBo
 	}
 }
 
-// TestNeutralizeEvidenceBoundaryMarkers table-drives the marker-neutralisation
+// TestNeutralizeBoundaryMarkers table-drives the marker-neutralisation
 // helper directly: normal content is untouched, and any occurrence of the
 // bare start or end marker text (however it appears in adversarial content)
 // is replaced with the inert placeholder.
-func TestNeutralizeEvidenceBoundaryMarkers(t *testing.T) {
+func TestNeutralizeBoundaryMarkers(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -1328,7 +1328,7 @@ func TestNeutralizeEvidenceBoundaryMarkers(t *testing.T) {
 		{
 			// Security round3 F1: verification_output_excerpt is wrapped in a
 			// DIFFERENT fence label ("VERIFICATION OUTPUT") than evidence's
-			// "EVIDENCE OUTPUT", but neutralizeEvidenceBoundaryMarkers must
+			// "EVIDENCE OUTPUT", but neutralizeBoundaryMarkers must
 			// strip BOTH marker pairs from every field it processes — since
 			// session and evidence render in the same trace response, a
 			// forged EVIDENCE marker planted inside verification_output_excerpt
@@ -1345,7 +1345,7 @@ func TestNeutralizeEvidenceBoundaryMarkers(t *testing.T) {
 		},
 		{
 			// Security round4: session summary is the newest fence label —
-			// neutralizeEvidenceBoundaryMarkers' target set must include it
+			// neutralizeBoundaryMarkers' target set must include it
 			// too, for the same cross-field reason evidence/verification
 			// markers are both neutralised regardless of which field they
 			// appear in (see the test case above).
@@ -1361,9 +1361,9 @@ func TestNeutralizeEvidenceBoundaryMarkers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := neutralizeEvidenceBoundaryMarkers(tt.input)
+			got := neutralizeBoundaryMarkers(tt.input)
 			if got != tt.want {
-				t.Errorf("neutralizeEvidenceBoundaryMarkers(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("neutralizeBoundaryMarkers(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
