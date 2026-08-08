@@ -816,19 +816,55 @@ func TestHandleStartWork_NilContextAssembler_NonFatal(t *testing.T) {
 
 // ---- start_work: branch_name ----
 
+// TestHandleStartWork_RejectsOversizedBranchName covers start_work's
+// branch_name length guard after it was migrated from a standalone 200-byte
+// check to validator.ValidateBranchName's shared 255-rune cap (PR #155
+// security round-2 m-1: start_work was the one branch_name writer sprint 8-7
+// gap E left un-migrated). 256 ASCII runes is one past the new boundary — the
+// error message now comes from validator.ValidateBranchName, not a
+// standalone "branch_name exceeds N character limit" string.
 func TestHandleStartWork_RejectsOversizedBranchName(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	r := callStartWork(t, s, map[string]any{
 		"repo_name":   "branch-size-repo",
 		"title":       "t",
 		"goal":        "g",
-		"branch_name": strings.Repeat("b", 201),
+		"branch_name": strings.Repeat("b", 256),
 	})
 	if !r.IsError {
 		t.Fatal("expected error for oversized branch_name")
 	}
-	if !strings.Contains(resultText(r), "branch_name exceeds") {
+	if !strings.Contains(resultText(r), "branch_name must not exceed 255 characters") {
 		t.Errorf("error should mention branch_name limit, got: %s", resultText(r))
+	}
+}
+
+// TestHandleStartWork_AcceptsCJKBranchNameOnceByteRejected is the concrete
+// regression case for gap E's third writer: a 67-character CJK branch name is
+// 201 bytes in UTF-8 (3 bytes/rune) — over the OLD standalone 200-byte check
+// this test used to exercise, but well under the new 255-RUNE cap shared with
+// add_task/update_task (tools_gtd.go) and the HTTP handler (gtd_handler.go).
+// Before the m-1 fix this same branch_name was accepted by add_task but
+// rejected by start_work, leaving the same branch unrecordable on one of the
+// two paths and breaking reconcile.go's branch_name-based matching.
+func TestHandleStartWork_AcceptsCJKBranchNameOnceByteRejected(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	cjk67 := strings.Repeat("漢", 67)
+	if got := len([]byte(cjk67)); got != 201 {
+		t.Fatalf("test fixture assumption broken: len(bytes)=%d, want 201", got)
+	}
+	if got := len([]rune(cjk67)); got != 67 {
+		t.Fatalf("test fixture assumption broken: len(runes)=%d, want 67", got)
+	}
+
+	r := callStartWork(t, s, map[string]any{
+		"repo_name":   "branch-cjk-repo",
+		"title":       "t",
+		"goal":        "g",
+		"branch_name": cjk67,
+	})
+	if r.IsError {
+		t.Fatalf("expected 67-rune/201-byte CJK branch_name to be accepted, got error: %s", resultText(r))
 	}
 }
 

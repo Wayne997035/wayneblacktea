@@ -232,6 +232,30 @@ func TestHandleListDecisions_IncludeAutoNonBoolDefaultsFalse(t *testing.T) {
 	}
 }
 
+// TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull verifies the
+// nil-slice-vs-JSON-null gap: when the store returns a nil []db.Decision (0
+// rows — see decision.Store.List / sqlite DecisionStore.List, both leave the
+// slice nil until a row is appended), handleListDecisions must serialize an
+// empty JSON array, not the literal 4-byte text "null".
+//
+// json.Unmarshal([]byte("null"), &slice) leaves slice nil with len==0 — the
+// exact same shape as unmarshaling "[]" — so asserting on len(out) after
+// unmarshal (as TestHandleListDecisions_NonexistentProjectReturnsEmpty does)
+// cannot distinguish the two. This test asserts the raw text instead.
+func TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull(t *testing.T) {
+	dec := &trackingDecisionStore{listResult: nil}
+	s := &Server{decision: dec}
+
+	r := callListDecisions(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(r))
+	}
+	raw := resultText(r)
+	if raw != "[]" {
+		t.Errorf("raw body = %q, want exactly %q (nil slice must not serialize to JSON null)", raw, "[]")
+	}
+}
+
 // TestHandleListDecisions_IncludeAutoTrue verifies the truth table row
 // "include_auto=true -> returns manual + auto" at the ListParams-plumbing
 // level (actual filtering is a store-layer concern, covered by store tests).

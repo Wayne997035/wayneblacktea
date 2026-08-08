@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/redact"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -104,22 +105,14 @@ func RedactAndCapOutputExcerpt(s string) string {
 // so a prompt-injected agent cannot smuggle a second shell instruction via an
 // embedded newline.
 //
-// This mirrors internal/mcp/noise_filter.go:checkCommandField exactly, but is
-// duplicated here (not imported) because internal/worksession must not
-// depend on internal/mcp (reverse dependency).
+// Delegates to validator.CheckCommandField -- the single shared
+// implementation with internal/mcp/noise_filter.go:checkCommandField -- so
+// the worksession store and the MCP/HTTP entry points can never drift
+// (sprint 8-7 gap E follow-up: this used to be a hand-duplicated 14-line
+// copy; internal/validator does not import internal/worksession, so no
+// import cycle).
 func CheckControlChars(name, value string) string {
-	for _, r := range value {
-		if r == '\n' || r == '\r' || r == 0x00 {
-			return name + " must not contain newline, carriage return, or null byte"
-		}
-		if r < 0x20 && r != '\t' {
-			return name + " must not contain ASCII control characters"
-		}
-		if r == ' ' || r == ' ' {
-			return name + " must not contain Unicode line/paragraph separator"
-		}
-	}
-	return ""
+	return validator.CheckCommandField(name, value)
 }
 
 // ResolveCompletedTaskIDs computes the final set of task IDs a Finish call

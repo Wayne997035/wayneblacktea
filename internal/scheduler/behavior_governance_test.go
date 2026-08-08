@@ -400,6 +400,66 @@ func TestRunBehaviorGovernance_SupersededOutsideWindow_SuccessorAloneVotes(t *te
 	}
 }
 
+// TestRunBehaviorGovernance_SupersededOutcome_UnionedRelatedRuleIDs_AllVoteOnce
+// is GTD 35d42906's governance-layer regression: internal/outcome/lifecycle.go's
+// supersede branch now UNIONS the superseded row's RelatedRuleIDs into the
+// new row instead of carrying this call's delta-only IDs verbatim. Row1
+// (terminal, superseded, RelatedRuleIDs={A,B}) is filtered out of voting
+// entirely by this package's own supersession filter, but its rule links
+// now also live on Row2 (SupersedesID=Row1.ID, RelatedRuleIDs={A,B,C} — the
+// shape lifecycle.go now produces) — so A, B, and C must each cast exactly
+// one vote from Row2, and Row1 must cast zero. Built directly via
+// stubOutcomeStore/stubBehaviorRuleStore fixtures, mirroring
+// TestRunBehaviorGovernance_PerRuleCallCount and
+// TestRunBehaviorGovernance_SupersededOutcome_VotesOnce's fixture shape —
+// this test does not call lifecycle.go itself (that package's own tests
+// cover the union); it only proves governance correctly consumes the union's
+// output.
+func TestRunBehaviorGovernance_SupersededOutcome_UnionedRelatedRuleIDs_AllVoteOnce(t *testing.T) {
+	ruleA, ruleB, ruleC := uuid.New(), uuid.New(), uuid.New()
+	row1ID := uuid.New()
+
+	row1 := outcome.Outcome{
+		ID:             row1ID,
+		Result:         "failure",
+		RelatedRuleIDs: []uuid.UUID{ruleA, ruleB},
+		CreatedAt:      time.Now().Add(-2 * time.Hour),
+	}
+	row2 := outcome.Outcome{
+		ID:             uuid.New(),
+		Result:         outcomeResultSuccess,
+		RelatedRuleIDs: []uuid.UUID{ruleA, ruleB, ruleC},
+		SupersedesID:   &row1ID,
+		CreatedAt:      time.Now().Add(-1 * time.Hour),
+	}
+
+	brStore := &stubBehaviorRuleStore{}
+	deps := governanceDeps{
+		outcomeStore:      &stubOutcomeStore{recentOutcomes: []outcome.Outcome{row1, row2}},
+		behaviorRuleStore: brStore,
+		workspaceID:       nil,
+	}
+	runBehaviorGovernance(deps)
+
+	if len(brStore.applyOutcomeCalls) != 3 {
+		t.Fatalf("expected exactly 3 ApplyOutcome calls (A, B, C each once from Row2), got %d: %+v",
+			len(brStore.applyOutcomeCalls), brStore.applyOutcomeCalls)
+	}
+	gotRules := make(map[uuid.UUID]int, 3)
+	for _, call := range brStore.applyOutcomeCalls {
+		gotRules[call.ruleID]++
+		if call.outcome != outcomeResultSuccess {
+			t.Errorf("call for rule %s: outcome = %q, want %q (must come from Row2, not Row1)",
+				call.ruleID, call.outcome, outcomeResultSuccess)
+		}
+	}
+	for _, id := range []uuid.UUID{ruleA, ruleB, ruleC} {
+		if gotRules[id] != 1 {
+			t.Errorf("rule %s voted %d times, want exactly 1", id, gotRules[id])
+		}
+	}
+}
+
 // TestRunBehaviorGovernance_ListRecentError verifies graceful handling of
 // ListRecentOutcomes error (logs warn, returns without panic).
 func TestRunBehaviorGovernance_ListRecentError(t *testing.T) {

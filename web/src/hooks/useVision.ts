@@ -8,6 +8,8 @@ export function useVision(status?: VisionStatus) {
   return useQuery<VisionItemSummary[]>({
     queryKey: ['vision', status ?? 'all'],
     queryFn: () => apiFetch<VisionItemSummary[]>(`/api/vision${params}`),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 

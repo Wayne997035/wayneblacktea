@@ -167,7 +167,16 @@ func (s *LearningStore) DueReviews(ctx context.Context, limit int) ([]learning.D
 		r.ReviewCount = reviewCount
 		out = append(out, r)
 	}
-	return out, errWrap("DueReviews iter", rows.Err())
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("DueReviews iter", err)
+	}
+	if out == nil {
+		// list endpoints MUST return [] not null (a nil slice marshals to JSON
+		// null); matches PG's make([]DueReview, 0, len(rows)) in
+		// internal/learning/store.go.
+		out = []learning.DueReview{}
+	}
+	return out, nil
 }
 
 // SubmitReview applies FSRS and updates the review schedule.

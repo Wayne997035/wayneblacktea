@@ -6,6 +6,8 @@ export function useProjects() {
   return useQuery<Project[]>({
     queryKey: ['projects'],
     queryFn: () => apiFetch<Project[]>('/api/projects'),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 

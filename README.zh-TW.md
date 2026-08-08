@@ -88,7 +88,7 @@ Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.m
 # 加任務
 > add_task "實作登入流程" --project my-project
 
-# 原子確認多步計畫
+# 原子確認多步計畫(任務＋決策同一交易;work_session 另為 best-effort)
 > confirm_plan {phases: [...], decisions: [...]}
 
 # 加一條知識筆記（支援關鍵字 + semantic vector 搜尋）

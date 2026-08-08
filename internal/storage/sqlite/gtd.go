@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -290,6 +291,9 @@ func (s *GTDStore) ProjectsByRepoName(ctx context.Context, repoName string) ([]d
 // repo_name is persisted when non-empty; empty string stores NULL (parity with
 // migration 000037 which added the nullable TEXT column).
 func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams) (*db.Project, error) {
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("creating project %q: %w", p.Name, gtd.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	area := p.Area
 	if area == "" {
@@ -427,7 +431,16 @@ func (s *GTDStore) CreateGoalTx(ctx context.Context, tx *sql.Tx, p gtd.CreateGoa
 // CreateProjectTx inserts a new project within the provided *sql.Tx.
 // It is the transactional counterpart of CreateProject and is used by the
 // confirm_proposal accept path for atomic cross-store writes.
+//
+// repo_name validation was previously missing here even though the sibling
+// non-Tx CreateProject (above) validates it and the Postgres equivalent
+// (internal/gtd/store.go's Store.CreateProject, reused unmodified via
+// WithTx(tx)) validates it too — a SQLite-only backend asymmetry in the
+// confirm_proposal materialisation path (sprint 8-7 gap G).
 func (s *GTDStore) CreateProjectTx(ctx context.Context, tx *sql.Tx, p gtd.CreateProjectParams) (uuid.UUID, error) {
+	if !validator.IsValidRepoName(p.RepoName) {
+		return uuid.UUID{}, fmt.Errorf("creating project %q: %w", p.Name, gtd.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	area := p.Area
 	if area == "" {
@@ -777,6 +790,78 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	}
 	return s.taskByID(ctx, id)
 }
+
+// CreateTaskTx inserts a new task within the provided *sql.Tx. It is the
+// transactional counterpart of CreateTask — mirroring CreateGoalTx /
+// CreateProjectTx / LearningStore.CreateConceptTx — and is used by
+// confirm_plan's SQLite atomic path so phase tasks and decisions commit or
+// roll back together in one transaction. Returns the freshly-generated ID
+// only (not the full row), matching the CreateGoalTx/CreateProjectTx return
+// shape: callers that already know the input fields (confirm_plan does —
+// it just supplied them) don't need a post-commit re-read to get them back.
+func (s *GTDStore) CreateTaskTx(ctx context.Context, tx *sql.Tx, p gtd.CreateTaskParams) (uuid.UUID, error) {
+	id := uuid.New()
+	priority := p.Priority
+	if priority == 0 {
+		priority = 3
+	}
+	var importance any
+	if p.Importance != nil {
+		importance = int(*p.Importance)
+	}
+	var dueVal any
+	if p.DueDate != nil {
+		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
+	}
+	kind := p.Kind
+	if kind == "" {
+		kind = defaultTaskKind
+	}
+
+	// Domain-layer gate (P6.7) — same as CreateTask above.
+	assignee := p.Assignee
+	if strings.TrimSpace(assignee) != "" {
+		normalized, nerr := gtd.NormalizeActor(assignee)
+		if nerr != nil {
+			return uuid.UUID{}, fmt.Errorf("creating task %q: %w", p.Title, nerr)
+		}
+		assignee = normalized
+	}
+
+	// commit_shas stored as JSON TEXT in SQLite; always empty on creation.
+	const commitSHAsJSON = "[]"
+	const q = `INSERT INTO tasks
+		(id, workspace_id, project_id, title, description, priority,
+		 importance, context, assignee, due_date, kind,
+		 branch_name, pr_url, commit_shas, created_at, updated_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)`
+	now := nowRFC3339()
+	var branchVal any
+	if p.BranchName != nil && *p.BranchName != "" {
+		branchVal = *p.BranchName
+	}
+	var prURLVal any
+	if p.PRUrl != nil && *p.PRUrl != "" {
+		prURLVal = *p.PRUrl
+	}
+	_, err := tx.ExecContext(ctx, q,
+		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
+		p.Title, nullStringIfEmpty(p.Description), priority, importance,
+		nullStringIfEmpty(p.Context), nullStringIfEmpty(assignee), dueVal, kind,
+		branchVal, prURLVal, commitSHAsJSON, now)
+	if err != nil {
+		return uuid.UUID{}, errWrap("CreateTaskTx", err)
+	}
+	return id, nil
+}
+
+// DB returns the underlying *DB handle. Exported so cross-store transactional
+// callers (e.g. confirm_plan's SQLite atomic path, which needs to open one
+// *sql.Tx and pass it to both CreateTaskTx here and DecisionStore.LogTx) can
+// BeginTx once instead of each store opening its own — SQLite is
+// single-writer, so two concurrently open transactions on the same
+// underlying connection would deadlock.
+func (s *GTDStore) DB() *DB { return s.db }
 
 func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	const q = `SELECT ` + tasksSelectCols + ` FROM tasks WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
@@ -1170,6 +1255,7 @@ type mergedTaskFields struct {
 	dueDate        any
 	taskCtx        any
 	status         string
+	kind           string
 	branchName     any
 	prURL          any
 	commitSHAsJSON string
@@ -1191,6 +1277,7 @@ func mergeTaskBaseFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFi
 		title:    existing.Title,
 		priority: existing.Priority,
 		status:   existing.Status,
+		kind:     existing.Kind,
 	}
 	if p.Title != nil {
 		m.title = *p.Title
@@ -1200,6 +1287,9 @@ func mergeTaskBaseFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFi
 	}
 	if p.Status != nil {
 		m.status = *p.Status
+	}
+	if p.Kind != nil {
+		m.kind = *p.Kind
 	}
 	if p.Description != nil {
 		m.desc = nullStringIfEmpty(*p.Description)
@@ -1311,16 +1401,17 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		    due_date    = ?7,
 		    context     = ?8,
 		    status      = ?9,
-		    branch_name = ?10,
-		    pr_url      = ?11,
-		    commit_shas = ?12,
-		    updated_at  = ?13
+		    kind        = ?10,
+		    branch_name = ?11,
+		    pr_url      = ?12,
+		    commit_shas = ?13,
+		    updated_at  = ?14
 		WHERE id = ?1
-		  AND (?14 IS NULL OR workspace_id = ?14)`
+		  AND (?15 IS NULL OR workspace_id = ?15)`
 	now := nowRFC3339()
 	res, err := s.db.conn.ExecContext(
 		ctx, q,
-		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status,
+		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status, m.kind,
 		m.branchName, m.prURL, m.commitSHAsJSON,
 		now, s.db.workspaceArg(),
 	)

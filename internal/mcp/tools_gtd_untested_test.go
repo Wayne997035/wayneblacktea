@@ -105,6 +105,22 @@ func TestListProjects_EmptyDB(t *testing.T) {
 	}
 }
 
+// TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull covers the nil-guard
+// added for GTD c282cc04 item #3. Asserts the raw JSON text is exactly "[]"
+// — json.Unmarshal into a slice cannot distinguish "null" from "[]" (both
+// decode to a zero-length nil slice), so TestListProjects_EmptyDB above does
+// NOT catch a regression here; only a string-level check does.
+func TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callListProjects(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("empty DB should succeed, got: %s", resultText(r))
+	}
+	if got := strings.TrimSpace(resultText(r)); got != "[]" {
+		t.Errorf("raw result = %q, want exactly %q", got, "[]")
+	}
+}
+
 func TestListProjects_ReturnsSeeded(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
@@ -320,6 +336,20 @@ func TestListGoals_EmptyDB(t *testing.T) {
 	}
 }
 
+// TestListGoals_EmptyDB_ReturnsEmptyArrayNotNull covers the nil-guard added
+// for GTD c282cc04 item #3 — see TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull
+// doc comment for why this must be a raw-string check, not json.Unmarshal.
+func TestListGoals_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callListGoals(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("empty DB should succeed, got: %s", resultText(r))
+	}
+	if got := strings.TrimSpace(resultText(r)); got != "[]" {
+		t.Errorf("raw result = %q, want exactly %q", got, "[]")
+	}
+}
+
 func TestListGoals_ReturnsSeeded(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	r := callCreateGoal(t, s, map[string]any{"title": "goal-1", "area": "career"})
@@ -453,6 +483,29 @@ func TestGetProject_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(resultText(r), "recent_decisions") {
 		t.Errorf("response should include recent_decisions envelope, got: %s", resultText(r))
+	}
+}
+
+// TestGetProject_NoDecisions_ReturnsEmptyArrayNotNull covers the nil-guard
+// on the embedded recent_decisions field (GTD c282cc04 item #3). A project
+// with zero logged decisions must serialize "recent_decisions":[] — a
+// string-level check because json.Unmarshal into a slice cannot distinguish
+// "null" from "[]" on the wire.
+func TestGetProject_NoDecisions_ReturnsEmptyArrayNotNull(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	name := "proj-" + uuid.NewString()[:8]
+	seedProject(t, s, name)
+	r := callGetProject(t, s, map[string]any{"name": name})
+	if r.IsError {
+		t.Fatalf("should succeed, got: %s", resultText(r))
+	}
+	// jsonText uses json.MarshalIndent, so the wire format has a space after
+	// the colon — match that shape.
+	if !strings.Contains(resultText(r), `"recent_decisions": []`) {
+		t.Errorf(`expected raw JSON to contain "recent_decisions": [], got: %s`, resultText(r))
+	}
+	if strings.Contains(resultText(r), `"recent_decisions": null`) {
+		t.Errorf(`recent_decisions must never serialize as null, got: %s`, resultText(r))
 	}
 }
 

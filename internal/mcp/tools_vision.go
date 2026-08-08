@@ -8,9 +8,20 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+)
+
+// MCP length caps for add_vision_item — mirror the HTTP boundary
+// (internal/handler/vision_handler.go:45-66) exactly. The MCP path had no
+// caps at all before this change (unbounded write), which is the reverse of
+// the usual "MCP is stricter than HTTP" framing for this repo — see
+// backend-security-design.md §2.
+const (
+	mcpVisionMaxTitleRunes      = 255
+	mcpVisionMaxWhyBlockedRunes = 2000
 )
 
 func (s *Server) registerVisionTools(ms *server.MCPServer) {
@@ -70,9 +81,23 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 	if title == "" {
 		return mcp.NewToolResultError("title is required"), nil
 	}
+	if len([]rune(title)) > mcpVisionMaxTitleRunes {
+		return mcp.NewToolResultError("title exceeds 255 characters"), nil
+	}
 	if whyBlocked == "" {
 		return mcp.NewToolResultError("why_blocked is required"), nil
 	}
+	if len([]rune(whyBlocked)) > mcpVisionMaxWhyBlockedRunes {
+		return mcp.NewToolResultError("why_blocked exceeds 2000 characters"), nil
+	}
+
+	// Vagueness check on title and why_blocked (warn-only, matching the HTTP
+	// twin — vision items are intentionally forward-looking and not subject
+	// to strict-mode rejection). No HTTP headers are available over MCP, so
+	// warnings ride along in the result body instead.
+	var allWarnings []string
+	allWarnings = append(allWarnings, validator.CheckVagueness("title", title, "general")...)
+	allWarnings = append(allWarnings, validator.CheckVagueness("why_blocked", whyBlocked, "general")...)
 
 	var dependsOn []string
 	if raw := stringArg(args, "depends_on"); raw != "" {
@@ -97,6 +122,9 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 	item, err := s.vision.Add(ctx, p)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("adding vision item: %v", err)), nil
+	}
+	if len(allWarnings) > 0 {
+		return jsonText(map[string]any{"item": item, "warnings": allWarnings})
 	}
 	return jsonText(item)
 }

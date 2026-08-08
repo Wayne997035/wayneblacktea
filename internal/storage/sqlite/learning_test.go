@@ -2,7 +2,9 @@ package sqlite_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +68,30 @@ func TestLearningStore_EmptyTable(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected count=0, got %d", count)
+	}
+}
+
+// TestLearningStore_DueReviews_EmptyReturnsEmptyArrayNotNull is the
+// mutation-provable regression test for the SQLite-only DueReviews nil-slice
+// bug (learning.go:130-171 built `var out []learning.DueReview` and returned
+// it unguarded, unlike the Postgres store's make([]DueReview, 0, len(rows))
+// in internal/learning/store.go). json.Unmarshal([]byte("null"), &s) and
+// json.Unmarshal([]byte("[]"), &s) both leave a zero-length slice, so
+// len(reviews)==0 (as TestLearningStore_EmptyTable already asserts) cannot
+// distinguish the two — this test marshals the store's return value directly
+// and asserts the raw JSON text, which can.
+func TestLearningStore_DueReviews_EmptyReturnsEmptyArrayNotNull(t *testing.T) {
+	s := openLearningStore(t, ":memory:", "")
+	reviews, err := s.DueReviews(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("DueReviews: %v", err)
+	}
+	raw, err := json.Marshal(reviews)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "[]" {
+		t.Errorf("raw JSON = %q, want exactly %q (nil slice must not serialize to JSON null)", got, "[]")
 	}
 }
 

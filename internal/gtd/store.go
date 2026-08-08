@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -139,6 +140,9 @@ func (s *Store) ProjectsByRepoName(ctx context.Context, repoName string) ([]db.P
 // column added in migration 000037 is included without requiring a sqlc
 // regen on every contributor's machine.
 func (s *Store) CreateProject(ctx context.Context, p CreateProjectParams) (*db.Project, error) {
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("creating project %q: %w", p.Name, ErrInvalidRepoName)
+	}
 	area := p.Area
 	if area == "" {
 		area = "projects"
@@ -956,17 +960,29 @@ func resolveAssigneeForUpdate(p *UpdateTaskParams, existingAssignee pgtype.Text,
 	return assignee, nil
 }
 
-// UpdateTask performs a partial update of a task by ID. nil fields in p are
-// preserved from the existing row (no null-clear support). Pre-reads the existing
-// task to fill nil params, then executes a single UPDATE RETURNING.
-// Returns ErrNotFound when no row matching id exists in the configured workspace.
-func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams) (*db.Task, error) {
-	existing, err := s.getTaskByID(ctx, id)
-	if err != nil {
-		return nil, err // ErrNotFound propagated as-is
-	}
+// taskUpdateMergedFields holds the per-column values produced by merging an
+// UpdateTaskParams against the existing row: nil fields fall back to the
+// existing value, non-nil fields overwrite it.
+type taskUpdateMergedFields struct {
+	title       string
+	description pgtype.Text
+	priority    int32
+	importance  pgtype.Int2
+	dueDate     pgtype.Timestamptz
+	taskContext pgtype.Text
+	status      string
+	kind        string
+	branchName  pgtype.Text
+	prURL       pgtype.Text
+	commitSHAs  []string
+}
 
-	// Merge: keep existing values for unspecified fields.
+// mergeTaskUpdateFields applies UpdateTask's "nil means keep existing" merge
+// rule to every optional column except assignee (handled separately by
+// resolveAssigneeForUpdate since it also needs status for validation).
+// Extracted verbatim out of UpdateTask to keep that function under the
+// gocyclo budget; the branching logic is unchanged.
+func mergeTaskUpdateFields(p *UpdateTaskParams, existing *db.Task) taskUpdateMergedFields {
 	title := coalesceString(p.Title, existing.Title)
 
 	var description pgtype.Text
@@ -1006,9 +1022,9 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		status = existing.Status
 	}
 
-	assignee, err := resolveAssigneeForUpdate(&p, existing.Assignee, status)
-	if err != nil {
-		return nil, fmt.Errorf("updating task %s: %w", id, err)
+	kind := existing.Kind
+	if p.Kind != nil {
+		kind = *p.Kind
 	}
 
 	var branchName pgtype.Text
@@ -1030,6 +1046,39 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		commitSHAs = p.CommitSHAs
 	}
 
+	return taskUpdateMergedFields{
+		title:       title,
+		description: description,
+		priority:    priority,
+		importance:  importance,
+		dueDate:     dueDate,
+		taskContext: taskContext,
+		status:      status,
+		kind:        kind,
+		branchName:  branchName,
+		prURL:       prURL,
+		commitSHAs:  commitSHAs,
+	}
+}
+
+// UpdateTask performs a partial update of a task by ID. nil fields in p are
+// preserved from the existing row (no null-clear support). Pre-reads the existing
+// task to fill nil params, then executes a single UPDATE RETURNING.
+// Returns ErrNotFound when no row matching id exists in the configured workspace.
+func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams) (*db.Task, error) {
+	existing, err := s.getTaskByID(ctx, id)
+	if err != nil {
+		return nil, err // ErrNotFound propagated as-is
+	}
+
+	// Merge: keep existing values for unspecified fields.
+	merged := mergeTaskUpdateFields(&p, existing)
+
+	assignee, err := resolveAssigneeForUpdate(&p, existing.Assignee, merged.status)
+	if err != nil {
+		return nil, fmt.Errorf("updating task %s: %w", id, err)
+	}
+
 	const q = `UPDATE tasks
 		SET title       = $1,
 		    description = $2,
@@ -1039,19 +1088,21 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		    due_date    = $6,
 		    context     = $7,
 		    status      = $8,
-		    branch_name = $9,
-		    pr_url      = $10,
-		    commit_shas = $11,
+		    kind        = $9,
+		    branch_name = $10,
+		    pr_url      = $11,
+		    commit_shas = $12,
 		    updated_at  = NOW()
-		WHERE id = $12
-		  AND ($13::uuid IS NULL OR workspace_id = $13)
+		WHERE id = $13
+		  AND ($14::uuid IS NULL OR workspace_id = $14)
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
 		          branch_name, pr_url, commit_shas`
 	rows, err := s.dbtx.Query(
 		ctx, q,
-		title, description, priority, importance, assignee, dueDate, taskContext, status,
-		branchName, prURL, commitSHAs,
+		merged.title, merged.description, merged.priority, merged.importance, assignee,
+		merged.dueDate, merged.taskContext, merged.status, merged.kind,
+		merged.branchName, merged.prURL, merged.commitSHAs,
 		id, s.workspaceID,
 	)
 	if err != nil {
@@ -1102,6 +1153,9 @@ func (s *Store) UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams
 // RepoName semantics: nil → preserve existing DB value; non-nil → overwrite
 // (empty string clears to NULL).
 func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error) {
+	if p.RepoName != nil && !validator.IsValidRepoName(*p.RepoName) {
+		return nil, fmt.Errorf("updating project %s: %w", id, ErrInvalidRepoName)
+	}
 	area := p.Area
 	if area == "" {
 		area = "projects"

@@ -7,5 +7,7 @@ export function useDashboardRecentDecisions() {
     queryKey: ['dashboard', 'recent-decisions'],
     queryFn: () => apiFetch<Decision[]>('/api/dashboard/recent-decisions?limit=3'),
     staleTime: 120_000,
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }

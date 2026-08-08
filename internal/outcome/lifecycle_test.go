@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -535,6 +536,156 @@ func TestRecordExecutionResult_TerminalRetry_NewRelatedRuleIDs_Supersedes(t *tes
 	// backends' supersede path (the prior row is never written to).
 	if len(fs.latest.RelatedRuleIDs) != 1 || fs.latest.RelatedRuleIDs[0] != ruleA {
 		t.Errorf("prior row's RelatedRuleIDs was mutated: %v", fs.latest.RelatedRuleIDs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GTD 35d42906: terminal supersede must UNION latest.RelatedRuleIDs into the
+// new row, not carry this call's delta-only IDs verbatim — otherwise a rule
+// ID that was only ever linked on the row being superseded loses its
+// governance vote FOREVER, because behavior_governance.go's supersession
+// filter (internal/scheduler/behavior_governance.go) skips every row that
+// something else supersedes.
+// ---------------------------------------------------------------------------
+
+// TestRecordExecutionResult_TerminalRetry_DeltaOnlyRelatedRuleIDs_UnionsIntoSupersedeRow
+// is the direct reproduction: a terminal retry with the SAME
+// result/notes/metrics but a genuinely new (per relatedRuleIDsHasNew)
+// related_rule_ids set falls into ActionSuperseded (isIdempotentReplay
+// returns false), but before this fix the new row's RelatedRuleIDs was set
+// to supersedeParams.RelatedRuleIDs (this call's own IDs) verbatim, dropping
+// any ID that only latest carried. The fix unions latest.RelatedRuleIDs
+// (first) with supersedeParams.RelatedRuleIDs (second), deduped — mirroring
+// FinalizeDraft's own existing-then-new union order (store.go:614-617) —
+// and leaves latest.RelatedRuleIDs itself untouched (no in-place append
+// aliasing).
+func TestRecordExecutionResult_TerminalRetry_DeltaOnlyRelatedRuleIDs_UnionsIntoSupersedeRow(t *testing.T) {
+	ruleA, ruleB, ruleC := uuid.New(), uuid.New(), uuid.New()
+
+	tests := []struct {
+		name          string
+		latestRuleIDs []uuid.UUID
+		paramsRuleIDs []uuid.UUID
+		wantRuleIDs   []uuid.UUID
+	}{
+		{
+			name:          "delta-only retry: new row inherits latest's IDs plus this call's own",
+			latestRuleIDs: []uuid.UUID{ruleA, ruleB},
+			paramsRuleIDs: []uuid.UUID{ruleC},
+			wantRuleIDs:   []uuid.UUID{ruleA, ruleB, ruleC},
+		},
+		{
+			name:          "overlapping retry: an ID present on both sides is not duplicated",
+			latestRuleIDs: []uuid.UUID{ruleA, ruleB},
+			paramsRuleIDs: []uuid.UUID{ruleB, ruleC},
+			wantRuleIDs:   []uuid.UUID{ruleA, ruleB, ruleC},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entityID := uuid.New()
+			priorID := uuid.New()
+			// Independent copy so a mutation of fs.latest.RelatedRuleIDs (the
+			// aliasing bug this fix must avoid) is distinguishable from tc's
+			// own slice below.
+			latestRuleIDs := append([]uuid.UUID{}, tc.latestRuleIDs...)
+
+			fs := &fakeStore{
+				t:         t,
+				hasLatest: true,
+				latest: Outcome{
+					ID:             priorID,
+					EntityType:     "task",
+					EntityID:       entityID,
+					Result:         "success",
+					Notes:          "shipped fine",
+					RelatedRuleIDs: latestRuleIDs,
+				},
+			}
+
+			got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+				EntityType:     "task",
+				EntityID:       entityID,
+				Result:         "success",
+				Notes:          "shipped fine",
+				RelatedRuleIDs: tc.paramsRuleIDs,
+			})
+			if err != nil {
+				t.Fatalf("RecordExecutionResult: %v", err)
+			}
+			if action != ActionSuperseded {
+				t.Fatalf("action = %q, want %q", action, ActionSuperseded)
+			}
+			if !slices.Equal(got.RelatedRuleIDs, tc.wantRuleIDs) {
+				t.Errorf("RelatedRuleIDs = %v, want %v", got.RelatedRuleIDs, tc.wantRuleIDs)
+			}
+			// The row being superseded must never be mutated by the union.
+			if !slices.Equal(fs.latest.RelatedRuleIDs, tc.latestRuleIDs) {
+				t.Errorf("prior row's RelatedRuleIDs was mutated: got %v, want %v", fs.latest.RelatedRuleIDs, tc.latestRuleIDs)
+			}
+		})
+	}
+}
+
+// TestRecordExecutionResult_TerminalRetry_DeltaOnlyRelatedRuleIDs_CapsUnionAtMax
+// is the cap sub-scenario: 60 existing + 60 newly-supplied IDs union to 120,
+// which exceeds MaxRelatedRuleIDsTotal (100) — the new row's RelatedRuleIDs
+// must be capped at 100 via CapRelatedRuleIDs, and per that function's
+// contract (store.go:475: "an already-linked rule ID can never be silently
+// removed"), every one of the 60 pre-existing IDs (well under the cap on
+// their own) must survive the cap.
+func TestRecordExecutionResult_TerminalRetry_DeltaOnlyRelatedRuleIDs_CapsUnionAtMax(t *testing.T) {
+	entityID := uuid.New()
+	priorID := uuid.New()
+
+	existing := make([]uuid.UUID, 60)
+	for i := range existing {
+		existing[i] = uuid.New()
+	}
+	incoming := make([]uuid.UUID, 60)
+	for i := range incoming {
+		incoming[i] = uuid.New()
+	}
+
+	fs := &fakeStore{
+		t:         t,
+		hasLatest: true,
+		latest: Outcome{
+			ID:             priorID,
+			EntityType:     "task",
+			EntityID:       entityID,
+			Result:         "success",
+			Notes:          "shipped fine",
+			RelatedRuleIDs: existing,
+		},
+	}
+
+	got, action, _, err := RecordExecutionResult(context.Background(), fs, CreateOutcomeParams{
+		EntityType:     "task",
+		EntityID:       entityID,
+		Result:         "success",
+		Notes:          "shipped fine",
+		RelatedRuleIDs: incoming,
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionResult: %v", err)
+	}
+	if action != ActionSuperseded {
+		t.Fatalf("action = %q, want %q", action, ActionSuperseded)
+	}
+	if len(got.RelatedRuleIDs) != MaxRelatedRuleIDsTotal {
+		t.Fatalf("len(RelatedRuleIDs) = %d, want capped at %d (60 existing + 60 new = 120 uncapped)",
+			len(got.RelatedRuleIDs), MaxRelatedRuleIDsTotal)
+	}
+	gotSet := make(map[uuid.UUID]bool, len(got.RelatedRuleIDs))
+	for _, id := range got.RelatedRuleIDs {
+		gotSet[id] = true
+	}
+	for _, id := range existing {
+		if !gotSet[id] {
+			t.Errorf("existing rule ID %s was dropped by the cap", id)
+		}
 	}
 }
 

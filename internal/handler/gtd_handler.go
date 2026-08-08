@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -26,19 +25,20 @@ var githubPRURLRe = validator.GitHubPRURLRe
 // (and the goconst linter stays happy).
 const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 
+// validateBranchName delegates to the shared internal/validator implementation
+// so every branch_name writer enforces byte-identical invariants — see
+// validator.ValidateBranchName's doc comment (sprint 8-7 gap E: this used to
+// be a hand-duplicated byte-counting check here that disagreed with MCP's own
+// byte-counting checks on CJK input). All three writers now call this single
+// function and are rune-counted: this HTTP handler, MCP add_task/update_task
+// (internal/mcp/tools_gtd.go), and MCP start_work
+// (internal/mcp/tools_worksession.go's parseOptionalBranchName). If a fourth
+// branch_name writer is ever added, it MUST also call
+// validator.ValidateBranchName directly rather than reimplementing a length
+// check — this comment intentionally names every current writer so a future
+// omission is a visible discrepancy, not a silent gap.
 func validateBranchName(s string) string {
-	// Count characters by rune, not byte: a 255-character CJK branch name
-	// is well within git's branch-name limits but trips a byte-length check
-	// because each char is 2-3 bytes in UTF-8.
-	if len([]rune(s)) > 255 {
-		return "branch_name must not exceed 255 characters"
-	}
-	for _, r := range s {
-		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
-			return "branch_name must not contain control characters"
-		}
-	}
-	return ""
+	return validator.ValidateBranchName(s)
 }
 
 func validateTaskStatus(s string) string {
@@ -64,6 +64,30 @@ func validateImportance(n int16) string {
 	return ""
 }
 
+// updateProjectMaxTitleLen and updateProjectMaxDescriptionLen mirror the
+// update_project MCP tool's rune-based mcp.MaxLength(500)/mcp.MaxLength(5000)
+// seam constraints (internal/mcp/tools_gtd.go registerGTDTools). Sprint 8-7
+// gap D: the HTTP PATCH endpoint previously had no upper bound on either
+// field, so a caller could store an unbounded title/description that the MCP
+// path would have rejected outright.
+const (
+	updateProjectMaxTitleLen       = 500
+	updateProjectMaxDescriptionLen = 5000
+)
+
+// validateUpdateProjectLengths applies the same rune-counted caps the
+// update_project MCP tool enforces via its seam. Returns a non-empty
+// user-facing error message on violation.
+func validateUpdateProjectLengths(title, description string) string {
+	if n := len([]rune(title)); n > updateProjectMaxTitleLen {
+		return "title exceeds 500 characters"
+	}
+	if n := len([]rune(description)); n > updateProjectMaxDescriptionLen {
+		return "description exceeds 5000 characters"
+	}
+	return ""
+}
+
 // GTDHandler handles all GTD-domain endpoints.
 type GTDHandler struct {
 	store gtdStore
@@ -81,6 +105,9 @@ func (h *GTDHandler) ListGoals(c echo.Context) error {
 		c.Logger().Errorf("ListGoals: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
+	if goals == nil {
+		goals = []db.Goal{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
+	}
 	return c.JSON(http.StatusOK, goals)
 }
 
@@ -97,8 +124,8 @@ func (h *GTDHandler) CreateGoal(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, errResp("invalid request body"))
 	}
-	if req.Title == "" {
-		return c.JSON(http.StatusBadRequest, errResp("title is required"))
+	if req.Title == "" || strings.TrimSpace(req.Area) == "" {
+		return c.JSON(http.StatusBadRequest, errResp("title and area are required"))
 	}
 
 	goal, err := h.store.CreateGoal(c.Request().Context(), gtd.CreateGoalParams{
@@ -120,6 +147,9 @@ func (h *GTDHandler) ListProjects(c echo.Context) error {
 	if err != nil {
 		c.Logger().Errorf("ListProjects: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if projects == nil {
+		projects = []db.Project{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
 	}
 	return c.JSON(http.StatusOK, projects)
 }
@@ -143,6 +173,9 @@ func (h *GTDHandler) CreateProject(c echo.Context) error {
 	if req.Name == "" || req.Title == "" {
 		return c.JSON(http.StatusBadRequest, errResp("name and title are required"))
 	}
+	if !validator.IsValidRepoName(req.RepoName) {
+		return c.JSON(http.StatusBadRequest, errResp("repo_name must match [a-zA-Z0-9_.-]{1,100}"))
+	}
 
 	project, err := h.store.CreateProject(c.Request().Context(), gtd.CreateProjectParams{
 		Name:        req.Name,
@@ -156,6 +189,9 @@ func (h *GTDHandler) CreateProject(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, gtd.ErrConflict) {
 			return c.JSON(http.StatusConflict, errResp("project name already exists"))
+		}
+		if errors.Is(err, gtd.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
 		}
 		c.Logger().Errorf("CreateProject: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -407,6 +443,9 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	if strings.TrimSpace(req.Title) == "" {
 		return c.JSON(http.StatusBadRequest, errResp("title is required"))
 	}
+	if msg := validateUpdateProjectLengths(req.Title, req.Description); msg != "" {
+		return c.JSON(http.StatusBadRequest, errResp(msg))
+	}
 
 	status := gtd.ProjectStatus(req.Status)
 	if status == "" {
@@ -417,6 +456,9 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	}
 	if req.Priority != 0 && (req.Priority < 1 || req.Priority > 5) {
 		return c.JSON(http.StatusBadRequest, errResp("priority must be between 1 and 5"))
+	}
+	if req.RepoName != nil && !validator.IsValidRepoName(*req.RepoName) {
+		return c.JSON(http.StatusBadRequest, errResp("repo_name must match [a-zA-Z0-9_.-]{1,100}"))
 	}
 
 	project, err := h.store.UpdateProject(c.Request().Context(), id, gtd.UpdateProjectParams{
@@ -431,6 +473,9 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, gtd.ErrNotFound) {
 			return c.JSON(http.StatusNotFound, errResp("project not found"))
+		}
+		if errors.Is(err, gtd.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
 		}
 		c.Logger().Errorf("UpdateProject: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -447,6 +492,7 @@ type updateTaskRequest struct {
 	DueDate     *time.Time `json:"due_date"`
 	Context     *string    `json:"context"`
 	Status      *string    `json:"status"`
+	Kind        *string    `json:"kind"`        // nil → preserve; must be a validator.ValidTaskKinds value when present (GTD-c282cc04)
 	BranchName  *string    `json:"branch_name"` // nil → preserve; empty string → clear to NULL
 	PRUrl       *string    `json:"pr_url"`      // nil → preserve; empty string → clear to NULL
 }
@@ -455,8 +501,24 @@ type updateTaskRequest struct {
 func updateTaskRequestIsEmpty(req *updateTaskRequest) bool {
 	return req.Title == nil && req.Description == nil && req.Priority == nil &&
 		req.Importance == nil && req.Assignee == nil && req.DueDate == nil &&
-		req.Context == nil && req.Status == nil &&
+		req.Context == nil && req.Status == nil && req.Kind == nil &&
 		req.BranchName == nil && req.PRUrl == nil
+}
+
+// validateUpdateTaskGitFields validates the branch_name/pr_url pair used for
+// git-integration bookkeeping (migration 000047). Extracted verbatim out of
+// validateUpdateTaskFields to keep that function under the gocyclo budget;
+// the branching logic is unchanged.
+func validateUpdateTaskGitFields(req *updateTaskRequest) string {
+	if req.BranchName != nil {
+		if msg := validateBranchName(*req.BranchName); msg != "" {
+			return msg
+		}
+	}
+	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
+		return errMsgInvalidPRURL
+	}
+	return ""
 }
 
 // validateUpdateTaskFields validates individual field values in the request,
@@ -480,15 +542,10 @@ func validateUpdateTaskFields(req *updateTaskRequest) string {
 			return msg
 		}
 	}
-	if req.BranchName != nil {
-		if msg := validateBranchName(*req.BranchName); msg != "" {
-			return msg
-		}
+	if req.Kind != nil && !validator.IsValidKind(*req.Kind) {
+		return "kind must be one of: general, fix-pr, feature, refactor, research, chore"
 	}
-	if req.PRUrl != nil && *req.PRUrl != "" && !githubPRURLRe.MatchString(*req.PRUrl) {
-		return errMsgInvalidPRURL
-	}
-	return ""
+	return validateUpdateTaskGitFields(req)
 }
 
 // validateUpdateTaskRequest validates the update request and returns a user-facing
@@ -517,6 +574,7 @@ func updateTaskParamsFromRequest(req *updateTaskRequest) gtd.UpdateTaskParams {
 		DueDate:     req.DueDate,
 		Context:     req.Context,
 		Status:      req.Status,
+		Kind:        req.Kind,
 		BranchName:  req.BranchName,
 		PRUrl:       req.PRUrl,
 	}

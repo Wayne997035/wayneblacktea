@@ -360,6 +360,28 @@ func TestListTasks_SummaryFalse_FullObjects(t *testing.T) {
 	}
 }
 
+// TestListTasks_SummaryFalse_EmptyDB_ReturnsEmptyArrayNotNull covers the
+// summary=false branch's nil-guard (GTD c282cc04 item #3). Asserts the raw
+// JSON string contains "tasks":[] and NOT "tasks":null — json.Unmarshal into
+// a slice cannot distinguish these two on the wire (both decode to a
+// zero-length nil slice), so a string-level check is the only test that can
+// actually catch a regression here.
+func TestListTasks_SummaryFalse_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callListTasks(t, s, map[string]any{"summary": false})
+	if r.IsError {
+		t.Fatalf("summary=false on empty DB should succeed, got: %s", resultText(r))
+	}
+	// jsonText uses json.MarshalIndent, so the wire format has a space after
+	// the colon and no trailing bracket immediately — match that shape.
+	if !strings.Contains(resultText(r), `"tasks": []`) {
+		t.Errorf(`expected raw JSON to contain "tasks": [], got: %s`, resultText(r))
+	}
+	if strings.Contains(resultText(r), `"tasks": null`) {
+		t.Errorf(`tasks must never serialize as null, got: %s`, resultText(r))
+	}
+}
+
 func TestListTasks_HasMore_LimitPlusOneDetection(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	// Seed 3 tasks; request limit=2 — has_more must be true.

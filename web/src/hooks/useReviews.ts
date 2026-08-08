@@ -6,9 +6,14 @@ export function useNewConcepts() {
   return useQuery<DueReview[]>({
     queryKey: ['reviews', 'new'],
     queryFn: async () => {
+      // Guard before .filter: backend may return JSON null for an empty list,
+      // and null.filter() would throw before the `select` defence below ever runs.
       const all = await apiFetch<DueReview[]>('/api/learning/reviews?limit=100')
-      return all.filter((r) => r.review_count === 0)
+      return (all ?? []).filter((r) => r.review_count === 0)
     },
+    // Defence: never let a null reach .length (queryFn above already guarantees an
+    // array, but keep this consistent with every other list hook).
+    select: (data) => data ?? [],
   })
 }
 
@@ -16,6 +21,8 @@ export function useReviews() {
   return useQuery<DueReview[]>({
     queryKey: ['reviews'],
     queryFn: () => apiFetch<DueReview[]>('/api/learning/reviews?limit=50'),
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
 

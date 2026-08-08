@@ -57,7 +57,11 @@ func callPromoteVision(t *testing.T, s *Server, args map[string]any) *mcpmsg.Cal
 	return result
 }
 
-// extractID parses the first UUID from a ToolResult JSON body.
+// extractID parses the first UUID from a ToolResult JSON body. add_vision_item
+// wraps the item under an "item" key (alongside "warnings") whenever
+// validator.CheckVagueness flags the title/why_blocked text — which most
+// short test fixtures below do — so this helper checks both the unwrapped
+// and wrapped shapes.
 func extractVisionID(t *testing.T, r *mcpmsg.CallToolResult) uuid.UUID {
 	t.Helper()
 	raw := resultText(r)
@@ -65,7 +69,15 @@ func extractVisionID(t *testing.T, r *mcpmsg.CallToolResult) uuid.UUID {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("extractVisionID: parse JSON: %v\nbody: %s", err, raw)
 	}
-	rawID, ok := m["id"].(string)
+	idField, ok := m["id"]
+	if !ok {
+		item, itemOK := m["item"].(map[string]any)
+		if !itemOK {
+			t.Fatalf("extractVisionID: no 'id' or 'item' field in: %s", raw)
+		}
+		idField = item["id"]
+	}
+	rawID, ok := idField.(string)
 	if !ok {
 		t.Fatalf("extractVisionID: no 'id' field in: %s", raw)
 	}
@@ -130,6 +142,108 @@ func TestHandleAddVisionItem_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(resultText(r), "search-revamp") {
 		t.Errorf("response should contain parent_initiative, got: %s", resultText(r))
+	}
+}
+
+// TestHandleAddVisionItem_TitleTooLong verifies the MCP path now enforces
+// the same 255-rune cap as HTTP AddVision (internal/handler/vision_handler.go:48-50) —
+// before this change, add_vision_item had no length limit at all.
+func TestHandleAddVisionItem_TitleTooLong(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddVision(t, s, map[string]any{
+		"title":       strings.Repeat("t", 256), // 256 runes > 255 limit
+		"why_blocked": "some blocking reason with enough detail",
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized title")
+	}
+	if !strings.Contains(resultText(r), "255") {
+		t.Errorf("error should mention the 255-char limit, got: %s", resultText(r))
+	}
+}
+
+// TestHandleAddVisionItem_TitleExactly255_OK verifies the boundary is
+// inclusive (255 runes is accepted, matching HTTP's `> 255` rejection test).
+func TestHandleAddVisionItem_TitleExactly255_OK(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddVision(t, s, map[string]any{
+		"title":       strings.Repeat("t", 255),
+		"why_blocked": "some blocking reason with enough detail",
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error at exactly-255 boundary: %s", resultText(r))
+	}
+}
+
+// TestHandleAddVisionItem_WhyBlockedTooLong verifies the MCP path now
+// enforces the same 2000-rune cap as HTTP AddVision
+// (internal/handler/vision_handler.go:54-56).
+func TestHandleAddVisionItem_WhyBlockedTooLong(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddVision(t, s, map[string]any{
+		"title":       "Some future idea",
+		"why_blocked": strings.Repeat("w", 2001), // 2001 runes > 2000 limit
+	})
+	if !r.IsError {
+		t.Fatal("expected error for oversized why_blocked")
+	}
+	if !strings.Contains(resultText(r), "2000") {
+		t.Errorf("error should mention the 2000-char limit, got: %s", resultText(r))
+	}
+}
+
+// TestHandleAddVisionItem_VaguenessWarningsEmbedded verifies that short /
+// vague title+why_blocked text (matching validator.CheckVagueness's "too
+// short and no file:line reference" rule) is warn-only over MCP: the write
+// still succeeds, and the warnings ride along in the response body under a
+// "warnings" key since MCP has no HTTP header channel to carry them.
+func TestHandleAddVisionItem_VaguenessWarningsEmbedded(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddVision(t, s, map[string]any{
+		"title":       "short",
+		"why_blocked": "also short",
+	})
+	if r.IsError {
+		t.Fatalf("vagueness must be warn-only, not a rejection: %s", resultText(r))
+	}
+	raw := resultText(r)
+	var result map[string]any
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("parse result: %v (%s)", err, raw)
+	}
+	warnings, ok := result["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Errorf("expected non-empty 'warnings' array, got: %s", raw)
+	}
+	if _, ok := result["item"].(map[string]any); !ok {
+		t.Errorf("expected wrapped 'item' key when warnings are present, got: %s", raw)
+	}
+}
+
+// TestHandleAddVisionItem_NoVaguenessWhenDescriptive verifies the inverse:
+// descriptive text with a file:line reference produces zero warnings, and
+// the response stays unwrapped (item fields at the top level) exactly like
+// it did before the vagueness check was added — no regression for callers
+// that read "id" directly off the top-level result.
+func TestHandleAddVisionItem_NoVaguenessWhenDescriptive(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callAddVision(t, s, map[string]any{
+		"title":       "Add semantic search to knowledge base (internal/knowledge/search.go:42)",
+		"why_blocked": "Needs a vector DB migration first, see internal/storage/pgvector.go:88 for the schema gap",
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(r))
+	}
+	raw := resultText(r)
+	var result map[string]any
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("parse result: %v (%s)", err, raw)
+	}
+	if _, ok := result["id"]; !ok {
+		t.Errorf("expected unwrapped 'id' at top level when no warnings fire, got: %s", raw)
+	}
+	if _, ok := result["warnings"]; ok {
+		t.Errorf("expected no 'warnings' key for descriptive input, got: %s", raw)
 	}
 }
 

@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -20,11 +18,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// repoNameRe enforces a safe slug format for project repo_name values passed
-// through MCP tools. Keeps the column semantically queryable and prevents
-// control characters or path-traversal sequences from entering the DB.
-var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.\-]{1,100}$`)
-
 // githubPRURLRe and commitSHARe are canonical definitions in the shared
 // internal/validator and internal/gtd packages respectively. Package-level
 // aliases keep call-sites in this file unchanged while eliminating duplication.
@@ -32,19 +25,6 @@ var (
 	githubPRURLRe = validator.GitHubPRURLRe
 	commitSHARe   = gtd.CommitSHARe
 )
-
-// branchNameHasControlChars returns true if s contains characters invalid in
-// git branch names: ASCII control chars (< 0x20), DEL (0x7F), or Unicode
-// "Other" characters (Cc control, Cf format like U+200B zero-width space /
-// U+FEFF BOM, Co private-use, Cs surrogates).
-func branchNameHasControlChars(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7F || unicode.Is(unicode.C, r) {
-			return true
-		}
-	}
-	return false
-}
 
 // resolveAssignee resolves a raw "assignee" value to a canonical actor via
 // gtd.NormalizeActor. Empty input is allowed (many tasks start unowned) and
@@ -85,26 +65,21 @@ func parseImportance(raw int32) (*int16, string) {
 	return &v, ""
 }
 
-// errMsgBranchNameTooLong, errMsgBranchNameControlChars and errMsgInvalidPRURL
-// are the shared validation messages for branch_name/pr_url, hoisted to
-// package-level constants because add_task (applyBranchAndPR), update_task
+// errMsgInvalidPRURL is the shared validation message for pr_url, hoisted to
+// a package-level constant because add_task (applyBranchAndPR), update_task
 // (applyBranchAndPRUpdate), and begin_task (validateBeginTaskLinkageArgs)
-// all enforce the identical rule (goconst).
-const (
-	errMsgBranchNameTooLong      = "branch_name must not exceed 255 characters"
-	errMsgBranchNameControlChars = "branch_name must not contain control characters"
-	errMsgInvalidPRURL           = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
-)
+// all enforce the identical rule (goconst). branch_name's own error messages
+// come straight from validator.ValidateBranchName — the single shared
+// implementation with the HTTP path (gtd_handler.go) — rather than being
+// hand-duplicated as constants here (sprint 8-7 gap E).
+const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 
 // applyBranchAndPR validates and sets branch_name and pr_url on a CreateTaskParams.
 // Returns a non-empty error message on validation failure.
 func applyBranchAndPR(branchName, prURL string, p *gtd.CreateTaskParams) string {
 	if branchName != "" {
-		if len(branchName) > 255 {
-			return errMsgBranchNameTooLong
-		}
-		if branchNameHasControlChars(branchName) {
-			return errMsgBranchNameControlChars
+		if msg := validator.ValidateBranchName(branchName); msg != "" {
+			return msg
 		}
 		p.BranchName = &branchName
 	}
@@ -125,11 +100,8 @@ func applyBranchAndPRUpdate(branchName, prURL *string, p *gtd.UpdateTaskParams) 
 	if branchName != nil {
 		bn := *branchName
 		if bn != "" {
-			if len(bn) > 255 {
-				return errMsgBranchNameTooLong
-			}
-			if branchNameHasControlChars(bn) {
-				return errMsgBranchNameControlChars
+			if msg := validator.ValidateBranchName(bn); msg != "" {
+				return msg
 			}
 		}
 		p.BranchName = branchName
@@ -292,6 +264,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("assignee", mcp.Description("Who owns this task"), mcp.MaxLength(200)),
 			mcp.WithString("due_date", mcp.Description("Due date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
 			mcp.WithString("context", mcp.Description("Free-form discussion background"), mcp.MaxLength(10000)),
+			mcp.WithString("kind",
+				mcp.Description("Task kind: general, fix-pr, feature, refactor, research, or chore."),
+				mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
 			mcp.WithString("branch_name", mcp.Description("Git branch name (empty string clears the field)")),
 			mcp.WithString("pr_url", mcp.Description("GitHub PR URL (empty string clears the field)")),
 		), seam("update_task", s.handleUpdateTask),
@@ -470,11 +445,14 @@ func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*m
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading projects: %v", err)), nil
 	}
+	if projects == nil {
+		projects = []db.Project{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	}
 	return jsonText(projects)
 }
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
-	if args.RepoName != "" && !repoNameRe.MatchString(args.RepoName) {
+	if !validator.IsValidRepoName(args.RepoName) {
 		return mcp.NewToolResultError("repo_name must match [a-zA-Z0-9_.-]{1,100}"), nil
 	}
 	p := gtd.CreateProjectParams{
@@ -566,8 +544,7 @@ func buildUpdateProjectParams(args UpdateProjectArgs, existing *db.Project) (gtd
 
 	// repo_name: explicitly passed → overwrite (nil pointer = preserve existing).
 	if args.RepoName != nil {
-		rn := *args.RepoName
-		if rn != "" && !repoNameRe.MatchString(rn) {
+		if !validator.IsValidRepoName(*args.RepoName) {
 			return gtd.UpdateProjectParams{}, "repo_name must match [a-zA-Z0-9_.-]{1,100}"
 		}
 		p.RepoName = args.RepoName
@@ -694,6 +671,9 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		}
 		tasks = summaries
 	} else {
+		if rows == nil {
+			rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+		}
 		tasks = rows
 	}
 
@@ -944,6 +924,9 @@ func (s *Server) handleListGoals(ctx context.Context, _ ListGoalsArgs) (*mcp.Cal
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading goals: %v", err)), nil
 	}
+	if goals == nil {
+		goals = []db.Goal{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	}
 	return jsonText(goals)
 }
 
@@ -1023,6 +1006,13 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 		taskCtx := args.Context
 		p.Context = &taskCtx
 	}
+	if args.Kind != "" {
+		if !validator.IsValidKind(args.Kind) {
+			return p, "kind must be one of: general, fix-pr, feature, refactor, research, chore"
+		}
+		k := args.Kind
+		p.Kind = &k
+	}
 
 	if msg := applyBranchAndPRUpdate(args.BranchName, args.PRUrl, &p); msg != "" {
 		return p, msg
@@ -1036,7 +1026,7 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 	return p.Status == nil && p.Title == nil && p.Description == nil &&
 		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
-		p.DueDate == nil && p.Context == nil &&
+		p.DueDate == nil && p.Context == nil && p.Kind == nil &&
 		p.BranchName == nil && p.PRUrl == nil && p.CommitSHAs == nil
 }
 
@@ -1127,6 +1117,9 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 	decisions, err := s.decision.ByProject(ctx, project.ID, 5)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+	}
+	if decisions == nil {
+		decisions = []db.Decision{} // embedded list MUST be [] not null (a nil slice marshals to JSON null)
 	}
 
 	return jsonText(projectWithDecisions{Project: project, Decisions: decisions})
@@ -1320,11 +1313,8 @@ func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistComp
 // validation failure.
 func validateBeginTaskLinkageArgs(branchName, prURL string) string {
 	if branchName != "" {
-		if len(branchName) > 255 {
-			return errMsgBranchNameTooLong
-		}
-		if branchNameHasControlChars(branchName) {
-			return errMsgBranchNameControlChars
+		if msg := validator.ValidateBranchName(branchName); msg != "" {
+			return msg
 		}
 	}
 	if prURL != "" && !githubPRURLRe.MatchString(prURL) {

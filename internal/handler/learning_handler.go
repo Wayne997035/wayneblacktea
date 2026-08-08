@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -306,6 +307,16 @@ func (h *LearningHandler) CreateConcept(c echo.Context) error {
 	if req.Title == "" || req.Content == "" {
 		return c.JSON(http.StatusBadRequest, errResp("title and content are required"))
 	}
+
+	// Tag character whitelist, matching the MCP create_concept path
+	// (internal/mcp/tools_learning.go's sanitizeTags → validator.SanitizeTags).
+	// Sprint 8-7 gap C: this HTTP endpoint previously stored raw tags
+	// unchecked, so a tag like "<script>" reached the DB verbatim.
+	cleanedTags, reason := validator.SanitizeTags(req.Tags)
+	if reason != "" {
+		return c.JSON(http.StatusBadRequest, errResp(reason))
+	}
+	req.Tags = cleanedTags
 
 	concept, err := h.store.CreateConcept(c.Request().Context(), req.Title, req.Content, req.Tags)
 	if err != nil {

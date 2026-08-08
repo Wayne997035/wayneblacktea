@@ -2,11 +2,14 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
@@ -100,6 +103,23 @@ func validateAddKnowledgeRequest(req addKnowledgeRequest) string {
 	return ""
 }
 
+// sanitizeKnowledgeControlChars rejects control characters in title (short,
+// single-line, rendered in lists) and content (long-form, may be markdown so
+// newlines are semantic content and stay allowed). Neither field is silently
+// modified — bad input is a hard error, not a stripped write. Mirrors
+// internal/mcp/tools_knowledge.go's sanitizeKnowledgeText via the same shared
+// sanitize.RejectControlChars function (sprint 8-7 gap A: this check
+// previously existed only on the MCP path).
+func sanitizeKnowledgeControlChars(title, content string) error {
+	if _, err := sanitize.RejectControlChars(title, knowledgeMaxTitleLen, false); err != nil {
+		return fmt.Errorf("title: %w", err)
+	}
+	if _, err := sanitize.RejectControlChars(content, knowledgeMaxContentLen, true); err != nil {
+		return fmt.Errorf("content: %w", err)
+	}
+	return nil
+}
+
 // AddKnowledge creates a new knowledge item.
 func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 	var req addKnowledgeRequest
@@ -109,6 +129,15 @@ func (h *KnowledgeHandler) AddKnowledge(c echo.Context) error {
 	if msg := validateAddKnowledgeRequest(req); msg != "" {
 		return c.JSON(http.StatusBadRequest, errResp(msg))
 	}
+	if err := sanitizeKnowledgeControlChars(req.Title, req.Content); err != nil {
+		return c.JSON(http.StatusBadRequest, errResp(err.Error()))
+	}
+
+	cleanedTags, reason := validator.SanitizeTags(req.Tags)
+	if reason != "" {
+		return c.JSON(http.StatusBadRequest, errResp(reason))
+	}
+	req.Tags = cleanedTags
 
 	item, err := h.store.AddItem(c.Request().Context(), knowledge.AddItemParams{
 		Type:          req.Type,

@@ -61,6 +61,13 @@ var (
 	ErrNotFound = errors.New("gtd: not found")
 	// ErrConflict is returned on uniqueness violations (e.g. duplicate project name).
 	ErrConflict = errors.New("gtd: conflict")
+	// ErrInvalidRepoName is returned when a non-empty repo_name fails
+	// validator.IsValidRepoName. Store-layer backstop for CreateProject /
+	// UpdateProject on both backends — MCP and HTTP callers already validate
+	// before reaching the store, but this closes the gap for any other
+	// caller (CLI, reconcile, future integrations) that writes projects
+	// directly through the store.
+	ErrInvalidRepoName = errors.New("gtd: repo_name must match [a-zA-Z0-9_.-]{1,100}")
 )
 
 // CreateProjectParams holds parameters for creating a new project.
@@ -130,6 +137,7 @@ type UpdateTaskParams struct {
 	DueDate     *time.Time
 	Context     *string
 	Status      *string
+	Kind        *string  // nil → preserve existing; set to one of validator.ValidTaskKinds (GTD-c282cc04)
 	BranchName  *string  // nil → preserve existing; set to update (migration 000047)
 	PRUrl       *string  // nil → preserve existing; set to update (migration 000047)
 	CommitSHAs  []string // nil → preserve existing; set to append/replace (migration 000047)

@@ -86,7 +86,7 @@ Once `wbt setup` finishes, open Claude Code from any directory and try:
 # Add a task
 > add_task "Implement login flow" --project my-project
 
-# Atomically confirm a multi-step plan
+# Atomically confirm a multi-step plan (tasks+decisions; work_session is separate best-effort)
 > confirm_plan {phases: [...], decisions: [...]}
 
 # Save a knowledge note (keyword + semantic vector search)

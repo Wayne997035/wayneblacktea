@@ -1220,6 +1220,104 @@ func TestGTDStore_UpdateTask_PG_NotFound(t *testing.T) {
 	}
 }
 
+// TestGTDStore_UpdateTask_PG_Kind_AllValidValues verifies that every kind in
+// validator.ValidTaskKinds round-trips through UpdateTask on the Postgres
+// backend (GTD c282cc04 item #1). Paired with
+// TestGTDStore_UpdateTask_Kind_AllValidValues per backend-security-design.md §6.5.
+func TestGTDStore_UpdateTask_PG_Kind_AllValidValues(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	for _, k := range []string{"general", "fix-pr", "feature", "refactor", "research", "chore"} {
+		t.Run(k, func(t *testing.T) {
+			task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-kind-" + k})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			kind := k
+			updated, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Kind: &kind})
+			if err != nil {
+				t.Fatalf("UpdateTask kind=%q: %v", k, err)
+			}
+			if updated.Kind != k {
+				t.Errorf("kind = %q, want %q", updated.Kind, k)
+			}
+		})
+	}
+}
+
+// TestGTDStore_UpdateTask_PG_Kind_OmittedPreservesExisting verifies that
+// updating an unrelated field (priority) without touching Kind leaves the
+// existing kind value untouched on the Postgres backend.
+func TestGTDStore_UpdateTask_PG_Kind_OmittedPreservesExisting(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "pg-kind-preserve", Kind: "feature"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if task.Kind != "feature" {
+		t.Fatalf("seed kind = %q, want %q", task.Kind, "feature")
+	}
+
+	newPrio := int32(1)
+	updated, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Priority: &newPrio})
+	if err != nil {
+		t.Fatalf("UpdateTask (priority only): %v", err)
+	}
+	if updated.Kind != "feature" {
+		t.Errorf("kind should be preserved when omitted: got %q, want %q", updated.Kind, "feature")
+	}
+}
+
+// TestGTDStore_CreateProject_PG_InvalidRepoName verifies the store-layer
+// backstop added for GTD c282cc04 item #2: CreateProject rejects a
+// non-empty repo_name that fails validator.IsValidRepoName, even when the
+// caller bypassed MCP/HTTP-layer validation.
+func TestGTDStore_CreateProject_PG_InvalidRepoName(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	_, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "pg-bad-repo-" + wsID.String()[:8], Title: "t", Area: "a",
+		RepoName: "bad repo name!",
+	})
+	if !errors.Is(err, gtd.ErrInvalidRepoName) {
+		t.Errorf("expected gtd.ErrInvalidRepoName, got: %v", err)
+	}
+}
+
+// TestGTDStore_UpdateProject_PG_InvalidRepoName is the UpdateProject
+// counterpart to TestGTDStore_CreateProject_PG_InvalidRepoName.
+func TestGTDStore_UpdateProject_PG_InvalidRepoName(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	p, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "pg-bad-repo-update-" + wsID.String()[:8], Title: "t", Area: "a",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	bad := "bad repo name!"
+	_, err = store.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+		Title: "Updated Title", Status: gtd.ProjectStatusActive, RepoName: &bad,
+	})
+	if !errors.Is(err, gtd.ErrInvalidRepoName) {
+		t.Errorf("expected gtd.ErrInvalidRepoName, got: %v", err)
+	}
+}
+
 // TestStore_TasksForTimeline_WorkspaceIsolation verifies workspace B cannot
 // see workspace A's rows.
 func TestStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {

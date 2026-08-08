@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
@@ -54,6 +55,9 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 			c.Logger().Errorf("ListDecisions ByProject: %v", err)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 		}
+		if decisions == nil {
+			decisions = []db.Decision{} // list endpoints MUST return [] not null (a nil slice marshals to JSON null and breaks frontend .length)
+		}
 		return c.JSON(http.StatusOK, decisions)
 	}
 
@@ -63,6 +67,9 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 			c.Logger().Errorf("ListDecisions ByRepo: %v", err)
 			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 		}
+		if decisions == nil {
+			decisions = []db.Decision{}
+		}
 		return c.JSON(http.StatusOK, decisions)
 	}
 
@@ -70,6 +77,9 @@ func (h *DecisionHandler) ListDecisions(c echo.Context) error {
 	if err != nil {
 		c.Logger().Errorf("ListDecisions All: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+	}
+	if decisions == nil {
+		decisions = []db.Decision{}
 	}
 	return c.JSON(http.StatusOK, decisions)
 }
@@ -92,6 +102,14 @@ func (h *DecisionHandler) LogDecision(c echo.Context) error {
 	}
 	if req.Title == "" || req.Context == "" || req.Decision == "" || req.Rationale == "" {
 		return c.JSON(http.StatusBadRequest, errResp("title, context, decision and rationale are required"))
+	}
+
+	// Noise/injection check — same validator.CheckDecisionNoise the MCP
+	// log_decision tool runs (internal/mcp/tools_decision.go:64), so a
+	// <script> tag or markdown fence in any of the four text fields is
+	// rejected regardless of which entry point the caller used.
+	if reason := validator.CheckDecisionNoise(req.Title, req.Context, req.Decision, req.Rationale); reason != "" {
+		return c.JSON(http.StatusBadRequest, errResp("invalid params: "+reason))
 	}
 
 	// Vagueness check on rationale (warn-only; decisions are not task descriptions).

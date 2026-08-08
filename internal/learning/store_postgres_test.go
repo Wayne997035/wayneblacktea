@@ -2,6 +2,8 @@ package learning_test
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
@@ -70,6 +72,35 @@ func TestStore_SubmitReview_HappyPath(t *testing.T) {
 	}
 	if found.LastReviewedAt == nil {
 		t.Error("expected LastReviewedAt to be set after SubmitReview")
+	}
+}
+
+// TestStore_DueReviews_EmptyReturnsEmptyArrayNotNull is the Postgres-side
+// regression lock for the empty-list-must-be-[]-not-null contract: DueReviews
+// already builds reviews := make([]DueReview, 0, len(rows)) (store.go:93), so
+// this test should always pass — it exists so a future edit that swaps that
+// make() call for a bare `var reviews []DueReview` declaration is caught here
+// instead of only being caught on the SQLite side (which had exactly that bug
+// until this same change — see internal/storage/sqlite/learning_test.go's
+// TestLearningStore_DueReviews_EmptyReturnsEmptyArrayNotNull). Asserts the raw
+// marshaled JSON text, not len(), because json.Unmarshal of "null" and "[]"
+// both produce a zero-length slice and are therefore indistinguishable via len().
+func TestStore_DueReviews_EmptyReturnsEmptyArrayNotNull(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New() // fresh, isolated workspace — guaranteed zero rows
+	store := learning.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	reviews, err := store.DueReviews(ctx, 10)
+	if err != nil {
+		t.Fatalf("DueReviews: %v", err)
+	}
+	raw, err := json.Marshal(reviews)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "[]" {
+		t.Errorf("raw JSON = %q, want exactly %q (nil slice must not serialize to JSON null)", got, "[]")
 	}
 }
 

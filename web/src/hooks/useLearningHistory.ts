@@ -10,5 +10,7 @@ export function useLearningHistory(status?: string) {
       return apiFetch<ConceptHistoryItem[]>(`/api/learning/history${params}`)
     },
     staleTime: 30_000,
+    // Defence: backend may return JSON null for an empty list; never let a null reach .length.
+    select: (data) => data ?? [],
   })
 }
