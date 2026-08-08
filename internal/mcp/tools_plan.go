@@ -28,8 +28,11 @@ func (s *Server) registerPlanTools(ms *server.MCPServer) {
 				"in_progress work_session linking the phase tasks is created separately, "+
 				"best-effort, AFTER the transaction commits -- a work-session failure never rolls "+
 				"back the already-committed tasks/decisions. ALWAYS check the response text/"+
-				"is_error rather than assuming success: a failure means no phase task or decision "+
-				"was written; a success response lists every task/decision actually created. "+
+				"is_error rather than assuming success: a success response lists every "+
+				"task/decision actually created, and a failure response states exactly what was "+
+				"written. A failure whose message says OUTCOME UNKNOWN means the plan MAY already "+
+				"be stored -- do NOT re-send it; call list_tasks/list_decisions first and only "+
+				"retry what is genuinely missing. "+
 				"Use this INSTEAD of calling add_task + log_decision separately — it is more reliable.",
 		),
 		mcp.WithString(
@@ -248,7 +251,10 @@ func (s *Server) materializePlanPg(
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, nil, fmt.Errorf("committing plan transaction: %w", err)
+		return nil, nil, nil, fmt.Errorf(
+			"committing plan transaction (OUTCOME UNKNOWN: the commit may or may not have been "+
+				"applied by the database; verify with list_tasks/list_decisions before retrying): %w", err,
+		)
 	}
 	return created, ids, logged, nil
 }
@@ -316,7 +322,10 @@ func (s *Server) materializePlanSQLite(
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, nil, nil, fmt.Errorf("committing plan transaction: %w", err)
+		return nil, nil, nil, fmt.Errorf(
+			"committing plan transaction (OUTCOME UNKNOWN: the commit may or may not have been "+
+				"applied by the database; verify with list_tasks/list_decisions before retrying): %w", err,
+		)
 	}
 	return created, ids, logged, nil
 }

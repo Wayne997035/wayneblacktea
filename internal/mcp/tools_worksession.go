@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -33,14 +34,16 @@ var validWorkSessionSources = map[string]bool{
 // (defence in depth), so this constant only governs the MCP-layer default.
 const maxWorkSessionListLimit = worksession.MaxListRecentLimit
 
-// maxVerificationCommandLen / maxVerificationOutputExcerptLen / maxBranchNameLen
-// are server-side length guards for finish_work / start_work. mcp.MaxLength()
-// on the tool schema is client-side advisory only and is not enforced by the
-// mcp-go server runtime (see existing title/goal/summary guards below).
+// maxVerificationCommandLen / maxVerificationOutputExcerptLen are server-side
+// length guards for finish_work. mcp.MaxLength() on the tool schema is
+// client-side advisory only and is not enforced by the mcp-go server runtime
+// (see existing title/goal/summary guards below). branch_name's own limit
+// (start_work) is validator.MaxBranchNameLen — the single shared rune-counted
+// cap enforced by parseOptionalBranchName below, not a standalone constant
+// here (sprint 8-7 gap E).
 const (
 	maxVerificationCommandLen       = 500
 	maxVerificationOutputExcerptLen = 2000
-	maxBranchNameLen                = 200
 )
 
 // maxEvidenceItems caps the number of items accepted per finish_work's
@@ -80,7 +83,9 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 			mcp.MaxLength(8192)),
 		mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 		mcp.WithString("source", mcp.Description("Source trigger: 'manual', 'confirm_plan', 'hook', or 'other'. Defaults to 'manual'.")),
-		mcp.WithString("branch_name", mcp.Description("Git branch this session is working on (optional)"), mcp.MaxLength(maxBranchNameLen)),
+		mcp.WithString("branch_name",
+			mcp.Description("Git branch this session is working on (optional)"),
+			mcp.MaxLength(validator.MaxBranchNameLen)),
 		mcp.WithString("assignee", mcp.Description(
 			"Canonical actor initiating this session (one of: claude, codex, human — or a recognized alias). "+
 				"Stamped onto any linked task_id that currently has no assignee when it flips to in_progress. "+
@@ -226,16 +231,22 @@ func parseTaskIDs(args map[string]any) ([]uuid.UUID, *mcp.CallToolResult) {
 	return parseTaskIDsFromField(args, "task_ids")
 }
 
-// parseOptionalBranchName extracts and length-validates the optional
-// branch_name field from start_work's arguments. Returns (nil, nil) when the
-// field is absent.
+// parseOptionalBranchName extracts and validates the optional branch_name
+// field from start_work's arguments. Returns (nil, nil) when the field is
+// absent. Delegates to validator.ValidateBranchName — the same 255-rune,
+// control-character-rejecting implementation add_task/update_task
+// (tools_gtd.go) and the HTTP path (gtd_handler.go) already share — instead
+// of a standalone byte-length check, so start_work's branch_name is no
+// longer the one writer sprint 8-7 gap E left un-migrated (a byte cap here
+// rejected CJK branch names the rune-counted writers accepted, leaving the
+// same branch unrecordable via start_work while add_task took it fine).
 func parseOptionalBranchName(args map[string]any) (*string, *mcp.CallToolResult) {
 	branchName := stringArg(args, "branch_name")
 	if branchName == "" {
 		return nil, nil
 	}
-	if len(branchName) > maxBranchNameLen {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("branch_name exceeds %d character limit", maxBranchNameLen))
+	if msg := validator.ValidateBranchName(branchName); msg != "" {
+		return nil, mcp.NewToolResultError(msg)
 	}
 	return &branchName, nil
 }

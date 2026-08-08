@@ -26,11 +26,17 @@ var githubPRURLRe = validator.GitHubPRURLRe
 const errMsgInvalidPRURL = "pr_url must be a valid GitHub PR URL (https://github.com/owner/repo/pull/N)"
 
 // validateBranchName delegates to the shared internal/validator implementation
-// so the HTTP and MCP (tools_gtd.go) entry points enforce byte-identical
-// branch_name invariants — see validator.ValidateBranchName's doc comment
-// (sprint 8-7 gap E: this used to be a hand-duplicated byte-counting check
-// here that disagreed with MCP's own byte-counting check on CJK input; both
-// are now rune-counted and both call this single function).
+// so every branch_name writer enforces byte-identical invariants — see
+// validator.ValidateBranchName's doc comment (sprint 8-7 gap E: this used to
+// be a hand-duplicated byte-counting check here that disagreed with MCP's own
+// byte-counting checks on CJK input). All three writers now call this single
+// function and are rune-counted: this HTTP handler, MCP add_task/update_task
+// (internal/mcp/tools_gtd.go), and MCP start_work
+// (internal/mcp/tools_worksession.go's parseOptionalBranchName). If a fourth
+// branch_name writer is ever added, it MUST also call
+// validator.ValidateBranchName directly rather than reimplementing a length
+// check — this comment intentionally names every current writer so a future
+// omission is a visible discrepancy, not a silent gap.
 func validateBranchName(s string) string {
 	return validator.ValidateBranchName(s)
 }
