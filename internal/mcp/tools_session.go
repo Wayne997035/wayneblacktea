@@ -53,9 +53,23 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError("invalid params: " + reason), nil
 	}
 
+	// repo_name goes through the same checkCommandField gate as
+	// next_actions.title/command/expected below (PR #157 round-2 security
+	// review m-R2): before this check, repo_name was the only free-text field
+	// of this handoff that accepted raw control characters — newline, ESC,
+	// NUL, and U+2028 all passed write-time validation unmodified. It renders
+	// in the same resource payload as those fields (resources.go
+	// handoffResourceRepoNameMaxRunes doc comment) and carries the same
+	// prompt-injection risk, so it must be rejected here rather than merely
+	// clipped at read time.
+	repoName := stringArg(args, "repo_name")
+	if reason := checkCommandField("repo_name", repoName); reason != "" {
+		return mcp.NewToolResultError("invalid params: " + reason), nil
+	}
+
 	p := session.HandoffParams{
 		Intent:         intent,
-		RepoName:       stringArg(args, "repo_name"),
+		RepoName:       repoName,
 		ContextSummary: contextSummary,
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
