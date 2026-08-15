@@ -57,7 +57,7 @@ func OpenPool(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 	// Cap connections per backend-security rule 5.3: CLI invocations are
 	// short-lived; default pgxpool MaxConns=4 can exhaust the Aiven free-tier
 	// 20-connection budget under automated tool invocations.
-	pgcfg.MaxConns = 2
+	pgcfg.MaxConns = storage.HookPoolMaxConns
 	pgcfg.MinConns = 0
 	pgcfg.MaxConnLifetime = 30 * time.Second
 

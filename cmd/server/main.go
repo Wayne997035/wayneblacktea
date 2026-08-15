@@ -716,7 +716,7 @@ func wireScheduler(
 	mergedPRsStore mergedprs.Store,
 ) (*scheduler.Scheduler, error) {
 	sched, err := scheduler.New(
-		stores.Learning(), discordClient, notionClient, briefingStores, aiw.conceptReviewer,
+		stores.Learning(), wireDiscordSender(discordClient), notionClient, briefingStores, aiw.conceptReviewer,
 		stores.GTD(), stores.Decision(), stores.Proposal(), aiw.reflector,
 		snapStore, snapGen, stores.WorkspaceID(), pruner, stores.Playbook(),
 		stores.PgxPool(),   // nil under SQLite → daily-discipline-prune skipped gracefully
@@ -937,6 +937,23 @@ func wireScheduler(
 		}
 	}
 	return sched, nil
+}
+
+// wireDiscordSender converts a possibly-nil *discord.Client into the
+// scheduler.DiscordSender interface without boxing a typed nil. Passing
+// discordClient directly to an interface-typed parameter makes a nil
+// *discord.Client a NON-nil DiscordSender (Go's typed-nil-interface
+// footgun) — sendDailyReviewReminder's `s.discord == nil` guard
+// (scheduler.go:842) then never fires and .Send() panics on the nil
+// receiver. Confirmed root cause of the SIGSEGV in server.log
+// (discord.(*Client).post called with a nil receiver from
+// sendDailyReviewReminder). Same pattern as wirePendingProposalsPruneSQLite
+// above for the same bug class on a different field.
+func wireDiscordSender(discordClient *discord.Client) scheduler.DiscordSender {
+	if discordClient == nil {
+		return nil
+	}
+	return discordClient
 }
 
 // wirePendingProposalsPruneSQLite wires the SQLite-only counterpart to

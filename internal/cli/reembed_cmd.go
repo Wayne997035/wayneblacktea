@@ -183,7 +183,7 @@ func openReembedPool() (*pgxpool.Pool, error) {
 		// into the message, which then lands in stderr / terminal history.
 		return nil, fmt.Errorf("reembed: invalid DATABASE_URL (check format; credentials redacted)")
 	}
-	cfg.MaxConns = 2
+	cfg.MaxConns = storage.HookPoolMaxConns
 	cfg.MinConns = 0
 	cfg.MaxConnLifetime = 30 * time.Second
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/scheduler"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
@@ -119,5 +120,34 @@ func TestWirePendingProposalsPruneSQLite_PostgresBackend_StaysTrueNilInterface(t
 		t.Fatal("expected pendingProposalsPruneSQLite to stay a TRUE nil interface on Postgres " +
 			"(SqliteDB() == nil); a non-nil interface here means the typed-nil guard regressed and " +
 			"a Postgres deployment would wire a broken SQLite prune store")
+	}
+}
+
+// TestWireDiscordSender_NilClient_StaysTrueNilInterface covers the crash
+// scenario (DISCORD_WEBHOOK_URL unset): discord.NewClient() returns a nil
+// *discord.Client, and wireDiscordSender must hand scheduler.New a TRUE nil
+// DiscordSender -- not a non-nil interface boxing a nil pointer. Unlike
+// pendingProposalsPruneSQLiteFieldIsNil above, no reflection is needed here:
+// wireDiscordSender's return value is directly inspectable in this package,
+// so `dc == nil` on the interface value itself is the whole test.
+func TestWireDiscordSender_NilClient_StaysTrueNilInterface(t *testing.T) {
+	dc := wireDiscordSender(nil)
+	if dc != nil {
+		t.Fatal("expected wireDiscordSender(nil) to return a TRUE nil DiscordSender; got a non-nil " +
+			"interface -- this means a nil *discord.Client got boxed and " +
+			"sendDailyReviewReminder's `s.discord == nil` guard (scheduler.go:842) will not fire, " +
+			"reproducing the SIGSEGV this fix exists to prevent")
+	}
+}
+
+// TestWireDiscordSender_NonNilClient_PassesThrough covers the happy path
+// (DISCORD_WEBHOOK_URL set): a real, non-nil *discord.Client must still reach
+// the scheduler as a usable, non-nil DiscordSender.
+func TestWireDiscordSender_NonNilClient_PassesThrough(t *testing.T) {
+	client := &discord.Client{}
+	dc := wireDiscordSender(client)
+	if dc == nil {
+		t.Fatal("expected wireDiscordSender to pass a non-nil *discord.Client through as a non-nil " +
+			"DiscordSender")
 	}
 }

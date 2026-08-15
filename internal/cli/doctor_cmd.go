@@ -107,7 +107,7 @@ func RunDoctor(_ []string) error {
 		emitDoctor(newDoctorSnapshot())
 		return nil
 	}
-	cfg.MaxConns = 2
+	cfg.MaxConns = storage.HookPoolMaxConns
 	cfg.MinConns = 0
 	cfg.MaxConnLifetime = 30 * time.Second
 	tlsCfg, tlsErr := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))

@@ -238,7 +238,7 @@ func newHookPgxPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing DSN: %w", err)
 	}
-	cfg.MaxConns = 2
+	cfg.MaxConns = storage.HookPoolMaxConns
 	cfg.MinConns = 0
 	cfg.MaxConnLifetime = 30 * time.Second
 	tlsCfg, err := storage.BuildTLSConfig(os.Getenv("APP_ENV"), os.Getenv("PGSSLROOTCERT"))
