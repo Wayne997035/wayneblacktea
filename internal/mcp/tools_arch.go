@@ -16,26 +16,74 @@ const (
 	maxSlugLen    = 128
 	maxSummaryLen = 8000
 	maxFileMapRaw = 128 * 1024 // 128 KB
-	// maxLastCommitSHALen is the byte cap for last_commit_sha, used at BOTH
-	// write time (validateLastCommitSHA) and read time
-	// (wrapUntrustedArchSnapshot's clipSafe call) — unlike maxSlugLen/
-	// statusSlugRe below, there is no format allow-list for this field, so
-	// the length cap alone is what bounds it on the way back out. A real
-	// `git rev-parse HEAD` SHA is 40 hex chars; `git describe` output (e.g.
-	// "v1.2.3-45-gabc1234-dirty") rarely exceeds 50. 128 matches this file's
-	// existing maxSlugLen order of magnitude (Lead directive, R4 dispatch
-	// round 2: reference this file's own consts, not an unrelated one in
-	// resources.go) with headroom well above both realistic shapes.
+
+	// maxLastCommitSHAWriteBytes bounds last_commit_sha at write time
+	// (validateLastCommitSHA's `len(*sha) >` check, which counts BYTES —
+	// Go's len() on a string is always byte length).
 	//
-	// The read-time use matters independently of the write-time one: the
-	// write-time cap only binds rows written AFTER it shipped. A row written
-	// before it — including one already poisoned through the same gap this
-	// closes (R4 dispatch, M-R6/m-R7) — is not retroactively cleaned, so the
-	// read side is the only backstop for such pre-existing data. For any
-	// legitimate value (well under 128 bytes), clipSafe's clip step never
-	// actually triggers and the byte-for-byte content survives untouched —
-	// see TestWrapUntrustedArchSnapshot_LegitSHAAndSlugByteForByte.
-	maxLastCommitSHALen = 128
+	// Value comes from PRODUCTION data, not from the shape of a single git
+	// SHA. As of 2026-08-15 (PR #157 round 5, M-R9, security-engineer) the
+	// `coverones` row's last_commit_sha stores a 14-repo `name:sha` map —
+	// "multi-repo gateway:8a5ad46 user:5a501da kyc:c1b624a ... dev-stack:
+	// 8e2c092" — 252 bytes, a multi-repo workspace convention, not a single
+	// `git rev-parse HEAD` output. Measured with:
+	//
+	//   PGSSLROOTCERT=... psql "$DATABASE_URL" -At -c \
+	//     "SELECT max(length(last_commit_sha)) FROM project_arch;"
+	//
+	// 512 gives that row ~2x headroom to grow without hitting another
+	// cliff, while staying ~350x below the 180 KB unbounded case m-R7
+	// closed (TestWrapUntrustedArchSnapshot_CJKWorstCaseByteBound).
+	//
+	// The previous value (128) was derived from the FIELD NAME, not from a
+	// measurement ("a real SHA is 40 hex chars; git describe rarely exceeds
+	// 50") — that reasoning never looked at what was actually stored, so it
+	// missed the coverones row entirely: every upsert to it was hard-
+	// rejected (never fixed by retrying — the value never got smaller) and
+	// every read of it silently dropped 7 of the 15 stored `name:sha`
+	// entries. If this bound needs to move again, measure production
+	// first — do not re-derive it from the field name.
+	//
+	// Known trade-off, NOT fixed by this change: raising this cap also
+	// raises the storage capacity for m-R11 (last_commit_sha has no self-
+	// healing write path in mcpInstructions' forced patch-back list, so a
+	// planted payload here persists indefinitely) by the same ~4x this cap
+	// grew. That is a tracked, separate finding; this constant only fixes
+	// the availability regression production data hit today.
+	maxLastCommitSHAWriteBytes = 512
+
+	// maxLastCommitSHAReadRunes bounds last_commit_sha at read time
+	// (wrapUntrustedArchSnapshot's clipSafe call, which counts RUNES —
+	// clipRunes/truncateRunes both range over `[]rune(s)`, not bytes).
+	//
+	// This is a SEPARATE constant from maxLastCommitSHAWriteBytes on
+	// purpose and must not be merged back into one shared value (m-R10, R4
+	// security review): before this split, a single `maxLastCommitSHALen`
+	// was used at both call sites with a doc comment claiming a "byte cap
+	// ... used at BOTH" — false for the read side, whose actual worst case
+	// is up to 4x the documented byte count for astral (4-byte) runes (128
+	// runes measured at 515 bytes worst case pre-fix, R4 security review
+	// m-R10 / 5.5). Naming the unit in each constant is what makes that
+	// class of error impossible to reintroduce silently — a reviewer
+	// grepping for `maxLastCommitSHAReadRunes` in a byte-counting context
+	// (or vice versa) has a mismatched name to flag, not just a mismatched
+	// comment to miss.
+	//
+	// Set to the SAME numeric value as the write cap (512), not derived
+	// independently, so that any value which cleared the write-time byte
+	// check also clears the read-time rune check unclipped: byte count is
+	// always >= rune count for UTF-8, so a string that fit in 512 bytes has
+	// at most 512 runes, and 512 runes is therefore never a tighter bound
+	// than the write cap already was. This is what keeps legitimate values
+	// byte-for-byte on the way out — see
+	// TestWrapUntrustedArchSnapshot_LegitSHAAndSlugByteForByte and
+	// TestHandleUpsertProjectArch_ProductionCoveronesShapeRoundTrips.
+	//
+	// Worst-case OUTPUT size in bytes is therefore up to 512*4=2048 bytes
+	// (all-astral-rune content on a pre-existing/legacy row that bypassed
+	// the write gate entirely, before it existed) — still ~88x below the
+	// 180 KB unbounded case m-R7 closed, so this does not reopen m-R7.
+	maxLastCommitSHAReadRunes = 512
 )
 
 func (s *Server) registerArchTools(ms *server.MCPServer) {
@@ -149,8 +197,8 @@ func validateLastCommitSHA(sha *string) *mcp.CallToolResult {
 	if reason := checkCommandField("last_commit_sha", *sha); reason != "" {
 		return mcp.NewToolResultError("invalid params: " + reason)
 	}
-	if len(*sha) > maxLastCommitSHALen {
-		return mcp.NewToolResultError(fmt.Sprintf("last_commit_sha too long (max %d chars)", maxLastCommitSHALen))
+	if len(*sha) > maxLastCommitSHAWriteBytes {
+		return mcp.NewToolResultError(fmt.Sprintf("last_commit_sha too long (max %d bytes)", maxLastCommitSHAWriteBytes))
 	}
 	return nil
 }
@@ -317,8 +365,11 @@ func (s *Server) handleGetProjectArch(ctx context.Context, req mcp.CallToolReque
 //     one of them faking a boundary for the fenced Summary above.
 //
 //   - Slug and LastCommitSHA are clipSafe'd (clip to maxSlugLen /
-//     maxLastCommitSHALen respectively, neutralise, clip again) but NOT
-//     fenced — same unfenced-but-neutralised treatment as FileMap, justified
+//     maxLastCommitSHAReadRunes respectively — the latter a RUNE cap, not
+//     the write side's maxLastCommitSHAWriteBytes BYTE cap; see
+//     maxLastCommitSHAReadRunes' own doc comment for why those are two
+//     separate constants, neutralise, clip again) but NOT fenced — same
+//     unfenced-but-neutralised treatment as FileMap, justified
 //     the same way: they are short values (a repo identifier, a git SHA),
 //     not prose. The clip step matters even though both fields also have a
 //     write-time length cap (validateArchSlug / validateLastCommitSHA in
@@ -359,7 +410,7 @@ func wrapUntrustedArchSnapshot(snap *arch.Snapshot, includeFileMap bool) *arch.S
 	out := *snap
 	out.Slug = clipSafe(snap.Slug, maxSlugLen)
 	out.Summary = fenceArchSummary(snap.Summary)
-	out.LastCommitSHA = clipSafe(snap.LastCommitSHA, maxLastCommitSHALen)
+	out.LastCommitSHA = clipSafe(snap.LastCommitSHA, maxLastCommitSHAReadRunes)
 	out.FileMap = nil
 	if includeFileMap && len(snap.FileMap) > 0 {
 		fileMap := make(map[string]string, len(snap.FileMap))

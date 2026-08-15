@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -132,14 +134,14 @@ func TestHandleUpsertProjectArch_SlugAllowlistRejectsNonAlnum(t *testing.T) {
 }
 
 // TestHandleUpsertProjectArch_LastCommitSHATooLongRejected pins the
-// maxLastCommitSHALen write-time bound (m-R7).
+// maxLastCommitSHAWriteBytes write-time bound (m-R7).
 func TestHandleUpsertProjectArch_LastCommitSHATooLongRejected(t *testing.T) {
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
 	result := callUpsertProjectArch(t, srv, map[string]any{
 		"slug": "repo", "summary": "s",
-		"last_commit_sha": strings.Repeat("a", maxLastCommitSHALen+1),
+		"last_commit_sha": strings.Repeat("a", maxLastCommitSHAWriteBytes+1),
 	})
 	if !result.IsError {
 		t.Fatalf("expected an error result for over-length last_commit_sha, got success: %+v", result.Content)
@@ -147,6 +149,161 @@ func TestHandleUpsertProjectArch_LastCommitSHATooLongRejected(t *testing.T) {
 	if store.upserted != nil {
 		t.Errorf("store must not be called when last_commit_sha fails length validation, got %+v", store.upserted)
 	}
+}
+
+// prodCoveronesSHA is the exact production value of project_arch.
+// last_commit_sha for slug="coverones" (252 bytes), captured 2026-08-15 via:
+//
+//	PGSSLROOTCERT=... psql "$DATABASE_URL" -At -c \
+//	  "SELECT last_commit_sha FROM project_arch WHERE slug='coverones';"
+//
+// It is a 14-repo `name:sha` map, not a single `git rev-parse HEAD` output —
+// the shape that TestWrapUntrustedArchSnapshot_LegitSHAAndSlugByteForByte's
+// self-authored "40 hex chars" / "git describe" fixtures never covered
+// (R4 security review M-R9: that gap is exactly why the old
+// maxLastCommitSHALen=128 write-time rejection and read-time truncation of
+// this real row went undetected until someone queried production).
+const prodCoveronesSHA = "multi-repo gateway:8a5ad46 user:5a501da kyc:c1b624a marketplace:86498f4 " +
+	"workspace:0e4125f payment:a8fa4b6 notification:1d0628e file:9cb3f05 " +
+	"chat-gateway:4db2196 ocr-sidecar:30ecec5 avatar-jojo:1683f97 admin-web:6cd817a " +
+	"web-app:cb520e3 dev-stack:8e2c092"
+
+// TestHandleUpsertProjectArch_ProductionCoveronesShapeRoundTrips pins M-R9
+// (R4/R5 security review): the production coverones row must (1) be
+// ACCEPTED at write time — not rejected as "too long" — and (2) come back
+// out of get_project_arch byte-for-byte identical to what was written, not
+// silently truncated. Both were false under the old 128-byte cap: write
+// hard-rejected this 252-byte value every session, and read truncated it to
+// 131 bytes, dropping 7 of the 15 `name:sha` entries.
+//
+// MUTATION (manually verified, not shipped as code): reverting
+// maxLastCommitSHAWriteBytes / maxLastCommitSHAReadRunes to 128 makes BOTH
+// assertions below fail — write.IsError=true ("last_commit_sha too long
+// (max 128 bytes)") and, independently (using fakeArchStore so the read
+// path is exercised even though the write above would have rejected this
+// row), the read-side round-trip truncates to 131 bytes.
+func TestHandleUpsertProjectArch_ProductionCoveronesShapeRoundTrips(t *testing.T) {
+	if got := len(prodCoveronesSHA); got != 252 {
+		t.Fatalf("fixture sanity check failed: prodCoveronesSHA is %d bytes, want 252 (re-verify against production if this changes)", got)
+	}
+
+	t.Run("write_accepted", func(t *testing.T) {
+		store := &recordingArchStore{}
+		srv := &Server{arch: store}
+
+		result := callUpsertProjectArch(t, srv, map[string]any{
+			"slug": "coverones", "summary": "s",
+			"last_commit_sha": prodCoveronesSHA,
+		})
+		if result.IsError {
+			t.Fatalf("production coverones last_commit_sha (252 bytes) was rejected at write time: %+v", result.Content)
+		}
+		if store.upserted == nil || store.upserted.LastCommitSHA == nil {
+			t.Fatal("store.upserted.LastCommitSHA is nil, want the 252-byte value")
+		}
+		if got := *store.upserted.LastCommitSHA; got != prodCoveronesSHA {
+			t.Errorf("last_commit_sha mutated on the write path: got %d bytes, want %d bytes\ngot:  %q\nwant: %q",
+				len(got), len(prodCoveronesSHA), got, prodCoveronesSHA)
+		}
+	})
+
+	t.Run("read_round_trips_byte_for_byte", func(t *testing.T) {
+		s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{
+			ID: "1", Slug: "coverones", Summary: "s", LastCommitSHA: prodCoveronesSHA,
+		}}}
+
+		raw := getProjectArchTextArgs(t, s, map[string]any{"slug": "coverones"})
+		var got arch.Snapshot
+		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+			t.Fatalf("unmarshal get_project_arch response: %v\nraw: %s", err, raw)
+		}
+		if got.LastCommitSHA != prodCoveronesSHA {
+			t.Errorf("last_commit_sha truncated on the read path: got %d bytes, want %d bytes\ngot:  %q\nwant: %q",
+				len(got.LastCommitSHA), len(prodCoveronesSHA), got.LastCommitSHA, prodCoveronesSHA)
+		}
+	})
+}
+
+// TestLastCommitSHA_UnitConsistency pins m-R10 (R4 security review): the
+// write-time bound is BYTES (maxLastCommitSHAWriteBytes, checked via Go's
+// len()) and the read-time bound is RUNES (maxLastCommitSHAReadRunes,
+// checked via clipSafe -> clipRunes -> []rune(s)). A single shared constant
+// used at both sites — the pre-fix state — makes it look like the same unit
+// governs both, which is false for any multi-byte content.
+//
+// MUTATION (manually verified, not shipped as code): collapsing
+// maxLastCommitSHAWriteBytes and maxLastCommitSHAReadRunes back into one
+// constant does not even compile once this test references both names
+// independently below — the two identifiers must both exist and be
+// separately assignable for this file to build. That is deliberate: the
+// m-R10 defect was a doc-comment claim divorced from two code sites sharing
+// one value, so the regression guard is that the two call sites are no
+// longer ABLE to silently share one identifier, not just a runtime
+// assertion that could itself be edited back to match a re-merged constant.
+func TestLastCommitSHA_UnitConsistency(t *testing.T) {
+	if maxLastCommitSHAWriteBytes != 512 || maxLastCommitSHAReadRunes != 512 {
+		t.Fatalf("expected both bounds at 512 (same number, different units): write=%d read=%d",
+			maxLastCommitSHAWriteBytes, maxLastCommitSHAReadRunes)
+	}
+
+	// Sub-test A: a CJK string whose BYTE length exceeds the write cap but
+	// whose RUNE count is well under the read cap. If the write path ever
+	// mistakenly checked rune count instead of byte count (the m-R10
+	// confusion, applied at write time instead of read time), this value
+	// would be wrongly ACCEPTED (200 runes < 512). The correct byte-based
+	// check must REJECT it (600 bytes > 512).
+	t.Run("write_rejects_by_bytes_not_runes", func(t *testing.T) {
+		cjk := strings.Repeat("測", 200) // 200 runes, 600 bytes (3 bytes/rune)
+		if n := utf8.RuneCountInString(cjk); n != 200 {
+			t.Fatalf("fixture sanity check failed: %d runes, want 200", n)
+		}
+		if n := len(cjk); n != 600 {
+			t.Fatalf("fixture sanity check failed: %d bytes, want 600", n)
+		}
+
+		store := &recordingArchStore{}
+		srv := &Server{arch: store}
+		result := callUpsertProjectArch(t, srv, map[string]any{
+			"slug": "repo", "summary": "s", "last_commit_sha": cjk,
+		})
+		if !result.IsError {
+			t.Fatalf("600-byte CJK value (200 runes) was accepted — write path is checking runes, not bytes: %+v", result.Content)
+		}
+	})
+
+	// Sub-test B: a CJK string that DOES clear the write byte cap (510
+	// bytes <= 512) must survive the read-time RUNE clip unmodified — the
+	// read cap (512 runes) is never a tighter bound than a value that
+	// already fit in <= 512 bytes, so it must not "double-clip" a value the
+	// write side already accepted as legitimate.
+	t.Run("read_does_not_double_clip_legit_value", func(t *testing.T) {
+		cjk := strings.Repeat("測", 170) // 170 runes, 510 bytes <= 512 write cap
+		if n := len(cjk); n != 510 {
+			t.Fatalf("fixture sanity check failed: %d bytes, want 510", n)
+		}
+
+		store := &recordingArchStore{}
+		srv := &Server{arch: store}
+		writeResult := callUpsertProjectArch(t, srv, map[string]any{
+			"slug": "repo", "summary": "s", "last_commit_sha": cjk,
+		})
+		if writeResult.IsError {
+			t.Fatalf("510-byte CJK value (170 runes) was rejected at write time, expected acceptance: %+v", writeResult.Content)
+		}
+
+		s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{
+			ID: "1", Slug: "repo", Summary: "s", LastCommitSHA: cjk,
+		}}}
+		raw := getProjectArchTextArgs(t, s, map[string]any{"slug": "repo"})
+		var got arch.Snapshot
+		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+			t.Fatalf("unmarshal get_project_arch response: %v\nraw: %s", err, raw)
+		}
+		if got.LastCommitSHA != cjk {
+			t.Errorf("510-byte/170-rune CJK value was double-clipped on read: got %d bytes (%d runes), want %d bytes (170 runes)\ngot:  %q",
+				len(got.LastCommitSHA), utf8.RuneCountInString(got.LastCommitSHA), len(cjk), got.LastCommitSHA)
+		}
+	})
 }
 
 // TestHandleUpsertProjectArch_LegitCommitSHAAndSlugAccepted proves the new
@@ -250,7 +407,7 @@ func TestWrapUntrustedArchSnapshot_SlugAndLastCommitSHAMarkersNeutralised(t *tes
 // closes.
 //
 // MUTATION (manually verified, not shipped as code): setting maxSlugLen /
-// maxLastCommitSHALen to a small value (e.g. 5) makes this test fail,
+// maxLastCommitSHAReadRunes to a small value (e.g. 5) makes this test fail,
 // printing the truncated value against the original.
 func TestWrapUntrustedArchSnapshot_LegitSHAAndSlugByteForByte(t *testing.T) {
 	currentHEAD := strings.Repeat("a1b2c3d4e5", 4) // 40 hex chars
@@ -300,26 +457,29 @@ func TestWrapUntrustedArchSnapshot_LegitSHAAndSlugByteForByte(t *testing.T) {
 // shipped — mcpInstructions' patch-back list doesn't cover last_commit_sha,
 // so such a row is never self-healing; slug's cap predates this PR but its
 // character allow-list doesn't, so a pre-existing row could still carry this
-// much raw text), well beyond maxSlugLen/maxLastCommitSHALen.
+// much raw text), well beyond maxSlugLen/maxLastCommitSHAReadRunes.
 //
-// designedByteBudget justification: two clipped fields (maxSlugLen=128 /
-// maxLastCommitSHALen=128 runes each, worst case 3 bytes/rune for BMP CJK +
-// 1 clipMarker rune) bound at roughly 2*(128*3+3)=774 bytes; this fixture's
-// short ASCII Summary plus its fence adds well under 200 more; JSON
-// structure (field names, quoting, the two other snapshot fields) adds a
-// few hundred more. 3000 bytes leaves comfortable headroom above that
-// arithmetic while still being orders of magnitude below the ~180 KB
-// unbounded case (m-R7 dispatch, the original CJK finding).
+// designedByteBudget justification (R5 update: maxLastCommitSHAReadRunes
+// grew from 128 to 512 runes, M-R9): two clipped fields (maxSlugLen=128
+// runes + maxLastCommitSHAReadRunes=512 runes, worst case 3 bytes/rune for
+// BMP CJK + 1 clipMarker rune) bound at roughly
+// (128*3+3)+(512*3+3)=1926 bytes; this fixture's short ASCII Summary plus
+// its fence adds well under 200 more; JSON structure (field names, quoting,
+// the two other snapshot fields) adds a few hundred more. 3000 bytes no
+// longer leaves the same margin it did at the old 128/128 bound — see the
+// budget's own runtime measurement below, which is the actual gate, not
+// this arithmetic estimate — while still being orders of magnitude below
+// the ~180 KB unbounded case (m-R7 dispatch, the original CJK finding).
 //
 // MUTATION (manually verified, not shipped as code): setting maxSlugLen AND
-// maxLastCommitSHALen to a very large value (e.g. 10_000_000) makes this
-// test fail, printing the actual byte count close to the raw poisoned input
-// size.
+// maxLastCommitSHAReadRunes to a very large value (e.g. 10_000_000) makes
+// this test fail, printing the actual byte count close to the raw poisoned
+// input size.
 func TestWrapUntrustedArchSnapshot_CJKWorstCaseByteBound(t *testing.T) {
 	const designedByteBudget = 3000
 
 	cjkChunk := "測試字元讀端邊界測試字元讀端邊界測試字元讀端邊界測試字元讀端邊界測試字元讀端邊界"
-	poisonedSlug := strings.Repeat(cjkChunk, 50) // ~4250 runes, far beyond maxSlugLen/maxLastCommitSHALen
+	poisonedSlug := strings.Repeat(cjkChunk, 50) // ~4250 runes, far beyond maxSlugLen/maxLastCommitSHAReadRunes
 	poisonedSHA := strings.Repeat(cjkChunk, 50)
 
 	s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{

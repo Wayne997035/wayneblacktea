@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
@@ -599,23 +600,30 @@ func TestResourceHandoffLatest_FencesForgedMarker(t *testing.T) {
 	}
 }
 
-// TestResourceHandoffLatest_ReadTimeCapEnforced pins the read-time cap
-// itself: content the write-time byte gate lets through (ASCII stays under
-// validator.MaxFieldLen=5000 bytes at far more than
-// handoffResourceIntentMaxRunes/handoffResourceSummaryMaxRunes runes) must
-// still be clipped by this resource — the write-time gate is NOT a
-// substitute for the read-time cap (see the const doc comment in
-// resources.go for why).
-func TestResourceHandoffLatest_ReadTimeCapEnforced(t *testing.T) {
+// TestResourceHandoffLatest_SummaryReadTimeCapEnforced pins the read-time
+// cap for context_summary: content the write-time byte gate lets through
+// (ASCII stays under validator.MaxFieldLen=5000 bytes at far more than
+// handoffResourceSummaryMaxRunes runes) must still be clipped by this
+// resource — the write-time gate is NOT a substitute for the read-time cap
+// (see the const doc comment in resources.go for why).
+//
+// Intent is deliberately NOT covered by this test as of PR #157 round 5
+// (M-R9's sibling finding): handoffResourceIntentMaxRunes now equals
+// validator.MaxFieldLen, so no ASCII value can clear the write-time byte
+// gate while still exceeding the read-time rune gate — that was the whole
+// point of the fix (TestResourceHandoffLatest_IntentNeverTruncatesLegitValue
+// below). handoffResourceSummaryMaxRunes is intentionally unchanged (see its
+// own doc comment), so this half of the old test still exercises a real
+// independent read-time clip.
+func TestResourceHandoffLatest_SummaryReadTimeCapEnforced(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 
 	// ASCII: 1 byte/rune, so this clears the 5000-byte write gate while
-	// exceeding both read-time rune caps.
-	intent := strings.Repeat("i", handoffResourceIntentMaxRunes+500)
+	// exceeding the read-time rune cap.
 	summary := strings.Repeat("s", handoffResourceSummaryMaxRunes+500)
 
 	setRes := callSetSessionHandoff(t, s, map[string]any{
-		"intent":          intent,
+		"intent":          "short intent",
 		"context_summary": summary,
 	})
 	if setRes.IsError {
@@ -629,15 +637,6 @@ func TestResourceHandoffLatest_ReadTimeCapEnforced(t *testing.T) {
 	var got handoffResource
 	parseResourceJSON(t, contents, &got)
 
-	innerIntent := strings.TrimSuffix(strings.TrimPrefix(got.Intent, storedContextBoundaryStart), storedContextBoundaryEnd)
-	if n := utf8.RuneCountInString(innerIntent); n != handoffResourceIntentMaxRunes+1 {
-		t.Errorf("intent inner content = %d runes, want %d (cap + clip marker)",
-			n, handoffResourceIntentMaxRunes+1)
-	}
-	if !strings.HasSuffix(innerIntent, clipMarker) {
-		t.Errorf("intent was not marked as clipped: %q", innerIntent)
-	}
-
 	innerSummary := strings.TrimSuffix(strings.TrimPrefix(got.ContextSummary, storedContextBoundaryStart), storedContextBoundaryEnd)
 	if n := utf8.RuneCountInString(innerSummary); n != handoffResourceSummaryMaxRunes+1 {
 		t.Errorf("context_summary inner content = %d runes, want %d (cap + clip marker)",
@@ -646,6 +645,82 @@ func TestResourceHandoffLatest_ReadTimeCapEnforced(t *testing.T) {
 	if !strings.HasSuffix(innerSummary, clipMarker) {
 		t.Errorf("context_summary was not marked as clipped: %q", innerSummary)
 	}
+}
+
+// TestResourceHandoffLatest_IntentNeverTruncatesLegitValue pins the intent
+// half of PR #157 round 5 (M-R9's sibling finding): production's longest
+// stored intent measured 2339 chars / 2775 bytes (Lead self-review,
+// 2026-08-15), which the previous handoffResourceIntentMaxRunes=2000 cap
+// silently truncated on every read of that row. The fix makes
+// handoffResourceIntentMaxRunes reference validator.MaxFieldLen (the
+// write-time byte cap) directly, guaranteeing any legitimately-stored value
+// — not just the one measured length — survives to this resource's reader
+// unclipped.
+//
+// MUTATION (manually verified, not shipped as code): reverting
+// handoffResourceIntentMaxRunes to a literal 2000 makes this test fail —
+// the 2339-char intent comes back missing its tail and carrying clipMarker.
+func TestResourceHandoffLatest_IntentNeverTruncatesLegitValue(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	// Length matches production's measured maximum (2339 chars); content is
+	// synthesized, not the real stored value (data hygiene — this repo's
+	// backend-security-design.md 3.2, don't persist more real user data
+	// into a test fixture than the length assertion needs).
+	const prodMaxIntentChars = 2339
+	intent := strings.Repeat("i", prodMaxIntentChars)
+	if got := len(intent); got != prodMaxIntentChars {
+		t.Fatalf("fixture sanity check failed: %d bytes, want %d (ASCII, 1 byte/rune)", got, prodMaxIntentChars)
+	}
+	// Below validator.MaxFieldLen (5000 bytes), so set_session_handoff
+	// accepts it — this is the "legit" half of the guarantee: a stored
+	// value the write gate already approved.
+	if prodMaxIntentChars >= validator.MaxFieldLen {
+		t.Fatalf("fixture no longer clears the write-time gate (%d >= MaxFieldLen=%d): premise broken",
+			prodMaxIntentChars, validator.MaxFieldLen)
+	}
+
+	setRes := callSetSessionHandoff(t, s, map[string]any{
+		"intent":          intent,
+		"context_summary": "short summary",
+	})
+	if setRes.IsError {
+		t.Fatalf("set_session_handoff rejected a %d-byte intent, want acceptance (validator.MaxFieldLen=%d): %s",
+			len(intent), validator.MaxFieldLen, resultText(setRes))
+	}
+
+	contents, err := s.handleResourceHandoffLatest(context.Background(), mcpmsg.ReadResourceRequest{})
+	if err != nil {
+		t.Fatalf("handleResourceHandoffLatest: %v", err)
+	}
+	var got handoffResource
+	parseResourceJSON(t, contents, &got)
+
+	innerIntent := strings.TrimSuffix(strings.TrimPrefix(got.Intent, storedContextBoundaryStart), storedContextBoundaryEnd)
+	if innerIntent != intent {
+		t.Errorf("production-length intent was truncated: got %d runes (want %d), suffix %q",
+			utf8.RuneCountInString(innerIntent), prodMaxIntentChars, lastNRunes(innerIntent, 20))
+	}
+	if strings.HasSuffix(innerIntent, clipMarker) {
+		t.Errorf("intent carries the clip marker — it was truncated: %q", lastNRunes(innerIntent, 20))
+	}
+
+	// Also assert the constant is structurally tied to the write-time bound,
+	// not an independently copied literal that happens to match today.
+	if handoffResourceIntentMaxRunes != validator.MaxFieldLen {
+		t.Errorf("handoffResourceIntentMaxRunes=%d has drifted from validator.MaxFieldLen=%d — it must reference that constant directly",
+			handoffResourceIntentMaxRunes, validator.MaxFieldLen)
+	}
+}
+
+// lastNRunes returns the last n runes of s (fewer if s is shorter), for
+// compact failure-message diffs on long fixture strings.
+func lastNRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[len(r)-n:])
 }
 
 // TestResourceHandoffLatest_RepoNameFencesForgedMarker is the repo_name twin

@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -441,20 +442,41 @@ func (s *Server) handleResourceGTDCurrent(
 // any field over validator.MaxFieldLen (5000 BYTES). It is a byte cap, not a
 // rune cap, so it under-bounds CJK content in rune terms (5000 bytes ≈ 1666
 // runes of 3-byte CJK) while over-bounding it in the ASCII case (5000 bytes =
-// 5000 runes, well over this resource's 2000/4000 rune caps). Contrast
-// upsert_project_arch, whose maxSummaryLen=8000 write-time bound lets
-// fenceArchSummary skip re-clipping entirely at read time (boundary_markers.go)
-// — that shortcut is NOT safe here, because 5000 write-time bytes can still
-// mean up to 5000 runes for ASCII-heavy text, comfortably over both caps
-// below. This resource's own read-time cap therefore remains the real bound
-// for the common (ASCII/mixed) case and must never be dropped as "surely
-// fine, the write side already caps it."
+// 5000 runes). Contrast upsert_project_arch, whose maxSummaryLen=8000
+// write-time bound lets fenceArchSummary skip re-clipping entirely at read
+// time (boundary_markers.go) — that shortcut is NOT safe for a rune cap
+// smaller than the write-time byte cap, because 5000 write-time bytes can
+// still mean up to 5000 runes for ASCII-heavy text.
+//
+// handoffResourceIntentMaxRunes is deliberately set TO validator.MaxFieldLen
+// (not an independently chosen smaller number) as of PR #157 round 5
+// (M-R9's sibling finding, Lead self-review 2026-08-15): production's
+// longest stored intent measured 2339 chars / 2775 bytes
+// (`SELECT max(length(intent)), max(octet_length(intent)) FROM
+// session_handoffs;`), which the PREVIOUS 2000-rune cap silently truncated
+// on every read — the same class of bug as M-R9, just on a different field.
+// Runes are never more numerous than bytes for a UTF-8 string, so any value
+// that cleared the write-time BYTE cap also clears this READ-time RUNE cap
+// unclipped — this cap can therefore NEVER be the thing that truncates a
+// legitimately-stored intent again, for any content shape, not just the
+// measured one. Referencing validator.MaxFieldLen directly (rather than
+// copying its value as a literal) means the two bounds cannot drift apart
+// if the write-time limit ever changes — see
+// TestResourceHandoffLatest_IntentNeverTruncatesLegitValue.
+//
+// handoffResourceSummaryMaxRunes is NOT changed by that same reasoning:
+// production's longest stored context_summary measured 3336 chars / 4991
+// bytes, comfortably under the existing 4000-rune cap (R5 precheck, Lead
+// verified 2026-08-15). "Currently fine" is not "provably fine for all
+// future content" the way the intent fix above is, but widening it without
+// a demonstrated problem is scope this round does not cover — see
+// TestResourceHandoffLatest_SummaryReadTimeCapEnforced, unchanged.
 //
 // Sized generously relative to get_today_context's now-removed
 // pending_handoff caps (300/350) because this resource is read on demand,
 // not injected into every session's opening prompt.
 const (
-	handoffResourceIntentMaxRunes  = 2000
+	handoffResourceIntentMaxRunes  = validator.MaxFieldLen
 	handoffResourceSummaryMaxRunes = 4000
 )
 
