@@ -141,9 +141,47 @@ func (h *GTDHandler) CreateGoal(c echo.Context) error {
 	return c.JSON(http.StatusCreated, goal)
 }
 
-// ListProjects returns all active projects.
+// listProjectsStatusEnum is the accepted vocabulary for GET /api/projects's
+// status query param: "" (unset) and "all" as sentinels, plus every value
+// gtd.ProjectStatus.IsValid() accepts. Built from the domain type's actual
+// constants rather than hand-copied literals so this can't silently drift
+// from gtd.ProjectStatus if a status is ever added/removed there. Derived
+// from what production data actually contains (active/archived/completed
+// measured directly against the DB), not just the two statuses a bug ticket
+// happened to mention — on_hold is a real ProjectStatus value even though no
+// row currently has it.
+var listProjectsStatusEnum = map[string]bool{
+	"":                                 true,
+	statusAll:                          true,
+	string(gtd.ProjectStatusActive):    true,
+	string(gtd.ProjectStatusCompleted): true,
+	string(gtd.ProjectStatusArchived):  true,
+	string(gtd.ProjectStatusOnHold):    true,
+}
+
+// ListProjects returns projects filtered by the status query param (default:
+// active, same as the historical contract).
+//
+// Query params:
+//
+//   - status unset or "active" → active only (unchanged default; existing
+//     callers that don't pass status see byte-identical results).
+//   - status=all → every status, so completed/archived/on_hold projects are
+//     included (this is what makes a completed project like wbt-core-mvp
+//     visible again).
+//   - status=completed|archived|on_hold → exact match.
+//   - any other value → 400 (previously there was no filter capability at
+//     all — ListActiveProjects always ran regardless of any query param — so
+//     an invalid value here is a new failure mode, not a regression: nothing
+//     that worked before now fails).
 func (h *GTDHandler) ListProjects(c echo.Context) error {
-	projects, err := h.store.ListActiveProjects(c.Request().Context())
+	status := c.QueryParam("status")
+	if !listProjectsStatusEnum[status] {
+		return c.JSON(http.StatusBadRequest, errResp(
+			"status must be one of: active, all, completed, archived, on_hold"))
+	}
+
+	projects, err := h.store.ProjectsFiltered(c.Request().Context(), status)
 	if err != nil {
 		c.Logger().Errorf("ListProjects: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))

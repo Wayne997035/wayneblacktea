@@ -192,6 +192,10 @@ func (m *mockClassifyGTDStore) ListActiveProjects(_ context.Context) ([]db.Proje
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) ProjectsFiltered(_ context.Context, _ string) ([]db.Project, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockClassifyGTDStore) GetProjectByID(_ context.Context, _ uuid.UUID) (*db.Project, error) {
 	return nil, errMockNotImpl
 }

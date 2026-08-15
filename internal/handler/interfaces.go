@@ -27,6 +27,11 @@ type proposalStore interface {
 // gtdStore covers the subset of gtd.Store used by handlers.
 type gtdStore interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
+	// ProjectsFiltered backs the `?status=` query param on GET /api/projects
+	// (ListProjects). Both backends implement this as part of gtd.StoreIface
+	// — see gtd.StoreIface.ProjectsFiltered's doc comment for the status
+	// vocabulary.
+	ProjectsFiltered(ctx context.Context, status string) ([]db.Project, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error)
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p gtd.CreateGoalParams) (*db.Goal, error)

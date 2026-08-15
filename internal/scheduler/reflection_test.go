@@ -33,6 +33,10 @@ func (s *stubGTDStore) ListActivityLogsSince(_ context.Context, _ time.Time, _ i
 // freely — golangci.yml excludes nilnil for _test.go files.
 func (s *stubGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) { return nil, nil }
 
+func (s *stubGTDStore) ProjectsFiltered(_ context.Context, _ string) ([]db.Project, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) GetProjectByID(_ context.Context, _ uuid.UUID) (*db.Project, error) {
 	return nil, nil
 }

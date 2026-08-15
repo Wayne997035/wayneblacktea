@@ -96,6 +96,22 @@ func TestEmptyListContract_HTTP(t *testing.T) {
 			wantBareArray: true,
 		},
 		{
+			// GTD-fix gtd-list-api-filters: ListProjects now routes through
+			// ProjectsFiltered when a status query param is present (see
+			// TestGTDHandler_ListProjects in handler_test.go for the full
+			// filter-forwarding coverage). Sibling row to
+			// ListTasks_status_all_filter below, proving the same nil-guard
+			// holds on the filtered branch for the projects endpoint too.
+			name: "ListProjects_status_all_filter",
+			run: func(t *testing.T) *httptest.ResponseRecorder {
+				e := newEcho()
+				h := handler.NewGTDHandler(&fakeGTDStore{})
+				e.GET("/api/projects", h.ListProjects)
+				return performRequest(e, http.MethodGet, "/api/projects?status=all", "")
+			},
+			wantBareArray: true,
+		},
+		{
 			// GTD-fix gtd-list-api-filters: ListTasks now routes through
 			// TasksFiltered when a status query param is present (see
 			// TestGTDHandler_ListTasks in handler_test.go for the full
