@@ -126,6 +126,54 @@ const (
 	maxNextActionFieldLen = 500
 )
 
+// nextActionControlCharFields lists the three free-text fields of a
+// NextAction that must reject control characters via checkCommandField —
+// title/command/expected. title was the one field of the four (the fourth,
+// ref_task_id, is UUID-validated separately) that skipped this check (PR #157
+// security review M-2): command and expected both reject embedded newlines so
+// a prompt-injected agent cannot smuggle a second instruction line in through
+// them (CheckCommandField's doc comment), and the same threat applies to
+// title with no principled reason it was exempt. Iterating this list (rather
+// than three unrolled if-blocks) is also what keeps
+// validateNextActionFields under the project's cyclomatic-complexity gate.
+func nextActionControlCharFields(a session.NextAction) []struct{ name, value string } {
+	return []struct{ name, value string }{
+		{"title", a.Title},
+		{"command", a.Command},
+		{"expected", a.Expected},
+	}
+}
+
+// validateNextActionFields checks one NextAction's field-length, control-char,
+// ref_task_id and status constraints, returning a bare (index-free) reason so
+// parseAndValidateNextActions can attach "next_actions[i]: " once at the call
+// site. Extracted from parseAndValidateNextActions to keep that function
+// under the project's cyclomatic-complexity gate.
+func validateNextActionFields(a session.NextAction) string {
+	if a.Title == "" {
+		return "title is required"
+	}
+	for _, f := range nextActionControlCharFields(a) {
+		if len([]rune(f.value)) > maxNextActionFieldLen {
+			return fmt.Sprintf("%s exceeds %d characters", f.name, maxNextActionFieldLen)
+		}
+		if reason := checkCommandField(f.name, f.value); reason != "" {
+			return reason
+		}
+	}
+	if a.RefTaskID != nil && *a.RefTaskID != "" {
+		if _, err := uuid.Parse(*a.RefTaskID); err != nil {
+			return "ref_task_id must be a valid UUID"
+		}
+	}
+	switch a.Status {
+	case session.NextActionPending, session.NextActionDone, session.NextActionSkipped, "":
+	default:
+		return "status must be pending, done, or skipped"
+	}
+	return ""
+}
+
 // parseAndValidateNextActions parses a JSON array of NextAction objects,
 // enforces count/field-length/UUID caps, and defaults empty Status to pending.
 // Returns the validated slice and an empty errMsg on success.
@@ -138,33 +186,8 @@ func parseAndValidateNextActions(raw string) ([]session.NextAction, string) {
 		return nil, fmt.Sprintf("next_actions: at most %d items allowed", maxNextActionItems)
 	}
 	for i, a := range actions {
-		if a.Title == "" {
-			return nil, fmt.Sprintf("next_actions[%d]: title is required", i)
-		}
-		if len([]rune(a.Title)) > maxNextActionFieldLen {
-			return nil, fmt.Sprintf("next_actions[%d]: title exceeds %d characters", i, maxNextActionFieldLen)
-		}
-		if len([]rune(a.Command)) > maxNextActionFieldLen {
-			return nil, fmt.Sprintf("next_actions[%d]: command exceeds %d characters", i, maxNextActionFieldLen)
-		}
-		if reason := checkCommandField("command", a.Command); reason != "" {
+		if reason := validateNextActionFields(a); reason != "" {
 			return nil, fmt.Sprintf("next_actions[%d]: %s", i, reason)
-		}
-		if len([]rune(a.Expected)) > maxNextActionFieldLen {
-			return nil, fmt.Sprintf("next_actions[%d]: expected exceeds %d characters", i, maxNextActionFieldLen)
-		}
-		if reason := checkCommandField("expected", a.Expected); reason != "" {
-			return nil, fmt.Sprintf("next_actions[%d]: %s", i, reason)
-		}
-		if a.RefTaskID != nil && *a.RefTaskID != "" {
-			if _, err := uuid.Parse(*a.RefTaskID); err != nil {
-				return nil, fmt.Sprintf("next_actions[%d]: ref_task_id must be a valid UUID", i)
-			}
-		}
-		switch a.Status {
-		case session.NextActionPending, session.NextActionDone, session.NextActionSkipped, "":
-		default:
-			return nil, fmt.Sprintf("next_actions[%d]: status must be pending, done, or skipped", i)
 		}
 		if actions[i].Status == "" {
 			actions[i].Status = session.NextActionPending

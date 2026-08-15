@@ -312,8 +312,14 @@ func buildPendingHandoffSummary(h *db.SessionHandoff) *pendingHandoffSummary {
 	}
 	full := buildPendingHandoffView(h)
 	return &pendingHandoffSummary{
-		ID:               h.ID,
-		RepoName:         textValue(h.RepoName),
+		ID: h.ID,
+		// clipSafe, not textValue: same pre-existing gap as resources.go's
+		// handoffResource.RepoName (PR #157 security review C-1) — repo_name
+		// had no read-time bound or marker neutralisation here either, and
+		// this payload is read at the start of every session. Shares
+		// handoffResourceRepoNameMaxRunes with the resource so both readers
+		// of RepoName enforce the same bound.
+		RepoName:         clipSafe(textValue(h.RepoName), handoffResourceRepoNameMaxRunes),
 		CreatedAt:        h.CreatedAt,
 		NextActionsTotal: len(full.NextActions),
 	}

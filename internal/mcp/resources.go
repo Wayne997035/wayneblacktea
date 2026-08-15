@@ -439,6 +439,31 @@ const (
 	handoffResourceSummaryMaxRunes = 4000
 )
 
+// handoffResourceRepoNameMaxRunes bounds repo_name, which this resource
+// renders in the SAME JSON payload as the fenced intent/context_summary above
+// without a fence of its own (it and next_actions rely on StoredDataNotice
+// instead — see the handoffResource type doc comment). set_session_handoff
+// applies NO write-time validation to repo_name at all — checkHandoffNoise
+// (tools_session.go handleSetSessionHandoff) covers only intent and
+// context_summary — so this read-time cap is the only bound that exists (PR
+// #157 security review C-1 / M-4: an unbounded, un-neutralised repo_name both
+// forged an escape for its sibling fences and let a single field blow the
+// payload to 200,000+ runes). Shared with buildPendingHandoffSummary
+// (tools_context.go) so both readers of RepoName enforce the same bound.
+const handoffResourceRepoNameMaxRunes = 200
+
+// handoffResourceMaxNextActions bounds how many next_actions rows this
+// resource renders. Each row already carries three 500-rune-capped fields
+// (tools_session.go maxNextActionFieldLen) and set_session_handoff allows up
+// to maxNextActionItems=50 of them — rendering all 50 at once measured at
+// 80,687 bytes for a single resource read (PR #157 security review m-3), an
+// unbounded cost for a mechanism whose whole purpose is saving tokens.
+// NextActionsTotal is computed from the FULL decoded list before this cap is
+// applied (see handleResourceHandoffLatest), so a truncated response stays
+// visible (total > len(next_actions)) rather than looking identical to "there
+// were only N to begin with".
+const handoffResourceMaxNextActions = 20
+
 // handoffResource is the full, fenced view of the latest session handoff.
 //
 // Deliberately NOT a reuse of pendingHandoffView (tools_context.go): that
@@ -452,6 +477,14 @@ const (
 // to apply before W3.
 type handoffResource struct {
 	HandoffPresent bool `json:"handoff_present"`
+	// StoredDataNotice leads the payload for the same reason it leads
+	// get_today_context's (tools_context.go): repo_name and next_actions.*
+	// are neutralised against forged boundary markers but NOT individually
+	// fenced like Intent/ContextSummary below, so this notice is the only
+	// in-payload signal that they are stored data, not instructions (PR #157
+	// security review M-1). omitempty keeps the handoff_present=false path a
+	// single-field response.
+	StoredDataNotice string `json:"stored_data_notice,omitempty"`
 	// ID is a pointer (not uuid.UUID) so omitempty actually drops it on the
 	// handoff_present=false path: [16]byte arrays never satisfy
 	// encoding/json's isEmptyValue (Len() on a fixed-size array is always its
@@ -496,11 +529,19 @@ func (s *Server) handleResourceHandoffLatest(
 
 	view := buildPendingHandoffView(h)
 	id := h.ID
+	// Computed from the FULL decoded list, BEFORE the handoffResourceMaxNextActions
+	// truncation below — handoffResourceMaxNextActions doc comment.
 	nextActionsTotal := len(view.NextActions)
 	out := handoffResource{
-		HandoffPresent: true,
-		ID:             &id,
-		RepoName:       textValue(h.RepoName),
+		HandoffPresent:   true,
+		ID:               &id,
+		StoredDataNotice: storedDataNotice,
+		// clipSafe, not textValue: repo_name is rendered in the SAME payload
+		// as the fenced intent/context_summary, so an un-neutralised marker
+		// here forges an escape for those fences (boundary_markers.go:20-25).
+		// clipSafe also bounds the field to handoffResourceRepoNameMaxRunes,
+		// which that const's doc comment covers.
+		RepoName: clipSafe(textValue(h.RepoName), handoffResourceRepoNameMaxRunes),
 		// Fenced, not merely clipped: this resource is the ONLY reader of the
 		// full text now that get_today_context's pending_handoff carries none
 		// of it (W3) — see the type doc comment above for the threat model.
@@ -511,10 +552,14 @@ func (s *Server) handleResourceHandoffLatest(
 	if h.CreatedAt.Valid {
 		out.CreatedAt = h.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
-	if len(view.NextActions) > 0 {
-		out.NextActions = make([]nextActionSummary, 0, len(view.NextActions))
-		for i := range view.NextActions {
-			a := &view.NextActions[i]
+	actions := view.NextActions
+	if len(actions) > handoffResourceMaxNextActions {
+		actions = actions[:handoffResourceMaxNextActions]
+	}
+	if len(actions) > 0 {
+		out.NextActions = make([]nextActionSummary, 0, len(actions))
+		for i := range actions {
+			a := &actions[i]
 			out.NextActions = append(out.NextActions, nextActionSummary{
 				Step:      a.Step,
 				Title:     neutralizeBoundaryMarkers(a.Title),
