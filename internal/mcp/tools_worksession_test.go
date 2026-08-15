@@ -1895,7 +1895,11 @@ func TestHandleGetWorkSessionTrace_EmptyEvidenceReturnsEmptyArray(t *testing.T) 
 		t.Fatalf("get_work_session_trace failed: %s", resultText(r))
 	}
 	text := resultText(r)
-	if strings.Contains(text, `"evidence": null`) {
+	// jsonText marshals compact (no space after the colon) — match that shape.
+	// This was previously `"evidence": null` (the indented form), which the
+	// W1 token-diet switch to compact JSON made permanently unreachable and
+	// turned this into a vacuously-passing assertion.
+	if strings.Contains(text, `"evidence":null`) {
 		t.Errorf("evidence must be an empty array, not null: %s", text)
 	}
 	var trace struct {

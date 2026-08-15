@@ -278,6 +278,36 @@ func (p *postgresServerStores) SqliteKnowledge() *wbtsqlite.KnowledgeStore { ret
 func (p *postgresServerStores) SqlitePlaybook() *wbtsqlite.PlaybookStore   { return nil }
 func (p *postgresServerStores) SqliteDB() *wbtsqlite.DB                    { return nil }
 
+// Aiven-measured connection budget, 2026-08. Re-measure against the live
+// instance (`SHOW max_connections;`, Aiven console for reserved/client
+// counts) before changing any of these — see the redeploy-budget test in
+// redeploy_budget_test.go, which fails loudly if this drifts from what the
+// pool-size constants below actually need.
+//
+// Placement note: these constants must live at package scope (not inside
+// buildPgxPoolConfig below) because redeploy_budget_test.go and 4 CLI/hook
+// call sites in other packages (internal/cli, internal/guard) reference
+// ServerPoolMaxConns / HookPoolMaxConns directly.
+const (
+	aivenMaxConnections    = 20
+	aivenSuperuserReserved = 3
+	aivenClientBackends    = 2
+	// AivenAvailableConns is what's actually left for our own pools.
+	AivenAvailableConns = aivenMaxConnections - aivenSuperuserReserved - aivenClientBackends // 15
+)
+
+// ServerPoolMaxConns is the pgxpool cap for the single long-running
+// cmd/server process. See buildPgxPoolConfig's doc comment below for the
+// fan-out floor (6) and the redeploy-budget ceiling this trades off against.
+const ServerPoolMaxConns = 8
+
+// HookPoolMaxConns is the pgxpool cap for short-lived CLI/hook processes
+// (wbt-context SessionStart hook, wbt doctor Stop hook, wbt reembed,
+// internal/guard) per backend-security-design.md §5.3. Centralized here so
+// redeploy_budget_test.go can verify the worst-case formula against the
+// real values instead of 4 independently-drifting literals.
+const HookPoolMaxConns = 2
+
 // buildPgxPoolConfig parses the DSN and applies our TLS / pgvector wiring plus
 // the personal-OS pool caps. It opens no connection, so the cap policy is
 // unit-testable without a live Postgres server (see factory_test.go).
@@ -358,7 +388,7 @@ func buildPgxPoolConfig(dsn, appEnv, pgsslrootcert string) (*pgxpool.Config, err
 	// goroutine holds two connections at once (WeeklyProgress runs its two
 	// queries serially), so the result is added latency, not deadlock.
 	if !strings.Contains(dsn, "pool_max_conns=") {
-		pgcfg.MaxConns = 8
+		pgcfg.MaxConns = ServerPoolMaxConns
 	}
 	if !strings.Contains(dsn, "pool_min_conns=") {
 		pgcfg.MinConns = 0

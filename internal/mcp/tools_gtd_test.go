@@ -372,12 +372,12 @@ func TestListTasks_SummaryFalse_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("summary=false on empty DB should succeed, got: %s", resultText(r))
 	}
-	// jsonText uses json.MarshalIndent, so the wire format has a space after
-	// the colon and no trailing bracket immediately — match that shape.
-	if !strings.Contains(resultText(r), `"tasks": []`) {
-		t.Errorf(`expected raw JSON to contain "tasks": [], got: %s`, resultText(r))
+	// jsonText marshals compact, so the wire format has no space after the
+	// colon — match that shape.
+	if !strings.Contains(resultText(r), `"tasks":[]`) {
+		t.Errorf(`expected raw JSON to contain "tasks":[], got: %s`, resultText(r))
 	}
-	if strings.Contains(resultText(r), `"tasks": null`) {
+	if strings.Contains(resultText(r), `"tasks":null`) {
 		t.Errorf(`tasks must never serialize as null, got: %s`, resultText(r))
 	}
 }

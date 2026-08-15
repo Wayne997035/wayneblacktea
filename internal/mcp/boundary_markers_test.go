@@ -232,12 +232,20 @@ func (s fakeArchStore) GetSnapshot(context.Context, string) (*arch.Snapshot, err
 	return s.snap, nil
 }
 
-// getProjectArchText calls handleGetProjectArch and returns the raw response
-// text of a successful call.
+// getProjectArchText calls handleGetProjectArch with include_file_map=true
+// (this file's fencing tests assert on file_map content, so they need it
+// present) and returns the raw response text of a successful call.
 func getProjectArchText(t *testing.T, s *Server) string {
 	t.Helper()
+	return getProjectArchTextArgs(t, s, map[string]any{"slug": "wayneblacktea", "include_file_map": true})
+}
+
+// getProjectArchTextArgs is getProjectArchText with caller-supplied
+// arguments, for tests exercising the include_file_map opt-in gate itself.
+func getProjectArchTextArgs(t *testing.T, s *Server, args map[string]any) string {
+	t.Helper()
 	req := mcpmsg.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"slug": "wayneblacktea"}
+	req.Params.Arguments = args
 	result, err := s.handleGetProjectArch(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleGetProjectArch: %v", err)
@@ -338,6 +346,11 @@ func TestHandleGetProjectArch_FencesUntrustedSummary(t *testing.T) {
 	}
 }
 
+// testFileMapPurpose is the fixture value used for a.go's file_map entry
+// across the wrapUntrustedArchSnapshot tests below (goconst: min-occurrences
+// 3, build/.golangci.yml).
+const testFileMapPurpose = "entry point"
+
 // TestWrapUntrustedArchSnapshot_DoesNotMutateInput pins the copy-not-mutate
 // contract the wrap* helpers in tools_worksession.go also follow: the caller's
 // snapshot (and any cache holding it) must not end up with fence markers baked
@@ -346,10 +359,10 @@ func TestWrapUntrustedArchSnapshot_DoesNotMutateInput(t *testing.T) {
 	original := &arch.Snapshot{
 		Slug:    "wayneblacktea",
 		Summary: "plain summary",
-		FileMap: map[string]string{"a.go": "entry point"},
+		FileMap: map[string]string{"a.go": testFileMapPurpose},
 	}
 
-	wrapped := wrapUntrustedArchSnapshot(original)
+	wrapped := wrapUntrustedArchSnapshot(original, true)
 
 	if original.Summary != "plain summary" {
 		t.Errorf("input summary was mutated to %q", original.Summary)
@@ -357,10 +370,32 @@ func TestWrapUntrustedArchSnapshot_DoesNotMutateInput(t *testing.T) {
 	if wrapped.Summary == original.Summary {
 		t.Error("wrapped summary is identical to the input — no fence was applied")
 	}
-	if got := original.FileMap["a.go"]; got != "entry point" {
+	if got := original.FileMap["a.go"]; got != testFileMapPurpose {
 		t.Errorf("input file_map was mutated: %q", got)
 	}
-	if wrapUntrustedArchSnapshot(nil) != nil {
+	if wrapUntrustedArchSnapshot(nil, true) != nil {
 		t.Error("nil snapshot must stay nil")
+	}
+}
+
+// TestWrapUntrustedArchSnapshot_IncludeFileMapGate pins the W2 opt-in gate:
+// includeFileMap=false must drop FileMap entirely (nil, not an empty map),
+// and includeFileMap=true must populate it exactly as before the gate existed.
+func TestWrapUntrustedArchSnapshot_IncludeFileMapGate(t *testing.T) {
+	original := &arch.Snapshot{
+		Slug:    "wayneblacktea",
+		Summary: "plain summary",
+		FileMap: map[string]string{"a.go": testFileMapPurpose},
+	}
+
+	if got := wrapUntrustedArchSnapshot(original, false); got.FileMap != nil {
+		t.Errorf("includeFileMap=false must yield nil FileMap, got %v", got.FileMap)
+	}
+	if got := wrapUntrustedArchSnapshot(original, true); len(got.FileMap) != 1 || got.FileMap["a.go"] != testFileMapPurpose {
+		t.Errorf("includeFileMap=true must preserve file_map entries, got %v", got.FileMap)
+	}
+	// original must never be mutated by either call.
+	if len(original.FileMap) != 1 || original.FileMap["a.go"] != testFileMapPurpose {
+		t.Errorf("input file_map was mutated: %v", original.FileMap)
 	}
 }

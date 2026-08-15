@@ -499,12 +499,12 @@ func TestGetProject_NoDecisions_ReturnsEmptyArrayNotNull(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("should succeed, got: %s", resultText(r))
 	}
-	// jsonText uses json.MarshalIndent, so the wire format has a space after
-	// the colon — match that shape.
-	if !strings.Contains(resultText(r), `"recent_decisions": []`) {
-		t.Errorf(`expected raw JSON to contain "recent_decisions": [], got: %s`, resultText(r))
+	// jsonText marshals compact, so the wire format has no space after the
+	// colon — match that shape.
+	if !strings.Contains(resultText(r), `"recent_decisions":[]`) {
+		t.Errorf(`expected raw JSON to contain "recent_decisions":[], got: %s`, resultText(r))
 	}
-	if strings.Contains(resultText(r), `"recent_decisions": null`) {
+	if strings.Contains(resultText(r), `"recent_decisions":null`) {
 		t.Errorf(`recent_decisions must never serialize as null, got: %s`, resultText(r))
 	}
 }
@@ -677,7 +677,7 @@ func TestChecklistToggle_HappyPath(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("should succeed, got: %s", resultText(r))
 	}
-	if !strings.Contains(resultText(r), `"done": true`) {
+	if !strings.Contains(resultText(r), `"done":true`) {
 		t.Errorf("item should be marked done, got: %s", resultText(r))
 	}
 }
@@ -738,7 +738,7 @@ func TestChecklistComplete_HappyPath(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("should succeed, got: %s", resultText(r))
 	}
-	if !strings.Contains(resultText(r), `"done": true`) {
+	if !strings.Contains(resultText(r), `"done":true`) {
 		t.Errorf("item should be marked done, got: %s", resultText(r))
 	}
 }
