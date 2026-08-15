@@ -27,9 +27,24 @@ type Snapshot struct {
 
 // UpsertParams collects the inputs for UpsertSnapshot.
 type UpsertParams struct {
-	Slug          string
-	Summary       string
-	FileMap       map[string]string
+	Slug    string
+	Summary string
+	// FileMap is patch semantics, not replace semantics: nil means the
+	// caller did not supply a file_map at all, and the store MUST leave
+	// whatever is already stored untouched (a brand-new row still gets
+	// {}, since there is nothing to preserve). A non-nil pointer — even
+	// one pointing at an empty map — is an explicit value and REPLACES
+	// the stored file_map outright, including clearing it to {}.
+	//
+	// This exists because the core MCP protocol is read-then-write
+	// (get_project_arch, read changed files, upsert_project_arch) and
+	// get_project_arch defaults to omitting file_map for token-diet
+	// reasons (W2). An agent that follows the protocol literally and
+	// omits file_map on the write-back must not be able to silently wipe
+	// an existing map it never saw — see security review PR #157 M-3,
+	// reproduced on both backends (3 entries -> 0 on upsert without
+	// file_map, before this type existed).
+	FileMap       *map[string]string
 	LastCommitSHA string
 }
 

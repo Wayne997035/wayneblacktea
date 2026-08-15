@@ -31,7 +31,11 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier (unique key)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description("Human-readable architecture description"), mcp.Required()),
-		mcp.WithString("file_map", mcp.Description(`JSON object mapping file path to purpose`)),
+		mcp.WithString("file_map", mcp.Description(
+			`JSON object mapping file path to purpose. Omit this field entirely to leave `+
+				`the stored file_map untouched (e.g. when you only read a couple of changed `+
+				`files and don't have the full picture) — pass "{}" to explicitly clear it.`,
+		)),
 		mcp.WithString("last_commit_sha", mcp.Description("Current git HEAD SHA (run git rev-parse HEAD)")),
 	), s.handleUpsertProjectArch)
 
@@ -71,16 +75,34 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 	if len(summary) > maxSummaryLen {
 		return mcp.NewToolResultError(fmt.Sprintf("summary too long (max %d chars)", maxSummaryLen)), nil
 	}
-	rawFileMap := stringArg(args, "file_map")
-	if len(rawFileMap) > maxFileMapRaw {
-		return mcp.NewToolResultError(fmt.Sprintf("file_map too large (max %d bytes)", maxFileMapRaw)), nil
-	}
-
-	fileMap := map[string]string{}
-	if rawFileMap != "" {
-		if err := json.Unmarshal([]byte(rawFileMap), &fileMap); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("file_map must be a valid JSON object: %v", err)), nil
+	// fileMap is patch semantics (security review PR #157 M-3): the
+	// "file_map" key must be entirely ABSENT from args to mean "leave the
+	// stored value untouched". args["file_map"] (not stringArg, which
+	// collapses "missing" and "present but not a string" into the same
+	// "") is what makes "absent" and "present-but-empty" distinguishable —
+	// a present key, even "" or "{}", is an explicit instruction and
+	// REPLACES the stored map, including clearing it to {}. This matters
+	// because the core protocol is read-then-write (get_project_arch ->
+	// read changed files -> upsert_project_arch) and get_project_arch
+	// defaults to omitting file_map (W2); an agent that follows the
+	// protocol literally and never saw the existing map must not be able
+	// to wipe it just by not mentioning it.
+	var fileMap *map[string]string
+	if rawVal, present := args["file_map"]; present {
+		rawFileMap, ok := rawVal.(string)
+		if !ok {
+			return mcp.NewToolResultError("file_map must be a JSON string"), nil
 		}
+		if len(rawFileMap) > maxFileMapRaw {
+			return mcp.NewToolResultError(fmt.Sprintf("file_map too large (max %d bytes)", maxFileMapRaw)), nil
+		}
+		m := map[string]string{}
+		if rawFileMap != "" {
+			if err := json.Unmarshal([]byte(rawFileMap), &m); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("file_map must be a valid JSON object: %v", err)), nil
+			}
+		}
+		fileMap = &m
 	}
 
 	snap, err := s.arch.UpsertSnapshot(ctx, arch.UpsertParams{

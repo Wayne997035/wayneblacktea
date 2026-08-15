@@ -26,12 +26,19 @@ var _ arch.StoreIface = (*ArchStore)(nil)
 
 // UpsertSnapshot inserts or updates the architecture snapshot for the given slug.
 func (s *ArchStore) UpsertSnapshot(ctx context.Context, p arch.UpsertParams) (*arch.Snapshot, error) {
-	if p.FileMap == nil {
-		p.FileMap = map[string]string{}
-	}
-	fileMapJSON, err := json.Marshal(p.FileMap)
-	if err != nil {
-		return nil, fmt.Errorf("arch: marshaling file_map: %w", err)
+	// fileMapArg mirrors the Postgres store's patch semantics (see
+	// internal/arch/store.go): nil binds as SQL NULL for ?4, which the
+	// query below checks directly (?4 IS NULL), not excluded.file_map
+	// (always non-NULL after the VALUES-clause COALESCE). That resolves
+	// "caller omitted file_map" to "keep the stored value" on the
+	// ON CONFLICT branch, while still defaulting a brand-new row to {}.
+	var fileMapArg any
+	if p.FileMap != nil {
+		b, err := json.Marshal(*p.FileMap)
+		if err != nil {
+			return nil, fmt.Errorf("arch: marshaling file_map: %w", err)
+		}
+		fileMapArg = string(b)
 	}
 
 	id := uuid.New().String()
@@ -39,14 +46,14 @@ func (s *ArchStore) UpsertSnapshot(ctx context.Context, p arch.UpsertParams) (*a
 
 	const q = `
 INSERT INTO project_arch (id, slug, summary, file_map, last_commit_sha, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+VALUES (?1, ?2, ?3, COALESCE(?4, '{}'), ?5, ?6)
 ON CONFLICT (slug) DO UPDATE
   SET summary         = excluded.summary,
-      file_map        = excluded.file_map,
+      file_map        = CASE WHEN ?4 IS NULL THEN file_map ELSE excluded.file_map END,
       last_commit_sha = excluded.last_commit_sha,
       updated_at      = ?6`
 
-	if _, err := s.db.conn.ExecContext(ctx, q, id, p.Slug, p.Summary, string(fileMapJSON), p.LastCommitSHA, now); err != nil {
+	if _, err := s.db.conn.ExecContext(ctx, q, id, p.Slug, p.Summary, fileMapArg, p.LastCommitSHA, now); err != nil {
 		return nil, fmt.Errorf("arch: upserting snapshot for %q: %w", p.Slug, err)
 	}
 

@@ -112,6 +112,65 @@ func TestHandleGetProjectArch_FileMapOptIn_ByteSizeDrop(t *testing.T) {
 	}
 }
 
+// TestHandleGetProjectArch_ByteSizeMeasurement_ProductionScale is the
+// committed, reproducible replacement for the PR body's original "8,300 B
+// -> 255 B (-96.9%)" get_project_arch headline claim. Review round 1
+// (testing-reality-checker) found that number unreproducible: the scratch
+// test that produced it (internal/mcp/zz_measure_test.go) was never
+// committed anywhere in the repo, and an independent reconstruction against
+// the real production row (slug=wayneblacktea, 18 file_map entries, an
+// 862-byte summary) run through this exact unmodified handler gave
+// ~-65.5%, not -96.9%.
+//
+// This fixture uses 18 entries specifically to match that real production
+// row's file_map count — it is NOT the same fixture as
+// TestHandleGetProjectArch_FileMapOptIn_ByteSizeDrop above (40 entries):
+// that test is a synthetic worst-case-shape regression guard, this one is
+// a best-effort production-scale measurement. The two answer different
+// questions and their percentages are not interchangeable; don't quote one
+// as if it were the other.
+func TestHandleGetProjectArch_ByteSizeMeasurement_ProductionScale(t *testing.T) {
+	const productionFileMapEntries = 18
+	fileMap := make(map[string]string, productionFileMapEntries)
+	for i := 0; i < productionFileMapEntries; i++ {
+		fileMap[archTestFileKey(i)] = archTestFileVal(i)
+	}
+
+	// Summary length approximates the real production row's 862-byte
+	// summary (per PR #157 review round 1, security-engineer / testing-
+	// reality-checker reports); the content itself is illustrative
+	// architecture prose, not copied production text.
+	const productionSummaryBytes = 862
+	summary := strings.Repeat(
+		"Echo HTTP + MCP server in one Go binary, dual backend (sqlite for local "+
+			"dev, pgx+pgvector on Aiven for production), domain-oriented internal "+
+			"packages with no service/repository split. ",
+		5,
+	)
+	summary = summary[:productionSummaryBytes]
+
+	s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{
+		ID:            "1",
+		Slug:          "wayneblacktea",
+		Summary:       summary,
+		FileMap:       fileMap,
+		LastCommitSHA: "deadbeef",
+	}}}
+
+	withMap := getProjectArchTextArgs(t, s, map[string]any{"slug": "wayneblacktea", "include_file_map": true})
+	withoutMap := getProjectArchTextArgs(t, s, map[string]any{"slug": "wayneblacktea"})
+
+	before, after := len(withMap), len(withoutMap)
+	reduction := 100 * float64(before-after) / float64(before)
+	t.Logf("get_project_arch, %d-entry production-scale fixture, include_file_map=true  = %d bytes", productionFileMapEntries, before)
+	t.Logf("get_project_arch, %d-entry production-scale fixture, include_file_map=false = %d bytes", productionFileMapEntries, after)
+	t.Logf("reduction = %.1f%%", reduction)
+
+	if after >= before {
+		t.Errorf("include_file_map=false (%d bytes) did not shrink the response versus true (%d bytes)", after, before)
+	}
+}
+
 func archTestFileKey(i int) string {
 	return "internal/pkg" + string(rune('a'+i%26)) + "/file" + string(rune('0'+i%10)) + ".go"
 }

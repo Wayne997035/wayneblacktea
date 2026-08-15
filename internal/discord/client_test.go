@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -188,5 +189,22 @@ func TestNewClient_WithEnv(t *testing.T) {
 	c := NewClient()
 	if c == nil {
 		t.Error("NewClient should return non-nil Client when env is set")
+	}
+}
+
+// TestClient_NilReceiver_ReturnsErrClientNotConfigured pins the
+// receiver-level guard in post (security review PR #157 m-2): a nil
+// *Client — however it reaches Send/SendEmbed, not just via the single
+// wireDiscordSender call site in cmd/server/main.go:952 — must return
+// ErrClientNotConfigured, not panic. Mirrors
+// internal/notion.TestUpsertDailyPage's nil-receiver case.
+func TestClient_NilReceiver_ReturnsErrClientNotConfigured(t *testing.T) {
+	var c *Client // deliberately nil, not NewClient()
+
+	if err := c.Send(context.Background(), "hello"); !errors.Is(err, ErrClientNotConfigured) {
+		t.Errorf("Send on nil receiver: err = %v, want ErrClientNotConfigured", err)
+	}
+	if err := c.SendEmbed(context.Background(), "t", "d", "0x00FF00"); !errors.Is(err, ErrClientNotConfigured) {
+		t.Errorf("SendEmbed on nil receiver: err = %v, want ErrClientNotConfigured", err)
 	}
 }

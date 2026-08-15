@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/httpguard"
 )
+
+// ErrClientNotConfigured indicates post was invoked on a nil receiver, i.e.
+// DISCORD_WEBHOOK_URL was not set at startup so NewClient returned nil.
+// Callers should treat this as "skip silently" (mirrors
+// internal/notion.ErrClientNotConfigured).
+var ErrClientNotConfigured = errors.New("discord: client not configured (DISCORD_WEBHOOK_URL unset)")
 
 // Client sends messages to a Discord webhook.
 type Client struct {
@@ -67,7 +74,17 @@ func (c *Client) SendEmbed(ctx context.Context, title, description, color string
 	return c.post(ctx, payload)
 }
 
+// post is the single low-level sender both Send and SendEmbed funnel
+// through. The nil-receiver guard here is the defence-in-depth layer: the
+// "no SIGSEGV when Discord isn't configured" property must not rely solely
+// on cmd/server/main.go:952's wireDiscordSender being the only call site
+// that ever holds a possibly-nil *Client (security review PR #157 m-2;
+// mirrors internal/notion.Client.UpsertDailyPage's receiver-level guard).
 func (c *Client) post(ctx context.Context, payload webhookPayload) error {
+	if c == nil {
+		return ErrClientNotConfigured
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshaling discord payload: %w", err)

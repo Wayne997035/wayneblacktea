@@ -35,7 +35,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_arch_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -95,6 +96,13 @@ func applyArchUpMigrationsOnce(ctx context.Context, pool *pgxpool.Pool) {
 	}
 }
 
+// fileMapPtr is the *map[string]string literal helper for
+// arch.UpsertParams.FileMap's patch semantics: a non-nil pointer (even to
+// an empty map) is an explicit value, as opposed to the Go zero value nil
+// which means "field omitted, keep whatever is stored". Mirrored in
+// internal/storage/sqlite/arch_test.go for the SQLite backend.
+func fileMapPtr(m map[string]string) *map[string]string { return &m }
+
 func openArchTestPgPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	if testing.Short() {
@@ -110,7 +118,7 @@ func TestStorePostgres_UpsertAndGet(t *testing.T) {
 	got, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
 		Slug:          "wayneblacktea",
 		Summary:       "personal OS",
-		FileMap:       map[string]string{"cmd/server/main.go": "entrypoint"},
+		FileMap:       fileMapPtr(map[string]string{"cmd/server/main.go": "entrypoint"}),
 		LastCommitSHA: "abc123",
 	})
 	if err != nil {
@@ -136,7 +144,7 @@ func TestStorePostgres_UpsertReplacesExisting(t *testing.T) {
 	first, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
 		Slug:          "repo",
 		Summary:       "old",
-		FileMap:       map[string]string{"old.go": "old"},
+		FileMap:       fileMapPtr(map[string]string{"old.go": "old"}),
 		LastCommitSHA: "oldsha",
 	})
 	if err != nil {
@@ -145,7 +153,7 @@ func TestStorePostgres_UpsertReplacesExisting(t *testing.T) {
 	second, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
 		Slug:          "repo",
 		Summary:       "new",
-		FileMap:       map[string]string{"new.go": "new"},
+		FileMap:       fileMapPtr(map[string]string{"new.go": "new"}),
 		LastCommitSHA: "newsha",
 	})
 	if err != nil {
@@ -174,7 +182,7 @@ func TestStorePostgres_LargeFileMapJSONRoundTrip(t *testing.T) {
 		fileMap[fmt.Sprintf("internal/pkg/file_%03d.go", i)] = strings.Repeat("purpose ", 20)
 	}
 
-	got, err := store.UpsertSnapshot(ctx, arch.UpsertParams{Slug: "large", Summary: "large", FileMap: fileMap})
+	got, err := store.UpsertSnapshot(ctx, arch.UpsertParams{Slug: "large", Summary: "large", FileMap: fileMapPtr(fileMap)})
 	if err != nil {
 		t.Fatalf("UpsertSnapshot: %v", err)
 	}
@@ -191,5 +199,107 @@ func TestStorePostgres_EmptyFileMapStoresEmptyObject(t *testing.T) {
 	}
 	if got.FileMap == nil || len(got.FileMap) != 0 {
 		t.Fatalf("FileMap = %#v, want empty map", got.FileMap)
+	}
+}
+
+// --- M-3 patch-semantics three-state matrix (security review PR #157) ---
+//
+// Mirrors internal/storage/sqlite/arch_test.go's matrix for parity: FileMap
+// ABSENT (nil pointer) preserves whatever is stored; FileMap present
+// pointing at an EMPTY map explicitly clears it; FileMap present with
+// CONTENT replaces the stored map outright (not a merge).
+
+func TestStorePostgres_UpsertFileMapAbsent_PreservesExisting(t *testing.T) {
+	store := arch.NewStore(openArchTestPgPool(t))
+	ctx := context.Background()
+
+	seeded := map[string]string{
+		"cmd/server/main.go":     "entrypoint",
+		"internal/mcp/server.go": "mcp wiring",
+		"internal/arch/arch.go":  "arch domain types",
+	}
+	if _, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
+		Slug:    "pg-patch-absent",
+		Summary: "first",
+		FileMap: fileMapPtr(seeded),
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+
+	// Simulate an agent that follows the read-then-write protocol but
+	// never saw the existing file_map (get_project_arch's default omits
+	// it, W2) and therefore omits the argument entirely on write-back.
+	got, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
+		Slug:    "pg-patch-absent",
+		Summary: "second, file_map omitted",
+		FileMap: nil,
+	})
+	if err != nil {
+		t.Fatalf("map-less upsert: %v", err)
+	}
+	if len(got.FileMap) != len(seeded) {
+		t.Fatalf("DATA LOSS: file_map omitted on upsert wiped stored map: got %d entries, want %d preserved: %v",
+			len(got.FileMap), len(seeded), got.FileMap)
+	}
+	for path, purpose := range seeded {
+		if got.FileMap[path] != purpose {
+			t.Errorf("file_map[%q] = %q, want preserved %q", path, got.FileMap[path], purpose)
+		}
+	}
+	if got.Summary != "second, file_map omitted" {
+		t.Errorf("summary should still update independently of file_map: got %q", got.Summary)
+	}
+}
+
+func TestStorePostgres_UpsertFileMapExplicitEmpty_Clears(t *testing.T) {
+	store := arch.NewStore(openArchTestPgPool(t))
+	ctx := context.Background()
+
+	if _, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
+		Slug:    "pg-patch-explicit-empty",
+		Summary: "first",
+		FileMap: fileMapPtr(map[string]string{"a.go": "a", "b.go": "b", "c.go": "c"}),
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+
+	got, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
+		Slug:    "pg-patch-explicit-empty",
+		Summary: "second, explicit clear",
+		FileMap: fileMapPtr(map[string]string{}),
+	})
+	if err != nil {
+		t.Fatalf("explicit-clear upsert: %v", err)
+	}
+	if len(got.FileMap) != 0 {
+		t.Fatalf("explicit {} should clear file_map, got %d entries: %v", len(got.FileMap), got.FileMap)
+	}
+}
+
+func TestStorePostgres_UpsertFileMapContent_Replaces(t *testing.T) {
+	store := arch.NewStore(openArchTestPgPool(t))
+	ctx := context.Background()
+
+	if _, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
+		Slug:    "pg-patch-replace",
+		Summary: "first",
+		FileMap: fileMapPtr(map[string]string{"old.go": "old", "also-old.go": "also old"}),
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+
+	got, err := store.UpsertSnapshot(ctx, arch.UpsertParams{
+		Slug:    "pg-patch-replace",
+		Summary: "second, replaced",
+		FileMap: fileMapPtr(map[string]string{"new.go": "new"}),
+	})
+	if err != nil {
+		t.Fatalf("replace upsert: %v", err)
+	}
+	if len(got.FileMap) != 1 || got.FileMap["new.go"] != "new" {
+		t.Fatalf("expected file_map replaced (not merged) with exactly {new.go: new}, got %v", got.FileMap)
+	}
+	if _, stillThere := got.FileMap["old.go"]; stillThere {
+		t.Errorf("old.go should have been replaced away, still present: %v", got.FileMap)
 	}
 }
