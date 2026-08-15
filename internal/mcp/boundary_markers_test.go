@@ -346,6 +346,11 @@ func TestHandleGetProjectArch_FencesUntrustedSummary(t *testing.T) {
 	}
 }
 
+// testFileMapPurpose is the fixture value used for a.go's file_map entry
+// across the wrapUntrustedArchSnapshot tests below (goconst: min-occurrences
+// 3, build/.golangci.yml).
+const testFileMapPurpose = "entry point"
+
 // TestWrapUntrustedArchSnapshot_DoesNotMutateInput pins the copy-not-mutate
 // contract the wrap* helpers in tools_worksession.go also follow: the caller's
 // snapshot (and any cache holding it) must not end up with fence markers baked
@@ -354,7 +359,7 @@ func TestWrapUntrustedArchSnapshot_DoesNotMutateInput(t *testing.T) {
 	original := &arch.Snapshot{
 		Slug:    "wayneblacktea",
 		Summary: "plain summary",
-		FileMap: map[string]string{"a.go": "entry point"},
+		FileMap: map[string]string{"a.go": testFileMapPurpose},
 	}
 
 	wrapped := wrapUntrustedArchSnapshot(original, true)
@@ -365,7 +370,7 @@ func TestWrapUntrustedArchSnapshot_DoesNotMutateInput(t *testing.T) {
 	if wrapped.Summary == original.Summary {
 		t.Error("wrapped summary is identical to the input — no fence was applied")
 	}
-	if got := original.FileMap["a.go"]; got != "entry point" {
+	if got := original.FileMap["a.go"]; got != testFileMapPurpose {
 		t.Errorf("input file_map was mutated: %q", got)
 	}
 	if wrapUntrustedArchSnapshot(nil, true) != nil {
@@ -380,17 +385,17 @@ func TestWrapUntrustedArchSnapshot_IncludeFileMapGate(t *testing.T) {
 	original := &arch.Snapshot{
 		Slug:    "wayneblacktea",
 		Summary: "plain summary",
-		FileMap: map[string]string{"a.go": "entry point"},
+		FileMap: map[string]string{"a.go": testFileMapPurpose},
 	}
 
 	if got := wrapUntrustedArchSnapshot(original, false); got.FileMap != nil {
 		t.Errorf("includeFileMap=false must yield nil FileMap, got %v", got.FileMap)
 	}
-	if got := wrapUntrustedArchSnapshot(original, true); len(got.FileMap) != 1 || got.FileMap["a.go"] != "entry point" {
+	if got := wrapUntrustedArchSnapshot(original, true); len(got.FileMap) != 1 || got.FileMap["a.go"] != testFileMapPurpose {
 		t.Errorf("includeFileMap=true must preserve file_map entries, got %v", got.FileMap)
 	}
 	// original must never be mutated by either call.
-	if len(original.FileMap) != 1 || original.FileMap["a.go"] != "entry point" {
+	if len(original.FileMap) != 1 || original.FileMap["a.go"] != testFileMapPurpose {
 		t.Errorf("input file_map was mutated: %v", original.FileMap)
 	}
 }

@@ -508,35 +508,52 @@ func TestResourceHandoffLatest_FullContent(t *testing.T) {
 	var got handoffResource
 	parseResourceJSON(t, contents, &got)
 
-	if !got.HandoffPresent {
-		t.Fatal("handoff_present = false, want true")
+	// Split into subtests (each a separate function for cyclomatic-complexity
+	// purposes) rather than one flat assertion block — every check below is
+	// unchanged from the original, none dropped or weakened.
+	t.Run("handoff_present", func(t *testing.T) {
+		if !got.HandoffPresent {
+			t.Fatal("handoff_present = false, want true")
+		}
+	})
+	t.Run("id", func(t *testing.T) {
+		if got.ID == nil || *got.ID == uuidZero {
+			t.Error("id missing or zero")
+		}
+	})
+	t.Run("intent", func(t *testing.T) {
+		assertFencedFreeText(t, "intent", got.Intent, intent)
+	})
+	t.Run("context_summary", func(t *testing.T) {
+		assertFencedFreeText(t, "context_summary", got.ContextSummary, summary)
+	})
+	t.Run("next_actions", func(t *testing.T) {
+		if got.NextActionsTotal == nil || *got.NextActionsTotal != 2 {
+			t.Errorf("next_actions_total = %v, want 2", got.NextActionsTotal)
+		}
+		if len(got.NextActions) != 2 {
+			t.Fatalf("next_actions length = %d, want 2", len(got.NextActions))
+		}
+		if got.NextActions[0].Command != "task sqlc" {
+			t.Errorf("next_actions[0].command = %q, want %q", got.NextActions[0].Command, "task sqlc")
+		}
+		if got.NextActions[1].RefTaskID != fixedTestUUID {
+			t.Errorf("next_actions[1].ref_task_id = %q, want %q", got.NextActions[1].RefTaskID, fixedTestUUID)
+		}
+	})
+}
+
+// assertFencedFreeText fails the test unless got contains want as a substring
+// and is wrapped in the STORED CONTEXT fence — the shared shape
+// TestResourceHandoffLatest_FullContent checks for both intent and
+// context_summary.
+func assertFencedFreeText(t *testing.T, label, got, want string) {
+	t.Helper()
+	if !strings.Contains(got, want) {
+		t.Errorf("%s lost or truncated: %q", label, got)
 	}
-	if got.ID == nil || *got.ID == uuidZero {
-		t.Error("id missing or zero")
-	}
-	if !strings.Contains(got.Intent, intent) {
-		t.Errorf("intent lost or truncated: %q", got.Intent)
-	}
-	if !strings.HasPrefix(got.Intent, storedContextBoundaryStart) || !strings.HasSuffix(got.Intent, storedContextBoundaryEnd) {
-		t.Errorf("intent is not fenced: %q", got.Intent)
-	}
-	if !strings.Contains(got.ContextSummary, summary) {
-		t.Errorf("context_summary lost or truncated: %q", got.ContextSummary)
-	}
-	if !strings.HasPrefix(got.ContextSummary, storedContextBoundaryStart) || !strings.HasSuffix(got.ContextSummary, storedContextBoundaryEnd) {
-		t.Errorf("context_summary is not fenced: %q", got.ContextSummary)
-	}
-	if got.NextActionsTotal == nil || *got.NextActionsTotal != 2 {
-		t.Errorf("next_actions_total = %v, want 2", got.NextActionsTotal)
-	}
-	if len(got.NextActions) != 2 {
-		t.Fatalf("next_actions length = %d, want 2", len(got.NextActions))
-	}
-	if got.NextActions[0].Command != "task sqlc" {
-		t.Errorf("next_actions[0].command = %q, want %q", got.NextActions[0].Command, "task sqlc")
-	}
-	if got.NextActions[1].RefTaskID != fixedTestUUID {
-		t.Errorf("next_actions[1].ref_task_id = %q, want %q", got.NextActions[1].RefTaskID, fixedTestUUID)
+	if !strings.HasPrefix(got, storedContextBoundaryStart) || !strings.HasSuffix(got, storedContextBoundaryEnd) {
+		t.Errorf("%s is not fenced: %q", label, got)
 	}
 }
 
