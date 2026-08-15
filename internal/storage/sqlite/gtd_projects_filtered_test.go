@@ -24,7 +24,7 @@ func seedSQLiteProject(t *testing.T, s *sqlite.GTDStore, status string) uuid.UUI
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if status != "" && status != "active" {
+	if status != "" && status != statusActive {
 		if _, err := s.UpdateProjectStatus(ctx, proj.ID, gtd.ProjectStatus(status)); err != nil {
 			t.Fatalf("UpdateProjectStatus %q: %v", status, err)
 		}
@@ -38,11 +38,11 @@ func TestSQLiteStore_ProjectsFiltered_ActiveDefault(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()
 
-	activeID := seedSQLiteProject(t, s, "active")
+	activeID := seedSQLiteProject(t, s, statusActive)
 	_ = seedSQLiteProject(t, s, "completed")
 	_ = seedSQLiteProject(t, s, "archived")
 
-	for _, status := range []string{"", "active"} {
+	for _, status := range []string{"", statusActive} {
 		t.Run("status="+status, func(t *testing.T) {
 			projects, err := s.ProjectsFiltered(ctx, status)
 			if err != nil {
@@ -50,7 +50,7 @@ func TestSQLiteStore_ProjectsFiltered_ActiveDefault(t *testing.T) {
 			}
 			found := false
 			for _, p := range projects {
-				if p.Status != "active" {
+				if p.Status != statusActive {
 					t.Errorf("active filter returned project with status %q", p.Status)
 				}
 				if p.ID == activeID {
@@ -73,7 +73,7 @@ func TestSQLiteStore_ProjectsFiltered_ActiveDefault_ByteIdenticalToListActivePro
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		_ = seedSQLiteProject(t, s, "active")
+		_ = seedSQLiteProject(t, s, statusActive)
 	}
 	_ = seedSQLiteProject(t, s, "completed") // must not appear in either result
 
@@ -102,7 +102,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusCompleted(t *testing.T) {
 	ctx := context.Background()
 
 	completedID := seedSQLiteProject(t, s, "completed")
-	_ = seedSQLiteProject(t, s, "active") // must not appear
+	_ = seedSQLiteProject(t, s, statusActive) // must not appear
 
 	projects, err := s.ProjectsFiltered(ctx, "completed")
 	if err != nil {
@@ -129,7 +129,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusArchived(t *testing.T) {
 	ctx := context.Background()
 
 	archivedID := seedSQLiteProject(t, s, "archived")
-	_ = seedSQLiteProject(t, s, "active")
+	_ = seedSQLiteProject(t, s, statusActive)
 
 	projects, err := s.ProjectsFiltered(ctx, "archived")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusOnHold(t *testing.T) {
 	ctx := context.Background()
 
 	onHoldID := seedSQLiteProject(t, s, "on_hold")
-	_ = seedSQLiteProject(t, s, "active")
+	_ = seedSQLiteProject(t, s, statusActive)
 
 	projects, err := s.ProjectsFiltered(ctx, "on_hold")
 	if err != nil {
@@ -180,7 +180,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusAll(t *testing.T) {
 	s := openMem(t, "")
 	ctx := context.Background()
 
-	activeID := seedSQLiteProject(t, s, "active")
+	activeID := seedSQLiteProject(t, s, statusActive)
 	completedID := seedSQLiteProject(t, s, "completed")
 	archivedID := seedSQLiteProject(t, s, "archived")
 	onHoldID := seedSQLiteProject(t, s, "on_hold")
@@ -258,7 +258,7 @@ func TestSQLiteStore_ProjectsFiltered_WorkspaceScoping_ActiveDefault(t *testing.
 	storeB := openFileStore(t, sharedPath, wsB)
 	ctx := context.Background()
 
-	wsBProjID := seedSQLiteProject(t, storeB, "active")
+	wsBProjID := seedSQLiteProject(t, storeB, statusActive)
 
 	projects, err := storeA.ProjectsFiltered(ctx, "")
 	if err != nil {
