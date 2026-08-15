@@ -21,7 +21,8 @@ const statusSlugMaxLen = 64
 var statusSlugRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 func (s *Server) registerStatusTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("generate_project_status",
+	ms.AddTool(mcp.NewTool(
+		"generate_project_status",
 		mcp.WithDescription(
 			"Returns a Haiku-generated status snapshot for the given project slug "+
 				"(sprint_summary, gap_analysis, sota_catchup_pct, pending_summary). "+
@@ -40,8 +41,13 @@ func (s *Server) handleGenerateProjectStatus(ctx context.Context, req mcp.CallTo
 		return mcp.NewToolResultError("slug is required"), nil
 	}
 	// Reject slugs that could break out of the [BEGIN UNTRUSTED] boundary
-	// in the Haiku snapshot prompt. Same allow-list as upsert_project_arch
-	// (alphanumeric + underscore + dash, max 64).
+	// in the Haiku snapshot prompt. Shares statusSlugRe (the character
+	// allow-list: alphanumeric + underscore + dash) with
+	// upsert_project_arch's validateArchSlug (tools_arch.go) — that gate
+	// used to have no allow-list at all despite this comment previously
+	// claiming otherwise (R4 dispatch round 3 finding). The length cap
+	// differs on purpose: 64 here is this tool's own Haiku-prompt budget,
+	// not shared with upsert_project_arch's maxSlugLen=128.
 	if len(slug) > statusSlugMaxLen || !statusSlugRe.MatchString(slug) {
 		return mcp.NewToolResultError(
 			"slug must match ^[a-zA-Z0-9_-]+$ and be ≤ 64 chars",
