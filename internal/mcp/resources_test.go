@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
@@ -834,23 +835,31 @@ func TestResourceHandoffLatest_StoredDataNotice(t *testing.T) {
 	// TestResourceHandoffLatest_NoHandoff.
 }
 
-// TestResourceHandoffLatest_NextActionsTruncated pins the 🟡 finding (PR #157
-// security review m-3): a full set of maxNextActionItems=50 rows used to ride
-// unbounded (measured 80,687 bytes for one resource read) and
-// next_actions_total was always == len(next_actions), so a reader could never
-// tell truncation had happened. Both must now hold: the rendered array is
-// capped at handoffResourceMaxNextActions, and the total still reports the
-// real (pre-truncation) count.
+// TestResourceHandoffLatest_NextActionsTruncated pins the byte-budget half of
+// GTD 8abedb42 (decision 43c62703): seeding enough next_actions to exceed
+// handoffResourceNextActionsMaxBytes must drop trailing ROWS while
+// next_actions_total keeps reporting the full, pre-truncation count — the
+// same visibility guarantee the old row-cap design had (PR #157 security
+// review m-3), now driven by aggregate bytes instead of a fixed row count.
+//
+// Each seeded row's three free-text fields sit at the write-time cap
+// (maxNextActionFieldLen=500 runes, ASCII) so 50 rows comfortably exceed the
+// budget — a fixture of 50 TINY rows (the pre-fix version of this test) no
+// longer triggers truncation at all under a byte budget, since 50 small rows
+// fit easily; this fixture is the one that actually exercises the new bound.
 func TestResourceHandoffLatest_NextActionsTruncated(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 
-	const seeded = 50 // maxNextActionItems
+	const seeded = 50                                      // maxNextActionItems
+	bigField := strings.Repeat("x", maxNextActionFieldLen) // 500 ASCII bytes, the write-time cap
 	actions := make([]map[string]any, seeded)
 	for i := range actions {
 		actions[i] = map[string]any{
-			"step":   i,
-			"title":  fmt.Sprintf("step-%d", i),
-			"status": "pending",
+			"step":     i,
+			"title":    bigField,
+			"status":   "pending",
+			"command":  bigField,
+			"expected": bigField,
 		}
 	}
 	actionsJSON, err := json.Marshal(actions)
@@ -873,17 +882,36 @@ func TestResourceHandoffLatest_NextActionsTruncated(t *testing.T) {
 	var got handoffResource
 	parseResourceJSON(t, contents, &got)
 
-	if len(got.NextActions) != handoffResourceMaxNextActions {
-		t.Errorf("next_actions length = %d, want %d (handoffResourceMaxNextActions)",
-			len(got.NextActions), handoffResourceMaxNextActions)
-	}
 	if got.NextActionsTotal == nil || *got.NextActionsTotal != seeded {
 		t.Errorf("next_actions_total = %v, want %d (the real, pre-truncation count)",
 			got.NextActionsTotal, seeded)
 	}
+	if len(got.NextActions) >= seeded {
+		t.Fatalf("next_actions length = %d, want < %d — the byte budget should have dropped tail rows",
+			len(got.NextActions), seeded)
+	}
+	if len(got.NextActions) == 0 {
+		t.Fatal("next_actions length = 0 — the budget dropped every row, want at least one to survive")
+	}
 	if got.NextActionsTotal == nil || *got.NextActionsTotal <= len(got.NextActions) {
 		t.Errorf("next_actions_total (%v) must be > len(next_actions) (%d) so truncation is visible",
 			got.NextActionsTotal, len(got.NextActions))
+	}
+
+	// Rows are dropped whole from the tail, never clipped individually: the
+	// first surviving row must carry its complete 500-char field.
+	if got.NextActions[0].Title != bigField {
+		t.Errorf("next_actions[0].title was altered — rows must survive complete or not at all "+
+			"(got %d chars, want %d)", len(got.NextActions[0].Title), len(bigField))
+	}
+
+	reencoded, err := json.Marshal(got.NextActions)
+	if err != nil {
+		t.Fatalf("re-marshal next_actions: %v", err)
+	}
+	if len(reencoded) > handoffResourceNextActionsMaxBytes {
+		t.Errorf("next_actions re-encoded = %d bytes, want <= %d (handoffResourceNextActionsMaxBytes)",
+			len(reencoded), handoffResourceNextActionsMaxBytes)
 	}
 }
 
@@ -936,15 +964,13 @@ func TestStoredDataNotice_CoversUnfencedHandoffFields(t *testing.T) {
 }
 
 // TestResourceHandoffLatest_NextActionsByteCapCJKWorstCase pins m-R4 (PR #157
-// round-2 security review): handoffResourceMaxNextActions caps ROW COUNT, not
-// bytes, and maxNextActionFieldLen=500 is a RUNE cap — for CJK content (3
-// bytes/rune) this let a single resource read reach 101,863 bytes, MORE than
-// the 80,687-byte figure that originally justified the row cap
-// (handoffResourceMaxNextActions doc comment). Seeds the same worst-case
-// shape (50 rows, each field CJK at the write-time rune cap) and asserts the
-// payload now stays under that original trigger value, and that
-// next_actions_total still reports the true pre-truncation count even though
-// individual field content is now byte-capped too.
+// round-2 security review) under the byte-budget design (GTD 8abedb42,
+// decision 43c62703): CJK content at the write-time rune cap (3 bytes/rune)
+// must still keep the WHOLE resource under the original 80,687-byte trigger
+// value. Unlike the pre-fix design, rows are now dropped WHOLE rather than
+// each field being clipped down to 200 runes — a surviving row's field must
+// come back byte-for-byte identical to the 500-rune CJK input, never
+// truncated.
 func TestResourceHandoffLatest_NextActionsByteCapCJKWorstCase(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 
@@ -988,17 +1014,213 @@ func TestResourceHandoffLatest_NextActionsByteCapCJKWorstCase(t *testing.T) {
 	var got handoffResource
 	parseResourceJSON(t, contents, &got)
 	if got.NextActionsTotal == nil || *got.NextActionsTotal != seeded {
-		t.Errorf("next_actions_total = %v, want %d (the real, pre-truncation count) — byte-capping "+
-			"individual fields must not also corrupt the total", got.NextActionsTotal, seeded)
+		t.Errorf("next_actions_total = %v, want %d (the real, pre-truncation count) — byte-budgeting "+
+			"rows must not also corrupt the total", got.NextActionsTotal, seeded)
 	}
-	if len(got.NextActions) != handoffResourceMaxNextActions {
-		t.Errorf("next_actions length = %d, want %d", len(got.NextActions), handoffResourceMaxNextActions)
+	if len(got.NextActions) == 0 || len(got.NextActions) >= seeded {
+		t.Fatalf("next_actions length = %d, want strictly between 0 and %d — the aggregate byte "+
+			"budget should drop some but not all rows for this adversarial CJK fixture",
+			len(got.NextActions), seeded)
 	}
+	// Rows are no longer individually clipped to 200 runes — a surviving
+	// row's field must be the FULL 500-rune input, byte-for-byte.
 	for i, a := range got.NextActions {
-		if n := utf8.RuneCountInString(a.Title); n > handoffResourceNextActionFieldMaxRunes+1 {
-			t.Errorf("next_actions[%d].title = %d runes, want <= %d (cap + clip marker)",
-				i, n, handoffResourceNextActionFieldMaxRunes+1)
+		if a.Title != cjk500 {
+			t.Errorf("next_actions[%d].title was truncated — rows must survive complete or be dropped "+
+				"whole, never partially clipped (got %d runes, want %d)",
+				i, utf8.RuneCountInString(a.Title), utf8.RuneCountInString(cjk500))
 		}
+	}
+}
+
+// TestResourceHandoffLatest_NextActionFieldNeverTruncatesLegitValue pins the
+// next_action-field half of GTD 8abedb42 — the sibling fix to
+// TestResourceHandoffLatest_IntentNeverTruncatesLegitValue above, on the
+// three next_action free-text fields instead of intent. Production measured
+// (Lead's read-only Aiven query, 2026-08-15, 135 handoffs / 363
+// next_action items) fields up to 320 chars (title), 281 chars (command), and
+// 218 chars (expected) — all cleared the write-time 500-rune cap but were
+// silently truncated on every read by the previous 200-rune read-time cap.
+// Content below is synthesized ASCII at those measured lengths, not the real
+// stored text (data hygiene, backend-security-design.md §3.2 — only the
+// LENGTH matters for this guarantee).
+//
+// MUTATION (manually verified, not shipped as code): reverting
+// handoffResourceNextActionFieldMaxRunes to a literal 200 makes this test
+// fail — all three fields come back short and carrying clipMarker.
+func TestResourceHandoffLatest_NextActionFieldNeverTruncatesLegitValue(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	const (
+		prodMaxTitleChars    = 320
+		prodMaxCommandChars  = 281
+		prodMaxExpectedChars = 218
+	)
+	title := strings.Repeat("t", prodMaxTitleChars)
+	command := strings.Repeat("c", prodMaxCommandChars)
+	expected := strings.Repeat("e", prodMaxExpectedChars)
+
+	for name, f := range map[string]string{"title": title, "command": command, "expected": expected} {
+		if got := len([]rune(f)); got >= maxNextActionFieldLen {
+			t.Fatalf("%s fixture no longer clears the write-time gate (%d >= maxNextActionFieldLen=%d): premise broken",
+				name, got, maxNextActionFieldLen)
+		}
+	}
+
+	actionJSON, err := json.Marshal([]map[string]any{{
+		"step": 0, "title": title, "status": "pending", "command": command, "expected": expected,
+	}})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	setRes := callSetSessionHandoff(t, s, map[string]any{
+		"intent":       "continue tomorrow",
+		"next_actions": string(actionJSON),
+	})
+	if setRes.IsError {
+		t.Fatalf("set_session_handoff rejected production-length next_action fields, want acceptance: %s",
+			resultText(setRes))
+	}
+
+	contents, err := s.handleResourceHandoffLatest(context.Background(), mcpmsg.ReadResourceRequest{})
+	if err != nil {
+		t.Fatalf("handleResourceHandoffLatest: %v", err)
+	}
+	var got handoffResource
+	parseResourceJSON(t, contents, &got)
+
+	if len(got.NextActions) != 1 {
+		t.Fatalf("next_actions length = %d, want 1", len(got.NextActions))
+	}
+	a := got.NextActions[0]
+	if a.Title != title {
+		t.Errorf("title truncated: got %d chars, want %d", len(a.Title), len(title))
+	}
+	if a.Command != command {
+		t.Errorf("command truncated: got %d chars, want %d", len(a.Command), len(command))
+	}
+	if a.Expected != expected {
+		t.Errorf("expected truncated: got %d chars, want %d", len(a.Expected), len(expected))
+	}
+}
+
+// TestResourceHandoffLatest_MaxObservedHandoffNeverTruncates pins the
+// row-count half of GTD 8abedb42: production's largest single handoff had 10
+// next_action items (Lead's read-only Aiven query, 2026-08-15, max across 135
+// handoffs), totaling 2,981 raw JSONB bytes — over 13x below
+// handoffResourceNextActionsMaxBytes (40,343 bytes). Seeds 10 items (that
+// measured worst case's item count) with moderate per-field content — the
+// production MAX field lengths are already covered by
+// TestResourceHandoffLatest_NextActionFieldNeverTruncatesLegitValue above —
+// and asserts every row survives.
+func TestResourceHandoffLatest_MaxObservedHandoffNeverTruncates(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	const prodMaxItemsPerHandoff = 10
+	actions := make([]map[string]any, prodMaxItemsPerHandoff)
+	for i := range actions {
+		actions[i] = map[string]any{
+			"step":     i,
+			"title":    fmt.Sprintf("step %d: do the thing that needs doing for this handoff", i),
+			"status":   "pending",
+			"command":  fmt.Sprintf("task run-%d", i),
+			"expected": "the thing is done and verified",
+		}
+	}
+	actionsJSON, err := json.Marshal(actions)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	setRes := callSetSessionHandoff(t, s, map[string]any{
+		"intent":       "continue tomorrow",
+		"next_actions": string(actionsJSON),
+	})
+	if setRes.IsError {
+		t.Fatalf("set_session_handoff failed: %s", resultText(setRes))
+	}
+
+	contents, err := s.handleResourceHandoffLatest(context.Background(), mcpmsg.ReadResourceRequest{})
+	if err != nil {
+		t.Fatalf("handleResourceHandoffLatest: %v", err)
+	}
+	var got handoffResource
+	parseResourceJSON(t, contents, &got)
+
+	if len(got.NextActions) != prodMaxItemsPerHandoff {
+		t.Errorf("next_actions length = %d, want %d — production's largest observed handoff must not "+
+			"lose a row under the new budget", len(got.NextActions), prodMaxItemsPerHandoff)
+	}
+	if got.NextActionsTotal == nil || *got.NextActionsTotal != prodMaxItemsPerHandoff {
+		t.Errorf("next_actions_total = %v, want %d", got.NextActionsTotal, prodMaxItemsPerHandoff)
+	}
+}
+
+// TestAppendNextActionsWithinByteBudget_ByteAccountingIsExact pins
+// appendNextActionsWithinByteBudget's core invariant directly (bypassing
+// set_session_handoff/resource-read plumbing): the function's internal
+// running byte count must equal the ACTUAL json.Marshal size of what it
+// returns (never over budget), and it must not stop before the next row
+// would genuinely have overflowed the budget (never under-pack).
+//
+// The fixture uses 100 SHORT rows (Command/Expected empty, dropped by
+// omitempty) specifically so the joining-comma accounting matters: the
+// per-row marshaled size is small enough that an under-count accumulated
+// across ~50 rows (the boundary this test lands on) exceeds a single row's
+// size, so an implementation that forgets to count the joining comma admits
+// multiple EXTRA rows past budget rather than silently staying within a
+// slack margin too small to detect — a fixture with fewer/larger rows does
+// not reliably catch this class of bug (verified: a 30-row/~40-byte-row
+// fixture left ~14 bytes of undercount at its boundary, smaller than one
+// row, so the mistaken loop still stopped at the correct row and the "never
+// over budget" check passed even with the comma accounting deleted).
+//
+// MUTATION (manually verified, not shipped as code): deleting the "+1 for
+// the joining comma" line in appendNextActionsWithinByteBudget makes the
+// "never over budget" half of this test fail — the mistaken loop admits ~2
+// extra rows, and the re-encoded result comes back over budget.
+func TestAppendNextActionsWithinByteBudget_ByteAccountingIsExact(t *testing.T) {
+	const n = 100
+	actions := make([]session.NextAction, n)
+	for i := range actions {
+		actions[i] = session.NextAction{
+			Step:   i,
+			Title:  fmt.Sprintf("t%d", i),
+			Status: session.NextActionPending,
+		}
+	}
+
+	// Derive a budget that lands mid-list (not 0 rows, not all n) so the
+	// boundary condition this function exists for is actually exercised.
+	full, err := json.Marshal(appendNextActionsWithinByteBudget(actions, 1<<20))
+	if err != nil {
+		t.Fatalf("marshal full result: %v", err)
+	}
+	budget := len(full) / 2
+
+	got := appendNextActionsWithinByteBudget(actions, budget)
+	if len(got) == 0 || len(got) == len(actions) {
+		t.Fatalf("fixture did not exercise a mid-list boundary: got %d of %d rows", len(got), len(actions))
+	}
+
+	reencoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if len(reencoded) > budget {
+		t.Errorf("appendNextActionsWithinByteBudget returned %d bytes, exceeds budget %d",
+			len(reencoded), budget)
+	}
+
+	// One more row must NOT fit — otherwise the loop stopped earlier than necessary.
+	oneMore, err := json.Marshal(appendNextActionsWithinByteBudget(actions[:len(got)+1], 1<<20))
+	if err != nil {
+		t.Fatalf("marshal one-more-row result: %v", err)
+	}
+	if len(oneMore) <= budget {
+		t.Errorf("packing stopped at %d rows (%d bytes) but %d rows (%d bytes) would still fit budget %d — "+
+			"the loop under-packed", len(got), len(reencoded), len(got)+1, len(oneMore), budget)
 	}
 }
 

@@ -119,12 +119,26 @@ tasks:
     dir: ../web
 
   build-server:
-    desc: "Build REST API server binary to bin/"
+    desc: "Build REST API server binary to bin/, with local build identity (commit/date) injected into internal/buildinfo — GTD 61838147"
     deps:
       - go-cache
+    vars:
+      BUILD_COMMIT:
+        sh: git rev-parse --short HEAD
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
     cmds:
       - mkdir -p bin
-      - go build -o bin/wayneblacktea-server ./cmd/server/
+      # Version stays the "dev" sentinel (internal/buildinfo's own default —
+      # only goreleaser tagged releases set a real version, matching the
+      # existing cmd/wbt convention). Commit/Date ARE injected here so a
+      # locally-built server can still answer "which commit is this" via
+      # wayneblacktea://system/build-info, without pretending to be a
+      # release.
+      - >-
+        go build -ldflags "-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit={{.BUILD_COMMIT}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date={{.BUILD_DATE}}"
+        -o bin/wayneblacktea-server ./cmd/server/
     dir: ..
 
   build-doctor:

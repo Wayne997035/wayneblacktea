@@ -37,7 +37,18 @@ builds:
     flags:
       - -trimpath
     ldflags:
+      # -X main.version/commit/date are legacy no-ops for this binary: cmd/server
+      # has never declared its own version/commit/date vars, so these three
+      # flags previously had no effect at all. The internal/buildinfo flags
+      # below are what actually reach the MCP server (internal/mcp/server.go
+      # reads buildinfo.Version for serverInfo.version and the
+      # wayneblacktea://system/build-info resource — GTD 61838147). Kept
+      # alongside rather than removed in case a future cmd/server/main.go
+      # startup log wants its own version vars without importing buildinfo.
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version={{.Version}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit={{.Commit}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date={{.Date}}
     goos:
       - linux
       - darwin
@@ -71,7 +82,20 @@ builds:
     flags:
       - -trimpath
     ldflags:
+      # -X main.version/commit/date feed `wbt version`'s own CLI output
+      # (cmd/wbt/main.go). The internal/buildinfo flags below are ADDITIONAL:
+      # `wbt mcp` runs the same MCP server as the `server` build id above
+      # (internal/mcprunner -> internal/mcp), so it needs the same
+      # buildinfo.Version/Commit/Date for serverInfo.version and the
+      # wayneblacktea://system/build-info resource — GTD 61838147. Without
+      # this block, `wbt mcp` would report the sentinel "dev" forever even in
+      # a tagged release, while the HTTP transport (server build id) reports
+      # the real tag: the exact two-transports-drift bug this PR exists to
+      # avoid.
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version={{.Version}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit={{.Commit}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date={{.Date}}
     goos:
       - linux
       - darwin

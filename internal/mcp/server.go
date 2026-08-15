@@ -13,6 +13,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
+	"github.com/Wayne997035/wayneblacktea/internal/buildinfo"
 	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
@@ -324,6 +325,19 @@ func (s *Server) workspaceUUID() *uuid.UUID {
 	return s.workspaceID
 }
 
+// backendKind reports which storage backend this Server is running against,
+// for the wayneblacktea://system/build-info resource (resources.go). Mirrors
+// the nil-check the pg*/sqlite* store field pairs already use elsewhere in
+// this struct (e.g. acceptProposal's pgGTD/sqliteGTD branch) rather than
+// adding a new accessor to storage.ServerStores — s.pool is already the
+// signal New() derives every other pg-vs-sqlite decision from.
+func (s *Server) backendKind() string {
+	if s.pool != nil {
+		return string(storage.BackendPostgres)
+	}
+	return string(storage.BackendSQLite)
+}
+
 // WithClassifier wires an ActivityClassifier into the server so that
 // significant MCP tool calls are automatically classified for implicit
 // decisions and follow-up tasks. Passing nil is valid and disables
@@ -419,10 +433,22 @@ upsert_project_arch.
 // CALLS bypass them entirely, so a filtered-out tool stays invocable by name —
 // that asymmetry is the feature's safety net, and TestAllTools_CallableWhenHidden
 // pins it. Both transports (HTTP at cmd/server/main.go and stdio via
-// internal/mcprunner) go through this one constructor, so both get it.
+// internal/mcprunner) go through this one constructor, so both get it —
+// including buildinfo.Version below (GTD 61838147): neither transport threads
+// a version value in separately, so there is exactly one place that can drift
+// from the other. See buildinfo's package doc for the ldflags that populate it.
 func (s *Server) MCPServer() *server.MCPServer {
 	opts := []server.ServerOption{
 		server.WithInstructions(mcpInstructions),
+		// Title/Description are the human-readable display fields the MCP
+		// spec (2025-11-25 Implementation) defines for "logging, display, and
+		// debugging" — static, unlike Version below, since they describe what
+		// the server IS rather than which build is running.
+		server.WithTitle("wayneblacktea Personal OS"),
+		server.WithDescription(
+			"Personal OS / GTD MCP server — single-tenant workspace exposing GTD tasks/projects/goals, " +
+				"session handoffs, decisions, and knowledge over MCP tools and resources.",
+		),
 		server.WithToolHandlerMiddleware(s.watchdog.Middleware()),
 		server.WithToolHandlerMiddleware(s.autoLogMiddleware()),
 		server.WithToolHandlerMiddleware(s.disciplineMiddleware()),
@@ -442,7 +468,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	if progressiveDisclosureEnabled() {
 		opts = append(opts, server.WithToolFilter(s.filterToolsForSession))
 	}
-	ms := server.NewMCPServer("wayneblacktea", "0.1.0", opts...)
+	ms := server.NewMCPServer("wayneblacktea", buildinfo.Version, opts...)
 	s.registerOnboardingTools(ms)
 	s.registerExpandTools(ms)
 	s.registerContextTools(ms)
