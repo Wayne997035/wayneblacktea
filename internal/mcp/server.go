@@ -526,9 +526,20 @@ func requireUUIDArg(args map[string]any, key, invalidMsg string) (uuid.UUID, *mc
 	return id, nil
 }
 
-// jsonText marshals v to indented JSON and returns a tool result text.
+// jsonText marshals v to compact JSON and returns a tool result text.
+//
+// Compact, no exceptions: the consumer of every MCP tool response is an LLM,
+// not a human eyeballing a terminal, so two-space indentation is pure prompt
+// overhead paid on every call. This used to be jsonText's own trade-off
+// (pretty-print, "worth the bytes for tools a human reads on demand") with a
+// separate compactJSONText carved out for the one payload that could not
+// afford it (get_today_context). That split is gone: every byte any tool
+// response costs is either session-start-adjacent or repeated often enough
+// that the whitespace was never worth it. Compact JSON parses identically to
+// indented JSON for every real client (all of them use json.Unmarshal or
+// equivalent), so nothing is lost but formatting.
 func jsonText(v any) (*mcp.CallToolResult, error) {
-	out, err := json.MarshalIndent(v, "", "  ")
+	out, err := json.Marshal(v)
 	if err != nil {
 		return mcp.NewToolResultError("marshaling response"), nil
 	}

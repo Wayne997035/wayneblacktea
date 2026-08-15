@@ -80,7 +80,8 @@ func withReconcileCandidatesDB(t *testing.T, s *Server) (*Server, *sql.DB) {
 func countAutoAppliedCandidates(t *testing.T, dbConn *sql.DB, taskID uuid.UUID) int {
 	t.Helper()
 	var count int
-	err := dbConn.QueryRowContext(context.Background(),
+	err := dbConn.QueryRowContext(
+		context.Background(),
 		`SELECT COUNT(*) FROM completion_candidates WHERE task_id = ? AND status = 'auto_applied'`,
 		taskID.String(),
 	).Scan(&count)
@@ -926,7 +927,7 @@ func TestMCPReconcileMergedPRs_NonMatchingPayloadNeverConsumesTokenCap(t *testin
 			t.Fatalf("call %d: expected success (no_match), got error: %s", i, resultText(r))
 		}
 		body := resultText(r)
-		if !strings.Contains(body, `"status": "no_match"`) {
+		if !strings.Contains(body, `"status":"no_match"`) {
 			t.Fatalf("call %d: expected status=no_match, got: %s", i, body)
 		}
 		// Check for the JSON KEY specifically (quote-colon), not a bare

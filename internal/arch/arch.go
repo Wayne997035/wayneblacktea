@@ -17,7 +17,7 @@ type Snapshot struct {
 	ID            string            `json:"id"`
 	Slug          string            `json:"slug"`
 	Summary       string            `json:"summary"`
-	FileMap       map[string]string `json:"file_map"`
+	FileMap       map[string]string `json:"file_map,omitempty"`
 	LastCommitSHA string            `json:"last_commit_sha"`
 	UpdatedAt     time.Time         `json:"updated_at"`
 	// Stale is populated at the MCP layer by comparing LastCommitSHA with the

@@ -44,6 +44,11 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 				"Returns an error when no snapshot has been stored yet.",
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier"), mcp.Required()),
+		mcp.WithBoolean("include_file_map", mcp.Description(
+			"Include the file_map in the response (default false). file_map is the largest "+
+				"field in this tool's response; call with include_file_map=true only when you "+
+				"need the path→purpose index.",
+		)),
 	), s.handleGetProjectArch)
 }
 
@@ -113,7 +118,8 @@ func (s *Server) handleGetProjectArch(ctx context.Context, req mcp.CallToolReque
 	// snap.last_commit_sha with `git rev-parse HEAD` themselves.
 	snap.Stale = false
 
-	return jsonText(wrapUntrustedArchSnapshot(snap))
+	includeFileMap := boolArg(args, "include_file_map")
+	return jsonText(wrapUntrustedArchSnapshot(snap, includeFileMap))
 }
 
 // wrapUntrustedArchSnapshot returns a copy of snap with its untrusted free
@@ -129,17 +135,24 @@ func (s *Server) handleGetProjectArch(ctx context.Context, req mcp.CallToolReque
 //     would bury the map in markers. Stripping the marker text is what stops
 //     one of them faking a boundary for the fenced Summary above.
 //
+// includeFileMap gates FileMap entirely: when false (the get_project_arch
+// default), the neutralisation loop is skipped and out.FileMap is left nil —
+// file_map is the largest field in this response, and the caller did not ask
+// for it (W2, token-diet). When true, the field is populated exactly as
+// before this option existed.
+//
 // The core protocol asks for get_project_arch at session start, so this is on
 // the automatic path — the same reason the identically-worded fence existed
 // while the snapshot was embedded in get_today_context (PR #156 reviewer M1 /
 // security review M-3). A nil snapshot is returned unchanged.
-func wrapUntrustedArchSnapshot(snap *arch.Snapshot) *arch.Snapshot {
+func wrapUntrustedArchSnapshot(snap *arch.Snapshot, includeFileMap bool) *arch.Snapshot {
 	if snap == nil {
 		return nil
 	}
 	out := *snap
 	out.Summary = fenceArchSummary(snap.Summary)
-	if len(snap.FileMap) > 0 {
+	out.FileMap = nil
+	if includeFileMap && len(snap.FileMap) > 0 {
 		fileMap := make(map[string]string, len(snap.FileMap))
 		for path, purpose := range snap.FileMap {
 			fileMap[neutralizeBoundaryMarkers(path)] = neutralizeBoundaryMarkers(purpose)

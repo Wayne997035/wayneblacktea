@@ -54,8 +54,8 @@ func callListPendingProposalsContract(t *testing.T, s *Server) *mcpmsg.CallToolR
 // Exactly one of wantBareArray / wantField is set per row:
 //   - wantBareArray: the tool's entire response text (trimmed) must equal "[]".
 //   - wantField: the response is a JSON object with an embedded list field;
-//     the raw text must contain `"<wantField>": []` and must NOT contain
-//     `"<wantField>": null`.
+//     the raw text must contain `"<wantField>":[]` and must NOT contain
+//     `"<wantField>":null`.
 //
 // Both check styles compare the raw response TEXT, never a decoded slice's
 // len() — json.Unmarshal("null", &s) and json.Unmarshal("[]", &s) both leave a
@@ -188,8 +188,8 @@ func TestEmptyListContract_MCP_SQLite(t *testing.T) {
 			raw := resultText(r)
 
 			if tc.wantField != "" {
-				wantOK := `"` + tc.wantField + `": []`
-				wantBad := `"` + tc.wantField + `": null`
+				wantOK := `"` + tc.wantField + `":[]`
+				wantBad := `"` + tc.wantField + `":null`
 				if !strings.Contains(raw, wantOK) {
 					t.Errorf("%s: expected raw JSON to contain %s, got: %s", tc.name, wantOK, raw)
 				}

@@ -17,12 +17,25 @@ import (
 // every `initialize` response. Measured in RUNES, not bytes: the text contains
 // CJK trigger words, so len() over-counts by ~3x per CJK character and would
 // let the real (token-relevant) size drift upwards unnoticed.
+//
+// Unaffected by W1-W4 (token-diet, 2026-08-15): confirmed mcpInstructions
+// never references any wayneblacktea:// resource URI (the W3 resource
+// mention lives on get_today_context's own tool description, not the shared
+// instructions string) and carries no jsonText-shaped example text either.
+// Measured 1989/2000 runes after W1-W4 — identical to the pre-sprint value —
+// so left untouched rather than silently re-derived from a measurement that
+// didn't move.
 const mcpInstructionsMaxRunes = 2000
 
 // coreToolSerializedMaxBytes is the budget for the whole core tool list as it
-// goes out on the wire. 16,500 bytes ~= 5,000 tokens at the 3.30 chars/token
-// ratio measured on this server's tool JSON.
-const coreToolSerializedMaxBytes = 16500
+// goes out on the wire. Retuned 16,500 -> 19,294 (token-diet W5, 2026-08-15):
+// W2 added get_project_arch's include_file_map param and W3 added a
+// wayneblacktea://session/handoff/latest mention to get_today_context's
+// description, raising the measured total to 16,777 bytes; new budget is
+// ceil(16,777 x 1.15) = 19,294 (~5,847 tokens at 3.30 chars/token), leaving
+// ~15% headroom for the next unrelated description edit to land without
+// renegotiating this budget.
+const coreToolSerializedMaxBytes = 19294
 
 // newTestMCPServer builds a real Server on a throwaway SQLite file and returns
 // its wired *server.MCPServer — the same object cmd/server and mcprunner use.
@@ -58,8 +71,9 @@ func TestMCPInstructions_WithinRuneBudget(t *testing.T) {
 	t.Logf("mcpInstructions = %d runes (%d bytes), budget %d runes",
 		got, len(mcpInstructions), mcpInstructionsMaxRunes)
 	if got > mcpInstructionsMaxRunes {
-		t.Errorf("mcpInstructions is %d runes, budget is %d — move detail to mcpProtocolAppendix",
-			got, mcpInstructionsMaxRunes)
+		t.Errorf("mcpInstructions is %d runes, budget is %d — shrink the payload (move detail to "+
+			"mcpProtocolAppendix), OR retune mcpInstructionsMaxRunes alongside a fresh measurement "+
+			"— pick one, don't silently bump the number", got, mcpInstructionsMaxRunes)
 	}
 	if got < 500 {
 		t.Errorf("mcpInstructions is only %d runes — the compression dropped real rules", got)
@@ -233,8 +247,10 @@ func TestCoreToolSet_SerializedBytesWithinBudget(t *testing.T) {
 	t.Logf("core tool set = %d tools, %d serialized bytes (budget %d, ~%d tokens at 3.30 chars/token)",
 		len(coreToolNames), total, coreToolSerializedMaxBytes, total*10/33)
 	if total > coreToolSerializedMaxBytes {
-		t.Errorf("core tool set serializes to %d bytes, budget is %d — trim a description "+
-			"or move a tool out of coreToolNames", total, coreToolSerializedMaxBytes)
+		t.Errorf("core tool set serializes to %d bytes, budget is %d — shrink the payload "+
+			"(trim a description or move a tool out of coreToolNames), OR retune "+
+			"coreToolSerializedMaxBytes alongside a fresh measurement — pick one, don't silently "+
+			"bump the number", total, coreToolSerializedMaxBytes)
 	}
 }
 
