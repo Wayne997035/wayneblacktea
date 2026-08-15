@@ -26,7 +26,10 @@ export function GtdPage() {
   const [editProject, setEditProject] = useState<Project | null>(null)
   const [fabOpen, setFabOpen] = useState(false)
   const goalsQuery = useGoals()
-  const projectsQuery = useProjects()
+  // 'all' so goalTaskCounts below can map every task back to its project's
+  // goal — a completed/archived project excluded here would silently drop
+  // its tasks out of the per-goal progress count (see GoalCard).
+  const projectsQuery = useProjects('all')
   const tasksQuery = useAllTasks('all')
 
   const goals = goalsQuery.data ?? []

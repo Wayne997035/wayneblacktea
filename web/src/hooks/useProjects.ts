@@ -2,10 +2,29 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import type { Project, ProjectStatus } from '../types/api'
 
-export function useProjects() {
+/**
+ * Status filter passed to GET /api/projects.
+ *
+ * - unset (default): backend returns active projects only. This is the
+ *   historical contract used by GTD list pages — keep it as the default so
+ *   existing callers don't regress.
+ * - 'all': backend returns every status (active/on_hold/completed/archived).
+ *   Needed by aggregations that must see every project regardless of status
+ *   (e.g. the GTD goal-progress rollup) — otherwise tasks that belong to a
+ *   completed project have no project to map back to and silently drop out
+ *   of the count.
+ */
+export type ProjectStatusFilter = ProjectStatus | 'all'
+
+export function useProjects(status?: ProjectStatusFilter) {
+  const suffix = status ? `?status=${status}` : ''
   return useQuery<Project[]>({
-    queryKey: ['projects'],
-    queryFn: () => apiFetch<Project[]>('/api/projects'),
+    // Status is part of the cache key so the default fetch and the 'all'
+    // fetch don't share a cache entry — otherwise whichever resolves last
+    // would clobber the other's data (e.g. DecisionsPage's default call vs.
+    // GtdPage's 'all' call racing on the same key).
+    queryKey: status ? ['projects', status] : ['projects'],
+    queryFn: () => apiFetch<Project[]>(`/api/projects${suffix}`),
     // Defence: backend may return JSON null for an empty list; never let a null reach .length.
     select: (data) => data ?? [],
   })
