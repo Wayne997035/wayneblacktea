@@ -575,10 +575,12 @@ const handoffResourceNextActionsMaxBytes = 80_687 / 2 // 40,343 bytes
 // handoffResource is the full, fenced view of the latest session handoff.
 //
 // Deliberately NOT a reuse of pendingHandoffView (tools_context.go): that
-// type is returned verbatim by set_session_handoff / mark_next_action_done
-// to echo the CALLER'S OWN just-written text back unfenced
-// (buildPendingHandoffView's doc comment), which is safe only because the
-// reader is the same turn that wrote it. This resource can be read by any
+// type is returned verbatim by set_session_handoff to echo the CALLER'S OWN
+// just-written text back unfenced (buildPendingHandoffView's doc comment),
+// which is safe only because the reader is the same turn that wrote it.
+// mark_next_action_done used to share that unfenced path; it no longer does
+// — it builds the hardened view (buildHardenedHandoffView, tools_session.go)
+// whose output this type's parity test pins byte-for-byte. This resource can be read by any
 // session, including one that has not written anything and has earned no
 // trust, so its free-text fields go through the same
 // clip+fence+neutralise treatment get_today_context's pending_handoff used
@@ -655,9 +657,17 @@ func (s *Server) handleResourceHandoffLatest(
 		// clipSafe also bounds the field to handoffResourceRepoNameMaxRunes,
 		// which that const's doc comment covers.
 		RepoName: clipSafe(textValue(h.RepoName), handoffResourceRepoNameMaxRunes),
-		// Fenced, not merely clipped: this resource is the ONLY reader of the
-		// full text now that get_today_context's pending_handoff carries none
-		// of it (W3) — see the type doc comment above for the threat model.
+		// Fenced, not merely clipped: this text is attacker-influenced and is
+		// read by sessions other than the one that wrote it — see the type doc
+		// comment above for the threat model. get_today_context's
+		// pending_handoff no longer carries it at all (W3), and
+		// mark_next_action_done emits the hardened equivalent.
+		//
+		// NOT the only reader: recall (tools_procedural.go) still returns the
+		// raw db.SessionHandoff row with none of this treatment. That is a
+		// known un-hardened path, not an oversight in this file — do not
+		// re-derive "this is the only reader" from the absence of other
+		// callers here.
 		Intent:           clipAndFenceStoredContext(h.Intent, handoffResourceIntentMaxRunes),
 		ContextSummary:   clipAndFenceStoredContext(textValue(h.ContextSummary), handoffResourceSummaryMaxRunes),
 		NextActionsTotal: &nextActionsTotal,
