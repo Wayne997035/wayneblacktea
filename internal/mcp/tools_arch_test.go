@@ -169,6 +169,41 @@ func TestHandleGetProjectArch_ByteSizeMeasurement_ProductionScale(t *testing.T) 
 	if after >= before {
 		t.Errorf("include_file_map=false (%d bytes) did not shrink the response versus true (%d bytes)", after, before)
 	}
+
+	// Pin the actual byte counts (not just the shrink direction) within a
+	// tolerance band. Round 2 reviewer finding: this test previously only
+	// asserted after < before, so the fixture could silently drift far from
+	// the "2,778 B -> 1,073 B (-61.4%)" figure this test reproduces without
+	// ever going red. wantTolerance is intentionally loose (±5%) — it's a
+	// drift guard, not a byte-for-byte pin.
+	//
+	// PR body / docs quoting these numbers (2,778 B before / 1,073 B after
+	// / -61.4% reduction) MUST be updated together with this fixture if the
+	// drift is intentional.
+	const (
+		wantBeforeBytes = 2778
+		wantAfterBytes  = 1073
+		wantTolerance   = 0.05
+	)
+	if !withinTolerance(before, wantBeforeBytes, wantTolerance) {
+		t.Errorf("include_file_map=true size drifted: got %d bytes, want %d +/- %.0f%%. "+
+			"PR body / docs quote 2,778 B before / 1,073 B after / -61.4%% reduction — update them too if this drift is intentional.",
+			before, wantBeforeBytes, wantTolerance*100)
+	}
+	if !withinTolerance(after, wantAfterBytes, wantTolerance) {
+		t.Errorf("include_file_map=false size drifted: got %d bytes, want %d +/- %.0f%%. "+
+			"PR body / docs quote 2,778 B before / 1,073 B after / -61.4%% reduction — update them too if this drift is intentional.",
+			after, wantAfterBytes, wantTolerance*100)
+	}
+}
+
+// withinTolerance reports whether got is within frac (e.g. 0.05 = 5%) of
+// want, inclusive.
+func withinTolerance(got, want int, frac float64) bool {
+	lo := float64(want) * (1 - frac)
+	hi := float64(want) * (1 + frac)
+	g := float64(got)
+	return g >= lo && g <= hi
 }
 
 func archTestFileKey(i int) string {
