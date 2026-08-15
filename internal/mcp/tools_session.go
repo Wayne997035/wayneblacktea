@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -132,7 +134,56 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marking next action done: %v", err)), nil
 	}
-	return jsonText(buildPendingHandoffView(h))
+	return jsonText(buildHardenedHandoffView(h))
+}
+
+// buildHardenedHandoffView renders h through the same clip + fence +
+// neutralise + byte-budget treatment the wayneblacktea://session/handoff/latest
+// resource applies (resources.go handleResourceHandoffLatest) — mirrored here
+// field-for-field rather than shared via a common helper, because
+// resources.go is out of scope for this change (PR #158 round-2 security
+// review dispatch); every constant and helper called below (clipSafe,
+// clipAndFenceStoredContext, appendNextActionsWithinByteBudget,
+// storedDataNotice, handoffResource*MaxRunes/Bytes) is the existing one that
+// file already defines, not a newly chosen number.
+//
+// handleMarkNextActionDone is the only caller. Its caller supplies only
+// handoff_id + step — unlike handleSetSessionHandoff, which echoes back the
+// text the SAME turn just wrote (buildPendingHandoffView's doc comment,
+// tools_context.go), mark_next_action_done's content was written by a
+// possibly earlier, possibly untrusted session, so it gets no more trust than
+// the read-only resource does.
+//
+// h must be non-nil — handleMarkNextActionDone has already returned on
+// session.ErrNotFound before reaching this call.
+func buildHardenedHandoffView(h *db.SessionHandoff) handoffResource {
+	view := buildPendingHandoffView(h)
+	id := h.ID
+	// Computed from the FULL decoded list, BEFORE the byte-budget truncation
+	// below — same ordering, same reason, as the resource
+	// (handoffResourceNextActionsMaxBytes doc comment, resources.go).
+	nextActionsTotal := len(view.NextActions)
+	out := handoffResource{
+		HandoffPresent:   true,
+		ID:               &id,
+		StoredDataNotice: storedDataNotice,
+		// clipSafe, not textValue: repo_name rides in the SAME payload as the
+		// fenced Intent/ContextSummary below, so an un-neutralised marker here
+		// forges an escape for those fences (boundary_markers.go).
+		RepoName: clipSafe(textValue(h.RepoName), handoffResourceRepoNameMaxRunes),
+		// Fenced, not merely clipped: same threat model as the resource — the
+		// reader has earned no trust on this content.
+		Intent:           clipAndFenceStoredContext(h.Intent, handoffResourceIntentMaxRunes),
+		ContextSummary:   clipAndFenceStoredContext(textValue(h.ContextSummary), handoffResourceSummaryMaxRunes),
+		NextActionsTotal: &nextActionsTotal,
+	}
+	if h.CreatedAt.Valid {
+		out.CreatedAt = h.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if len(view.NextActions) > 0 {
+		out.NextActions = appendNextActionsWithinByteBudget(view.NextActions, handoffResourceNextActionsMaxBytes)
+	}
+	return out
 }
 
 const (

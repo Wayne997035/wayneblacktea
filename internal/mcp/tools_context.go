@@ -257,9 +257,14 @@ type nextActionSummary struct {
 // same way this type used to.
 //
 // It is intentionally a SEPARATE type from pendingHandoffView rather than a
-// slimming of it: set_session_handoff and mark_next_action_done
-// (tools_session.go) echo the caller's own text straight back through
-// buildPendingHandoffView, and this type must never do that. Only
+// slimming of it: set_session_handoff (tools_session.go) echoes the CALLER'S
+// OWN just-written text straight back through buildPendingHandoffView, and
+// this type must never do that. (mark_next_action_done used to share that
+// echo-back too, but its caller only supplies handoff_id + step — the
+// content being read back was written by a possibly earlier, possibly
+// untrusted session, so PR #158 round-2 security review moved it onto
+// buildHardenedHandoffView (tools_session.go), the same clip+fence+
+// neutralise+byte-budget view the read-only resource uses.) Only
 // get_today_context uses this type.
 type pendingHandoffSummary struct {
 	ID               uuid.UUID          `json:"id"`
@@ -286,9 +291,16 @@ type pendingHandoffView struct {
 // buildPendingHandoffView converts a db.SessionHandoff into a pendingHandoffView,
 // decoding the raw next_actions bytes into a typed slice.
 //
-// Do NOT add clipping here: tools_session.go returns this view verbatim from
-// set_session_handoff / mark_next_action_done, where the response is an
-// echo-back of what the caller just wrote and must stay byte-exact.
+// Do NOT add clipping here: tools_session.go's handleSetSessionHandoff
+// returns this view verbatim, where the response is an echo-back of what the
+// CALLER JUST WROTE in this same turn and must stay byte-exact — that trust
+// premise does not hold for a handoff written by a different, possibly
+// untrusted, earlier session, which is why handleMarkNextActionDone
+// (tools_session.go) no longer returns this view directly; it passes the
+// same *db.SessionHandoff through buildHardenedHandoffView instead (PR #158
+// round-2 security review), which still calls this function internally for
+// the next_actions decode but clips/fences/neutralises/byte-budgets
+// everything before it leaves the process.
 func buildPendingHandoffView(h *db.SessionHandoff) *pendingHandoffView {
 	if h == nil {
 		return nil

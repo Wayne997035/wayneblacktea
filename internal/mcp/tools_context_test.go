@@ -1417,15 +1417,29 @@ func TestHandleGetTodayContext_FetchesConcurrently(t *testing.T) {
 // regression: the session tools must NOT be clipped
 // ---------------------------------------------------------------------------
 
-// TestSessionToolsEchoBackUnclipped is the guard for the shared-type hazard:
-// pendingHandoffView is used by set_session_handoff and mark_next_action_done
-// (tools_session.go) to echo the caller's own text back. get_today_context's
-// budget is served by the separate pendingHandoffSummary type, so clipping it
-// must never leak into those two tools.
+// TestSetSessionHandoffEchoBackUnclipped is the guard for the shared-type
+// hazard: pendingHandoffView is used by set_session_handoff (tools_session.go)
+// to echo the CALLER'S OWN just-written text back unclipped.
+// get_today_context's budget is served by the separate pendingHandoffSummary
+// type, so clipping it must never leak into this tool.
+//
+// mark_next_action_done used to share this same unclipped-echo-back
+// assertion (this test was TestSessionToolsEchoBackUnclipped and exercised
+// both tools) until PR #158 round-2 security review: mark_next_action_done's
+// caller supplies only handoff_id + step, so the content being read back may
+// have been written by an earlier, untrusted session — the opposite trust
+// premise from set_session_handoff's same-turn echo-back. It now goes
+// through buildHardenedHandoffView (tools_session.go) instead, the same
+// clip+fence+neutralise+byte-budget view the read-only handoff resource
+// uses; that new contract is covered by
+// TestHandleMarkNextActionDone_MatchesResourceHardenedView,
+// TestHandleMarkNextActionDone_NeutralizesForgedEndMarkers and
+// TestHandleMarkNextActionDone_CJKWorstCaseMatchesResource
+// (tools_session_hardened_view_test.go), not here.
 //
 // Runs against a real SQLite-backed store (newTestWorkSessionServer), so it
 // exercises the actual persist → read-back path rather than a fake.
-func TestSessionToolsEchoBackUnclipped(t *testing.T) {
+func TestSetSessionHandoffEchoBackUnclipped(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 
 	// intent/summary must stay under validator.MaxFieldLen (5000 BYTES,
@@ -1495,18 +1509,4 @@ func TestSessionToolsEchoBackUnclipped(t *testing.T) {
 
 	setRaw := resultText(setRes)
 	assertUnclippedHandoff(t, "set_session_handoff", setRaw)
-
-	var setView pendingHandoffView
-	if err := json.Unmarshal([]byte(setRaw), &setView); err != nil {
-		t.Fatalf("unmarshal set_session_handoff response: %v", err)
-	}
-
-	doneRes := callMarkNextActionDone(t, s, map[string]any{
-		"handoff_id": setView.ID.String(),
-		"step":       float64(0),
-	})
-	if doneRes.IsError {
-		t.Fatalf("mark_next_action_done failed: %s", resultText(doneRes))
-	}
-	assertUnclippedHandoff(t, "mark_next_action_done", resultText(doneRes))
 }
