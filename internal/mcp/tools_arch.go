@@ -44,12 +44,13 @@ const (
 	// entries. If this bound needs to move again, measure production
 	// first — do not re-derive it from the field name.
 	//
-	// Known trade-off, NOT fixed by this change: raising this cap also
-	// raises the storage capacity for m-R11 (last_commit_sha has no self-
-	// healing write path in mcpInstructions' forced patch-back list, so a
-	// planted payload here persists indefinitely) by the same ~4x this cap
-	// grew. That is a tracked, separate finding; this constant only fixes
-	// the availability regression production data hit today.
+	// m-R11 (GTD 25537a73, decision 0d1a41fc) is now fixed: last_commit_sha
+	// is no longer patch semantics at the store layer (internal/arch/store.go,
+	// internal/storage/sqlite/arch.go) — every upsert_project_arch call
+	// unconditionally overwrites it, so a planted payload no longer
+	// persists indefinitely; the next routine (mandatory) upsert clears it.
+	// Raising this cap still raises the byte budget available to whatever
+	// value IS written on any single call, independent of that fix.
 	maxLastCommitSHAWriteBytes = 512
 
 	// maxLastCommitSHAReadRunes bounds last_commit_sha at read time
@@ -96,9 +97,12 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 				"summary is a one-paragraph human-readable architecture description, "+
 				"file_map is a JSON object mapping file paths to their purpose, "+
 				"last_commit_sha is the current HEAD SHA for staleness detection. "+
-				"summary, file_map and last_commit_sha share one patch-semantics rule: "+
-				"omit the field entirely to leave the stored value untouched; pass it "+
-				"(even an empty value) to explicitly replace the stored value.",
+				"summary and file_map share one patch-semantics rule: omit the field "+
+				"entirely to leave the stored value untouched; pass it (even an empty "+
+				"value) to explicitly replace the stored value. last_commit_sha does NOT "+
+				"follow that rule — every call overwrites it, and omitting it clears it "+
+				"to \"\" the same as passing \"\" would; always pass the current HEAD SHA "+
+				"when you have it.",
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier (unique key)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description(
@@ -115,12 +119,16 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 		)),
 		mcp.WithString("last_commit_sha", mcp.Description(
 			`Current git HEAD SHA (run git rev-parse HEAD), used for staleness detection. `+
-				`Omit this field entirely to leave the stored last_commit_sha untouched `+
-				`(e.g. when this call is only refreshing summary or file_map) — pass "" to `+
-				`explicitly clear it (get_project_arch's stale field is always false — this `+
-				`server does not compute staleness itself; clearing this value just removes `+
-				`what a caller would otherwise compare against git rev-parse HEAD), or `+
-				`any other string to replace it.`,
+				`UNLIKE summary/file_map, this field always REPLACES the stored value with `+
+				`whatever you pass — pass a SHA string to replace it with that SHA. `+
+				`OMITTING this field also replaces the stored value, clearing it to "" `+
+				`rather than leaving it untouched (the same result as passing "" `+
+				`explicitly). Pass the current HEAD SHA when you have it; if you don't, `+
+				`it is safe to omit — get_project_arch's stale field is always false `+
+				`regardless (this server does not compute staleness itself), so clearing `+
+				`this value only means the next comparison a caller makes against `+
+				`git rev-parse HEAD will read "" and correctly treat the snapshot as `+
+				`needing a re-read.`,
 		)),
 	), s.handleUpsertProjectArch)
 
@@ -179,17 +187,21 @@ func validateArchSlug(slug string) *mcp.CallToolResult {
 }
 
 // validateLastCommitSHA applies upsert_project_arch's last_commit_sha gate:
-// nil (field omitted, patch-semantics preserve) is always valid; a present
-// value must be control-char-free and length-bounded. Split out of
-// handleUpsertProjectArch for the same gocyclo reason as validateArchSlug
-// above.
+// nil (field omitted) is always valid — there is nothing to validate,
+// since the store now overwrites the column to "" in that case rather than
+// preserving whatever was there (m-R11, unconditional overwrite; see
+// arch.UpsertParams.LastCommitSHA's doc comment). A present value must be
+// control-char-free and length-bounded. Split out of handleUpsertProjectArch
+// for the same gocyclo reason as validateArchSlug above.
 //
 // last_commit_sha had NO control-char or length check before this (M-R6 /
 // m-R7, R4 dispatch): it feeds a byte-for-byte equality comparison against
-// `git rev-parse HEAD` for staleness, is not covered by mcpInstructions'
-// forced patch-back list (server.go), and round-trips into every
+// `git rev-parse HEAD` for staleness and round-trips into every
 // wrapUntrustedArchSnapshot response — so an unvalidated value planted here
-// was a standing injection vector with no self-healing write path.
+// was a standing injection vector. m-R11 closed the "no self-healing write
+// path" half of that (mcpInstructions' forced patch-back list, server.go,
+// still never mentions this field by name, but the store no longer needs it
+// to — every upsert clears/replaces the column regardless).
 func validateLastCommitSHA(sha *string) *mcp.CallToolResult {
 	if sha == nil {
 		return nil
@@ -211,25 +223,34 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 		return errResult, nil
 	}
 
-	// summary, file_map and last_commit_sha share one patch-semantics
-	// contract (security review PR #157 round 3, unifying what M-3
-	// originally fixed for file_map alone): the key must be entirely
-	// ABSENT from args to mean "leave the stored value untouched".
-	// optionalStringArg (and the equivalent inline check below for
-	// file_map, which additionally accepts and JSON-decodes its string) do
-	// NOT use stringArg, because stringArg collapses "missing" and
-	// "present but not a string" into the same "" — indistinguishable from
-	// "present with an explicit empty value". A present key, even "", is
-	// an explicit instruction and REPLACES the stored value, including
-	// clearing it. This matters because the core protocol is
-	// read-then-write (get_project_arch -> read changed files ->
-	// upsert_project_arch) and get_project_arch defaults to omitting
-	// file_map (W2); an agent that follows the protocol literally and
-	// never saw an existing value must not be able to wipe it just by not
-	// mentioning it. last_commit_sha additionally feeds the staleness
-	// check (mcpInstructions in server.go), so silently wiping it on every
-	// upsert that omits it would make that check permanently wrong, not
-	// just lose data.
+	// summary and file_map share one patch-semantics contract (security
+	// review PR #157 round 3, unifying what M-3 originally fixed for
+	// file_map alone): the key must be entirely ABSENT from args to mean
+	// "leave the stored value untouched". optionalStringArg (and the
+	// equivalent inline check below for file_map, which additionally
+	// accepts and JSON-decodes its string) do NOT use stringArg, because
+	// stringArg collapses "missing" and "present but not a string" into
+	// the same "" — indistinguishable from "present with an explicit empty
+	// value". A present key, even "", is an explicit instruction and
+	// REPLACES the stored value, including clearing it. This matters
+	// because the core protocol is read-then-write (get_project_arch ->
+	// read changed files -> upsert_project_arch) and get_project_arch
+	// defaults to omitting file_map (W2); an agent that follows the
+	// protocol literally and never saw an existing value must not be able
+	// to wipe it just by not mentioning it.
+	//
+	// last_commit_sha is parsed through the SAME optionalStringArg call
+	// below — nil vs "present, even empty" is still a meaningful
+	// distinction for TYPE validation (a JSON null or non-string value must
+	// still be rejected, see TestHandleUpsertProjectArch_LastCommitSHA_
+	// JSONNullRejected) — but it does NOT get the "absent preserves"
+	// contract described above. m-R11 (decision 0d1a41fc) made this field
+	// unconditionally overwritten at the store layer: omitting it clears it
+	// to "" exactly like passing "" would. See
+	// arch.UpsertParams.LastCommitSHA's doc comment for why (the mandatory
+	// write-back list in mcpInstructions never includes this field, so
+	// "absent preserves" meant an injected value here had no self-healing
+	// path).
 	summary, errResult := optionalStringArg(args, "summary")
 	if errResult != nil {
 		return errResult, nil
@@ -297,13 +318,19 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 }
 
 // optionalStringArg extracts args[key] using presence semantics: a nil
-// *string return means key is entirely absent from args (caller wants the
-// existing stored value preserved on upsert); a non-nil pointer — even to ""
-// — means the key was present and should replace the stored value. The
-// second return value is a ready-to-send MCP error result when the key is
-// present but not a JSON string (e.g. a JSON null, a number, an array); nil
-// otherwise. Local to upsert_project_arch's patch-semantics fields
-// (summary, last_commit_sha) — file_map has extra JSON-parsing validation
+// *string return means key is entirely absent from args; a non-nil pointer
+// — even to "" — means the key was present. The second return value is a
+// ready-to-send MCP error result when the key is present but not a JSON
+// string (e.g. a JSON null, a number, an array); nil otherwise.
+//
+// Callers decide what "absent" MEANS for their own field: for summary it is
+// "caller wants the existing stored value preserved on upsert" (patch
+// semantics). last_commit_sha uses this same function purely for the
+// presence/type check — the STORE does not honor "absent preserves" for
+// that field (m-R11, unconditional overwrite; see
+// arch.UpsertParams.LastCommitSHA's doc comment) — nil still round-trips
+// through to a nil UpsertParams.LastCommitSHA, it just no longer means
+// "preserve" once it gets there. file_map has extra JSON-parsing validation
 // on top of this same presence check and is handled inline above.
 func optionalStringArg(args map[string]any, key string) (*string, *mcp.CallToolResult) {
 	rawVal, present := args[key]
