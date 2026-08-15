@@ -511,7 +511,7 @@ func TestResourceHandoffLatest_FullContent(t *testing.T) {
 	if !got.HandoffPresent {
 		t.Fatal("handoff_present = false, want true")
 	}
-	if got.ID == nil || *got.ID == (uuidZero) {
+	if got.ID == nil || *got.ID == uuidZero {
 		t.Error("id missing or zero")
 	}
 	if !strings.Contains(got.Intent, intent) {

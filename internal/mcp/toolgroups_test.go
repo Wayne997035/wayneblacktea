@@ -18,14 +18,16 @@ import (
 // CJK trigger words, so len() over-counts by ~3x per CJK character and would
 // let the real (token-relevant) size drift upwards unnoticed.
 //
-// Unaffected by W1-W4 (token-diet, 2026-08-15): confirmed mcpInstructions
-// never references any wayneblacktea:// resource URI (the W3 resource
-// mention lives on get_today_context's own tool description, not the shared
-// instructions string) and carries no jsonText-shaped example text either.
-// Measured 1989/2000 runes after W1-W4 — identical to the pre-sprint value —
-// so left untouched rather than silently re-derived from a measurement that
-// didn't move.
-const mcpInstructionsMaxRunes = 2000
+// Retuned 2000 -> 2288 (token-diet W5, 2026-08-15): mcpInstructions' own
+// content is unaffected by W1-W4 (confirmed it never references any
+// wayneblacktea:// resource URI or carries jsonText-shaped example text), but
+// "the content didn't move" is not a reason to skip the retune — the whole
+// point of this line item is that the OLD 2000 budget left only 11 runes of
+// headroom over the measured 1989, so any single new discipline line in this
+// string would trip the ceiling and blame "budget exceeded" rather than "you
+// added something." New budget is ceil(1989 x 1.15) = 2288, restoring real
+// headroom for exactly that kind of routine addition.
+const mcpInstructionsMaxRunes = 2288
 
 // coreToolSerializedMaxBytes is the budget for the whole core tool list as it
 // goes out on the wire. Retuned 16,500 -> 19,294 (token-diet W5, 2026-08-15):
