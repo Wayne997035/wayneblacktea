@@ -27,18 +27,18 @@ import (
 // ---- fake store implementations ----
 
 type fakeGTDStore struct {
-	goals                    []db.Goal
-	projects                 []db.Project
-	tasks                    []db.Task
-	allStatusTasks           []db.Task
-	allStatusCalls           int
-	tasksCalls               int
+	goals          []db.Goal
+	projects       []db.Project
+	tasks          []db.Task
+	allStatusTasks []db.Task
+	allStatusCalls int
+	tasksCalls     int
 	// filteredCalls/capturedFilter back TasksFiltered (GET /api/tasks's
 	// ?status= query param, GTD-fix ListTasks). capturedFilter records the
 	// last gtd.TaskFilter passed in, so tests can assert the handler actually
 	// forwarded the parsed status rather than merely returning 200.
-	filteredCalls  int
-	capturedFilter *gtd.TaskFilter
+	filteredCalls            int
+	capturedFilter           *gtd.TaskFilter
 	createdGoal              *db.Goal
 	createdProj              *db.Project
 	createdTask              *db.Task
@@ -1149,6 +1149,22 @@ func TestGTDHandler_ListTasks(t *testing.T) {
 			wantCode:          http.StatusOK,
 			wantFilteredCalls: 1,
 			wantStatusFwd:     "completed",
+		},
+		{
+			// Closes the gap flagged in review: a status filter that legitimately
+			// matches zero rows (store returns nil, same zero-value fakeGTDStore
+			// as the "nil tasks → []" case above) MUST still hit the nil-guard on
+			// the *filtered* branch, not just the unfiltered default branch —
+			// same contract, second code path. See also
+			// empty_list_contract_test.go's "ListTasks_status_all_filter" row for
+			// the sibling assertion on the ?status=all variant.
+			name:              "status=cancelled + nil result → [] (filtered branch honours empty-list contract)",
+			query:             "?status=cancelled",
+			store:             &fakeGTDStore{},
+			wantCode:          http.StatusOK,
+			wantExactBody:     "[]",
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "cancelled",
 		},
 		{
 			name:              "status=cancelled → exact match forwarded",
