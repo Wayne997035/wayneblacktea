@@ -37,7 +37,8 @@
     "title": "[wbt][UI 資料錯誤] GET /api/projects 只回 active — 已完成專案 wbt-core-mvp(190 任務)全 UI 不可見",
     "description": "internal/handler/gtd_handler.go:145-155 只回 active 專案。DB 是 active 2 / completed 1(wbt-core-mvp,190 任務、179 已完成),API 只回 2。實測點「已完成」tab → 顯示「沒有專案」,連「全部」tab 也看不到它。連帶讓 GTD 目標進度更錯 —— GtdPage 的 project→goal 對照表建在這份 active-only 清單上。acceptance: /api/projects 支援 status filter 並預設回全部(或前端明確傳 status);補測試斷言 completed 專案可被取得。risk: 已完成的專案等於從系統消失,歷史查不到。",
     "created_at": "2026-08-08 10:36:14.80517+00",
-    "fixture_category": "negative_verified"
+    "fixture_category": "positive_verified",
+    "_note": "Moved from negative_verified during GTD fix/gtd-audit-tests-and-gate: commit 582741d ('fix: GET /api/projects now applies the status query param instead of ignoring it') already implements this — ListProjects validates ?status against listProjectsStatusEnum and calls store.ProjectsFiltered, with dedicated PG (store_postgres_projects_filtered_test.go) and SQLite (gtd_projects_filtered_test.go) tests. That commit predates 9ac008a (this tool's own first commit), so the negative_verified ground truth was already stale the moment this fixture was frozen — not a case of the repo advancing past a correct snapshot. GTD status here is still 'in_progress', which is itself the exact miss this tool exists to catch."
   },
   {
     "id": "48a6e2da-43ee-4f58-8dd9-2a8b2c6e713c",

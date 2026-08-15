@@ -252,6 +252,7 @@ tasks:
     desc: "Run unit tests (-short, no Docker, no race detector — fast path)"
     deps:
       - go-cache
+      - py-test
     cmds:
       # -short skips testcontainers-based integration tests that require Docker.
       # No -race: mcp + sqlite packages are goroutine-heavy; race adds 5-10× overhead
@@ -280,6 +281,12 @@ tasks:
     desc: "Create workspace-local Go build cache for sandboxed agent runs"
     cmds:
       - mkdir -p {{.GO_BUILD_CACHE}}
+    dir: ..
+
+  py-test:
+    desc: "Run scripts/gtd-code-audit's Python unit test suite. Deliberately unittest (stdlib), not pytest — this repo's sandboxed agent runs don't have pytest installed, and this package has zero third-party deps by design (see its README's threat model)."
+    cmds:
+      - python3 -m unittest discover -s scripts/gtd-code-audit -p 'test_*.py'
     dir: ..
 
   test-integration:

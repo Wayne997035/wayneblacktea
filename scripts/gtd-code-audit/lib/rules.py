@@ -127,10 +127,32 @@ def _symbol_citation_hit(git: GitOps, symbols):
     return None
 
 
+def _truncation_notice(anchors: dict) -> str | None:
+    """Anchor extraction caps each category at
+    extract.MAX_ANCHORS_PER_CATEGORY (DoS guard — see that constant's
+    docstring). Per this tool's own "no silent caps" policy, a ticket that
+    hit the cap on any category MUST carry a visible note saying so, not
+    silently classify against a truncated subset with no trace of the
+    truncation. Prepended to Evidence.reasons by classify() below,
+    regardless of which rule ultimately fires."""
+    if not anchors.get("truncated"):
+        return None
+    parts = ", ".join(f"{cat} 截掉 {n} 個" for cat, n in sorted(anchors["truncated"].items()))
+    return f"⚠ 錨點數量超過上限(每類最多 {extract_mod.MAX_ANCHORS_PER_CATEGORY} 個),{parts} —— 判定只根據保留下來的子集"
+
+
 def classify(title: str, description: str, created_at: str, git: GitOps,
              window: int = DEFAULT_WINDOW) -> Evidence:
     anchors = extract_mod.extract_anchors(title, description)
+    notice = _truncation_notice(anchors)
+    ev = _classify_inner(created_at, git, anchors, window)
+    if notice:
+        ev.reasons = [notice] + ev.reasons
+    return ev
 
+
+def _classify_inner(created_at: str, git: GitOps, anchors: dict,
+                     window: int = DEFAULT_WINDOW) -> Evidence:
     if not extract_mod.has_any_anchor(anchors):
         return Evidence("NO_ANCHOR_NEEDS_HUMAN", [
             "沒有可機器檢查的錨點(無 file:line / 符號 / commit SHA / review label / 量測數字)"

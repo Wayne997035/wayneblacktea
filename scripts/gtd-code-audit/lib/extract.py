@@ -55,6 +55,27 @@ CONTROL_CHARS = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 MIN_SYMBOL_LEN = 5
 _SYMBOL_STOPLIST = {"e_g", "i_e", "vs_the"}
 
+# Anchor-count cap per category (DoS guard — GTD ticket description is an
+# unbounded TEXT column with no length cap at the add_task MCP tool layer
+# either; backend-security-design.md §2.1 treats this input as adversarial).
+# Every anchor that clears extraction potentially costs one `git grep`
+# subprocess call downstream in lib/rules.py (~0.12-0.13s measured locally,
+# subprocess.run + git process spin-up dominates). Without a cap, a ticket
+# description padded with N unique symbol-shaped tokens costs O(N) calls in
+# the worst case (rules.py's _symbol_citation_hit tries every symbol until
+# a hit) — measured directly: 300 unique non-matching tokens took 37.1s
+# end-to-end (~0.124s/token), so an unbounded ~40,000-token payload
+# extrapolates to over an hour of subprocess time for a single ticket.
+# Real-world ceiling, measured against all 16 tickets in
+# testdata/known_tickets.json: the densest real ticket extracts 18 symbols
+# (0 for labels/pr_numbers beyond low single digits). MAX_ANCHORS_PER_CATEGORY
+# = 50 keeps >2.7x headroom over that real-world max while bounding worst-
+# case subprocess calls per ticket to a low hundreds, not tens of thousands
+# (see lib/rules.py's _label_citation_hit for why labels/pr_numbers also
+# need grep_fixed's memoization on top of this cap, not just this cap
+# alone — the pr_numbers × labels nested loop multiplies rather than sums).
+MAX_ANCHORS_PER_CATEGORY = 50
+
 # Every GTD ticket this team files carries a severity/kind tag in its title
 # ("🔴 Critical", "🟠 Major", "🟡 Minor", "🔵 Suggestion") — these are plain
 # English words that happen to match PASCAL_RE and, being common vocabulary,
@@ -73,6 +94,18 @@ _PASCAL_STOPLIST = {
 
 def _clean(s):
     return CONTROL_CHARS.sub('', s or '')
+
+
+def _cap(items: list, limit: int = MAX_ANCHORS_PER_CATEGORY) -> tuple[list, int]:
+    """Truncate to `limit`, returning (kept, dropped_count). Callers MUST
+    surface a non-zero dropped_count to the human/agent consuming the
+    verdict — see extract_anchors()'s "truncated" key and
+    rules.classify()'s prepended reason line. A cap that silently drops
+    anchors with no visible trace is exactly what this tool's own README
+    forbids ("no silent caps")."""
+    if len(items) <= limit:
+        return items, 0
+    return items[:limit], len(items) - limit
 
 
 def extract_anchors(title: str, description: str) -> dict:
@@ -116,15 +149,42 @@ def extract_anchors(title: str, description: str) -> dict:
     if am:
         accept_text = description[am.end():].strip()
 
+    # Cap every category (DoS guard, see MAX_ANCHORS_PER_CATEGORY above).
+    # symbols is capped longest-first (not alphabetically) BEFORE the final
+    # sort — a longer Go-shaped token is more specific/higher-signal per
+    # lib/rules.py::_symbol_citation_hit's own stated rationale, so if
+    # anything has to be dropped it should be the short, generic-sounding
+    # tail, not whatever happens to sort last alphabetically.
+    symbols_by_len = sorted(symbols, key=len, reverse=True)
+    symbols_kept, symbols_dropped = _cap(symbols_by_len)
+    files_kept, files_dropped = _cap(files)
+    labels_kept, labels_dropped = _cap(sorted(set(LABEL_RE.findall(text))))
+    pr_kept, pr_dropped = _cap(sorted(set(PR_RE.findall(text))))
+    sha_kept, sha_dropped = _cap(sorted(set(COMMIT_RE.findall(text))))
+    measure_kept, measure_dropped = _cap(sorted(set(MEASURE_RE.findall(text))))
+    test_kept, test_dropped = _cap(sorted(set(TEST_NAME_RE.findall(text))))
+
+    truncated = {
+        cat: dropped
+        for cat, dropped in (
+            ("files", files_dropped), ("symbols", symbols_dropped),
+            ("labels", labels_dropped), ("pr_numbers", pr_dropped),
+            ("commit_shas", sha_dropped), ("measurements", measure_dropped),
+            ("test_names", test_dropped),
+        )
+        if dropped
+    }
+
     return {
-        "files": files,
-        "symbols": sorted(symbols),
-        "labels": sorted(set(LABEL_RE.findall(text))),
-        "pr_numbers": sorted(set(PR_RE.findall(text))),
-        "commit_shas": sorted(set(COMMIT_RE.findall(text))),
-        "measurements": sorted(set(MEASURE_RE.findall(text))),
-        "test_names": sorted(set(TEST_NAME_RE.findall(text))),
+        "files": files_kept,
+        "symbols": sorted(symbols_kept),
+        "labels": labels_kept,
+        "pr_numbers": pr_kept,
+        "commit_shas": sha_kept,
+        "measurements": measure_kept,
+        "test_names": test_kept,
         "acceptance_text": accept_text,
+        "truncated": truncated,
     }
 
 

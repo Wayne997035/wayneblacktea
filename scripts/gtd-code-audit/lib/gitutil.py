@@ -23,6 +23,24 @@ from pathlib import Path
 HEX_SHA_RE = re.compile(r'^[0-9a-f]{7,40}$')
 _UNSAFE_PATH_CHARS = re.compile(r'[\x00\r\n]')
 
+# This tool's own directory, repo-root-relative. grep_fixed() excludes it
+# (see SELF_EXCLUDE_PATHSPEC below) so this tool never cites its OWN
+# test/fixture files as evidence that a ticket got fixed. Concretely:
+# testdata/known_tickets.json stores ticket titles/descriptions verbatim as
+# JSON string values, and test_audit.py's adversarial-payload tests embed
+# literal citation-shaped strings in source — both are git-tracked, so a
+# repo-wide `git grep -F <ticket text substring>` finds the ticket
+# describing itself. Found via fixture regression testing (GTD
+# fix/gtd-audit-tests-and-gate): ticket 6f306618's branch-name mention
+# ("mcp-token-diet-v2") only self-matched inside
+# testdata/known_tickets.json, producing a false CITED_BUT_MARKED_UNFIXED.
+SELF_DIR = "scripts/gtd-code-audit"
+# `:(top)` anchors the pathspec to the repository root regardless of `-C`;
+# without it, a pathspec is relative to the `-C` cwd (which for a GitOps
+# rooted AT SELF_DIR would resolve to SELF_DIR/SELF_DIR, i.e. nothing) and
+# silently fail to exclude anything.
+SELF_EXCLUDE_PATHSPEC = f":(exclude,top){SELF_DIR}"
+
 
 def safe_path(repo_root: Path, rel_path: str) -> Path | None:
     """Resolve rel_path against repo_root. Returns None if it's unsafe or
@@ -54,6 +72,16 @@ class GitOps:
         self.repo_root = Path(repo_root)
         self.timeout = timeout
         self._ls_files_cache = None
+        # Per-instance memoization, keyed by the exact argv literal/path.
+        # audit.py creates ONE GitOps and reuses it across every ticket in a
+        # batch run, so these caches also pay off across tickets that share
+        # a citation (same PR review round's tickets commonly repeat the
+        # same label/PR-number/anchor-file) — not just within one ticket's
+        # own classify() call. See lib/rules.py's _label_citation_hit
+        # docstring for the O(pr_numbers × labels) shape this specifically
+        # de-duplicates.
+        self._grep_cache: dict[str, list[tuple[str, int]]] = {}
+        self._commit_iso_cache: dict[str, str | None] = {}
 
     def _run(self, args: list[str]):
         try:
@@ -102,12 +130,20 @@ class GitOps:
         return "\n".join(lines[lo:hi])
 
     def last_commit_iso(self, rel_path: str) -> str | None:
-        """ISO-8601 commit date of the most recent commit touching rel_path."""
-        if safe_path(self.repo_root, rel_path) is None:
-            return None
-        rc, out, _ = self._run(["log", "-1", "--format=%cI", "--", rel_path])
-        out = out.strip()
-        return out if rc == 0 and out else None
+        """ISO-8601 commit date of the most recent commit touching rel_path.
+        Memoized: the same anchor file is commonly re-checked both within
+        one ticket's classify() (once from _symbol_citation_hit's recency
+        check, again from the STILL_OPEN_LIKELY fallback) and across
+        multiple tickets in the same batch run that cite the same file."""
+        if rel_path in self._commit_iso_cache:
+            return self._commit_iso_cache[rel_path]
+        result = None
+        if safe_path(self.repo_root, rel_path) is not None:
+            rc, out, _ = self._run(["log", "-1", "--format=%cI", "--", rel_path])
+            out = out.strip()
+            result = out if rc == 0 and out else None
+        self._commit_iso_cache[rel_path] = result
+        return result
 
     def resolve_basename(self, basename: str) -> str | None:
         """Ticket text often drops the directory prefix ('context_render.go'
@@ -125,19 +161,27 @@ class GitOps:
 
     def grep_fixed(self, literal: str) -> list[tuple[str, int]]:
         """git grep -n -F -e <literal> — fixed-string, case-sensitive,
-        repo-wide. literal is one argv element; shell metacharacters in it
-        are inert. Overlong or empty literals are refused (also guards
-        against accidentally grepping for a whole paragraph)."""
+        repo-wide, EXCLUDING this tool's own directory (SELF_EXCLUDE_PATHSPEC
+        — see its module-level comment for why). literal is one argv
+        element; shell metacharacters in it are inert. Overlong or empty
+        literals are refused (also guards against accidentally grepping for
+        a whole paragraph). Memoized per literal: rules.py's citation rules
+        can re-query the same label/symbol/measurement many times across a
+        ticket's PR-numbers × labels combinations and across tickets in the
+        same batch run (see __init__'s cache docstring)."""
         if not literal or len(literal) > 200:
             return []
-        rc, out, _ = self._run(["grep", "-n", "-F", "-e", literal])
-        if rc not in (0, 1):  # 1 == "ran fine, zero matches"
-            return []
+        if literal in self._grep_cache:
+            return self._grep_cache[literal]
+        rc, out, _ = self._run(
+            ["grep", "-n", "-F", "-e", literal, "--", ".", SELF_EXCLUDE_PATHSPEC])
         hits = []
-        for line in out.splitlines():
-            m = re.match(r'^([^:]+):(\d+):', line)
-            if m:
-                hits.append((m.group(1), int(m.group(2))))
+        if rc in (0, 1):  # 1 == "ran fine, zero matches"
+            for line in out.splitlines():
+                m = re.match(r'^([^:]+):(\d+):', line)
+                if m:
+                    hits.append((m.group(1), int(m.group(2))))
+        self._grep_cache[literal] = hits
         return hits
 
     def object_exists(self, sha: str) -> bool:

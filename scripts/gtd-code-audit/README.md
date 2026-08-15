@@ -101,10 +101,60 @@ full argument; the short version:
   validated against an explicit allowlist (status enum) or a strict UUID
   regex before touching the query string. Ticket body text never reaches
   SQL.
+- `grep_fixed()` excludes this tool's own directory
+  (`lib/gitutil.py::SELF_EXCLUDE_PATHSPEC`) from every repo-wide search. A
+  ticket's own text (branch names, quoted code) ends up stored verbatim in
+  `testdata/known_tickets.json` and in adversarial test payloads in
+  `test_audit.py`, both git-tracked — without this exclusion, a ticket can
+  corroborate itself just by existing in this tool's own fixtures (found
+  via fixture regression: ticket 6f306618's branch-name mention only
+  self-matched inside `testdata/known_tickets.json`, producing a false
+  `CITED_BUT_MARKED_UNFIXED`).
+- **Anchor counts are capped** (`lib/extract.py::MAX_ANCHORS_PER_CATEGORY`,
+  currently 50 per category) and `grep_fixed`/`last_commit_iso` are
+  memoized per `GitOps` instance (`lib/gitutil.py`). Ticket `description` is
+  an unbounded `TEXT` column with no length cap at the `add_task` MCP tool
+  either, so a ticket padded with thousands of unique symbol-shaped tokens
+  is a real, reachable DoS against this script, not a theoretical one —
+  measured directly: an uncapped run against 300 unique non-matching
+  symbols took 37.1s (~0.124s per `git grep` subprocess call); extrapolated
+  to a ~40,000-token payload that's over an hour for a single ticket. After
+  the cap+memoization fix, the same shape at any input size (300 tokens or
+  5,000) classifies in ~5.5s — bounded by the cap, not by attacker input
+  size. A truncated ticket's `Evidence.reasons` always carries a `⚠` note
+  naming which categories were capped and by how many (never a silent
+  drop) — see `lib/rules.py::_truncation_notice`.
 
-`test_audit.py`'s `TestGitOpsRejectsUnsafeGrepInput` and the adversarial
-cases in `TestExtractAnchors`/`TestSafePath` exercise this directly —
-overlong literals, shell metacharacters, path traversal, null bytes.
+`test_audit.py`'s `TestGitOpsRejectsUnsafeGrepInput`, `TestGitOpsSelfExclusion`,
+`TestAnchorCapAndMemoization`, and the adversarial cases in
+`TestExtractAnchors`/`TestSafePath` exercise this directly — overlong
+literals, shell metacharacters, path traversal, null bytes, self-citation,
+and anchor flooding.
+
+### Subprocess call-count bounds (per ticket, worst case, first touch — no cache warm)
+
+Every subprocess this package spawns funnels through exactly one place,
+`GitOps._run` (`lib/gitutil.py`) — `db.py`'s single `psql` call (once per
+script invocation, not per ticket) is the only exception. Bound derivation
+below assumes the 50-per-category cap and holds regardless of how large the
+adversarial ticket text is (extraction truncates before any of this runs):
+
+| Call site (via `rules.classify`) | Method | Per-ticket bound | Notes |
+|---|---|---|---|
+| `_label_citation_hit` — PR-number variants | `grep_fixed` | ≤100 (50 PR numbers × 2 literal formats) | not memoized across formats (`PR #N` / `PR#N` are distinct literals) |
+| `_label_citation_hit` — labels | `grep_fixed` | ≤50 (deduped) | measured: naively O(pr×label) would be ≤2,500 without memoization; with it, 150 calls total observed for a 50×50 adversarial ticket (16.9s) vs a theoretical ~2,600 calls (~5 min) without |
+| measurement citation loop | `grep_fixed` | ≤50 | stops at first hit |
+| `_symbol_citation_hit` | `grep_fixed` | ≤50 | stops at first hit; measured 5.5s worst case (50 misses) |
+| recency checks (`_symbol_citation_hit`'s touched-after loop + the `STILL_OPEN_LIKELY` fallback loop) | `last_commit_iso` | ≤50 (deduped across both call sites) | same anchor-file set both times |
+| `resolve_basename` (via `_resolve_file`) | `ls-files` | 1, ever | cached at `GitOps` construction — not per-ticket, not per-anchor |
+| `file_exists` / `line_count` / `read_context` | — | 0 | direct filesystem I/O, no subprocess |
+
+Sum of the bounded rows ≈ 300 calls (~0.12s each) ≈ 36s worst case for a
+never-before-seen ticket; a batch run (`audit.py`'s normal usage) reuses one
+`GitOps` instance across every ticket, so subsequent tickets sharing labels/
+PR numbers/anchor files with earlier ones in the same run pay far less —
+measured: 5 identical adversarial tickets back-to-back after the first,
+0.004s total.
 
 ## Known limitations (found via fixture testing, not theoretical)
 
@@ -129,17 +179,36 @@ overlong literals, shell metacharacters, path traversal, null bytes.
 16 real tickets from wayneblacktea's own GTD, captured 2026-08-15. Each is
 tagged `fixture_category`:
 
-- `positive_verified` (10 tickets: all 4 PR#151 findings + 6 of PR#157's
-  original 11-ticket wave) — manually confirmed already fixed in code
-  *before* writing the corresponding rule, by reading the actual current
-  file content (not by trusting ticket text or GTD status — several of
-  these were still `pending` in GTD despite the code fix already existing).
+- `positive_verified` (11 tickets: all 4 PR#151 findings + 6 of PR#157's
+  original 11-ticket wave + `7610088f`, moved here — see below) — manually
+  confirmed already fixed in code *before* writing the corresponding rule,
+  by reading the actual current file content (not by trusting ticket text
+  or GTD status — several of these were still `pending`/`in_progress` in
+  GTD despite the code fix already existing).
   `test_audit.py::test_verified_positive_fixtures_flagged_suspect` asserts
   every one of these gets `SUSPECT_ALREADY_FIXED`.
-- `negative_verified` (1 ticket: `7610088f`, `GET /api/projects` still
-  active-only) — manually confirmed still broken by reading the handler.
-  `test_verified_negative_fixtures_not_flagged_suspect` asserts this is
-  never flagged `SUSPECT_ALREADY_FIXED`.
+- `negative_verified` (0 tickets, by design — see below). Historically held
+  1 ticket (`7610088f`, `GET /api/projects` returning active-only) which was
+  **moved to `positive_verified` during GTD `fix/gtd-audit-tests-and-gate`**:
+  commit `582741d` (`fix: GET /api/projects now applies the status query
+  param instead of ignoring it`) already implements the fix — and that
+  commit predates this tool's own first commit (`9ac008a`), so the
+  `negative_verified` classification was stale the moment this fixture was
+  frozen, not something that rotted later. This surfaced a structural
+  problem with anchoring a "must never false-positive" regression guard to
+  a real GTD bug ticket: the entire point of filing a bug is that it
+  eventually gets fixed, so a real ticket is the wrong anchor for a
+  guarantee that's supposed to hold forever.
+  `test_verified_negative_fixtures_not_flagged_suspect` is kept (now
+  vacuously passing) so a future manually-verified still-open ticket can be
+  dropped in without new test code, but the guard that actually matters now
+  is `test_synthetic_permanent_tradeoff_never_flagged_suspect`: it anchors
+  to `internal/storage/sqlite/knowledge.go`'s `SearchByCosine`, an
+  *accepted* design trade-off (SQLite has no ANN index — documented in
+  `wayneblacktea/CLAUDE.md`, not tracked as a bug), and computes
+  `created_at` **at test-run time** from that file's own last-commit
+  timestamp rather than trusting a frozen calendar date — the exact axis
+  that made `7610088f` rot.
 - `positive_claimed_by_dispatch` (5 tickets) — **the dispatch that
   commissioned this script said all 11 of PR#157's original wave "should be
   flagged already-fixed"; direct code inspection while building the rules

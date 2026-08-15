@@ -5,6 +5,7 @@ wayneblacktea checkout using the frozen fixture set in testdata/.
 Run: python3 -m unittest test_audit -v
 """
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -308,12 +309,44 @@ class TestGitOpsRejectsUnsafeGrepInput(unittest.TestCase):
         self.assertEqual(git.grep_fixed(""), [])
 
     def test_shell_metacharacters_do_not_execute(self):
-        # If this ever executed as shell, it would try to run `id` and
-        # substitute output — instead it must just search for the literal
-        # bytes (finding nothing) with git exiting 1, not raising.
-        git = GitOps(HERE)
-        hits = git.grep_fixed("$(id)")
-        self.assertEqual(hits, [])
+        # Regression note: an earlier version of this test asserted
+        # grep_fixed("$(id)") == [] — but that literal string is quoted
+        # verbatim in THIS test's own source a few lines up, so `git grep`
+        # (which is repo-wide, not scoped to argv) found its own source
+        # line and the assertion failed on a match that proves nothing
+        # about shell interpretation either way (self-collision, not a
+        # security regression — see lib/gitutil.py's SELF_EXCLUDE_PATHSPEC
+        # docstring for the general fix; this test needed its own fix
+        # regardless because grep hits were never the right signal here).
+        #
+        # Mutation-provable design: the payload's `; touch <canary>`
+        # segment is a real shell command. It is inert as long as
+        # subprocess is called with an argv list (git grep -F just
+        # searches for those literal bytes, finds nothing, canary is never
+        # created). If _run() were ever changed to shell=True (e.g. via
+        # " ".join(argv)), the shell would execute `touch <canary>` for
+        # real — the canary file would exist — and this test goes red.
+        # Verified by temporarily mutating gitutil.py locally: subprocess.run(
+        #   " ".join(["git", "-C", str(self.repo_root), *args]), shell=True, ...)
+        # makes this test fail with the canary present, as designed.
+        #
+        # Rooted at the real repo (not HERE=scripts/gtd-code-audit) so the
+        # search scope is the normal, non-degenerate one `audit.py` always
+        # uses in practice — GitOps(HERE) would have its own directory as
+        # both the include AND the SELF_EXCLUDE_PATHSPEC target, making
+        # every grep_fixed() call structurally return [] regardless of the
+        # literal, which would silently defeat the first assertion below.
+        git = GitOps(_repo_root())
+        canary = HERE / f".shell_canary_{os.getpid()}"
+        self.addCleanup(lambda: canary.unlink(missing_ok=True))
+        self.assertFalse(canary.exists(), "canary must not pre-exist")
+        payload = f"zzNoSuchLiteralZZ; touch {canary} #"
+        hits = git.grep_fixed(payload)
+        self.assertEqual(hits, [], "argv-safe grep must find nothing for a nonexistent literal")
+        self.assertFalse(
+            canary.exists(),
+            "shell metacharacters executed a real command — subprocess must use argv, never shell=True",
+        )
 
     def test_invalid_sha_format_rejected_before_cat_file(self):
         git = GitOps(HERE)
@@ -328,6 +361,99 @@ def _repo_root():
         if (d / ".git").exists():
             return d
     raise RuntimeError("no .git found above " + str(HERE))
+
+
+class TestGitOpsSelfExclusion(unittest.TestCase):
+    """grep_fixed() must never let this tool's own testdata/tests count as
+    corroborating evidence — see SELF_EXCLUDE_PATHSPEC's docstring in
+    lib/gitutil.py. Regression coverage for ticket 6f306618's false
+    CITED_BUT_MARKED_UNFIXED (branch name in the ticket's own description
+    self-matched inside testdata/known_tickets.json)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.git = GitOps(_repo_root())
+
+    def test_self_directory_content_never_matched(self):
+        # This exact literal is only known to appear inside
+        # testdata/known_tickets.json (a ticket's branch-name mention) —
+        # confirmed via `git grep` during triage of this bug. If
+        # SELF_EXCLUDE_PATHSPEC regresses, this comes back as a hit.
+        hits = self.git.grep_fixed("mcp-token-diet-v2")
+        self_dir_hits = [h for h in hits if h[0].startswith("scripts/gtd-code-audit/")]
+        self.assertEqual(self_dir_hits, [],
+                          f"self-referential hits inside this tool's own dir: {self_dir_hits}")
+
+    def test_real_repo_content_still_matched(self):
+        # The exclusion must be scoped to this tool's own directory only —
+        # it must not accidentally suppress real matches elsewhere.
+        hits = self.git.grep_fixed("wbt-core-mvp")
+        self.assertTrue(hits, "exclusion pathspec over-broadly suppressed real repo matches")
+        self.assertTrue(any(not f.startswith("scripts/gtd-code-audit/") for f, _ in hits))
+
+
+class TestAnchorCapAndMemoization(unittest.TestCase):
+    """DoS guard regression coverage — Lead's dispatch measured an
+    adversarial ticket (many unique symbol-shaped tokens, none matching
+    anything) driving lib/rules.py's uncapped symbol iteration to ~1,670
+    subprocess calls / 3m04s for one ticket; independently reproduced here
+    at 300 tokens -> 37.1s (~0.124s/call), consistent with that figure."""
+
+    def test_symbol_cap_enforced_and_reported(self):
+        many_tokens = " ".join(f"zzAdversarialSymbolToken{i}Unmatched" for i in range(500))
+        anchors = extract.extract_anchors("t", many_tokens)
+        self.assertEqual(len(anchors["symbols"]), extract.MAX_ANCHORS_PER_CATEGORY)
+        # Not silently dropped — the truncation MUST be visible in the
+        # returned dict so a caller (rules.classify -> audit.py's output)
+        # can report it, per README's "no silent caps" policy.
+        self.assertIn("symbols", anchors["truncated"])
+        self.assertEqual(anchors["truncated"]["symbols"], 500 - extract.MAX_ANCHORS_PER_CATEGORY)
+
+    def test_truncation_surfaces_in_classify_reasons(self):
+        git = FakeGit()  # nothing matches -> falls through to NO rule firing early
+        many_tokens = " ".join(f"zzAdversarialSymbolToken{i}Unmatched" for i in range(500))
+        ev = rules.classify("t", many_tokens, "2026-08-01T00:00:00+00:00", git)
+        self.assertTrue(any("截掉" in r for r in ev.reasons),
+                         f"truncation notice missing from reasons: {ev.reasons}")
+
+    def test_realistic_ticket_untouched_by_cap(self):
+        # The densest real ticket in testdata/known_tickets.json extracts
+        # 18 symbols (measured directly) — well under the cap of 50, so no
+        # real-world ticket should ever see a truncation notice.
+        desc = " ".join(f"realSymbol{i}Example" for i in range(18))
+        anchors = extract.extract_anchors("t", desc)
+        self.assertEqual(anchors["truncated"], {})
+
+    def test_grep_fixed_memoized_within_instance(self):
+        git = GitOps(_repo_root())
+        calls = []
+        real_run = git._run
+
+        def counting_run(args):
+            calls.append(args)
+            return real_run(args)
+
+        git._run = counting_run
+        git.grep_fixed("wbt-core-mvp")
+        git.grep_fixed("wbt-core-mvp")
+        git.grep_fixed("wbt-core-mvp")
+        self.assertEqual(len(calls), 1,
+                          "repeated grep_fixed(same literal) must hit the cache after the first call")
+
+    def test_last_commit_iso_memoized_within_instance(self):
+        git = GitOps(_repo_root())
+        calls = []
+        real_run = git._run
+
+        def counting_run(args):
+            calls.append(args)
+            return real_run(args)
+
+        git._run = counting_run
+        git.last_commit_iso("internal/storage/sqlite/knowledge.go")
+        git.last_commit_iso("internal/storage/sqlite/knowledge.go")
+        self.assertEqual(len(calls), 1,
+                          "repeated last_commit_iso(same path) must hit the cache after the first call")
 
 
 class TestKnownFixtureRegression(unittest.TestCase):
@@ -368,7 +494,24 @@ class TestKnownFixtureRegression(unittest.TestCase):
         """The one rule that must never break: a ticket manually confirmed
         STILL open in code must never be labelled SUSPECT_ALREADY_FIXED.
         This is the false-positive case Lead explicitly said is more costly
-        than a false negative."""
+        than a false negative.
+
+        Currently vacuous by design: `known_tickets.json` has ZERO
+        `negative_verified` entries (see README.md "Fixture provenance" —
+        the one real ticket that lived here, 7610088f, was moved to
+        `positive_verified` because its anchor file
+        (internal/handler/gtd_handler.go) genuinely got fixed by commit
+        582741d, which had already landed in this checkout's history
+        *before* the fixture was even frozen — the ground truth was stale
+        from the moment it was written, not "rotted" by a later PR). A
+        real GTD bug ticket is structurally the wrong anchor for a "this
+        must STAY unfixed forever" regression guard, because the entire
+        point of filing it is that it eventually gets fixed — see
+        test_synthetic_permanent_tradeoff_never_flagged_suspect below for
+        the guard that replaces it and does not have this failure mode.
+        This test is kept (rather than deleted) so a *future* manually-
+        verified still-open ticket can be dropped into this category
+        without writing new test code."""
         failures = []
         for fx in self.fixtures:
             if fx["fixture_category"] != "negative_verified":
@@ -378,6 +521,41 @@ class TestKnownFixtureRegression(unittest.TestCase):
                 failures.append((fx["id"][:8], fx["title"][:60], ev.verdict))
         self.assertFalse(failures,
                           f"{len(failures)} verified-still-open tickets WRONGLY flagged fixed: {failures}")
+
+    def test_synthetic_permanent_tradeoff_never_flagged_suspect(self):
+        """Rot-proof replacement for the "must never false-positive" guard
+        (see the docstring above for why a real, fixable GTD bug ticket is
+        the wrong anchor for this).
+
+        Anchors to internal/storage/sqlite/knowledge.go's SearchByCosine —
+        an ACCEPTED, documented design trade-off (SQLite has no ANN, so it
+        brute-force cosine-scans capped at 200 rows; see
+        wayneblacktea/CLAUDE.md "SQLite cosine fallback" and the function's
+        own doc comment), not a bug anyone is tracking to fix. Unlike a
+        real bug ticket, "fixing" this would require a deliberate
+        architecture decision (switching SQLite to some ANN index), not an
+        incidental commit — so it will not silently flip to "fixed"
+        the way 7610088f did.
+
+        `created_at` is computed HERE, at test-run time, as the anchor
+        file's own last-commit timestamp — NOT a frozen calendar date. The
+        STILL_OPEN_LIKELY rule fires on `last_commit_iso(file) <=
+        created_at`; setting created_at equal to that exact measurement
+        makes the comparison true by construction on every run, forever,
+        regardless of when the test executes — the classic rot vector
+        (calendar dates falling behind real repo history) cannot recur
+        here because there is no calendar date to fall behind."""
+        anchor_file = "internal/storage/sqlite/knowledge.go"
+        last_touch = self.git.last_commit_iso(anchor_file)
+        self.assertIsNotNone(last_touch, f"{anchor_file} must exist and have git history")
+        title = "[synthetic][設計限制,非 bug] SearchByCosine 沒有 ANN,brute-force 硬上限 200 筆"
+        description = (
+            f"{anchor_file}:651 SearchByCosine — SQLite 沒有 pgvector,brute-force "
+            "Go-side cosine scan,LIMIT 200。這是既有接受的設計取捨,不是要修的 bug。"
+        )
+        ev = rules.classify(title, description, last_touch, self.git)
+        self.assertNotEqual(ev.verdict, "SUSPECT_ALREADY_FIXED",
+                             f"permanent design trade-off wrongly flagged fixed: {ev.reasons}")
 
     def test_dispatch_claimed_fixtures_report_honestly(self):
         """These 5 tickets were named by the dispatch as 'should be flagged
