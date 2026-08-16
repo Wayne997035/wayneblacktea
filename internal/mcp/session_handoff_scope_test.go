@@ -40,31 +40,53 @@ import (
 // handleResourceGTDCurrent starts also reading .Intent, not just
 // .ResolvedAt/.CreatedAt as its entry here claims) compiles and passes this
 // test silently. Closing that would need per-selector, not per-scope,
-// whitelisting — deliberately not attempted here; the mitigation is that
-// every entry's reason names EXACTLY which fields it reads, so a reviewer
-// diffing a change against its whitelist reason (not just against this test
-// passing) can catch drift a green run cannot.
+// whitelisting — deliberately not attempted here.
+//
+// The mitigation is that every entry's reason below names EXACTLY which
+// fields it reads (or states "reads no field" when it passes the row whole
+// to another whitelisted scope), so a reviewer diffing a change against its
+// whitelist reason — not just against this test passing — can catch drift a
+// green run cannot. This was NOT true of 10 of the 18 entries as of round 5
+// (二軍 finding M-5-1: their reasons described the treatment applied, not
+// the fields read, giving a reviewer nothing to diff); those 10 have been
+// rewritten to name fields. Any new entry added to sessionHandoffScopeWhitelist
+// MUST follow the same convention — a reason that does not name a field (or
+// explicitly say it reads none) reintroduces exactly the gap M-5-1 found.
 var sessionHandoffScopeWhitelist = map[string]string{
-	"session_handoff_safe.go:safeSessionHandoff": "defines the wrapper type itself; every other " +
-		"whitelisted scope below either builds the view MarshalJSON delegates to, or immediately " +
-		"constructs this type from a raw row it just obtained",
-	"session_handoff_safe.go:newSafeSessionHandoff": "the wrapper's own constructor — the raw row is " +
-		"its parameter by design",
+	"session_handoff_safe.go:safeSessionHandoff": "reads no field of h itself — holds h as its only " +
+		"struct field; every method below reads *db.SessionHandoff fields through v.h, not through " +
+		"this type declaration",
+	"session_handoff_safe.go:newSafeSessionHandoff": "reads no field of h — stores the pointer " +
+		"verbatim as the constructed value's h field",
+	"session_handoff_safe.go:safeSessionHandoff.MarshalJSON": "reads h as a whole (nil-checked) and " +
+		"delegates to buildHardenedHandoffView(h); dereferences no individual field of h directly here",
+	"session_handoff_safe.go:safeSessionHandoff.rawIntent": "reads h.Intent directly, unhardened — " +
+		"the wrapper's sanctioned raw-text escape hatch (round-5 二軍 finding C-5-1: this scope, along " +
+		"with rawContextSummary/hardenedIntent/MarshalJSON below, is where sessionHandoffValueFields' " +
+		"\"h\" entry is SUPPOSED to still match — these four are the only legitimate readers of v.h)",
+	"session_handoff_safe.go:safeSessionHandoff.rawContextSummary": "reads h.ContextSummary directly " +
+		"(via textValue), unhardened — same escape-hatch contract as rawIntent",
+	"session_handoff_safe.go:safeSessionHandoff.hardenedIntent": "reads h.Intent directly and hardens " +
+		"it via clipAndFenceStoredContext before returning",
 
-	"tools_session.go:buildHardenedHandoffView": "the hardened-view builder safeSessionHandoff." +
-		"MarshalJSON delegates to",
-	"tools_session.go:Server.handleSetSessionHandoff": "calls SetHandoff and returns the same-turn " +
-		"echo-back view (buildPendingHandoffView) — out of scope for this change, PR #158 dispatch",
-	"tools_session.go:Server.handleResolveHandoff": "calls Resolve, which returns only an error (no " +
-		"*db.SessionHandoff at all) — flagged only because the broad non-nil-comparison rule treats " +
-		"any use of the session field as reportable regardless of which method is called; reviewed, " +
-		"leaks nothing",
-	"tools_session.go:Server.handleMarkNextActionDone": "calls MarkNextActionDone, then renders the " +
-		"hardened view via buildHardenedHandoffView",
+	"tools_session.go:buildHardenedHandoffView": "reads ID/RepoName/Intent/ContextSummary/CreatedAt/" +
+		"NextActions from h and hardens every one of them (clip/fence/neutralise/byte-budget) before " +
+		"returning — the hardened-view builder safeSessionHandoff.MarshalJSON delegates to",
+	"tools_session.go:Server.handleSetSessionHandoff": "reads no field of h itself — passes the store's " +
+		"return value whole to buildPendingHandoffView (the same-turn echo-back builder), out of scope " +
+		"for this change per PR #158 dispatch",
+	"tools_session.go:Server.handleResolveHandoff": "reads no field of any handoff — there is none to " +
+		"read; Resolve returns only an error. Flagged only because the broad non-nil-comparison rule " +
+		"treats any use of the session field as reportable regardless of which method is called",
+	"tools_session.go:Server.handleMarkNextActionDone": "reads no field of h itself — passes the " +
+		"store's return value whole to buildHardenedHandoffView",
 
-	"tools_context.go:buildPendingHandoffView": "the same-turn echo-back builder (pendingHandoffView) " +
-		"— out of scope for this change",
-	"tools_context.go:buildPendingHandoffSummary": "presence-only builder; carries no free text",
+	"tools_context.go:buildPendingHandoffView": "reads every field of h verbatim (ID/ProjectID/" +
+		"RepoName/Intent/ContextSummary/ResolvedAt/CreatedAt/WorkspaceID/NextActions) with NO " +
+		"hardening — the same-turn echo-back builder (pendingHandoffView), safe only because its " +
+		"callers restrict it to the caller's own just-written text; out of scope for this change",
+	"tools_context.go:buildPendingHandoffSummary": "reads ID/CreatedAt and the decoded NextActions " +
+		"length only, via buildPendingHandoffView; carries no free text of its own",
 	"tools_context.go:todayContextRaw": "the struct field (.handoff) that holds the raw row only long " +
 		"enough for fetchTodayContext to write it and toContext to hand it to " +
 		"buildPendingHandoffSummary — neither reader dereferences .Intent/.ContextSummary/.RepoName",
@@ -76,22 +98,26 @@ var sessionHandoffScopeWhitelist = map[string]string{
 		"(todayContextRaw.handoff) was invisible to the check even though toContext reads it " +
 		"directly; see sessionHandoffValueFields below",
 
-	"resources.go:Server.handleResourceHandoffLatest": "the read-only resource's own hardened builder " +
-		"— out of scope for this change, PR #158 dispatch (behaviour must stay byte-for-byte unchanged)",
+	"resources.go:Server.handleResourceHandoffLatest": "reads RepoName/Intent/ContextSummary/ID/" +
+		"CreatedAt/NextActions from h and hardens every one of them — the read-only resource's own " +
+		"hardened builder, out of scope for this change, PR #158 dispatch (behaviour must stay " +
+		"byte-for-byte unchanged)",
 	"resources.go:Server.handleResourceDashboardOverview": "reads only CreatedAt, never free text",
 	"resources.go:Server.handleResourceGTDCurrent":        "reads only ResolvedAt/CreatedAt, never free text",
 
-	"tools_closeout.go:Server.fillCloseoutHandoff": "wraps the row in safeSessionHandoff immediately " +
-		"(hardenedIntent)",
+	"tools_closeout.go:Server.fillCloseoutHandoff": "reads no field of handoff itself — wraps the row " +
+		"in safeSessionHandoff immediately (hardenedIntent)",
 
 	"tools_dashboard.go:Server.handleReconcileDashboard": "reads only ResolvedAt/CreatedAt, never free text",
 
-	"tools_watchdog.go:Server.detectStaleHandoffs": "wraps each row in safeSessionHandoff immediately " +
-		"(hardenedIntent) before it reaches the finding detail",
+	"tools_watchdog.go:Server.detectStaleHandoffs": "reads ResolvedAt/CreatedAt (filter, non-text) and " +
+		"ID directly; Intent only via safeSessionHandoff.hardenedIntent() before it reaches the " +
+		"finding detail",
 
-	"tools_procedural.go:recallEpisodic": "wraps the row in safeSessionHandoff immediately; the raw " +
-		"accessors (rawIntent/rawContextSummary) are used only for the internal, non-serializing " +
-		"substring match and their return values never cross a serialization boundary here",
+	"tools_procedural.go:recallEpisodic": "reads Intent/ContextSummary only via safeSessionHandoff's " +
+		"raw accessors (rawIntent/rawContextSummary), for an internal, non-serializing substring " +
+		"match; returns the safeSessionHandoff wrapper itself, never h, so the raw text never crosses " +
+		"a serialization boundary here",
 }
 
 // sessionHandoffFreeMethods are session.StoreIface methods whose name is
@@ -151,23 +177,36 @@ const sessionHandoffCollidingMethod = "SearchByCosine"
 // check sessionHandoffCollidingMethod above is restricted to.
 const sessionHandoffStoreField = "session"
 
-// sessionHandoffValueFields are every field name, across ANY type in this
-// package, found to hold either the session store itself or a raw
-// *db.SessionHandoff row obtained from it: "session" (*Server's own store
-// field) and "handoff" (todayContextRaw's field, tools_context.go, which
-// holds the raw row between fetchTodayContext writing it and toContext
-// reading it). Any appearance of either name as a selector OUTSIDE a nil
-// comparison (`s.session == nil`, the idiomatic "is this configured" guard
-// used throughout this package) is reportable on its own, independent of
-// whether a sentinel method name appears anywhere nearby — this is what
-// closes the bypasses where the raw value's SOURCE is captured into a local
-// variable, passed as a function argument, or embedded into a wrapper
-// struct, before any method is ever called on it, and (via "handoff") the
-// round-5 二軍 C-4-1 finding that a second field holding the same kind of raw
-// value was invisible to a check that only knew about "session".
+// sessionHandoffValueFields is an ALLOWLIST, not an inventory: these are the
+// field names, across ANY type in this package, that this check currently
+// knows to hold either the session store itself or a raw *db.SessionHandoff
+// row — "session" (*Server's own store field), "handoff"
+// (todayContextRaw's field, tools_context.go), and "h" (safeSessionHandoff's
+// own field, session_handoff_safe.go). Any appearance of one of these three
+// names as a selector OUTSIDE a nil comparison (`s.session == nil`, the
+// idiomatic "is this configured" guard used throughout this package) is
+// reportable on its own, independent of whether a sentinel method name
+// appears anywhere nearby — this is what closes the bypasses where the raw
+// value's SOURCE is captured into a local variable, passed as a function
+// argument, or embedded into a wrapper struct, before any method is ever
+// called on it.
+//
+// This list is NOT exhaustive by construction and cannot be made so by
+// adding more names to it: a field added to hold a raw row under a FOURTH
+// name — on an already-whitelisted type or a brand new one — is invisible to
+// this rule the moment it is written, because the rule matches names, not
+// "does this field's declared type happen to be *db.SessionHandoff or
+// session.StoreIface". round-5 二軍 finding C-5-1 found the third name ("h",
+// safeSessionHandoff's own field) missing from what was, at the time, a
+// two-name list whose OWN doc comment claimed to be a complete inventory;
+// that claim was false the moment it was written, for the same reason this
+// paragraph does not claim completeness now. If this list is ever wrong
+// again, the fix is the same one-line addition C-5-1 needed — it is
+// list-maintenance, not a rewrite of the mechanism.
 var sessionHandoffValueFields = map[string]bool{
 	sessionHandoffStoreField: true,
 	"handoff":                true,
+	"h":                      true,
 }
 
 // TestSessionHandoffTypeConfinedToWhitelist is the mechanical half of the PR
@@ -209,7 +248,13 @@ var sessionHandoffValueFields = map[string]bool{
 //   - within an ALREADY-whitelisted scope, this test does not re-verify that
 //     the scope still only does what its whitelist reason claims — see the
 //     "Known limitation" paragraph on sessionHandoffScopeWhitelist's own doc
-//     comment (round-5 一軍 finding, same root as the field-map gap above).
+//     comment (round-5 一軍 finding, same root as the field-map gap above);
+//   - a field added under a name NOT in sessionHandoffValueFields — even on
+//     an already-whitelisted type (e.g. todayContextRaw gaining a second
+//     field `prev *db.SessionHandoff` alongside its existing `handoff`
+//     field) — is invisible to the field-selector rule until that name is
+//     added to the map; see sessionHandoffValueFields' own doc comment
+//     (round-5 二軍 finding C-5-1, reproduced as that finding's q12b probe).
 func TestSessionHandoffTypeConfinedToWhitelist(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

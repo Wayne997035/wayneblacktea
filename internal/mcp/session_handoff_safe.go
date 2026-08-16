@@ -23,10 +23,19 @@ import (
 // MarshalJSON always renders the SAME clip+neutralise+fence+byte-budget view
 // buildHardenedHandoffView already produces for mark_next_action_done and the
 // wayneblacktea://session/handoff/latest resource, regardless of where the
-// value ends up — a map[string]any, a []any, a struct field, doesn't matter.
-// Forgetting to harden is no longer possible once a value is this type; it is
-// only possible by reaching for one of the raw/lightly-hardened accessors
-// below, which is a visible, grep-able act instead of a silent omission.
+// value ends up — a map[string]any, a []any, a struct field, doesn't matter,
+// AS LONG AS the value crossing that boundary is this type and not h itself.
+//
+// h is unexported but not private to this type — any code in this package
+// can write `v.h` and read every field of the raw row directly, bypassing
+// MarshalJSON entirely (round-5 二軍 finding C-5-1: an earlier version of
+// this comment claimed "forgetting to harden is no longer possible once a
+// value is this type" — false, since v.h was reachable the whole time and
+// leaks the FULL row, not just Intent/ContextSummary like the rawIntent/
+// rawContextSummary accessors below do). session_handoff_scope_test.go's
+// sessionHandoffValueFields rule is what actually confines `.h` to this
+// file's own methods — read that map's doc comment, not this one, for what
+// it currently catches.
 //
 // internal/mcp/session_handoff_scope_test.go enforces the other half of this
 // guarantee mechanically. Its whitelist is keyed per function/type
