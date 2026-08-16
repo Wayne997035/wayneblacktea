@@ -18,12 +18,21 @@ FROM golang:1.26.4-alpine AS builder
 # build` here embeds "dev"/"none"/"unknown", never a value that could pass
 # for a real version. The deploying pipeline (Railway or any CI) overrides
 # these via `docker build --build-arg VERSION=... --build-arg COMMIT=...
-# --build-arg BUILD_DATE=...`; wiring Railway itself to pass real values is a
-# follow-up (this Dockerfile only had to prove the mechanism — see the PR
-# report for why railway.toml wasn't touched here).
+# --build-arg BUILD_DATE=...`.
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
+
+# Railway wiring. Railway injects its own variables into the build ONLY for
+# names the Dockerfile declares with ARG, in the stage that needs them
+# (https://docs.railway.com/builds/dockerfiles: "you must specify them in the
+# Dockerfile using the ARG command" … "declare your environment variables in
+# the stage they are required in"). RAILWAY_GIT_COMMIT_SHA is a Railway-
+# provided variable, populated when the deploy originated from the GitHub
+# trigger. The empty default keeps a plain `docker build` byte-identical to
+# before: with nothing injected this stays empty, the branch below is skipped,
+# and the binary still embeds dev/none/unknown.
+ARG RAILWAY_GIT_COMMIT_SHA=
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -32,9 +41,49 @@ RUN go mod download
 COPY . .
 # Copy the built frontend into the path expected by //go:embed in cmd/server/main.go
 COPY --from=frontend /web/dist ./cmd/server/web/dist
-RUN CGO_ENABLED=0 go build -ldflags "-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version=${VERSION} \
-    -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit=${COMMIT} \
-    -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date=${BUILD_DATE}" \
+# Precedence: an explicit --build-arg always wins; Railway's injected SHA is
+# only consulted when COMMIT was left at its sentinel. Date is derived in the
+# same branch, so it moves together with Commit and never claims a build time
+# for a build whose commit is unknown. Version is deliberately NOT derived —
+# only a goreleaser tagged release sets a real version, a commit SHA must not
+# masquerade as one.
+#
+# The hex assertion is load-bearing, not decoration. This value is interpolated
+# into the -ldflags string, and go build re-splits that string on whitespace —
+# so a value containing whitespace becomes ADDITIONAL linker flags rather than
+# part of the commit. A second -X for the same symbol wins, which means an
+# unvalidated value can silently rewrite buildinfo.Version into something that
+# looks like a real release. That is the exact failure internal/buildinfo exists
+# to prevent (see its doc comment: a plausible-looking fake version is worse
+# than an obviously-fake one). Verified by PoC: shell metacharacters do NOT
+# execute here (ARGs reach RUN as env vars and "${VAR}" expansion does not
+# re-parse them) and the payload can never become a separate `go build`
+# argument, so -toolexec is unreachable — the only real primitive is the extra
+# -X. This guard closes that primitive for RAILWAY_GIT_COMMIT_SHA only. VERSION,
+# COMMIT and BUILD_DATE reach the same -ldflags string unvalidated and each
+# still delivers it; that gap predates this file's Railway wiring and is tracked
+# separately, so do not read the guard below as covering them.
+#
+# Fails the build closed on purpose: a blocked deploy is loud, a forged build
+# identity is silent, and the running service is unaffected either way —
+# Railway removes the previous deployment only once a new one reaches Active,
+# so a failed build leaves the current version serving.
+RUN set -eu; \
+    COMMIT_VAL="${COMMIT}"; \
+    DATE_VAL="${BUILD_DATE}"; \
+    if [ "${COMMIT_VAL}" = "none" ] && [ -n "${RAILWAY_GIT_COMMIT_SHA}" ]; then \
+        case "${RAILWAY_GIT_COMMIT_SHA}" in \
+            *[!0-9a-fA-F]*) echo "refusing: RAILWAY_GIT_COMMIT_SHA is not a hex sha" >&2; exit 1 ;; \
+        esac; \
+        COMMIT_VAL="${RAILWAY_GIT_COMMIT_SHA}"; \
+        if [ "${DATE_VAL}" = "unknown" ]; then \
+            DATE_VAL="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+        fi; \
+    fi; \
+    echo "build identity: version=${VERSION} commit=${COMMIT_VAL} date=${DATE_VAL}"; \
+    CGO_ENABLED=0 go build -ldflags "-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version=${VERSION} \
+    -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit=${COMMIT_VAL} \
+    -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date=${DATE_VAL}" \
     -o /app/server ./cmd/server/
 
 # Stage 3: Minimal runtime image
