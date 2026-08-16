@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -120,13 +119,24 @@ func (s *Server) fillCloseoutProposals(ctx context.Context, report *closeoutRepo
 }
 
 // fillCloseoutHandoff checks whether a session handoff has been set.
+//
+// HandoffSummary goes through safeSessionHandoff.hardenedIntent(), not
+// sanitize.Notes(handoff.Intent) as before: sanitize.Notes strips control
+// characters and caps length but does not neutralise forged boundary
+// markers, so a poisoned Intent could still fake an escape from whatever
+// fence a reader expects around stored data (PR #158 chokepoint — same
+// threat class as recallEpisodic's episodic branch, tools_procedural.go).
+// hardenedIntent shares the exact clip+fence treatment
+// buildHardenedHandoffView gives Intent, so this tool and mark_next_action_
+// done/the handoff resource never disagree on what "hardened" means for the
+// same field.
 func (s *Server) fillCloseoutHandoff(ctx context.Context, report *closeoutReport) {
 	handoff, err := s.session.LatestHandoff(ctx)
 	if err != nil || handoff == nil {
 		return // ErrNotFound or real error: HandoffSet stays false (advisory).
 	}
 	report.HandoffSet = true
-	report.HandoffSummary = sanitize.Notes(handoff.Intent)
+	report.HandoffSummary = newSafeSessionHandoff(handoff).hardenedIntent()
 }
 
 // fillCloseoutCandidates counts pending completion candidates into the report.
