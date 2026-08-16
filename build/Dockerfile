@@ -47,10 +47,28 @@ COPY --from=frontend /web/dist ./cmd/server/web/dist
 # for a build whose commit is unknown. Version is deliberately NOT derived —
 # only a goreleaser tagged release sets a real version, a commit SHA must not
 # masquerade as one.
+#
+# The hex assertion is load-bearing, not decoration. This value is interpolated
+# into the -ldflags string, and go build re-splits that string on whitespace —
+# so a value containing whitespace becomes ADDITIONAL linker flags rather than
+# part of the commit. A second -X for the same symbol wins, which means an
+# unvalidated value can silently rewrite buildinfo.Version into something that
+# looks like a real release. That is the exact failure internal/buildinfo exists
+# to prevent (see its doc comment: a plausible-looking fake version is worse
+# than an obviously-fake one). Verified by PoC: shell metacharacters do NOT
+# execute here (ARGs reach RUN as env vars and "${VAR}" expansion does not
+# re-parse them) and the payload can never become a separate `go build`
+# argument, so -toolexec is unreachable — the only real primitive is the extra
+# -X, and this guard closes it. Fails the build closed on purpose: a blocked
+# deploy is loud, a forged build identity is silent, and the running service is
+# unaffected either way because Railway keeps the last good deployment.
 RUN set -eu; \
     COMMIT_VAL="${COMMIT}"; \
     DATE_VAL="${BUILD_DATE}"; \
     if [ "${COMMIT_VAL}" = "none" ] && [ -n "${RAILWAY_GIT_COMMIT_SHA}" ]; then \
+        case "${RAILWAY_GIT_COMMIT_SHA}" in \
+            *[!0-9a-fA-F]*) echo "refusing: RAILWAY_GIT_COMMIT_SHA is not a hex sha" >&2; exit 1 ;; \
+        esac; \
         COMMIT_VAL="${RAILWAY_GIT_COMMIT_SHA}"; \
         if [ "${DATE_VAL}" = "unknown" ]; then \
             DATE_VAL="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
