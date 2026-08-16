@@ -18,9 +18,12 @@ import (
 func TestBoundaryMarkers_RegistryIsWellFormed(t *testing.T) {
 	markers := boundaryMarkers()
 
-	// Five pairs: evidence, verification, session summary, stored context,
-	// project arch. A new fenced field must land here too.
-	const wantMarkers = 10
+	// Five pairs (evidence, verification, session summary, stored context,
+	// project arch) plus storedDataNotice as a single unpaired entry (round-4
+	// PR #158 security review m-3-2 — boundaryMarkers' doc comment explains
+	// why the notice itself must be neutralised, not just the fence pairs). A
+	// new fenced field or notice string must land here too.
+	const wantMarkers = 11
 	if len(markers) != wantMarkers {
 		t.Errorf("boundaryMarkers() has %d entries, want %d — a fenced field was added "+
 			"without registering its markers, so forged copies of them survive",

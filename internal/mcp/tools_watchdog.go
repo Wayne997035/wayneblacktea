@@ -348,10 +348,16 @@ func (s *Server) detectStaleHandoffs(ctx context.Context, wsID *uuid.UUID) []age
 		if !h.CreatedAt.Valid || !h.CreatedAt.Time.Before(staleThreshold) {
 			continue
 		}
+		// stored_data_notice sits alongside the fenced intent for the same
+		// reason closeoutReport.HandoffSummaryNotice does (tools_closeout.go)
+		// — round-4 PR #158 security review s-3-1: this path used to carry
+		// only the fence with no notice, a different treatment than the
+		// other four exit points that read the same stored data.
 		detail, _ := json.Marshal(map[string]any{
-			"handoff_id": h.ID.String(),
-			"intent":     newSafeSessionHandoff(h).hardenedIntent(),
-			"created_at": h.CreatedAt.Time.Format(time.RFC3339),
+			"handoff_id":         h.ID.String(),
+			"intent":             newSafeSessionHandoff(h).hardenedIntent(),
+			"stored_data_notice": storedDataNotice,
+			"created_at":         h.CreatedAt.Time.Format(time.RFC3339),
 		})
 		if s.insertWatchdogEvent(ctx, wsID, watchdog.EventTypeStaleHandoff, watchdog.SeverityWarn, detail) {
 			out = append(out, agentBehaviorFinding{

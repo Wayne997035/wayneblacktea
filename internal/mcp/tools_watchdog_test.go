@@ -599,6 +599,17 @@ func TestDetectStaleHandoffs_NeutralizesForgedMarkers(t *testing.T) {
 	if !strings.Contains(detail, storedContextMarkerStart) {
 		t.Errorf("finding detail missing its STORED CONTEXT fence: %s", detail)
 	}
+
+	// s-3-1 (round-4 review): the finding detail must carry the same notice
+	// the other four exit points carry alongside their fenced handoff text —
+	// not just the fence on its own.
+	var decoded map[string]any
+	if err := json.Unmarshal(findings[0].Detail, &decoded); err != nil {
+		t.Fatalf("finding detail is not valid JSON: %v — got: %s", err, detail)
+	}
+	if got, _ := decoded["stored_data_notice"].(string); got != storedDataNotice {
+		t.Errorf("finding detail stored_data_notice = %q, want the real storedDataNotice text", got)
+	}
 }
 
 // TestDetectStaleHandoffs_ResolvedOrRecentSkipped verifies the existing

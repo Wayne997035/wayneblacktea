@@ -78,8 +78,22 @@ const (
 const boundaryMarkerPlaceholder = "[boundary marker removed]"
 
 // boundaryMarkers returns every bare marker text in the package: the three
-// pairs owned by get_work_session_trace (tools_worksession.go) plus the two
-// declared above.
+// pairs owned by get_work_session_trace (tools_worksession.go), the two
+// declared above, and storedDataNotice (tools_context.go) as a single
+// unpaired entry.
+//
+// storedDataNotice is included here (round-4 PR #158 security review m-3-2)
+// because it is plain, printable, forgeable text just like the marker pairs:
+// without this entry, a payload written through set_session_handoff could
+// embed the literal notice sentence in a field that survives to the response
+// (e.g. a next_actions title/command/expected, which only goes through
+// clipSafe — neutralisation, not fencing), producing a SECOND, attacker-
+// authored copy of "Stored records read from the database..." sitting next
+// to the real one. A reader cannot tell which copy is authoritative, which
+// defeats the notice's entire purpose. Adding it here means clipSafe (via
+// neutralizeBoundaryMarkers) replaces any forged copy with
+// boundaryMarkerPlaceholder before it ever reaches a response, the same way
+// a forged fence marker already is.
 func boundaryMarkers() []string {
 	return []string{
 		evidenceOutputExcerptMarkerStart,
@@ -92,6 +106,7 @@ func boundaryMarkers() []string {
 		storedContextMarkerEnd,
 		archSnapshotMarkerStart,
 		archSnapshotMarkerEnd,
+		storedDataNotice,
 	}
 }
 

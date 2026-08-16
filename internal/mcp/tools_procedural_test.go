@@ -78,11 +78,28 @@ func TestRecall_EpisodicHandoff_NeutralizesForgedMarkers(t *testing.T) {
 		t.Errorf("recall response missing the intent/context_summary fence start: %s", raw)
 	}
 
-	// The Embedding column ([]byte, a vector blob) must never leave the
-	// process through this path — the pre-fix raw-row return would have
-	// base64-encoded it into the JSON as an "embedding" field.
-	if strings.Contains(raw, `"embedding"`) {
-		t.Errorf("recall response leaks the embedding column: %s", raw)
+	// The response must carry none of db.SessionHandoff's non-text/internal
+	// columns — handoffResource (the hardened view's JSON shape) simply does
+	// not declare these fields, so their JSON key can never appear in output
+	// produced through safeSessionHandoff, regardless of what any query
+	// happens to populate.
+	//
+	// "embedding" alone is NOT a valid discriminator here (round-4 PR #158
+	// security review, 二軍 finding): LatestHandoff's SELECT list never
+	// queries that column (internal/session/store.go), so db.SessionHandoff.
+	// Embedding is always its zero value on this path regardless of whether
+	// the serialization fix is in place — a raw-row leak on THIS code path
+	// would never actually carry embedding bytes, making that one assertion
+	// tautological. summary_text/embedding_provider/embedding_model/
+	// embedding_dim have no such caveat: db.SessionHandoff has no omitempty
+	// tag on any of them, so encoding/json always emits the key on a direct
+	// struct marshal regardless of the column's value — these are true
+	// structural-absence checks, not query-dependent ones.
+	for _, dbOnlyKey := range []string{"summary_text", "embedding_provider", "embedding_model", "embedding_dim"} {
+		if strings.Contains(raw, `"`+dbOnlyKey+`"`) {
+			t.Errorf("recall response leaks db.SessionHandoff-only key %q — the raw row escaped "+
+				"safeSessionHandoff's hardened view: %s", dbOnlyKey, raw)
+		}
 	}
 
 	// episodic must decode as a one-element array of the hardened view shape

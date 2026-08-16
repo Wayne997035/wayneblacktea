@@ -358,6 +358,14 @@ func TestCloseoutSessionCheck_HandoffSummaryNeutralizesForgedMarkers(t *testing.
 	if !strings.Contains(report.HandoffSummary, storedContextMarkerStart) {
 		t.Errorf("HandoffSummary missing its STORED CONTEXT fence: %s", report.HandoffSummary)
 	}
+
+	// s-3-1 (round-4 review): HandoffSummary must carry the same notice the
+	// other four exit points (mark_next_action_done, the handoff resource,
+	// recall, and now analyze_agent_behavior's stale_handoff finding) carry
+	// alongside their fenced handoff text — not just the fence on its own.
+	if report.HandoffSummaryNotice != storedDataNotice {
+		t.Errorf("HandoffSummaryNotice = %q, want the real storedDataNotice text", report.HandoffSummaryNotice)
+	}
 }
 
 // containsAll checks whether s contains all provided substrings.

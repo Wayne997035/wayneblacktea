@@ -663,11 +663,16 @@ func (s *Server) handleResourceHandoffLatest(
 		// pending_handoff no longer carries it at all (W3), and
 		// mark_next_action_done emits the hardened equivalent.
 		//
-		// NOT the only reader: recall (tools_procedural.go) still returns the
-		// raw db.SessionHandoff row with none of this treatment. That is a
-		// known un-hardened path, not an oversight in this file — do not
-		// re-derive "this is the only reader" from the absence of other
-		// callers here.
+		// This file does not claim to be the only reader that applies this
+		// treatment, and deliberately does not enumerate which other files do
+		// — that list goes stale the moment any of them changes, independent
+		// of this file's own diff (a prior version of this comment named
+		// recall as an un-hardened reader; that became false as soon as
+		// tools_procedural.go was fixed without anyone touching this file).
+		// The actual guarantee lives in session_handoff_scope_test.go: every
+		// reader of a raw *db.SessionHandoff in this package is confined to a
+		// reviewed whitelist, mechanically enforced — read that file for which
+		// readers exist and what each one does, not this comment.
 		Intent:           clipAndFenceStoredContext(h.Intent, handoffResourceIntentMaxRunes),
 		ContextSummary:   clipAndFenceStoredContext(textValue(h.ContextSummary), handoffResourceSummaryMaxRunes),
 		NextActionsTotal: &nextActionsTotal,

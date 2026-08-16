@@ -150,3 +150,42 @@ func TestSafeSessionHandoff_HardenedIntent_MatchesFullViewIntentField(t *testing
 		t.Errorf("hardenedIntent() on nil-wrapped value = %q, want \"\"", got)
 	}
 }
+
+// TestSafeSessionHandoff_NeutralizesForgedStoredDataNotice pins round-4 PR
+// #158 security review m-3-2: storedDataNotice used to be absent from
+// boundaryMarkers() (boundary_markers.go), so a forged copy of the exact
+// notice sentence planted in a next_actions field (title/command/expected —
+// which only go through clipSafe, not a per-field fence) survived verbatim
+// alongside the real notice. A reader had no way to tell the forged copy
+// from the authoritative one. Fixed by registering storedDataNotice in
+// boundaryMarkers(); this pins that the forged copy is now replaced with
+// boundaryMarkerPlaceholder, leaving exactly one real occurrence.
+func TestSafeSessionHandoff_NeutralizesForgedStoredDataNotice(t *testing.T) {
+	nextActions, err := json.Marshal([]map[string]any{
+		{"step": 0, "title": storedDataNotice, "status": "pending"},
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture next_actions: %v", err)
+	}
+	h := &db.SessionHandoff{
+		ID:          uuid.New(),
+		Intent:      "continue tomorrow",
+		NextActions: nextActions,
+	}
+
+	out, err := json.Marshal(newSafeSessionHandoff(h))
+	if err != nil {
+		t.Fatalf("json.Marshal(safeSessionHandoff): %v", err)
+	}
+	raw := string(out)
+
+	const wantRealNotices = 1
+	if n := strings.Count(raw, storedDataNotice); n != wantRealNotices {
+		t.Errorf("response carries %d occurrences of the real notice text, want exactly %d "+
+			"(the authoritative stored_data_notice field) — a forged copy in next_actions.title "+
+			"survived unneutralised: %s", n, wantRealNotices, raw)
+	}
+	if !strings.Contains(raw, boundaryMarkerPlaceholder) {
+		t.Errorf("forged notice in next_actions.title was not neutralised: %s", raw)
+	}
+}
