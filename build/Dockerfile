@@ -59,9 +59,15 @@ COPY --from=frontend /web/dist ./cmd/server/web/dist
 # execute here (ARGs reach RUN as env vars and "${VAR}" expansion does not
 # re-parse them) and the payload can never become a separate `go build`
 # argument, so -toolexec is unreachable — the only real primitive is the extra
-# -X, and this guard closes it. Fails the build closed on purpose: a blocked
-# deploy is loud, a forged build identity is silent, and the running service is
-# unaffected either way because Railway keeps the last good deployment.
+# -X. This guard closes that primitive for RAILWAY_GIT_COMMIT_SHA only. VERSION,
+# COMMIT and BUILD_DATE reach the same -ldflags string unvalidated and each
+# still delivers it; that gap predates this file's Railway wiring and is tracked
+# separately, so do not read the guard below as covering them.
+#
+# Fails the build closed on purpose: a blocked deploy is loud, a forged build
+# identity is silent, and the running service is unaffected either way —
+# Railway removes the previous deployment only once a new one reaches Active,
+# so a failed build leaves the current version serving.
 RUN set -eu; \
     COMMIT_VAL="${COMMIT}"; \
     DATE_VAL="${BUILD_DATE}"; \
