@@ -665,14 +665,18 @@ func (s *Server) handleResourceHandoffLatest(
 		//
 		// This file does not claim to be the only reader that applies this
 		// treatment, and deliberately does not enumerate which other files do
-		// — that list goes stale the moment any of them changes, independent
-		// of this file's own diff (a prior version of this comment named
-		// recall as an un-hardened reader; that became false as soon as
-		// tools_procedural.go was fixed without anyone touching this file).
-		// The actual guarantee lives in session_handoff_scope_test.go: every
-		// reader of a raw *db.SessionHandoff in this package is confined to a
-		// reviewed whitelist, mechanically enforced — read that file for which
-		// readers exist and what each one does, not this comment.
+		// or how completely session_handoff_scope_test.go covers them — both
+		// of those go stale independently of any change made HERE (a prior
+		// version of this comment named recall as an un-hardened reader; that
+		// became false the moment tools_procedural.go was fixed. A later
+		// version claimed the scope test "mechanically enforces" that every
+		// reader is confined to a reviewed whitelist; that overstated the
+		// test's actual coverage at the time it was written — see that test
+		// file's own doc comment for what it does and does not catch, which is
+		// the only place this kind of claim can be kept in sync with the code
+		// enforcing it). Read session_handoff_scope_test.go directly for the
+		// current whitelist and its known gaps — not this comment, and not any
+		// other comment that tries to summarize it from a different file.
 		Intent:           clipAndFenceStoredContext(h.Intent, handoffResourceIntentMaxRunes),
 		ContextSummary:   clipAndFenceStoredContext(textValue(h.ContextSummary), handoffResourceSummaryMaxRunes),
 		NextActionsTotal: &nextActionsTotal,

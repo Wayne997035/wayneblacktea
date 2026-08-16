@@ -84,17 +84,18 @@ func TestRecall_EpisodicHandoff_NeutralizesForgedMarkers(t *testing.T) {
 	// produced through safeSessionHandoff, regardless of what any query
 	// happens to populate.
 	//
-	// "embedding" alone is NOT a valid discriminator here (round-4 PR #158
-	// security review, 二軍 finding): LatestHandoff's SELECT list never
-	// queries that column (internal/session/store.go), so db.SessionHandoff.
-	// Embedding is always its zero value on this path regardless of whether
-	// the serialization fix is in place — a raw-row leak on THIS code path
-	// would never actually carry embedding bytes, making that one assertion
-	// tautological. summary_text/embedding_provider/embedding_model/
-	// embedding_dim have no such caveat: db.SessionHandoff has no omitempty
-	// tag on any of them, so encoding/json always emits the key on a direct
-	// struct marshal regardless of the column's value — these are true
-	// structural-absence checks, not query-dependent ones.
+	// Checking summary_text/embedding_provider/embedding_model/embedding_dim
+	// (rather than the single field "embedding" an earlier version of this
+	// test checked) is not because "embedding" fails to discriminate — it
+	// does: db.SessionHandoff.Embedding has no omitempty tag, so a direct
+	// struct marshal always emits `"embedding":null` regardless of whether
+	// the query populated it, and round-5 (三軍) mutation testing confirmed a
+	// raw-row leak reproduces exactly that key (an earlier version of this
+	// comment claimed otherwise — that claim was wrong and has been removed,
+	// not just softened). These four keys are checked instead simply to
+	// spread the assertion across more of db.SessionHandoff's structurally-
+	// absent-from-handoffResource fields than a single key would, all
+	// sharing the same no-omitempty property "embedding" itself has.
 	for _, dbOnlyKey := range []string{"summary_text", "embedding_provider", "embedding_model", "embedding_dim"} {
 		if strings.Contains(raw, `"`+dbOnlyKey+`"`) {
 			t.Errorf("recall response leaks db.SessionHandoff-only key %q — the raw row escaped "+

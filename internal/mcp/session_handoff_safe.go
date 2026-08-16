@@ -29,11 +29,11 @@ import (
 // below, which is a visible, grep-able act instead of a silent omission.
 //
 // internal/mcp/session_handoff_scope_test.go enforces the other half of this
-// guarantee: *db.SessionHandoff (and the session store methods that return
-// it) may only appear in a short, reviewed whitelist of files — this one plus
-// the handful of existing call sites that already construct a
-// safeSessionHandoff or an equivalently-hardened view immediately after
-// obtaining the raw row.
+// guarantee mechanically. Its whitelist is keyed per function/type
+// declaration, not per file — read that test file's own doc comment for
+// exactly what it checks and what it knowingly does not (both have changed
+// across security review rounds and will keep changing; summarizing them
+// here would just create a second copy that goes stale on its own schedule).
 type safeSessionHandoff struct {
 	h *db.SessionHandoff
 }
