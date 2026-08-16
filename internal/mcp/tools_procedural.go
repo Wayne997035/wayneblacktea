@@ -290,6 +290,17 @@ func recallAtoms(ctx context.Context, s *Server, query string) []atom.Atom {
 
 // recallEpisodic retrieves the latest session handoff and filters by query.
 // Returns a slice so the JSON output is always an array.
+//
+// The returned element is a safeSessionHandoff (session_handoff_safe.go), not
+// the raw *db.SessionHandoff — PR #158 round-2 security review found this
+// branch returning the raw row verbatim (including the Embedding blob and
+// unfenced Intent/ContextSummary text with no defence against forged
+// boundary markers), reachable by ANY session via recall with no handoff_id
+// required. rawIntent/rawContextSummary are the type's designated escape
+// hatch for exactly this kind of internal, non-serializing comparison; the
+// value actually returned to the caller is the safe wrapper, so its JSON
+// encoding always goes through safeSessionHandoff.MarshalJSON's hardened
+// view, however it ends up nested in the response.
 func recallEpisodic(ctx context.Context, s *Server, query string) []any {
 	if s.session == nil {
 		return []any{}
@@ -299,11 +310,12 @@ func recallEpisodic(ctx context.Context, s *Server, query string) []any {
 		// ErrNotFound is normal when no handoff exists yet.
 		return []any{}
 	}
+	safe := newSafeSessionHandoff(h)
 	// Filter: only include if summary_text or intent contains the query.
 	qLower := strings.ToLower(query)
-	if strings.Contains(strings.ToLower(h.ContextSummary.String), qLower) ||
-		strings.Contains(strings.ToLower(h.Intent), qLower) {
-		return []any{h}
+	if strings.Contains(strings.ToLower(safe.rawContextSummary()), qLower) ||
+		strings.Contains(strings.ToLower(safe.rawIntent()), qLower) {
+		return []any{safe}
 	}
 	return []any{}
 }

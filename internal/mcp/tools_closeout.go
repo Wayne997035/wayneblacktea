@@ -7,22 +7,31 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 // closeoutReport is the JSON payload returned by closeout_session_check.
 type closeoutReport struct {
-	GeneratedAt          time.Time       `json:"generated_at"`
-	OpenTaskCount        int             `json:"open_task_count"`
-	StuckTasks           []stuckTaskInfo `json:"stuck_tasks,omitempty"`
-	PendingProposals     int             `json:"pending_proposals"`
-	HandoffSet           bool            `json:"handoff_set"`
-	HandoffSummary       string          `json:"handoff_summary,omitempty"`
-	CompletionCandidates int             `json:"completion_candidates"`
-	Actions              []string        `json:"next_actions"`
-	Clean                bool            `json:"clean"`
+	GeneratedAt      time.Time       `json:"generated_at"`
+	OpenTaskCount    int             `json:"open_task_count"`
+	StuckTasks       []stuckTaskInfo `json:"stuck_tasks,omitempty"`
+	PendingProposals int             `json:"pending_proposals"`
+	HandoffSet       bool            `json:"handoff_set"`
+	HandoffSummary   string          `json:"handoff_summary,omitempty"`
+	// HandoffSummaryNotice is set alongside HandoffSummary (never on its
+	// own) — round-4 PR #158 security review s-3-1: mark_next_action_done,
+	// the handoff resource, and recall's episodic branch all carry
+	// storedDataNotice in the same payload as their fenced handoff text,
+	// but closeout_session_check and analyze_agent_behavior's stale_handoff
+	// detection (tools_watchdog.go) used to carry only the fence with no
+	// notice — the same stored data got two different treatments depending
+	// on which of the five exit points read it. This field closes that gap
+	// for this exit point.
+	HandoffSummaryNotice string   `json:"handoff_summary_notice,omitempty"`
+	CompletionCandidates int      `json:"completion_candidates"`
+	Actions              []string `json:"next_actions"`
+	Clean                bool     `json:"clean"`
 }
 
 // stuckTaskInfo is a brief summary of an in_progress task older than 7 days.
@@ -120,13 +129,25 @@ func (s *Server) fillCloseoutProposals(ctx context.Context, report *closeoutRepo
 }
 
 // fillCloseoutHandoff checks whether a session handoff has been set.
+//
+// HandoffSummary goes through safeSessionHandoff.hardenedIntent(), not
+// sanitize.Notes(handoff.Intent) as before: sanitize.Notes strips control
+// characters and caps length but does not neutralise forged boundary
+// markers, so a poisoned Intent could still fake an escape from whatever
+// fence a reader expects around stored data (PR #158 chokepoint — same
+// threat class as recallEpisodic's episodic branch, tools_procedural.go).
+// hardenedIntent shares the exact clip+fence treatment
+// buildHardenedHandoffView gives Intent, so this tool and mark_next_action_
+// done/the handoff resource never disagree on what "hardened" means for the
+// same field.
 func (s *Server) fillCloseoutHandoff(ctx context.Context, report *closeoutReport) {
 	handoff, err := s.session.LatestHandoff(ctx)
 	if err != nil || handoff == nil {
 		return // ErrNotFound or real error: HandoffSet stays false (advisory).
 	}
 	report.HandoffSet = true
-	report.HandoffSummary = sanitize.Notes(handoff.Intent)
+	report.HandoffSummary = newSafeSessionHandoff(handoff).hardenedIntent()
+	report.HandoffSummaryNotice = storedDataNotice
 }
 
 // fillCloseoutCandidates counts pending completion candidates into the report.

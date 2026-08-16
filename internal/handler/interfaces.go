@@ -27,11 +27,25 @@ type proposalStore interface {
 // gtdStore covers the subset of gtd.Store used by handlers.
 type gtdStore interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
+	// ProjectsFiltered backs the `?status=` query param on GET /api/projects
+	// (ListProjects). Both backends implement this as part of gtd.StoreIface
+	// — see gtd.StoreIface.ProjectsFiltered's doc comment for the status
+	// vocabulary.
+	ProjectsFiltered(ctx context.Context, status string) ([]db.Project, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error)
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p gtd.CreateGoalParams) (*db.Goal, error)
 	CreateProject(ctx context.Context, p gtd.CreateProjectParams) (*db.Project, error)
 	Tasks(ctx context.Context, projectID *uuid.UUID) ([]db.Task, error)
+	// TasksFiltered backs the `?status=` query param on GET /api/tasks
+	// (ListTasks). Both backends already implement this as part of
+	// gtd.StoreIface for the list_tasks MCP tool (internal/mcp/tools_gtd.go),
+	// so exposing it here reuses that existing status-conditional query
+	// instead of hand-rolling a second one. Status "" or "active" →
+	// pending+in_progress (byte-identical to the old Tasks(ctx, nil) default,
+	// preserving the historical GET /api/tasks contract); "all" → every
+	// status; any other value → exact match.
+	TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Task, error)
 	// TasksByProjectAllStatuses backs the `?status=all` variant of
 	// GET /api/projects/:id/tasks (used by the project-detail UI to render
 	// the "completed" section). Default behaviour stays active-only.

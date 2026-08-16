@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/buildinfo"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
@@ -17,7 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// registerResources registers the 5 read-only MCP resources.
+// registerResources registers the 6 read-only MCP resources.
 // All handlers are workspace-scoped via s.workspaceID and NEVER accept
 // workspace identity from the URI or any request parameter.
 func (s *Server) registerResources(ms *server.MCPServer) {
@@ -78,6 +79,20 @@ func (s *Server) registerResources(ms *server.MCPServer) {
 			mcp.WithResourceDescription(handoffLatestResourceDescription),
 		),
 		s.handleResourceHandoffLatest,
+	)
+
+	ms.AddResource(
+		mcp.NewResource(
+			"wayneblacktea://system/build-info",
+			"Build Info",
+			mcp.WithResourceDescription(
+				"Which build of this server is running: version, commit, build date, MCP protocol "+
+					"version, and storage backend (postgres/sqlite). For identifying/debugging a deployment, "+
+					"never for security decisions — the MCP spec explicitly scopes implementation "+
+					"version/name to logging, display, and debugging.",
+			),
+		),
+		s.handleResourceBuildInfo,
 	)
 }
 
@@ -493,46 +508,79 @@ const (
 // (tools_context.go) so both readers of RepoName enforce the same bound.
 const handoffResourceRepoNameMaxRunes = 200
 
-// handoffResourceMaxNextActions bounds how many next_actions rows this
-// resource renders. Each row already carries three 500-rune-capped fields
-// (tools_session.go maxNextActionFieldLen) and set_session_handoff allows up
-// to maxNextActionItems=50 of them — rendering all 50 at once measured at
-// 80,687 bytes for a single resource read (PR #157 security review m-3), an
-// unbounded cost for a mechanism whose whole purpose is saving tokens.
-// NextActionsTotal is computed from the FULL decoded list before this cap is
-// applied (see handleResourceHandoffLatest), so a truncated response stays
-// visible (total > len(next_actions)) rather than looking identical to "there
-// were only N to begin with".
-//
-// This row cap alone is NOT a byte bound (PR #157 round-2 security review
-// m-R4): maxNextActionFieldLen=500 is a RUNE cap, and a CJK-heavy title/
-// command/expected measured 101,863 bytes for the pre-existing 50-row
-// scenario above — MORE than the 80,687-byte figure that originally
-// justified this row cap. handoffResourceNextActionFieldMaxRunes below closes
-// that gap by re-clipping each field at read time, the same way repo_name
-// already is.
-const handoffResourceMaxNextActions = 20
-
 // handoffResourceNextActionFieldMaxRunes re-clips each next_action's
-// title/command/expected at read time, on top of the write-time
-// maxNextActionFieldLen=500-rune cap (PR #157 round-2 security review m-R4).
-// The write-time cap alone under-bounds bytes for CJK content (500 runes × 3
-// bytes × 3 fields × handoffResourceMaxNextActions=20 rows, unclipped, can
-// still approach the pre-fix 101,863-byte worst case); at 200 runes the same
-// worst case stays well under the original 80,687-byte trigger value with
-// real headroom, while still leaving a usable amount of text per field for a
-// reader to act on (unlike clipping so hard that the field becomes useless,
-// which would just reproduce the "truncated with no way back" problem this
-// resource exists to solve).
-const handoffResourceNextActionFieldMaxRunes = 200
+// title/command/expected at read time against boundary-marker-stuffing
+// growth (clipSafe's neutralisation pass can grow a string before its final
+// clip — boundary_markers.go:75-77), the same defensive re-clip repo_name
+// already gets.
+//
+// It is deliberately set TO maxNextActionFieldLen (tools_session.go, the
+// write-time RUNE cap already enforced on every stored field) rather than an
+// independently-chosen smaller number — GTD 8abedb42, mirroring the fix
+// handoffResourceIntentMaxRunes above already applied to intent. The
+// pre-existing value here was 200: production measured 15 of 363 stored
+// next_action items (135 handoffs, Lead's read-only Aiven query, 2026-08-15)
+// with a title/command/expected between 200 and the write-time 500-rune cap
+// — title up to 320 chars/394 bytes, command up to 281 chars/281 bytes,
+// expected up to 218 chars/298 bytes — all silently losing their tail on
+// every read of this resource despite having cleared write-time validation.
+// At 500 runes (== the write-time cap), no legitimately-stored field value
+// can ever be truncated by this constant again, for the same structural
+// reason handoffResourceIntentMaxRunes cannot: any value that passed
+// validateNextActionFields' `len([]rune(f.value)) > maxNextActionFieldLen`
+// check already has ≤ maxNextActionFieldLen runes.
+//
+// This alone would reopen PR #157 round-2 security review m-R4 (CJK-heavy
+// content at the 500-rune cap measured 101,863 bytes for a 20-row render) if
+// paired with a fixed row count — it is not: handoffResourceNextActionsMaxBytes
+// below bounds the AGGREGATE bytes of the rendered array directly, dropping
+// whole trailing rows once the budget is spent, so a full-width field never
+// forces a smaller field elsewhere to be clipped, and the total can never
+// approach that 101,863-byte figure regardless of row count.
+const handoffResourceNextActionFieldMaxRunes = maxNextActionFieldLen
+
+// handoffResourceNextActionsMaxBytes bounds the aggregate JSON-encoded size
+// of the *rendered* next_actions array (GTD 8abedb42, decision 43c62703).
+//
+// The previous design (a handoffResourceMaxNextActions=20 row cap combined
+// with the 200-rune field cap replaced above) bounded bytes indirectly
+// through row-count × field-size arithmetic, which is what forced individual
+// fields to be clipped — see handoffResourceNextActionFieldMaxRunes' doc
+// comment for the production values that fix silently truncated. This
+// constant replaces that indirection: appendNextActionsWithinByteBudget
+// (below) tracks the running JSON-encoded size of the array being built and
+// stops BEFORE any row that would push the total over this budget, so every
+// row that IS rendered carries its complete write-time-validated content and
+// only whole trailing rows are ever dropped.
+//
+// Value: HALF of 80,687 bytes — the size PR #157 security review m-3
+// measured for rendering all 50 stored next_actions with no bound at all,
+// which that review judged too costly for a mechanism whose whole purpose is
+// saving tokens (the finding that originally motivated a row cap). Setting
+// the new aggregate budget AT that value would only just avoid reproducing
+// the exact cost already judged unacceptable; halving it keeps real headroom
+// below that rejected cost instead. The result remains far larger than any
+// production shape ever needs: the largest next_actions blob measured across
+// production (135 handoffs / 363 items, Lead's read-only Aiven query,
+// 2026-08-15) is 2,981 raw JSONB bytes (p99: 2,797 bytes) — over 13x smaller
+// than this budget — so real handoffs never lose a row to it.
+//
+// TestResourceHandoffLatest_NextActionsByteCapCJKWorstCase pins the
+// adversarial ceiling (total resource bytes must stay < 80,687);
+// TestResourceHandoffLatest_NextActionFieldNeverTruncatesLegitValue and
+// TestResourceHandoffLatest_MaxObservedHandoffNeverTruncates pin the
+// production-shape guarantee that no real handoff is ever truncated.
+const handoffResourceNextActionsMaxBytes = 80_687 / 2 // 40,343 bytes
 
 // handoffResource is the full, fenced view of the latest session handoff.
 //
 // Deliberately NOT a reuse of pendingHandoffView (tools_context.go): that
-// type is returned verbatim by set_session_handoff / mark_next_action_done
-// to echo the CALLER'S OWN just-written text back unfenced
-// (buildPendingHandoffView's doc comment), which is safe only because the
-// reader is the same turn that wrote it. This resource can be read by any
+// type is returned verbatim by set_session_handoff to echo the CALLER'S OWN
+// just-written text back unfenced (buildPendingHandoffView's doc comment),
+// which is safe only because the reader is the same turn that wrote it.
+// mark_next_action_done used to share that unfenced path; it no longer does
+// — it builds the hardened view (buildHardenedHandoffView, tools_session.go)
+// whose output this type's parity test pins byte-for-byte. This resource can be read by any
 // session, including one that has not written anything and has earned no
 // trust, so its free-text fields go through the same
 // clip+fence+neutralise treatment get_today_context's pending_handoff used
@@ -595,8 +643,9 @@ func (s *Server) handleResourceHandoffLatest(
 
 	view := buildPendingHandoffView(h)
 	id := h.ID
-	// Computed from the FULL decoded list, BEFORE the handoffResourceMaxNextActions
-	// truncation below — handoffResourceMaxNextActions doc comment.
+	// Computed from the FULL decoded list, BEFORE the byte-budget truncation
+	// below (appendNextActionsWithinByteBudget) — handoffResourceNextActionsMaxBytes
+	// doc comment.
 	nextActionsTotal := len(view.NextActions)
 	out := handoffResource{
 		HandoffPresent:   true,
@@ -608,9 +657,26 @@ func (s *Server) handleResourceHandoffLatest(
 		// clipSafe also bounds the field to handoffResourceRepoNameMaxRunes,
 		// which that const's doc comment covers.
 		RepoName: clipSafe(textValue(h.RepoName), handoffResourceRepoNameMaxRunes),
-		// Fenced, not merely clipped: this resource is the ONLY reader of the
-		// full text now that get_today_context's pending_handoff carries none
-		// of it (W3) — see the type doc comment above for the threat model.
+		// Fenced, not merely clipped: this text is attacker-influenced and is
+		// read by sessions other than the one that wrote it — see the type doc
+		// comment above for the threat model. get_today_context's
+		// pending_handoff no longer carries it at all (W3), and
+		// mark_next_action_done emits the hardened equivalent.
+		//
+		// This file does not claim to be the only reader that applies this
+		// treatment, and deliberately does not enumerate which other files do
+		// or how completely session_handoff_scope_test.go covers them — both
+		// of those go stale independently of any change made HERE (a prior
+		// version of this comment named recall as an un-hardened reader; that
+		// became false the moment tools_procedural.go was fixed. A later
+		// version claimed the scope test "mechanically enforces" that every
+		// reader is confined to a reviewed whitelist; that overstated the
+		// test's actual coverage at the time it was written — see that test
+		// file's own doc comment for what it does and does not catch, which is
+		// the only place this kind of claim can be kept in sync with the code
+		// enforcing it). Read session_handoff_scope_test.go directly for the
+		// current whitelist and its known gaps — not this comment, and not any
+		// other comment that tries to summarize it from a different file.
 		Intent:           clipAndFenceStoredContext(h.Intent, handoffResourceIntentMaxRunes),
 		ContextSummary:   clipAndFenceStoredContext(textValue(h.ContextSummary), handoffResourceSummaryMaxRunes),
 		NextActionsTotal: &nextActionsTotal,
@@ -618,24 +684,100 @@ func (s *Server) handleResourceHandoffLatest(
 	if h.CreatedAt.Valid {
 		out.CreatedAt = h.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
-	actions := view.NextActions
-	if len(actions) > handoffResourceMaxNextActions {
-		actions = actions[:handoffResourceMaxNextActions]
-	}
-	if len(actions) > 0 {
-		out.NextActions = make([]nextActionSummary, 0, len(actions))
-		for i := range actions {
-			a := &actions[i]
-			out.NextActions = append(out.NextActions, nextActionSummary{
-				Step:      a.Step,
-				Title:     clipSafe(a.Title, handoffResourceNextActionFieldMaxRunes),
-				Status:    string(a.Status),
-				Command:   clipSafe(a.Command, handoffResourceNextActionFieldMaxRunes),
-				Expected:  clipSafe(a.Expected, handoffResourceNextActionFieldMaxRunes),
-				RefTaskID: neutralizePtr(a.RefTaskID),
-			})
-		}
+	if len(view.NextActions) > 0 {
+		out.NextActions = appendNextActionsWithinByteBudget(view.NextActions, handoffResourceNextActionsMaxBytes)
 	}
 
+	return marshalResource(uri, out)
+}
+
+// appendNextActionsWithinByteBudget builds the rendered next_actions slice
+// for the handoff resource, stopping BEFORE any row whose addition would push
+// the JSON-encoded array over maxBytes — see handoffResourceNextActionsMaxBytes'
+// doc comment for why this replaced a fixed row count. Every included row
+// carries its full write-time-validated field content
+// (handoffResourceNextActionFieldMaxRunes only re-clips against
+// marker-stuffing growth, never a legitimately-stored value); only whole
+// trailing rows are ever dropped, never a partial field.
+//
+// totalBytes starts at 2 (the array's enclosing "[" and "]") and gains 1 per
+// row after the first (the joining comma) on top of that row's own encoded
+// size — this makes totalBytes track len(json.Marshal(result)) exactly (both
+// use compact, non-indented encoding — marshalResource / jsonText never
+// indent), so the returned slice's marshaled size can never exceed maxBytes.
+// TestAppendNextActionsWithinByteBudget_ByteAccountingIsExact pins this.
+func appendNextActionsWithinByteBudget(actions []session.NextAction, maxBytes int) []nextActionSummary {
+	out := make([]nextActionSummary, 0, len(actions))
+	totalBytes := 2 // "[" + "]"
+	for i := range actions {
+		a := &actions[i]
+		item := nextActionSummary{
+			Step:      a.Step,
+			Title:     clipSafe(a.Title, handoffResourceNextActionFieldMaxRunes),
+			Status:    string(a.Status),
+			Command:   clipSafe(a.Command, handoffResourceNextActionFieldMaxRunes),
+			Expected:  clipSafe(a.Expected, handoffResourceNextActionFieldMaxRunes),
+			RefTaskID: neutralizePtr(a.RefTaskID),
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			// nextActionSummary is a flat struct of strings/ints — this
+			// cannot fail in practice. Skip defensively rather than let one
+			// bad row corrupt the byte budget accounting for the rest.
+			slog.Warn("handoff resource: marshaling next_action for byte budget", "step", a.Step, "err", err)
+			continue
+		}
+		itemBytes := len(encoded)
+		if len(out) > 0 {
+			itemBytes++ // joining comma before this element
+		}
+		if totalBytes+itemBytes > maxBytes {
+			break // tail rows dropped; NextActionsTotal (the full decoded
+			// count, computed before this call) keeps the truncation visible.
+		}
+		totalBytes += itemBytes
+		out = append(out, item)
+	}
+	return out
+}
+
+// ─── wayneblacktea://system/build-info ────────────────────────────────────
+
+// buildInfoResource is the JSON shape for the build-info resource
+// (GTD 61838147). Deliberately limited to fields the MCP spec (2025-11-25
+// Implementation) scopes to "logging, display, and debugging" — never a DSN,
+// credential path, env value, or internal hostname (dispatch threat surface:
+// any MCP client can read this resource, so it must not leak deployment
+// secrets alongside build identity).
+type buildInfoResource struct {
+	GeneratedAt     string `json:"generated_at"`
+	Version         string `json:"version"`
+	Commit          string `json:"commit"`
+	BuildDate       string `json:"build_date"`
+	ProtocolVersion string `json:"protocol_version"`
+	Backend         string `json:"backend"`
+}
+
+func (s *Server) handleResourceBuildInfo(
+	_ context.Context,
+	_ mcp.ReadResourceRequest,
+) ([]mcp.ResourceContents, error) {
+	const uri = "wayneblacktea://system/build-info"
+
+	// Version/Commit/BuildDate read from buildinfo — the same package
+	// server.go's MCPServer() reads for serverInfo.version, so this resource
+	// and the initialize response can never independently drift (server.go's
+	// MCPServer doc comment). ProtocolVersion is mcp-go's own compiled-in
+	// LATEST_PROTOCOL_VERSION constant, not a value this server invented —
+	// it is the highest protocol version this build understands, regardless
+	// of which version an individual client negotiates down to.
+	out := buildInfoResource{
+		GeneratedAt:     s.now().UTC().Format(time.RFC3339),
+		Version:         buildinfo.Version,
+		Commit:          buildinfo.Commit,
+		BuildDate:       buildinfo.Date,
+		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		Backend:         s.backendKind(),
+	}
 	return marshalResource(uri, out)
 }

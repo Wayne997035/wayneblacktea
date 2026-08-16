@@ -141,9 +141,47 @@ func (h *GTDHandler) CreateGoal(c echo.Context) error {
 	return c.JSON(http.StatusCreated, goal)
 }
 
-// ListProjects returns all active projects.
+// listProjectsStatusEnum is the accepted vocabulary for GET /api/projects's
+// status query param: "" (unset) and "all" as sentinels, plus every value
+// gtd.ProjectStatus.IsValid() accepts. Built from the domain type's actual
+// constants rather than hand-copied literals so this can't silently drift
+// from gtd.ProjectStatus if a status is ever added/removed there. Derived
+// from what production data actually contains (active/archived/completed
+// measured directly against the DB), not just the two statuses a bug ticket
+// happened to mention — on_hold is a real ProjectStatus value even though no
+// row currently has it.
+var listProjectsStatusEnum = map[string]bool{
+	"":                                 true,
+	statusAll:                          true,
+	string(gtd.ProjectStatusActive):    true,
+	string(gtd.ProjectStatusCompleted): true,
+	string(gtd.ProjectStatusArchived):  true,
+	string(gtd.ProjectStatusOnHold):    true,
+}
+
+// ListProjects returns projects filtered by the status query param (default:
+// active, same as the historical contract).
+//
+// Query params:
+//
+//   - status unset or "active" → active only (unchanged default; existing
+//     callers that don't pass status see byte-identical results).
+//   - status=all → every status, so completed/archived/on_hold projects are
+//     included (this is what makes a completed project like wbt-core-mvp
+//     visible again).
+//   - status=completed|archived|on_hold → exact match.
+//   - any other value → 400 (previously there was no filter capability at
+//     all — ListActiveProjects always ran regardless of any query param — so
+//     an invalid value here is a new failure mode, not a regression: nothing
+//     that worked before now fails).
 func (h *GTDHandler) ListProjects(c echo.Context) error {
-	projects, err := h.store.ListActiveProjects(c.Request().Context())
+	status := c.QueryParam("status")
+	if !listProjectsStatusEnum[status] {
+		return c.JSON(http.StatusBadRequest, errResp(
+			"status must be one of: active, all, completed, archived, on_hold"))
+	}
+
+	projects, err := h.store.ProjectsFiltered(c.Request().Context(), status)
 	if err != nil {
 		c.Logger().Errorf("ListProjects: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -580,11 +618,57 @@ func updateTaskParamsFromRequest(req *updateTaskRequest) gtd.UpdateTaskParams {
 	}
 }
 
-// ListTasks returns all pending/in-progress tasks, optionally filtered by
-// branch_name or pr_url query parameters. Filter is applied Go-side after
-// fetching all tasks (personal-scale, low row count).
+// listTasksStatusEnum is the accepted vocabulary for GET /api/tasks's status
+// query param, mirroring the list_tasks MCP tool's mcp.Enum(...) constraint
+// (internal/mcp/tools_gtd.go registerGTDTools) so the HTTP and MCP surfaces
+// enforce the identical status contract. "" (param absent) is included so the
+// zero value of c.QueryParam("status") maps to the historical default
+// (pending + in_progress) instead of falling into the "unknown value" branch.
+var listTasksStatusEnum = map[string]bool{
+	"":                               true,
+	"active":                         true,
+	statusAll:                        true,
+	string(gtd.TaskStatusPending):    true,
+	string(gtd.TaskStatusInProgress): true,
+	string(gtd.TaskStatusCompleted):  true,
+	string(gtd.TaskStatusCancelled):  true,
+}
+
+// listTasksMaxRows caps the row count TasksFiltered's LIMIT clause requests
+// for GET /api/tasks. TaskFilter.Limit=0 would translate to a literal
+// `LIMIT 0` in both backends' SQL (zero rows), not "unbounded" — this mirrors
+// the 10000 cap gtd.Store.TasksForTimeline (and its SQLite twin) already use
+// for "no real limit, but the SQL LIMIT clause still needs a positive value"
+// personal-scale queries, rather than inventing a new magic number.
+const listTasksMaxRows = 10000
+
+// ListTasks returns tasks filtered by the status query param (default:
+// pending/in_progress, same as the historical contract), optionally further
+// filtered by branch_name or pr_url query parameters. The branch/pr_url
+// filter is applied Go-side after fetching (personal-scale, low row count).
+//
+// Query params:
+//
+//   - status unset or "active" → pending + in_progress (unchanged default;
+//     existing callers that don't pass status see byte-identical results).
+//   - status=all → every status, so completed/cancelled tasks are included.
+//     Mirrors the ?status=all contract already used by
+//     GET /api/projects/:id/tasks and the list_tasks MCP tool.
+//   - status=pending|in_progress|completed|cancelled → exact match.
+//   - any other value → 400 (previously silently ignored, which is the bug
+//     this fixes: a caller passing an unrecognised status believed it was
+//     filtering when the server silently returned the unfiltered default).
 func (h *GTDHandler) ListTasks(c echo.Context) error {
-	tasks, err := h.store.Tasks(c.Request().Context(), nil)
+	status := c.QueryParam("status")
+	if !listTasksStatusEnum[status] {
+		return c.JSON(http.StatusBadRequest, errResp(
+			"status must be one of: active, all, pending, in_progress, completed, cancelled"))
+	}
+
+	tasks, err := h.store.TasksFiltered(c.Request().Context(), gtd.TaskFilter{
+		Status: status,
+		Limit:  listTasksMaxRows,
+	})
 	if err != nil {
 		c.Logger().Errorf("ListTasks: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))

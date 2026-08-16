@@ -363,9 +363,12 @@ func TestHandleUpsertProjectArch_LegitCommitSHAAndSlugAccepted(t *testing.T) {
 // TestWrapUntrustedArchSnapshot_SlugAndLastCommitSHAMarkersNeutralised
 // simulates a snapshot already poisoned with a forged closing fence + a
 // directive addressed to the reading agent, planted in Slug and
-// LastCommitSHA (fields with no self-healing write path — see
-// mcpInstructions' forced patch-back list in server.go, which omits
-// last_commit_sha). The whole response must carry exactly one occurrence of
+// LastCommitSHA. This read-side neutralisation is defence-in-depth
+// independent of m-R11's write-side self-heal fix (internal/arch/store.go):
+// a row poisoned before this test's fixture is constructed still needs to be
+// safe to read back even though, on a real server, the very next
+// upsert_project_arch call for that slug would already have cleared
+// last_commit_sha. The whole response must carry exactly one occurrence of
 // the real closing marker (fenceArchSummary's own), proving neither injected
 // field forged a second fence boundary.
 //
@@ -454,10 +457,10 @@ func TestWrapUntrustedArchSnapshot_LegitSHAAndSlugByteForByte(t *testing.T) {
 // original m-R4 lesson — a rune cap under-bounds 3-byte CJK content). Slug
 // and LastCommitSHA are fed content that would already have bypassed the
 // NEW write-time length caps (simulating a row written before this PR
-// shipped — mcpInstructions' patch-back list doesn't cover last_commit_sha,
-// so such a row is never self-healing; slug's cap predates this PR but its
-// character allow-list doesn't, so a pre-existing row could still carry this
-// much raw text), well beyond maxSlugLen/maxLastCommitSHAReadRunes.
+// shipped, or — for last_commit_sha specifically — before m-R11's
+// unconditional-overwrite self-heal existed; slug's cap predates this PR but
+// its character allow-list doesn't, so a pre-existing row could still carry
+// this much raw text), well beyond maxSlugLen/maxLastCommitSHAReadRunes.
 //
 // designedByteBudget justification (R5 update: maxLastCommitSHAReadRunes
 // grew from 128 to 512 runes, M-R9): two clipped fields (maxSlugLen=128

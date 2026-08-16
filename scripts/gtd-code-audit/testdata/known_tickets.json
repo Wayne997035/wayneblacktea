@@ -1,0 +1,131 @@
+[
+  {
+    "id": "935c1574-b3ad-4e98-af3f-630af157cc89",
+    "status": "completed",
+    "title": "[wbt][PR#151 一軍 🟠 Major] decision.All unscoped fallback 對 assemble_context 並非 dead case — 註解宣稱與事實不符且無測試",
+    "description": "file:line — internal/contextpack/ports.go:44-51 與 internal/contextpack/retrieval.go:198-208 的 doc comment 宣稱「Every existing scoped caller (MCP assemble_context always sets at least one of the three) leaves this branch dead」。此宣稱為假。\n\nLead 已獨立驗證（非採信 agent）：internal/mcp/tools_contextpack.go:49-57，只有 objective 帶 mcp.Required()，repo_name / project_id / task_id 三者皆為 Optional 無 Required。對照組 tools_worksession.go:75 的 repo_name 確實有 mcp.Required()，可見這是 assemble_context 自身的設計而非疏漏。\n\n失敗情境：MCP client 只傳 objective 呼叫 assemble_context → RepoName 空、ProjectID 與 TaskID 皆 nil → 命中新增的 decision.All unscoped fallback → 回傳跨所有 repo 與 project 的最新決策，而該呼叫形狀在本 PR 之前回傳的是空集合。這是對已上線共用 API 的靜默行為變更，非只影響 CLI hook。\n\n一軍另已確認另一個 production caller assembleStartWorkContext（tools_worksession.go:260）確實安全：start_work 的 repo_name 是 Required 且 server 端於 tools_worksession.go:282 拒絕空值。\n\n非安全邊界問題：decision.Store.All 與 sqlite.DecisionStore.All 兩者皆有 workspace scoping，且本系統為單租戶。\n\n修法二選一，實作者需在報告中說明選擇理由：\nA. 修正兩處 doc comment 使其與事實相符，並新增測試驅動 handleAssembleContext 在三個 scope 欄位皆空時的行為，明確定義並鎖定該情況的預期輸出。\nB. 把 fallback 收窄成只作用於 CLI hook 自己的 request path，不動共用的 retrieveDecisions。\n\nacceptance：選定修法後，MUST 有測試涵蓋「三個 scope 欄位皆空的 assemble_context 呼叫」這條路徑，且該測試經 mutation 自證會紅；既有 scoped caller 的三條 retrieval_test 案例不得修改仍須全過；cd build 後 task check 0 issues。",
+    "created_at": "2026-08-04 10:59:35.840896+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "f9d101db-01d3-4796-8759-c2819e4e89e5",
+    "status": "completed",
+    "title": "[wbt][PR#151 三軍 🟠 Major] 三支 fail-soft helper 的錯誤分支零測試覆蓋",
+    "description": "三軍 testing-reality-checker 於 PR #151 commit 36010dd 判 🟠 Major。三支新增函式的錯誤分支完全沒有測試觸及：\n\n1. internal/cli/context_cmd.go:236 newHookPgxPool — happy path 僅由 golden parity 整合測試間接涵蓋；兩條錯誤分支（pgxpool.ParseConfig 失敗、storage.BuildTLSConfig 失敗）零覆蓋，直接與間接皆無。\n2. internal/cli/context_cmd.go:264 latestHandoffOrNil — 「沒有 handoff」分支（session.ErrNotFound 回 nil 不 warn）與「真實 DB 錯誤」分支（warn 後回 nil）從未被執行。所有觸及此函式的測試都先用 SetHandoff 塞了一筆 handoff，故只跑得到「有 handoff」那條。三軍評為最便宜可補的缺口。\n3. internal/cli/context_cmd.go:280 assembleSessionPack — happy path 間接涵蓋；err != nil 分支未測（其 doc comment 自承目前為防禦性、理論上不可達，嚴重度較低）。\n\n另 internal/cli/context_render.go:111 renderHandoffSection 無專屬單元測試，僅透過 renderSessionContext 的測試間接涵蓋（nil 與非 nil handoff 兩種情況有涵蓋），但 handoffFieldTruncateRunes 的截斷行為從未在該函式層級被斷言。\n\n三軍已確認無缺口者：validateReadOnlyPath、dsnReadOnly、verifyCurrentSchema、renderDecisionsSection、renderRelevantContextSection、renderDueReviewsSection 皆有直接專屬測試。\n\n三軍判斷這些皆為 fail-soft 或防禦性路徑（hook 降級為 nil 或 warn，不會 crash 也不洩漏資料），故非 Critical，且不與任何 engineer 宣稱矛盾（engineer 從未宣稱這幾支有測試）。\n\nacceptance：至少補齊 latestHandoffOrNil 的 ErrNotFound 與一般 DB error 兩條分支的單元測試（三軍點名為最便宜的缺口）；newHookPgxPool 兩條錯誤分支與 renderHandoffSection 的截斷斷言一併補齊；每條新測試 MUST 經 mutation 自證會紅；cd build 後 task check 0 issues。",
+    "created_at": "2026-08-04 10:59:54.653067+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "ef6150a0-1430-4657-b9be-4f2b7a569e6d",
+    "status": "completed",
+    "title": "[wbt][PR#151 二軍 🔴 Critical] untrusted-local-db 邊界標記可被 DB 內容偽造 — M-2 防護實質等於沒有",
+    "description": "branch: fix/a5a-sessionstart-dual-backend。file:line — internal/cli/context_render.go:97-98。\n\n問題：body 由 strings.Join(parts) 組成後直接包上固定字串的開頭與結尾標記，對 DB 來的文字零轉義、零過濾。二軍全 repo grep untrusted-local-db，只找到常數定義與兩個測試的 HasPrefix/HasSuffix 斷言，沒有任何一處剝除內容中的結束標記。\n\n攻擊步驟（二軍已實測各環節）：\n1. 攻擊者在公開 repo 根目錄放一份合法 SQLite。storage/factory.go:99 的預設路徑就是 ./wayneblacktea.db，無 DATABASE_URL 時 BackendFor 解析成 sqlite。\n2. schema_migrations 自行寫入 current version 與 dirty=0 即可通過閘門 —— 二軍實測三行 SQL 就過。該閘門是可用性控制，對偽造 DB 提供零防護。\n3. decisions 一列 Title 寫入含字面結束標記的 payload，例如換行後接結束標記、再接偽造的系統指令。itemFromDecision 的 500 rune 額度足夠容納。\n4. user clone 後在該目錄開 session，渲染出提前閉合的標記，後續 payload 落在邊界之外，對下游模型呈現為第一人稱指令。\n\n嚴重度依據：這是宣稱防了但可繞過的 False Security 狀態，severity-format 規定強制升 Critical。攻擊者可控文字總量約 15KB（contextpack 預算 12000 runes 加 handoff 兩欄各 500 加 due reviews 十筆各 200）。\n\njson.Marshal 對角括號的 HTML escape 是傳輸層編碼，解碼後原樣還原，不構成緩解。\n\n修法（二軍建議兩者都做，Lead 同意）：\nA. 每次執行產生 nonce，開頭與結尾標記都帶同一個隨機值，靜態 repo 內容無法預測，結構上不可偽造。\nB. 保底 sanitize：wrap 之前對 body 掃描並中和任何字面的開頭或結尾標記字串。\n\nacceptance：MUST 新增一個 payload 含字面結束標記的測試案例，斷言輸出中結束標記出現次數恰為一次；該測試 MUST 經 mutation 自證會紅（拿掉 sanitize 後必須失敗）。現有的 HasPrefix/HasSuffix 測試對此攻擊會全綠通過，故不得以既有測試充數。修完 MUST 回第二軍複查。cd build 後 task check 0 issues。",
+    "created_at": "2026-08-04 11:01:08.87926+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "791aff55-0bf1-490f-94b9-036317319ac5",
+    "status": "completed",
+    "title": "[wbt][PR#151 二軍 🟠 Major] OpenReadOnly 宣稱不建檔為假 — WAL side-car 會在不可信目錄留下 -wal 與 -shm",
+    "description": "branch: fix/a5a-sessionstart-dual-backend。file:line — internal/storage/sqlite/readonly.go:22-24 的 doc comment。\n\n二軍實測（probe，modernc.org/sqlite v1.50.0）：對 WAL 模式的 DB 用 file: 前綴加 mode=ro 開啟後，同目錄會出現 -shm 與 -wal 兩個檔，且 Close 之後仍留存。\n\n影響：每次 session start 都往攻擊者選定的目錄寫兩個檔，會污染被 clone 的 repo 的 git status；M-1 威脅模型宣稱的「hook 進程絕不寫入」這個不變式不成立。目錄若為唯讀則 open 直接失敗走 fail-soft，可接受。\n\n重要的反證（二軍獨立驗證，非推論）：兩個 side-car 檔的權限繼承主 DB 的 0600（probe 顯示主檔 chmod 0600 後兩個 side-car 皆為 owner-only），且 -wal 為 0 bytes 不含資料頁。所以 Lead 原本擔心的「OpenReadOnly 不做 chmod 是否會回退既有 Open 的 0600 保證」並不成立，非回歸。\n\n修法：\n1. 修正 doc，改為「不修改資料庫內容；SQLite 可能建立 0 byte 的 -wal 與 -shm side-car，其權限繼承主 DB」。不得繼續宣稱不建任何檔。\n2. 新增測試釘住 side-car 權限等於主檔權限，避免未來 umask 或 driver 變更導致靜默降級為 0644。\n\nacceptance：doc 與實際行為一致；side-car 權限測試存在且經 mutation 自證會紅；cd build 後 task check 0 issues。",
+    "created_at": "2026-08-04 11:01:24.232417+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "7610088f-0056-4704-ab4e-1deada0bf935",
+    "status": "in_progress",
+    "title": "[wbt][UI 資料錯誤] GET /api/projects 只回 active — 已完成專案 wbt-core-mvp(190 任務)全 UI 不可見",
+    "description": "internal/handler/gtd_handler.go:145-155 只回 active 專案。DB 是 active 2 / completed 1(wbt-core-mvp,190 任務、179 已完成),API 只回 2。實測點「已完成」tab → 顯示「沒有專案」,連「全部」tab 也看不到它。連帶讓 GTD 目標進度更錯 —— GtdPage 的 project→goal 對照表建在這份 active-only 清單上。acceptance: /api/projects 支援 status filter 並預設回全部(或前端明確傳 status);補測試斷言 completed 專案可被取得。risk: 已完成的專案等於從系統消失,歷史查不到。",
+    "created_at": "2026-08-08 10:36:14.80517+00",
+    "fixture_category": "positive_verified",
+    "_note": "Moved from negative_verified during GTD fix/gtd-audit-tests-and-gate: commit 582741d ('fix: GET /api/projects now applies the status query param instead of ignoring it') already implements this — ListProjects validates ?status against listProjectsStatusEnum and calls store.ProjectsFiltered, with dedicated PG (store_postgres_projects_filtered_test.go) and SQLite (gtd_projects_filtered_test.go) tests. That commit predates 9ac008a (this tool's own first commit), so the negative_verified ground truth was already stale the moment this fixture was frozen — not a case of the repo advancing past a correct snapshot. GTD status here is still 'in_progress', which is itself the exact miss this tool exists to catch."
+  },
+  {
+    "id": "48a6e2da-43ee-4f58-8dd9-2a8b2c6e713c",
+    "status": "completed",
+    "title": "[wbt][PR#157 二軍 🔴 Critical] 新 handoff resource 的 repo_name 未中性化 — 可從圍欄外注入,實測單一 payload 出現 3 個結束標記",
+    "description": "internal/mcp/resources.go:503 —— repo_name 只做 textValue(),沒有 neutralize / clip / fence。攻擊者寫入的真實 `=== END STORED CONTEXT ===` 加重開標記在 JSON 中會序列化於 intent 之前,實測單一 payload 出現 3 個結束標記(設計上限 2),注入文字落在所有合法圍欄之外 = 圍欄逃逸。\n\n二軍 runtime 判定 bypass-possible,已用 resources/list 驗證該 resource 真的 over-the-wire 可達,不是理論風險。\n\n同型缺陷在 internal/mcp/tools_context.go:316 為 pre-existing —— **兩處都要修**,只修新的那處等於留著同一條路。\n\n同一行還有第二個問題(見 🟠 單):repo_name 寫端讀端皆無長度上限,實測接受 200,000 rune、resource 回傳 200,242 bytes。兩者可用同一個修法一起關掉。\n\nacceptance:\n- repo_name 走與 intent/context_summary 相同的 clip + fence + neutralise 路徑\n- 回歸測試:塞入含真實結束標記的 repo_name,斷言輸出中結束標記數量不超過設計上限,且注入文字落在圍欄內\n- tools_context.go:316 同款修好,有測試\n- PoC 步驟見 .reviews/pr157/r1-security-engineer.md",
+    "created_at": "2026-08-15 02:53:00.208999+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "504715a3-ef76-40e0-8d54-57b2c47114ca",
+    "status": "completed",
+    "title": "[wbt][PR#157 二軍 🟠 Major] include_file_map 預設 false 讓 upsert_project_arch 變成盲目破壞性覆寫 — 雙後端實測 file_map 3 筆歸零",
+    "description": "internal/mcp/tools_arch.go:47-51。W2 把 file_map 改成 opt-in 之後,agent 用 get_project_arch 讀回來的 snapshot 不含 file_map;若它照著這份內容呼叫 upsert_project_arch(這是核心協定明載的流程:讀 3+ 個 internal/ 檔就要 upsert),就會把既有 file_map 整個寫成空。\n\n二軍雙後端實跑驗證(真 SQLite + pgvector testcontainer),file_map 3 筆 → 0 筆,parity 一致 —— 兩個後端都會掉資料。\n\n這是本 sprint 的設計決策(file_map 改 opt-in)引入的**資料流失**風險,不是既有缺陷。Lead 與 SA 都沒預見到讀寫兩端的耦合。\n\n可能修法方向(未定案,實作前要先定):upsert 改成 file_map 欄位缺席時保留既有值(patch 語意而非 replace 語意)、或 get 回傳一個 file_map_omitted 旗標讓寫端知道自己拿的是殘缺快照、或 upsert 要求顯式帶 file_map 才動它。\n\nacceptance:\n- get → upsert 的往返不得使 file_map 歸零,雙後端都有測試涵蓋\n- 該測試經 mutation 自證會紅\n- 若採 patch 語意,要能區分「沒帶 = 不動」與「明確帶空 = 清空」",
+    "created_at": "2026-08-15 02:53:10.981714+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "ece289a7-767f-4d48-afa3-15719a095c03",
+    "status": "completed",
+    "title": "[wbt][PR#157 二軍 🟠 Major] 新 resource 的 next_actions 既無 fence 也無 stored_data_notice — 相對 PR 前是退步",
+    "description": "internal/mcp/resources.go:462-476。本 repo 記錄的契約是「fence 或 stored_data_notice 二選一」,新 resource 的 next_actions 兩者皆無。\n\n相對 PR 前是**退步**:原本 get_today_context 的 next_actions 是 120 rune × 6 筆且有 notice 罩著;新 resource 是 500 rune × 50 筆且完全沒有。可注入面積放大約 35 倍,防護反而拿掉。\n\nacceptance:\n- next_actions 補上 fence 或 stored_data_notice(依 repo 既有契約擇一,與其他欄位一致)\n- 回歸測試斷言該欄位的注入內容無法逃出防護\n- 檢查同一個 resource 內是否還有其他欄位漏掉同款防護",
+    "created_at": "2026-08-15 02:53:18.746623+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "e9af551f-15d4-4f97-894f-95405ddee48f",
+    "status": "completed",
+    "title": "[wbt][PR#157 二軍 🟠 Major] next_actions.title 是唯一沒過 checkCommandField 的字串欄位 — 實測多行注入原樣存活",
+    "description": "internal/mcp/tools_session.go:144。同一結構的 command 與 expected 兩個欄位都有過 checkCommandField,唯獨 title 沒有。二軍實測多行注入文字原樣存活進 DB。\n\n這是寫端的缺口(與另一張 resource 讀端防護的單互補 —— 讀端補了不代表寫端可以放行,兩層都該守)。\n\nacceptance:\n- next_actions.title 比照 command / expected 過同一道 checkCommandField\n- 測試涵蓋多行注入被攔\n- 順帶盤查同結構是否還有第三個漏掉的字串欄位,有就一起補",
+    "created_at": "2026-08-15 02:53:24.551731+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "8668d503-6df0-4e19-ab97-4740e7c7a3d2",
+    "status": "pending",
+    "title": "[wbt][PR#157 二軍 🟡 Minor] 圍欄中性化擋不住近似標記 — 6 種變體(零寬/NBSP/全形/大小寫/空白)實測全數穿過",
+    "description": "branch: feature/8-15-mcp-token-diet-v2。internal/mcp/boundary_markers.go:104。\n\n二軍實測 6 種近似標記變體(zero-width 字元、NBSP、全形、大小寫變化、空白變體)全部原字不動地穿過中性化函式。\n\n**這是既有設計極限,本 PR 沒有削弱它** —— 但本 PR 擴大了它要保護的面(新增第一個承載 raw free text 的 resource),所以同一個極限現在罩著更多內容。\n\n不擋 merge,但要記錄:中性化目前只認完全一致的字面標記。若要提升,方向是正規化後再比對(Unicode NFKC + 去零寬 + 摺疊空白 + 大小寫),但要注意過度正規化會誤傷正常內容。\n\nacceptance:\n- 決定是否要把中性化升級成正規化後比對;若決定不做,要在 boundary_markers.go 留一行說明這個已知極限與為何接受",
+    "created_at": "2026-08-15 02:54:08.181526+00",
+    "fixture_category": "positive_claimed_by_dispatch"
+  },
+  {
+    "id": "6f306618-7013-4afe-bbbf-17429347f9d8",
+    "status": "pending",
+    "title": "[wbt][PR#157 二軍 🟡 Minor] discord post() 無 nil-receiver guard — 整個性質靠單一 call site 撐住,sibling notion.Client 是在 receiver 層防的",
+    "description": "branch: feature/8-15-mcp-token-diet-v2。internal/discord/client.go:70。\n\n二軍確認 W6 的修法正確、且沒有把 crash 換成靜默失效。但 `post()` 本身沒有 nil-receiver guard,實測直接呼叫仍會 panic —— 也就是說「不 panic」這個性質完全靠 `cmd/server/main.go:952` 這**單一** call site 的裝箱防護撐住。\n\n對照組:同 repo 的 notion.Client 是在 **receiver 層**防的,不依賴呼叫端記得。兩個 optional dependency 用了兩套不一致的防法。\n\n不擋 merge(目前只有一個 call site,防線成立),但這是「會被遺忘的形狀」—— 未來多一個 call site 就會重演 2026-07-21 那次 SIGSEGV。\n\nacceptance:\n- post() 加 nil-receiver guard,或明確記錄為何這裡選擇 call-site 防護而 notion 選 receiver 防護\n- 若加 guard,要有測試且經 mutation 自證",
+    "created_at": "2026-08-15 02:54:18.165462+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "48bf052d-3401-40d7-a7f8-c26767d46966",
+    "status": "pending",
+    "title": "[wbt][PR#157 二軍 🟡 Minor] 新 resource 無總量上限(全合法欄位實測 80,687 bytes),且 next_actions_total 永遠等於陣列長度、無法表達截斷",
+    "description": "branch: feature/8-15-mcp-token-diet-v2。internal/mcp/resources.go:495。\n\n兩個相關缺口:\n一、resource 有各欄位的 cap,但沒有**總量**上限。二軍用全部合法欄位(不觸發任何單欄 cap)實測回傳 80,687 bytes。對一個「為了省 token 才存在」的機制來說,這個上界是諷刺的。\n二、`next_actions_total` 目前恆等於實際回傳的陣列長度,所以當 next_actions 被截斷時,消費者**無從得知**還有更多 —— 這個欄位失去它在 get_today_context 裡原本的職責(告訴你有多少、即使沒全給)。\n\nacceptance:\n- resource 加總量上限,超過時明確標示已截斷\n- next_actions_total 改為回報**未截斷前**的真實筆數,並有測試斷言「截斷時 total > len(array)」\n- 兩者都有測試釘住",
+    "created_at": "2026-08-15 02:54:27.451873+00",
+    "fixture_category": "positive_claimed_by_dispatch"
+  },
+  {
+    "id": "56e7152d-2fcc-456c-aef3-f4e182bbb635",
+    "status": "pending",
+    "title": "[wbt][PR#157 二軍 🔵 彙整] 三則 Suggestion:DSN 繞過連線預算 / boolArg 不吃字串化 bool / DB 錯誤原文回 client",
+    "description": "branch: 待開。PR #157 二軍 round 1 的 🔵 Suggestion 彙整,皆不擋 merge。明細見 .reviews/pr157/r1-security-engineer.md。\n\n一、`internal/storage/factory.go:390` —— DSN 可以繞過連線預算。W7 剛把 MaxConns 集中成具名常數並加了 ratchet 測試,但若連線字串本身帶 pool 參數,那條不變式就被繞過。要確認 DSN 解析路徑是否會覆寫常數,若會就要一起納入 ratchet。\n\n二、`internal/mcp/server.go:493` —— `boolArg` 不接受字串化的 bool(`\"true\"` / `\"false\"`)。W2 新加的 `include_file_map` 正是 bool 參數,若某些 MCP client 送字串化布林,會靜默當成 false —— 那會直接觸發本輪那張 file_map 資料流失的單。值得一併查。\n\n三、`internal/mcp/resources.go:490` —— DB 錯誤原文直接回給 client,可能洩漏 schema / 連線細節。\n\nacceptance:三則各自判定「修」或「記錄為接受」,不得默默略過。第二則與 file_map 資料流失單有關聯,優先。",
+    "created_at": "2026-08-15 02:54:38.072055+00",
+    "fixture_category": "positive_claimed_by_dispatch"
+  },
+  {
+    "id": "5d29b5d1-040f-44c0-98bf-b217db9a62d1",
+    "status": "pending",
+    "title": "[wbt][PR#157 一軍 🟡 Minor] task lint 的 PKGS 結構性排除 cmd/server/... — run() 複雜度 23、wireScheduler() 33 完全沒有 CI 信號",
+    "description": "branch: 待開。build/Taskfile.yml:227。\n\n`task lint` 的 `PKGS` 變數把 `cmd/server/...` 排除在外(因為 web/dist embed 依賴),導致 `cmd/server/main.go` 裡的 `run()`(gocyclo 複雜度 23)與 `wireScheduler()`(33)遠超 gocyclo>15 門檻卻**完全沒有 CI 信號**。\n\n一軍確認:base commit 48448bf 上複雜度完全相同,**是既有問題、非本 PR 造成**,W6 的一行改動也沒有惡化它。\n\n但兩個後果要記:\n一、PR #157 body 宣稱「task lint → 0 issues(完整 linter 集)」——這句話只在**被排除後的 scope 內**成立,措辭過強。\n二、本 PR 新增的 `wireDiscordSender` helper 正好落在這個盲區裡,等於它的複雜度永遠不會被 CI 看到。\n\n這與同輪發現的另一個 lint 盲點是**不同**問題:那個是「從 repo root 跑 golangci-lint 找不到 build/.golangci.yml 會靜默降級」,這個是「即使正確跑了,PKGS 也把 cmd/server 排掉」。兩層獨立的假綠。\n\nacceptance:\n- 決定 cmd/server 要納入 lint(需解 web/dist embed 依賴)還是明確記錄為接受的盲區\n- 若納入,run() 與 wireScheduler() 的既有複雜度要一併處置(拆分或加豁免註解)\n- 兩個 lint 盲點都應在 Taskfile 或 CI 設定裡留下可被搜到的說明",
+    "created_at": "2026-08-15 02:56:09.115786+00",
+    "fixture_category": "positive_claimed_by_dispatch"
+  },
+  {
+    "id": "6545ee3f-6977-48a1-9b21-2bce3d9335bd",
+    "status": "completed",
+    "title": "[wbt][PR#157 三軍 🔴 Critical] PR body 的 get_project_arch「8,300→255 B(−96.9%)」不可重現,真值約 3,302→1,140 B(−65.5%)",
+    "description": "branch: feature/8-15-mcp-token-diet-v2。\n\nPR #157 headline 表格宣稱 `get_project_arch` 預設路徑 8,300 B → 255 B(−96.9%)。三軍判定**無法重現**,並用兩個獨立來源反證:\n\n一、`_project/.claude/graph/mcp-probe.json` —— PR 前一天在**完全相同的 base commit 48448bf** 用 live curl 實測,記錄 get_project_arch = **3,170 chars**,不是 8,300。\n二、取生產 DB 真實 row(18 筆 file_map,read-only psql 連 Aiven)餵進未修改的 handler:**3,302 B → 1,140 B,約 −65.5%**。\n\n根因:產出 8,300/255 的 `zz_measure_test.go` **從未進 commit**(`git log --all` 確認全 repo 不存在)。Lead 當初指示「鷹架量完刪掉、數字寫進報告即可」—— 只考慮到「鷹架不該進 repo」,沒考慮到**數字失去可重跑來源就等於沒有出處**。committed fixture 是 40 筆(tools_arch_test.go:92-96),兩種 fixture 都產不出 8,300/255。\n\n**要修的不只是數字,是產生數字的方式**:進 PR body 的量測值 MUST 來自 committed、可重跑的測試。\n\nacceptance:\n- PR body 該列改成真值,或改為引用一支 committed 測試的輸出\n- 該測試要能被任何人重跑並得到同一組數字\n- 順帶檢查同表其他列的出處(三軍已確認其餘各列 bit-for-bit 可重現,只有這列有問題)",
+    "created_at": "2026-08-15 03:03:08.195445+00",
+    "fixture_category": "positive_verified"
+  },
+  {
+    "id": "1652e4d6-c972-48c6-9c4a-d4097928229f",
+    "status": "pending",
+    "title": "[wbt][PR#157 三軍 🟡 Minor] 派工單寫的「80-entry fixture」與 repo 不符,committed fixture 實為 40 筆",
+    "description": "branch: feature/8-15-mcp-token-diet-v2。tools_arch_test.go:92-96。\n\nLead 的三軍派工單裡引用 engineer 回報的「80-entry file_map fixture」,實際 committed fixture 是 **40 筆**。三軍確認這不影響它的 🔴 判定(兩種 fixture 大小都產不出 8,300/255),但它是同一條線上的第二個對不上的數字。\n\n這條的價值在於它指出一個模式:**engineer 回報裡的數字被 Lead 原樣轉抄進下游派工單,沒有一道 gate 會去對照 repo 現況。** 三軍是唯一會查證的一軍,而它排在最後。\n\nacceptance:\n- fixture 筆數在報告/PR body 中更正為實際值\n- 併入上一張 🔴 單一起處理(同一個「數字沒有可查證來源」根因)",
+    "created_at": "2026-08-15 03:03:14.192273+00",
+    "fixture_category": "positive_claimed_by_dispatch"
+  }
+]

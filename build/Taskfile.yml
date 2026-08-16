@@ -119,12 +119,26 @@ tasks:
     dir: ../web
 
   build-server:
-    desc: "Build REST API server binary to bin/"
+    desc: "Build REST API server binary to bin/, with local build identity (commit/date) injected into internal/buildinfo — GTD 61838147"
     deps:
       - go-cache
+    vars:
+      BUILD_COMMIT:
+        sh: git rev-parse --short HEAD
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
     cmds:
       - mkdir -p bin
-      - go build -o bin/wayneblacktea-server ./cmd/server/
+      # Version stays the "dev" sentinel (internal/buildinfo's own default —
+      # only goreleaser tagged releases set a real version, matching the
+      # existing cmd/wbt convention). Commit/Date ARE injected here so a
+      # locally-built server can still answer "which commit is this" via
+      # wayneblacktea://system/build-info, without pretending to be a
+      # release.
+      - >-
+        go build -ldflags "-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit={{.BUILD_COMMIT}}
+        -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date={{.BUILD_DATE}}"
+        -o bin/wayneblacktea-server ./cmd/server/
     dir: ..
 
   build-doctor:
@@ -238,6 +252,7 @@ tasks:
     desc: "Run unit tests (-short, no Docker, no race detector — fast path)"
     deps:
       - go-cache
+      - py-test
     cmds:
       # -short skips testcontainers-based integration tests that require Docker.
       # No -race: mcp + sqlite packages are goroutine-heavy; race adds 5-10× overhead
@@ -266,6 +281,12 @@ tasks:
     desc: "Create workspace-local Go build cache for sandboxed agent runs"
     cmds:
       - mkdir -p {{.GO_BUILD_CACHE}}
+    dir: ..
+
+  py-test:
+    desc: "Run scripts/gtd-code-audit's Python unit test suite. Deliberately unittest (stdlib), not pytest — this repo's sandboxed agent runs don't have pytest installed, and this package has zero third-party deps by design (see its README's threat model)."
+    cmds:
+      - python3 -m unittest discover -s scripts/gtd-code-audit -p 'test_*.py'
     dir: ..
 
   test-integration:

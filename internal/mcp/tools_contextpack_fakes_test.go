@@ -50,6 +50,10 @@ type noopGTDStore struct{}
 var _ gtd.StoreIface = noopGTDStore{}
 
 func (noopGTDStore) ListActiveProjects(context.Context) ([]db.Project, error) { return nil, nil }
+func (noopGTDStore) ProjectsFiltered(context.Context, string) ([]db.Project, error) {
+	return nil, nil
+}
+
 func (noopGTDStore) GetProjectByID(context.Context, uuid.UUID) (*db.Project, error) {
 	return nil, gtd.ErrNotFound
 }

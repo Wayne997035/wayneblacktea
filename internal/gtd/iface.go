@@ -19,6 +19,15 @@ import (
 // unit-of-work design is settled (Phase C+).
 type StoreIface interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
+	// ProjectsFiltered backs the `?status=` query param on GET /api/projects
+	// (ListProjects). Status "" or "active" → active only (byte-identical to
+	// ListActiveProjects, preserving the historical GET /api/projects
+	// default); "all" → every status regardless of value; any other value →
+	// exact match against a ProjectStatus (active/completed/archived/
+	// on_hold). Callers MUST validate status against an allowlist before
+	// calling — mirrors TasksFiltered's contract of not rejecting
+	// unrecognised values itself.
+	ProjectsFiltered(ctx context.Context, status string) ([]db.Project, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error)
 	ProjectByName(ctx context.Context, name string) (*db.Project, error)
 	// ProjectsByRepoName returns every project whose `repo_name` column matches

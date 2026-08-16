@@ -27,12 +27,23 @@ import (
 // ---- fake store implementations ----
 
 type fakeGTDStore struct {
-	goals                    []db.Goal
-	projects                 []db.Project
-	tasks                    []db.Task
-	allStatusTasks           []db.Task
-	allStatusCalls           int
-	tasksCalls               int
+	goals          []db.Goal
+	projects       []db.Project
+	tasks          []db.Task
+	allStatusTasks []db.Task
+	allStatusCalls int
+	tasksCalls     int
+	// filteredCalls/capturedFilter back TasksFiltered (GET /api/tasks's
+	// ?status= query param, GTD-fix ListTasks). capturedFilter records the
+	// last gtd.TaskFilter passed in, so tests can assert the handler actually
+	// forwarded the parsed status rather than merely returning 200.
+	filteredCalls  int
+	capturedFilter *gtd.TaskFilter
+	// projectsFilteredCalls/capturedProjectsStatus back ProjectsFiltered
+	// (GET /api/projects's ?status= query param, ListProjects). Mirrors the
+	// filteredCalls/capturedFilter pair above for tasks.
+	projectsFilteredCalls    int
+	capturedProjectsStatus   *string
 	createdGoal              *db.Goal
 	createdProj              *db.Project
 	createdTask              *db.Task
@@ -60,6 +71,12 @@ func (f *fakeGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) {
 }
 
 func (f *fakeGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) {
+	return f.projects, f.err
+}
+
+func (f *fakeGTDStore) ProjectsFiltered(_ context.Context, status string) ([]db.Project, error) {
+	f.projectsFilteredCalls++
+	f.capturedProjectsStatus = &status
 	return f.projects, f.err
 }
 
@@ -91,6 +108,12 @@ func (f *fakeGTDStore) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error)
 func (f *fakeGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]db.Task, error) {
 	f.allStatusCalls++
 	return f.allStatusTasks, f.err
+}
+
+func (f *fakeGTDStore) TasksFiltered(_ context.Context, filter gtd.TaskFilter) ([]db.Task, error) {
+	f.filteredCalls++
+	f.capturedFilter = &filter
+	return f.tasks, f.err
 }
 
 func (f *fakeGTDStore) PullForwardTasks(_ context.Context, _ time.Time) ([]db.Task, error) {
@@ -298,27 +321,134 @@ func TestGTDHandler_ListGoals_NilSliceReturnsEmptyArrayNotNull(t *testing.T) {
 	}
 }
 
+// TestGTDHandler_ListProjects verifies that ListProjects returns [] (not
+// null) when the store returns a nil slice, propagates store errors as 500,
+// and — GTD-fix gtd-list-api-filters — reads the status query param instead
+// of always calling ListActiveProjects: valid values are forwarded verbatim
+// to ProjectsFiltered (asserted via capturedProjectsStatus), unset preserves
+// the historical active-only default, and unrecognised values are rejected
+// with 400 (previously there was no filter capability at all, so a bad value
+// silently returned the unfiltered active set — the bug this fixes: a
+// completed project like wbt-core-mvp was permanently invisible via this
+// endpoint no matter what a caller passed).
 func TestGTDHandler_ListProjects(t *testing.T) {
 	projID := uuid.New()
 	cases := []struct {
-		name     string
-		store    *fakeGTDStore
-		wantCode int
+		name                  string
+		query                 string
+		store                 *fakeGTDStore
+		wantCode              int
+		wantExactBody         string
+		wantProjFilteredCalls int    // -1 = don't check
+		wantProjStatusFwd     string // asserted against capturedProjectsStatus; only checked when wantProjFilteredCalls > 0
 	}{
 		{
-			name:     "returns active projects",
-			store:    &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
-			wantCode: http.StatusOK,
+			name:                  "returns active projects",
+			query:                 "",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "",
 		},
 		{
-			name:     "store error → 500",
-			store:    &fakeGTDStore{err: errors.New("db down")},
-			wantCode: http.StatusInternalServerError,
+			name:                  "store error → 500",
+			query:                 "",
+			store:                 &fakeGTDStore{err: errors.New("db down")},
+			wantCode:              http.StatusInternalServerError,
+			wantProjFilteredCalls: 1,
 		},
 		{
-			name:     "empty list → 200 with empty array",
-			store:    &fakeGTDStore{projects: []db.Project{}},
-			wantCode: http.StatusOK,
+			name:                  "empty list → 200 with empty array",
+			query:                 "",
+			store:                 &fakeGTDStore{projects: []db.Project{}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+		},
+		{
+			name:                  "status=active → forwarded, 200",
+			query:                 "?status=active",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "active",
+		},
+		{
+			// Core regression case: previously ListProjects always called
+			// ListActiveProjects regardless of query, so a completed project
+			// (e.g. wbt-core-mvp) never reached the caller through any query.
+			name:                  "status=all → forwarded to ProjectsFiltered (opts into every status)",
+			query:                 "?status=all",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "all",
+		},
+		{
+			name:                  "status=completed → exact match forwarded",
+			query:                 "?status=completed",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "completed",
+		},
+		{
+			// archived is a real gtd.ProjectStatus value confirmed present in
+			// production (1 row measured directly against the DB), not just
+			// the active/completed pair the original ticket mentioned — the
+			// whitelist MUST include it or a real status becomes "invalid".
+			name:                  "status=archived → exact match forwarded",
+			query:                 "?status=archived",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "archived",
+		},
+		{
+			name:                  "status=on_hold → exact match forwarded",
+			query:                 "?status=on_hold",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "on_hold",
+		},
+		{
+			// Closes the empty-list-contract gap on the filtered branch
+			// itself (same class of case the review round added to
+			// TestGTDHandler_ListTasks): a status filter that legitimately
+			// matches zero rows must still hit the nil-guard, not just the
+			// unfiltered default branch.
+			name:                  "status=archived + nil result → [] (filtered branch honours empty-list contract)",
+			query:                 "?status=archived",
+			store:                 &fakeGTDStore{},
+			wantCode:              http.StatusOK,
+			wantExactBody:         "[]",
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "archived",
+		},
+		{
+			// Unrecognised status MUST fail loudly (400), matching ListTasks'
+			// contract, not silently fall back to active-only.
+			name:                  "status=bogus → 400, store never called",
+			query:                 "?status=bogus",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusBadRequest,
+			wantProjFilteredCalls: 0,
+		},
+		{
+			// Enum membership is case-sensitive, matching ListTasks' contract.
+			name:                  "status=Active (wrong case) → 400",
+			query:                 "?status=Active",
+			store:                 &fakeGTDStore{},
+			wantCode:              http.StatusBadRequest,
+			wantProjFilteredCalls: 0,
+		},
+		{
+			name:                  "status= (empty value) → treated as unset default",
+			query:                 "?status=",
+			store:                 &fakeGTDStore{projects: []db.Project{{ID: projID, Title: "Ship it"}}},
+			wantCode:              http.StatusOK,
+			wantProjFilteredCalls: 1,
+			wantProjStatusFwd:     "",
 		},
 	}
 
@@ -327,11 +457,47 @@ func TestGTDHandler_ListProjects(t *testing.T) {
 			e := newEcho()
 			h := handler.NewGTDHandler(tc.store)
 			e.GET("/api/projects", h.ListProjects)
-			rec := performRequest(e, http.MethodGet, "/api/projects", "")
+			rec := performRequest(e, http.MethodGet, "/api/projects"+tc.query, "")
 			if rec.Code != tc.wantCode {
-				t.Errorf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+				t.Fatalf("got status %d, want %d (body: %s)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.wantExactBody != "" {
+				if got := strings.TrimSpace(rec.Body.String()); got != tc.wantExactBody {
+					t.Errorf("body: got %q, want %q", got, tc.wantExactBody)
+				}
+			}
+			if tc.store.projectsFilteredCalls != tc.wantProjFilteredCalls {
+				t.Errorf("ProjectsFiltered calls: got %d, want %d", tc.store.projectsFilteredCalls, tc.wantProjFilteredCalls)
+			}
+			if tc.wantProjFilteredCalls > 0 {
+				if tc.store.capturedProjectsStatus == nil {
+					t.Fatal("capturedProjectsStatus is nil despite ProjectsFiltered being called")
+				}
+				if *tc.store.capturedProjectsStatus != tc.wantProjStatusFwd {
+					t.Errorf("capturedProjectsStatus = %q, want %q", *tc.store.capturedProjectsStatus, tc.wantProjStatusFwd)
+				}
 			}
 		})
+	}
+}
+
+// TestGTDHandler_ListProjects_InvalidStatusMessage locks the exact 400 body
+// for an unrecognised status value, matching ListTasks' error-message style.
+func TestGTDHandler_ListProjects_InvalidStatusMessage(t *testing.T) {
+	e := newEcho()
+	h := handler.NewGTDHandler(&fakeGTDStore{})
+	e.GET("/api/projects", h.ListProjects)
+	rec := performRequest(e, http.MethodGet, "/api/projects?status=bogus", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	want := "status must be one of: active, all, completed, archived, on_hold"
+	if body["error"] != want {
+		t.Errorf("error message = %q, want %q", body["error"], want)
 	}
 }
 
@@ -1043,43 +1209,155 @@ func TestGTDHandler_ListProjectTasks(t *testing.T) {
 }
 
 // TestGTDHandler_ListTasks verifies that ListTasks returns [] (not null) when
-// the store returns a nil slice, handles branch filtering, and propagates store
-// errors as 500.
+// the store returns a nil slice, handles branch filtering, propagates store
+// errors as 500, and — GTD-fix gtd-list-api-filters — reads the status query
+// param instead of silently ignoring it: valid values are forwarded verbatim
+// to TasksFiltered (asserted via capturedFilter), unset preserves the
+// historical active-only default, and unrecognised values are rejected with
+// 400 (previously silently ignored, returning the unfiltered default as if
+// the filter had been applied — the bug this fixes).
 func TestGTDHandler_ListTasks(t *testing.T) {
 	task1 := db.Task{ID: uuid.New(), Title: "first task", Status: "pending"}
 
 	cases := []struct {
-		name          string
-		query         string
-		store         *fakeGTDStore
-		wantCode      int
-		wantExactBody string
+		name              string
+		query             string
+		store             *fakeGTDStore
+		wantCode          int
+		wantExactBody     string
+		wantFilteredCalls int    // -1 = don't check
+		wantStatusFwd     string // asserted against capturedFilter.Status; only checked when wantFilteredCalls > 0
 	}{
 		{
-			name:          "nil tasks → []",
-			query:         "",
-			store:         &fakeGTDStore{},
-			wantCode:      http.StatusOK,
-			wantExactBody: "[]",
+			name:              "nil tasks → []",
+			query:             "",
+			store:             &fakeGTDStore{},
+			wantCode:          http.StatusOK,
+			wantExactBody:     "[]",
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "",
 		},
 		{
-			name:          "nil tasks + branch filter → []",
-			query:         "?branch=feature/x",
-			store:         &fakeGTDStore{},
-			wantCode:      http.StatusOK,
-			wantExactBody: "[]",
+			name:              "nil tasks + branch filter → []",
+			query:             "?branch=feature/x",
+			store:             &fakeGTDStore{},
+			wantCode:          http.StatusOK,
+			wantExactBody:     "[]",
+			wantFilteredCalls: 1,
 		},
 		{
-			name:     "store error → 500",
-			query:    "",
-			store:    &fakeGTDStore{err: errors.New("db down")},
-			wantCode: http.StatusInternalServerError,
+			name:              "store error → 500",
+			query:             "",
+			store:             &fakeGTDStore{err: errors.New("db down")},
+			wantCode:          http.StatusInternalServerError,
+			wantFilteredCalls: 1,
 		},
 		{
-			name:     "tasks present → 200 with data",
-			query:    "",
-			store:    &fakeGTDStore{tasks: []db.Task{task1}},
-			wantCode: http.StatusOK,
+			name:              "tasks present → 200 with data",
+			query:             "",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+		},
+		{
+			// Explicit "active" alias behaves identically to unset — both are
+			// the historical pending+in_progress default.
+			name:              "status=active → forwarded, 200",
+			query:             "?status=active",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "active",
+		},
+		{
+			// This is the core regression case: previously ListTasks always
+			// called Tasks(ctx, nil) (active-only) regardless of status=all,
+			// so completed/cancelled tasks never reached the caller.
+			name:              "status=all → forwarded to TasksFiltered (opts into every status)",
+			query:             "?status=all",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "all",
+		},
+		{
+			name:              "status=pending → exact match forwarded",
+			query:             "?status=pending",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "pending",
+		},
+		{
+			name:              "status=in_progress → exact match forwarded",
+			query:             "?status=in_progress",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "in_progress",
+		},
+		{
+			name:              "status=completed → exact match forwarded",
+			query:             "?status=completed",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "completed",
+		},
+		{
+			// Closes the gap flagged in review: a status filter that legitimately
+			// matches zero rows (store returns nil, same zero-value fakeGTDStore
+			// as the "nil tasks → []" case above) MUST still hit the nil-guard on
+			// the *filtered* branch, not just the unfiltered default branch —
+			// same contract, second code path. See also
+			// empty_list_contract_test.go's "ListTasks_status_all_filter" row for
+			// the sibling assertion on the ?status=all variant.
+			name:              "status=cancelled + nil result → [] (filtered branch honours empty-list contract)",
+			query:             "?status=cancelled",
+			store:             &fakeGTDStore{},
+			wantCode:          http.StatusOK,
+			wantExactBody:     "[]",
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "cancelled",
+		},
+		{
+			name:              "status=cancelled → exact match forwarded",
+			query:             "?status=cancelled",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "cancelled",
+		},
+		{
+			// Unrecognised status MUST fail loudly (400), not silently fall
+			// back to the default the way branch/pr_url unmatched values
+			// silently produce an empty filtered list — a caller filtering on
+			// a typo'd status must find out, not get an unfiltered response
+			// they'll misread as "no tasks match".
+			name:              "status=bogus → 400, store never called",
+			query:             "?status=bogus",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusBadRequest,
+			wantFilteredCalls: 0,
+		},
+		{
+			// Enum membership is case-sensitive, matching the list_tasks MCP
+			// tool's mcp.Enum(...) (no case-folding there either).
+			name:              "status=Active (wrong case) → 400",
+			query:             "?status=Active",
+			store:             &fakeGTDStore{},
+			wantCode:          http.StatusBadRequest,
+			wantFilteredCalls: 0,
+		},
+		{
+			// ?status= (present but empty) is wire-identical to status
+			// omitted entirely — both decode to "" via c.QueryParam.
+			name:              "status= (empty value) → treated as unset default",
+			query:             "?status=",
+			store:             &fakeGTDStore{tasks: []db.Task{task1}},
+			wantCode:          http.StatusOK,
+			wantFilteredCalls: 1,
+			wantStatusFwd:     "",
 		},
 	}
 
@@ -1097,7 +1375,45 @@ func TestGTDHandler_ListTasks(t *testing.T) {
 					t.Errorf("body: got %q, want %q", got, tc.wantExactBody)
 				}
 			}
+			if tc.store.filteredCalls != tc.wantFilteredCalls {
+				t.Errorf("TasksFiltered calls: got %d, want %d", tc.store.filteredCalls, tc.wantFilteredCalls)
+			}
+			if tc.wantFilteredCalls > 0 {
+				if tc.store.capturedFilter == nil {
+					t.Fatal("capturedFilter is nil despite TasksFiltered being called")
+				}
+				if tc.store.capturedFilter.Status != tc.wantStatusFwd {
+					t.Errorf("capturedFilter.Status = %q, want %q", tc.store.capturedFilter.Status, tc.wantStatusFwd)
+				}
+				// Limit must be a positive value — TaskFilter.Limit=0 would
+				// translate to a literal `LIMIT 0` in both backends' SQL
+				// (zero rows), silently breaking every case above.
+				if tc.store.capturedFilter.Limit <= 0 {
+					t.Errorf("capturedFilter.Limit = %d, want > 0 (a zero Limit means SQL LIMIT 0 → always empty)", tc.store.capturedFilter.Limit)
+				}
+			}
 		})
+	}
+}
+
+// TestGTDHandler_ListTasks_InvalidStatusMessage locks the exact 400 body for
+// an unrecognised status value so the error is actionable (names the valid
+// vocabulary) rather than a bare "invalid request".
+func TestGTDHandler_ListTasks_InvalidStatusMessage(t *testing.T) {
+	e := newEcho()
+	h := handler.NewGTDHandler(&fakeGTDStore{})
+	e.GET("/api/tasks", h.ListTasks)
+	rec := performRequest(e, http.MethodGet, "/api/tasks?status=bogus", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	want := "status must be one of: active, all, pending, in_progress, completed, cancelled"
+	if body["error"] != want {
+		t.Errorf("error message = %q, want %q", body["error"], want)
 	}
 }
 

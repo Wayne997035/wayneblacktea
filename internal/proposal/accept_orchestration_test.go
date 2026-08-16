@@ -29,6 +29,15 @@ type fakeAcceptAdapter struct {
 	created        any
 	materializeErr error
 
+	// materializeGotPrepared records the "prepared" argument (PrepareOutOfBand's
+	// return value) that AcceptOrchestration actually passed to Materialize, so
+	// tests can assert the data-flow guarantee, not just the call-order
+	// guarantee captured by calls below. GTD-1f42debd: previously this argument
+	// was silently discarded by Materialize — a regression that dropped,
+	// reordered, or nil'd it before this fix would have left every test in this
+	// file green.
+	materializeGotPrepared any
+
 	resolved   *db.PendingProposal
 	resolveErr error
 
@@ -58,8 +67,9 @@ func (f *fakeAcceptAdapter) BeginTx(context.Context) error {
 	return f.beginTxErr
 }
 
-func (f *fakeAcceptAdapter) Materialize(context.Context, *db.PendingProposal, any) (any, error) {
+func (f *fakeAcceptAdapter) Materialize(_ context.Context, _ *db.PendingProposal, prepared any) (any, error) {
 	f.calls = append(f.calls, "Materialize")
+	f.materializeGotPrepared = prepared
 	if f.materializeErr != nil {
 		return nil, f.materializeErr
 	}
@@ -229,6 +239,15 @@ func TestAcceptOrchestration_HappyPath(t *testing.T) {
 	}
 	if gotCreated != createdEntity {
 		t.Errorf("expected the created entity from Materialize, got %+v", gotCreated)
+	}
+	// GTD-1f42debd: assert the data-flow guarantee, not just the call-order
+	// guarantee below — bound to f.prepared (the fixture's own field) rather
+	// than a re-typed "opaque-prepared-value" literal, so this only fails when
+	// the value AcceptOrchestration hands to Materialize actually diverges
+	// from what PrepareOutOfBand produced, not whenever someone legitimately
+	// changes the fixture's prepared value.
+	if f.materializeGotPrepared != f.prepared {
+		t.Errorf("Materialize received prepared=%v, want the PrepareOutOfBand output %v", f.materializeGotPrepared, f.prepared)
 	}
 	wantCalls := []string{"ReadPending", "PrepareOutOfBand", "BeginTx", "Materialize", "ResolveAccepted", "Commit", "Rollback"}
 	if !reflect.DeepEqual(f.calls, wantCalls) {

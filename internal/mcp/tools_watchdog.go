@@ -315,6 +315,19 @@ func (s *Server) detectProposalFail(ctx context.Context, wsID *uuid.UUID) []agen
 }
 
 // Detection #5: stale_handoff — session handoffs not resolved within 7 days.
+//
+// intent goes through safeSessionHandoff.hardenedIntent(), not the raw
+// h.Intent field: found during the PR #158 chokepoint work as the same
+// unhardened-leak class the dispatch targeted (recallEpisodic,
+// tools_procedural.go) — this detail is marshaled straight into
+// agentBehaviorFinding.Detail and returned verbatim by analyze_agent_
+// behavior, so a poisoned Intent stored via set_session_handoff would reach
+// any caller of that tool with no clip/neutralise/fence at all. Fixed inline
+// (not deferred to a follow-up ticket) because it directly calls
+// HandoffsSince and therefore falls inside this change's own mechanical
+// check (session_handoff_scope_test.go) — leaving it unfixed would mean
+// whitelisting a known, live leak in the same PR that closes this exact bug
+// class elsewhere.
 func (s *Server) detectStaleHandoffs(ctx context.Context, wsID *uuid.UUID) []agentBehaviorFinding {
 	if s.session == nil {
 		return nil
@@ -327,17 +340,24 @@ func (s *Server) detectStaleHandoffs(ctx context.Context, wsID *uuid.UUID) []age
 	}
 	staleThreshold := time.Now().Add(-7 * 24 * time.Hour)
 	var out []agentBehaviorFinding
-	for _, h := range handoffs {
+	for i := range handoffs {
+		h := &handoffs[i]
 		if h.ResolvedAt.Valid {
 			continue
 		}
 		if !h.CreatedAt.Valid || !h.CreatedAt.Time.Before(staleThreshold) {
 			continue
 		}
+		// stored_data_notice sits alongside the fenced intent for the same
+		// reason closeoutReport.HandoffSummaryNotice does (tools_closeout.go)
+		// — round-4 PR #158 security review s-3-1: this path used to carry
+		// only the fence with no notice, a different treatment than the
+		// other four exit points that read the same stored data.
 		detail, _ := json.Marshal(map[string]any{
-			"handoff_id": h.ID.String(),
-			"intent":     h.Intent,
-			"created_at": h.CreatedAt.Time.Format(time.RFC3339),
+			"handoff_id":         h.ID.String(),
+			"intent":             newSafeSessionHandoff(h).hardenedIntent(),
+			"stored_data_notice": storedDataNotice,
+			"created_at":         h.CreatedAt.Time.Format(time.RFC3339),
 		})
 		if s.insertWatchdogEvent(ctx, wsID, watchdog.EventTypeStaleHandoff, watchdog.SeverityWarn, detail) {
 			out = append(out, agentBehaviorFinding{

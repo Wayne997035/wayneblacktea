@@ -61,6 +61,67 @@ func (s *Store) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
 	return rows, nil
 }
 
+// ProjectsFiltered returns projects matching status, scoped to the
+// configured workspace. Status "" or "active" → active only, ordered
+// identically to ListActiveProjects (priority ASC, updated_at DESC) so the
+// default (unset status) query is byte-identical to the pre-existing
+// GET /api/projects contract; "all" → every status; any other value → exact
+// match. Callers (the HTTP handler) validate status against an allowlist
+// before calling — this method does not itself reject unrecognised values,
+// mirroring TasksFiltered's contract.
+//
+// Hand-rolled (not sqlc), following ProjectsByRepoName's precedent just
+// above, to avoid a sqlc regen on every contributor's machine for one query.
+func (s *Store) ProjectsFiltered(ctx context.Context, status string) ([]db.Project, error) {
+	const selectCols = `id, goal_id, name, title, description, status, area, priority,
+		created_at, updated_at, workspace_id, repo_name`
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	switch status {
+	case "", "active":
+		q := `SELECT ` + selectCols + `
+			FROM projects
+			WHERE status = 'active'
+			  AND ($1::uuid IS NULL OR workspace_id = $1)
+			ORDER BY priority ASC, updated_at DESC`
+		rows, err = s.dbtx.Query(ctx, q, s.workspaceID)
+	case "all":
+		q := `SELECT ` + selectCols + `
+			FROM projects
+			WHERE ($1::uuid IS NULL OR workspace_id = $1)
+			ORDER BY priority ASC, updated_at DESC`
+		rows, err = s.dbtx.Query(ctx, q, s.workspaceID)
+	default:
+		q := `SELECT ` + selectCols + `
+			FROM projects
+			WHERE status = $1
+			  AND ($2::uuid IS NULL OR workspace_id = $2)
+			ORDER BY priority ASC, updated_at DESC`
+		rows, err = s.dbtx.Query(ctx, q, status, s.workspaceID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing filtered projects (status=%q): %w", status, err)
+	}
+	defer rows.Close()
+	var out []db.Project
+	for rows.Next() {
+		var p db.Project
+		if err := rows.Scan(
+			&p.ID, &p.GoalID, &p.Name, &p.Title, &p.Description, &p.Status, &p.Area, &p.Priority,
+			&p.CreatedAt, &p.UpdatedAt, &p.WorkspaceID, &p.RepoName,
+		); err != nil {
+			return nil, fmt.Errorf("scanning filtered project (status=%q): %w", status, err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating filtered projects (status=%q): %w", status, err)
+	}
+	return out, nil
+}
+
 // GetProjectByID returns a single project by UUID, regardless of status.
 func (s *Store) GetProjectByID(ctx context.Context, id uuid.UUID) (*db.Project, error) {
 	row, err := s.q.GetProjectByID(ctx, db.GetProjectByIDParams{

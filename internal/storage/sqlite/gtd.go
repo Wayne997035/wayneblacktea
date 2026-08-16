@@ -243,6 +243,51 @@ func (s *GTDStore) ListActiveProjects(ctx context.Context) ([]db.Project, error)
 	return out, errWrap("ListActiveProjects iter", rows.Err())
 }
 
+// ProjectsFiltered returns projects matching status, scoped to the
+// configured workspace. Status "" or "active" → active only, ordered
+// identically to ListActiveProjects (priority ASC, updated_at DESC); "all"
+// → every status; any other value → exact match. Mirrors
+// gtd.Store.ProjectsFiltered (Postgres) and TasksFiltered's
+// switch-by-status pattern.
+func (s *GTDStore) ProjectsFiltered(ctx context.Context, status string) ([]db.Project, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	switch status {
+	case "", "active":
+		const q = `SELECT ` + projectsSelectCols + ` FROM projects
+			WHERE status = 'active'
+			  AND (?1 IS NULL OR workspace_id = ?1)
+			ORDER BY priority ASC, updated_at DESC`
+		rows, err = s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	case "all":
+		const q = `SELECT ` + projectsSelectCols + ` FROM projects
+			WHERE (?1 IS NULL OR workspace_id = ?1)
+			ORDER BY priority ASC, updated_at DESC`
+		rows, err = s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	default:
+		const q = `SELECT ` + projectsSelectCols + ` FROM projects
+			WHERE status = ?1
+			  AND (?2 IS NULL OR workspace_id = ?2)
+			ORDER BY priority ASC, updated_at DESC`
+		rows, err = s.db.conn.QueryContext(ctx, q, status, s.db.workspaceArg())
+	}
+	if err != nil {
+		return nil, errWrap("ProjectsFiltered", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []db.Project
+	for rows.Next() {
+		p, err := scanProject(rows.Scan)
+		if err != nil {
+			return nil, errWrap("ProjectsFiltered scan", err)
+		}
+		out = append(out, p)
+	}
+	return out, errWrap("ProjectsFiltered iter", rows.Err())
+}
+
 // ProjectByName looks up a single project by unique name within the workspace.
 func (s *GTDStore) ProjectByName(ctx context.Context, name string) (*db.Project, error) {
 	const q = `SELECT ` + projectsSelectCols + ` FROM projects
