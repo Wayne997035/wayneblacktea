@@ -42,10 +42,21 @@ import "time"
 // injected identity" markers, matching the existing convention in
 // cmd/wbt/main.go's own version/commit/date vars (that binary's `wbt
 // version` command).
+// sentinelVersion, sentinelCommit, and sentinelDate name the three defaults
+// above so every other reference to "no injected identity" in this file (and
+// in this package's tests, which share this package and can see these
+// directly) is the SAME string, never a second independently-typed literal
+// that could quietly drift from the var block's own default.
+const (
+	sentinelVersion = "dev"
+	sentinelCommit  = "none"
+	sentinelDate    = "unknown"
+)
+
 var (
-	Version = "dev"
-	Commit  = "none"
-	Date    = "unknown"
+	Version = sentinelVersion
+	Commit  = sentinelCommit
+	Date    = sentinelDate
 )
 
 // commitShaLen is how many hex characters of Commit BuildID uses. Chosen to
@@ -85,12 +96,12 @@ const buildIDTimeLayout = "20060102150405"
 // (e.g. a truncated or zero-padded SHA) is worse than an obviously-fake one,
 // per this package's own doc comment.
 func BuildID() string {
-	if Commit == "none" || len(Commit) < commitShaLen {
-		return "dev"
+	if Commit == sentinelCommit || len(Commit) < commitShaLen {
+		return sentinelVersion
 	}
 	t, err := time.Parse(time.RFC3339, Date)
 	if err != nil {
-		return "dev"
+		return sentinelVersion
 	}
 	return "v0.0.0-" + t.UTC().Format(buildIDTimeLayout) + "-" + Commit[:commitShaLen]
 }
@@ -105,7 +116,7 @@ func BuildID() string {
 // buildinfo's package doc already describes for Version/Commit/Date
 // themselves.
 func EffectiveVersion() string {
-	if Version != "dev" {
+	if Version != sentinelVersion {
 		return Version
 	}
 	return BuildID()

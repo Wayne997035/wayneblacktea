@@ -2,6 +2,23 @@ package buildinfo
 
 import "testing"
 
+// sentinelVersion/sentinelCommit/sentinelDate are buildinfo.go's own package-
+// level constants (this file shares the package, not a _test-suffixed one) —
+// tests reference them directly instead of re-typing "dev"/"none"/"unknown"
+// as second, independently-drifting literals.
+
+// testCommitSHA is this repo's real HEAD commit at the time U6 was written
+// (2026-08-20-mcp-surface-spec.md's assumptions table, Lead-verified) — the
+// full 40-char SHA whose first 12 hex chars ("5b87fcbf4b78") anchor
+// TestBuildID_RealValues' byte-exact assertion.
+const testCommitSHA = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
+
+// testBuildDate is the measured Railway build-info timestamp for
+// testCommitSHA (Lead-verified, ~20s after the commit's own author time —
+// see build/Dockerfile's RAILWAY_GIT_COMMIT_SHA comment block for why
+// BuildID uses build time, not commit time).
+const testBuildDate = "2026-08-16T07:43:48Z"
+
 // resetSentinels restores Version/Commit/Date to their zero-ldflags
 // defaults after a test overrides them — mirrors the t.Cleanup pattern
 // internal/mcp's own buildinfo canary tests already use
@@ -23,11 +40,11 @@ func resetSentinels(t *testing.T) {
 // for a real, if malformed, build identity.
 func TestBuildID_SentinelDefaults(t *testing.T) {
 	resetSentinels(t)
-	Version, Commit, Date = "dev", "none", "unknown"
+	Version, Commit, Date = sentinelVersion, sentinelCommit, sentinelDate
 
 	got := BuildID()
-	if got != "dev" {
-		t.Errorf("BuildID() = %q, want sentinel %q", got, "dev")
+	if got != sentinelVersion {
+		t.Errorf("BuildID() = %q, want sentinel %q", got, sentinelVersion)
 	}
 	if got == "v0.0.0-unknown-none" {
 		t.Error("BuildID() returned a pseudo-version-shaped string built directly from the sentinel " +
@@ -44,9 +61,9 @@ func TestBuildID_SentinelDefaults(t *testing.T) {
 // why BuildID uses build time, not commit time).
 func TestBuildID_RealValues(t *testing.T) {
 	resetSentinels(t)
-	Version = "dev"
-	Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
-	Date = "2026-08-16T07:43:48Z"
+	Version = sentinelVersion
+	Commit = testCommitSHA
+	Date = testBuildDate
 
 	const want = "v0.0.0-20260816074348-5b87fcbf4b78"
 	if got := BuildID(); got != want {
@@ -62,11 +79,11 @@ func TestBuildID_RealValues(t *testing.T) {
 // something that otherwise looks like a real build identity.
 func TestBuildID_MalformedDate(t *testing.T) {
 	resetSentinels(t)
-	Version = "dev"
-	Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
+	Version = sentinelVersion
+	Commit = testCommitSHA
 
 	cases := []string{
-		"unknown",    // the package's own Date sentinel
+		sentinelDate, // the package's own Date sentinel
 		"2026-08-16", // date only, no time — not RFC3339
 		"not-a-date-at-all",
 		"",
@@ -74,8 +91,8 @@ func TestBuildID_MalformedDate(t *testing.T) {
 	for _, date := range cases {
 		t.Run(date, func(t *testing.T) {
 			Date = date
-			if got := BuildID(); got != "dev" {
-				t.Errorf("BuildID() with Date=%q = %q, want sentinel %q", date, got, "dev")
+			if got := BuildID(); got != sentinelVersion {
+				t.Errorf("BuildID() with Date=%q = %q, want sentinel %q", date, got, sentinelVersion)
 			}
 		})
 	}
@@ -87,12 +104,12 @@ func TestBuildID_MalformedDate(t *testing.T) {
 // hex characters than the documented format promises.
 func TestBuildID_ShortCommitFallsBack(t *testing.T) {
 	resetSentinels(t)
-	Version = "dev"
+	Version = sentinelVersion
 	Commit = "5b87fcb" // 7 chars, git's default abbreviated SHA length
-	Date = "2026-08-16T07:43:48Z"
+	Date = testBuildDate
 
-	if got := BuildID(); got != "dev" {
-		t.Errorf("BuildID() with a 7-char Commit = %q, want sentinel %q", got, "dev")
+	if got := BuildID(); got != sentinelVersion {
+		t.Errorf("BuildID() with a 7-char Commit = %q, want sentinel %q", got, sentinelVersion)
 	}
 }
 
@@ -103,12 +120,12 @@ func TestBuildID_ShortCommitFallsBack(t *testing.T) {
 // output rather than the bare "dev" sentinel.
 func TestEffectiveVersion_FallsBackWhenSentinel(t *testing.T) {
 	resetSentinels(t)
-	Version = "dev"
-	Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
-	Date = "2026-08-16T07:43:48Z"
+	Version = sentinelVersion
+	Commit = testCommitSHA
+	Date = testBuildDate
 
 	want := BuildID()
-	if want == "dev" {
+	if want == sentinelVersion {
 		t.Fatal("test setup bug: BuildID() itself returned the sentinel, this test cannot distinguish " +
 			"fallback from no-fallback")
 	}
@@ -124,8 +141,8 @@ func TestEffectiveVersion_FallsBackWhenSentinel(t *testing.T) {
 func TestEffectiveVersion_RealTagUnchanged(t *testing.T) {
 	resetSentinels(t)
 	Version = "v1.4.2"
-	Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
-	Date = "2026-08-16T07:43:48Z"
+	Commit = testCommitSHA
+	Date = testBuildDate
 
 	if got := EffectiveVersion(); got != "v1.4.2" {
 		t.Errorf("EffectiveVersion() = %q, want the real tag %q unchanged", got, "v1.4.2")
@@ -141,8 +158,8 @@ func TestEffectiveVersion_RealTagUnchanged(t *testing.T) {
 func TestEffectiveVersion_RealTagUnchangedEvenWithSentinelCommit(t *testing.T) {
 	resetSentinels(t)
 	Version = "v1.0.0"
-	Commit = "none"
-	Date = "unknown"
+	Commit = sentinelCommit
+	Date = sentinelDate
 
 	if got := EffectiveVersion(); got != "v1.0.0" {
 		t.Errorf("EffectiveVersion() = %q, want the real tag %q unchanged", got, "v1.0.0")

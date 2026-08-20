@@ -12,6 +12,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// sentinelVersion is buildinfo.Version's own zero-ldflags default (see that
+// package's var block) — these tests assert against this exact value rather
+// than an arbitrary "dev"-looking string, so a failure here means the
+// sentinel itself changed behaviour, not that the test drifted from it.
+const sentinelVersion = "dev"
+
 // rpcServerInfo issues a real "initialize" call over the JSON-RPC entry point
 // (the same one both transports use — server.go's MCPServer doc comment) and
 // returns the decoded serverInfo block.
@@ -74,8 +80,9 @@ func TestMCPServer_VersionComesFromBuildinfo(t *testing.T) {
 // indistinguishable from a tagged one (that indistinguishability was the
 // original bug: "0.1.0" looked real and never changed).
 func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
-	if buildinfo.Version != "dev" {
-		t.Errorf("buildinfo.Version = %q in an ldflags-less test build, want sentinel %q", buildinfo.Version, "dev")
+	if buildinfo.Version != sentinelVersion {
+		t.Errorf("buildinfo.Version = %q in an ldflags-less test build, want sentinel %q",
+			buildinfo.Version, sentinelVersion)
 	}
 	if buildinfo.Commit != "none" {
 		t.Errorf("buildinfo.Commit = %q in an ldflags-less test build, want sentinel %q", buildinfo.Commit, "none")
@@ -86,9 +93,9 @@ func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
 
 	s := newTestResourceServer(t)
 	info := rpcServerInfo(t, s.MCPServer())
-	if info.Version != "dev" {
+	if info.Version != sentinelVersion {
 		t.Errorf("serverInfo.version = %q, want the sentinel %q to survive unchanged into serverInfo",
-			info.Version, "dev")
+			info.Version, sentinelVersion)
 	}
 }
 
@@ -101,7 +108,7 @@ func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
 // report the synthetic build ID instead of the bare "dev" sentinel.
 func TestMCPServer_VersionFallsBackToBuildIDWhenSentinel(t *testing.T) {
 	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
-	buildinfo.Version = "dev"
+	buildinfo.Version = sentinelVersion
 	buildinfo.Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
 	buildinfo.Date = "2026-08-16T07:43:48Z"
 	t.Cleanup(func() {
@@ -118,7 +125,7 @@ func TestMCPServer_VersionFallsBackToBuildIDWhenSentinel(t *testing.T) {
 			"sentinel — EffectiveVersion must fall back to BuildID(), not report \"dev\" verbatim)",
 			info.Version, wantBuildID)
 	}
-	if info.Version == "dev" {
+	if info.Version == sentinelVersion {
 		t.Error("serverInfo.version = \"dev\" — EffectiveVersion did not fall back to BuildID() even " +
 			"though Commit/Date carried real values")
 	}
@@ -132,7 +139,7 @@ func TestMCPServer_VersionFallsBackToBuildIDWhenSentinel(t *testing.T) {
 // BuildID() value rather than echoing buildinfo.Version directly.
 func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
 	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
-	buildinfo.Version = "dev"
+	buildinfo.Version = sentinelVersion
 	buildinfo.Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
 	buildinfo.Date = "2026-08-16T07:43:48Z"
 	t.Cleanup(func() {
@@ -153,15 +160,15 @@ func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
 		t.Errorf("resource build_id %q != serverInfo.version %q — the two have drifted apart",
 			got.BuildID, info.Version)
 	}
-	if got.BuildID == "dev" {
+	if got.BuildID == sentinelVersion {
 		t.Error("resource build_id = \"dev\" — EffectiveVersion did not fall back to BuildID()")
 	}
 	// version (the plain, non-fallback field) stays at the raw sentinel —
 	// only build_id/serverInfo.version apply the fallback. This is the
 	// contract buildIDNote documents for readers of the resource.
-	if got.Version != "dev" {
+	if got.Version != sentinelVersion {
 		t.Errorf("resource version = %q, want the raw sentinel %q unchanged (build_id is the "+
-			"fallback-aware field, version is not)", got.Version, "dev")
+			"fallback-aware field, version is not)", got.Version, sentinelVersion)
 	}
 }
 
