@@ -171,6 +171,31 @@ The agent doesn't need to remember to save things. The server captures them auto
 | **Dashboard** | Web UI + Discord bot | None | None |
 | **Tradeoff** | More setup, more surface area | Zero setup | Zero setup |
 
+## Checking what's running
+
+Read the `wayneblacktea://system/build-info` MCP resource (or `GET /health`
+for a bare liveness check) to see exactly which build is running. Two
+fields matter:
+
+- `version` is the real release tag ONLY when the running binary was
+  produced by a tagged `goreleaser` release — otherwise it is `"dev"`.
+  **As of this writing, this repo has 0 git tags and `.github/workflows/
+  release.yml` has never run** — every deployed build, including every
+  current Railway production deploy, reports `version: "dev"`. Do not read
+  a `"dev"` version as "something is misconfigured"; it is the expected
+  state until the first tag is pushed.
+- `build_id` is always present regardless of whether a real tag exists. When
+  `version` is `"dev"` it reports a synthetic, Go-pseudo-version-shaped
+  identifier instead: `v0.0.0-<build-time-yyyymmddhhmmss>-<commit-sha12>`,
+  derived from the build's commit SHA and build timestamp (`build/Dockerfile`
+  reads these from Railway's `RAILWAY_GIT_COMMIT_SHA` build arg). **The
+  timestamp is BUILD time, not COMMIT time** — it is captured when the
+  Docker image is built, not when the commit was authored, so it will differ
+  from the pseudo-version string `go list -m` would compute for the same
+  commit (measured drift on this repo: ~20 seconds between commit time and
+  build time). Treat `build_id` as "which build produced this response," not
+  as a stand-in for a real Go module pseudo-version.
+
 ## Verifying release binaries
 
 Release binaries will be signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signing via GitHub OIDC once the first tagged release is published. To verify a future downloaded binary:

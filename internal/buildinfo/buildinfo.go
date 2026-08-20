@@ -21,6 +21,8 @@
 // MCPServer doc comment).
 package buildinfo
 
+import "time"
+
 // Version, Commit, and Date are set at link time via:
 //
 //	-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version=<tag>
@@ -45,3 +47,66 @@ var (
 	Commit  = "none"
 	Date    = "unknown"
 )
+
+// commitShaLen is how many hex characters of Commit BuildID uses. Chosen to
+// match Go's own pseudo-version convention (golang.org/x/mod/module,
+// "vX.0.0-yyyymmddhhmmss-abcdefabcdef" uses a 12-character short SHA) so a
+// build ID looks familiar to anyone who has read a `go list -m` pseudo-
+// version before, without actually claiming to BE one (see BuildID's doc
+// comment for the one deliberate deviation: build time instead of commit
+// time).
+const commitShaLen = 12
+
+// buildIDTimeLayout renders Date (RFC3339, e.g. "2026-08-16T07:43:48Z") into
+// the compact yyyymmddhhmmss form Go pseudo-versions use.
+const buildIDTimeLayout = "20060102150405"
+
+// BuildID returns a Go-pseudo-version-shaped synthetic identifier derived
+// from Commit and Date: "v0.0.0-<yyyymmddhhmmss>-<sha12>". It exists for
+// Railway production deploys, which set Commit/Date (from
+// RAILWAY_GIT_COMMIT_SHA, build/Dockerfile) but never Version — there is no
+// git tag driving those builds (goreleaser only runs on a tagged release),
+// so EffectiveVersion falls back to this instead of reporting the bare "dev"
+// sentinel for every production build forever.
+//
+// Deliberately NOT a real Go pseudo-version: the timestamp is BUILD time
+// (Date, set at Docker build time), not COMMIT time (which Railway's build
+// args don't expose — see build/Dockerfile's RAILWAY_GIT_COMMIT_SHA comment
+// block). The two differ by however long the build took (measured ~20s for
+// this repo) — close enough to be a useful "which build is this" fingerprint,
+// not close enough to be interchangeable with `go list -m`'s own pseudo-
+// version string for the same commit. No "+" suffix either (real pseudo-
+// versions never have one at the module-path level; a trailing "+dirty" or
+// similar is a different convention this deliberately does not adopt).
+//
+// Returns the "dev" sentinel — never a partial or malformed identifier — when
+// Commit is at its sentinel, Date fails to parse as RFC3339, or Commit is
+// shorter than commitShaLen. A build identity that looks real but isn't
+// (e.g. a truncated or zero-padded SHA) is worse than an obviously-fake one,
+// per this package's own doc comment.
+func BuildID() string {
+	if Commit == "none" || len(Commit) < commitShaLen {
+		return "dev"
+	}
+	t, err := time.Parse(time.RFC3339, Date)
+	if err != nil {
+		return "dev"
+	}
+	return "v0.0.0-" + t.UTC().Format(buildIDTimeLayout) + "-" + Commit[:commitShaLen]
+}
+
+// EffectiveVersion returns Version when it carries a real (non-sentinel)
+// value — a goreleaser tagged release — otherwise falls back to BuildID()
+// (itself "dev" when no build identity was injected at all). This is the
+// single function internal/mcp reads for both serverInfo.version
+// (server.go) and the wayneblacktea://system/build-info resource
+// (resources.go): reading the same function from both places is what keeps
+// them from independently drifting apart, the same structural guarantee
+// buildinfo's package doc already describes for Version/Commit/Date
+// themselves.
+func EffectiveVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	return BuildID()
+}

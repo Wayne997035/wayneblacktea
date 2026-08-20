@@ -756,7 +756,29 @@ type buildInfoResource struct {
 	BuildDate       string `json:"build_date"`
 	ProtocolVersion string `json:"protocol_version"`
 	Backend         string `json:"backend"`
+	// BuildID and BuildIDNote are U6's addition (2026-08-20-mcp-surface-spec.md):
+	// always emitted (not omitempty) so the resource's field SHAPE never
+	// changes between a tagged release and an untagged production deploy —
+	// only the VALUES differ (real tag: BuildID equals Version; sentinel:
+	// BuildID is the synthetic buildinfo.BuildID() identifier). A field that
+	// silently appears/disappears depending on build state is a worse API
+	// than one that is always present and sometimes redundant.
+	BuildID     string `json:"build_id"`
+	BuildIDNote string `json:"build_id_note"`
 }
+
+// buildIDNote explains both version and build_id in one place so a reader
+// of this resource never has to guess which one to trust or why they can
+// differ. Kept as a package-level const (not inlined) so
+// TestResourceBuildInfo_NoUnexpectedFields's forbidden-substring scan and any
+// future byte-budget test measure the exact same string this handler emits.
+const buildIDNote = "version is the real release tag when this build was produced by a tagged " +
+	"goreleaser release (see README's \"Checking what's running\"); every other build — including every " +
+	"current Railway production deploy, which has never been driven by a git tag — leaves version at " +
+	"the \"dev\" sentinel and reports build_id instead: a synthetic v0.0.0-<build-time>-<commit12> " +
+	"identifier derived from this specific build's commit and build timestamp. build_id is ALWAYS " +
+	"present and, when version is a real tag, equals it exactly (see buildinfo.EffectiveVersion) — " +
+	"prefer build_id over version when identifying which exact build produced this response."
 
 func (s *Server) handleResourceBuildInfo(
 	_ context.Context,
@@ -770,7 +792,10 @@ func (s *Server) handleResourceBuildInfo(
 	// MCPServer doc comment). ProtocolVersion is mcp-go's own compiled-in
 	// LATEST_PROTOCOL_VERSION constant, not a value this server invented —
 	// it is the highest protocol version this build understands, regardless
-	// of which version an individual client negotiates down to.
+	// of which version an individual client negotiates down to. BuildID reads
+	// buildinfo.EffectiveVersion() — the SAME function server.go's
+	// serverInfo.version reads — so the two can never independently drift
+	// (mirrors the Version/serverInfo.version relationship one line above).
 	out := buildInfoResource{
 		GeneratedAt:     s.now().UTC().Format(time.RFC3339),
 		Version:         buildinfo.Version,
@@ -778,6 +803,8 @@ func (s *Server) handleResourceBuildInfo(
 		BuildDate:       buildinfo.Date,
 		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 		Backend:         s.backendKind(),
+		BuildID:         buildinfo.EffectiveVersion(),
+		BuildIDNote:     buildIDNote,
 	}
 	return marshalResource(uri, out)
 }

@@ -434,9 +434,13 @@ upsert_project_arch.
 // that asymmetry is the feature's safety net, and TestAllTools_CallableWhenHidden
 // pins it. Both transports (HTTP at cmd/server/main.go and stdio via
 // internal/mcprunner) go through this one constructor, so both get it —
-// including buildinfo.Version below (GTD 61838147): neither transport threads
-// a version value in separately, so there is exactly one place that can drift
-// from the other. See buildinfo's package doc for the ldflags that populate it.
+// including buildinfo.EffectiveVersion() below (GTD 61838147, extended U6):
+// neither transport threads a version value in separately, so there is
+// exactly one place that can drift from the other. EffectiveVersion falls
+// back to a synthetic build ID (buildinfo.BuildID) when Version is at its
+// "dev" sentinel — the common case for every Railway production deploy,
+// which sets Commit/Date but never a real Version (no git tag drives those
+// builds). See buildinfo's package doc for the ldflags that populate it.
 func (s *Server) MCPServer() *server.MCPServer {
 	opts := []server.ServerOption{
 		server.WithInstructions(mcpInstructions),
@@ -468,7 +472,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	if progressiveDisclosureEnabled() {
 		opts = append(opts, server.WithToolFilter(s.filterToolsForSession))
 	}
-	ms := server.NewMCPServer("wayneblacktea", buildinfo.Version, opts...)
+	ms := server.NewMCPServer("wayneblacktea", buildinfo.EffectiveVersion(), opts...)
 	s.registerOnboardingTools(ms)
 	s.registerExpandTools(ms)
 	s.registerContextTools(ms)
