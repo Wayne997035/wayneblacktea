@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -216,5 +217,61 @@ func TestMCPBeginTask_InvalidAssignee(t *testing.T) {
 	}
 	if got.Status != taskStatusPending {
 		t.Errorf("status changed to %q despite rejected assignee", got.Status)
+	}
+}
+
+// beginTaskResponseWithSession mirrors the MCP envelope including the
+// (now-optional) work_session_id field, for U16's persistence test.
+type beginTaskResponseWithSession struct {
+	Task struct {
+		ID string `json:"id"`
+	} `json:"task"`
+	WorkSessionID string `json:"work_session_id"`
+}
+
+// TestBeginTask_ReturnedSessionIDIsPersisted pins U16 (F17,
+// 2026-08-20-mcp-surface-spec.md): begin_task's work_session_id must be a
+// real, persisted worksession.Session row, not a phantom uuid.New() with
+// nothing behind it. Bad case: take the ID straight out of begin_task's
+// response and feed it to checkpoint_work — it must succeed (not "session
+// not found"). Positive control: GetByID on that same ID returns a real,
+// non-nil row.
+func TestBeginTask_ReturnedSessionIDIsPersisted(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	r := callBeginTask(t, s, map[string]any{"task_id": id.String(), "assignee": "claude"})
+	if r.IsError {
+		t.Fatalf("begin_task error: %s", resultText(r))
+	}
+	var resp beginTaskResponseWithSession
+	if err := json.Unmarshal([]byte(resultText(r)), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nraw=%s", err, resultText(r))
+	}
+	if resp.WorkSessionID == "" {
+		t.Fatalf("begin_task response has no work_session_id at all: %s", resultText(r))
+	}
+
+	// bad case: checkpoint_work must accept this ID, not error "not found".
+	cr := callCheckpointWork(t, s, map[string]any{
+		"session_id": resp.WorkSessionID,
+		"summary":    "checked the returned session ID works",
+	})
+	if cr.IsError {
+		t.Fatalf("checkpoint_work(session_id=%s) must succeed on begin_task's own returned ID, got: %s",
+			resp.WorkSessionID, resultText(cr))
+	}
+
+	// positive control: GetByID returns a real, non-nil row.
+	sessID, err := uuid.Parse(resp.WorkSessionID)
+	if err != nil {
+		t.Fatalf("work_session_id %q is not a valid UUID: %v", resp.WorkSessionID, err)
+	}
+	sess, err := s.workSession.GetByID(context.Background(), s.workspaceUUIDVal(), sessID)
+	if err != nil {
+		t.Fatalf("GetByID(%s): %v", sessID, err)
+	}
+	if sess == nil {
+		t.Fatal("GetByID returned a nil session for begin_task's own returned ID")
 	}
 }

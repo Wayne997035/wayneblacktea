@@ -145,9 +145,9 @@ func TestUpsertRepo_PerWorkspaceConflict(t *testing.T) {
 
 	repoA, err := storeA.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:          repoName,
-		Path:          "/home/a/shared-repo-name",
-		Description:   "workspace A copy",
-		CurrentBranch: "main",
+		Path:          strPtr("/home/a/shared-repo-name"),
+		Description:   strPtr("workspace A copy"),
+		CurrentBranch: strPtr("main"),
 	})
 	if err != nil {
 		t.Fatalf("storeA.UpsertRepo: %v", err)
@@ -160,9 +160,9 @@ func TestUpsertRepo_PerWorkspaceConflict(t *testing.T) {
 
 	repoB, err := storeB.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:          repoName,
-		Path:          "/home/b/shared-repo-name",
-		Description:   "workspace B copy",
-		CurrentBranch: "develop",
+		Path:          strPtr("/home/b/shared-repo-name"),
+		Description:   strPtr("workspace B copy"),
+		CurrentBranch: strPtr("develop"),
 	})
 	if err != nil {
 		t.Fatalf("storeB.UpsertRepo: %v", err)
@@ -213,10 +213,10 @@ func TestUpsertRepo_SameWorkspaceUpdate(t *testing.T) {
 
 	first, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            repoName,
-		Path:            "/repos/my-project",
-		Description:     "initial description",
-		CurrentBranch:   "main",
-		NextPlannedStep: "setup CI",
+		Path:            strPtr("/repos/my-project"),
+		Description:     strPtr("initial description"),
+		CurrentBranch:   strPtr("main"),
+		NextPlannedStep: strPtr("setup CI"),
 	})
 	if err != nil {
 		t.Fatalf("first UpsertRepo: %v", err)
@@ -229,10 +229,10 @@ func TestUpsertRepo_SameWorkspaceUpdate(t *testing.T) {
 
 	second, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            repoName,
-		Path:            "/repos/my-project",
-		Description:     "updated description",
-		CurrentBranch:   "feature/x",
-		NextPlannedStep: "write tests",
+		Path:            strPtr("/repos/my-project"),
+		Description:     strPtr("updated description"),
+		CurrentBranch:   strPtr("feature/x"),
+		NextPlannedStep: strPtr("write tests"),
 	})
 	if err != nil {
 		t.Fatalf("second UpsertRepo: %v", err)

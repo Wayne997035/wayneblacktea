@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -876,7 +877,7 @@ func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) 
 	// Auto-parse artifact: PR URL → set pr_url; 40-hex SHA → append to commit_shas.
 	// SECURITY: we only store the strings, never fetch the URLs.
 	if artifact != nil && *artifact != "" {
-		if updated := s.applyArtifactSideEffects(ctx, args.TaskID, task, strings.TrimSpace(*artifact)); updated != nil {
+		if updated := s.applyArtifactSideEffects(ctx, args.TaskID, strings.TrimSpace(*artifact)); updated != nil {
 			task = updated
 		}
 	}
@@ -911,20 +912,24 @@ func (s *Server) seedDraftOutcome(ctx context.Context, taskID uuid.UUID) {
 // task. Returns the updated task on success, nil if no side-effect applied or
 // the update failed (caller uses the original completed task in that case).
 // SECURITY: only stores the URL string, never makes an HTTP fetch.
-func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, task *db.Task, artifact string) *db.Task {
+//
+// commit_shas is appended atomically at the SQL layer via
+// gtd.UpdateTaskParams.AppendCommitSHA (P7 fix) — this function no longer
+// reads the caller's already-loaded task to compute a merged array in Go,
+// which was a TOCTOU race under concurrent complete_task calls on the same
+// task (the exact duplicate of gtd/artifact_effects.go's HTTP-path bug this
+// PR also fixes).
+func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, artifact string) *db.Task {
 	var up gtd.UpdateTaskParams
 	var artifactKind string
 	if githubPRURLRe.MatchString(artifact) {
 		up.PRUrl = &artifact
 		artifactKind = "pr_url"
 	} else if commitSHARe.MatchString(artifact) {
-		newSHAs := make([]string, len(task.CommitSHAs)+1)
-		copy(newSHAs, task.CommitSHAs)
-		newSHAs[len(task.CommitSHAs)] = artifact
-		up.CommitSHAs = newSHAs
+		up.AppendCommitSHA = &artifact
 		artifactKind = "commit_sha"
 	}
-	if up.PRUrl == nil && up.CommitSHAs == nil {
+	if up.PRUrl == nil && up.AppendCommitSHA == nil {
 		return nil
 	}
 	updated, updateErr := s.gtd.UpdateTask(ctx, id, up)
@@ -1047,7 +1052,7 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 	return p.Status == nil && p.Title == nil && p.Description == nil &&
 		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
 		p.DueDate == nil && p.Context == nil && p.Kind == nil &&
-		p.BranchName == nil && p.PRUrl == nil && p.CommitSHAs == nil
+		p.BranchName == nil && p.PRUrl == nil && p.AppendCommitSHA == nil
 }
 
 // requireAssigneeForInProgress enforces that a task cannot transition to
@@ -1389,6 +1394,87 @@ func (s *Server) persistBeginTaskLinkage(
 	return updated, nil
 }
 
+// resolveBeginTaskRepoName resolves the repo_name a work session created for
+// task should be scoped to: the task's own project's repo_name when set,
+// else primaryProjectSlug (tools_context.go) — the same single-tenant
+// fallback get_project_arch's default slug already uses for "no specific
+// project" contexts. Never returns "" (worksession.CreateParams.RepoName is
+// required and rejects empty).
+func (s *Server) resolveBeginTaskRepoName(ctx context.Context, task *db.Task) string {
+	if task.ProjectID.Valid {
+		pid := workspaceUUIDFromPgtype(task.ProjectID)
+		if project, err := s.gtd.GetProjectByID(ctx, pid); err == nil &&
+			project.RepoName.Valid && project.RepoName.String != "" {
+			return project.RepoName.String
+		}
+	}
+	return primaryProjectSlug
+}
+
+// attachBeginTaskWorkSession creates (or, if one is already active for this
+// task's repo, reuses) a real worksession.Session and links id to it as the
+// primary task — so the work_session_id begin_task returns is a real,
+// persisted row checkpoint_work/finish_work can operate on, not a phantom
+// UUID (F17, 2026-08-20-mcp-surface-spec.md U16). Best-effort: a failure here
+// never fails begin_task's primary guarantee (the task is already in_progress
+// by the time this runs) — on failure the caller gets no work_session_id
+// rather than a fabricated one.
+//
+// Source="other" and Goal=task.Title reuse the narrowest existing
+// conventions rather than inventing new ones: "other" is already a valid
+// worksession source (tools_worksession.go's validWorkSessionSources) with no
+// more specific value fitting "created as a side effect of begin_task"; Goal
+// has no independent input on this call path, and "the goal of this session
+// is to complete this task" is the literal, unambiguous reading for a
+// single-task session.
+func (s *Server) attachBeginTaskWorkSession(ctx context.Context, id uuid.UUID, task *db.Task, assignee string) uuid.UUID {
+	if s.workSession == nil {
+		return uuid.Nil
+	}
+	wsID := s.workspaceUUIDVal()
+	repoName := s.resolveBeginTaskRepoName(ctx, task)
+
+	var projectID *uuid.UUID
+	if task.ProjectID.Valid {
+		pid := workspaceUUIDFromPgtype(task.ProjectID)
+		projectID = &pid
+	}
+
+	sess, err := s.workSession.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    repoName,
+		ProjectID:   projectID,
+		Title:       task.Title,
+		Goal:        task.Title,
+		Source:      "other",
+		TaskIDs:     []uuid.UUID{id},
+		Assignee:    assignee,
+	})
+	if err == nil {
+		return sess.ID
+	}
+	if !errors.Is(err, worksession.ErrAlreadyActive) {
+		slog.Warn("begin_task: worksession.Create failed (non-fatal, no work_session_id returned)",
+			"task_id", id, "err", err)
+		return uuid.Nil
+	}
+
+	// Another session is already in_progress for this repo — attach this
+	// task to it rather than failing begin_task's primary guarantee.
+	active, err := s.workSession.GetActive(ctx, wsID, repoName)
+	if err != nil || active.Session == nil {
+		slog.Warn("begin_task: GetActive after ErrAlreadyActive failed (non-fatal, no work_session_id returned)",
+			"task_id", id, "err", err)
+		return uuid.Nil
+	}
+	if err := s.workSession.LinkTask(ctx, active.Session.ID, id, "primary"); err != nil {
+		slog.Warn("begin_task: LinkTask into active session failed (non-fatal, no work_session_id returned)",
+			"task_id", id, "session_id", active.Session.ID, "err", err)
+		return uuid.Nil
+	}
+	return active.Session.ID
+}
+
 func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.CallToolResult, error) {
 	idStr := args.TaskID
 	id, err := uuid.Parse(idStr)
@@ -1423,11 +1509,18 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return errResult, nil
 	}
 
-	return jsonText(map[string]any{
+	resp := map[string]any{
 		"task":                   task,
 		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
-		"work_session_id":        uuid.New().String(),
-	})
+	}
+	// work_session_id is a real, persisted worksession.Session row
+	// (checkpoint_work/finish_work-compatible) when the side effect
+	// succeeds — see attachBeginTaskWorkSession's doc comment (F17). Omitted
+	// entirely on failure rather than falling back to a fabricated UUID.
+	if sessID := s.attachBeginTaskWorkSession(ctx, id, task, assignee); sessID != uuid.Nil {
+		resp["work_session_id"] = sessID.String()
+	}
+	return jsonText(resp)
 }
 
 // sanitiseMCPText strips null bytes and control characters from LLM-emitted text.

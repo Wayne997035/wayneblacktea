@@ -44,7 +44,9 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 
 	ms.AddTool(mcp.NewTool(
 		"sync_repo",
-		mcp.WithDescription("Creates or updates a repository entry with current state."),
+		mcp.WithDescription("Creates or updates a repository entry with current state. All params "+
+			"except name are optional and preserve their stored value when omitted — pass an "+
+			"empty string to explicitly clear one."),
 		mcp.WithString("name", mcp.Description("Repository name (unique key)"), mcp.Required()),
 		mcp.WithString("path", mcp.Description("Local filesystem path")),
 		mcp.WithString("description", mcp.Description("Short description")),
@@ -596,6 +598,44 @@ func (s *Server) handleListActiveRepos(ctx context.Context, _ mcp.CallToolReques
 	return jsonText(repos)
 }
 
+// syncRepoOptionalStringArgs extracts sync_repo's 5 optional fields using
+// optionalStringArg's presence semantics (Ω6, 2026-08-20-mcp-surface-spec.md):
+// a nil *string means the field was entirely absent from the call and the
+// stored value must be preserved, not wiped to "". Bundled into one struct
+// (rather than 5 separate local vars) purely to keep handleSyncRepo under the
+// gocyclo threshold with an early-return per field.
+type syncRepoOptionalStringArgs struct {
+	path, description, language, currentBranch, nextPlannedStep *string
+}
+
+// parseSyncRepoOptionalArgs runs optionalStringArg over sync_repo's 5
+// optional fields, short-circuiting on the first type-mismatch error.
+func parseSyncRepoOptionalArgs(args map[string]any) (syncRepoOptionalStringArgs, *mcp.CallToolResult) {
+	var out syncRepoOptionalStringArgs
+	var errResult *mcp.CallToolResult
+	out.path, errResult = optionalStringArg(args, "path")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.description, errResult = optionalStringArg(args, "description")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.language, errResult = optionalStringArg(args, "language")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.currentBranch, errResult = optionalStringArg(args, "current_branch")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.nextPlannedStep, errResult = optionalStringArg(args, "next_planned_step")
+	if errResult != nil {
+		return out, errResult
+	}
+	return out, nil
+}
+
 func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	name := stringArg(args, "name")
@@ -603,13 +643,18 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("name is required"), nil
 	}
 
+	opt, errResult := parseSyncRepoOptionalArgs(args)
+	if errResult != nil {
+		return errResult, nil
+	}
+
 	repo, err := s.workspace.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            name,
-		Path:            stringArg(args, "path"),
-		Description:     stringArg(args, "description"),
-		Language:        stringArg(args, "language"),
-		CurrentBranch:   stringArg(args, "current_branch"),
-		NextPlannedStep: stringArg(args, "next_planned_step"),
+		Path:            opt.path,
+		Description:     opt.description,
+		Language:        opt.language,
+		CurrentBranch:   opt.currentBranch,
+		NextPlannedStep: opt.nextPlannedStep,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("syncing repo: %v", err)), nil

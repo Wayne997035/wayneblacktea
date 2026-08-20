@@ -137,10 +137,17 @@ type UpdateTaskParams struct {
 	DueDate     *time.Time
 	Context     *string
 	Status      *string
-	Kind        *string  // nil → preserve existing; set to one of validator.ValidTaskKinds (GTD-c282cc04)
-	BranchName  *string  // nil → preserve existing; set to update (migration 000047)
-	PRUrl       *string  // nil → preserve existing; set to update (migration 000047)
-	CommitSHAs  []string // nil → preserve existing; set to append/replace (migration 000047)
+	Kind        *string // nil → preserve existing; set to one of validator.ValidTaskKinds (GTD-c282cc04)
+	BranchName  *string // nil → preserve existing; set to update (migration 000047)
+	PRUrl       *string // nil → preserve existing; set to update (migration 000047)
+	// AppendCommitSHA: nil → no-op, commit_shas is left untouched. Non-nil →
+	// the store atomically appends this single SHA to commit_shas at the SQL
+	// layer (array_append in Postgres, json_insert in SQLite) — never a
+	// Go-side read-modify-write, which raced under concurrent complete_task
+	// calls on the same task (P7, 2026-08-20 mcp-surface-spec, GTD 25537a73
+	// follow-up). There is no "replace the whole array" operation; commit_shas
+	// is append-only through this API.
+	AppendCommitSHA *string
 }
 
 // ChecklistItem represents a single item in a task's structured checklist.

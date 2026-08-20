@@ -20,7 +20,10 @@ func (m *mockArtifactStore) UpdateTask(_ context.Context, _ uuid.UUID, p UpdateT
 		return nil, m.returnErr
 	}
 	m.updated = &p
-	return &db.Task{CommitSHAs: p.CommitSHAs}, nil
+	if p.AppendCommitSHA != nil {
+		return &db.Task{CommitSHAs: []string{*p.AppendCommitSHA}}, nil
+	}
+	return &db.Task{}, nil
 }
 
 func TestApplyArtifactSideEffects_PRUrl(t *testing.T) {
@@ -41,6 +44,13 @@ func TestApplyArtifactSideEffects_PRUrl(t *testing.T) {
 	}
 }
 
+// TestApplyArtifactSideEffects_CommitSHA pins P7: the side effect now passes
+// a single AppendCommitSHA value for the store to append atomically at the
+// SQL layer, rather than reading task.CommitSHAs and building a merged array
+// in Go (the TOCTOU-prone pattern this fix replaces — see
+// ApplyArtifactSideEffects' doc comment). The passed-in task's existing
+// CommitSHAs is deliberately irrelevant to this function's output now: it is
+// no longer read at all, which is exactly what closes the race.
 func TestApplyArtifactSideEffects_CommitSHA(t *testing.T) {
 	store := &mockArtifactStore{}
 	id := uuid.New()
@@ -51,14 +61,11 @@ func TestApplyArtifactSideEffects_CommitSHA(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result for commit SHA artifact")
 	}
-	if store.updated == nil || store.updated.CommitSHAs == nil {
-		t.Fatal("expected CommitSHAs to be set in UpdateTask params")
+	if store.updated == nil || store.updated.AppendCommitSHA == nil {
+		t.Fatal("expected AppendCommitSHA to be set in UpdateTask params")
 	}
-	if len(store.updated.CommitSHAs) != 2 {
-		t.Fatalf("expected 2 SHAs (existing + new), got %d", len(store.updated.CommitSHAs))
-	}
-	if store.updated.CommitSHAs[1] != sha {
-		t.Errorf("CommitSHAs[1] = %q, want %q", store.updated.CommitSHAs[1], sha)
+	if *store.updated.AppendCommitSHA != sha {
+		t.Errorf("AppendCommitSHA = %q, want %q", *store.updated.AppendCommitSHA, sha)
 	}
 }
 

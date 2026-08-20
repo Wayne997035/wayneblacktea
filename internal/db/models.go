@@ -262,6 +262,8 @@ type Outcome struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	RelatedRuleIds []uuid.UUID        `json:"related_rule_ids"`
 	WorkSessionID  pgtype.UUID        `json:"work_session_id"`
+	SupersedesID   pgtype.UUID        `json:"supersedes_id"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
 type PendingProposal struct {

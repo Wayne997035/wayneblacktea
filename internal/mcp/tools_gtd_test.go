@@ -501,8 +501,9 @@ func TestListTasks_DefaultSummary_OmitsHeavyFields(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
+	sha := "abc1234"
 	if _, err := s.gtd.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{
-		CommitSHAs: []string{"abc1234"},
+		AppendCommitSHA: &sha,
 	}); err != nil {
 		t.Fatalf("UpdateTask (commit_shas): %v", err)
 	}

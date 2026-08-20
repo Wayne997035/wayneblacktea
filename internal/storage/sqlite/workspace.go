@@ -178,32 +178,51 @@ func (s *WorkspaceStore) UpsertModelPreference(ctx context.Context, model string
 	return nil
 }
 
-// UpsertRepo creates or updates a repo entry.
+// UpsertRepo creates or updates a repo entry. path/description/language/
+// current_branch/known_issues/next_planned_step are presence-aware (Ω6,
+// 2026-08-20-mcp-surface-spec.md): the ON CONFLICT CASE branches check the
+// bound PARAMETER (?4-?8), not excluded.<col> (which is never NULL — it's
+// whatever the VALUES clause carried), so a nil pointer preserves the stored
+// value instead of wiping it. This closes the PG/SQLite divergence
+// (known_issues was already COALESCE-preserved on PG but unconditionally
+// overwritten here).
 func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoParams) (*db.Repo, error) {
 	id := uuid.New()
-	issuesJSON, err := encodeStringSlice(p.KnownIssues)
-	if err != nil {
-		return nil, err
+	var issuesArg any
+	if p.KnownIssues != nil {
+		encoded, err := encodeStringSlice(p.KnownIssues)
+		if err != nil {
+			return nil, err
+		}
+		issuesArg = encoded
 	}
 	now := sqliteNowMillis()
+	// known_issues is NOT NULL DEFAULT '[]' in the schema — COALESCE(?8, '[]')
+	// in the VALUES clause only matters for the brand-new-row (no-conflict)
+	// path; a bare ?8 there would try to insert a literal NULL and violate
+	// the NOT NULL constraint whenever a caller's first-ever sync_repo call
+	// for a new repo doesn't set known_issues (sync_repo never does — that
+	// arg isn't part of its schema). The ON CONFLICT branch below still
+	// checks the raw ?8 parameter, not this VALUES-clause default, so
+	// preserve-on-omit for existing rows is unaffected.
 	const q = `INSERT INTO repos
 		(id, workspace_id, name, path, description, language, current_branch,
 		 known_issues, next_planned_step, last_activity, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, '[]'), ?9, ?10, ?10, ?10)
 		ON CONFLICT(COALESCE(workspace_id,''), name) DO UPDATE SET
-			path = excluded.path,
-			description = excluded.description,
-			language = excluded.language,
-			current_branch = excluded.current_branch,
-			known_issues = excluded.known_issues,
-			next_planned_step = excluded.next_planned_step,
+			path = CASE WHEN ?4 IS NULL THEN repos.path ELSE excluded.path END,
+			description = CASE WHEN ?5 IS NULL THEN repos.description ELSE excluded.description END,
+			language = CASE WHEN ?6 IS NULL THEN repos.language ELSE excluded.language END,
+			current_branch = CASE WHEN ?7 IS NULL THEN repos.current_branch ELSE excluded.current_branch END,
+			known_issues = CASE WHEN ?8 IS NULL THEN repos.known_issues ELSE excluded.known_issues END,
+			next_planned_step = CASE WHEN ?9 IS NULL THEN repos.next_planned_step ELSE excluded.next_planned_step END,
 			last_activity = excluded.last_activity,
 			updated_at = excluded.updated_at`
-	_, err = s.db.conn.ExecContext(ctx, q,
-		id.String(), s.db.workspaceArg(), p.Name, nullStringIfEmpty(p.Path),
-		nullStringIfEmpty(p.Description), nullStringIfEmpty(p.Language),
-		nullStringIfEmpty(p.CurrentBranch), issuesJSON,
-		nullStringIfEmpty(p.NextPlannedStep), now)
+	_, err := s.db.conn.ExecContext(ctx, q,
+		id.String(), s.db.workspaceArg(), p.Name, nullStringPtr(p.Path),
+		nullStringPtr(p.Description), nullStringPtr(p.Language),
+		nullStringPtr(p.CurrentBranch), issuesArg,
+		nullStringPtr(p.NextPlannedStep), now)
 	if err != nil {
 		return nil, errWrap("UpsertRepo", err)
 	}

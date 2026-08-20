@@ -26,12 +26,12 @@ func TestWorkspaceStore_UpsertAndGetRoundTrip(t *testing.T) {
 	s := openWorkspaceStore(t, ":memory:", "")
 	repo, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{
 		Name:            "round-trip",
-		Path:            "/tmp/round-trip",
-		Description:     "demo repo",
-		Language:        "go",
-		CurrentBranch:   "main",
+		Path:            strPtr("/tmp/round-trip"),
+		Description:     strPtr("demo repo"),
+		Language:        strPtr("go"),
+		CurrentBranch:   strPtr("main"),
 		KnownIssues:     []string{"issue one", "issue two"},
-		NextPlannedStep: "ship sqlite stores",
+		NextPlannedStep: strPtr("ship sqlite stores"),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRepo: %v", err)
@@ -82,13 +82,13 @@ func TestWorkspaceStore_EmptyTable(t *testing.T) {
 func TestWorkspaceStore_UpdateExistingRepo(t *testing.T) {
 	s := openWorkspaceStore(t, ":memory:", "")
 	first, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{
-		Name: "update-me", Language: "go",
+		Name: "update-me", Language: strPtr("go"),
 	})
 	if err != nil {
 		t.Fatalf("first UpsertRepo: %v", err)
 	}
 	second, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{
-		Name: "update-me", Language: "typescript", Description: "updated",
+		Name: "update-me", Language: strPtr("typescript"), Description: strPtr("updated"),
 	})
 	if err != nil {
 		t.Fatalf("second UpsertRepo: %v", err)
@@ -156,7 +156,7 @@ func TestWorkspaceStore_RepoByID(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := s.UpsertRepo(ctx, workspace.UpsertRepoParams{
-		Name: "by-id", Language: "go", Description: "lookup by id",
+		Name: "by-id", Language: strPtr("go"), Description: strPtr("lookup by id"),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRepo: %v", err)
