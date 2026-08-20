@@ -66,8 +66,8 @@ func TestBuildID_MalformedDate(t *testing.T) {
 	Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
 
 	cases := []string{
-		"unknown",             // the package's own Date sentinel
-		"2026-08-16",          // date only, no time — not RFC3339
+		"unknown",    // the package's own Date sentinel
+		"2026-08-16", // date only, no time — not RFC3339
 		"not-a-date-at-all",
 		"",
 	}
