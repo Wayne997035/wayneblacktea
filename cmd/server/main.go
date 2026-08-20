@@ -326,7 +326,15 @@ func run() error {
 	log.Printf("mcp: http transport capabilities = %+v", capReport)
 	handlers.knowledge.WithAtomizer(mcpServer.LaunchAtomize)
 	httpMCPHandler := mcphttp.NewStreamableHTTPServer(mcpServer.MCPServer())
-	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), apimw.APIKeyMiddleware(apiKey))
+	// mcpRL runs BEFORE the API key check (order matters: Echo middleware
+	// passed to a route runs in the order listed) — U19's threat surface is
+	// an unauthenticated flood, so the rate limit must bound cost for
+	// wrong-key requests too, not only ones that already cleared auth. Every
+	// other rate limiter in this file sits after its group's auth middleware
+	// (api := e.Group("/api", apimw.APIKeyMiddleware(apiKey)) runs first,
+	// mutationRL/etc. second) because none of their dispatch threat models
+	// call out an unauthenticated-flood scenario the way U19's does.
+	e.Any("/mcp", echo.WrapHandler(httpMCPHandler), newMCPRateLimiter(), apimw.APIKeyMiddleware(apiKey))
 
 	distFS, err := fs.Sub(staticFiles, "web/dist")
 	if err != nil {
@@ -370,6 +378,28 @@ func run() error {
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil
+}
+
+// mcpRateLimit is the /mcp requests-per-second budget (U19, F14,
+// 2026-08-20-mcp-surface-spec.md): every single MCP tool call from every
+// transport-HTTP client goes through this one route, with Burst defaulting
+// to the rounded-down rate (echo's NewRateLimiterMemoryStore doc comment) —
+// the same convention every other rate limiter in this file already uses
+// (mutationRL=30, activityRL=30, postToolUseRL=120). Set to parity with
+// postToolUseRL rather than inventing a new number: that limiter's own
+// comment already justifies 120 as the budget for "fires on every Claude
+// Code tool call, including fast loops" — /mcp is exactly that class of
+// endpoint (arguably busier, since it IS the live tool-call path, not a
+// post-hoc log write), and this is a single-tenant personal deployment
+// where legitimate traffic never approaches even a fraction of 120/s.
+const mcpRateLimit = 120
+
+// newMCPRateLimiter returns the rate-limiting middleware for the /mcp route.
+// Extracted to its own function (mirrors resolveIPExtractor above) so its
+// configuration can be exercised directly in a unit test without wiring the
+// full server.
+func newMCPRateLimiter() echo.MiddlewareFunc {
+	return echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(mcpRateLimit))
 }
 
 func validateAPIKey(apiKey string) error {
