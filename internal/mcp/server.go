@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -512,10 +513,51 @@ func stringArg(args map[string]any, key string) string {
 	return v
 }
 
-// numberArg extracts a float64 argument and returns it as int32.
+// numberArg extracts a float64 argument and returns it as int32, silently
+// truncating any fractional part (F9, 2026-08-20-mcp-surface-spec.md U12:
+// e.g. priority=2.5 becomes 2 with no error). Kept as-is for its existing
+// call sites — changing its signature to reject fractional input would
+// require updating every caller in the same commit, which spans files this
+// PR's lane split does not own (tools_atom.go, tools_behaviorrule.go,
+// tools_contextpack.go, tools_decision.go, tools_health.go,
+// tools_knowledge.go, tools_learning.go, tools_outcome.go,
+// tools_procedural.go, tools_proposal.go, tools_reflection.go,
+// tools_skill.go, tools_vision.go, tools_watchdog.go, tools_worksession.go —
+// see this dispatch's final report for the tracked list). New call sites
+// should use requireIntArg below instead, which shares isWholeNumber's guard
+// with decodeIntField (toolspec.go) and rejects rather than truncates.
 func numberArg(args map[string]any, key string) int32 {
 	v, _ := args[key].(float64)
 	return int32(v)
+}
+
+// isWholeNumber reports whether v has no fractional part — the one shared
+// guard behind both decodeIntField (toolspec.go, seam-validated tools) and
+// requireIntArg (below, new non-seam call sites). F9's root cause was this
+// check not existing in EITHER path (int64(nv) and int32(v) both truncated
+// silently); this is deliberately the single place that check now lives.
+func isWholeNumber(v float64) bool {
+	return v == math.Trunc(v)
+}
+
+// requireIntArg extracts a required integer argument, returning a
+// ready-to-send MCP error result when the key is missing, non-numeric, or
+// carries a fractional part (see numberArg's doc comment for why numberArg
+// itself keeps its old truncating behaviour instead of being changed
+// in-place). Prefer this over numberArg for any new or migrated call site.
+func requireIntArg(args map[string]any, key string) (int32, *mcp.CallToolResult) {
+	raw, present := args[key]
+	if !present {
+		return 0, mcp.NewToolResultError(key + " is required")
+	}
+	v, ok := raw.(float64)
+	if !ok {
+		return 0, mcp.NewToolResultError(key + " must be a number")
+	}
+	if !isWholeNumber(v) {
+		return 0, mcp.NewToolResultError(fmt.Sprintf("%s must be a whole number, got %v", key, v))
+	}
+	return int32(v), nil
 }
 
 // boolArg extracts a boolean argument from MCP tool arguments. Missing or
