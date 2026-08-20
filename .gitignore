@@ -69,6 +69,7 @@ migrations/**/*.bak
 
 # Review-army reports (local working artifacts, never pushed)
 .reviews/
+.implement/
 
 # Python tooling working artifacts (scripts/gtd-code-audit/ etc.) — same
 # convention as _project/.gitignore's scripts/*/reports/.
