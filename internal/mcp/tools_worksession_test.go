@@ -466,6 +466,65 @@ func TestCheckpointWorkAndFinishWork_DeadParamsRemoved(t *testing.T) {
 	}
 }
 
+// TestHandleFinishWork_NewDecisionsReachableByRepoName is the bad-case red
+// test for the repo_name gap the Lead asked to fix after PR160 Lane C's
+// first pass: finish_work never registered a repo_name tool argument (only
+// start_work/get_active_work/list_recent_work_sessions did), so
+// stringArg(args, "repo_name") inside logFinishWorkDecisions was always "" —
+// every decision logged via finish_work's new_decisions had RepoName="" and
+// was permanently unreachable via list_decisions(repo_name), the one query
+// path the MCP protocol mandates before answering an architecture/
+// past-decision question. The fix reads sess.RepoName (the session's own
+// repo) instead of a caller-supplied argument that never existed on the
+// schema. This test seeds a decision through finish_work and asserts it is
+// found by list_decisions filtered on the session's repo — not just that a
+// row exists in the table.
+func TestHandleFinishWork_NewDecisionsReachableByRepoName(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	repoName := "finish-work-decision-repo"
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": repoName,
+		"title":     "repo_name reachability test",
+		"goal":      "verify new_decisions logged via finish_work is reachable by repo_name",
+	})
+	if startR.IsError {
+		t.Fatalf("start_work failed: %s", resultText(startR))
+	}
+	sessID := startSessionID(t, startR)
+
+	uniqueTitle := "finish_work decision reachability check " + sessID
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":    sessID,
+		"summary":       "done",
+		"new_decisions": `["` + uniqueTitle + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(r))
+	}
+	var finishResult map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &finishResult); err != nil {
+		t.Fatalf("unmarshal finish result: %v", err)
+	}
+	if got, _ := finishResult["decisions_logged"].(float64); got != 1 {
+		t.Fatalf("precondition failed: decisions_logged = %v, want 1", finishResult["decisions_logged"])
+	}
+
+	listR := callListDecisions(t, s, map[string]any{
+		"repo_name": repoName,
+		"limit":     float64(50),
+	})
+	if listR.IsError {
+		t.Fatalf("list_decisions failed: %s", resultText(listR))
+	}
+	if !strings.Contains(resultText(listR), uniqueTitle) {
+		t.Errorf("list_decisions(repo_name=%q) did not find decision %q logged via finish_work — "+
+			"bad case: decision was recorded with the wrong (empty) repo_name and is unreachable "+
+			"from the one query path the MCP protocol mandates.\nresponse: %s",
+			repoName, uniqueTitle, resultText(listR))
+	}
+}
+
 // ---- finish_work ----
 
 func TestHandleFinishWork_Success(t *testing.T) {

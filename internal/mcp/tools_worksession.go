@@ -753,7 +753,22 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 	// — since decisions were already committed with nothing to attach them
 	// to. Finish's own session-exists + status check now doubles as the
 	// validation gate the fix pattern calls for).
-	decisionResult := s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), stringArg(args, "repo_name"))
+	//
+	// repo_name comes from sess.RepoName (the session's own repo, already
+	// known server-side), NOT from a "repo_name" tool argument — finish_work
+	// never registered that param in its schema (only start_work/
+	// get_active_work/list_recent_work_sessions did), so stringArg(args,
+	// "repo_name") was always "". Every decision logged via finish_work's
+	// new_decisions therefore had RepoName="" — unreachable from
+	// list_decisions(repo_name), the one query path the MCP protocol
+	// mandates before answering an architecture/past-decision question. Data
+	// wasn't lost, but it was permanently unreachable through the only
+	// enforced read path — same failure class as this PR's Category Ω
+	// (write and read semantics diverging). Reading it back from sess avoids
+	// asking the caller to repeat something the server already knows, and
+	// avoids a new "caller's repo_name disagrees with the session's actual
+	// repo" inconsistency a schema param would introduce.
+	decisionResult := s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), sess.RepoName)
 
 	outcomeID := s.autoCreateOutcomeOnFailure(
 		ctx, sessID, sess, completedTaskIDs, deferredTaskIDs, evidenceParams.finalResult, summary,
