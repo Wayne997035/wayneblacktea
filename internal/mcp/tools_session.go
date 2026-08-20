@@ -93,7 +93,7 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 
 	h, err := s.session.SetHandoff(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("setting handoff: %v", err)), nil
+		return storeErrorResult("setting handoff", err), nil
 	}
 	return jsonText(buildPendingHandoffView(h))
 }
@@ -108,7 +108,7 @@ func (s *Server) handleResolveHandoff(ctx context.Context, req mcp.CallToolReque
 	if err := s.session.Resolve(ctx, id); errors.Is(err, session.ErrNotFound) {
 		return mcp.NewToolResultError("handoff not found"), nil
 	} else if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("resolving handoff: %v", err)), nil
+		return storeErrorResult("resolving handoff", err), nil
 	}
 
 	return mcp.NewToolResultText("handoff resolved"), nil
@@ -137,7 +137,7 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError("handoff not found or step does not exist"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("marking next action done: %v", err)), nil
+		return storeErrorResult("marking next action done", err), nil
 	}
 	return jsonText(buildHardenedHandoffView(h))
 }

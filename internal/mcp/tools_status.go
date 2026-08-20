@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"regexp"
 
@@ -80,7 +79,7 @@ func (s *Server) handleGenerateProjectStatus(ctx context.Context, req mcp.CallTo
 	)
 	if err != nil {
 		slog.Warn("generate_project_status: failed", "slug", slug, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("generating status snapshot: %v", err)), nil
+		return storeErrorResult("generating status snapshot", err), nil
 	}
 
 	type response struct {

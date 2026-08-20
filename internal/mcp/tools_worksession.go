@@ -197,7 +197,7 @@ func parseOptionalUUID(args map[string]any, field string) (*uuid.UUID, *mcp.Call
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid %s UUID: %v", field, err))
+		return nil, inputErrorResultf(err, "invalid %s UUID", field)
 	}
 	return &id, nil
 }
@@ -211,7 +211,7 @@ func parseTaskIDsFromField(args map[string]any, field string) ([]uuid.UUID, *mcp
 	}
 	var rawIDs []string
 	if err := json.Unmarshal([]byte(raw), &rawIDs); err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid %s JSON: %v", field, err))
+		return nil, inputErrorResultf(err, "invalid %s JSON", field)
 	}
 	if len(rawIDs) > 50 {
 		return nil, mcp.NewToolResultError(fmt.Sprintf("%s exceeds limit: got %d, max 50", field, len(rawIDs)))
@@ -220,7 +220,7 @@ func parseTaskIDsFromField(args map[string]any, field string) ([]uuid.UUID, *mcp
 	for _, rawID := range rawIDs {
 		id, err := uuid.Parse(rawID)
 		if err != nil {
-			return nil, mcp.NewToolResultError(fmt.Sprintf("invalid UUID in %s %q: %v", field, rawID, err))
+			return nil, inputErrorResultf(err, "invalid UUID in %s %q", field, rawID)
 		}
 		ids = append(ids, id)
 	}
@@ -355,7 +355,7 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 				"another session is already in_progress for this repo — call finish_work or get_active_work first",
 			), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("start_work failed: %v", err)), nil
+		return storeErrorResult("start_work failed", err), nil
 	}
 
 	slog.Info("start_work", "session_id", sess.ID, "workspace_id", s.workspaceUUIDVal(), "repo_name", repoName)
@@ -394,7 +394,7 @@ func (s *Server) handleGetActiveWork(ctx context.Context, req mcp.CallToolReques
 	wsID := s.workspaceUUIDVal()
 	result, err := s.workSession.GetActive(ctx, wsID, repoName)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get_active_work failed: %v", err)), nil
+		return storeErrorResult("get_active_work failed", err), nil
 	}
 	// U13 (2026-08-20-mcp-surface-spec.md): result.Session is read back from
 	// a session that may have been started by an earlier, possibly
@@ -450,7 +450,7 @@ func (s *Server) handleCheckpointWork(ctx context.Context, req mcp.CallToolReque
 		if errors.Is(err, worksession.ErrNotFound) {
 			return mcp.NewToolResultError("session not found or not in checkpointable state"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("checkpoint_work failed: %v", err)), nil
+		return storeErrorResult("checkpoint_work failed", err), nil
 	}
 
 	return jsonText(map[string]any{
@@ -552,7 +552,7 @@ func parseFinishWorkEvidence(args map[string]any) ([]worksession.EvidenceInput, 
 	}
 	var items []finishWorkEvidenceItem
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid evidence JSON: %v", err))
+		return nil, inputErrorResult("invalid evidence JSON", err)
 	}
 	if len(items) > maxEvidenceItems {
 		return nil, mcp.NewToolResultError(
@@ -792,7 +792,7 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		if errors.Is(err, worksession.ErrNotFound) {
 			return mcp.NewToolResultError("session not found or already completed/cancelled"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("finish_work failed: %v", err)), nil
+		return storeErrorResult("finish_work failed", err), nil
 	}
 	if completedIDs == nil {
 		completedIDs = []uuid.UUID{}
@@ -878,7 +878,7 @@ func (s *Server) handleListRecentWorkSessions(ctx context.Context, req mcp.CallT
 
 	sessions, err := s.workSession.ListRecent(ctx, s.workspaceUUIDVal(), repoName, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("list_recent_work_sessions failed: %v", err)), nil
+		return storeErrorResult("list_recent_work_sessions failed", err), nil
 	}
 
 	// U13 Phase B (tools_worksession.go:856): reuses neutralizeSessionMetadataFields
@@ -1206,12 +1206,12 @@ func (s *Server) handleGetWorkSessionTrace(ctx context.Context, req mcp.CallTool
 		if errors.Is(err, worksession.ErrNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("session %s not found", sessID)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("get_work_session_trace failed: %v", err)), nil
+		return storeErrorResult("get_work_session_trace failed", err), nil
 	}
 
 	evidence, err := s.workSession.GetEvidence(ctx, sessID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get_work_session_trace failed: %v", err)), nil
+		return storeErrorResult("get_work_session_trace failed", err), nil
 	}
 	if evidence == nil {
 		evidence = []worksession.Evidence{}

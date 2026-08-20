@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -145,7 +144,7 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 
 	d, err := s.decision.Log(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("logging decision: %v", err)), nil
+		return storeErrorResult("logging decision", err), nil
 	}
 	s.launchAtomize("decisions", d.ID, d.Decision+" "+d.Rationale)
 	return jsonText(wrapUntrustedDecision(d))
@@ -187,7 +186,7 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 
 	decisions, err := s.decision.List(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+		return storeErrorResult("loading decisions", err), nil
 	}
 	if decisions == nil {
 		decisions = []db.Decision{} // list tools MUST return [] not null — a nil slice serializes to JSON null

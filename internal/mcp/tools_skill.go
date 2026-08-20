@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
@@ -323,7 +322,7 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 
 	sk, err := s.skill.Add(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("extracting skill: %v", err)), nil
+		return storeErrorResult("extracting skill", err), nil
 	}
 
 	s.launchAtomize("skills", mustParseUUID(sk.ID), name+" "+description)
@@ -354,7 +353,7 @@ func (s *Server) handleSearchSkills(ctx context.Context, req mcp.CallToolRequest
 
 	results, err := s.skill.Search(ctx, f)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("searching skills: %v", err)), nil
+		return storeErrorResult("searching skills", err), nil
 	}
 	if results == nil {
 		results = []*skill.Skill{}
@@ -381,7 +380,7 @@ func (s *Server) handleUseSkill(ctx context.Context, req mcp.CallToolRequest) (*
 		if errors.Is(err, skill.ErrNotFound) {
 			return mcp.NewToolResultError("skill not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("using skill: %v", err)), nil
+		return storeErrorResult("using skill", err), nil
 	}
 	return jsonText(wrapUntrustedSkill(sk))
 }
@@ -424,7 +423,7 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 		if errors.Is(err, skill.ErrNotFound) {
 			return mcp.NewToolResultError("skill not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("updating skill from outcome: %v", err)), nil
+		return storeErrorResult("updating skill from outcome", err), nil
 	}
 
 	if notes != "" {
@@ -451,7 +450,7 @@ func (s *Server) handleListRelevantSkills(ctx context.Context, req mcp.CallToolR
 
 	results, err := s.skill.ListRelevant(ctx, wsStr, query, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing relevant skills: %v", err)), nil
+		return storeErrorResult("listing relevant skills", err), nil
 	}
 	if results == nil {
 		results = []*skill.Skill{}

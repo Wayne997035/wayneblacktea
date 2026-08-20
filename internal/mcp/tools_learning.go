@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -78,7 +77,7 @@ func wrapUntrustedConcept(c *db.Concept) *db.Concept {
 func (s *Server) handleGetDueReviews(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	reviews, err := s.learning.DueReviews(ctx, 50)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading due reviews: %v", err)), nil
+		return storeErrorResult("loading due reviews", err), nil
 	}
 	return jsonText(wrapUntrustedDueReviews(reviews))
 }
@@ -109,14 +108,14 @@ func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest
 		if errors.Is(err, learning.ErrNotFound) {
 			return mcp.NewToolResultError("review schedule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("loading review schedule: %v", err)), nil
+		return storeErrorResult("loading review schedule", err), nil
 	}
 
 	if err := s.learning.SubmitReview(ctx, scheduleID, state, learning.Rating(ratingVal)); err != nil {
 		if errors.Is(err, learning.ErrNotFound) {
 			return mcp.NewToolResultError("review schedule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("submitting review: %v", err)), nil
+		return storeErrorResult("submitting review", err), nil
 	}
 	return mcp.NewToolResultText("review submitted"), nil
 }
@@ -145,7 +144,7 @@ func (s *Server) handleCreateConcept(ctx context.Context, req mcp.CallToolReques
 
 	concept, err := s.learning.CreateConcept(ctx, title, content, tags)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating concept: %v", err)), nil
+		return storeErrorResult("creating concept", err), nil
 	}
 	return jsonText(wrapUntrustedConcept(concept))
 }

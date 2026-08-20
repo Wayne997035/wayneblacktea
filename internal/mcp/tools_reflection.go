@@ -138,7 +138,7 @@ func (s *Server) handleGenerateReflection(ctx context.Context, req mcp.CallToolR
 
 	r, err := s.reflection.Create(ctx, *params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating reflection: %v", err)), nil
+		return storeErrorResult("creating reflection", err), nil
 	}
 	// M9: atomize the reflection summary in the background when non-empty.
 	if r.Summary != "" {
@@ -183,15 +183,15 @@ func buildReflectionCreateParams(
 
 	insights, err := parseOptionalJSON(args, "insights")
 	if err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("insights: %v", err))
+		return nil, inputErrorResult("insights", err)
 	}
 	patternsDetected, err := parseOptionalJSON(args, "patterns_detected")
 	if err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("patterns_detected: %v", err))
+		return nil, inputErrorResult("patterns_detected", err)
 	}
 	suggestedActions, err := parseOptionalJSON(args, "suggested_actions")
 	if err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("suggested_actions: %v", err))
+		return nil, inputErrorResult("suggested_actions", err)
 	}
 
 	params := &reflection.CreateParams{
@@ -225,7 +225,7 @@ func applyRelatedEntity(params *reflection.CreateParams, args map[string]any) *m
 	if relEntityIDStr != "" {
 		relID, parseErr := uuid.Parse(relEntityIDStr)
 		if parseErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("related_entity_id: invalid UUID: %v", parseErr))
+			return inputErrorResult("related_entity_id: invalid UUID", parseErr)
 		}
 		params.RelatedEntityID = &relID
 	}
@@ -254,7 +254,7 @@ func (s *Server) handleListReflections(ctx context.Context, req mcp.CallToolRequ
 
 	reflections, err := s.reflection.List(ctx, params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing reflections: %v", err)), nil
+		return storeErrorResult("listing reflections", err), nil
 	}
 	if reflections == nil {
 		reflections = []*reflection.Reflection{}
@@ -282,7 +282,7 @@ func (s *Server) handleGetLatestReflection(ctx context.Context, req mcp.CallTool
 		if errors.Is(err, reflection.ErrNotFound) {
 			return jsonText(nil)
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("getting latest reflection: %v", err)), nil
+		return storeErrorResult("getting latest reflection", err), nil
 	}
 	return jsonText(wrapUntrustedReflection(r))
 }
@@ -299,7 +299,7 @@ func (s *Server) handleAnalyzeRecentPatterns(ctx context.Context, req mcp.CallTo
 
 	reflections, err := s.reflection.RecentWithPatterns(ctx, s.workspaceUUID(), since, 50)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("analyzing recent patterns: %v", err)), nil
+		return storeErrorResult("analyzing recent patterns", err), nil
 	}
 	if reflections == nil {
 		reflections = []*reflection.Reflection{}

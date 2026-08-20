@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
@@ -130,7 +129,7 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 
 	pack, err := s.contextAssembler.Assemble(ctx, cpReq)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("assembling context: %v", err)), nil
+		return storeErrorResult("assembling context", err), nil
 	}
 
 	// contextpack.Pack carries its own snake_case json tags (the wire

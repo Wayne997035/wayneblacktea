@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -553,15 +552,15 @@ func (s *Server) fetchLatestStatusSnapshot(ctx context.Context) *latestStatusSna
 func (r *todayContextRaw) toolError() *mcp.CallToolResult {
 	switch {
 	case r.goalsErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading goals: %v", r.goalsErr))
+		return storeErrorResult("loading goals", r.goalsErr)
 	case r.projectsErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading projects: %v", r.projectsErr))
+		return storeErrorResult("loading projects", r.projectsErr)
 	case r.progressErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading progress: %v", r.progressErr))
+		return storeErrorResult("loading progress", r.progressErr)
 	case r.handoffErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading handoff: %v", r.handoffErr))
+		return storeErrorResult("loading handoff", r.handoffErr)
 	case r.pulledErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading pull-forward tasks: %v", r.pulledErr))
+		return storeErrorResult("loading pull-forward tasks", r.pulledErr)
 	default:
 		return nil
 	}
@@ -648,7 +647,7 @@ func wrapUntrustedRepo(r *db.Repo) *db.Repo {
 func (s *Server) handleListActiveRepos(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	repos, err := s.workspace.ActiveRepos(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading repos: %v", err)), nil
+		return storeErrorResult("loading repos", err), nil
 	}
 	out := make([]db.Repo, len(repos))
 	for i := range repos {
@@ -716,7 +715,7 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 		NextPlannedStep: opt.nextPlannedStep,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("syncing repo: %v", err)), nil
+		return storeErrorResult("syncing repo", err), nil
 	}
 	return jsonText(wrapUntrustedRepo(repo))
 }

@@ -621,7 +621,7 @@ func (s *Server) handleDetectUnclosedLoops(ctx context.Context, _ mcp.CallToolRe
 	}
 	events, err := s.disciplineEventStore.ListUnresolved(ctx, s.workspaceID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing unresolved events: %v", err)), nil
+		return storeErrorResult("listing unresolved events", err), nil
 	}
 	if events == nil {
 		events = []watchdog.DisciplineEvent{}
@@ -642,13 +642,13 @@ func (s *Server) handleMarkLoopResolved(ctx context.Context, req mcp.CallToolReq
 	}
 	eventID, err := uuid.Parse(eventIDStr)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid event_id UUID: %v", err)), nil
+		return inputErrorResult("invalid event_id UUID", err), nil
 	}
 	if err := s.disciplineEventStore.MarkResolved(ctx, eventID); err != nil {
 		if errors.Is(err, watchdog.ErrEventNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("event %s not found", eventIDStr)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("marking event resolved: %v", err)), nil
+		return storeErrorResult("marking event resolved", err), nil
 	}
 	out, _ := json.Marshal(map[string]any{
 		"event_id":    eventIDStr,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -159,7 +158,7 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 	var dependsOn []string
 	if raw := stringArg(args, "depends_on"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &dependsOn); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("depends_on must be a valid JSON array: %v", err)), nil
+			return inputErrorResult("depends_on must be a valid JSON array", err), nil
 		}
 	}
 
@@ -178,7 +177,7 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 
 	item, err := s.vision.Add(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding vision item: %v", err)), nil
+		return storeErrorResult("adding vision item", err), nil
 	}
 	safeItem := wrapUntrustedVisionItem(item)
 	if len(allWarnings) > 0 {
@@ -206,7 +205,7 @@ func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequ
 
 	items, err := s.vision.List(ctx, filter)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing vision items: %v", err)), nil
+		return storeErrorResult("listing vision items", err), nil
 	}
 	if items == nil {
 		items = []vision.VisionItemSummary{}
@@ -253,7 +252,7 @@ func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError("vision item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating vision item: %v", err)), nil
+		return storeErrorResult("updating vision item", err), nil
 	}
 	return jsonText(wrapUntrustedVisionItem(item))
 }
@@ -271,7 +270,7 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("vision item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading vision item: %v", err)), nil
+		return storeErrorResult("loading vision item", err), nil
 	}
 
 	// Determine GTD task title.
@@ -300,7 +299,7 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 	}
 	task, err := s.gtd.CreateTask(ctx, taskParams)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating GTD task: %v", err)), nil
+		return storeErrorResult("creating GTD task", err), nil
 	}
 
 	// Mark vision item as promoted.
@@ -310,7 +309,7 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("vision item not found after task creation"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("promoting vision item: %v", err)), nil
+		return storeErrorResult("promoting vision item", err), nil
 	}
 
 	return jsonText(map[string]any{

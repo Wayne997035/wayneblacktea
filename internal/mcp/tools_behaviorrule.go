@@ -123,7 +123,7 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 	var err error
 	condition, err = sanitizeRuleText(condition, 2000)
 	if err != nil {
-		return mcp.NewToolResultError("condition: " + err.Error()), nil
+		return inputErrorResult("condition", err), nil
 	}
 
 	action := stringArg(args, "action")
@@ -132,7 +132,7 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 	}
 	action, err = sanitizeRuleText(action, 2000)
 	if err != nil {
-		return mcp.NewToolResultError("action: " + err.Error()), nil
+		return inputErrorResult("action", err), nil
 	}
 
 	sourceType := stringArg(args, "source_type")
@@ -162,14 +162,14 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 	if srcIDStr != "" {
 		srcID, err := uuid.Parse(srcIDStr)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("source_id: invalid UUID: %v", err)), nil
+			return inputErrorResult("source_id: invalid UUID", err), nil
 		}
 		params.SourceID = &srcID
 	}
 
 	r, err := s.behaviorRule.Propose(ctx, params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("proposing behavior rule: %v", err)), nil
+		return storeErrorResult("proposing behavior rule", err), nil
 	}
 	return jsonText(wrapUntrustedBehaviorRule(r))
 }
@@ -205,7 +205,7 @@ func (s *Server) handleListBehaviorRules(ctx context.Context, req mcp.CallToolRe
 
 	rules, err := s.behaviorRule.List(ctx, params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing behavior rules: %v", err)), nil
+		return storeErrorResult("listing behavior rules", err), nil
 	}
 	if rules == nil {
 		rules = []*behaviorrule.BehaviorRule{}
@@ -226,7 +226,7 @@ func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolR
 	}
 	ruleID, err := uuid.Parse(ruleIDStr)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("rule_id: invalid UUID: %v", err)), nil
+		return inputErrorResult("rule_id: invalid UUID", err), nil
 	}
 
 	outcome := stringArg(args, "outcome")
@@ -239,7 +239,7 @@ func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolR
 		if errors.Is(err, behaviorrule.ErrNotFound) {
 			return mcp.NewToolResultError("behavior rule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("applying outcome: %v", err)), nil
+		return storeErrorResult("applying outcome", err), nil
 	}
 	return jsonText(wrapUntrustedBehaviorRule(r))
 }
@@ -273,7 +273,7 @@ func (s *Server) handleDeprecateBehaviorRule(ctx context.Context, req mcp.CallTo
 	}
 	ruleID, err := uuid.Parse(ruleIDStr)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("rule_id: invalid UUID: %v", err)), nil
+		return inputErrorResult("rule_id: invalid UUID", err), nil
 	}
 
 	r, err := s.behaviorRule.Deprecate(ctx, ruleID)
@@ -281,7 +281,7 @@ func (s *Server) handleDeprecateBehaviorRule(ctx context.Context, req mcp.CallTo
 		if errors.Is(err, behaviorrule.ErrNotFound) {
 			return mcp.NewToolResultError("behavior rule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("deprecating behavior rule: %v", err)), nil
+		return storeErrorResult("deprecating behavior rule", err), nil
 	}
 	return jsonText(wrapUntrustedBehaviorRule(r))
 }

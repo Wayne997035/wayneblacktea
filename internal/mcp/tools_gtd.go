@@ -559,7 +559,7 @@ func wrapUntrustedGoals(goals []db.Goal) []db.Goal {
 func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*mcp.CallToolResult, error) {
 	projects, err := s.gtd.ListActiveProjects(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading projects: %v", err)), nil
+		return storeErrorResult("loading projects", err), nil
 	}
 	if projects == nil {
 		projects = []db.Project{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
@@ -590,7 +590,7 @@ func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs
 		return mcp.NewToolResultError("project name already exists"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating project: %v", err)), nil
+		return storeErrorResult("creating project", err), nil
 	}
 	return jsonText(wrapUntrustedProject(project))
 }
@@ -602,12 +602,12 @@ func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs
 		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading project: %v", err)), nil
+		return storeErrorResult("loading project", err), nil
 	}
 
-	p, toolErr := buildUpdateProjectParams(args, existing)
-	if toolErr != "" {
-		return mcp.NewToolResultError(toolErr), nil
+	p, toolErrMsg := buildUpdateProjectParams(args, existing)
+	if toolErrMsg != "" {
+		return mcp.NewToolResultError(toolErrMsg), nil
 	}
 
 	project, err := s.gtd.UpdateProject(ctx, args.ProjectID, p)
@@ -615,14 +615,14 @@ func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs
 		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
+		return storeErrorResult("updating project", err), nil
 	}
 	return jsonText(wrapUntrustedProject(project))
 }
 
 // buildUpdateProjectParams builds a gtd.UpdateProjectParams from typed
 // UpdateProjectArgs, filling omitted fields from the existing project row.
-// Returns a non-empty toolErr string on validation failure. status's
+// Returns a non-empty toolErrMsg string on validation failure. status's
 // enum-membership (when present+non-empty) is already enforced by the seam
 // (update_project's status arg declares mcp.Enum(...) at registration) — no
 // hand-written switch-case needed here.
@@ -779,7 +779,7 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 	}
 	rows, err := s.gtd.TasksFiltered(ctx, f)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading tasks: %v", err)), nil
+		return storeErrorResult("loading tasks", err), nil
 	}
 
 	hasMore := len(rows) > limit
@@ -827,7 +827,7 @@ func (s *Server) handleGetTask(ctx context.Context, args GetTaskArgs) (*mcp.Call
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
+		return storeErrorResult("loading task", err), nil
 	}
 	return jsonText(wrapUntrustedTask(task))
 }
@@ -856,7 +856,7 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
+		return storeErrorResult("loading task", err), nil
 	}
 
 	// Idempotent no-op: same → same, no write. U13 Phase B
@@ -880,7 +880,7 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating task status: %v", err)), nil
+		return storeErrorResult("updating task status", err), nil
 	}
 	return jsonText(wrapUntrustedTask(updated)) // U13 Phase B (tools_gtd.go:843)
 }
@@ -926,9 +926,9 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
 	}
 
-	assignee, assigneeErr := resolveAssignee(args.Assignee)
-	if assigneeErr != "" {
-		return mcp.NewToolResultError(assigneeErr), nil
+	assignee, assigneeErrMsg := resolveAssignee(args.Assignee)
+	if assigneeErrMsg != "" {
+		return mcp.NewToolResultError(assigneeErrMsg), nil
 	}
 
 	p := gtd.CreateTaskParams{
@@ -940,9 +940,9 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		Kind:        kind,
 		ProjectID:   args.ProjectID,
 	}
-	imp, impErr := parseImportance(args.Importance)
-	if impErr != "" {
-		return mcp.NewToolResultError(impErr), nil
+	imp, impErrMsg := parseImportance(args.Importance)
+	if impErrMsg != "" {
+		return mcp.NewToolResultError(impErrMsg), nil
 	}
 	p.Importance = imp
 	if msg := applyBranchAndPR(args.BranchName, args.PRUrl, &p); msg != "" {
@@ -961,7 +961,7 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {
 		slog.Warn("add_task: CreateTask failed", "title", args.Title, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("creating task: %v", err)), nil
+		return storeErrorResult("creating task", err), nil
 	}
 
 	// Embed warnings in the result body when present. U13 Phase B
@@ -991,7 +991,7 @@ func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) 
 	}
 	if err != nil {
 		slog.Warn("complete_task: CompleteTask failed", "task_id", args.TaskID, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("completing task: %v", err)), nil
+		return storeErrorResult("completing task", err), nil
 	}
 
 	// Auto-parse artifact: PR URL → set pr_url; 40-hex SHA → append to commit_shas.
@@ -1067,7 +1067,7 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, art
 func (s *Server) handleListGoals(ctx context.Context, _ ListGoalsArgs) (*mcp.CallToolResult, error) {
 	goals, err := s.gtd.ActiveGoals(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading goals: %v", err)), nil
+		return storeErrorResult("loading goals", err), nil
 	}
 	if goals == nil {
 		goals = []db.Goal{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
@@ -1091,7 +1091,7 @@ func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mc
 
 	goal, err := s.gtd.CreateGoal(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating goal: %v", err)), nil
+		return storeErrorResult("creating goal", err), nil
 	}
 	return jsonText(wrapUntrustedGoal(goal)) // U13 Phase B (tools_gtd.go:1047)
 }
@@ -1127,9 +1127,9 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 		v := args.Priority
 		p.Priority = &v
 	}
-	imp, impErr := parseImportance(args.Importance)
-	if impErr != "" {
-		return p, impErr
+	imp, impErrMsg := parseImportance(args.Importance)
+	if impErrMsg != "" {
+		return p, impErrMsg
 	}
 	p.Importance = imp
 
@@ -1196,7 +1196,7 @@ func (s *Server) requireAssigneeForInProgress(ctx context.Context, id uuid.UUID,
 			return mcp.NewToolResultError("task not found")
 		}
 		slog.Warn("update_task: GetTaskByID failed while checking assignee for in_progress", "task_id", id, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("checking task before in_progress transition: %v", err))
+		return storeErrorResult("checking task before in_progress transition", err)
 	}
 	if existing.Assignee.Valid && strings.TrimSpace(existing.Assignee.String) != "" {
 		return nil
@@ -1222,7 +1222,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	}
 	if err != nil {
 		slog.Warn("update_task: UpdateTask failed", "task_id", args.TaskID, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("updating task: %v", err)), nil
+		return storeErrorResult("updating task", err), nil
 	}
 	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:1178)
 }
@@ -1240,7 +1240,7 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProje
 		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
+		return storeErrorResult("updating project", err), nil
 	}
 	return jsonText(wrapUntrustedProject(project)) // U13 Phase B (tools_gtd.go:1196)
 }
@@ -1256,12 +1256,12 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", args.Name)), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading project: %v", err)), nil
+		return storeErrorResult("loading project", err), nil
 	}
 
 	decisions, err := s.decision.ByProject(ctx, project.ID, 5)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+		return storeErrorResult("loading decisions", err), nil
 	}
 	if decisions == nil {
 		decisions = []db.Decision{} // embedded list MUST be [] not null (a nil slice marshals to JSON null)
@@ -1280,7 +1280,7 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 
 func (s *Server) handleLogActivity(ctx context.Context, args LogActivityArgs) (*mcp.CallToolResult, error) {
 	if err := s.gtd.LogActivity(ctx, args.Actor, args.Action, args.ProjectID, args.Notes); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("logging activity: %v", err)), nil
+		return storeErrorResult("logging activity", err), nil
 	}
 	return mcp.NewToolResultText("activity logged"), nil
 }
@@ -1432,7 +1432,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
 		slog.Warn("delete_task: DeleteTask failed", "task_id", id, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("deleting task: %v", err)), nil
+		return storeErrorResult("deleting task", err), nil
 	}
 	return mcp.NewToolResultText("task deleted"), nil
 }
@@ -1450,7 +1450,7 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWork
 	now := time.Now()
 	tasks, err := s.gtd.UpcomingTasks(ctx, now, days, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading upcoming tasks: %v", err)), nil
+		return storeErrorResult("loading upcoming tasks", err), nil
 	}
 
 	groups := gtd.GroupUpcomingTasks(tasks, now, time.UTC, days, limit)
@@ -1527,7 +1527,7 @@ func (s *Server) handleChecklistAddItem(ctx context.Context, args ChecklistAddIt
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding checklist item: %v", err)), nil
+		return storeErrorResult("adding checklist item", err), nil
 	}
 	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1440)
 }
@@ -1547,7 +1547,7 @@ func (s *Server) handleChecklistToggle(ctx context.Context, args ChecklistToggle
 		return mcp.NewToolResultError("task or item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("toggling checklist item: %v", err)), nil
+		return storeErrorResult("toggling checklist item", err), nil
 	}
 	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1460)
 }
@@ -1562,7 +1562,7 @@ func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistComp
 		return mcp.NewToolResultError("task or item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("completing checklist item: %v", err)), nil
+		return storeErrorResult("completing checklist item", err), nil
 	}
 	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1475)
 }
@@ -1602,7 +1602,7 @@ func (s *Server) persistAssigneeBeforeBegin(ctx context.Context, id uuid.UUID, i
 		if errors.Is(err, gtd.ErrNotFound) {
 			return mcp.NewToolResultError("task not found: " + idStr)
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("persisting assignee before begin: %v", err))
+		return storeErrorResult("persisting assignee before begin", err)
 	}
 	return nil
 }
@@ -1626,7 +1626,7 @@ func (s *Server) persistBeginTaskLinkage(
 	}
 	updated, err := s.gtd.UpdateTask(ctx, id, up)
 	if err != nil {
-		return task, mcp.NewToolResultError(fmt.Sprintf("beginning task linkage persist: %v", err))
+		return task, storeErrorResult("beginning task linkage persist", err)
 	}
 	return updated, nil
 }
@@ -1716,7 +1716,7 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 	idStr := args.TaskID
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		return mcp.NewToolResultError("invalid task_id: " + err.Error()), nil
+		return inputErrorResult("invalid task_id", err), nil
 	}
 
 	branchName := args.BranchName
@@ -1725,9 +1725,9 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return mcp.NewToolResultError(msg), nil
 	}
 
-	assignee, assigneeErr := resolveAssignee(args.Assignee)
-	if assigneeErr != "" {
-		return mcp.NewToolResultError(assigneeErr), nil
+	assignee, assigneeErrMsg := resolveAssignee(args.Assignee)
+	if assigneeErrMsg != "" {
+		return mcp.NewToolResultError(assigneeErrMsg), nil
 	}
 	if errResult := s.persistAssigneeBeforeBegin(ctx, id, idStr, assignee); errResult != nil {
 		return errResult, nil
@@ -1738,7 +1738,7 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return mcp.NewToolResultError("task not found: " + idStr), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("beginning task: %v", err)), nil
+		return storeErrorResult("beginning task", err), nil
 	}
 
 	task, errResult := s.persistBeginTaskLinkage(ctx, id, task, branchName, prURL)

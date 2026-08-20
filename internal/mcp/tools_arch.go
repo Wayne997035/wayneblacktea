@@ -271,7 +271,7 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 		m := map[string]string{}
 		if rawFileMap != "" {
 			if err := json.Unmarshal([]byte(rawFileMap), &m); err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("file_map must be a valid JSON object: %v", err)), nil
+				return inputErrorResult("file_map must be a valid JSON object", err), nil
 			}
 		}
 		fileMap = &m

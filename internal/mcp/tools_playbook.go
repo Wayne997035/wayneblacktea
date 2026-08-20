@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/playbook"
@@ -92,7 +91,7 @@ func (s *Server) handleListPlaybooks(ctx context.Context, req mcp.CallToolReques
 
 	playbooks, err := s.playbook.List(ctx, params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing playbooks: %v", err)), nil
+		return storeErrorResult("listing playbooks", err), nil
 	}
 	if playbooks == nil {
 		playbooks = []*playbook.Playbook{}

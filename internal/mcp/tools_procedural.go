@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -241,15 +240,15 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 	var ccErr error
 	title, ccErr = sanitize.RejectControlChars(title, 200, false)
 	if ccErr != nil {
-		return mcp.NewToolResultError("title: " + ccErr.Error()), nil
+		return inputErrorResult("title", ccErr), nil
 	}
 	whenToUse, ccErr = sanitize.RejectControlChars(whenToUse, 2000, true)
 	if ccErr != nil {
-		return mcp.NewToolResultError("when_to_use: " + ccErr.Error()), nil
+		return inputErrorResult("when_to_use", ccErr), nil
 	}
 	approachMD, ccErr = sanitize.RejectControlChars(approachMD, 20000, true)
 	if ccErr != nil {
-		return mcp.NewToolResultError("approach_md: " + ccErr.Error()), nil
+		return inputErrorResult("approach_md", ccErr), nil
 	}
 
 	p := procedural.AddParams{
@@ -266,7 +265,7 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 
 	mem, err := s.procedural.Add(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding procedural memory: %v", err)), nil
+		return storeErrorResult("adding procedural memory", err), nil
 	}
 	s.launchAtomize("procedural_memories", mem.ID, mem.Title+" "+mem.WhenToUse+" "+mem.ApproachMD)
 	return jsonText(wrapUntrustedProceduralMemory(mem))
@@ -299,7 +298,7 @@ func (s *Server) handleQueryProcedural(ctx context.Context, req mcp.CallToolRequ
 
 	results, err := s.procedural.Query(ctx, f)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("querying procedural memories: %v", err)), nil
+		return storeErrorResult("querying procedural memories", err), nil
 	}
 	if results == nil {
 		results = []procedural.ProceduralMemory{}
@@ -320,7 +319,7 @@ func (s *Server) handleMarkProceduralUsed(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError("procedural memory not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("marking procedural memory used: %v", err)), nil
+		return storeErrorResult("marking procedural memory used", err), nil
 	}
 	return jsonText(wrapUntrustedProceduralMemory(mem))
 }

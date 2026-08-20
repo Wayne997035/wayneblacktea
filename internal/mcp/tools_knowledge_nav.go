@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -78,7 +77,7 @@ func (s *Server) handleNavigateKnowledge(ctx context.Context, req mcp.CallToolRe
 		// List root items (parent_id IS NULL).
 		items, err := s.knowledge.ListRoots(ctx)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing root knowledge items: %v", err)), nil
+			return storeErrorResult("listing root knowledge items", err), nil
 		}
 		nav := make([]knowledgeNavItem, 0, len(items))
 		for _, item := range items {
@@ -94,7 +93,7 @@ func (s *Server) handleNavigateKnowledge(ctx context.Context, req mcp.CallToolRe
 
 	items, err := s.knowledge.ListChildren(ctx, parentID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing children of %s: %v", rawParentID, err)), nil
+		return storeErrorResultf(err, "listing children of %s", rawParentID), nil
 	}
 	nav := make([]knowledgeNavItem, 0, len(items))
 	for _, item := range items {
@@ -112,7 +111,7 @@ func (s *Server) handleOutlineKnowledge(ctx context.Context, req mcp.CallToolReq
 
 	items, err := s.knowledge.ListChildren(ctx, itemID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("outlining knowledge item %s: %v", itemID, err)), nil
+		return storeErrorResultf(err, "outlining knowledge item %s", itemID), nil
 	}
 	nav := make([]knowledgeNavItem, 0, len(items))
 	for _, item := range items {

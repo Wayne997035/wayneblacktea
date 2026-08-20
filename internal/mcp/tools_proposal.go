@@ -300,7 +300,7 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 		DueDate:     dueDate,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("encoding payload: %v", err)), nil
+		return storeErrorResult("encoding payload", err), nil
 	}
 
 	row, err := s.proposal.Create(ctx, proposal.CreateParams{
@@ -309,7 +309,7 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 		ProposedBy: stringArg(args, "proposed_by"),
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating proposal: %v", err)), nil
+		return storeErrorResult("creating proposal", err), nil
 	}
 	return jsonText(wrapUntrustedProposal(row))
 }
@@ -342,7 +342,7 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 		Priority:    priority,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("encoding payload: %v", err)), nil
+		return storeErrorResult("encoding payload", err), nil
 	}
 
 	row, err := s.proposal.Create(ctx, proposal.CreateParams{
@@ -351,7 +351,7 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 		ProposedBy: stringArg(args, "proposed_by"),
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating proposal: %v", err)), nil
+		return storeErrorResult("creating proposal", err), nil
 	}
 	return jsonText(wrapUntrustedProposal(row))
 }
@@ -359,7 +359,7 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 func (s *Server) handleListPendingProposals(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rows, err := s.proposal.ListPending(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing pending proposals: %v", err)), nil
+		return storeErrorResult("listing pending proposals", err), nil
 	}
 	return jsonText(wrapUntrustedProposals(rows))
 }
@@ -406,7 +406,7 @@ func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolReq
 	// Reject path stays on BatchConfirm — no materialiser to run.
 	result, err := s.proposal.BatchConfirm(ctx, ids, proposal.StatusRejected)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("batch confirm: %v", err)), nil
+		return storeErrorResult("batch confirm", err), nil
 	}
 	return jsonText(result)
 }
@@ -480,7 +480,7 @@ func (s *Server) handleConfirmProposal(ctx context.Context, req mcp.CallToolRequ
 			return mcp.NewToolResultError("proposal not found or already resolved"), nil
 		}
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("rejecting: %v", err)), nil
+			return storeErrorResult("rejecting", err), nil
 		}
 		return jsonText(confirmResult{Proposal: wrapUntrustedProposal(row)})
 	case actionAccept:
@@ -506,7 +506,7 @@ func (s *Server) acceptProposal(ctx context.Context, id uuid.UUID) (*mcp.CallToo
 func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallToolResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("beginning tx: %v", err)), nil
+		return storeErrorResult("beginning tx", err), nil
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // safe: no-op if already committed
 
@@ -515,7 +515,7 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+		return storeErrorResult("fetching proposal", err), nil
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
@@ -529,10 +529,10 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 
 	resolved, err := s.pgProposal.WithTx(tx).Resolve(ctx, id, proposal.StatusAccepted)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal: %v", err)), nil
+		return storeErrorResult("resolving proposal", err), nil
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("committing: %v", err)), nil
+		return storeErrorResult("committing", err), nil
 	}
 	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
@@ -551,7 +551,7 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+		return storeErrorResult("fetching proposal", err), nil
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
@@ -586,7 +586,7 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+		return storeErrorResult("fetching proposal", err), nil
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
@@ -594,7 +594,7 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 
 	tx, err := s.sqliteProposal.DB().BeginTx(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("beginning transaction: %v", err)), nil
+		return storeErrorResult("beginning transaction", err), nil
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 
@@ -607,11 +607,11 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		if errors.Is(err, proposal.ErrNotFound) {
 			return mcp.NewToolResultError("proposal already resolved by concurrent request"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal: %v", err)), nil
+		return storeErrorResult("resolving proposal", err), nil
 	}
 
 	if err := tx.Commit(); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("committing transaction: %v", err)), nil
+		return storeErrorResult("committing transaction", err), nil
 	}
 
 	created = s.runSQLitePostCommitMaterialisers(ctx, id, prop, created)

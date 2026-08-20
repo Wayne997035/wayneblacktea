@@ -158,7 +158,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	var p reconcileMCPPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return mcp.NewToolResultError("invalid payload JSON: " + err.Error()), nil
+		return inputErrorResult("invalid payload JSON", err), nil
 	}
 	// Short-circuit BEFORE the prune+cap+token-issuance block below. Without
 	// this check, a completely empty merged_prs:[] payload still ran the full
@@ -190,7 +190,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	result, err := gtd.MatchMergedPRs(ctx, s.gtd, prs)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("match: %v", err)), nil
+		return storeErrorResult("match", err), nil
 	}
 
 	// BatchCompleteTasksByPRMatch and WriteAutoApplied are deliberately NOT
@@ -323,7 +323,7 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	// absent from this map even though it is still present in rec.matches.
 	appliedIDs, err := s.gtd.BatchCompleteTasksByPRMatch(ctx, rec.matches)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("batch complete: %v", err)), nil
+		return storeErrorResult("batch complete", err), nil
 	}
 
 	// Round-3 Finding 2: only write a completion_candidates 'auto_applied'

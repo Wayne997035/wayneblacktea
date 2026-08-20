@@ -1263,15 +1263,24 @@ func TestHandleGetTodayContext_ErrorPriorityIsDeterministic(t *testing.T) {
 	}
 
 	for i := range 50 {
-		if got := callGetTodayContextErr(t, s); !strings.HasPrefix(got, "loading goals:") {
-			t.Fatalf("iteration %d: error = %q, want it to start with %q", i, got, "loading goals:")
+		if got := callGetTodayContextErr(t, s); got != "loading goals failed" {
+			t.Fatalf("iteration %d: error = %q, want %q", i, got, "loading goals failed")
 		}
 	}
 }
 
 // TestHandleGetTodayContext_SingleFailureMessages verifies each lookup's own
-// failure surfaces with its own (unchanged) message, and that the documented
+// failure surfaces with its own distinct message, and that the documented
 // "no pending handoff" sentinel is NOT an error.
+//
+// The expected strings lost their ": store exploded" suffix in U14
+// (.specs/2026-08-20-mcp-surface-spec.md): this handler runs six store lookups
+// and used to render whichever failed as "<op>: %v", which put the raw store
+// error into get_today_context — the one tool the core protocol calls at every
+// session start. The property this test guards is unchanged (each lookup is
+// still distinguishable by its own op name); only the text is, so the
+// assertion below now also pins the negative half, that the store's own error
+// text is absent.
 func TestHandleGetTodayContext_SingleFailureMessages(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1282,35 +1291,39 @@ func TestHandleGetTodayContext_SingleFailureMessages(t *testing.T) {
 		{
 			name:    "goals",
 			gtd:     todayContextTestGTDStore{goalsErr: errStore},
-			wantErr: "loading goals: store exploded",
+			wantErr: "loading goals failed",
 		},
 		{
 			name:    "projects",
 			gtd:     todayContextTestGTDStore{projectsErr: errStore},
-			wantErr: "loading projects: store exploded",
+			wantErr: "loading projects failed",
 		},
 		{
 			name:    "weekly progress",
 			gtd:     todayContextTestGTDStore{progressErr: errStore},
-			wantErr: "loading progress: store exploded",
+			wantErr: "loading progress failed",
 		},
 		{
 			name:    "handoff",
 			session: todayContextTestSessionStore{err: errStore},
-			wantErr: "loading handoff: store exploded",
+			wantErr: "loading handoff failed",
 		},
 		{
 			name:    "pull-forward",
 			gtd:     todayContextTestGTDStore{tasksErr: errStore},
-			wantErr: "loading pull-forward tasks: store exploded",
+			wantErr: "loading pull-forward tasks failed",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Server{gtd: tc.gtd, session: tc.session}
-			if got := callGetTodayContextErr(t, s); got != tc.wantErr {
+			got := callGetTodayContextErr(t, s)
+			if got != tc.wantErr {
 				t.Errorf("error = %q, want %q", got, tc.wantErr)
+			}
+			if strings.Contains(got, "store exploded") {
+				t.Errorf("the store's own error text reached the client: %q", got)
 			}
 		})
 	}
@@ -1370,8 +1383,14 @@ func TestHandleGetTodayContext_PullForwardStoreError(t *testing.T) {
 		gtd:     todayContextTestGTDStore{tasksErr: context.DeadlineExceeded},
 		session: todayContextTestSessionStore{},
 	}
-	if got := callGetTodayContextErr(t, s); !strings.HasPrefix(got, "loading pull-forward tasks:") {
-		t.Errorf("error = %q, want it to start with %q", got, "loading pull-forward tasks:")
+	got := callGetTodayContextErr(t, s)
+	if got != "loading pull-forward tasks failed" {
+		t.Errorf("error = %q, want %q", got, "loading pull-forward tasks failed")
+	}
+	// U14: "context deadline exceeded" tells the caller nothing it can act on
+	// and tells a reader of its context that a query timed out.
+	if strings.Contains(got, context.DeadlineExceeded.Error()) {
+		t.Errorf("the driver-level timeout reached the client: %q", got)
 	}
 }
 

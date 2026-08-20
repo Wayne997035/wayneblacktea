@@ -186,7 +186,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	var ccErr error
 	title, content, ccErr = sanitizeKnowledgeText(title, content)
 	if ccErr != nil {
-		return mcp.NewToolResultError(ccErr.Error()), nil
+		return inputErrorResult("", ccErr), nil
 	}
 
 	cleanedTags, reason := sanitizeTags(tags)
@@ -220,7 +220,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	}
 	item, err := s.knowledge.AddItem(ctx, addParams)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding knowledge item: %v", err)), nil
+		return storeErrorResult("adding knowledge item", err), nil
 	}
 
 	atomsQueued := s.atomizer != nil && s.atom != nil
@@ -292,7 +292,7 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 		items, err = s.knowledge.Search(ctx, query, limit)
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("searching knowledge: %v", err)), nil
+		return storeErrorResult("searching knowledge", err), nil
 	}
 
 	if !includeAtoms {
@@ -330,7 +330,7 @@ func (s *Server) handleListKnowledge(ctx context.Context, req mcp.CallToolReques
 
 	items, err := s.knowledge.List(ctx, limit, offset)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing knowledge: %v", err)), nil
+		return storeErrorResult("listing knowledge", err), nil
 	}
 	return jsonText(wrapUntrustedKnowledgeItems(items))
 }
@@ -351,12 +351,12 @@ func (s *Server) handleSyncToNotion(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("knowledge item %s not found", id)), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching knowledge item: %v", err)), nil
+		return storeErrorResult("fetching knowledge item", err), nil
 	}
 
 	pageURL, err := s.notion.CreatePage(ctx, item.Title, item.Content, item.Type)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating Notion page: %v", err)), nil
+		return storeErrorResult("creating Notion page", err), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Notion page created: %s", pageURL)), nil

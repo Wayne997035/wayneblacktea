@@ -345,8 +345,17 @@ func TestHandleConfirmPlan_SequentialFallback_PartialTaskFailure_CreatedTasksSur
 	if !strings.Contains(text, "Do A") {
 		t.Errorf("already-created task title must be surfaced on partial failure, got: %s", text)
 	}
-	if !strings.Contains(text, "1 already created") {
+	// U14 moved this count out of the wrapped store error and into the
+	// response body. materializePlan's error used to be rendered verbatim
+	// ("creating task \"Do B\" (1 already created): sqlite CreateTask: CHECK
+	// constraint failed: priority BETWEEN 1 AND 5"), which carried the count
+	// but also the backend, the table constraint and its SQL text. The count
+	// is the part the caller can act on, so planResultText states it directly.
+	if !strings.Contains(text, "tasks (1)") {
 		t.Errorf("error should note exactly 1 task was already created before the failure, got: %s", text)
+	}
+	if strings.Contains(text, "CHECK constraint") || strings.Contains(text, "sqlite") {
+		t.Errorf("backend constraint detail reached the client: %s", text)
 	}
 }
 

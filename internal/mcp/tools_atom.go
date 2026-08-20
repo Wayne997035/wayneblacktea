@@ -141,7 +141,7 @@ func (s *Server) handleTraverseAtoms(ctx context.Context, req mcp.CallToolReques
 
 	result, err := s.atom.Traverse(ctx, startID, depth)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("traversing atoms: %v", err)), nil
+		return storeErrorResult("traversing atoms", err), nil
 	}
 	if result == nil {
 		result = &atom.TraverseResult{
@@ -178,7 +178,7 @@ func (s *Server) handleSearchAtoms(ctx context.Context, req mcp.CallToolRequest)
 	wsID := s.workspaceUUID()
 	atoms, err := s.atom.Search(ctx, wsID, query, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("searching atoms: %v", err)), nil
+		return storeErrorResult("searching atoms", err), nil
 	}
 	if atoms == nil {
 		atoms = []atom.Atom{}
@@ -393,7 +393,7 @@ func (s *Server) promoteSingleAtom(ctx context.Context, atomID uuid.UUID, a atom
 		Tags:    a.Tags,
 	})
 	if marshalErr != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("building proposal payload: %v", marshalErr)), nil
+		return storeErrorResult("building proposal payload", marshalErr), nil
 	}
 	prop, createErr := s.proposal.Create(ctx, proposal.CreateParams{
 		WorkspaceID: s.workspaceUUID(),
@@ -402,7 +402,7 @@ func (s *Server) promoteSingleAtom(ctx context.Context, atomID uuid.UUID, a atom
 		ProposedBy:  "atom_bridge",
 	})
 	if createErr != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating knowledge proposal: %v", createErr)), nil
+		return storeErrorResult("creating knowledge proposal", createErr), nil
 	}
 	if setErr := s.atom.SetDigestStatus(ctx, atomID, atom.DigestStatusPromoted, ""); setErr != nil {
 		slog.Warn("promote_atom_to_knowledge: setting promoted status failed",

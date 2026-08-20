@@ -280,7 +280,7 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 
 	in.notes = sanitize.Notes(stringArg(args, "notes"))
 	if err := sanitize.ValidateNoTagNoise(in.notes); err != nil {
-		return in, mcp.NewToolResultError(fmt.Sprintf("invalid notes: %v", err))
+		return in, inputErrorResult("invalid notes", err)
 	}
 
 	if raw := stringArg(args, "metrics_json"); raw != "" {
@@ -306,7 +306,7 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 
 	relatedRuleIDs, rridErr := parseRelatedRuleIDs(stringArg(args, "related_rule_ids"))
 	if rridErr != nil {
-		return in, mcp.NewToolResultError(rridErr.Error())
+		return in, inputErrorResult("", rridErr)
 	}
 	in.relatedRuleIDs = relatedRuleIDs
 
@@ -578,7 +578,7 @@ func (s *Server) handleEvaluateOutcome(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError("analysis is required"), nil
 	}
 	if err := sanitize.ValidateNoTagNoise(analysis); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid analysis: %v", err)), nil
+		return inputErrorResult("invalid analysis", err), nil
 	}
 
 	wsID := s.workspaceUUID()
@@ -588,17 +588,17 @@ func (s *Server) handleEvaluateOutcome(ctx context.Context, req mcp.CallToolRequ
 		if errors.Is(err, outcome.ErrNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("outcome %s not found", outcomeID)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("looking up outcome: %v", err)), nil
+		return storeErrorResult("looking up outcome", err), nil
 	}
 
 	lessonsJSON, err := validateJSONArrayArg(args, "lessons_json")
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return inputErrorResult("", err), nil
 	}
 
 	suggestionsJSON, err := validateJSONArrayArg(args, "suggestions_json")
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return inputErrorResult("", err), nil
 	}
 
 	eval, err := s.outcome.CreateEvaluation(ctx, outcome.CreateEvaluationParams{
@@ -609,7 +609,7 @@ func (s *Server) handleEvaluateOutcome(ctx context.Context, req mcp.CallToolRequ
 		ImprovementSuggestions: suggestionsJSON,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating evaluation: %v", err)), nil
+		return storeErrorResult("creating evaluation", err), nil
 	}
 	return jsonText(wrapUntrustedEvaluation(eval))
 }
@@ -636,7 +636,7 @@ func (s *Server) handleListRecentOutcomes(ctx context.Context, req mcp.CallToolR
 	wsID := s.workspaceUUID()
 	outcomes, err := s.outcome.ListRecentOutcomes(ctx, wsID, entityType, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing outcomes: %v", err)), nil
+		return storeErrorResult("listing outcomes", err), nil
 	}
 	if outcomes == nil {
 		outcomes = []outcome.Outcome{}
@@ -668,7 +668,7 @@ func (s *Server) handleFindFailedPatterns(ctx context.Context, req mcp.CallToolR
 	wsID := s.workspaceUUID()
 	failed, err := s.outcome.ListFailedOutcomes(ctx, wsID, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing failed outcomes: %v", err)), nil
+		return storeErrorResult("listing failed outcomes", err), nil
 	}
 
 	// N+1: fetch evaluations per outcome. Acceptable at personal-OS scale
