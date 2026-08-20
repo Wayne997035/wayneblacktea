@@ -44,7 +44,16 @@ cd build && task build-frontend
 go run ./cmd/server -env .env
 ```
 
-The server listens on port `8420` by default (set `PORT=<n>` in `.env` to override). Open `http://localhost:8420` in your browser.
+The server listens on port `8420` by default (set `PORT=<n>` in `.env` to override). Open `http://localhost:8420` in your browser. Take the port from the `http server started on :PORT` line the server prints — that is the authoritative value if you overrode it.
+
+### Checking it actually came up
+
+Two things trip people up, and both look like "the server is down" when it isn't:
+
+- **`/api/health` is auth-gated.** A bare `curl` against it returns **401**, which is the healthy response for an unauthenticated request. Only `connection refused` means the server is not up.
+- **The browser and `curl` take different auth paths.** API requests authenticate with an `X-API-Key` header, but the web UI does `POST /api/session` and then rides a `wbt_session` cookie (`web/src/lib/api.ts` `loginWithKey` → `pages/LoginPage.tsx`). **`curl` succeeding with the header does not prove the browser can get in** — if you are testing the UI, walk the session/cookie path yourself first.
+
+Also note the web UI is embedded into the binary via `//go:embed web/dist` (`cmd/server/main.go`), so a front-end change you did not `npm run build` will not appear — you will be looking at the previously built bundle.
 
 ## 3. Run the seed command
 
