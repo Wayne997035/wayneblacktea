@@ -20,6 +20,16 @@ const statusSlugMaxLen = 64
 
 var statusSlugRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
+// statusFieldMaxRunes bounds SprintSummary/GapAnalysis/PendingSummary on
+// read — U13 (2026-08-20-mcp-surface-spec.md). These are Haiku-generated but
+// cached in the snapshot store and read back on subsequent calls
+// (from_cache=true) — the U13 inventory classifies this as "stored on
+// behalf of an LLM, read back into an LLM context" even though the content
+// is AI-summarized rather than verbatim: a forged marker in a source
+// decision's rationale could still survive summarization verbatim. Sized
+// like wrapUntrustedTask's gtdBodyMaxRunes (tools_gtd.go).
+const statusFieldMaxRunes = gtdBodyMaxRunes
+
 func (s *Server) registerStatusTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"generate_project_status",
@@ -87,10 +97,10 @@ func (s *Server) handleGenerateProjectStatus(ctx context.Context, req mcp.CallTo
 	return jsonText(response{
 		Slug:           snap.Slug,
 		GeneratedAt:    snap.GeneratedAt.Format("2006-01-02T15:04:05Z"),
-		SprintSummary:  snap.SprintSummary,
-		GapAnalysis:    snap.GapAnalysis,
+		SprintSummary:  clipSafe(snap.SprintSummary, statusFieldMaxRunes),
+		GapAnalysis:    clipSafe(snap.GapAnalysis, statusFieldMaxRunes),
 		SotaCatchupPct: snap.SotaCatchupPct,
-		PendingSummary: snap.PendingSummary,
+		PendingSummary: clipSafe(snap.PendingSummary, statusFieldMaxRunes),
 		Source:         snap.Source,
 		FromCache:      fromCache,
 	})

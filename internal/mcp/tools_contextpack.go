@@ -77,6 +77,37 @@ func (s *Server) registerContextPackTools(ms *server.MCPServer) {
 	), s.handleAssembleContext)
 }
 
+// contextPackItemSummaryMaxRunes bounds Pack.Items[].Summary on read — U13
+// (2026-08-20-mcp-surface-spec.md). Sized like wrapUntrustedTask's
+// gtdBodyMaxRunes (tools_gtd.go): Summary is an aggregated, potentially
+// long-form projection (contextpack/retrieval.go's itemFrom* helpers), not a
+// short title.
+const contextPackItemSummaryMaxRunes = gtdBodyMaxRunes
+
+// wrapUntrustedContextPack returns a copy of pack with every Item's Summary
+// clipSafe'd (tools_context.go). assemble_context aggregates summaries from
+// decisions, knowledge, procedural, skills, outcomes, reflection,
+// behaviorrule and session read ports (contextpack.Assembler) — none of
+// those upstream readers neutralise markers before contextpack.Assemble
+// stitches them together, so the aggregation point in this handler is where
+// U13 closes the gap (Phase A inventory, .specs/2026-08-20-u13-inventory.md
+// §3 tools_contextpack.go). nil in, nil out.
+func wrapUntrustedContextPack(pack *contextpack.Pack) *contextpack.Pack {
+	if pack == nil {
+		return nil
+	}
+	out := *pack
+	if len(pack.Items) > 0 {
+		items := make([]contextpack.Item, len(pack.Items))
+		for i, it := range pack.Items {
+			it.Summary = clipSafe(it.Summary, contextPackItemSummaryMaxRunes)
+			items[i] = it
+		}
+		out.Items = items
+	}
+	return &out
+}
+
 // handleAssembleContext validates the request, wires it to the contextpack
 // Assembler, and returns the assembled Pack. persist is rejected outright —
 // Phase 2 will add the write path once outcome-linkage lands.
@@ -136,7 +167,7 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 	// contextpack.Pack carries its own snake_case json tags (the wire
 	// contract at docs/wayneblacktea-2.0-development-prompt.md:265-291), so
 	// no wrapper struct is needed here.
-	return jsonText(pack)
+	return jsonText(wrapUntrustedContextPack(pack))
 }
 
 // clampBudgetChars applies the assemble_context default/clamp rule: unset or

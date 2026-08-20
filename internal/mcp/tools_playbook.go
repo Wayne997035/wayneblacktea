@@ -11,7 +11,8 @@ import (
 )
 
 func (s *Server) registerPlaybookTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("list_playbooks",
+	ms.AddTool(mcp.NewTool(
+		"list_playbooks",
 		mcp.WithDescription(
 			"Returns procedural playbooks — generalized rules derived from past decisions. "+
 				"Call BEFORE responding to any complex task to check if a matching rule exists. "+
@@ -21,6 +22,36 @@ func (s *Server) registerPlaybookTools(ms *server.MCPServer) {
 		mcp.WithString("context_keywords",
 			mcp.Description("Space-separated or comma-separated keywords to filter playbooks by relevance. Optional.")),
 	), s.handleListPlaybooks)
+}
+
+// playbookTextMaxRunes bounds TriggerPattern/ActionTemplate on read — U13
+// (2026-08-20-mcp-surface-spec.md). Playbooks are derived-rule text
+// generalised from past decisions with no write-time neutralisation, so
+// this is sized like wrapUntrustedTask's gtdBodyMaxRunes (tools_gtd.go):
+// long-form by nature, not a short title.
+const playbookTextMaxRunes = gtdBodyMaxRunes
+
+// wrapUntrustedPlaybook returns a copy of p with TriggerPattern/ActionTemplate
+// clipSafe'd (tools_context.go). nil in, nil out.
+func wrapUntrustedPlaybook(p *playbook.Playbook) *playbook.Playbook {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.TriggerPattern = clipSafe(p.TriggerPattern, playbookTextMaxRunes)
+	out.ActionTemplate = clipSafe(p.ActionTemplate, playbookTextMaxRunes)
+	return &out
+}
+
+// wrapUntrustedPlaybooks maps wrapUntrustedPlaybook over a slice, always
+// non-nil (list_playbooks already guards nil -> [] at its own call site
+// before this runs).
+func wrapUntrustedPlaybooks(playbooks []*playbook.Playbook) []*playbook.Playbook {
+	out := make([]*playbook.Playbook, len(playbooks))
+	for i, p := range playbooks {
+		out[i] = wrapUntrustedPlaybook(p)
+	}
+	return out
 }
 
 func (s *Server) handleListPlaybooks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -66,5 +97,5 @@ func (s *Server) handleListPlaybooks(ctx context.Context, req mcp.CallToolReques
 	if playbooks == nil {
 		playbooks = []*playbook.Playbook{}
 	}
-	return jsonText(playbooks)
+	return jsonText(wrapUntrustedPlaybooks(playbooks))
 }

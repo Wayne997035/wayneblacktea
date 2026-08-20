@@ -616,9 +616,20 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 				}
 				return r
 			}, t.Title)
+			// clipSafe (tools_context.go) on top of the control-char strip
+			// above — U13 (2026-08-20-mcp-surface-spec.md). The control-char
+			// strip alone does not neutralise a forged boundary marker
+			// (printable ASCII), so a task title containing one used to
+			// reach system_health's CompletionDrift[].Title unneutralised —
+			// this is the "nested field" gap Phase A's inventory corrected
+			// from an initial "computed" assumption (.specs/2026-08-20-
+			// u13-inventory.md §2). Reuses gtdTitleMaxRunes (tools_gtd.go):
+			// system_health is not a session-start-budget tool, so the
+			// full-record read cap applies, not tools_context.go's smaller
+			// session-start caps.
 			candidates = append(candidates, DriftCandidate{
 				TaskID:   t.ID.String(),
-				Title:    title,
+				Title:    clipSafe(title, gtdTitleMaxRunes),
 				Evidence: evidence,
 			})
 		}

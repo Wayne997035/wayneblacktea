@@ -590,12 +590,71 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 	return jsonText(raw.toContext())
 }
 
+// Read-time bounds for db.Repo's free-text fields, applied by
+// wrapUntrustedRepo before jsonText — U13 (2026-08-20-mcp-surface-spec.md).
+// sync_repo's args declare no mcp.MaxLength on any of them, so these exist
+// purely to stop marker-stuffing / pathological-growth content from
+// reaching an unbounded read, sized like wrapUntrustedTask/wrapUntrustedProject's
+// gtdTitleMaxRunes/gtdBodyMaxRunes (tools_gtd.go) rather than this file's own
+// small session-start caps above (a different, budget-constrained payload).
+const (
+	repoShortFieldMaxRunes = gtdTitleMaxRunes // path, language, current_branch, each known_issues entry
+	repoLongFieldMaxRunes  = gtdBodyMaxRunes  // description, next_planned_step
+)
+
+// wrapUntrustedRepo returns a copy of r with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedTask/wrapUntrustedProject's (tools_gtd.go) copy-not-mutate
+// contract. nil in, nil out.
+//
+// Both list_active_repos and sync_repo route through this (Phase A
+// inventory, .specs/2026-08-20-u13-inventory.md §3 tools_context.go, which
+// corrected the dispatch's original "already wired" assumption for this
+// file): sync_repo's own echo of the caller's just-written value is
+// deliberately NOT given buildPendingHandoffView's echo exemption here —
+// the repo row is workspace-shared and re-read later by list_active_repos in
+// a different, possibly untrusted session, so wiring both call sites the
+// same way avoids a silent asymmetry between them.
+func wrapUntrustedRepo(r *db.Repo) *db.Repo {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	if r.Path.Valid {
+		out.Path.String = clipSafe(r.Path.String, repoShortFieldMaxRunes)
+	}
+	if r.Description.Valid {
+		out.Description.String = clipSafe(r.Description.String, repoLongFieldMaxRunes)
+	}
+	if r.Language.Valid {
+		out.Language.String = clipSafe(r.Language.String, repoShortFieldMaxRunes)
+	}
+	if r.CurrentBranch.Valid {
+		out.CurrentBranch.String = clipSafe(r.CurrentBranch.String, repoShortFieldMaxRunes)
+	}
+	if r.NextPlannedStep.Valid {
+		out.NextPlannedStep.String = clipSafe(r.NextPlannedStep.String, repoLongFieldMaxRunes)
+	}
+	if len(r.KnownIssues) > 0 {
+		issues := make([]string, len(r.KnownIssues))
+		for i, iss := range r.KnownIssues {
+			issues[i] = clipSafe(iss, repoShortFieldMaxRunes)
+		}
+		out.KnownIssues = issues
+	}
+	return &out
+}
+
 func (s *Server) handleListActiveRepos(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	repos, err := s.workspace.ActiveRepos(ctx)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading repos: %v", err)), nil
 	}
-	return jsonText(repos)
+	out := make([]db.Repo, len(repos))
+	for i := range repos {
+		out[i] = *wrapUntrustedRepo(&repos[i])
+	}
+	return jsonText(out)
 }
 
 // syncRepoOptionalStringArgs extracts sync_repo's 5 optional fields using
@@ -659,5 +718,5 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("syncing repo: %v", err)), nil
 	}
-	return jsonText(repo)
+	return jsonText(wrapUntrustedRepo(repo))
 }

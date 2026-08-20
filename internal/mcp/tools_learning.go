@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -37,12 +38,49 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 	), s.handleCreateConcept)
 }
 
+// learningTextMaxRunes bounds DueReview/Concept Title/Content on read — U13
+// (2026-08-20-mcp-surface-spec.md). Neither field has a write-time
+// neutralisation step (create_concept below only requires non-empty), so
+// this is sized like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes
+// (tools_gtd.go) — generous enough that legitimate content never trips it.
+const learningTextMaxRunes = gtdBodyMaxRunes
+
+// wrapUntrustedDueReview returns a copy of r with Title/Content clipSafe'd
+// (tools_context.go).
+func wrapUntrustedDueReview(r learning.DueReview) learning.DueReview {
+	r.Title = clipSafe(r.Title, learningTextMaxRunes)
+	r.Content = clipSafe(r.Content, learningTextMaxRunes)
+	return r
+}
+
+// wrapUntrustedDueReviews maps wrapUntrustedDueReview over a slice, always
+// non-nil (preserves get_due_reviews' "[] never null" list contract).
+func wrapUntrustedDueReviews(reviews []learning.DueReview) []learning.DueReview {
+	out := make([]learning.DueReview, len(reviews))
+	for i, r := range reviews {
+		out[i] = wrapUntrustedDueReview(r)
+	}
+	return out
+}
+
+// wrapUntrustedConcept returns a copy of c with Title/Content clipSafe'd.
+// nil in, nil out.
+func wrapUntrustedConcept(c *db.Concept) *db.Concept {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.Title = clipSafe(c.Title, learningTextMaxRunes)
+	out.Content = clipSafe(c.Content, learningTextMaxRunes)
+	return &out
+}
+
 func (s *Server) handleGetDueReviews(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	reviews, err := s.learning.DueReviews(ctx, 50)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading due reviews: %v", err)), nil
 	}
-	return jsonText(reviews)
+	return jsonText(wrapUntrustedDueReviews(reviews))
 }
 
 func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -109,5 +147,5 @@ func (s *Server) handleCreateConcept(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating concept: %v", err)), nil
 	}
-	return jsonText(concept)
+	return jsonText(wrapUntrustedConcept(concept))
 }

@@ -22,14 +22,22 @@ type knowledgeNavItem struct {
 	CreatedAt    string `json:"created_at,omitempty"`
 }
 
+// navItemFromDB projects a db.KnowledgeItem into the lightweight nav shape.
+// Title/HeadingPath go through clipSafe (tools_context.go) — U13
+// (2026-08-20-mcp-surface-spec.md); reusing tools_knowledge.go's
+// knowledgeTitleMaxRunes keeps this file's bound in sync with the same
+// column's cap on the full-record readers (add_knowledge/search_knowledge/
+// list_knowledge). One fix here covers all 3 call sites in this file
+// (navigate_knowledge's root/children branches and outline_knowledge) since
+// every one of them funnels through this function.
 func navItemFromDB(item *db.KnowledgeItem) knowledgeNavItem {
 	nav := knowledgeNavItem{
 		ID:    item.ID.String(),
-		Title: item.Title,
+		Title: clipSafe(item.Title, knowledgeTitleMaxRunes),
 		Type:  item.Type,
 	}
 	if item.HeadingPath.Valid {
-		nav.HeadingPath = item.HeadingPath.String
+		nav.HeadingPath = clipSafe(item.HeadingPath.String, knowledgeTitleMaxRunes)
 	}
 	if item.HeadingLevel.Valid {
 		nav.HeadingLevel = int(item.HeadingLevel.Int32)
