@@ -58,6 +58,12 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 	if err := sanitize.ValidateNoTagNoise(p.Decision); err != nil {
 		return nil, fmt.Errorf("log_decision: decision %w", err)
 	}
+	// p.ActorSessionID is deliberately NOT run through ValidateNoTagNoise:
+	// unlike Title/Context/Decision/Rationale/Alternatives, it is not
+	// caller-supplied free text — it is a server-generated session
+	// identifier the calling code path sets from its own session context
+	// (see LogParams's doc comment). Validating it as if it were untrusted
+	// free text would add a check that can never fire.
 	row, err := s.q.CreateDecision(ctx, db.CreateDecisionParams{
 		ProjectID:        pgconv.ToUUID(p.ProjectID),
 		TaskID:           pgconv.ToUUID(p.TaskID),
