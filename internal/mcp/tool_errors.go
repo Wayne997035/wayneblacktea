@@ -34,10 +34,38 @@ import (
 //   - inputErrorResult — the failure came from validating the caller's own
 //     argument. Echoed back verbatim, because it is about that argument.
 //
-// The rule is enforced structurally, not by convention:
-// TestNoRawErrorReachesToolResult (tool_errors_test.go) fails if any
-// NewToolResultError call in this package interpolates an error at all, so a
-// new handler cannot reintroduce the pattern without the package going red.
+// What the gate actually guarantees, precisely — TestNoRawErrorReachesToolResult
+// (tool_errors_test.go) does NOT enforce "every error goes through these two
+// helpers". It enforces a narrower, purely syntactic property: no
+// mcp.NewToolResultError(...) call anywhere in this package (outside this
+// file) may contain an error-shaped identifier in its argument list. That
+// closes exactly the failure mode this file exists for — a handler
+// interpolating err/someErr/xErr straight into a NewToolResultError call —
+// and nothing else.
+//
+// It is NOT structural in the stronger sense the previous version of this
+// comment claimed ("the two helpers are the only way through"). Both
+// storeErrorResult and inputErrorResult are themselves thin wrappers around
+// mcp.NewToolResultError — nothing in the type system stops a new handler
+// from calling mcp.NewToolResultError directly with a STATIC string (no err
+// identifier in sight) that nonetheless leaks something else: a hardcoded
+// snippet of internal state, a value assembled without going through either
+// helper, or simply the wrong message for the failure. Of the ~266 direct
+// mcp.NewToolResultError( call sites in this package as of this dispatch,
+// only the 4 inside this file are provably routed through the helpers by
+// construction — the other ~262 pass this gate today because none of them
+// currently happens to interpolate an err-shaped identifier, which is a
+// property of the CURRENT code, not a guarantee the gate imposes on future
+// code. A handler that builds its error text some other way (string
+// concatenation from a non-error variable, a field pulled from a struct that
+// happens to hold driver text, etc.) would not trip this test at all.
+//
+// Closing that fully — routing every call site through the helpers so the
+// choice is structurally forced rather than incidentally true — is call-site
+// surgery across ~262 locations and is explicitly out of this dispatch's
+// scope (R2 dispatch, U13/U14 gate-hardening round); it is the natural next
+// step if this file's guarantee needs to be strengthened rather than just
+// accurately described.
 
 // storeErrorResult reports a server-side failure to an MCP client without
 // disclosing what actually broke.

@@ -32,11 +32,20 @@ const (
 	readerPending storedDataReaderStatus = "PENDING"
 )
 
-// storedDataReader is one `stored`-classified jsonText( call site from the
-// U13 inventory (.specs/2026-08-20-u13-inventory.md). Line numbers are
-// current as of this dispatch; see that file for the full reasoning behind
-// each classification (field names, why it's stored not computed, which
-// helper it needs).
+// storedDataReader is one `stored`-classified serialization call site — a
+// jsonText( (MCP TOOL result) or marshalResource( (MCP RESOURCE read) call —
+// from the U13 inventory. Line numbers are current as of this dispatch.
+//
+// Scope was originally internal/mcp/tools_*.go only; widened this dispatch
+// (R2, U13/U14 gate-hardening round) to the WHOLE internal/mcp package
+// (excluding _test.go). The narrower scope is exactly what let three real
+// leaks reach an LLM client unneutralised — dashboard/overview,
+// dashboard/upcoming, and gtd/current (all resources.go, none of them a
+// tools_*.go file): TestStoredDataReaderInventory_GrepCountMatchesCode's grep
+// never looked at resources.go at all, so those three sites had no PASS/
+// PENDING slot to be caught in even in principle — a table that only checks
+// files matching a naming convention checks nothing about files that don't
+// match it.
 type storedDataReader struct {
 	file   string
 	line   int
@@ -44,13 +53,14 @@ type storedDataReader struct {
 	status storedDataReaderStatus
 }
 
-// storedDataReaders is the complete `stored` subset of the 102 jsonText(
-// call sites in internal/mcp/tools_*.go (87 entries — the other 15 are
-// `computed`, tracked only in the .specs file since they carry no stored
-// free text and therefore need no renderer). Enumerated once here so this
-// test file and the .specs inventory can be diffed against each other by a
-// reviewer; TestStoredDataReaderInventory_TotalMatchesDocumentedCount below
-// pins the total against the reproducible grep-based count.
+// storedDataReaders is the complete `stored` subset of the serialization call
+// sites across internal/mcp (excluding _test.go) — jsonText( for MCP tool
+// results, marshalResource( for MCP resource reads; see
+// TestStoredDataReaderInventory_GrepCountMatchesCode for why those two and
+// not e.g. mcp.NewToolResultText( called directly). Enumerated once here so
+// this table can be diffed against the code by a reviewer;
+// TestStoredDataReaderInventory_TotalMatchesDocumentedCount pins the total
+// against the reproducible grep-based count.
 var storedDataReaders = []storedDataReader{
 	// tools_arch.go
 	{file: "tools_arch.go", line: 309, tool: "upsert_project_arch", status: readerPass},
@@ -161,25 +171,68 @@ var storedDataReaders = []storedDataReader{
 	{file: "tools_worksession.go", line: 836, tool: "finish_work", status: readerPass},
 	{file: "tools_worksession.go", line: 914, tool: "list_recent_work_sessions", status: readerPass},
 	{file: "tools_worksession.go", line: 1224, tool: "get_work_session_trace", status: readerPass},
+
+	// resources.go — added this dispatch (R2, U13/U14 gate-hardening round;
+	// widened scope, see storedDataReader's doc comment). The first three
+	// were real, PoC'd leaks (二軍 round-2 security review): a forged
+	// boundary marker planted in a task/project/goal's stored free text
+	// reached the client verbatim through these resources, because nothing
+	// in resources.go called clipSafe/wrapUntrusted* before marshalResource.
+	// Fixed in the same commit that adds this row — see
+	// TestResourceDashboardOverview_NeutralizesForgedMarker,
+	// TestResourceDashboardUpcoming_NeutralizesForgedMarker, and
+	// TestResourceGTDCurrent_NeutralizesForgedMarker (this file) for the
+	// behavioural proof, mirroring this file's existing
+	// TestHandle*_NeutralizesForgedMarker* convention for tools_*.go sites.
+	{file: "resources.go", line: 222, tool: "dashboard/overview", status: readerPass},
+	{file: "resources.go", line: 278, tool: "dashboard/upcoming", status: readerPass},
+	{file: "resources.go", line: 449, tool: "gtd/current", status: readerPass},
+	// session/handoff/latest's full-content branch was ALREADY wired
+	// (clipAndFenceStoredContext / clipSafe / appendNextActionsWithinByteBudget
+	// — see resources.go's handleResourceHandoffLatest and the pre-existing
+	// TestResourceHandoffLatest_FencesForgedMarker /
+	// TestResourceHandoffLatest_RepoNameFencesForgedMarker in
+	// resources_test.go) — it simply had no row in this table because the
+	// table's scan never reached resources.go before this dispatch.
+	{file: "resources.go", line: 719, tool: "session/handoff/latest", status: readerPass},
+	// resources.go:376 (system/health), :667 (session/handoff/latest's
+	// handoff_present=false branch), and :837 (system/build-info) are
+	// `computed`, NOT `stored`, and therefore intentionally have no row here
+	// — mirroring the pre-existing tools_*.go convention of tracking
+	// `computed` sites only in the raw grep total, not this table:
+	//   - system/health (lightHealthResource): counts and a []string of
+	//     server-COMPOSED sentences (forgotten_signals) — no field copies
+	//     stored free text verbatim.
+	//   - session/handoff/latest, no-handoff branch: constructs
+	//     handoffResource{HandoffPresent: false} — every field is a Go
+	//     zero-value, nothing read from a store.
+	//   - system/build-info: version/commit/build-date/protocol-version/
+	//     backend, all build-time or process metadata, never user- or
+	//     LLM-authored content.
 }
 
-// wantStoredDataReaderTotal is the documented `stored` subtotal from
-// .specs/2026-08-20-u13-inventory.md, minus one row Phase B overturned.
+// wantStoredDataReaderTotal is the documented `stored` subtotal.
 //
 // Phase A classified tools_proposal.go's confirm_proposals batch-REJECT
 // return as `stored`. It is not: that path returns proposal.BatchConfirmResult
 // (internal/proposal/proposal.go), whose only fields are a UUID string, a
 // bool, two ints and ErrMsg — no stored free text of any kind. The same
 // applies to its batchAccept twin. Both were dropped from the table during
-// integration, so the subtotal is 86 of the 100 real call sites (the raw grep
-// total of 102 counts two comment-only false positives — see
-// TestStoredDataReaderInventory_GrepCountMatchesCode).
+// integration, so the tools_*.go subtotal is 86 of the 100 real jsonText(
+// call sites in that subset (the raw grep total for tools_*.go alone was 102,
+// counting two comment-only false positives).
 //
 // ErrMsg is NOT a loophole here: it carries a store error string
 // (internal/proposal/store.go), which is U14's (error-message hygiene)
 // jurisdiction, not U13's — a boundary renderer on a field whose content is
 // a Go error would be the wrong tool for the wrong threat.
-const wantStoredDataReaderTotal = 86
+//
+// This dispatch (R2, U13/U14 gate-hardening round) adds 4 resources.go rows
+// documented above (86 + 4 = 90) as part of widening this table's scope from
+// tools_*.go to the whole internal/mcp package — see
+// TestStoredDataReaderInventory_GrepCountMatchesCode for the corresponding
+// widened raw-match total.
+const wantStoredDataReaderTotal = 90
 
 // TestStoredDataReaderInventory_TotalMatchesDocumentedCount pins
 // storedDataReaders' length against the inventory doc. If someone edits the
@@ -192,16 +245,42 @@ func TestStoredDataReaderInventory_TotalMatchesDocumentedCount(t *testing.T) {
 	}
 }
 
+// storedDataSerializationNeedles are the substrings that mark a line as a
+// candidate MCP-response serialization call site: jsonText( for MCP TOOL
+// results (server.go), marshalResource( for MCP RESOURCE reads (resources.go)
+// — the two functions in this package through which a value can reach an
+// MCP client's JSON payload. Direct mcp.NewToolResultText(...)/
+// mcp.NewToolResultError(...) calls are deliberately NOT included: as of this
+// dispatch every non-jsonText NewToolResultText( call site in tools_*.go
+// carries only a static string or already-neutralised/computed content (spot
+// -checked during R2 U13/U14 gate-hardening; tools_gtd.go's
+// handleGetUpcomingWork already routes task titles through
+// neutralizeBoundaryMarkers before NewToolResultText, for example) — adding
+// that needle would inflate the raw count without changing which sites need
+// a row in storedDataReaders above. NewToolResultError is U14's (error-
+// hygiene) surface, covered by tool_errors_test.go, not this file's.
+var storedDataSerializationNeedles = []string{"jsonText(", "marshalResource("}
+
 // TestStoredDataReaderInventory_GrepCountMatchesCode reproduces
-// `grep -n 'jsonText(' internal/mcp/tools_*.go | grep -v _test.go | wc -l`
+// `grep -n 'jsonText(\|marshalResource(' internal/mcp/*.go | grep -v _test.go | wc -l`
 // in pure Go (no shell dependency, same substring-match semantics) so the
 // "reproducible enumeration method" the spec's U13 acceptance criteria call
 // for stays executable, not just a command a human has to remember to rerun.
-// wantTotal (102) includes the 2 comment-only false positives documented in
-// the inventory (tools_arch.go:302, tools_outcome.go:258) — grep can't tell
-// a comment from a call, and neither does this scan; that's why the
-// classification table above only tracks the 87 REAL `stored` sites, not
-// this raw total.
+//
+// Scope is the WHOLE internal/mcp package (excluding _test.go), not just
+// tools_*.go — widened this dispatch (R2, U13/U14 gate-hardening round; see
+// storedDataReader's doc comment for why the narrower scope was itself the
+// bug). wantTotal (111) = 103 jsonText( matches (100 real call sites + 2
+// pre-existing comment-only false positives, tools_arch.go:302 and
+// tools_outcome.go:336, + 1 NEW false positive from the widened scope:
+// server.go's own `func jsonText(` definition line, which was never counted
+// before because server.go isn't a tools_*.go file) + 8 marshalResource(
+// matches (7 real call sites in resources.go + 1 false positive: that
+// function's own `func marshalResource(` definition line, same shape as
+// jsonText's). Both self-definition false positives are unavoidable with a
+// substring scan — a call site and a func declaration both contain the
+// literal text `<name>(` — and are no different in kind from the two
+// pre-existing comment false positives this test already tolerated.
 func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -210,13 +289,12 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 	total := 0
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, "tools_") || !strings.HasSuffix(name, ".go") ||
-			strings.HasSuffix(name, "_test.go") {
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		// name is one entry from os.ReadDir(".") on this test's own package
-		// directory, already filtered to tools_*.go non-test files above —
-		// not user/network input. Same pattern + same justification as
+		// directory, already filtered to non-test .go files above — not
+		// user/network input. Same pattern + same justification as
 		// internal/guard/classifier_test.go's os.Open(path) nolint.
 		f, err := os.Open(name) //nolint:gosec // name comes from ReadDir(".") on this package's own dir, not external input
 		if err != nil {
@@ -224,8 +302,11 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 		}
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
-			if strings.Contains(sc.Text(), "jsonText(") {
-				total++
+			line := sc.Text()
+			for _, needle := range storedDataSerializationNeedles {
+				if strings.Contains(line, needle) {
+					total++
+				}
 			}
 		}
 		if scanErr := sc.Err(); scanErr != nil {
@@ -234,11 +315,11 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 		}
 		_ = f.Close()
 	}
-	const wantTotal = 102 // .specs/2026-08-20-u13-inventory.md
+	const wantTotal = 111
 	if total != wantTotal {
-		t.Errorf("jsonText( call-site count in internal/mcp/tools_*.go = %d, want %d — "+
-			"the U13 inventory (.specs/2026-08-20-u13-inventory.md) and storedDataReaders "+
-			"above need updating to match the current code before this can pass", total, wantTotal)
+		t.Errorf("jsonText(/marshalResource( call-site count in internal/mcp/*.go (excluding _test.go) "+
+			"= %d, want %d — storedDataReaders above needs updating to match the current code before "+
+			"this can pass", total, wantTotal)
 	}
 }
 

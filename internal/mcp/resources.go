@@ -154,11 +154,17 @@ func marshalResource(uri string, v any) ([]mcp.ResourceContents, error) {
 // dashboardOverviewResource is the JSON shape for the overview resource.
 // Raw arch snapshot text is intentionally excluded (prompt-injection risk,
 // see backend-security-design.md §2). Only a boolean presence flag is surfaced.
+//
+// Goals/Projects are typed (not `any`) so the U13 boundary-marker treatment
+// applied when the handler builds this struct — wrapUntrustedGoals /
+// wrapUntrustedProject, the SAME helpers list_goals/list_projects already use
+// (tools_gtd.go) — cannot be silently bypassed by a future caller assigning
+// an unwrapped slice through an `any` field with no compile-time signal.
 type dashboardOverviewResource struct {
 	GeneratedAt         string         `json:"generated_at"`
 	WorkspaceID         string         `json:"workspace_id"`
-	Goals               any            `json:"goals"`
-	Projects            any            `json:"projects"`
+	Goals               []db.Goal      `json:"goals"`
+	Projects            []db.Project   `json:"projects"`
 	WeeklyProgress      weeklyProgress `json:"weekly_progress"`
 	PendingHandoff      bool           `json:"pending_handoff"`
 	PendingHandoffAt    *string        `json:"pending_handoff_created_at,omitempty"`
@@ -175,11 +181,23 @@ func (s *Server) handleResourceDashboardOverview(
 	if err != nil {
 		return nil, fmt.Errorf("overview resource: loading goals: %w", err)
 	}
+	if goals == nil {
+		goals = []db.Goal{}
+	}
+	goals = wrapUntrustedGoals(goals)
 
 	projects, err := s.gtd.ListActiveProjects(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("overview resource: loading projects: %w", err)
 	}
+	if projects == nil {
+		projects = []db.Project{}
+	}
+	wrappedProjects := make([]db.Project, len(projects))
+	for i := range projects {
+		wrappedProjects[i] = *wrapUntrustedProject(&projects[i])
+	}
+	projects = wrappedProjects
 
 	completed, total, err := s.gtd.WeeklyProgress(ctx)
 	if err != nil {
@@ -279,12 +297,16 @@ func (s *Server) handleResourceDashboardUpcoming(
 }
 
 // toResourceUpcomingItems converts a db.Task slice to resource-friendly items.
+// Title goes through clipSafe (bound + boundary-marker-neutralise) — U13 —
+// the same treatment get_upcoming_work's renderUpcomingBuckets (tools_gtd.go)
+// already applies to the identical underlying data via neutralizeBoundaryMarkers;
+// this resource reads the exact same stored, attacker-influenced field.
 func toResourceUpcomingItems(tasks []db.Task) []resourceUpcomingItem {
 	out := make([]resourceUpcomingItem, 0, len(tasks))
 	for _, t := range tasks {
 		item := resourceUpcomingItem{
 			ID:       t.ID.String(),
-			Title:    t.Title,
+			Title:    clipSafe(t.Title, gtdTitleMaxRunes),
 			Status:   t.Status,
 			Priority: t.Priority,
 		}
@@ -407,11 +429,13 @@ func (s *Server) handleResourceGTDCurrent(
 		WorkspaceID: s.workspaceIDForResource(),
 	}
 
-	// Top pending task.
+	// Top pending task. Title goes through clipSafe (bound +
+	// boundary-marker-neutralise) — U13 — mirroring toResourceUpcomingItems'
+	// treatment of the same field on the dashboard/upcoming resource above.
 	if t, err := s.gtd.TopPendingTask(ctx); err == nil && t != nil {
 		tt := &topTask{
 			ID:       t.ID.String(),
-			Title:    t.Title,
+			Title:    clipSafe(t.Title, gtdTitleMaxRunes),
 			Priority: t.Priority,
 		}
 		if t.DueDate.Valid {

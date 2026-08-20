@@ -564,7 +564,7 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 
 	resolved, err := s.proposal.Resolve(ctx, id, proposal.StatusAccepted)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal (entity already created): %v", err)), nil
+		return storeErrorResult("resolving proposal (entity already created)", err), nil
 	}
 	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
