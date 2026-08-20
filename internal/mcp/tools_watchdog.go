@@ -81,6 +81,65 @@ type agentBehaviorFinding struct {
 	Detail    json.RawMessage `json:"detail"`
 }
 
+// ---------------------------------------------------------------------------
+// U13 Phase B — boundary-marker neutralisation for tools_watchdog.go
+// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+//
+// Applied ONLY at the two jsonText response boundaries below (analyze_agent_
+// behavior, detect_unclosed_loops), never inside the 8 detectXxx functions
+// or insertWatchdogEvent — this is a read-time, copy-not-mutate contract
+// (same as wrapUntrustedTask/wrapUntrustedDecision elsewhere in this
+// package): the discipline_events_m8 row insertWatchdogEvent persists is
+// left exactly as the detector built it. Both response shapes are
+// neutralised independently because detect_unclosed_loops re-reads
+// PERSISTED rows (watchdog.DisciplineEvent, its own type) on a later call —
+// a poisoned Detail written by an EARLIER analyze_agent_behavior run must
+// still be neutralised the SECOND time it is read back out, not just the
+// first time it's returned.
+// ---------------------------------------------------------------------------
+
+// watchdogDetailMaxRunes bounds each individual string value found while
+// neutralising a Findings[].Detail / DisciplineEvent.Detail blob via
+// neutralizeJSONBlob (tools_proposal.go). Detail is json.RawMessage (not a
+// plain []byte like pending_proposals.payload or outcome.Outcome.Metrics),
+// so encoding/json inlines it as literal JSON text in the response rather
+// than base64-encoding it — a forged marker embedded in a detector's own
+// map[string]any{...} payload (e.g. detectStuckTasks/detectTaskNoOutcome/
+// detectDecisionNoReflection copying a task/decision Title verbatim into
+// "title") is directly, visibly live to the reading LLM, not merely live
+// after a base64 decode. Mirrors proposalPayloadFieldMaxRunes/
+// outcomeBlobFieldMaxRunes: generous, read-time-only.
+const watchdogDetailMaxRunes = 20000
+
+// neutralizeFindings maps neutralizeJSONBlob over each finding's Detail,
+// preserving element order and returning new agentBehaviorFinding values
+// (copy-not-mutate — the caller's slice/elements are untouched).
+func neutralizeFindings(findings []agentBehaviorFinding) []agentBehaviorFinding {
+	out := make([]agentBehaviorFinding, len(findings))
+	for i, f := range findings {
+		out[i] = f
+		if len(f.Detail) > 0 {
+			out[i].Detail = json.RawMessage(neutralizeJSONBlob(f.Detail, watchdogDetailMaxRunes))
+		}
+	}
+	return out
+}
+
+// neutralizeDisciplineEvents is neutralizeFindings' counterpart for
+// watchdog.DisciplineEvent (detect_unclosed_loops' persisted-row read path —
+// a distinct Go type from agentBehaviorFinding even though both carry a
+// json.RawMessage Detail field built the same way by the same 8 detectors).
+func neutralizeDisciplineEvents(events []watchdog.DisciplineEvent) []watchdog.DisciplineEvent {
+	out := make([]watchdog.DisciplineEvent, len(events))
+	for i, e := range events {
+		out[i] = e
+		if len(e.Detail) > 0 {
+			out[i].Detail = json.RawMessage(neutralizeJSONBlob(e.Detail, watchdogDetailMaxRunes))
+		}
+	}
+	return out
+}
+
 func (s *Server) handleAnalyzeAgentBehavior(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if s.disciplineEventStore == nil {
 		return mcp.NewToolResultError("discipline_event_store not configured"), nil
@@ -114,8 +173,8 @@ func (s *Server) handleAnalyzeAgentBehavior(ctx context.Context, req mcp.CallToo
 	result := analyzeAgentBehaviorResult{
 		RunAt:         time.Now().UTC(),
 		TotalInserted: len(findings),
-		Findings:      findings,
-		LiveFindings:  liveFindings,
+		Findings:      neutralizeFindings(findings),
+		LiveFindings:  neutralizeFindings(liveFindings),
 	}
 	if result.Findings == nil {
 		result.Findings = []agentBehaviorFinding{}
@@ -567,7 +626,7 @@ func (s *Server) handleDetectUnclosedLoops(ctx context.Context, _ mcp.CallToolRe
 	if events == nil {
 		events = []watchdog.DisciplineEvent{}
 	}
-	return jsonText(events)
+	return jsonText(neutralizeDisciplineEvents(events))
 }
 
 // ---- mark_loop_resolved ----

@@ -73,6 +73,84 @@ func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 
 const maxOutcomeLimit = 100
 
+// ---------------------------------------------------------------------------
+// U13 Phase B — boundary-marker neutralisation for tools_outcome.go
+// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// ---------------------------------------------------------------------------
+
+// outcomeNotesMaxRunes / outcomeBlobFieldMaxRunes bound outcome.Outcome's and
+// outcome.Evaluation's free-text and JSON-blob fields at read time. Mirrors
+// decisionBodyMaxRunes/gtdBodyMaxRunes/proposalPayloadFieldMaxRunes:
+// generous, above every existing write-time cap (sanitize.Notes already caps
+// Notes/Analysis at write time via parseRecordOutcomeArgs/
+// handleEvaluateOutcome) — exists purely to stop marker-stuffing /
+// pathological growth on read.
+const (
+	outcomeNotesMaxRunes     = 20000
+	outcomeBlobFieldMaxRunes = 20000
+)
+
+// wrapUntrustedOutcome returns a copy of o with Notes clipSafe'd and Metrics
+// walked+neutralised via neutralizeJSONBlob (tools_proposal.go) — U13.
+// Mirrors wrapUntrustedDecision/wrapUntrustedTask's copy-not-mutate contract.
+//
+// Metrics is documented ("JSON object of numeric metrics") but
+// parseRecordOutcomeArgs only validates it decodes into
+// map[string]json.RawMessage — an object — never that its values are
+// numeric, so a caller can put a forged marker in a string value there just
+// as easily as in Notes. Like pending_proposals.payload (tools_proposal.go),
+// Metrics is a plain []byte field (not json.RawMessage), so it renders
+// base64-encoded in the response rather than literal JSON text — see
+// neutralizeJSONBlob's doc comment for why that does not make neutralising
+// it pointless.
+func wrapUntrustedOutcome(o outcome.Outcome) outcome.Outcome {
+	out := o
+	out.Notes = clipSafe(o.Notes, outcomeNotesMaxRunes)
+	if len(o.Metrics) > 0 {
+		out.Metrics = neutralizeJSONBlob(o.Metrics, outcomeBlobFieldMaxRunes)
+	}
+	return out
+}
+
+// wrapUntrustedOutcomes maps wrapUntrustedOutcome over a slice, preserving
+// element order — mirrors wrapUntrustedDecisions.
+func wrapUntrustedOutcomes(outcomes []outcome.Outcome) []outcome.Outcome {
+	out := make([]outcome.Outcome, len(outcomes))
+	for i := range outcomes {
+		out[i] = wrapUntrustedOutcome(outcomes[i])
+	}
+	return out
+}
+
+// wrapUntrustedEvaluation returns a copy of e with Analysis clipSafe'd and
+// Lessons/ImprovementSuggestions walked+neutralised via neutralizeJSONBlob —
+// U13. Both are []byte-encoded JSON arrays built from lessons_json/
+// suggestions_json arguments validated only as "is a JSON array"
+// (isJSONArray, tools_outcome.go) — no element-type or content restriction
+// — so a forged marker can ride inside an array element the same way it can
+// inside Metrics above.
+func wrapUntrustedEvaluation(e outcome.Evaluation) outcome.Evaluation {
+	out := e
+	out.Analysis = clipSafe(e.Analysis, outcomeNotesMaxRunes)
+	if len(e.Lessons) > 0 {
+		out.Lessons = neutralizeJSONBlob(e.Lessons, outcomeBlobFieldMaxRunes)
+	}
+	if len(e.ImprovementSuggestions) > 0 {
+		out.ImprovementSuggestions = neutralizeJSONBlob(e.ImprovementSuggestions, outcomeBlobFieldMaxRunes)
+	}
+	return out
+}
+
+// wrapUntrustedEvaluations maps wrapUntrustedEvaluation over a slice,
+// preserving element order — mirrors wrapUntrustedDecisions.
+func wrapUntrustedEvaluations(evals []outcome.Evaluation) []outcome.Evaluation {
+	out := make([]outcome.Evaluation, len(evals))
+	for i := range evals {
+		out[i] = wrapUntrustedEvaluation(evals[i])
+	}
+	return out
+}
+
 // registerOutcomeTools registers the 4 outcome/evaluation MCP tools.
 func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 	// Description budget: record_outcome is in the always-visible core tool
@@ -362,7 +440,7 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// ActionCreated. Adding it here would resurrect M-2a (silently dropping
 	// the session link / atomization for a legitimate content-bearing write).
 	if action == outcome.ActionReplayedIdempotent || action == outcome.ActionDraftPreserved {
-		return jsonText(o)
+		return jsonText(wrapUntrustedOutcome(o))
 	}
 
 	// Best-effort: also set work_sessions.outcome_id so the link is
@@ -435,7 +513,7 @@ func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolReques
 	// lifecycle.go's notesHasNewContent doc comment on interleaved resends —
 	// so running this check against a no-write no-op response would produce
 	// a false positive.
-	resp := recordOutcomeResponse{Outcome: o}
+	resp := recordOutcomeResponse{Outcome: wrapUntrustedOutcome(o)}
 	resp.NotesTruncated = outcome.NotesTruncated(o.Notes, in.notes)
 	resp.RelatedRuleIDsTruncated = outcome.RelatedRuleIDsTruncated(o.RelatedRuleIDs, in.relatedRuleIDs)
 	if resp.NotesTruncated || resp.RelatedRuleIDsTruncated {
@@ -533,7 +611,7 @@ func (s *Server) handleEvaluateOutcome(ctx context.Context, req mcp.CallToolRequ
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating evaluation: %v", err)), nil
 	}
-	return jsonText(eval)
+	return jsonText(wrapUntrustedEvaluation(eval))
 }
 
 // handleListRecentOutcomes returns outcomes ordered by created_at DESC.
@@ -563,7 +641,7 @@ func (s *Server) handleListRecentOutcomes(ctx context.Context, req mcp.CallToolR
 	if outcomes == nil {
 		outcomes = []outcome.Outcome{}
 	}
-	return jsonText(outcomes)
+	return jsonText(wrapUntrustedOutcomes(outcomes))
 }
 
 // failedOutcomeWithEvals bundles a failed outcome with its evaluations for
@@ -605,8 +683,8 @@ func (s *Server) handleFindFailedPatterns(ctx context.Context, req mcp.CallToolR
 			evals = []outcome.Evaluation{}
 		}
 		result = append(result, failedOutcomeWithEvals{
-			Outcome:     o,
-			Evaluations: evals,
+			Outcome:     wrapUntrustedOutcome(o),
+			Evaluations: wrapUntrustedEvaluations(evals),
 		})
 	}
 	return jsonText(result)

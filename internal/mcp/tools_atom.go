@@ -17,6 +17,67 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// ---------------------------------------------------------------------------
+// U13 Phase B — boundary-marker neutralisation for tools_atom.go
+// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// ---------------------------------------------------------------------------
+
+// atomContentMaxRunes bounds Atom.Content at read time — U13. Mirrors
+// gtdBodyMaxRunes/decisionBodyMaxRunes: generous, above any existing
+// write-time cap (atom.CheckPromotionEligibility only enforces a MINIMUM
+// content length for promotion, atom.PromotionMinContentRunes; there is no
+// write-time maximum on Content) — exists purely to stop marker-stuffing /
+// pathological growth on read.
+//
+// atomKeywordMaxRunes bounds each Keywords/Tags entry — much smaller than
+// atomContentMaxRunes because these are meant to be single-word/short-phrase
+// labels (ai.Atomizer.Atomize's own prompt asks for keywords, not
+// sentences); still generous relative to that intent, existing purely as a
+// marker-stuffing backstop like every other read-time cap in this dispatch.
+const (
+	atomContentMaxRunes = 20000
+	atomKeywordMaxRunes = 200
+)
+
+// wrapUntrustedAtom returns a copy of a with Content clipSafe'd and every
+// Keywords/Tags entry clipSafe'd — U13. Mirrors wrapUntrustedDecision/
+// wrapUntrustedTask's copy-not-mutate contract. Content is the field flagged
+// in the U13 inventory (Phase A); Keywords/Tags are additionally in scope
+// here because they are ALSO ai.Atomizer LLM output (internal/ai/
+// atomizer.go) derived from the same parent text as Content — capped at 5/3
+// ENTRIES there but with no per-string LENGTH cap, so a forged marker fits
+// inside a single keyword/tag string just as easily as inside Content.
+func wrapUntrustedAtom(a atom.Atom) atom.Atom {
+	out := a
+	out.Content = clipSafe(a.Content, atomContentMaxRunes)
+	if len(a.Keywords) > 0 {
+		out.Keywords = clipSafeSlice(a.Keywords, atomKeywordMaxRunes)
+	}
+	if len(a.Tags) > 0 {
+		out.Tags = clipSafeSlice(a.Tags, atomKeywordMaxRunes)
+	}
+	return out
+}
+
+// wrapUntrustedAtoms maps wrapUntrustedAtom over a slice, preserving element
+// order — mirrors wrapUntrustedDecisions.
+func wrapUntrustedAtoms(atoms []atom.Atom) []atom.Atom {
+	out := make([]atom.Atom, len(atoms))
+	for i := range atoms {
+		out[i] = wrapUntrustedAtom(atoms[i])
+	}
+	return out
+}
+
+// clipSafeSlice maps clipSafe over every element of ss, preserving order.
+func clipSafeSlice(ss []string, maxRunes int) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = clipSafe(s, maxRunes)
+	}
+	return out
+}
+
 func (s *Server) registerAtomTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"promote_atom_to_knowledge",
@@ -94,6 +155,7 @@ func (s *Server) handleTraverseAtoms(ctx context.Context, req mcp.CallToolReques
 	if result.Links == nil {
 		result.Links = []atom.Link{}
 	}
+	result.Atoms = wrapUntrustedAtoms(result.Atoms)
 	return jsonText(result)
 }
 
@@ -121,7 +183,7 @@ func (s *Server) handleSearchAtoms(ctx context.Context, req mcp.CallToolRequest)
 	if atoms == nil {
 		atoms = []atom.Atom{}
 	}
-	return jsonText(atoms)
+	return jsonText(wrapUntrustedAtoms(atoms))
 }
 
 // atomizeAndPersist calls the LLM atomizer and persists atoms+links.

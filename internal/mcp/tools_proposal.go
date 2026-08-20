@@ -65,6 +65,263 @@ const (
 	actionReject = "reject"
 )
 
+// ---------------------------------------------------------------------------
+// U13 Phase B — boundary-marker neutralisation for tools_proposal.go
+// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// ---------------------------------------------------------------------------
+
+// proposalPayloadFieldMaxRunes bounds each individual string value found
+// while neutralising a JSON blob (pending_proposals.payload here; watchdog
+// Findings[].Detail and outcome.Outcome.Metrics/Evaluation.Lessons/
+// ImprovementSuggestions reuse the same walker from their own files).
+// Mirrors decisionBodyMaxRunes/gtdBodyMaxRunes: generous, read-time-only,
+// above every existing write-time cap (decodeGoalParams et al. already cap
+// total payload size in bytes at write/materialise time) — exists purely to
+// stop marker-stuffing / pathological growth on read.
+const proposalPayloadFieldMaxRunes = 20000
+
+// jsonBlobMaxDepth bounds recursion in neutralizeJSONBlob/neutralizeAnyValue.
+// Every payload shape this server actually writes (goalPayload,
+// projectPayload, conceptPayload, TaskPayload, DecisionProposerPayload,
+// KnowledgePayload, watchdog detail maps) is flat — an object of scalars/
+// []string one level deep — because this server always constructs the JSON
+// structure itself via typed Go structs before json.Marshal; only the
+// STRING VALUES inside are attacker-influenced (title/description/content
+// text an LLM supplied as a tool argument). This cap is defence in depth
+// against a payload that reaches this function with deeper nesting than any
+// current write path produces — a hand-crafted DB row, a future proposal
+// type, or a bug — so a pathologically nested blob can't stack-overflow this
+// walk before any downstream length cap gets a chance to reject it.
+const jsonBlobMaxDepth = 20
+
+// neutralizeJSONBlob unmarshal-walks an opaque JSON blob (object, array, or
+// scalar) and replaces every string value it finds — at every nesting depth
+// — with its clipSafe'd (bounded + boundary-marker-neutralised) form, then
+// remarshals. This is the JSON-blob counterpart to clipSafe for plain string
+// fields: pending_proposals.payload (this file), watchdog Findings[].Detail
+// (tools_watchdog.go), and outcome.Outcome.Metrics / Evaluation.Lessons /
+// Evaluation.ImprovementSuggestions (tools_outcome.go) are all typed
+// sub-shapes already encoded to bytes by the time they reach a response
+// struct, so a per-field clipSafe call cannot reach the text sealed inside —
+// see the Phase A inventory note under tools_proposal.go / tools_watchdog.go.
+//
+// Malformed JSON (fails json.Unmarshal) is NOT passed through unneutralised:
+// that would make "blob is corrupt" and "blob has no stored text" collapse
+// into the same, wrong outcome (a forged marker embedded in non-JSON bytes
+// would survive verbatim). It falls back to clipSafe over the raw byte
+// string instead, so a marker is still stripped even though the shape is
+// unrecognised.
+//
+// pending_proposals.payload's field TYPE is a plain []byte (not
+// json.RawMessage) — which for a struct with NO custom marshaller would mean
+// encoding/json base64-encodes it into the response instead of inlining it
+// as literal JSON text. db.PendingProposal is NOT that generic case, though:
+// its hand-written MarshalJSON (internal/db/models_custom.go) explicitly
+// re-wraps Payload as json.RawMessage(p.Payload) before marshalling the
+// struct, so the FINAL response embeds it as literal, directly-visible JSON
+// — empirically confirmed via this file's own test
+// (TestHandleProposeGoalProposeProjectListPending_..., u13_phase_b_b2_test.go)
+// rather than assumed from the field type alone. That makes
+// pending_proposals.payload strictly MORE exposed than a base64 blob would
+// be (no decode step needed for a reading LLM to see a forged marker
+// verbatim), not less — this function's unmarshal-neutralise-remarshal
+// approach is unchanged either way, since it operates on the DECODED value
+// regardless of how the final byte slice gets embedded. outcome.Outcome.
+// Metrics / Evaluation.Lessons / Evaluation.ImprovementSuggestions
+// (tools_outcome.go) have no such override and DO base64-encode — verified
+// the same way, via tools_outcome.go's own tests reading the field back
+// through base64 decoding successfully. watchdog's Detail (json.RawMessage)
+// renders literally for a third, structurally different reason (the field's
+// declared Go type itself implements MarshalJSON as a pass-through).
+func neutralizeJSONBlob(raw []byte, maxRunes int) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return []byte(clipSafe(string(raw), maxRunes))
+	}
+	out, err := json.Marshal(neutralizeAnyValue(v, maxRunes, 0))
+	if err != nil {
+		// Should not happen — neutralizeAnyValue only ever produces the
+		// handful of types encoding/json already round-tripped from raw via
+		// the Unmarshal above (map[string]any/[]any/string/float64/bool/nil)
+		// — but fail safe rather than ever emit an un-neutralised blob.
+		return []byte(boundaryMarkerPlaceholder)
+	}
+	return out
+}
+
+// neutralizeAnyValue is neutralizeJSONBlob's recursive step, operating on
+// already-decoded Go values (the shapes encoding/json.Unmarshal into an
+// `any` ever produces: map[string]any, []any, string, float64, bool, nil).
+// depth is capped at jsonBlobMaxDepth (see its doc comment).
+func neutralizeAnyValue(v any, maxRunes, depth int) any {
+	if depth > jsonBlobMaxDepth {
+		return boundaryMarkerPlaceholder
+	}
+	switch t := v.(type) {
+	case string:
+		return clipSafe(t, maxRunes)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = neutralizeAnyValue(val, maxRunes, depth+1)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = neutralizeAnyValue(val, maxRunes, depth+1)
+		}
+		return out
+	default:
+		// numbers, bools, nil — pass through unchanged.
+		return v
+	}
+}
+
+// wrapUntrustedProposal returns a copy of p with Payload run through
+// neutralizeJSONBlob — U13. Mirrors wrapUntrustedDecision/wrapUntrustedTask's
+// copy-not-mutate contract (never mutates the caller's row or any cache
+// holding it). nil in, nil out.
+func wrapUntrustedProposal(p *db.PendingProposal) *db.PendingProposal {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.Payload = neutralizeJSONBlob(p.Payload, proposalPayloadFieldMaxRunes)
+	return &out
+}
+
+// wrapUntrustedProposals maps wrapUntrustedProposal over a slice, preserving
+// element order — mirrors wrapUntrustedDecisions.
+func wrapUntrustedProposals(props []db.PendingProposal) []db.PendingProposal {
+	out := make([]db.PendingProposal, len(props))
+	for i := range props {
+		out[i] = *wrapUntrustedProposal(&props[i])
+	}
+	return out
+}
+
+// neutralizeCreatedEntity neutralises the free-text fields of the
+// materialised entity confirm_proposal/confirm_proposals return under
+// confirmResult.Created — U13. created's concrete type varies by
+// proposal.Type AND by which of the three materialise paths
+// (materializeFromPayloadPg / ...Iface / ...SQLiteTx) ran, so this is a type
+// switch over every shape those functions actually produce, not a single
+// wrapUntrusted* call. Reuses wrapUntrustedProject/wrapUntrustedTask/
+// wrapUntrustedDecision (tools_gtd.go / tools_decision.go) where a shared
+// helper already exists; db.Goal/db.Concept/db.KnowledgeItem/
+// playbook.Playbook get an inline clipSafe here because no shared wrapper
+// exists yet for their own tools (tracked separately as PENDING in the U13
+// inventory — this does not change THEIR jsonText call sites, only the copy
+// embedded in confirm_proposal's response).
+func neutralizeCreatedEntity(created any) any {
+	switch v := created.(type) {
+	case nil:
+		return nil
+	case *db.Goal:
+		return neutralizeProposalGoal(v)
+	case *db.Project:
+		return wrapUntrustedProject(v)
+	case *db.Task:
+		return wrapUntrustedTask(v)
+	case *db.Decision:
+		return wrapUntrustedDecision(v)
+	case *db.Concept:
+		return neutralizeProposalConcept(v)
+	case *db.KnowledgeItem:
+		return neutralizeProposalKnowledgeItem(v)
+	case *playbook.Playbook:
+		return neutralizeProposalPlaybook(v)
+	case map[string]string:
+		// SQLite-tx materialise path (materializeFromPayloadSQLiteTx) returns
+		// {"id": ..., "title": ...} / {"id": ..., "name": ..., "title": ...}
+		// for goal/project/concept/decision instead of a typed struct.
+		out := make(map[string]string, len(v))
+		for k, val := range v {
+			if k == "id" {
+				out[k] = val
+				continue
+			}
+			out[k] = clipSafe(val, proposalPayloadFieldMaxRunes)
+		}
+		return out
+	case map[string]any:
+		// materializeTaskPg/Iface's {"task": *db.Task, "warnings": []string}
+		// shape (add_task-style vagueness warnings). "warnings" is
+		// validator-emitted fixed text (validator.CheckTaskInput), not
+		// stored free text — left as-is.
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[k] = val
+		}
+		if t, ok := out["task"].(*db.Task); ok {
+			out["task"] = wrapUntrustedTask(t)
+		}
+		return out
+	default:
+		// Every case above is exhaustive over what materializeFromPayload{Pg,
+		// Iface,SQLiteTx} can currently return — a new materialiser branch
+		// landing here without updating this switch is exactly the kind of
+		// silent gap U13 exists to prevent, so this is loud (slog.Warn), not
+		// a silent pass-through.
+		slog.Warn("neutralizeCreatedEntity: unrecognised type for confirm_proposal Created field",
+			"go_type", fmt.Sprintf("%T", created))
+		return created
+	}
+}
+
+// neutralizeProposalGoal/neutralizeProposalConcept/
+// neutralizeProposalKnowledgeItem/neutralizeProposalPlaybook are
+// neutralizeCreatedEntity's per-type helpers for the domain structs that
+// don't yet have a shared wrapUntrusted* in this package (see
+// neutralizeCreatedEntity's doc comment). Suffixed "Proposal" to avoid
+// colliding with a future dedicated wrapUntrustedGoal/... in tools_gtd.go /
+// tools_knowledge.go / tools_playbook.go once Phase B reaches those files.
+func neutralizeProposalGoal(g *db.Goal) *db.Goal {
+	if g == nil {
+		return nil
+	}
+	out := *g
+	out.Title = clipSafe(g.Title, gtdTitleMaxRunes)
+	if g.Description.Valid {
+		out.Description.String = clipSafe(g.Description.String, gtdBodyMaxRunes)
+	}
+	return &out
+}
+
+func neutralizeProposalConcept(c *db.Concept) *db.Concept {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.Title = clipSafe(c.Title, gtdTitleMaxRunes)
+	out.Content = clipSafe(c.Content, gtdBodyMaxRunes)
+	return &out
+}
+
+func neutralizeProposalKnowledgeItem(k *db.KnowledgeItem) *db.KnowledgeItem {
+	if k == nil {
+		return nil
+	}
+	out := *k
+	out.Title = clipSafe(k.Title, gtdTitleMaxRunes)
+	out.Content = clipSafe(k.Content, gtdBodyMaxRunes)
+	return &out
+}
+
+func neutralizeProposalPlaybook(p *playbook.Playbook) *playbook.Playbook {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.TriggerPattern = clipSafe(p.TriggerPattern, gtdTitleMaxRunes)
+	out.ActionTemplate = clipSafe(p.ActionTemplate, gtdBodyMaxRunes)
+	return &out
+}
+
 func (s *Server) registerProposalTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"confirm_proposals",
@@ -155,7 +412,7 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating proposal: %v", err)), nil
 	}
-	return jsonText(row)
+	return jsonText(wrapUntrustedProposal(row))
 }
 
 func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -197,7 +454,7 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating proposal: %v", err)), nil
 	}
-	return jsonText(row)
+	return jsonText(wrapUntrustedProposal(row))
 }
 
 func (s *Server) handleListPendingProposals(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -205,7 +462,7 @@ func (s *Server) handleListPendingProposals(ctx context.Context, _ mcp.CallToolR
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("listing pending proposals: %v", err)), nil
 	}
-	return jsonText(rows)
+	return jsonText(wrapUntrustedProposals(rows))
 }
 
 func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -326,7 +583,7 @@ func (s *Server) handleConfirmProposal(ctx context.Context, req mcp.CallToolRequ
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("rejecting: %v", err)), nil
 		}
-		return jsonText(confirmResult{Proposal: row})
+		return jsonText(confirmResult{Proposal: wrapUntrustedProposal(row)})
 	case actionAccept:
 		return s.acceptProposal(ctx, id)
 	default:
@@ -378,7 +635,7 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 	if err := tx.Commit(ctx); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("committing: %v", err)), nil
 	}
-	return jsonText(confirmResult{Proposal: resolved, Created: created})
+	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
 
 // acceptProposalSequential is the SQLite-backed best-effort path. modernc.org/
@@ -410,7 +667,7 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal (entity already created): %v", err)), nil
 	}
-	return jsonText(confirmResult{Proposal: resolved, Created: created})
+	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
 
 // acceptProposalSQLite runs the materialise + resolve sequence inside a single
@@ -464,9 +721,9 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 	resolved, err := s.proposal.Get(ctx, id)
 	if err != nil {
 		// Commit succeeded — return partial result rather than an error.
-		return jsonText(confirmResult{Created: created})
+		return jsonText(confirmResult{Created: neutralizeCreatedEntity(created)})
 	}
-	return jsonText(confirmResult{Proposal: resolved, Created: created})
+	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
 
 // runSQLitePostCommitMaterialisers runs the post-commit materialise step for
