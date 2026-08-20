@@ -345,7 +345,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Permanently deletes a task. TWO-STEP: first call with only task_id "+
 					"returns {deletion_token, expires_at}; second call MUST include "+
 					"confirm=true and deletion_token to perform the delete. Tokens "+
-					"expire after 60s.",
+					"expire after 60s and MUST be confirmed from the same MCP session "+
+					"that issued them — a token cannot be handed off to a different "+
+					"session/connection to complete the delete.",
 			),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
@@ -1157,6 +1159,63 @@ func (s *Server) handleLogActivity(ctx context.Context, args LogActivityArgs) (*
 	return mcp.NewToolResultText("activity logged"), nil
 }
 
+// currentSessionID returns the calling MCP client session's ID, or "" when
+// ctx carries no tracked session at all (e.g. a transport that doesn't do
+// session tracking, or a direct handler call in tests that never went
+// through the real MCP server dispatch). mcp-go's real session IDs
+// (StreamableHTTP: "mcp-session-"+uuid) never contain ":", which
+// issueDeletionToken/deletionTokenMatchesSession below rely on.
+func currentSessionID(ctx context.Context) string {
+	sess := server.ClientSessionFromContext(ctx)
+	if sess == nil {
+		return ""
+	}
+	return sess.SessionID()
+}
+
+// issueDeletionToken builds the token value returned to the caller in
+// delete_task's step 1 (and stored server-side as deletionToken.token,
+// server.go — that struct itself is unchanged; the binding lives entirely in
+// how this string is constructed and later checked, both in this file).
+//
+// When ctx carries a tracked session, the token is prefixed
+// "<sessionID>:<random>" — deletionTokenMatchesSession then requires step 2
+// to run from that SAME live session, not just present the same string.
+// This is U9's partial mitigation for Category S (self-confirmed
+// irreversible deletion, 2026-08-20-mcp-surface-spec.md): the token was
+// previously keyed by task_id alone with no binding to WHO can complete step
+// 2 — anyone who obtains the exact token string (already unlikely, but not
+// architecturally prevented) could confirm it. Binding to the live MCP
+// session narrows that to "must be the same ongoing connection", without
+// requiring F16/U15's authenticated-actor-identity system, which hasn't
+// landed yet and is what the FULL fix (distinct human/agent identities, not
+// just distinct transport sessions) actually needs.
+//
+// When ctx carries no session (non-tracked transport, or a direct test
+// call), the token is the bare random UUID exactly as before — unchanged,
+// task-id-only protection for that case.
+func issueDeletionToken(ctx context.Context) string {
+	random := uuid.NewString()
+	if sessionID := currentSessionID(ctx); sessionID != "" {
+		return sessionID + ":" + random
+	}
+	return random
+}
+
+// deletionTokenMatchesSession reports whether storedToken (as built by
+// issueDeletionToken) may be confirmed from ctx's current session. A token
+// issued with no session prefix is accepted from any caller (the original,
+// unchanged task-id-only protection). A token issued WITH a session prefix
+// may only be confirmed from that exact session — see issueDeletionToken's
+// doc comment.
+func deletionTokenMatchesSession(ctx context.Context, storedToken string) bool {
+	if !strings.Contains(storedToken, ":") {
+		return true
+	}
+	sessionID := currentSessionID(ctx)
+	return sessionID != "" && strings.HasPrefix(storedToken, sessionID+":")
+}
+
 // handleDeleteTask implements a 2-step confirmation flow.
 //
 // First call (confirm absent / false): issue a one-time deletion_token tied
@@ -1164,13 +1223,21 @@ func (s *Server) handleLogActivity(ctx context.Context, args LogActivityArgs) (*
 // {deletion_token, expires_at} to the caller. The task is NOT deleted.
 //
 // Second call (confirm=true + matching deletion_token): verify the token
-// matches the stored value AND has not expired, then call store.DeleteTask.
-// The token is consumed (single-use) regardless of success.
+// matches the stored value, has not expired, AND (when the issuing call had
+// a tracked MCP session) comes from that same session — see
+// issueDeletionToken/deletionTokenMatchesSession — then call
+// store.DeleteTask. The token is consumed (single-use) regardless of
+// success.
 //
-// Rationale: prevent accidental deletion from a hallucinated tool call. An
-// LLM that emits delete_task once gets a token-only response back; deleting
-// requires a second deliberate call. The token must come from us so a malicious
-// upstream client can't synthesize one without first making a "read" call.
+// Rationale: prevent accidental deletion from a hallucinated tool call, AND
+// (partial mitigation, U9) narrow deliberate cross-session replay of a
+// captured token. An LLM that emits delete_task once gets a token-only
+// response back; deleting requires a second deliberate call from the SAME
+// session. The token must come from us so a malicious upstream client can't
+// synthesize one without first making a "read" call. The full fix for a
+// deliberate cross-IDENTITY (not just cross-session) confirm needs
+// authenticated actor identity — F16/U15, not yet landed; see Category S in
+// 2026-08-20-mcp-surface-spec.md.
 func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mcp.CallToolResult, error) {
 	id := args.TaskID
 	confirm := args.Confirm
@@ -1194,7 +1261,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 			return mcp.NewToolResultError("too many pending deletions in flight; retry later"), nil
 		}
 
-		token := uuid.NewString()
+		token := issueDeletionToken(ctx)
 		expires := s.now().Add(deleteTokenTTL)
 		s.deleteTokens.Store(id.String(), deletionToken{token: token, expiresAt: expires})
 		return jsonText(map[string]any{
@@ -1226,6 +1293,15 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	// untrusted parties in the comparison window — plain equality is fine.
 	if suppliedToken != rec.token {
 		return mcp.NewToolResultError("deletion_token mismatch"), nil
+	}
+	// U9 partial mitigation (Category S): requester must be the same MCP
+	// session that issued the token, when one was tracked — see
+	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
+	if !deletionTokenMatchesSession(ctx, rec.token) {
+		return mcp.NewToolResultError(
+			"deletion_token was issued to a different session; call delete_task without confirm "+
+				"from that same session to obtain a new token",
+		), nil
 	}
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
