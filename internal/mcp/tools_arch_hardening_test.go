@@ -623,13 +623,41 @@ func TestHandleUpsertProjectArch_ResponseIsWrapped(t *testing.T) {
 	}
 }
 
-// --- m-R8: stale-field description matches the hardcoded-false implementation
+// --- P5/U3: hardcoded `stale` field removed entirely (supersedes m-R8) ------
+//
+// m-R8 pinned that the (now-removed) hardcoded-false `stale` field's
+// description matched the hardcoded implementation. The field itself carried
+// zero real consumers (arch.Snapshot.Stale was written but never read outside
+// this package; the unrelated web `stale_badge` field is a different,
+// dashboard-automation concept) and its own doc comment admitted "the store
+// always sets it false; callers add their own logic" — a field that can never
+// be anything but a constant is not staleness detection, it's dead weight
+// with a name that invites the wrong assumption. Removed rather than fixed:
+// same lineage as the two tests this replaces, same file section.
 
-// TestUpsertProjectArch_LastCommitSHADescription_NoFalseStaleClaim pins m-R8:
-// the last_commit_sha description previously claimed clearing it "makes
-// get_project_arch always report stale" — false, since handleGetProjectArch
-// hardcodes snap.Stale = false unconditionally regardless of last_commit_sha.
-func TestUpsertProjectArch_LastCommitSHADescription_NoFalseStaleClaim(t *testing.T) {
+// TestHandleGetProjectArch_NoStaleField pins P5/U3: the response JSON no
+// longer carries a "stale" key at all — arch.Snapshot dropped the Stale
+// field, so there is nothing left to hardcode false.
+func TestHandleGetProjectArch_NoStaleField(t *testing.T) {
+	s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{
+		ID:            "1",
+		Slug:          "wayneblacktea",
+		Summary:       "Echo HTTP + MCP in one binary.",
+		LastCommitSHA: "deadbeef",
+	}}}
+
+	raw := getProjectArchTextArgs(t, s, map[string]any{"slug": "wayneblacktea"})
+	if strings.Contains(raw, "stale") {
+		t.Errorf("get_project_arch response still contains a \"stale\" reference: %s", raw)
+	}
+}
+
+// TestUpsertProjectArchDescription_NoStaleReference pins the other half: the
+// last_commit_sha field description must not reference "stale" — that field
+// no longer exists in the response, so any wording pointing at it (even to
+// explain that it's always false) is a dangling reference to something the
+// server no longer returns.
+func TestUpsertProjectArchDescription_NoStaleReference(t *testing.T) {
 	ms := server.NewMCPServer("test", "0.0.0")
 	srv := &Server{}
 	srv.registerArchTools(ms)
@@ -645,29 +673,10 @@ func TestUpsertProjectArch_LastCommitSHADescription_NoFalseStaleClaim(t *testing
 	}
 	desc, _ := prop["description"].(string)
 
-	if strings.Contains(desc, "always report stale") {
-		t.Errorf("description still makes the false claim that clearing last_commit_sha makes get_project_arch report stale: %q", desc)
+	if strings.Contains(desc, "stale") {
+		t.Errorf("last_commit_sha description still contains a \"stale\" reference: %q", desc)
 	}
-	if !strings.Contains(desc, "always false") {
-		t.Errorf("description does not state the actual (hardcoded-false) behaviour: %q", desc)
-	}
-}
-
-// TestGetProjectArchDescription_StaleFieldAlwaysFalse pins the matching half
-// of m-R8 on get_project_arch's own description.
-func TestGetProjectArchDescription_StaleFieldAlwaysFalse(t *testing.T) {
-	ms := server.NewMCPServer("test", "0.0.0")
-	srv := &Server{}
-	srv.registerArchTools(ms)
-
-	tools := ms.ListTools()
-	tool, ok := tools["get_project_arch"]
-	if !ok {
-		t.Fatal("get_project_arch not registered")
-	}
-	desc := tool.Tool.Description
-
-	if !strings.Contains(desc, "always false") {
-		t.Errorf("get_project_arch description does not state the stale field is always false: %q", desc)
+	if !strings.Contains(desc, "always REPLACES") {
+		t.Errorf("description dropped the clobber warning that last_commit_sha always replaces: %q", desc)
 	}
 }

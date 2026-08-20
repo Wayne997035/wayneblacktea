@@ -152,7 +152,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Omitted params preserve the existing value. Use update_project_status to change status only."),
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 			mcp.WithString("title", mcp.Description("Updated display title"), mcp.MaxLength(500)),
-			mcp.WithString("description", mcp.Description("Updated description"), mcp.MaxLength(5000)),
+			mcp.WithString("description", mcp.Description(
+				"Updated description. REPLACES the stored value entirely — no append/merge; "+
+					"omit to leave unchanged.",
+			), mcp.MaxLength(5000)),
 			mcp.WithString("area", mcp.Description("Work area (e.g. engineering, personal)")),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
 			mcp.WithString("status",
@@ -192,7 +195,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"add_task",
 			mcp.WithDescription(
 				"CALL immediately when follow-up work is identified during discussion. "+
-					"Creates a task optionally under a project.",
+					"Creates a task optionally under a project. See initial_instructions "+
+					"(Per-tool detail) for kind values, the assignee allowlist, and "+
+					"priority-vs-importance.",
 			),
 			mcp.WithString("title", mcp.Description("Task title"), mcp.Required()),
 			mcp.WithString("project_id", mcp.Description("Parent project UUID")),
@@ -263,13 +268,17 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"update_task",
 			mcp.WithDescription("Updates mutable fields of a task; all params except task_id are optional "+
 				"and omitted ones keep their value. MUST call with status=\"in_progress\" the moment work "+
-				"starts. Use complete_task, NEVER update_task, to mark a task completed."),
+				"starts. Use complete_task, NEVER update_task, to mark a task completed. See "+
+				"initial_instructions (Per-tool detail) for the full omission/clear semantics per field."),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithString("status",
 				mcp.Description("pending | in_progress | cancelled"),
 				mcp.Enum("pending", "in_progress", "cancelled")),
 			mcp.WithString("title", mcp.Description("Updated title"), mcp.MaxLength(2000)),
-			mcp.WithString("description", mcp.Description("Updated details"), mcp.MaxLength(10000)),
+			mcp.WithString("description", mcp.Description(
+				"Updated details. REPLACES the stored value entirely — no append/merge; "+
+					"omit to leave unchanged.",
+			), mcp.MaxLength(10000)),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower runs first")),
 			mcp.WithNumber("importance", mcp.Description("Importance 1-3, 1=high")),
 			mcp.WithString("assignee", mcp.Description("Owner: claude | codex | human"), mcp.MaxLength(200)),

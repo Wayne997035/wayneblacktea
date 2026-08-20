@@ -32,9 +32,8 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 				"yet due, surfaced early so they aren't missed). This is a compact index, not full records: long "+
 				"text is clipped with a trailing … and lists are capped (the *_total fields report the real "+
 				"counts). To read anything clipped, run expand_tools(group=\"gtd\") first — get_task, get_project "+
-				"and list_goals are hidden until then. get_project_arch(slug) is core and returns the "+
-				"architecture snapshot. For the pending handoff's full intent, context_summary and next_actions, "+
-				"read the resource wayneblacktea://session/handoff/latest.",
+				"and list_goals are hidden until then. For the pending handoff's full intent, context_summary "+
+				"and next_actions, read the resource wayneblacktea://session/handoff/latest.",
 		),
 	), s.handleGetTodayContext)
 

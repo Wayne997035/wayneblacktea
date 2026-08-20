@@ -55,7 +55,12 @@ func (s *Server) registerVisionTools(ms *server.MCPServer) {
 		mcp.WithDescription("Updates a vision item's status or context. Auto-sets last_discussed_at to NOW() if not provided."),
 		mcp.WithString("id", mcp.Description("Vision item UUID"), mcp.Required()),
 		mcp.WithString("status", mcp.Description("New status: open, discussing, maturing, promoted, dismissed")),
-		mcp.WithString("context_md", mcp.Description("Updated markdown context notes")),
+		mcp.WithString("context_md", mcp.Description(
+			"Updated markdown context notes. REPLACES the stored value entirely — no "+
+				"append/merge. Omitting this field (or passing an empty string) leaves "+
+				"the stored value unchanged; there is no way to explicitly clear it via "+
+				"this tool.",
+		)),
 		mcp.WithString("last_discussed_at", mcp.Description("Override discussion timestamp in RFC3339 format")),
 	), s.handleUpdateVisionItem)
 

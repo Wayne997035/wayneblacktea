@@ -364,6 +364,55 @@ func TestHandleUpdateVisionItem_HappyPath(t *testing.T) {
 	}
 }
 
+// TestUpdateVisionItemContextMDDiscloses pins U1's third disclosure (Ω3):
+// context_md fully REPLACES the stored value when given (vision/store.go's
+// Update only sets the column when p.ContextMD != nil) — no append/merge.
+// The bad-case half proves that behaviour end-to-end; the schema half proves
+// the registered tool now says so.
+func TestUpdateVisionItemContextMDDiscloses(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	added := callAddVision(t, s, map[string]any{
+		"title":       "context_md disclosure test",
+		"why_blocked": "For testing",
+		"context_md":  "old context",
+	})
+	if added.IsError {
+		t.Fatalf("add failed: %s", resultText(added))
+	}
+	id := extractVisionID(t, added)
+
+	// bad case: context_md="new context" must fully replace "old context".
+	r := callUpdateVision(t, s, map[string]any{
+		"id":         id.String(),
+		"context_md": "new context",
+	})
+	if r.IsError {
+		t.Fatalf("update failed: %s", resultText(r))
+	}
+	got, err := s.vision.GetByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.ContextMD != "new context" {
+		t.Errorf("context_md = %q, want exactly \"new context\" (replace, no append survives from \"old context\")", got.ContextMD)
+	}
+
+	tool := s.MCPServer().GetTool("update_vision_item")
+	if tool == nil {
+		t.Fatal("update_vision_item not registered on MCPServer()")
+	}
+	schema, ok := tool.Tool.InputSchema.Properties["context_md"].(map[string]any)
+	if !ok {
+		t.Fatalf("update_vision_item InputSchema.Properties[%q] = %#v, want map[string]any",
+			"context_md", tool.Tool.InputSchema.Properties["context_md"])
+	}
+	desc, _ := schema["description"].(string)
+	if !strings.Contains(desc, "REPLACES") {
+		t.Errorf("update_vision_item's context_md field does not disclose REPLACES semantics: %q", desc)
+	}
+}
+
 // ---- promote_vision_to_task ----
 
 func TestHandlePromoteVisionToTask_MissingID(t *testing.T) {
