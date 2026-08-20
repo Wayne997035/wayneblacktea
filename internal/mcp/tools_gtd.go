@@ -528,6 +528,34 @@ func wrapUntrustedProject(p *db.Project) *db.Project {
 	return &out
 }
 
+// wrapUntrustedGoal is wrapUntrustedTask's sibling for db.Goal — U13 Phase B
+// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1026/1047). Same
+// copy-not-mutate contract, nil in/nil out. Area/Status are left as-is: both
+// are short caller-supplied values but neither list_goals nor create_goal's
+// PENDING inventory entries flag them as needing this treatment, unlike
+// Title/Description.
+func wrapUntrustedGoal(g *db.Goal) *db.Goal {
+	if g == nil {
+		return nil
+	}
+	out := *g
+	out.Title = clipSafe(g.Title, gtdTitleMaxRunes)
+	if g.Description.Valid {
+		out.Description.String = clipSafe(g.Description.String, gtdBodyMaxRunes)
+	}
+	return &out
+}
+
+// wrapUntrustedGoals maps wrapUntrustedGoal over a slice, mirroring
+// wrapUntrustedDecisions' (tools_decision.go) same pattern for a []T sibling.
+func wrapUntrustedGoals(goals []db.Goal) []db.Goal {
+	out := make([]db.Goal, len(goals))
+	for i := range goals {
+		out[i] = *wrapUntrustedGoal(&goals[i])
+	}
+	return out
+}
+
 func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*mcp.CallToolResult, error) {
 	projects, err := s.gtd.ListActiveProjects(ctx)
 	if err != nil {
@@ -683,10 +711,14 @@ type taskSummary struct {
 }
 
 // toTaskSummary converts a db.Task to the compact taskSummary wire format.
+// Title goes through clipSafe (U13 Phase B, tools_gtd.go:772) — same bound
+// wrapUntrustedTask applies to the full-record shape below, since a stored
+// title can carry a forged boundary marker regardless of which shape the
+// caller asked for (summary=true is the list_tasks default).
 func toTaskSummary(t db.Task) taskSummary {
 	ts := taskSummary{
 		ID:       t.ID.String(),
-		Title:    t.Title,
+		Title:    clipSafe(t.Title, gtdTitleMaxRunes),
 		Status:   t.Status,
 		Priority: t.Priority,
 		Kind:     t.Kind,
@@ -766,7 +798,14 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		if rows == nil {
 			rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
 		}
-		tasks = rows
+		// U13 Phase B (tools_gtd.go:772): summary=false returns full db.Task
+		// rows, so each one goes through wrapUntrustedTask the same as
+		// get_task's single-record read (line ~793).
+		wrapped := make([]db.Task, len(rows))
+		for i := range rows {
+			wrapped[i] = *wrapUntrustedTask(&rows[i])
+		}
+		tasks = wrapped
 	}
 
 	return jsonText(map[string]any{
@@ -820,9 +859,12 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
 	}
 
-	// Idempotent no-op: same → same, no write.
+	// Idempotent no-op: same → same, no write. U13 Phase B
+	// (tools_gtd.go:825): wrapUntrustedTask same as the write branch below —
+	// this branch returns the raw existing row unchanged, which is a stored
+	// (possibly untrusted) read just like get_task's.
 	if cur.Status == rawStatus {
-		return jsonText(cur)
+		return jsonText(wrapUntrustedTask(cur))
 	}
 
 	// Guard invalid transitions.
@@ -840,7 +882,7 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("updating task status: %v", err)), nil
 	}
-	return jsonText(updated)
+	return jsonText(wrapUntrustedTask(updated)) // U13 Phase B (tools_gtd.go:843)
 }
 
 // allowedTargets returns a sorted list of allowed target statuses for errMsg.
@@ -922,11 +964,18 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		return mcp.NewToolResultError(fmt.Sprintf("creating task: %v", err)), nil
 	}
 
-	// Embed warnings in the result body when present.
+	// Embed warnings in the result body when present. U13 Phase B
+	// (tools_gtd.go:927/929): both return paths echo the just-created task
+	// back to the caller — wrapUntrustedTask, not a same-turn-echo exemption,
+	// because Description/Context/Title are free text the caller supplied
+	// this same call, so the exemption would apply here too EXCEPT this same
+	// task row is also read back later by list_tasks/get_task from a
+	// different session (matches the sync_repo/list_active_repos reasoning
+	// in the U13 inventory) — wire it here for consistency.
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"task": task, "warnings": allWarnings})
+		return jsonText(map[string]any{"task": wrapUntrustedTask(task), "warnings": allWarnings})
 	}
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task))
 }
 
 func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) (*mcp.CallToolResult, error) {
@@ -955,7 +1004,7 @@ func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) 
 
 	s.seedDraftOutcome(ctx, args.TaskID)
 
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:958)
 }
 
 // seedDraftOutcome best-effort records a result:"unknown" outcome for a
@@ -1023,7 +1072,7 @@ func (s *Server) handleListGoals(ctx context.Context, _ ListGoalsArgs) (*mcp.Cal
 	if goals == nil {
 		goals = []db.Goal{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
 	}
-	return jsonText(goals)
+	return jsonText(wrapUntrustedGoals(goals)) // U13 Phase B (tools_gtd.go:1026)
 }
 
 func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mcp.CallToolResult, error) {
@@ -1044,7 +1093,7 @@ func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mc
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating goal: %v", err)), nil
 	}
-	return jsonText(goal)
+	return jsonText(wrapUntrustedGoal(goal)) // U13 Phase B (tools_gtd.go:1047)
 }
 
 // parseUpdateTaskArgs translates a validated UpdateTaskArgs into
@@ -1175,7 +1224,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 		slog.Warn("update_task: UpdateTask failed", "task_id", args.TaskID, "err", err)
 		return mcp.NewToolResultError(fmt.Sprintf("updating task: %v", err)), nil
 	}
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:1178)
 }
 
 func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProjectStatusArgs) (*mcp.CallToolResult, error) {
@@ -1193,7 +1242,7 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProje
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
 	}
-	return jsonText(project)
+	return jsonText(wrapUntrustedProject(project)) // U13 Phase B (tools_gtd.go:1196)
 }
 
 type projectWithDecisions struct {
@@ -1218,7 +1267,15 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 		decisions = []db.Decision{} // embedded list MUST be [] not null (a nil slice marshals to JSON null)
 	}
 
-	return jsonText(projectWithDecisions{Project: project, Decisions: decisions})
+	// U13 Phase B (tools_gtd.go:1221): both nested structs are stored reads
+	// unwired before this — Project via wrapUntrustedProject (same helper
+	// used at list_projects/create_project/update_project), Decisions via
+	// wrapUntrustedDecisions (tools_decision.go, same helper list_decisions
+	// already uses).
+	return jsonText(projectWithDecisions{
+		Project:   wrapUntrustedProject(project),
+		Decisions: wrapUntrustedDecisions(decisions),
+	})
 }
 
 func (s *Server) handleLogActivity(ctx context.Context, args LogActivityArgs) (*mcp.CallToolResult, error) {
@@ -1406,6 +1463,41 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWork
 	return mcp.NewToolResultText(header + body), nil
 }
 
+// wrapUntrustedChecklistItems returns a copy of items with each item's
+// free-text fields (Title, FileRef, Notes, EvidenceURL) clipSafe'd (bounded +
+// boundary-marker-neutralised) — U13 Phase B
+// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1440/1460/1475).
+// sanitiseMCPText (gtd.SanitiseChecklistText) only strips control
+// chars/nulls at write time; it does not neutralise boundary-marker text, so
+// a forged "=== END STORED CONTEXT ===" survives into the stored row and was
+// read back verbatim by all three checklist handlers before this change.
+//
+// EvidenceURL is included even though the inventory's field list for these
+// three sites names only Title/FileRef/Notes: it is set from
+// task_checklist_toggle's caller-supplied evidence_url argument through the
+// exact same sanitiseMCPText-only path (handleChecklistToggle below), so it
+// is the same class of gap as handleGetUpcomingWork's raw-title render
+// (flagged separately in the U13 inventory despite not being a jsonText
+// call site) — caught while implementing this helper rather than left for a
+// later pass.
+func wrapUntrustedChecklistItems(items []gtd.ChecklistItem) []gtd.ChecklistItem {
+	out := make([]gtd.ChecklistItem, len(items))
+	for i, it := range items {
+		out[i] = it
+		out[i].Title = clipSafe(it.Title, gtdTitleMaxRunes)
+		if it.FileRef != "" {
+			out[i].FileRef = clipSafe(it.FileRef, gtdBodyMaxRunes)
+		}
+		if it.Notes != "" {
+			out[i].Notes = clipSafe(it.Notes, gtdBodyMaxRunes)
+		}
+		if it.EvidenceURL != "" {
+			out[i].EvidenceURL = clipSafe(it.EvidenceURL, gtdBodyMaxRunes)
+		}
+	}
+	return out
+}
+
 func (s *Server) handleChecklistAddItem(ctx context.Context, args ChecklistAddItemArgs) (*mcp.CallToolResult, error) {
 	// title's required-presence and maxLength(500) are already enforced by
 	// the seam on the raw value; sanitisation here can only shrink the
@@ -1437,7 +1529,7 @@ func (s *Server) handleChecklistAddItem(ctx context.Context, args ChecklistAddIt
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("adding checklist item: %v", err)), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1440)
 }
 
 func (s *Server) handleChecklistToggle(ctx context.Context, args ChecklistToggleArgs) (*mcp.CallToolResult, error) {
@@ -1457,7 +1549,7 @@ func (s *Server) handleChecklistToggle(ctx context.Context, args ChecklistToggle
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("toggling checklist item: %v", err)), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1460)
 }
 
 func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistCompleteArgs) (*mcp.CallToolResult, error) {
@@ -1472,7 +1564,7 @@ func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistComp
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("completing checklist item: %v", err)), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1475)
 }
 
 // validateBeginTaskLinkageArgs checks the optional branch_name/pr_url args
@@ -1654,8 +1746,14 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return errResult, nil
 	}
 
+	// U13 Phase B (tools_gtd.go:1668): wrapUntrustedTask ONLY for the
+	// response map's "task" field — branch_name_suggestion and
+	// attachBeginTaskWorkSession below still use the original unwrapped
+	// task (its Title feeds gtd.TitleToBranchSlug and the new work
+	// session's own Title/Goal), matching wrapUntrustedTask's
+	// copy-not-mutate contract.
 	resp := map[string]any{
-		"task":                   task,
+		"task":                   wrapUntrustedTask(task),
 		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
 	}
 	// work_session_id is a real, persisted worksession.Session row
@@ -1683,7 +1781,16 @@ func workspaceUUIDFromPgtype(pg pgtype.UUID) uuid.UUID {
 	return uuid.UUID(pg.Bytes)
 }
 
-// renderUpcomingBuckets formats the 5 task buckets as plain text for MCP responses.
+// renderUpcomingBuckets formats the 5 task buckets as plain text for MCP
+// responses. get_upcoming_work (handleGetUpcomingWork) is the one stored-data
+// reader in this file the jsonText-based grep cannot find — it returns
+// mcp.NewToolResultText, not JSON — so a raw t.Title here was interpolated
+// straight into plain text with no boundary-marker neutralisation at all
+// (U13 inventory §"Not caught by the jsonText grep at all"). Titles are
+// neutralised only, not clipSafe-clipped: this render has never capped
+// length (unlike jsonText-based callers that go through wrapUntrustedTask),
+// so clipping here would be a new, unrelated behaviour change outside this
+// dispatch's scope.
 func renderUpcomingBuckets(groups gtd.UpcomingGroups) string {
 	appendBucket := func(sb []byte, label string, bucket []db.Task) []byte {
 		if len(bucket) == 0 {
@@ -1695,7 +1802,7 @@ func renderUpcomingBuckets(groups gtd.UpcomingGroups) string {
 			if t.DueDate.Valid {
 				due = " [due: " + t.DueDate.Time.UTC().Format("2006-01-02") + "]"
 			}
-			sb = append(sb, fmt.Sprintf("- [%s] %s%s\n", t.Status, t.Title, due)...)
+			sb = append(sb, fmt.Sprintf("- [%s] %s%s\n", t.Status, neutralizeBoundaryMarkers(t.Title), due)...)
 		}
 		return append(sb, '\n')
 	}

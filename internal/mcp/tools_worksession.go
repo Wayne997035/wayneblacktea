@@ -362,6 +362,11 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 
 	pack := s.assembleStartWorkContext(ctx, sess.ID, goal, repoName, taskIDs)
 
+	// U13 Phase B (tools_worksession.go:365): title/goal/repo_name are this
+	// same call's own just-supplied arguments (same-turn echo, exempt — see
+	// wrapUntrustedContextPack's doc comment); context_pack is NOT exempt —
+	// it aggregates other sessions'/domains' stored text via
+	// contextpack.Assemble.
 	return jsonText(map[string]any{
 		"session_id":   sess.ID,
 		"status":       sess.Status,
@@ -370,7 +375,7 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		"repo_name":    sess.RepoName,
 		"started_at":   sess.StartedAt,
 		"linked_tasks": len(taskIDs),
-		"context_pack": pack,
+		"context_pack": wrapUntrustedContextPack(pack),
 	})
 }
 
@@ -603,6 +608,35 @@ func parseFinishWorkEvidence(args map[string]any) ([]worksession.EvidenceInput, 
 	return out, nil
 }
 
+// wrapUntrustedContextPack returns a copy of pack with every item's Summary
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13 Phase B
+// (.specs/2026-08-20-u13-inventory.md, tools_worksession.go:365). pack.Items
+// aggregates summaries assembled from decisions/knowledge/procedural/
+// skills/outcomes/reflection/behaviorrule/session read ports (contextpack.
+// Assemble) — none of those source domains neutralise boundary-marker text
+// at write time, so a payload planted in any one of them reaches start_work's
+// response unless neutralised here. Objective is left as-is: it is always the
+// caller's own "goal" argument from THIS SAME call (assembleStartWorkContext
+// passes goal straight through as contextpack.Request.Objective), matching
+// the established same-turn-echo exemption (buildPendingHandoffView,
+// tools_session.go) — unlike Items, which are pulled from other
+// sessions'/domains' stored rows. A nil pack is returned unmodified.
+func wrapUntrustedContextPack(pack *contextpack.Pack) *contextpack.Pack {
+	if pack == nil {
+		return nil
+	}
+	out := *pack
+	if len(pack.Items) > 0 {
+		items := make([]contextpack.Item, len(pack.Items))
+		copy(items, pack.Items)
+		for i := range items {
+			items[i].Summary = clipSafe(items[i].Summary, gtdBodyMaxRunes)
+		}
+		out.Items = items
+	}
+	return &out
+}
+
 // resolveAutoOutcomeTaskID picks the task ID to attach an auto-created
 // outcome to when finish_work reports failure/partial/regressed. Priority:
 // first completed task, then first deferred task, then the session's
@@ -792,11 +826,18 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		ctx, sessID, sess, completedTaskIDs, deferredTaskIDs, evidenceParams.finalResult, summary,
 	)
 
+	// U13 Phase B (tools_worksession.go:795): final_report echoes
+	// sess.FinalSummary — the exact field get_work_session_trace/
+	// get_active_work already fence via wrapUntrustedFinalSummary. Reused
+	// here (not a new helper) purely as a call-site fix: this response was
+	// simply not calling it before.
+	wrappedSess := wrapUntrustedFinalSummary(sess)
+
 	return jsonText(map[string]any{
 		"session_id":         sess.ID,
 		"status":             sess.Status,
 		"completed_at":       sess.CompletedAt,
-		"final_report":       sess.FinalSummary,
+		"final_report":       wrappedSess.FinalSummary,
 		"outcome_id":         outcomeID,
 		"completed_task_ids": completedIDs,
 		"decisions_logged":   decisionResult.Logged,
@@ -840,8 +881,25 @@ func (s *Server) handleListRecentWorkSessions(ctx context.Context, req mcp.CallT
 		return mcp.NewToolResultError(fmt.Sprintf("list_recent_work_sessions failed: %v", err)), nil
 	}
 
+	// U13 Phase B (tools_worksession.go:856): reuses neutralizeSessionMetadataFields
+	// (Title/Goal, pre-existing) — the gap this site had. FinalResult is
+	// intentionally left untouched: the U13 inventory's suggested helper for
+	// this row named "clipSafe on FinalResult", but migration
+	// 000065_work_sessions_evidence (both migrations/ and migrations/sqlite/)
+	// puts a `CHECK (final_result IN ('success','failure','partial','unknown',
+	// 'regressed'))` directly on the column on BOTH backends — no write path
+	// (MCP, HTTP, CLI, or a hypothetical future caller) can ever persist a
+	// value outside that 5-item enum, verified by attempting exactly that via
+	// a direct s.workSession.Finish call in this dispatch's test suite (it
+	// fails with a CHECK constraint violation, not a validation error).
+	// neutralizeSessionMetadataFields' own doc comment already documents
+	// FinalResult (with Status/Source/VerificationStatus) as "genuinely
+	// safe-because, not a gap" for exactly this reason — the inventory row
+	// for this site contradicted that pre-existing, already-verified
+	// classification elsewhere in the same file.
 	summaries := make([]workSessionSummary, 0, len(sessions))
-	for _, sess := range sessions {
+	for i := range sessions {
+		sess := neutralizeSessionMetadataFields(&sessions[i])
 		summaries = append(summaries, workSessionSummary{
 			ID:                 sess.ID,
 			Title:              sess.Title,
