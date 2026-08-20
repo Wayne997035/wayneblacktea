@@ -14,6 +14,110 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// reflectionSummaryMaxRunes / reflectionJSONLeafMaxRunes are read-time
+// bounds for reflection.Reflection's free-text fields, applied by
+// wrapUntrustedReflection before jsonText — U13 (2026-08-20-mcp-surface-
+// spec.md). reflectionSummaryMaxRunes mirrors buildReflectionCreateParams'
+// write-time maxSummary cap; reflectionJSONLeafMaxRunes is a generous
+// read-time-only backstop for the string leaves inside
+// Insights/PatternsDetected/SuggestedActions (parseOptionalJSON only
+// validates JSON-ness, not length), same rationale as decisionBodyMaxRunes
+// (tools_decision.go).
+const (
+	reflectionSummaryMaxRunes  = 5000
+	reflectionJSONLeafMaxRunes = 20000
+)
+
+// wrapUntrustedReflection returns a copy of r with every free-text field
+// neutralised — U13. Mirrors wrapUntrustedTask/wrapUntrustedDecision's
+// copy-not-mutate contract. nil in, nil out.
+//
+// generate_reflection is explicitly an AI-generated record — the dispatch
+// for this file calls that out by name: "LLM 生成的文字要當成對抗性輸入
+// ... 不因為「是我們自己的模型寫的」就豁免" (backend-security-design.md
+// §2.1). Insights/PatternsDetected/SuggestedActions are json.RawMessage
+// (caller-chosen shape, validated only for JSON-well-formedness by
+// parseOptionalJSON), the same "JSON-inside-a-field" pattern flagged for
+// tools_proposal.go's Payload / tools_watchdog.go's Detail in the U13
+// inventory — Phase A's own note called these "structured JSON, not free
+// text" and scoped this file's conversion to Summary only, but an
+// "insight"/"pattern"/"suggested action" IS free text by construction (an
+// assistant's own generated analysis), and a forged marker embedded in a
+// source decision's rationale can survive verbatim into a generated
+// insight string. Widening the conversion here rather than deferring it —
+// see the dispatch report for the explicit divergence note.
+func wrapUntrustedReflection(r *reflection.Reflection) *reflection.Reflection {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.Summary = clipSafe(r.Summary, reflectionSummaryMaxRunes)
+	out.Insights = neutralizeJSONRawMessage(r.Insights)
+	out.PatternsDetected = neutralizeJSONRawMessage(r.PatternsDetected)
+	out.SuggestedActions = neutralizeJSONRawMessage(r.SuggestedActions)
+	return &out
+}
+
+// wrapUntrustedReflections maps wrapUntrustedReflection over a slice of
+// pointers, preserving order. Callers already normalise nil results to
+// []*reflection.Reflection{} before calling this (list tools MUST return []
+// not null).
+func wrapUntrustedReflections(reflections []*reflection.Reflection) []*reflection.Reflection {
+	out := make([]*reflection.Reflection, len(reflections))
+	for i, r := range reflections {
+		out[i] = wrapUntrustedReflection(r)
+	}
+	return out
+}
+
+// neutralizeJSONRawMessage walks an arbitrary already-marshaled JSON value
+// and neutralizes every string leaf it finds (via neutralizeJSONValue),
+// then remarshals. Malformed input (raw is not valid JSON, or
+// unmarshal/remarshal fails) is returned unchanged rather than dropped —
+// parseOptionalJSON already validates well-formedness at write time, so
+// this should never trigger in practice, but failing open here avoids
+// silently deleting a caller's data over a formatting edge case this
+// function isn't responsible for fixing.
+func neutralizeJSONRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(neutralizeJSONValue(v))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// neutralizeJSONValue recursively applies clipSafe to every string leaf in
+// an arbitrary decoded JSON value (map[string]any / []any pass through
+// recursively; string leaves get clipSafe'd; every other scalar — number,
+// bool, nil — is returned unchanged).
+func neutralizeJSONValue(v any) any {
+	switch val := v.(type) {
+	case string:
+		return clipSafe(val, reflectionJSONLeafMaxRunes)
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, vv := range val {
+			out[k] = neutralizeJSONValue(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, vv := range val {
+			out[i] = neutralizeJSONValue(vv)
+		}
+		return out
+	default:
+		return val
+	}
+}
+
 func (s *Server) registerReflectionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool("generate_reflection",
 		mcp.WithDescription(
@@ -83,7 +187,7 @@ func (s *Server) handleGenerateReflection(ctx context.Context, req mcp.CallToolR
 	if r.Summary != "" {
 		s.launchAtomize("reflections", r.ID, r.Summary)
 	}
-	return jsonText(r)
+	return jsonText(wrapUntrustedReflection(r))
 }
 
 // buildReflectionCreateParams validates and constructs a CreateParams from MCP
@@ -198,7 +302,7 @@ func (s *Server) handleListReflections(ctx context.Context, req mcp.CallToolRequ
 	if reflections == nil {
 		reflections = []*reflection.Reflection{}
 	}
-	return jsonText(reflections)
+	return jsonText(wrapUntrustedReflections(reflections))
 }
 
 // handleGetLatestReflection returns the most recent reflection of the given type.
@@ -223,7 +327,7 @@ func (s *Server) handleGetLatestReflection(ctx context.Context, req mcp.CallTool
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("getting latest reflection: %v", err)), nil
 	}
-	return jsonText(r)
+	return jsonText(wrapUntrustedReflection(r))
 }
 
 // handleAnalyzeRecentPatterns returns reflections with detected patterns within the look-back window.
@@ -243,7 +347,7 @@ func (s *Server) handleAnalyzeRecentPatterns(ctx context.Context, req mcp.CallTo
 	if reflections == nil {
 		reflections = []*reflection.Reflection{}
 	}
-	return jsonText(reflections)
+	return jsonText(wrapUntrustedReflections(reflections))
 }
 
 // parseOptionalJSON extracts a string argument and validates it as JSON.

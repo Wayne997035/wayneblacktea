@@ -8,11 +8,138 @@ import (
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// Read-time bounds for procedural.ProceduralMemory's free-text fields,
+// applied by wrapUntrustedProceduralMemory before jsonText — U13
+// (2026-08-20-mcp-surface-spec.md). proceduralTitleMaxRunes/
+// proceduralWhenToUseMaxRunes/proceduralApproachMaxRunes mirror
+// handleAddProcedural's write-time caps (200/2000/20000 runes).
+// proceduralListItemMaxRunes bounds ToolsUsed/FilesTouched, which have no
+// write-time per-item cap (only the raw comma-separated string is length
+// — implicitly — capped via approach_md/when_to_use's own caps, not its
+// own) — read-time-only backstop against marker-stuffing, same rationale as
+// decisionBodyMaxRunes (tools_decision.go).
+//
+// The content here is dispatch-flagged as especially injection-shaped:
+// add_procedural/query_procedural/mark_procedural_used store literal
+// step-by-step approach text (ApproachMD is explicitly "Markdown-formatted
+// step-by-step approach") — exactly the shape a forged marker plus
+// injected instruction would want to hide inside
+// (backend-security-design.md §2.1).
+const (
+	proceduralTitleMaxRunes     = 200
+	proceduralWhenToUseMaxRunes = 2000
+	proceduralApproachMaxRunes  = 20000
+	proceduralListItemMaxRunes  = 2000
+)
+
+// wrapUntrustedProceduralMemory returns a copy of m with every free-text
+// field clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract. nil
+// in, nil out.
+//
+// ID, WorkspaceID, RepoName, ProjectID, SuccessCount, LastUsedAt, CreatedAt
+// are left untouched — none is free text a caller authored. RepoName is
+// validator-gated at every write path in this codebase, same as
+// wrapUntrustedDecision's rationale for its own RepoName field
+// (tools_decision.go).
+func wrapUntrustedProceduralMemory(m *procedural.ProceduralMemory) *procedural.ProceduralMemory {
+	if m == nil {
+		return nil
+	}
+	out := *m
+	out.Title = clipSafe(m.Title, proceduralTitleMaxRunes)
+	out.WhenToUse = clipSafe(m.WhenToUse, proceduralWhenToUseMaxRunes)
+	out.ApproachMD = clipSafe(m.ApproachMD, proceduralApproachMaxRunes)
+	out.ToolsUsed = clipSafeStringsBounded(m.ToolsUsed, proceduralListItemMaxRunes)
+	out.FilesTouched = clipSafeStringsBounded(m.FilesTouched, proceduralListItemMaxRunes)
+	return &out
+}
+
+// wrapUntrustedProceduralMemories maps wrapUntrustedProceduralMemory over a
+// value slice (not pointers — procedural.Store returns
+// []procedural.ProceduralMemory), preserving order. Callers already
+// normalise nil results to []procedural.ProceduralMemory{} before calling
+// this (list tools MUST return [] not null).
+func wrapUntrustedProceduralMemories(memories []procedural.ProceduralMemory) []procedural.ProceduralMemory {
+	out := make([]procedural.ProceduralMemory, len(memories))
+	for i := range memories {
+		out[i] = *wrapUntrustedProceduralMemory(&memories[i])
+	}
+	return out
+}
+
+// clipSafeStringsBounded applies clipSafe(v, maxRunes) to every element of
+// a []string field, preserving order (nil in yields nil out).
+//
+// Named distinctly from tools_skill.go's clipSafeSkillStrings (same shape,
+// different maxRunes source) rather than sharing one helper — U13 Phase B
+// fans four engineers out across this package concurrently on independent
+// branches; a shared helper here would need to live in a file none of them
+// owns (boundary_markers.go, explicitly off-limits per dispatch) or risk a
+// same-name/same-package collision if another file's branch reaches for an
+// identically-generic name. Flagged in the dispatch report as a candidate
+// for consolidation into boundary_markers.go once all branches land.
+func clipSafeStringsBounded(items []string, maxRunes int) []string {
+	if items == nil {
+		return nil
+	}
+	out := make([]string, len(items))
+	for i, v := range items {
+		out[i] = clipSafe(v, maxRunes)
+	}
+	return out
+}
+
+// recallItemBodyMaxRunes bounds the free-text fields recall's semantic and
+// atoms branches neutralize below (neutralizeRecallKnowledgeItems,
+// neutralizeRecallAtoms). Generous read-time-only backstop, same rationale
+// as decisionBodyMaxRunes (tools_decision.go); recall caps every branch's
+// result count at 5, so this is a marker-stuffing defence, not a
+// token-diet measure.
+const recallItemBodyMaxRunes = 20000
+
+// neutralizeRecallKnowledgeItems neutralizes the free-text Title/Content
+// fields of the knowledge items recall's semantic branch returns.
+//
+// Named/scoped to this file rather than tools_knowledge.go (which owns the
+// rest of db.KnowledgeItem's PENDING inventory rows — add_knowledge,
+// search_knowledge, list_knowledge) for the same parallel-dispatch
+// collision-avoidance reason as clipSafeStringsBounded's doc comment: this
+// handler's call site (handleRecall, tools_procedural.go) is not part of
+// that file's assignment, but returns the identical stored struct.
+func neutralizeRecallKnowledgeItems(items []db.KnowledgeItem) []db.KnowledgeItem {
+	out := make([]db.KnowledgeItem, len(items))
+	for i, it := range items {
+		cp := it
+		cp.Title = clipSafe(it.Title, recallItemBodyMaxRunes)
+		cp.Content = clipSafe(it.Content, recallItemBodyMaxRunes)
+		out[i] = cp
+	}
+	return out
+}
+
+// neutralizeRecallAtoms neutralizes the free-text Content field of atoms
+// recall's atoms branch returns. Keywords/Tags are left untouched to match
+// tools_atom.go's own PENDING inventory scoping for this type (Content
+// only) — this file's recall handler reaches the same atom.Atom struct
+// through a different call site than that file's traverse_atoms/
+// search_atoms.
+func neutralizeRecallAtoms(atoms []atom.Atom) []atom.Atom {
+	out := make([]atom.Atom, len(atoms))
+	for i, a := range atoms {
+		cp := a
+		cp.Content = clipSafe(a.Content, recallItemBodyMaxRunes)
+		out[i] = cp
+	}
+	return out
+}
 
 func (s *Server) registerProceduralTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
@@ -142,7 +269,7 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError(fmt.Sprintf("adding procedural memory: %v", err)), nil
 	}
 	s.launchAtomize("procedural_memories", mem.ID, mem.Title+" "+mem.WhenToUse+" "+mem.ApproachMD)
-	return jsonText(mem)
+	return jsonText(wrapUntrustedProceduralMemory(mem))
 }
 
 // handleQueryProcedural searches procedural memories.
@@ -177,7 +304,7 @@ func (s *Server) handleQueryProcedural(ctx context.Context, req mcp.CallToolRequ
 	if results == nil {
 		results = []procedural.ProceduralMemory{}
 	}
-	return jsonText(results)
+	return jsonText(wrapUntrustedProceduralMemories(results))
 }
 
 // handleMarkProceduralUsed increments a procedural memory's success count.
@@ -195,7 +322,7 @@ func (s *Server) handleMarkProceduralUsed(ctx context.Context, req mcp.CallToolR
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marking procedural memory used: %v", err)), nil
 	}
-	return jsonText(mem)
+	return jsonText(wrapUntrustedProceduralMemory(mem))
 }
 
 // handleRecall performs a unified cross-type memory search.
@@ -263,7 +390,7 @@ func (s *Server) handleRecall(ctx context.Context, req mcp.CallToolRequest) (*mc
 		if proc == nil {
 			proc = []procedural.ProceduralMemory{}
 		}
-		result["procedural"] = proc
+		result["procedural"] = wrapUntrustedProceduralMemories(proc)
 	}
 
 	// Atoms: search memory_atoms by keyword.
@@ -285,7 +412,7 @@ func recallAtoms(ctx context.Context, s *Server, query string) []atom.Atom {
 	if atoms == nil {
 		return []atom.Atom{}
 	}
-	return atoms
+	return neutralizeRecallAtoms(atoms)
 }
 
 // recallEpisodic retrieves the latest session handoff and filters by query.
@@ -333,7 +460,7 @@ func recallKnowledge(ctx context.Context, s *Server, query string) any {
 	if items == nil {
 		return []any{}
 	}
-	return items
+	return neutralizeRecallKnowledgeItems(items)
 }
 
 // recallDecisions fetches the most recent decisions and filters by query.
@@ -356,7 +483,12 @@ func recallDecisions(ctx context.Context, s *Server, query string) any {
 			strings.Contains(strings.ToLower(d.Title), qLower) ||
 			strings.Contains(strings.ToLower(d.RepoName.String), qLower) ||
 			strings.Contains(strings.ToLower(d.Rationale), qLower) {
-			filtered = append(filtered, d)
+			// wrapUntrustedDecision (tools_decision.go) — reused directly
+			// since it already exists in this package, unlike the
+			// file-local helpers above (no collision risk: it's an
+			// already-committed Phase A helper, not something a parallel
+			// Phase B branch might independently reinvent).
+			filtered = append(filtered, *wrapUntrustedDecision(&d))
 		}
 		if len(filtered) >= 5 {
 			break

@@ -24,6 +24,58 @@ const (
 	mcpVisionMaxWhyBlockedRunes = 2000
 )
 
+// visionParentInitiativeMaxRunes / visionContextMDMaxRunes are read-time
+// bounds for the two vision.VisionItem free-text fields that have no
+// write-time cap of their own (unlike Title/WhyBlocked above) — U13
+// (2026-08-20-mcp-surface-spec.md). Generous read-time-only backstop
+// against marker-stuffing, same rationale as decisionBodyMaxRunes
+// (tools_decision.go).
+const (
+	visionParentInitiativeMaxRunes = mcpVisionMaxTitleRunes
+	visionContextMDMaxRunes        = 20000
+)
+
+// wrapUntrustedVisionItem returns a copy of v with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract. nil
+// in, nil out.
+//
+// DependsOn (task IDs), Status, RepoName, PromotedTaskID and the timestamp
+// fields are left untouched — none is free text a caller/LLM authored.
+func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	out.Title = clipSafe(v.Title, mcpVisionMaxTitleRunes)
+	out.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
+	out.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
+	out.ContextMD = clipSafe(v.ContextMD, visionContextMDMaxRunes)
+	return &out
+}
+
+// wrapUntrustedVisionItemSummary is wrapUntrustedVisionItem's sibling for
+// vision.VisionItemSummary (the list_vision_items projection, which omits
+// ContextMD entirely — see VisionItemSummary's doc comment).
+func wrapUntrustedVisionItemSummary(v vision.VisionItemSummary) vision.VisionItemSummary {
+	v.Title = clipSafe(v.Title, mcpVisionMaxTitleRunes)
+	v.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
+	v.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
+	return v
+}
+
+// wrapUntrustedVisionItemSummaries maps wrapUntrustedVisionItemSummary over
+// a slice, preserving order. list_vision_items already normalises nil to
+// []vision.VisionItemSummary{} before calling this (list tools MUST return
+// [] not null).
+func wrapUntrustedVisionItemSummaries(items []vision.VisionItemSummary) []vision.VisionItemSummary {
+	out := make([]vision.VisionItemSummary, len(items))
+	for i, v := range items {
+		out[i] = wrapUntrustedVisionItemSummary(v)
+	}
+	return out
+}
+
 func (s *Server) registerVisionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"add_vision_item",
@@ -128,10 +180,11 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("adding vision item: %v", err)), nil
 	}
+	safeItem := wrapUntrustedVisionItem(item)
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"item": item, "warnings": allWarnings})
+		return jsonText(map[string]any{"item": safeItem, "warnings": allWarnings})
 	}
-	return jsonText(item)
+	return jsonText(safeItem)
 }
 
 func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -158,7 +211,7 @@ func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequ
 	if items == nil {
 		items = []vision.VisionItemSummary{}
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedVisionItemSummaries(items))
 }
 
 func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -202,7 +255,7 @@ func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolReq
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("updating vision item: %v", err)), nil
 	}
-	return jsonText(item)
+	return jsonText(wrapUntrustedVisionItem(item))
 }
 
 func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -261,7 +314,7 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 	}
 
 	return jsonText(map[string]any{
-		"task":        task,
-		"vision_item": promoted,
+		"task":        wrapUntrustedTask(task),
+		"vision_item": wrapUntrustedVisionItem(promoted),
 	})
 }
