@@ -85,6 +85,26 @@ type LogParams struct {
 	// Source is required and MUST be set by the calling code path
 	// (SourceManual or SourceAuto), never decoded from a caller payload.
 	Source Source
+	// ActorSessionID identifies which MCP client session wrote this
+	// decision (migration 000076). Empty string means "unknown/not
+	// recorded" (stored as SQL NULL — see pgconv.ToText). It MUST be set by
+	// the calling code path from its own session context, never decoded
+	// from a caller-supplied payload (backend-security-design.md §2
+	// adversarial input / provenance integrity) — the write path that
+	// populates this from a real session is out of scope for this contract
+	// layer (U15); this field currently always writes empty/NULL.
+	ActorSessionID string
+	// ConfirmedByHuman records whether a human explicitly confirmed this
+	// decision (migration 000076). false is the honest default meaning "not
+	// proven to be human" — it is NOT proof the decision was
+	// machine-written; Source already carries the manual/auto distinction
+	// and manual does NOT imply human-confirmed (see Source's doc comment
+	// above). It MUST be set by the calling code path via an actual
+	// confirmation gate, never decoded from a caller-supplied payload
+	// (backend-security-design.md §2) — that confirmation gate does not
+	// exist yet in this contract layer (U15); this field currently always
+	// writes false.
+	ConfirmedByHuman bool
 }
 
 // ListParams holds filter parameters for List. Workspace scoping is NOT a

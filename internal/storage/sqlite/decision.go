@@ -31,9 +31,11 @@ func sqliteNowMillis() string {
 
 // decisionsSelectCols lists all columns returned by decision read queries.
 // task_id was added in migration 000048; source was added in migration
-// 000073.
+// 000073; actor_session_id/confirmed_by_human were added in migration
+// 000076 (contract layer only — no writer sets non-default values yet).
 const decisionsSelectCols = `id, project_id, repo_name, title, context, decision,
-	rationale, alternatives, created_at, workspace_id, task_id, source`
+	rationale, alternatives, created_at, workspace_id, task_id, source,
+	actor_session_id, confirmed_by_human`
 
 func scanDecision(scan func(...any) error) (db.Decision, error) {
 	var (
@@ -43,9 +45,12 @@ func scanDecision(scan func(...any) error) (db.Decision, error) {
 		alternativesNS, createdNS sql.NullString
 		taskIDNS                  sql.NullString
 		source                    string
+		actorSessionNS            sql.NullString
+		confirmedByHuman          int64
 	)
 	err := scan(&idStr, &projectIDNS, &repoNS, &d.Title, &d.Context, &d.Decision,
-		&d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &source)
+		&d.Rationale, &alternativesNS, &createdNS, &wsNS, &taskIDNS, &source,
+		&actorSessionNS, &confirmedByHuman)
 	if err != nil {
 		return db.Decision{}, err
 	}
@@ -59,25 +64,30 @@ func scanDecision(scan func(...any) error) (db.Decision, error) {
 	d.WorkspaceID = pgtypeUUID(nsString(wsNS))
 	d.TaskID = pgtypeUUID(nsString(taskIDNS))
 	d.Source = source
+	d.ActorSessionID = pgtypeText(actorSessionNS.String, actorSessionNS.Valid)
+	d.ConfirmedByHuman = confirmedByHuman != 0
 	return d, nil
 }
 
 // Log records a new architectural decision.
 // task_id (migration 000048) is stored as nullable TEXT UUID. p.Source is
 // validated before write — an invalid Source writes zero rows.
+// actor_session_id/confirmed_by_human (migration 000076) round-trip
+// whatever the caller set on p — see LogParams's doc comments; this contract
+// layer's own callers all currently leave them at zero value.
 func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Decision, error) {
 	if !p.Source.Valid() {
 		return nil, decision.ErrInvalidSource
 	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source, actor_session_id, confirmed_by_human)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
 		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID),
-		string(p.Source))
+		string(p.Source), nullStringIfEmpty(p.ActorSessionID), boolToInt(p.ConfirmedByHuman))
 	if err != nil {
 		return nil, errWrap("LogDecision", err)
 	}
@@ -96,13 +106,13 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source, actor_session_id, confirmed_by_human)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
 	_, err := tx.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		nullStringIfEmpty(p.RepoName), p.Title, p.Context, p.Decision, p.Rationale,
 		nullStringIfEmpty(p.Alternatives), sqliteNowMillis(), nullStringFromUUID(p.TaskID),
-		string(p.Source))
+		string(p.Source), nullStringIfEmpty(p.ActorSessionID), boolToInt(p.ConfirmedByHuman))
 	if err != nil {
 		return uuid.UUID{}, errWrap("LogDecisionTx", err)
 	}
@@ -125,13 +135,14 @@ func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error
 		return decision.ErrInvalidSource
 	}
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source, actor_session_id, confirmed_by_human)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		d.ID.String(), pgUUIDToNullString(d.WorkspaceID), pgUUIDToNullString(d.ProjectID),
 		pgTextToNullString(d.RepoName), d.Title, d.Context, d.Decision, d.Rationale,
 		pgTextToNullString(d.Alternatives), pgTimestamptzToString(d.CreatedAt),
-		pgUUIDToNullString(d.TaskID), d.Source)
+		pgUUIDToNullString(d.TaskID), d.Source, pgTextToNullString(d.ActorSessionID),
+		boolToInt(d.ConfirmedByHuman))
 	if err != nil {
 		return errWrap("ImportDecision", err)
 	}

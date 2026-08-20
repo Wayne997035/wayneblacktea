@@ -59,16 +59,18 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 		return nil, fmt.Errorf("log_decision: decision %w", err)
 	}
 	row, err := s.q.CreateDecision(ctx, db.CreateDecisionParams{
-		ProjectID:    pgconv.ToUUID(p.ProjectID),
-		TaskID:       pgconv.ToUUID(p.TaskID),
-		RepoName:     pgconv.ToText(p.RepoName),
-		Title:        p.Title,
-		Context:      p.Context,
-		Decision:     p.Decision,
-		Rationale:    p.Rationale,
-		Alternatives: pgconv.ToText(p.Alternatives),
-		WorkspaceID:  s.workspaceID,
-		Source:       string(p.Source),
+		ProjectID:        pgconv.ToUUID(p.ProjectID),
+		TaskID:           pgconv.ToUUID(p.TaskID),
+		RepoName:         pgconv.ToText(p.RepoName),
+		Title:            p.Title,
+		Context:          p.Context,
+		Decision:         p.Decision,
+		Rationale:        p.Rationale,
+		Alternatives:     pgconv.ToText(p.Alternatives),
+		WorkspaceID:      s.workspaceID,
+		Source:           string(p.Source),
+		ActorSessionID:   pgconv.ToText(p.ActorSessionID),
+		ConfirmedByHuman: p.ConfirmedByHuman,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("logging decision %q: %w", p.Title, err)

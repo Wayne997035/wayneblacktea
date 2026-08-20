@@ -28,6 +28,9 @@ type Querier interface {
 	CountWeeklyRelevantTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	CreateActivityLog(ctx context.Context, arg CreateActivityLogParams) (ActivityLog, error)
 	CreateConcept(ctx context.Context, arg CreateConceptParams) (Concept, error)
+	// actor_session_id / confirmed_by_human (migration 000076): caller-code-path
+	// values only, never decoded from an MCP/HTTP payload — see
+	// internal/decision.LogParams's ActorSessionID/ConfirmedByHuman doc comments.
 	CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error)
 	CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error)
 	CreatePendingProposal(ctx context.Context, arg CreatePendingProposalParams) (PendingProposal, error)

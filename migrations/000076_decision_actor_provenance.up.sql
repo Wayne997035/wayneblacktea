@@ -1,0 +1,42 @@
+-- 000076_decision_actor_provenance.up.sql
+--
+-- Adds two provenance columns to decisions, contract-first (U15): which MCP
+-- client session wrote the row (actor_session_id) and whether a human has
+-- confirmed it (confirmed_by_human). Neither column is populated by this
+-- migration — this PR is schema-only; the write path (setting these fields
+-- on insert) is wired by follow-up work.
+--
+-- Design notes:
+--   * actor_session_id TEXT, nullable, no DEFAULT — existing rows have no
+--     recorded session, and there is no honest non-NULL value to backfill
+--     with (a synthetic placeholder like 'unknown' would be indistinguishable
+--     from a real session id string on read, defeating the point of the
+--     column).
+--   * confirmed_by_human BOOLEAN NOT NULL DEFAULT FALSE — existing rows
+--     become `false` automatically. This default means "not proven to be
+--     human", NOT "proven to be machine-written": source already carries the
+--     manual/auto distinction (migration 000073_decision_source) and manual
+--     does NOT imply human-confirmed (see internal/decision.Source's doc
+--     comment — log_decision/confirm_plan are LLM-callable with no
+--     confirmation gate). Downstream code MUST NOT read
+--     confirmed_by_human=false as proof of machine origin.
+--   * No FOREIGN KEY (CLAUDE.md red-line #9 / backend-security-design.md
+--     §1.1) — neither column references another table.
+--   * No new index (backend-security-design.md §1.2, indexes are advisory):
+--     neither column has a query/filter path in this repo yet — that lands
+--     with the follow-up work that consumes these fields. Adding an index
+--     now would be speculative coverage against a query shape that doesn't
+--     exist.
+--   * Retention: follows the row's table TTL (decisions has none currently;
+--     backend-security-design.md §1.3 targets tables that record every
+--     event/tool call — decisions is a curated log, not a firehose, so no
+--     separate TTL is added here).
+--   * ADD COLUMN (not IF NOT EXISTS): mirrors 000073_decision_source's M-1
+--     rationale — a re-run of this migration MUST fail loudly (duplicate
+--     column error) instead of silently no-op'ing.
+--   * No backfill UPDATEs: both columns are new schema surface only:
+--     nothing in the repo writes them yet, so there is no legacy data
+--     shape to reclassify.
+
+ALTER TABLE decisions ADD COLUMN actor_session_id TEXT;
+ALTER TABLE decisions ADD COLUMN confirmed_by_human BOOLEAN NOT NULL DEFAULT FALSE;

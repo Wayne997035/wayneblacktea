@@ -1,6 +1,9 @@
 -- name: CreateDecision :one
-INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id, source)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+-- actor_session_id / confirmed_by_human (migration 000076): caller-code-path
+-- values only, never decoded from an MCP/HTTP payload — see
+-- internal/decision.LogParams's ActorSessionID/ConfirmedByHuman doc comments.
+INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id, source, actor_session_id, confirmed_by_human)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: ListDecisionsByRepo :many

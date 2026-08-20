@@ -68,6 +68,16 @@ func pgtypeText(s string, valid bool) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }
 
+// boolToInt converts a Go bool into the 0/1 INTEGER SQLite stores booleans
+// as (no native BOOLEAN type) — mirrors the existing is_mutating/would_deny
+// convention in internal/storage/sqlite/discipline.go.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // errWrap wraps a SQLite driver error with a stable prefix so the caller can
 // errors.Is against pgx-style sentinels (gtd.ErrNotFound, etc.) without us
 // reaching for them directly here.
