@@ -149,8 +149,9 @@ func (s *Server) registerOnboardingTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"initial_instructions",
 		mcp.WithDescription(
-			"Returns the complete usage protocol for this MCP server. "+
-				"Call at session start after get_today_context for full workflow guidance.",
+			"Returns the complete usage protocol for this MCP server, including the Per-tool detail "+
+				"appendix. Call only when a tool's own description points here (e.g. \"See "+
+				"initial_instructions (Per-tool detail) for X\") — not on a fixed schedule.",
 		),
 	), s.handleInitialInstructions)
 }
