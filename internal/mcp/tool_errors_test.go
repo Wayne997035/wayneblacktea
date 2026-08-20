@@ -167,7 +167,7 @@ func skipToEOL(body string, i int) int {
 // returns the index just past the closing "*/", or len(body) if unterminated.
 func skipBlockComment(body string, i int) int {
 	i += 2 // past "/*"
-	for i+1 < len(body) && !(body[i] == '*' && body[i+1] == '/') {
+	for i+1 < len(body) && (body[i] != '*' || body[i+1] != '/') {
 		i++
 	}
 	if i+1 < len(body) {
