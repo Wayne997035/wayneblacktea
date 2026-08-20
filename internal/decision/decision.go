@@ -90,9 +90,12 @@ type LogParams struct {
 	// recorded" (stored as SQL NULL — see pgconv.ToText). It MUST be set by
 	// the calling code path from its own session context, never decoded
 	// from a caller-supplied payload (backend-security-design.md §2
-	// adversarial input / provenance integrity) — the write path that
-	// populates this from a real session is out of scope for this contract
-	// layer (U15); this field currently always writes empty/NULL.
+	// adversarial input / provenance integrity). Populated by every
+	// internal/mcp write path via Server.auditSessionID (U15,
+	// tools_gtd.go) — that helper falls back to the server's per-process
+	// session ID rather than "" when ctx carries no tracked MCP client
+	// session, so this column should be non-empty on every row written
+	// through the MCP server.
 	ActorSessionID string
 	// ConfirmedByHuman records whether a human explicitly confirmed this
 	// decision (migration 000076). false is the honest default meaning "not

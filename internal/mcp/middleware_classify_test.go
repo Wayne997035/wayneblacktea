@@ -329,7 +329,7 @@ func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
 	s := &Server{gtd: g, decision: dec, classifier: nil}
 
 	// Should return immediately without panicking.
-	s.maybeClassifyToolCall("complete_task", "task_id=abc", "ok")
+	s.maybeClassifyToolCall("complete_task", "task_id=abc", "ok", "actor-session-1")
 
 	time.Sleep(50 * time.Millisecond)
 	if len(dec.recordedLogs()) != 0 {
@@ -353,7 +353,7 @@ func TestMaybeClassifyToolCall_NonSignificantTool(t *testing.T) {
 	// it must be skipped (classifier nil path is tested above).
 	// Here we test the significantTools gate with a non-nil classifier by
 	// directly calling the internal gate check.
-	s.maybeClassifyToolCall("list_tasks", "args", "result")
+	s.maybeClassifyToolCall("list_tasks", "args", "result", "actor-session-1")
 
 	time.Sleep(50 * time.Millisecond)
 	if len(dec.recordedLogs()) != 0 {
@@ -393,8 +393,17 @@ func TestLogMCPDecision_Dedup(t *testing.T) {
 
 	ctx := context.Background()
 	// First log should succeed.
-	if err := s.logMCPDecision(ctx, "Use SQLite for local dev", "complete_task"); err != nil {
+	if err := s.logMCPDecision(ctx, "Use SQLite for local dev", "complete_task", "actor-session-1"); err != nil {
 		t.Fatalf("first logMCPDecision: %v", err)
+	}
+	// U15: actorSessionID is threaded through to the persisted LogParams
+	// unchanged — an "auto" decision still records who triggered it.
+	logs := dec.recordedLogs()
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log, got %d", len(logs))
+	}
+	if logs[0].params.ActorSessionID != "actor-session-1" {
+		t.Errorf("ActorSessionID = %q, want %q", logs[0].params.ActorSessionID, "actor-session-1")
 	}
 
 	// For dedup we need All() to return an existing decision — use the dedicated mock.
@@ -402,7 +411,7 @@ func TestLogMCPDecision_Dedup(t *testing.T) {
 		existing: []db.Decision{{Title: "Use SQLite for local dev"}},
 	}
 	s2 := &Server{decision: dedupDec}
-	if err := s2.logMCPDecision(ctx, "use sqlite for local dev", "complete_task"); err != nil {
+	if err := s2.logMCPDecision(ctx, "use sqlite for local dev", "complete_task", "actor-session-2"); err != nil {
 		t.Fatalf("dedup logMCPDecision: %v", err)
 	}
 	if len(dedupDec.logs) != 0 {
@@ -422,7 +431,7 @@ func TestLogMCPDecision_TruncatesTitle(t *testing.T) {
 	}
 	title := string(longTitle)
 
-	if err := s.logMCPDecision(context.Background(), title, "upsert_project_arch"); err != nil {
+	if err := s.logMCPDecision(context.Background(), title, "upsert_project_arch", "actor-session-1"); err != nil {
 		t.Fatalf("logMCPDecision with long title: %v", err)
 	}
 	logs := dec.recordedLogs()
@@ -442,7 +451,7 @@ func TestLogMCPDecision_EmptyTitle(t *testing.T) {
 
 	cases := []string{"", "   ", "\t\n"}
 	for _, title := range cases {
-		if err := s.logMCPDecision(context.Background(), title, "complete_task"); err != nil {
+		if err := s.logMCPDecision(context.Background(), title, "complete_task", "actor-session-1"); err != nil {
 			t.Errorf("logMCPDecision(%q): unexpected error: %v", title, err)
 		}
 	}
@@ -845,7 +854,7 @@ func TestTryAcquireClassifyToken_DrainsAndRefills(t *testing.T) {
 func TestMaybeClassifyToolCall_NilGuardReturnsInstant(t *testing.T) {
 	s := &Server{classifier: nil}
 	start := time.Now()
-	s.maybeClassifyToolCall("complete_task", "args", "result")
+	s.maybeClassifyToolCall("complete_task", "args", "result", "actor-session-1")
 	elapsed := time.Since(start)
 	if elapsed > 10*time.Millisecond {
 		t.Errorf("nil-classifier guard took %v; want instant return", elapsed)

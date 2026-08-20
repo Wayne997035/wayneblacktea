@@ -428,3 +428,31 @@ func TestDeleteTask_NoTrackedSessionUnchangedBehaviour(t *testing.T) {
 		t.Fatalf("no-session confirm must still succeed (unchanged fallback), got: %s", resultText(r2))
 	}
 }
+
+// TestDeleteTask_TokenDoesNotLeakSessionID is U9's format regression guard:
+// an earlier revision of this mitigation prefixed the returned token with
+// "<sessionID>:", which meant any transcript, log, or error message that
+// captured the token also disclosed which MCP session issued it. The
+// session binding now lives entirely server-side (deletionToken.issuedBySession)
+// — the value returned to the caller MUST be an opaque random UUID with no
+// structural relationship to the issuing session's ID.
+func TestDeleteTask_TokenDoesNotLeakSessionID(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	const sessionID = "session-leak-probe"
+	ctx := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: sessionID})
+
+	r := callDeleteTaskCtx(t, ctx, s, map[string]any{"task_id": id.String()})
+	token := extractToken(t, r)
+
+	if strings.Contains(token, ":") {
+		t.Errorf("deletion_token must not contain ':', got %q", token)
+	}
+	if strings.Contains(token, sessionID) {
+		t.Errorf("deletion_token must not contain the issuing session ID as a substring, got %q", token)
+	}
+	if _, err := uuid.Parse(token); err != nil {
+		t.Errorf("deletion_token must be a bare UUID, got %q (parse err: %v)", token, err)
+	}
+}

@@ -124,11 +124,16 @@ type Server struct {
 	// backends — wired in at New() time.
 	discipline discipline.Store
 
-	// sessionID is the per-process identifier written into every
-	// discipline_events row. We have no real "MCP session" abstraction so we
-	// derive it from PID + start time; this is sufficient for the 15-minute
-	// drift window and survives a restart cleanly (the new ID won't conflate
-	// with the old session's mutating calls).
+	// sessionID is the per-process fallback identifier used by
+	// auditSessionID (tools_gtd.go) whenever ctx carries no tracked MCP
+	// client session — e.g. stdio transports that don't do session
+	// tracking, or a direct handler call in a test. Real per-client
+	// sessions (server.ClientSessionFromContext) are the primary source for
+	// discipline_events.session_id and decisions.actor_session_id; this
+	// field only fills the gap so those columns are never written empty
+	// (U15). Derived from PID + start time, which is sufficient for the
+	// 15-minute drift window and survives a restart cleanly (the new ID
+	// won't conflate with the old session's mutating calls).
 	sessionID string
 
 	// workspaceID is populated from WORKSPACE_ID env at New time for use by
@@ -189,6 +194,15 @@ type Server struct {
 type deletionToken struct {
 	token     string
 	expiresAt time.Time
+	// issuedBySession is the MCP client session (currentSessionID) live at
+	// step-1 issue time, or "" when that call carried no tracked session.
+	// U9 fix: this used to be encoded INTO token itself as a
+	// "<sessionID>:<random>" prefix, which meant any place that logs or
+	// echoes a token also leaked which session issued it. Keeping it here
+	// instead means the returned token stays a bare random UUID — see
+	// issueDeletionToken/deletionTokenMatchesSession (tools_gtd.go) for how
+	// this field is set and checked.
+	issuedBySession string
 }
 
 // deleteTokenTTL is the window during which an issued deletion token remains
@@ -304,10 +318,13 @@ func (s *Server) now() time.Time {
 	return s.nowFn()
 }
 
-// newSessionID returns a per-process identifier used as session_id when
-// recording discipline_events. Since the MCP server has no real session
-// concept yet, we derive it from PID + start time (millis). Format keeps it
-// shorter than a UUID and human-readable in logs.
+// newSessionID returns a per-process identifier used as the fallback actor
+// identity (s.sessionID, see its field doc) when a caller has no tracked
+// per-client MCP session. The server DOES have a real per-client session
+// concept (server.ClientSessionFromContext, surfaced via currentSessionID /
+// auditSessionID in tools_gtd.go) — this ID only covers the untracked-caller
+// gap. Derived from PID + start time (millis); format keeps it shorter than
+// a UUID and human-readable in logs.
 func newSessionID() string {
 	return fmt.Sprintf("mcp-%d-%d", os.Getpid(), time.Now().UnixMilli())
 }

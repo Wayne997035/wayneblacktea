@@ -247,14 +247,15 @@ func (s *Server) materializePlanPg(
 			continue
 		}
 		dec, derr := decTx.Log(ctx, decision.LogParams{
-			ProjectID:    projectID,
-			RepoName:     repoName,
-			Title:        d.Title,
-			Context:      d.Context,
-			Decision:     d.Decision,
-			Rationale:    d.Rationale,
-			Alternatives: d.Alternatives,
-			Source:       decision.SourceManual,
+			ProjectID:      projectID,
+			RepoName:       repoName,
+			Title:          d.Title,
+			Context:        d.Context,
+			Decision:       d.Decision,
+			Rationale:      d.Rationale,
+			Alternatives:   d.Alternatives,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if derr != nil {
 			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
@@ -319,14 +320,15 @@ func (s *Server) materializePlanSQLite(
 			continue
 		}
 		if _, derr := s.sqliteDecision.LogTx(ctx, tx, decision.LogParams{
-			ProjectID:    projectID,
-			RepoName:     repoName,
-			Title:        d.Title,
-			Context:      d.Context,
-			Decision:     d.Decision,
-			Rationale:    d.Rationale,
-			Alternatives: d.Alternatives,
-			Source:       decision.SourceManual,
+			ProjectID:      projectID,
+			RepoName:       repoName,
+			Title:          d.Title,
+			Context:        d.Context,
+			Decision:       d.Decision,
+			Rationale:      d.Rationale,
+			Alternatives:   d.Alternatives,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		}); derr != nil {
 			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
 		}
@@ -404,14 +406,15 @@ func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput
 			continue
 		}
 		dec, err := s.decision.Log(ctx, decision.LogParams{
-			ProjectID:    projectID,
-			RepoName:     repoName,
-			Title:        d.Title,
-			Context:      d.Context,
-			Decision:     d.Decision,
-			Rationale:    d.Rationale,
-			Alternatives: d.Alternatives,
-			Source:       decision.SourceManual,
+			ProjectID:      projectID,
+			RepoName:       repoName,
+			Title:          d.Title,
+			Context:        d.Context,
+			Decision:       d.Decision,
+			Rationale:      d.Rationale,
+			Alternatives:   d.Alternatives,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if err != nil {
 			return logged, fmt.Errorf("logging decision %q (%d already logged): %w", d.Title, len(logged), err)

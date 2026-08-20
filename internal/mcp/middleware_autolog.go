@@ -44,7 +44,13 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// payload design upstream of this middleware.
 			argSummary := redact.ForLLM(truncateRunes(marshalArgsDeterministic(args), mcpArgSummaryMaxRunes))
 			resultSummary := redact.ForLLM(extractResultText(res, mcpResultSummaryMaxRunes))
-			s.maybeClassifyToolCall(tool, argSummary, resultSummary)
+			// Captured from the request ctx HERE, before maybeClassifyToolCall's
+			// goroutine switches to context.Background() — a background
+			// context carries no server.ClientSessionFromContext value, so
+			// the actor identity must be resolved on the request goroutine
+			// or it is lost (U15).
+			actorSessionID := s.auditSessionID(ctx)
+			s.maybeClassifyToolCall(tool, argSummary, resultSummary, actorSessionID)
 
 			action, notes, ok := autoLogEntry(tool, args)
 			if !ok {
@@ -84,7 +90,8 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 				// Recover from any panic so a log failure never crashes the server.
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Warn("autoLogMiddleware: panic in background goroutine",
+						slog.Warn(
+							"autoLogMiddleware: panic in background goroutine",
 							"tool", tool,
 							"panic", fmt.Sprintf("%v", r),
 						)
@@ -102,7 +109,8 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 								projectID = &pid
 							}
 						} else if lookupErr != gtd.ErrNotFound {
-							slog.Warn("autoLogMiddleware: task lookup failed",
+							slog.Warn(
+								"autoLogMiddleware: task lookup failed",
 								"tool", tool,
 								"task_id", taskIDStr,
 								"error", lookupErr,
@@ -112,7 +120,8 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 				}
 
 				if logErr := s.gtd.LogActivity(bgCtx, "wayneblacktea-auto", action, projectID, notes); logErr != nil {
-					slog.Warn("autoLogMiddleware: failed to log activity",
+					slog.Warn(
+						"autoLogMiddleware: failed to log activity",
 						"tool", tool,
 						"action", action,
 						"error", logErr,

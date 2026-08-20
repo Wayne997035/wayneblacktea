@@ -87,9 +87,13 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 
 			toolName := sanitizeAuditText(rawTool, maxToolNameRunes)
 			repoName := sanitizeAuditText(stringArg(args, "repo_name"), maxRepoNameRunes)
+			// Captured from the request ctx BEFORE the goroutine below
+			// switches to context.Background() — server.ClientSessionFromContext
+			// only resolves off the live request context (U15).
+			sessionID := s.auditSessionID(ctx)
 
 			params := discipline.InsertParams{
-				SessionID:   s.sessionID,
+				SessionID:   sessionID,
 				RepoName:    repoName,
 				ToolName:    toolName,
 				IsMutating:  discipline.IsMutating(rawTool),
@@ -103,7 +107,8 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Warn("disciplineMiddleware: panic in background goroutine",
+						slog.Warn(
+							"disciplineMiddleware: panic in background goroutine",
 							"tool", toolName,
 							"panic", fmt.Sprintf("%v", r),
 						)
@@ -112,9 +117,10 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 				bgCtx, cancel := context.WithTimeout(context.Background(), disciplineRecordTimeout)
 				defer cancel()
 				if insertErr := s.discipline.Insert(bgCtx, params); insertErr != nil {
-					slog.Warn("disciplineMiddleware: failed to record event",
+					slog.Warn(
+						"disciplineMiddleware: failed to record event",
 						"tool", toolName,
-						"session_id", s.sessionID,
+						"session_id", sessionID,
 						"is_mutating", params.IsMutating,
 						"error", insertErr,
 					)

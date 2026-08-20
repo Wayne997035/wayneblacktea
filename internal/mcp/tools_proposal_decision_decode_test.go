@@ -27,13 +27,21 @@ func TestDecodeDecisionParams_ForgedSourceIgnored(t *testing.T) {
 		"source": "manual"
 	}`)
 
-	got, errMsg := decodeDecisionParams(payload)
+	got, errMsg := decodeDecisionParams(payload, "actor-session-1")
 	if errMsg != "" {
 		t.Fatalf("decodeDecisionParams returned unexpected error: %s", errMsg)
 	}
 	if got.Source != decision.SourceAuto {
 		t.Errorf("Source = %q, want %q (forged payload key must not override the path constant)",
 			got.Source, decision.SourceAuto)
+	}
+	// U15: actorSessionID is a caller-supplied parameter (the confirming
+	// call's session), never decoded from the payload — assert it round-trips
+	// verbatim and is NOT overridden by anything in the JSON body (there is
+	// no matching key to forge here, but the round-trip itself is the
+	// property worth pinning).
+	if got.ActorSessionID != "actor-session-1" {
+		t.Errorf("ActorSessionID = %q, want %q", got.ActorSessionID, "actor-session-1")
 	}
 }
 
@@ -91,7 +99,7 @@ func TestDecodeDecisionParams_LengthCaps(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal fixture: %v", err)
 			}
-			_, errMsg := decodeDecisionParams(raw)
+			_, errMsg := decodeDecisionParams(raw, "actor-session-1")
 			if tc.wantErrMsg {
 				if !strings.Contains(errMsg, tc.wantSubstr) {
 					t.Errorf("errMsg = %q, want substring %q", errMsg, tc.wantSubstr)

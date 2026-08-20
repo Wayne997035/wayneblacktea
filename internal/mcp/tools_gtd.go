@@ -1299,47 +1299,64 @@ func currentSessionID(ctx context.Context) string {
 	return sess.SessionID()
 }
 
-// issueDeletionToken builds the token value returned to the caller in
-// delete_task's step 1 (and stored server-side as deletionToken.token,
-// server.go — that struct itself is unchanged; the binding lives entirely in
-// how this string is constructed and later checked, both in this file).
+// auditSessionID returns the identity to stamp on an audit-trail row
+// (discipline_events.session_id, decisions.actor_session_id): the calling
+// MCP client's tracked session when ctx carries one, and s.sessionID (the
+// per-process fallback, see its doc comment on Server) otherwise.
 //
-// When ctx carries a tracked session, the token is prefixed
-// "<sessionID>:<random>" — deletionTokenMatchesSession then requires step 2
-// to run from that SAME live session, not just present the same string.
-// This is U9's partial mitigation for Category S (self-confirmed
-// irreversible deletion, 2026-08-20-mcp-surface-spec.md): the token was
-// previously keyed by task_id alone with no binding to WHO can complete step
-// 2 — anyone who obtains the exact token string (already unlikely, but not
-// architecturally prevented) could confirm it. Binding to the live MCP
-// session narrows that to "must be the same ongoing connection", without
-// requiring F16/U15's authenticated-actor-identity system, which hasn't
-// landed yet and is what the FULL fix (distinct human/agent identities, not
-// just distinct transport sessions) actually needs.
+// Unlike currentSessionID, this NEVER returns "". An empty actor column
+// reads as "the write path failed to record who did this", which is a
+// different and strictly worse failure mode than "this call came from a
+// transport with no per-client session concept" — the latter is common
+// (stdio, direct test calls) and s.sessionID still narrows it to "this
+// server process", which is real audit signal. U9's deletion-token binding
+// deliberately does NOT use this helper — see issueDeletionToken's doc
+// comment for why that one call site needs the raw "" instead.
 //
-// When ctx carries no session (non-tracked transport, or a direct test
-// call), the token is the bare random UUID exactly as before — unchanged,
-// task-id-only protection for that case.
-func issueDeletionToken(ctx context.Context) string {
-	random := uuid.NewString()
-	if sessionID := currentSessionID(ctx); sessionID != "" {
-		return sessionID + ":" + random
+// MUST only ever be called with ctx, never with a caller-supplied session_id
+// argument — a tool payload is adversarial input (backend-security-design.md
+// §2) and could otherwise forge an actor identity.
+func (s *Server) auditSessionID(ctx context.Context) string {
+	if id := currentSessionID(ctx); id != "" {
+		return id
 	}
-	return random
+	return s.sessionID
 }
 
-// deletionTokenMatchesSession reports whether storedToken (as built by
-// issueDeletionToken) may be confirmed from ctx's current session. A token
-// issued with no session prefix is accepted from any caller (the original,
-// unchanged task-id-only protection). A token issued WITH a session prefix
-// may only be confirmed from that exact session — see issueDeletionToken's
-// doc comment.
-func deletionTokenMatchesSession(ctx context.Context, storedToken string) bool {
-	if !strings.Contains(storedToken, ":") {
-		return true
-	}
-	sessionID := currentSessionID(ctx)
-	return sessionID != "" && strings.HasPrefix(storedToken, sessionID+":")
+// issueDeletionToken returns the token value returned to the caller in
+// delete_task's step 1 and stored server-side as deletionToken.token
+// (server.go). It is always a bare random UUID — U9's session binding lives
+// in the separate deletionToken.issuedBySession field (set by the caller,
+// handleDeleteTask below), not encoded into the token string itself.
+//
+// Earlier revisions of this mitigation prefixed the token with
+// "<sessionID>:", which meant every place a token could be logged, echoed in
+// an error message, or re-displayed to the calling LLM also leaked which MCP
+// session issued it. The session binding is security bookkeeping the caller
+// never needs to see; keeping it purely server-side (deletionToken struct)
+// gives the same protection — see deletionTokenMatchesSession below — without
+// that leak, and without changing the token's shape for existing callers.
+func issueDeletionToken() string {
+	return uuid.NewString()
+}
+
+// deletionTokenMatchesSession reports whether rec (as stored by
+// handleDeleteTask's step 1) may be confirmed from ctx's current session.
+//
+// Comparison is plain equality against currentSessionID(ctx) — deliberately
+// the RAW value (possibly ""), not auditSessionID's process-level fallback.
+// A token issued with no tracked session (rec.issuedBySession == "") is
+// U9's original task-id-only protection: it is preserved unchanged because
+// it can only match a confirming call that ALSO carries no tracked session,
+// which is exactly "same untracked transport" (stdio, direct test calls) —
+// currentSessionID never returns "" for a transport that has a real,
+// mismatched session, so this is not a wildcard. Using auditSessionID's
+// s.sessionID fallback here instead would turn every untracked-transport
+// call into a match for every OTHER untracked-transport call sharing the
+// same process, which is precisely the universal-key failure mode this
+// function exists to avoid — see U15 dispatch's "acceptance ③" note.
+func deletionTokenMatchesSession(ctx context.Context, rec deletionToken) bool {
+	return currentSessionID(ctx) == rec.issuedBySession
 }
 
 // handleDeleteTask implements a 2-step confirmation flow.
@@ -1387,9 +1404,13 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 			return mcp.NewToolResultError("too many pending deletions in flight; retry later"), nil
 		}
 
-		token := issueDeletionToken(ctx)
+		token := issueDeletionToken()
 		expires := s.now().Add(deleteTokenTTL)
-		s.deleteTokens.Store(id.String(), deletionToken{token: token, expiresAt: expires})
+		s.deleteTokens.Store(id.String(), deletionToken{
+			token:           token,
+			expiresAt:       expires,
+			issuedBySession: currentSessionID(ctx),
+		})
 		return jsonText(map[string]any{
 			"status":         "confirmation_required",
 			"task_id":        id.String(),
@@ -1423,7 +1444,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	// U9 partial mitigation (Category S): requester must be the same MCP
 	// session that issued the token, when one was tracked — see
 	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
-	if !deletionTokenMatchesSession(ctx, rec.token) {
+	if !deletionTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(
 			"deletion_token was issued to a different session; call delete_task without confirm " +
 				"from that same session to obtain a new token",

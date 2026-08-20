@@ -758,7 +758,7 @@ func (s *Server) materializeTaskSQLite(_ context.Context, _ *sql.Tx, prop *db.Pe
 // TypeDecision. Extracted from the switch to keep gocyclo low; the decision
 // path is the only one that requires the dedicated *DecisionStore handle.
 func (s *Server) materializeDecisionSQLite(ctx context.Context, tx *sql.Tx, prop *db.PendingProposal) (any, string) {
-	dp, errMsg := decodeDecisionParams(prop.Payload)
+	dp, errMsg := decodeDecisionParams(prop.Payload, s.auditSessionID(ctx))
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -855,7 +855,7 @@ func (s *Server) materializeTaskPg(ctx context.Context, tx pgx.Tx, prop *db.Pend
 // materializeDecisionPg is the per-type Postgres-Tx materialiser for
 // TypeDecision. Extracted from the switch to keep gocyclo low.
 func (s *Server) materializeDecisionPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
-	dp, errMsg := decodeDecisionParams(prop.Payload)
+	dp, errMsg := decodeDecisionParams(prop.Payload, s.auditSessionID(ctx))
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -952,7 +952,7 @@ func (s *Server) materializeTaskIface(ctx context.Context, prop *db.PendingPropo
 // materializeDecisionIface is the per-type backend-agnostic materialiser for
 // TypeDecision. Extracted from the switch to keep gocyclo low.
 func (s *Server) materializeDecisionIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
-	dp, errMsg := decodeDecisionParams(prop.Payload)
+	dp, errMsg := decodeDecisionParams(prop.Payload, s.auditSessionID(ctx))
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -1032,7 +1032,13 @@ func decodeKnowledgePayload(payload []byte) (proposal.KnowledgePayload, string) 
 // strip) is the drafter's job — by the time the proposal is on the queue
 // the user has reviewed it. Empty title still produces an error so the
 // proposal stays pending instead of materialising garbage.
-func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
+// actorSessionID identifies whose MCP session called confirm_proposal (the
+// materialising call) — not the (unknown) origin of the auto-drafted
+// proposal itself. Threaded in as a parameter rather than set post-decode by
+// each of the 3 call sites so the returned decision.LogParams value stays
+// self-contained (U15; also keeps this struct literal visible to the
+// structural test in u15_actor_session_test.go).
+func decodeDecisionParams(payload []byte, actorSessionID string) (decision.LogParams, string) {
 	var p proposal.DecisionProposerPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return decision.LogParams{}, fmt.Sprintf("decoding decision payload: %v", err)
@@ -1076,7 +1082,8 @@ func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
 		// A human accepting a proposal does NOT change its auto origin — the
 		// decision was inferred by a TypeDecision materialiser, not confirmed
 		// fresh by an operator (P3.0a Step 6).
-		Source: decision.SourceAuto,
+		Source:         decision.SourceAuto,
+		ActorSessionID: actorSessionID,
 	}, ""
 }
 

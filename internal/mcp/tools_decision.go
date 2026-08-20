@@ -119,13 +119,20 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	p := decision.LogParams{
-		Title:        title,
-		Context:      decCtx,
-		Decision:     dec,
-		Rationale:    rationale,
-		RepoName:     stringArg(args, "repo_name"),
-		Alternatives: stringArg(args, "alternatives"),
-		Source:       decision.SourceManual,
+		Title:          title,
+		Context:        decCtx,
+		Decision:       dec,
+		Rationale:      rationale,
+		RepoName:       stringArg(args, "repo_name"),
+		Alternatives:   stringArg(args, "alternatives"),
+		Source:         decision.SourceManual,
+		ActorSessionID: s.auditSessionID(ctx),
+		// ConfirmedByHuman is deliberately left at its false zero value: this
+		// tool has no confirmation gate of its own (see its description
+		// above — "the tool has no confirmation gate of its own"), so
+		// calling it does not prove a human confirmed anything. true is
+		// reserved for a future real human-confirmation gate (GTD 41ef0520);
+		// no MCP path is entitled to set it yet.
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)

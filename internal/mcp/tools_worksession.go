@@ -1310,9 +1310,10 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 			continue
 		}
 		if _, logErr := s.decision.Log(ctx, decision.LogParams{
-			Title:    title,
-			RepoName: repoName,
-			Source:   decision.SourceManual,
+			Title:          title,
+			RepoName:       repoName,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		}); logErr != nil {
 			slog.Warn(
 				"finish_work: failed to log decision",
