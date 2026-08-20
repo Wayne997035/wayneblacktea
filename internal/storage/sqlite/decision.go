@@ -81,7 +81,9 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source, actor_session_id, confirmed_by_human)
+		(id, workspace_id, project_id, repo_name, title, context, decision,
+		 rationale, alternatives, created_at, task_id, source,
+		 actor_session_id, confirmed_by_human)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
@@ -106,7 +108,9 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source, actor_session_id, confirmed_by_human)
+		(id, workspace_id, project_id, repo_name, title, context, decision,
+		 rationale, alternatives, created_at, task_id, source,
+		 actor_session_id, confirmed_by_human)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
 	_, err := tx.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
@@ -135,7 +139,9 @@ func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error
 		return decision.ErrInvalidSource
 	}
 	const q = `INSERT INTO decisions
-		(id, workspace_id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, task_id, source, actor_session_id, confirmed_by_human)
+		(id, workspace_id, project_id, repo_name, title, context, decision,
+		 rationale, alternatives, created_at, task_id, source,
+		 actor_session_id, confirmed_by_human)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		d.ID.String(), pgUUIDToNullString(d.WorkspaceID), pgUUIDToNullString(d.ProjectID),
