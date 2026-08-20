@@ -137,15 +137,14 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 	// contract at docs/wayneblacktea-2.0-development-prompt.md:265-291), so
 	// no wrapper struct is needed here.
 	//
-	// U13 boundary-marker wiring for this response (Pack.Items[].Summary) is
-	// deliberately NOT done here — Lead coordination note (2026-08-20): b1's
-	// dispatch already added an equivalent wrapUntrustedContextPack for this
-	// same contextpack.Pack/Item type via tools_worksession.go's start_work
-	// path, and worktrees can't see each other's in-flight commits. Lead
-	// integrates this call site during the merge instead of two divergent
-	// implementations colliding. tools_contextpack.go:139 (assemble_context)
-	// stays PENDING in this dispatch's totals — see report.
-	return jsonText(pack)
+	// U13: Pack.Items[].Summary aggregates summaries pulled from decisions,
+	// knowledge, procedural, skills, outcomes, reflection, behaviorrule and
+	// session read ports — none of which neutralise on the way in, so this is
+	// the single choke point where a forged boundary marker stored in any of
+	// those domains would reach the model. wrapUntrustedContextPack lives in
+	// tools_worksession.go (start_work returns the same contextpack.Pack);
+	// both call sites share it so the two paths cannot drift apart.
+	return jsonText(wrapUntrustedContextPack(pack))
 }
 
 // clampBudgetChars applies the assemble_context default/clamp rule: unset or

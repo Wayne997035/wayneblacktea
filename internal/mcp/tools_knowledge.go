@@ -147,24 +147,11 @@ func wrapUntrustedKnowledgeItems(items []db.KnowledgeItem) []db.KnowledgeItem {
 	return out
 }
 
-// wrapUntrustedAtom returns a copy of a with Content clipSafe'd.
-// search_knowledge's include_atoms=true branch is the only stored-data
-// reader in this file that touches atom.Atom — tools_atom.go's own call
-// sites (traverse_atoms, search_atoms) are a separate Phase B conversion,
-// not covered here.
-func wrapUntrustedAtom(a atom.Atom) atom.Atom {
-	a.Content = clipSafe(a.Content, knowledgeBodyMaxRunes)
-	return a
-}
-
-// wrapUntrustedAtoms maps wrapUntrustedAtom over a slice, always non-nil.
-func wrapUntrustedAtoms(atoms []atom.Atom) []atom.Atom {
-	out := make([]atom.Atom, len(atoms))
-	for i, a := range atoms {
-		out[i] = wrapUntrustedAtom(a)
-	}
-	return out
-}
+// wrapUntrustedAtom / wrapUntrustedAtoms live in tools_atom.go — that file
+// owns the atom.Atom type's read surface. This file's include_atoms=true
+// branch calls them. The tools_atom.go version also clips Keywords and Tags,
+// not just Content, so routing both call sites through it is strictly
+// stronger than a knowledge-local copy would be.
 
 // sanitizeKnowledgeText rejects control characters in title (short,
 // single-line, rendered in lists) and content (long-form, may be markdown so
