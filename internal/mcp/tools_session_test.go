@@ -113,7 +113,10 @@ func TestParseAndValidateNextActions_TooManyItems(t *testing.T) {
 func TestParseAndValidateNextActions_ExactlyFiftyItems(t *testing.T) {
 	items := make([]map[string]any, 50)
 	for i := range items {
-		items[i] = map[string]any{"title": "item", "status": "pending"}
+		// Distinct, in-range (0-50) steps: U10's duplicate-step check (this
+		// file) would otherwise reject all 50 items sharing the implicit
+		// zero-value step an omitted "step" key decodes to.
+		items[i] = map[string]any{"step": i, "title": "item", "status": "pending"}
 	}
 	raw, _ := json.Marshal(items)
 	_, msg := parseAndValidateNextActions(string(raw))
@@ -326,6 +329,68 @@ func TestParseAndValidateNextActions_FieldCheckOrder(t *testing.T) {
 	}
 }
 
+// TestSetSessionHandoff_RejectsInvalidSteps is U10's acceptance criterion
+// (F8, 2026-08-20-mcp-surface-spec.md): set_session_handoff.next_actions[].step
+// previously had no range or uniqueness check at all, unlike
+// mark_next_action_done's own step param (bounded 0-maxNextActionItems) —
+// a step stored out of that range, or duplicated across items, could never
+// be marked done cleanly afterward.
+func TestSetSessionHandoff_RejectsInvalidSteps(t *testing.T) {
+	cases := []struct {
+		name       string
+		nextAction string
+		wantErr    bool
+		wantSubstr string
+	}{
+		{
+			name:       "negative step rejected",
+			nextAction: `[{"step":-1,"title":"do it","status":"pending"}]`,
+			wantErr:    true,
+			wantSubstr: "step",
+		},
+		{
+			name:       "step above maxNextActionItems rejected",
+			nextAction: `[{"step":51,"title":"do it","status":"pending"}]`,
+			wantErr:    true,
+			wantSubstr: "step",
+		},
+		{
+			name: "duplicate step rejected",
+			nextAction: `[{"step":1,"title":"first","status":"pending"},` +
+				`{"step":1,"title":"second","status":"pending"}]`,
+			wantErr:    true,
+			wantSubstr: "duplicate step",
+		},
+		{
+			name: "valid unique steps accepted",
+			nextAction: `[{"step":0,"title":"first","status":"pending"},` +
+				`{"step":1,"title":"second","status":"pending"}]`,
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestWorkSessionServer(t)
+			r := callSetSessionHandoff(t, s, map[string]any{
+				"intent":       "continue tomorrow",
+				"next_actions": tc.nextAction,
+			})
+			if tc.wantErr {
+				if !r.IsError {
+					t.Fatalf("expected an error, got success: %s", resultText(r))
+				}
+				if tc.wantSubstr != "" && !strings.Contains(resultText(r), tc.wantSubstr) {
+					t.Errorf("error should mention %q, got: %s", tc.wantSubstr, resultText(r))
+				}
+				return
+			}
+			if r.IsError {
+				t.Fatalf("expected success, got error: %s", resultText(r))
+			}
+		})
+	}
+}
+
 // TestSetSessionHandoff_InvalidNextActionsJSON verifies that malformed JSON in
 // next_actions is rejected with a tool error.
 func TestSetSessionHandoff_InvalidNextActionsJSON(t *testing.T) {
@@ -398,6 +463,26 @@ func TestHandleMarkNextActionDone_InvalidUUID(t *testing.T) {
 	})
 	if !r.IsError {
 		t.Fatal("expected error for invalid UUID")
+	}
+}
+
+// TestHandleMarkNextActionDone_RejectsFractionalStep is U12's end-to-end
+// acceptance criterion applied to this handler's own numberArg call site
+// (F9, 2026-08-20-mcp-surface-spec.md): step=2.5 previously silently
+// truncated to 2 via numberArg's int32(v) with no error — the caller had no
+// way to know 2.5 was not what got applied. requireIntArg (server.go)
+// rejects it instead.
+func TestHandleMarkNextActionDone_RejectsFractionalStep(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callMarkNextActionDone(t, s, map[string]any{
+		"handoff_id": "123e4567-e89b-12d3-a456-426614174000",
+		"step":       2.5,
+	})
+	if !r.IsError {
+		t.Fatal("expected an error for a fractional step, got success")
+	}
+	if !strings.Contains(resultText(r), "whole number") {
+		t.Errorf("error should mention \"whole number\", got: %s", resultText(r))
 	}
 }
 
