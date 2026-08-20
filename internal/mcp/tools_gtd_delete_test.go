@@ -334,10 +334,10 @@ func TestDeleteTask_PruneExpiredOnWrite(t *testing.T) {
 // currentSessionID/issueDeletionToken/deletionTokenMatchesSession.
 type fakeClientSession struct{ id string }
 
-func (f fakeClientSession) SessionID() string                                   { return f.id }
+func (f fakeClientSession) SessionID() string                                      { return f.id }
 func (f fakeClientSession) NotificationChannel() chan<- mcpmsg.JSONRPCNotification { return nil }
-func (f fakeClientSession) Initialize()                                         {}
-func (f fakeClientSession) Initialized() bool                                   { return true }
+func (f fakeClientSession) Initialize()                                            {}
+func (f fakeClientSession) Initialized() bool                                      { return true }
 
 // callDeleteTaskCtx is callDeleteTask with a caller-supplied context, so
 // tests can simulate a specific (or absent) MCP client session via

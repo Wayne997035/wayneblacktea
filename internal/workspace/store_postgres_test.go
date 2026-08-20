@@ -43,7 +43,8 @@ func run(m *testing.M) int {
 	// pre-installed. Migration 000005_knowledge.up.sql does
 	// `CREATE EXTENSION vector` so the vanilla `postgres:16-alpine` image
 	// fails with `extension "vector" is not available`.
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -189,7 +190,8 @@ func TestUpsertRepo_PerWorkspaceConflict(t *testing.T) {
 
 	// Assert both repos exist as distinct rows in the DB.
 	var count int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM repos WHERE name = $1`, repoName,
 	).Scan(&count); err != nil {
 		t.Fatalf("count repos by name: %v", err)
@@ -256,7 +258,8 @@ func TestUpsertRepo_SameWorkspaceUpdate(t *testing.T) {
 
 	// Exactly one row must exist for this (workspace_id, name) pair.
 	var count int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM repos WHERE workspace_id = $1 AND name = $2`, wsID, repoName,
 	).Scan(&count); err != nil {
 		t.Fatalf("count repos: %v", err)

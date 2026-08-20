@@ -1299,7 +1299,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
 	if !deletionTokenMatchesSession(ctx, rec.token) {
 		return mcp.NewToolResultError(
-			"deletion_token was issued to a different session; call delete_task without confirm "+
+			"deletion_token was issued to a different session; call delete_task without confirm " +
 				"from that same session to obtain a new token",
 		), nil
 	}
