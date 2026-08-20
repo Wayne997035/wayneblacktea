@@ -463,6 +463,71 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	), seam("begin_task", s.handleBeginTask))
 }
 
+// Read-time bounds for db.Task/db.Project's free-text fields, applied by
+// wrapUntrustedTask/wrapUntrustedProject before jsonText — U13
+// (2026-08-20-mcp-surface-spec.md). Write-time caps on these fields are
+// inconsistent across tools today (update_task.title has mcp.MaxLength(500),
+// add_task.title has none at all), so these read-time bounds intentionally
+// sit ABOVE every existing write cap — they exist to stop marker-stuffing /
+// pathological-growth content from reaching an unbounded read, not to
+// replicate the session-start token-diet get_today_context enforces via
+// taskTitleMaxRunes/projectTitleMaxRunes (tools_context.go, a DIFFERENT,
+// much smaller cap for a DIFFERENT, budget-constrained payload). Legitimate
+// content on a get_task/get_project-class full read should never hit these.
+const (
+	gtdTitleMaxRunes = 2000
+	gtdBodyMaxRunes  = 20000
+)
+
+// wrapUntrustedTask returns a copy of t with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedArchSnapshot's (tools_arch.go) and wrapUntrustedDecision's
+// (tools_decision.go) copy-not-mutate contract. nil in, nil out.
+//
+// Checklist is deliberately NOT touched here: it is raw JSON bytes ([]byte)
+// encoding a []gtd.ChecklistItem, each of which carries its own free-text
+// Title/FileRef/Notes — neutralising those requires unmarshal-walk-remarshal,
+// not a plain clipSafe(string) call, and is out of this template's scope
+// (Phase A dispatch note: flagged to Lead as a distinct implementation
+// pattern, not silently skipped). Artifact/BranchName/PRUrl are left as-is:
+// applyArtifactSideEffects/validateBeginTaskLinkageArgs already constrain
+// them to URL/SHA/branch-name shapes at the write paths that set them, which
+// forecloses embedding a multi-line forged marker. Assignee is left as-is:
+// gtd.NormalizeActor is a whitelist, not free text.
+func wrapUntrustedTask(t *db.Task) *db.Task {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	out.Title = clipSafe(t.Title, gtdTitleMaxRunes)
+	if t.Description.Valid {
+		out.Description.String = clipSafe(t.Description.String, gtdBodyMaxRunes)
+	}
+	if t.Context.Valid {
+		out.Context.String = clipSafe(t.Context.String, gtdBodyMaxRunes)
+	}
+	return &out
+}
+
+// wrapUntrustedProject is wrapUntrustedTask's sibling for db.Project — see
+// its doc comment for the shared rationale. Name is included alongside
+// Title: unlike Task, a project's Name doubles as its lookup key
+// (get_project(name)) but is still caller-supplied free text at
+// create_project time, validated only by validator.IsValidRepoName's
+// separate repo_name field, not Name itself.
+func wrapUntrustedProject(p *db.Project) *db.Project {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.Name = clipSafe(p.Name, gtdTitleMaxRunes)
+	out.Title = clipSafe(p.Title, gtdTitleMaxRunes)
+	if p.Description.Valid {
+		out.Description.String = clipSafe(p.Description.String, gtdBodyMaxRunes)
+	}
+	return &out
+}
+
 func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*mcp.CallToolResult, error) {
 	projects, err := s.gtd.ListActiveProjects(ctx)
 	if err != nil {
@@ -471,7 +536,11 @@ func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*m
 	if projects == nil {
 		projects = []db.Project{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
 	}
-	return jsonText(projects)
+	out := make([]db.Project, len(projects))
+	for i := range projects {
+		out[i] = *wrapUntrustedProject(&projects[i])
+	}
+	return jsonText(out)
 }
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
@@ -495,7 +564,7 @@ func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("creating project: %v", err)), nil
 	}
-	return jsonText(project)
+	return jsonText(wrapUntrustedProject(project))
 }
 
 func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs) (*mcp.CallToolResult, error) {
@@ -520,7 +589,7 @@ func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
 	}
-	return jsonText(project)
+	return jsonText(wrapUntrustedProject(project))
 }
 
 // buildUpdateProjectParams builds a gtd.UpdateProjectParams from typed
@@ -721,7 +790,7 @@ func (s *Server) handleGetTask(ctx context.Context, args GetTaskArgs) (*mcp.Call
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
 	}
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task))
 }
 
 // allowedTransitions maps each source status to the set of valid target statuses.

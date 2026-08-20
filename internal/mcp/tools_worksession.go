@@ -391,6 +391,24 @@ func (s *Server) handleGetActiveWork(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get_active_work failed: %v", err)), nil
 	}
+	// U13 (2026-08-20-mcp-surface-spec.md): result.Session is read back from
+	// a session that may have been started by an earlier, possibly
+	// untrusted, call — unlike start_work's own response below (which only
+	// ever echoes what THIS call just wrote), so it needs the same
+	// treatment get_work_session_trace already applies to the same
+	// *worksession.Session type. LastCheckpoint is the free-text summary
+	// argument checkpoint_work persists (5000 chars, no boundary-marker
+	// screening at write time) — neutralizePtr (boundary_markers.go) is the
+	// shared helper for exactly this "optional *string, nil-safe" shape.
+	if result != nil {
+		result.Session = wrapUntrustedVerificationOutputExcerpt(result.Session)
+		result.Session = wrapUntrustedFinalSummary(result.Session)
+		result.Session = neutralizeSessionMetadataFields(result.Session)
+		if result.LastCheckpoint != nil {
+			neutralized := neutralizePtr(result.LastCheckpoint)
+			result.LastCheckpoint = &neutralized
+		}
+	}
 	return jsonText(result)
 }
 

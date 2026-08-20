@@ -622,23 +622,6 @@ type handoffResource struct {
 	Resolved bool `json:"resolved,omitempty"`
 }
 
-// neutralizePtr is neutralizeBoundaryMarkers over an optional string pointer;
-// nil becomes "". Used only for RefTaskID, which parseAndValidateNextActions
-// already validates as a UUID (36 runes, fixed alphabet) — unlike
-// title/command/expected below, it needs no read-time re-clip because its
-// write-time validation already bounds both its length and its character set.
-// Title/command/expected go through clipSafe instead (PR #157 round-2
-// security review m-R4): the write-time maxNextActionFieldLen=500-rune cap
-// under-bounds bytes for CJK content, so this resource re-clips them at
-// handoffResourceNextActionFieldMaxRunes on top of that write-time bound —
-// see that const's doc comment.
-func neutralizePtr(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return neutralizeBoundaryMarkers(*p)
-}
-
 // sinceEpoch is passed to HandoffsSince below as an always-in-the-past
 // bound, so "handoffs since sinceEpoch" reads as "every handoff" — see
 // handleResourceHandoffLatest's doc comment for why this resource needs

@@ -149,3 +149,24 @@ func fenceArchSummary(s string) string {
 	}
 	return archSnapshotBoundaryStart + neutralized + archSnapshotBoundaryEnd
 }
+
+// neutralizePtr is neutralizeBoundaryMarkers over an optional string pointer;
+// nil becomes "". Moved here from resources.go (U13, 2026-08-20-mcp-surface-
+// spec.md) so every stored-data reader added under Phase B has a single
+// shared home for this helper instead of each file growing its own
+// nil-pointer-neutralise wrapper — this file is already the registry every
+// other neutralisation helper in the package lives in.
+//
+// Originally written only for handoffResource.NextActions[].RefTaskID
+// (resources.go), which parseAndValidateNextActions already validates as a
+// UUID (36 runes, fixed alphabet) — unlike free-text fields such as
+// title/command/expected, a UUID-shaped value needs no read-time re-clip
+// because its write-time validation already bounds both its length and its
+// character set. Callers with a free-text *string field should go through
+// clipSafe instead (bounds length AND neutralises), not this function alone.
+func neutralizePtr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return neutralizeBoundaryMarkers(*p)
+}
