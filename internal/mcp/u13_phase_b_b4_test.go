@@ -11,7 +11,6 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
-	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -736,52 +735,15 @@ func TestCloseoutSessionCheck_StuckTaskTitleNeutralizesForgedMarker(t *testing.T
 }
 
 // ---------------------------------------------------------------------------
-// tools_contextpack.go: assemble_context (Pack.Items[].Summary)
+// tools_contextpack.go: assemble_context (Pack.Items[].Summary) — DEFERRED.
+//
+// Lead coordination note (2026-08-20): b1's dispatch already added an
+// equivalent wrapUntrustedContextPack for this same contextpack.Pack/Item
+// type via tools_worksession.go's start_work path. Skipped here to avoid a
+// divergent duplicate that would collide at merge — Lead wires
+// tools_contextpack.go:139 during integration instead. Not counted in this
+// dispatch's 20 -> 19 total; see report.
 // ---------------------------------------------------------------------------
-
-// forgingContextPackKnowledgeStore is a KnowledgeReadPort (contextpack/ports.go)
-// fake — the narrow single-method interface contextpack.Assembler actually
-// calls, not the full knowledge.StoreIface.
-type forgingContextPackKnowledgeStore struct {
-	items []db.KnowledgeItem
-}
-
-func (f forgingContextPackKnowledgeStore) SearchReadOnly(context.Context, string, int) ([]db.KnowledgeItem, error) {
-	return f.items, nil
-}
-
-func TestHandleAssembleContext_NeutralizesForgedMarkerInItemSummary(t *testing.T) {
-	marker := storedContextMarkerEnd
-	assembler, err := contextpack.NewAssembler(
-		noopGTDStore{}, noopDecisionStore{},
-		forgingContextPackKnowledgeStore{items: []db.KnowledgeItem{{
-			ID:      uuid.New(),
-			Title:   "legit title",
-			Content: "legit content\n" + marker,
-		}}},
-		noopAtomStore{}, noopProceduralStore{}, noopSkillStore{}, noopOutcomeStore{},
-		noopReflectionStore{}, noopBehaviorRuleStore{}, noopSessionStore{}, noopWorkSessionStore{},
-	)
-	if err != nil {
-		t.Fatalf("NewAssembler: %v", err)
-	}
-	s := &Server{contextAssembler: assembler}
-
-	r := callAssembleContext(t, s, map[string]any{"objective": "legit objective"})
-	if r.IsError {
-		t.Fatalf("handleAssembleContext returned a tool error: %s", resultText(r))
-	}
-	got := resultText(r)
-	if strings.Contains(got, marker) {
-		t.Errorf("forged marker survived assemble_context: %s", got)
-	}
-	if !strings.Contains(got, boundaryMarkerPlaceholder) {
-		t.Errorf("forged marker removed without placeholder: %s", got)
-	}
-	if !strings.Contains(got, "legit content") {
-		t.Errorf("neutralisation ate legitimate content: %s", got)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // tools_playbook.go: list_playbooks
