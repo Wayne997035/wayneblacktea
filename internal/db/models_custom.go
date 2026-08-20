@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // pendingProposalJSON is the wire shape for PendingProposal — flat, no
@@ -90,3 +91,97 @@ func (p PendingProposal) MarshalJSON() ([]byte, error) {
 	}
 	return b, nil
 }
+
+// decisionJSON is the wire shape for Decision — every field Decision has
+// EXCEPT actor_session_id and confirmed_by_human.
+//
+// actor_session_id is a server-side audit/provenance identity
+// (backend-security-design.md §2 adversarial input / provenance integrity):
+// PR160 round-2 security review (M-3) found that any caller of
+// list_decisions / GET /api/decisions could read another MCP session's
+// actor_session_id back out, turning the residual risk accepted by decision
+// 91ff27d6 ("only a caller who already knows a session ID can impersonate
+// it") into "any caller can learn a live session ID for free by calling a
+// core read tool" — a materially cheaper attack than the one that was
+// actually accepted. The column itself is untouched; only the read-side
+// serialization is closed.
+//
+// confirmed_by_human is dropped for a different but adjacent reason (M-2):
+// the confirmation gate the field's doc comment refers to
+// (decision.LogParams.ConfirmedByHuman) does not exist yet, so this column
+// writes false on every row regardless of whether the decision is actually
+// human-approved. Surfacing "confirmed_by_human": false on every decision
+// reads to an LLM caller as an explicit "not approved by a human" signal,
+// which is false — it is "this feature is not wired up yet". Re-add it once
+// a real confirmation gate exists to set it meaningfully.
+//
+// Every other field reuses Decision's own pgtype.* types (not a hand-reshaped
+// plain-Go mirror like pendingProposalJSON above) specifically so its wire
+// representation — null-vs-value, RFC3339Nano timestamps, UUID string form —
+// stays byte-identical to what encoding/json already produced for Decision
+// before this type existed (pgtype.Text/UUID/Timestamptz/Int4 all implement
+// json.Marshaler themselves); only the two audit fields disappear.
+type decisionJSON struct {
+	ID                uuid.UUID          `json:"id"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	RepoName          pgtype.Text        `json:"repo_name"`
+	Title             string             `json:"title"`
+	Context           string             `json:"context"`
+	Decision          string             `json:"decision"`
+	Rationale         string             `json:"rationale"`
+	Alternatives      pgtype.Text        `json:"alternatives"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Embedding         []byte             `json:"embedding"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	EmbeddingProvider pgtype.Text        `json:"embedding_provider"`
+	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
+	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
+	Source            string             `json:"source"`
+}
+
+// MarshalJSON hides Decision.ActorSessionID and Decision.ConfirmedByHuman
+// from every JSON serialization boundary in this codebase (handler.JSON
+// responses, MCP jsonText, any future c.JSON(decision) call site) —
+// PR160 M-3 / M-2. Declared on the VALUE receiver, not a pointer: pgtype's
+// own MarshalJSON methods (Text, UUID, Timestamptz — see this package's
+// go.sum-pinned pgx/v5) all use value receivers for the identical reason
+// mcp.safeSessionHandoff documents (internal/mcp/session_handoff_safe.go):
+// encoding/json only special-cases a pointer receiver when the value being
+// marshaled is addressable, which a map value or an `any`-boxed element is
+// not guaranteed to be. A value receiver makes "this type never emits those
+// two fields" hold regardless of how a caller stores or nests the value —
+// []db.Decision, *db.Decision, map[string]any{"decision": d}, []any{d}, a
+// struct field — all of them.
+//
+// The write path is untouched: Decision.ActorSessionID/ConfirmedByHuman
+// still round-trip through the DB exactly as before (this method only
+// governs json.Marshal(Decision), never affects DB reads/writes, which go
+// through pgx's binary/text wire protocol, not encoding/json).
+func (d Decision) MarshalJSON() ([]byte, error) {
+	out := decisionJSON{
+		ID:                d.ID,
+		ProjectID:         d.ProjectID,
+		RepoName:          d.RepoName,
+		Title:             d.Title,
+		Context:           d.Context,
+		Decision:          d.Decision,
+		Rationale:         d.Rationale,
+		Alternatives:      d.Alternatives,
+		CreatedAt:         d.CreatedAt,
+		WorkspaceID:       d.WorkspaceID,
+		Embedding:         d.Embedding,
+		TaskID:            d.TaskID,
+		EmbeddingProvider: d.EmbeddingProvider,
+		EmbeddingModel:    d.EmbeddingModel,
+		EmbeddingDim:      d.EmbeddingDim,
+		Source:            d.Source,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling decision: %w", err)
+	}
+	return b, nil
+}
+
+var _ json.Marshaler = Decision{}
