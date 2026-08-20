@@ -293,8 +293,18 @@ tasks:
     desc: "Run integration tests (requires Docker for testcontainers)"
     cmds:
       # Build tag + no -short: runs testcontainers-based integration tests.
-      # -p 1 avoids concurrent Ryuk/container startup races across packages.
-      - go test -tags integration -p 3 ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
+      # -p 3 avoids concurrent Ryuk/container startup races across packages.
+      #
+      # -timeout 30m, not go test's 10m default. Every package here that touches
+      # a store spins up its own testcontainers Postgres in TestMain, and CI
+      # runners are roughly 6x slower at that than a dev machine: internal/mcp
+      # measures ~100s locally and hit the 10m alarm in CI, while
+      # internal/storage/sqlite alone reports 137s there. The alarm was firing
+      # on a suite that was merely slow — no deadlock, no data race (verified
+      # separately with -race, 0 findings) — and a timeout that trips on
+      # healthy runs teaches people to re-run CI instead of reading it.
+      # If a package ever genuinely hangs, 30m still bounds it.
+      - go test -tags integration -p 3 -timeout 30m ./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/...
     dir: ..
 
   migrate-up:
