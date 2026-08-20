@@ -365,7 +365,7 @@ func TestPgStore_Finish(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	done, err := store.Finish(ctx, worksession.FinishParams{
+	done, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID,
 		Summary:   "all done",
 	})
@@ -409,7 +409,7 @@ func TestPgStore_Finish_NilWorkspace(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	done, err := store.Finish(ctx, worksession.FinishParams{
+	done, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID,
 		Summary:   "nil ws done",
 	})
@@ -560,7 +560,7 @@ func TestPgStore_Finish_NotFound(t *testing.T) {
 	store := newPgStore(pool, &wsID)
 	ctx := context.Background()
 
-	_, err := store.Finish(ctx, worksession.FinishParams{
+	_, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: uuid.New(),
 		Summary:   "ghost",
 	})
@@ -798,7 +798,7 @@ func TestPgFinishWork_AutoMarksTasksCompleted(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, err = store.Finish(ctx, worksession.FinishParams{
+	_, _, err = store.Finish(ctx, worksession.FinishParams{
 		SessionID:        sess.ID,
 		Summary:          "done",
 		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
@@ -815,9 +815,13 @@ func TestPgFinishWork_AutoMarksTasksCompleted(t *testing.T) {
 	}
 }
 
-// TestPgFinishWork_NoTaskIDs verifies that Finish discovers linked tasks via
-// work_session_tasks and marks them all completed when CompletedTaskIDs is empty.
-func TestPgFinishWork_NoTaskIDs(t *testing.T) {
+// TestPgFinishWork_NoTaskIDs_CompleteAllLinkedTasksOptIn verifies that
+// Finish discovers linked tasks via work_session_tasks and marks them all
+// completed when CompletedTaskIDs is empty AND the caller opts in via
+// CompleteAllLinkedTasks (Ω5 fix — see
+// TestPgFinishWork_OmittedCompletedTaskIDsAffectsNone for the default-false,
+// no-op case).
+func TestPgFinishWork_NoTaskIDs_CompleteAllLinkedTasksOptIn(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
 	store := newPgStore(pool, &wsID)
@@ -840,13 +844,18 @@ func TestPgFinishWork_NoTaskIDs(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Finish with no CompletedTaskIDs — store discovers linked tasks automatically.
-	_, err = store.Finish(ctx, worksession.FinishParams{
-		SessionID: sess.ID,
-		Summary:   "done without explicit ids",
+	// Finish with no CompletedTaskIDs but CompleteAllLinkedTasks=true —
+	// store discovers linked tasks automatically.
+	_, completedIDs, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:              sess.ID,
+		Summary:                "done without explicit ids, opted into complete-all",
+		CompleteAllLinkedTasks: true,
 	})
 	if err != nil {
 		t.Fatalf("Finish: %v", err)
+	}
+	if len(completedIDs) != 2 {
+		t.Errorf("completedIDs: got %d ids, want 2", len(completedIDs))
 	}
 
 	if got := queryPgTaskStatus(t, pool, taskA); got != statusCompleted {
@@ -854,6 +863,52 @@ func TestPgFinishWork_NoTaskIDs(t *testing.T) {
 	}
 	if got := queryPgTaskStatus(t, pool, taskB); got != statusCompleted {
 		t.Errorf("taskB status: got %q, want completed", got)
+	}
+}
+
+// TestPgFinishWork_OmittedCompletedTaskIDsAffectsNone is U7's Ω5 bad-case
+// red test (Postgres backend): omitting completed_task_ids with
+// CompleteAllLinkedTasks left at its false default must complete NEITHER
+// linked task.
+func TestPgFinishWork_OmittedCompletedTaskIDsAffectsNone(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgStore(pool, &wsID)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertPgTestTask(t, pool, wsID, taskA)
+	insertPgTestTask(t, pool, wsID, taskB)
+
+	sess, err := store.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    "pg-omitted-completed-repo",
+		Title:       "PG finish omitted ids",
+		Goal:        "verify omission completes nothing",
+		Source:      "test",
+		TaskIDs:     []uuid.UUID{taskA, taskB},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, completedIDs, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "done, completed_task_ids omitted, no opt-in",
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if len(completedIDs) != 0 {
+		t.Errorf("completedIDs: got %v, want empty (bad case: omission must not silently complete linked tasks)", completedIDs)
+	}
+
+	if got := queryPgTaskStatus(t, pool, taskA); got == statusCompleted {
+		t.Errorf("taskA must NOT be completed when completed_task_ids is omitted, got %q", got)
+	}
+	if got := queryPgTaskStatus(t, pool, taskB); got == statusCompleted {
+		t.Errorf("taskB must NOT be completed when completed_task_ids is omitted, got %q", got)
 	}
 }
 
@@ -885,7 +940,7 @@ func TestPgStore_Finish_WritesEvidenceColumns(t *testing.T) {
 	verifCmd := "cd build && task check"
 	verifExcerpt := "0 issues"
 	finalResult := "success"
-	done, err := store.Finish(ctx, worksession.FinishParams{
+	done, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID:                 sess.ID,
 		Summary:                   "verified and shipped",
 		VerificationStatus:        &verifStatus,
@@ -1005,7 +1060,7 @@ func TestPgStore_ListRecent_DescOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create old: %v", err)
 	}
-	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessOld.ID, Summary: "done"}); err != nil {
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessOld.ID, Summary: "done"}); err != nil {
 		t.Fatalf("Finish old: %v", err)
 	}
 	sessNew, err := store.Create(ctx, worksession.CreateParams{
@@ -1014,7 +1069,7 @@ func TestPgStore_ListRecent_DescOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create new: %v", err)
 	}
-	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessNew.ID, Summary: "done"}); err != nil {
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessNew.ID, Summary: "done"}); err != nil {
 		t.Fatalf("Finish new: %v", err)
 	}
 
@@ -1118,7 +1173,7 @@ func TestPgStore_Finish_RejectsControlCharsInVerificationCommand(t *testing.T) {
 	}
 
 	badCmd := "task check\nrm -rf /"
-	_, err = store.Finish(ctx, worksession.FinishParams{
+	_, _, err = store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID, Summary: "done", VerificationCommand: &badCmd,
 	})
 	if err == nil {
@@ -1170,7 +1225,7 @@ func TestPgStore_Finish_WithEvidence(t *testing.T) {
 
 	cmd := taskCheckCmd
 	pr := "https://github.com/example/repo/pull/1"
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID,
 		Summary:   "done with evidence",
 		Evidence: []worksession.EvidenceInput{
@@ -1216,10 +1271,11 @@ func TestPgFinishWork_DeferredOnly_ExcludesFromFallback(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if _, err := store.Finish(ctx, worksession.FinishParams{
-		SessionID:       sess.ID,
-		Summary:         "deferred taskB to next session",
-		DeferredTaskIDs: []uuid.UUID{taskB},
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:              sess.ID,
+		Summary:                "deferred taskB to next session",
+		DeferredTaskIDs:        []uuid.UUID{taskB},
+		CompleteAllLinkedTasks: true,
 	}); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -1254,7 +1310,7 @@ func TestPgFinishWork_CompletedAndDeferred_NoOverlap(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID:        sess.ID,
 		Summary:          "taskA done, taskB deferred",
 		CompletedTaskIDs: []uuid.UUID{taskA},
@@ -1294,7 +1350,7 @@ func TestPgFinishWork_CompletedDeferredOverlap_DeferredWins(t *testing.T) {
 	}
 
 	// taskB is listed in BOTH completed and deferred — deferred must win.
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID:        sess.ID,
 		Summary:          "conflicting lists for taskB",
 		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
@@ -1356,7 +1412,7 @@ func TestPgStore_GetEvidence_NilWorkspace(t *testing.T) {
 	}
 
 	cmd := taskCheckCmd
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID,
 		Summary:   "nil ws done with evidence",
 		Evidence: []worksession.EvidenceInput{

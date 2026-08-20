@@ -2,6 +2,8 @@ package sanitize_test
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -85,5 +87,51 @@ func TestValidateNoTagNoise(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidateNoTagNoise_ReportsExcerpt is U2's accept criterion. It
+// simulates the exact wrap convention every real caller already uses
+// (decision/store.go:44 — fmt.Errorf("log_decision: rationale %w", err)) so
+// the assertion matches what a caller of log_decision actually sees: the
+// field name (supplied by the caller's own wrap, unchanged by this fix) AND
+// a bounded excerpt around the matched fragment (the part this fix adds).
+func TestValidateNoTagNoise_ReportsExcerpt(t *testing.T) {
+	rationale := "see </invoke> tag"
+	inner := sanitize.ValidateNoTagNoise(rationale)
+	if inner == nil {
+		t.Fatalf("ValidateNoTagNoise(%q) = nil, want ErrTagNoise", rationale)
+	}
+	err := fmt.Errorf("log_decision: rationale %w", inner)
+
+	if !errors.Is(err, sanitize.ErrTagNoise) {
+		t.Errorf("errors.Is(err, ErrTagNoise) = false, want true (err: %v)", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "rationale") {
+		t.Errorf("error message %q does not contain field name %q", msg, "rationale")
+	}
+	if !strings.Contains(msg, "</invoke>") {
+		t.Errorf("error message %q does not contain the matched fragment %q", msg, "</invoke>")
+	}
+}
+
+// TestValidateNoTagNoise_ExcerptIsBounded verifies the excerpt window does
+// not echo an entire large payload back into the error message — only a
+// bounded run of runes around the matched fragment (backend-security-design.md
+// §5.4 — self-check item 4: the fix for a bad error message must not become
+// its own information-disclosure/amplification surface).
+func TestValidateNoTagNoise_ExcerptIsBounded(t *testing.T) {
+	payload := strings.Repeat("x", 5000) + "</invoke>" + strings.Repeat("y", 5000)
+	err := sanitize.ValidateNoTagNoise(payload)
+	if err == nil {
+		t.Fatal("expected ErrTagNoise, got nil")
+	}
+	msg := err.Error()
+	if len(msg) >= len(payload) {
+		t.Errorf("error message length %d is not bounded relative to a %d-rune payload", len(msg), len(payload))
+	}
+	if strings.Contains(msg, strings.Repeat("x", 100)) || strings.Contains(msg, strings.Repeat("y", 100)) {
+		t.Errorf("error message leaked far more of the payload than the excerpt window should allow: %q", msg)
 	}
 }

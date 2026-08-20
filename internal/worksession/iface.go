@@ -256,24 +256,41 @@ type CreateParams struct {
 }
 
 // CheckpointParams holds the inputs for checkpointing a work session.
+//
+// U4 (mcp-surface spec P6): CompletedTaskIDs/NewTaskTitles/NewDecisionTitles/
+// Blockers/NextActions were registered on the checkpoint_work MCP tool but
+// never read by any handler or store method (dead params — confirmed by
+// repo-wide grep before removal, per backend-security-design.md §5.2's
+// "config/env present, zero code reads it = finding" principle applied to
+// tool schemas). Removed rather than wired up: checkpoint_work's own
+// description never promised progress-tracking side effects beyond
+// status=checkpointed + last_checkpoint_at.
 type CheckpointParams struct {
-	SessionID         uuid.UUID
-	Summary           string
-	CompletedTaskIDs  []uuid.UUID
-	NewTaskTitles     []string
-	NewDecisionTitles []string
-	Blockers          []string
-	NextActions       []string
+	SessionID uuid.UUID
+	Summary   string
 }
 
 // FinishParams holds the inputs for finishing a work session.
+//
+// U4: FollowUpTaskTitles was registered on finish_work as follow_up_tasks
+// but never read (same dead-param class as CheckpointParams' fields above).
+// Removed rather than wired up.
 type FinishParams struct {
-	SessionID          uuid.UUID
-	Summary            string
-	CompletedTaskIDs   []uuid.UUID
-	DeferredTaskIDs    []uuid.UUID
-	Artifact           *string
-	FollowUpTaskTitles []string
+	SessionID        uuid.UUID
+	Summary          string
+	CompletedTaskIDs []uuid.UUID
+	DeferredTaskIDs  []uuid.UUID
+	Artifact         *string
+	// CompleteAllLinkedTasks opts into completing every task linked to this
+	// session when CompletedTaskIDs is empty (Ω5 fix, mcp-surface spec —
+	// backend-security-design.md §2.1: LLM tool input is adversarial, and an
+	// omitted/empty completed_task_ids used to silently mark EVERY linked
+	// task completed with no way to opt out. Default false now means
+	// omission completes none; this flag is the explicit, auditable way to
+	// get the old "complete everything" behavior back for callers that
+	// actually want it (e.g. a session where every linked task really is
+	// done and enumerating IDs is redundant).
+	CompleteAllLinkedTasks bool
 
 	// --- wbt-2.0 P2.1 evidence-chain additions ---
 
@@ -323,9 +340,14 @@ type StoreIface interface {
 	Checkpoint(ctx context.Context, p CheckpointParams) (*Session, error)
 
 	// Finish sets status=completed, completed_at=now, stores final_summary,
-	// and returns the updated session. It uses a conditional UPDATE
-	// (WHERE status='in_progress' OR status='checkpointed') to prevent races.
-	Finish(ctx context.Context, p FinishParams) (*Session, error)
+	// and returns the updated session plus the actual list of task IDs that
+	// were marked completed (nil/empty when none were — e.g.
+	// CompletedTaskIDs omitted and CompleteAllLinkedTasks is false). It uses
+	// a conditional UPDATE (WHERE status='in_progress' OR
+	// status='checkpointed') to prevent races. The second return value lets
+	// callers (e.g. finish_work's MCP response) report exactly which tasks
+	// were affected instead of leaving that implicit (Ω5 fix).
+	Finish(ctx context.Context, p FinishParams) (*Session, []uuid.UUID, error)
 
 	// GetByID returns the session with the given ID, scoped to workspaceID.
 	GetByID(ctx context.Context, workspaceID, sessionID uuid.UUID) (*Session, error)

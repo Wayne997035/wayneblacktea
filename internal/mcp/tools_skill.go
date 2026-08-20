@@ -75,7 +75,9 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 		mcp.WithString("outcome_id",
 			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK)")),
 		mcp.WithBoolean("success",
-			mcp.Description("true = success outcome, false = failure outcome")),
+			mcp.Description("REQUIRED: true = success outcome, false = failure outcome. No default — "+
+				"omitting this is rejected rather than silently recorded as a failure."),
+			mcp.Required()),
 		mcp.WithString("notes",
 			mcp.Description("Notes about the outcome (max 2000 chars)"),
 			mcp.MaxLength(2000)),
@@ -137,6 +139,20 @@ func validateNotes(notes string) string {
 		return "notes exceeds 2000 character limit"
 	}
 	return ""
+}
+
+// hasBoolArg reports whether key is present in args and holds a JSON boolean
+// value (true or false) — distinguishes "omitted" from "explicitly false".
+// Ω8 fix (mcp-surface spec, backend-security-design.md §2.1): boolArg's
+// missing-key default of false made an omitted update_skill_from_outcome
+// `success` argument silently record a FAILURE outcome — the opposite of
+// "caller forgot to say" being a no-op or an error. mcp.Required() on the
+// tool schema is client-side advisory only (mcp-go does not enforce it
+// server-side, see the existing "X is required" checks throughout this
+// package), so the server-side check below is what actually rejects it.
+func hasBoolArg(args map[string]any, key string) bool {
+	_, ok := args[key].(bool)
+	return ok
 }
 
 // handleExtractSkill implements the extract_skill MCP tool.
@@ -263,6 +279,11 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 		return mcp.NewToolResultError(msg), nil
 	}
 
+	if !hasBoolArg(args, "success") {
+		return mcp.NewToolResultError(
+			"success is required: true = success outcome, false = failure outcome (no default)",
+		), nil
+	}
 	success := boolArg(args, "success")
 
 	var wsStr *string

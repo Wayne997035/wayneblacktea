@@ -179,6 +179,10 @@ func (f *fakeHealthLearningStore) DueReviews(_ context.Context, _ int) ([]learni
 	return nil, nil
 }
 
+func (f *fakeHealthLearningStore) GetScheduleState(_ context.Context, _ uuid.UUID) (learning.CardState, error) {
+	return learning.CardState{}, nil
+}
+
 func (f *fakeHealthLearningStore) SubmitReview(_ context.Context, _ uuid.UUID, _ learning.CardState, _ learning.Rating) error {
 	return nil
 }

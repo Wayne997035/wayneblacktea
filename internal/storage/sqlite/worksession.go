@@ -395,17 +395,23 @@ func (s *WorkSessionStore) Checkpoint(ctx context.Context, p worksession.Checkpo
 // Finish sets status=completed and stores final_summary. After the session
 // update, linked tasks are batch-marked as completed:
 //   - If FinishParams.CompletedTaskIDs is non-empty, only those tasks are marked.
-//   - Otherwise, all tasks linked via work_session_tasks are marked completed.
+//   - Otherwise, if FinishParams.CompleteAllLinkedTasks is true, all tasks
+//     linked via work_session_tasks are marked completed.
+//   - Otherwise (both empty/false), no tasks are marked completed — Ω5 fix,
+//     mirrors the Postgres store (see internal/worksession/store.go).
+//
+// Returns the updated session and the actual list of task IDs marked
+// completed.
 //
 // wbt-2.0 P2.2: also persists VerificationStatus/VerificationCommand/
 // VerificationOutputExcerpt/FinalResult/OutcomeID and, when p.Evidence is
 // non-empty, inserts each evidence row (best-effort, non-fatal on error).
-func (s *WorkSessionStore) Finish(ctx context.Context, p worksession.FinishParams) (*worksession.Session, error) {
+func (s *WorkSessionStore) Finish(ctx context.Context, p worksession.FinishParams) (*worksession.Session, []uuid.UUID, error) {
 	ws := s.db.workspaceArg()
 
 	if p.VerificationCommand != nil {
 		if reason := worksession.CheckControlChars("verification_command", *p.VerificationCommand); reason != "" {
-			return nil, fmt.Errorf("worksession.Finish: %s", reason)
+			return nil, nil, fmt.Errorf("worksession.Finish: %s", reason)
 		}
 	}
 
@@ -434,19 +440,20 @@ func (s *WorkSessionStore) Finish(ctx context.Context, p worksession.FinishParam
 		strPtrArg(p.VerificationStatus), strPtrArg(p.VerificationCommand),
 		verificationExcerptArg, strPtrArg(p.FinalResult), nullStringFromUUID(p.OutcomeID))
 	if err != nil {
-		return nil, errWrap("WorkSessionStore.Finish", err)
+		return nil, nil, errWrap("WorkSessionStore.Finish", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return nil, worksession.ErrNotFound
+		return nil, nil, worksession.ErrNotFound
 	}
 
 	// Resolve which tasks to mark completed. deferred_task_ids always wins
-	// over completed_task_ids (and over the empty-completed fallback below) —
-	// see worksession.ResolveCompletedTaskIDs (wbt-2.0 P2 review F2).
+	// over completed_task_ids (and over the complete-all-linked fallback
+	// below) — see worksession.ResolveCompletedTaskIDs (wbt-2.0 P2 review
+	// F2). The fallback to "every linked task" only fires when the caller
+	// explicitly opts in via CompleteAllLinkedTasks (Ω5 fix).
 	var linkedIDs []uuid.UUID
-	if len(p.CompletedTaskIDs) == 0 {
-		// Fallback: find all tasks linked to this session.
+	if len(p.CompletedTaskIDs) == 0 && p.CompleteAllLinkedTasks {
 		linked, lErr := s.LinkedTasks(ctx, p.SessionID)
 		if lErr == nil {
 			linkedIDs = make([]uuid.UUID, 0, len(linked))
@@ -476,7 +483,11 @@ func (s *WorkSessionStore) Finish(ctx context.Context, p worksession.FinishParam
 		}
 	}
 
-	return s.byID(ctx, p.SessionID)
+	sess, err := s.byID(ctx, p.SessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sess, taskIDs, nil
 }
 
 // GetByID returns the session scoped to workspaceID.

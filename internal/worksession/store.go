@@ -367,13 +367,21 @@ func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, e
 // Finish sets status=completed and records final_summary. After the session
 // update, linked tasks are batch-marked as completed:
 //   - If FinishParams.CompletedTaskIDs is non-empty, only those tasks are marked.
-//   - Otherwise, all tasks linked via work_session_tasks are marked completed.
+//   - Otherwise, if FinishParams.CompleteAllLinkedTasks is true, all tasks
+//     linked via work_session_tasks are marked completed.
+//   - Otherwise (both empty/false), no tasks are marked completed — Ω5 fix:
+//     omitting completed_task_ids used to silently complete every linked
+//     task with no way to opt out (backend-security-design.md §2.1).
+//
+// Returns the updated session and the actual list of task IDs marked
+// completed, so callers can report exactly what happened instead of leaving
+// it implicit.
 //
 // wbt-2.0 P2.2: also persists VerificationStatus/VerificationCommand/
 // VerificationOutputExcerpt/FinalResult/OutcomeID and, when p.Evidence is
 // non-empty, inserts each evidence row. Evidence insertion is best-effort
 // (non-fatal on error) — the session UPDATE has already committed by then.
-func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
+func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, []uuid.UUID, error) {
 	var ws uuid.UUID
 	if s.workspaceID != nil {
 		ws = *s.workspaceID
@@ -381,7 +389,7 @@ func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
 
 	if p.VerificationCommand != nil {
 		if reason := CheckControlChars("verification_command", *p.VerificationCommand); reason != "" {
-			return nil, fmt.Errorf("worksession.Finish: %s", reason)
+			return nil, nil, fmt.Errorf("worksession.Finish: %s", reason)
 		}
 	}
 
@@ -411,17 +419,20 @@ func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
 	sess, err := scanSessionFromRow(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
+			return nil, nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("worksession.Finish: %w", err)
+		return nil, nil, fmt.Errorf("worksession.Finish: %w", err)
 	}
 
 	// Resolve which tasks to mark completed. deferred_task_ids always wins
-	// over completed_task_ids (and over the empty-completed fallback below) —
-	// see ResolveCompletedTaskIDs (wbt-2.0 P2 review F2).
+	// over completed_task_ids (and over the complete-all-linked fallback
+	// below) — see ResolveCompletedTaskIDs (wbt-2.0 P2 review F2). The
+	// fallback to "every linked task" only fires when the caller explicitly
+	// opts in via CompleteAllLinkedTasks (Ω5 fix) — omitting
+	// completed_task_ids with the flag left at its false default now marks
+	// nothing completed, instead of silently completing everything.
 	var linkedIDs []uuid.UUID
-	if len(p.CompletedTaskIDs) == 0 {
-		// Fallback: find all linked tasks for this session.
+	if len(p.CompletedTaskIDs) == 0 && p.CompleteAllLinkedTasks {
 		linked, lErr := s.LinkedTasks(ctx, p.SessionID)
 		if lErr == nil {
 			linkedIDs = make([]uuid.UUID, 0, len(linked))
@@ -458,7 +469,7 @@ func (s *Store) Finish(ctx context.Context, p FinishParams) (*Session, error) {
 		}
 	}
 
-	return sess, nil
+	return sess, taskIDs, nil
 }
 
 // batchMarkTasksCompleted sets status='completed' and optionally artifact on

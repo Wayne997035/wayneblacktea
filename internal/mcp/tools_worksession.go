@@ -112,11 +112,6 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description("What was accomplished since last checkpoint (required)"), mcp.Required(), mcp.MaxLength(5000)),
-		mcp.WithString("completed_task_ids", mcp.Description(`JSON array of task UUIDs completed in this segment`)),
-		mcp.WithString("new_task_titles", mcp.Description(`JSON array of new task titles to add`)),
-		mcp.WithString("new_decisions", mcp.Description(`JSON array of decision titles to log`)),
-		mcp.WithString("blockers", mcp.Description(`JSON array of blocker descriptions`)),
-		mcp.WithString("next_actions", mcp.Description(`JSON array of next-action descriptions`)),
 	), s.handleCheckpointWork)
 
 	ms.AddTool(mcp.NewTool(
@@ -131,10 +126,18 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description("Final summary of what was accomplished (required)"), mcp.Required(), mcp.MaxLength(5000)),
-		mcp.WithString("completed_task_ids", mcp.Description(`JSON array of task UUIDs completed`)),
+		mcp.WithString("completed_task_ids", mcp.Description(
+			"JSON array of task UUIDs completed. Omitting this (or sending []) completes NONE of the "+
+				"tasks linked to this session by default — set complete_all_linked_tasks=true to mark every "+
+				"linked task completed instead of enumerating IDs.",
+		)),
+		mcp.WithBoolean("complete_all_linked_tasks", mcp.Description(
+			"When completed_task_ids is omitted or empty, set true to mark every task linked to this "+
+				"session as completed. Defaults to false (omitting completed_task_ids completes none). "+
+				"Ignored when completed_task_ids is non-empty.",
+		)),
 		mcp.WithString("deferred_task_ids", mcp.Description(`JSON array of task UUIDs deferred to next session`)),
 		mcp.WithString("artifact", mcp.Description("PR URL or artifact reference (optional)")),
-		mcp.WithString("follow_up_tasks", mcp.Description(`JSON array of new follow-up task titles`)),
 		mcp.WithString("new_decisions", mcp.Description(`JSON array of decision titles to log`)),
 		mcp.WithString("verification_status",
 			mcp.Description("How this session's work was verified: not_run | passed | failed | unknown")),
@@ -717,16 +720,16 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		artifact = &raw
 	}
 
-	// Log new_decisions before finishing the session (best-effort, non-fatal).
-	s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), stringArg(args, "repo_name"))
+	completeAllLinkedTasks := boolArg(args, "complete_all_linked_tasks")
 
 	slog.Info("finish_work", "session_id", sessID, "workspace_id", s.workspaceUUIDVal())
-	sess, err := s.workSession.Finish(ctx, worksession.FinishParams{
+	sess, completedIDs, err := s.workSession.Finish(ctx, worksession.FinishParams{
 		SessionID:                 sessID,
 		Summary:                   summary,
 		CompletedTaskIDs:          completedTaskIDs,
 		DeferredTaskIDs:           deferredTaskIDs,
 		Artifact:                  artifact,
+		CompleteAllLinkedTasks:    completeAllLinkedTasks,
 		VerificationStatus:        evidenceParams.verificationStatus,
 		VerificationCommand:       evidenceParams.verificationCommand,
 		VerificationOutputExcerpt: evidenceParams.verificationOutputExcerpt,
@@ -739,17 +742,32 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("finish_work failed: %v", err)), nil
 	}
+	if completedIDs == nil {
+		completedIDs = []uuid.UUID{}
+	}
+
+	// Log new_decisions only after Finish has succeeded (U20 fix —
+	// backend-security-design.md §5.2: logging decisions BEFORE Finish
+	// validated the session left orphaned manual-source decision rows behind
+	// whenever Finish then failed — e.g. a bad/already-completed session_id
+	// — since decisions were already committed with nothing to attach them
+	// to. Finish's own session-exists + status check now doubles as the
+	// validation gate the fix pattern calls for).
+	decisionResult := s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), stringArg(args, "repo_name"))
 
 	outcomeID := s.autoCreateOutcomeOnFailure(
 		ctx, sessID, sess, completedTaskIDs, deferredTaskIDs, evidenceParams.finalResult, summary,
 	)
 
 	return jsonText(map[string]any{
-		"session_id":   sess.ID,
-		"status":       sess.Status,
-		"completed_at": sess.CompletedAt,
-		"final_report": sess.FinalSummary,
-		"outcome_id":   outcomeID,
+		"session_id":         sess.ID,
+		"status":             sess.Status,
+		"completed_at":       sess.CompletedAt,
+		"final_report":       sess.FinalSummary,
+		"outcome_id":         outcomeID,
+		"completed_task_ids": completedIDs,
+		"decisions_logged":   decisionResult.Logged,
+		"decisions_skipped":  decisionResult.Skipped,
 	})
 }
 
@@ -1123,20 +1141,49 @@ func (s *Server) workspaceUUIDVal() uuid.UUID {
 	return *s.workspaceID
 }
 
+// finishWorkDecisionResult summarizes what logFinishWorkDecisions actually
+// did (U20 fix — backend-security-design.md §2.1/§5.2: hitting the 50-item
+// cap, or a malformed/noisy title, used to be reported only via slog.Warn on
+// the server, with finish_work's response giving the caller no signal at
+// all that some decisions were silently dropped). Logged counts successful
+// decision.Log calls; Skipped carries one short human-readable entry per
+// item that was not logged, so a caller (typically an LLM agent) can see
+// and react to the gap instead of assuming every decision landed.
+type finishWorkDecisionResult struct {
+	Logged  int      `json:"logged"`
+	Skipped []string `json:"skipped,omitempty"`
+}
+
+// truncateForFinishWorkLog caps s at 80 runes for safe inclusion in a slog
+// field or the finish_work response's Skipped list — the raw title is
+// LLM-controlled free text (backend-security-design.md §2.1) and may itself
+// be the noisy/oversized value being reported on.
+func truncateForFinishWorkLog(s string) string {
+	if runes := []rune(s); len(runes) > 80 {
+		return string(runes[:80]) + "..."
+	}
+	return s
+}
+
 // logFinishWorkDecisions parses a JSON array of decision title strings from
-// rawDecisions and logs each one via s.decision.Log. All errors are logged as
-// Warn so the finish_work call is never aborted by a failed decision write.
-func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, rawDecisions, repoName string) {
+// rawDecisions and logs each one via s.decision.Log. Every skip (invalid
+// JSON, over-cap, noisy title, control chars, or a failed Log call) is
+// non-fatal to finish_work as a whole but is now reported back in the
+// returned finishWorkDecisionResult, not just logged server-side.
+func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, rawDecisions, repoName string) finishWorkDecisionResult {
+	var result finishWorkDecisionResult
 	if rawDecisions == "" {
-		return
+		return result
 	}
 	var titles []string
 	if err := json.Unmarshal([]byte(rawDecisions), &titles); err != nil {
 		slog.Warn("finish_work: invalid new_decisions JSON, skipping", "session_id", sessID, "err", err)
-		return
+		result.Skipped = append(result.Skipped, "new_decisions: invalid JSON, entire array skipped")
+		return result
 	}
 	const maxFinishWorkDecisions = 50
 	if len(titles) > maxFinishWorkDecisions {
+		overCap := len(titles) - maxFinishWorkDecisions
 		slog.Warn(
 			"finish_work: new_decisions exceeds cap, truncating",
 			"session_id", sessID,
@@ -1144,17 +1191,22 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 			"cap", maxFinishWorkDecisions,
 		)
 		titles = titles[:maxFinishWorkDecisions]
+		result.Skipped = append(result.Skipped, fmt.Sprintf(
+			"%d decisions beyond the %d-item cap were not logged", overCap, maxFinishWorkDecisions,
+		))
 	}
 	for _, title := range titles {
 		if title == "" {
 			continue
 		}
+		logTitle := truncateForFinishWorkLog(title)
 		if reason := checkField("title", title); reason != "" {
 			slog.Warn(
 				"finish_work: skipping noisy decision title",
 				"session_id", sessID,
 				"reason", reason,
 			)
+			result.Skipped = append(result.Skipped, fmt.Sprintf("%q: %s", logTitle, reason))
 			continue
 		}
 		if reason := checkCommandField("title", title); reason != "" {
@@ -1163,6 +1215,7 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 				"session_id", sessID,
 				"reason", reason,
 			)
+			result.Skipped = append(result.Skipped, fmt.Sprintf("%q: %s", logTitle, reason))
 			continue
 		}
 		if _, logErr := s.decision.Log(ctx, decision.LogParams{
@@ -1170,16 +1223,16 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 			RepoName: repoName,
 			Source:   decision.SourceManual,
 		}); logErr != nil {
-			logTitle := title
-			if runes := []rune(logTitle); len(runes) > 80 {
-				logTitle = string(runes[:80]) + "..."
-			}
 			slog.Warn(
 				"finish_work: failed to log decision",
 				"session_id", sessID,
 				"title", logTitle,
 				"err", logErr,
 			)
+			result.Skipped = append(result.Skipped, fmt.Sprintf("%q: log failed", logTitle))
+			continue
 		}
+		result.Logged++
 	}
+	return result
 }

@@ -179,6 +179,25 @@ func (s *LearningStore) DueReviews(ctx context.Context, limit int) ([]learning.D
 	return out, nil
 }
 
+// GetScheduleState returns the current CardState for scheduleID, scoped to
+// the store's configured workspace. Sibling of the Postgres store's
+// GetScheduleState (Ω7 fix) — see internal/learning/iface.go for the full
+// rationale.
+func (s *LearningStore) GetScheduleState(ctx context.Context, scheduleID uuid.UUID) (learning.CardState, error) {
+	const q = `SELECT stability, difficulty, review_count FROM review_schedule
+		WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`
+	var cs learning.CardState
+	err := s.db.conn.QueryRowContext(ctx, q, scheduleID.String(), s.db.workspaceArg()).
+		Scan(&cs.Stability, &cs.Difficulty, &cs.ReviewCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return learning.CardState{}, learning.ErrNotFound
+	}
+	if err != nil {
+		return learning.CardState{}, errWrap("LearningStore.GetScheduleState", err)
+	}
+	return cs, nil
+}
+
 // SubmitReview applies FSRS and updates the review schedule.
 func (s *LearningStore) SubmitReview(
 	ctx context.Context, scheduleID uuid.UUID, currentState learning.CardState, rating learning.Rating,

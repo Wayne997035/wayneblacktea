@@ -19,12 +19,13 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 
 	ms.AddTool(mcp.NewTool(
 		"submit_review",
-		mcp.WithDescription("Submits a review rating for a concept and updates the next review schedule."),
+		mcp.WithDescription(
+			"Submits a review rating for a concept and updates the next review schedule. "+
+				"The current stability/difficulty/review_count are read from the stored schedule "+
+				"server-side — do not pass them.",
+		),
 		mcp.WithString("schedule_id", mcp.Description("Review schedule UUID"), mcp.Required()),
 		mcp.WithNumber("rating", mcp.Description("Rating: 1=Again, 2=Hard, 3=Good, 4=Easy"), mcp.Required()),
-		mcp.WithNumber("stability", mcp.Description("Current stability value from get_due_reviews")),
-		mcp.WithNumber("difficulty", mcp.Description("Current difficulty value from get_due_reviews")),
-		mcp.WithNumber("review_count", mcp.Description("Current review count from get_due_reviews")),
 	), s.handleSubmitReview)
 
 	ms.AddTool(mcp.NewTool(
@@ -57,14 +58,20 @@ func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("rating must be between 1 and 4"), nil
 	}
 
-	state := learning.CardState{
-		Stability:   floatArg(args, "stability"),
-		Difficulty:  floatArg(args, "difficulty"),
-		ReviewCount: int(numberArg(args, "review_count")),
-	}
-	// Default stability if not provided.
-	if state.Stability == 0 {
-		state.Stability = 1.0
+	// Ω7 fix (mcp-surface spec, backend-security-design.md §2.1): the
+	// current CardState is read from the DB, never trusted from the caller.
+	// submit_review used to accept stability/difficulty/review_count as
+	// LLM-supplied "current state" params; an omitted or wrong review_count
+	// made NextState treat a mature, many-times-reviewed schedule as a fresh
+	// card, silently resetting it to a much shorter interval. Reading state
+	// server-side removes that trust boundary entirely instead of trying to
+	// distinguish "omitted" from "wrong."
+	state, err := s.learning.GetScheduleState(ctx, scheduleID)
+	if err != nil {
+		if errors.Is(err, learning.ErrNotFound) {
+			return mcp.NewToolResultError("review schedule not found"), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("loading review schedule: %v", err)), nil
 	}
 
 	if err := s.learning.SubmitReview(ctx, scheduleID, state, learning.Rating(ratingVal)); err != nil {

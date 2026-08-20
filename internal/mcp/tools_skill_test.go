@@ -21,8 +21,10 @@ type stubSkillStore struct {
 	returnList  []*skill.Skill
 	returnErr   error
 	// captured params for assertion
-	lastAddParams    skill.AddParams
-	lastSearchFilter skill.SearchFilter
+	lastAddParams               skill.AddParams
+	lastSearchFilter            skill.SearchFilter
+	lastUpdateFromOutcomeParams skill.UpdateFromOutcomeParams
+	updateFromOutcomeCalled     bool
 }
 
 var _ skill.StoreIface = (*stubSkillStore)(nil)
@@ -51,7 +53,9 @@ func (s *stubSkillStore) IncrementSuccess(_ context.Context, _ string, _ *string
 	return s.returnSkill, nil
 }
 
-func (s *stubSkillStore) UpdateFromOutcome(_ context.Context, _ skill.UpdateFromOutcomeParams, _ *string) (*skill.Skill, error) {
+func (s *stubSkillStore) UpdateFromOutcome(_ context.Context, p skill.UpdateFromOutcomeParams, _ *string) (*skill.Skill, error) {
+	s.updateFromOutcomeCalled = true
+	s.lastUpdateFromOutcomeParams = p
 	if s.returnErr != nil {
 		return nil, s.returnErr
 	}
@@ -97,6 +101,17 @@ func callUseSkill(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallTool
 	r, err := s.handleUseSkill(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleUseSkill returned unexpected Go error: %v", err)
+	}
+	return r
+}
+
+func callUpdateSkillFromOutcome(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	r, err := s.handleUpdateSkillFromOutcome(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleUpdateSkillFromOutcome returned unexpected Go error: %v", err)
 	}
 	return r
 }
@@ -352,5 +367,88 @@ func TestHandleUseSkill_StoreError(t *testing.T) {
 
 	if !r.IsError {
 		t.Fatalf("expected IsError=true for store error")
+	}
+}
+
+// --- handleUpdateSkillFromOutcome tests (Ω8 fix) ---
+
+// TestHandleUpdateSkillFromOutcome_MissingSuccess_Rejected is Ω8's bad-case
+// red test: omitting `success` must be rejected, not silently recorded as a
+// failure outcome (the pre-fix behavior — boolArg's missing-key default of
+// false). The store must never be called.
+func TestHandleUpdateSkillFromOutcome_MissingSuccess_Rejected(t *testing.T) {
+	store := &stubSkillStore{returnSkill: &skill.Skill{ID: "skill-1"}}
+	s := newSkillServer(store)
+
+	r := callUpdateSkillFromOutcome(t, s, map[string]any{
+		"skill_id": "skill-1",
+		"notes":    "did the thing",
+	})
+
+	if !r.IsError {
+		t.Fatal("expected IsError=true when success is omitted (bad case)")
+	}
+	if !strings.Contains(resultText(r), "success is required") {
+		t.Errorf("error message should mention success is required, got: %s", resultText(r))
+	}
+	if store.updateFromOutcomeCalled {
+		t.Error("UpdateFromOutcome must not be called when success is omitted")
+	}
+}
+
+// TestHandleUpdateSkillFromOutcome_ExplicitFalse_RecordsFailure is the
+// positive control: success=false explicitly must succeed and reach the
+// store as Success=false — proves the fix rejects OMISSION, not the
+// legitimate value false itself.
+func TestHandleUpdateSkillFromOutcome_ExplicitFalse_RecordsFailure(t *testing.T) {
+	store := &stubSkillStore{returnSkill: &skill.Skill{ID: "skill-1"}}
+	s := newSkillServer(store)
+
+	r := callUpdateSkillFromOutcome(t, s, map[string]any{
+		"skill_id": "skill-1",
+		"success":  false,
+	})
+
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	if !store.updateFromOutcomeCalled {
+		t.Fatal("UpdateFromOutcome was not called")
+	}
+	if store.lastUpdateFromOutcomeParams.Success != false {
+		t.Errorf("Success: got %v, want false", store.lastUpdateFromOutcomeParams.Success)
+	}
+}
+
+// TestHandleUpdateSkillFromOutcome_ExplicitTrue_RecordsSuccess is the second
+// positive control: success=true explicitly must reach the store as
+// Success=true.
+func TestHandleUpdateSkillFromOutcome_ExplicitTrue_RecordsSuccess(t *testing.T) {
+	store := &stubSkillStore{returnSkill: &skill.Skill{ID: "skill-1"}}
+	s := newSkillServer(store)
+
+	r := callUpdateSkillFromOutcome(t, s, map[string]any{
+		"skill_id": "skill-1",
+		"success":  true,
+	})
+
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	if !store.lastUpdateFromOutcomeParams.Success {
+		t.Errorf("Success: got %v, want true", store.lastUpdateFromOutcomeParams.Success)
+	}
+}
+
+func TestHandleUpdateSkillFromOutcome_EmptySkillID(t *testing.T) {
+	s := newSkillServer(&stubSkillStore{})
+
+	r := callUpdateSkillFromOutcome(t, s, map[string]any{
+		"skill_id": "",
+		"success":  true,
+	})
+
+	if !r.IsError {
+		t.Fatal("expected IsError=true for empty skill_id")
 	}
 }
