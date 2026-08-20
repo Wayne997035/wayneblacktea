@@ -1,3 +1,13 @@
+//go:build !integration
+
+// U13 Phase B group b4 proofs. Tagged !integration for the same reason as
+// u13_phase_b_b3_test.go: the stub stores and call helpers this file uses
+// (stubBehaviorRuleStore, newBehaviorRuleServer, callProposeBehaviorRule, …)
+// live in !integration-tagged files, so without the tag the package fails to
+// BUILD under `-tags integration` — a failure mode plain `go test` never
+// shows, which is why it survived the Phase B fan-out's per-agent
+// verification.
+
 package mcp
 
 import (

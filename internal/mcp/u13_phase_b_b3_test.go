@@ -1,3 +1,13 @@
+//go:build !integration
+
+// U13 Phase B group b3 proofs. Tagged !integration to match the files that
+// own the callExtractSkill / callGenerateReflection / callListReflections
+// helpers below (tools_skill_test.go, tools_reflection_test.go), which carry
+// the same tag: without it this file compiles under `-tags integration` while
+// every helper it calls is excluded, and `task test-integration` fails to
+// build the package. These are stub-store unit proofs — nothing here needs a
+// live database — so unit-mode-only is the right scope, not a workaround.
+
 package mcp
 
 import (

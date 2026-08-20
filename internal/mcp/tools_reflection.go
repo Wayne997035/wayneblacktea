@@ -52,9 +52,14 @@ func wrapUntrustedReflection(r *reflection.Reflection) *reflection.Reflection {
 	}
 	out := *r
 	out.Summary = clipSafe(r.Summary, reflectionSummaryMaxRunes)
-	out.Insights = neutralizeJSONRawMessage(r.Insights)
-	out.PatternsDetected = neutralizeJSONRawMessage(r.PatternsDetected)
-	out.SuggestedActions = neutralizeJSONRawMessage(r.SuggestedActions)
+	// neutralizeJSONBlob (boundary_markers.go) is the package's single JSON
+	// walker — U13 integration folded this file's own copy into it. Unlike
+	// that copy, a blob that fails to unmarshal is clipSafe'd rather than
+	// returned unchanged, so a malformed stored value cannot carry a forged
+	// marker through.
+	out.Insights = json.RawMessage(neutralizeJSONBlob(r.Insights, reflectionJSONLeafMaxRunes))
+	out.PatternsDetected = json.RawMessage(neutralizeJSONBlob(r.PatternsDetected, reflectionJSONLeafMaxRunes))
+	out.SuggestedActions = json.RawMessage(neutralizeJSONBlob(r.SuggestedActions, reflectionJSONLeafMaxRunes))
 	return &out
 }
 
@@ -68,54 +73,6 @@ func wrapUntrustedReflections(reflections []*reflection.Reflection) []*reflectio
 		out[i] = wrapUntrustedReflection(r)
 	}
 	return out
-}
-
-// neutralizeJSONRawMessage walks an arbitrary already-marshaled JSON value
-// and neutralizes every string leaf it finds (via neutralizeJSONValue),
-// then remarshals. Malformed input (raw is not valid JSON, or
-// unmarshal/remarshal fails) is returned unchanged rather than dropped —
-// parseOptionalJSON already validates well-formedness at write time, so
-// this should never trigger in practice, but failing open here avoids
-// silently deleting a caller's data over a formatting edge case this
-// function isn't responsible for fixing.
-func neutralizeJSONRawMessage(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
-		return raw
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return raw
-	}
-	out, err := json.Marshal(neutralizeJSONValue(v))
-	if err != nil {
-		return raw
-	}
-	return out
-}
-
-// neutralizeJSONValue recursively applies clipSafe to every string leaf in
-// an arbitrary decoded JSON value (map[string]any / []any pass through
-// recursively; string leaves get clipSafe'd; every other scalar — number,
-// bool, nil — is returned unchanged).
-func neutralizeJSONValue(v any) any {
-	switch val := v.(type) {
-	case string:
-		return clipSafe(val, reflectionJSONLeafMaxRunes)
-	case map[string]any:
-		out := make(map[string]any, len(val))
-		for k, vv := range val {
-			out[k] = neutralizeJSONValue(vv)
-		}
-		return out
-	case []any:
-		out := make([]any, len(val))
-		for i, vv := range val {
-			out[i] = neutralizeJSONValue(vv)
-		}
-		return out
-	default:
-		return val
-	}
 }
 
 func (s *Server) registerReflectionTools(ms *server.MCPServer) {

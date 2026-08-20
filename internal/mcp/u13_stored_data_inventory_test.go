@@ -56,118 +56,130 @@ var storedDataReaders = []storedDataReader{
 	{file: "tools_arch.go", line: 309, tool: "upsert_project_arch", status: readerPass},
 	{file: "tools_arch.go", line: 365, tool: "get_project_arch", status: readerPass},
 	// tools_behaviorrule.go
-	{file: "tools_behaviorrule.go", line: 138, tool: "propose_behavior_rule", status: readerPending},
-	{file: "tools_behaviorrule.go", line: 177, tool: "list_behavior_rules", status: readerPending},
-	{file: "tools_behaviorrule.go", line: 208, tool: "apply_behavior_rules", status: readerPending},
-	{file: "tools_behaviorrule.go", line: 250, tool: "deprecate_behavior_rule", status: readerPending},
+	{file: "tools_behaviorrule.go", line: 174, tool: "propose_behavior_rule", status: readerPass},
+	{file: "tools_behaviorrule.go", line: 213, tool: "list_behavior_rules", status: readerPass},
+	{file: "tools_behaviorrule.go", line: 244, tool: "apply_behavior_rules", status: readerPass},
+	{file: "tools_behaviorrule.go", line: 286, tool: "deprecate_behavior_rule", status: readerPass},
 	// tools_atom.go
-	{file: "tools_atom.go", line: 97, tool: "traverse_atoms", status: readerPending},
-	{file: "tools_atom.go", line: 124, tool: "search_atoms", status: readerPending},
+	{file: "tools_atom.go", line: 159, tool: "traverse_atoms", status: readerPass},
+	{file: "tools_atom.go", line: 186, tool: "search_atoms", status: readerPass},
 	// tools_context.go
 	{file: "tools_context.go", line: 590, tool: "get_today_context", status: readerPass},
-	{file: "tools_context.go", line: 598, tool: "list_active_repos", status: readerPending},
-	{file: "tools_context.go", line: 662, tool: "sync_repo", status: readerPending},
+	{file: "tools_context.go", line: 657, tool: "list_active_repos", status: readerPass},
+	{file: "tools_context.go", line: 721, tool: "sync_repo", status: readerPass},
 	// tools_closeout.go
-	{file: "tools_closeout.go", line: 91, tool: "closeout_session_check", status: readerPending},
+	{file: "tools_closeout.go", line: 91, tool: "closeout_session_check", status: readerPass},
 	// tools_contextpack.go
-	{file: "tools_contextpack.go", line: 139, tool: "assemble_context", status: readerPending},
-	// tools_decision.go — converted this dispatch
+	{file: "tools_contextpack.go", line: 147, tool: "assemble_context", status: readerPass},
+	// tools_decision.go
 	{file: "tools_decision.go", line: 151, tool: "log_decision", status: readerPass},
 	{file: "tools_decision.go", line: 195, tool: "list_decisions", status: readerPass},
-	// tools_gtd.go — 4 of 19 converted this dispatch
-	{file: "tools_gtd.go", line: 543, tool: "list_projects", status: readerPass},
-	{file: "tools_gtd.go", line: 567, tool: "create_project", status: readerPass},
-	{file: "tools_gtd.go", line: 592, tool: "update_project", status: readerPass},
-	{file: "tools_gtd.go", line: 772, tool: "list_tasks", status: readerPending},
-	{file: "tools_gtd.go", line: 793, tool: "get_task", status: readerPass},
-	{file: "tools_gtd.go", line: 825, tool: "set_task_status", status: readerPending},
-	{file: "tools_gtd.go", line: 843, tool: "set_task_status", status: readerPending},
-	{file: "tools_gtd.go", line: 927, tool: "add_task", status: readerPending},
-	{file: "tools_gtd.go", line: 929, tool: "add_task", status: readerPending},
-	{file: "tools_gtd.go", line: 958, tool: "complete_task", status: readerPending},
-	{file: "tools_gtd.go", line: 1026, tool: "list_goals", status: readerPending},
-	{file: "tools_gtd.go", line: 1047, tool: "create_goal", status: readerPending},
-	{file: "tools_gtd.go", line: 1178, tool: "update_task", status: readerPending},
-	{file: "tools_gtd.go", line: 1196, tool: "update_project_status", status: readerPending},
-	{file: "tools_gtd.go", line: 1221, tool: "get_project", status: readerPending},
-	{file: "tools_gtd.go", line: 1440, tool: "checklist_add_item", status: readerPending},
-	{file: "tools_gtd.go", line: 1460, tool: "checklist_toggle", status: readerPending},
-	{file: "tools_gtd.go", line: 1475, tool: "checklist_complete", status: readerPending},
-	{file: "tools_gtd.go", line: 1668, tool: "begin_task", status: readerPending},
+	// tools_gtd.go
+	{file: "tools_gtd.go", line: 571, tool: "list_projects", status: readerPass},
+	{file: "tools_gtd.go", line: 595, tool: "create_project", status: readerPass},
+	{file: "tools_gtd.go", line: 620, tool: "update_project", status: readerPass},
+	{file: "tools_gtd.go", line: 811, tool: "list_tasks", status: readerPass},
+	{file: "tools_gtd.go", line: 832, tool: "get_task", status: readerPass},
+	{file: "tools_gtd.go", line: 867, tool: "set_task_status", status: readerPass},
+	{file: "tools_gtd.go", line: 885, tool: "set_task_status", status: readerPass},
+	{file: "tools_gtd.go", line: 976, tool: "add_task", status: readerPass},
+	{file: "tools_gtd.go", line: 978, tool: "add_task", status: readerPass},
+	{file: "tools_gtd.go", line: 1007, tool: "complete_task", status: readerPass},
+	{file: "tools_gtd.go", line: 1075, tool: "list_goals", status: readerPass},
+	{file: "tools_gtd.go", line: 1096, tool: "create_goal", status: readerPass},
+	{file: "tools_gtd.go", line: 1227, tool: "update_task", status: readerPass},
+	{file: "tools_gtd.go", line: 1245, tool: "update_project_status", status: readerPass},
+	{file: "tools_gtd.go", line: 1275, tool: "get_project", status: readerPass},
+	{file: "tools_gtd.go", line: 1532, tool: "checklist_add_item", status: readerPass},
+	{file: "tools_gtd.go", line: 1552, tool: "checklist_toggle", status: readerPass},
+	{file: "tools_gtd.go", line: 1567, tool: "checklist_complete", status: readerPass},
+	{file: "tools_gtd.go", line: 1766, tool: "begin_task", status: readerPass},
 	// tools_health.go
-	{file: "tools_health.go", line: 218, tool: "system_health", status: readerPending},
+	{file: "tools_health.go", line: 241, tool: "system_health", status: readerPass},
 	// tools_knowledge.go
-	{file: "tools_knowledge.go", line: 202, tool: "add_knowledge", status: readerPending},
-	{file: "tools_knowledge.go", line: 258, tool: "search_knowledge", status: readerPending},
-	{file: "tools_knowledge.go", line: 277, tool: "search_knowledge", status: readerPending},
-	{file: "tools_knowledge.go", line: 300, tool: "list_knowledge", status: readerPending},
+	{file: "tools_knowledge.go", line: 243, tool: "add_knowledge", status: readerPass},
+	{file: "tools_knowledge.go", line: 299, tool: "search_knowledge", status: readerPass},
+	{file: "tools_knowledge.go", line: 312, tool: "search_knowledge", status: readerPass},
+	{file: "tools_knowledge.go", line: 335, tool: "list_knowledge", status: readerPass},
 	// tools_knowledge_nav.go
-	{file: "tools_knowledge_nav.go", line: 79, tool: "navigate_knowledge", status: readerPending},
-	{file: "tools_knowledge_nav.go", line: 95, tool: "navigate_knowledge", status: readerPending},
-	{file: "tools_knowledge_nav.go", line: 113, tool: "outline_knowledge", status: readerPending},
+	{file: "tools_knowledge_nav.go", line: 87, tool: "navigate_knowledge", status: readerPass},
+	{file: "tools_knowledge_nav.go", line: 103, tool: "navigate_knowledge", status: readerPass},
+	{file: "tools_knowledge_nav.go", line: 121, tool: "outline_knowledge", status: readerPass},
 	// tools_learning.go
-	{file: "tools_learning.go", line: 45, tool: "get_due_reviews", status: readerPending},
-	{file: "tools_learning.go", line: 112, tool: "create_concept", status: readerPending},
+	{file: "tools_learning.go", line: 83, tool: "get_due_reviews", status: readerPass},
+	{file: "tools_learning.go", line: 150, tool: "create_concept", status: readerPass},
 	// tools_outcome.go
-	{file: "tools_outcome.go", line: 365, tool: "record_outcome", status: readerPending},
-	{file: "tools_outcome.go", line: 444, tool: "record_outcome", status: readerPending},
-	{file: "tools_outcome.go", line: 536, tool: "evaluate_outcome", status: readerPending},
-	{file: "tools_outcome.go", line: 566, tool: "list_recent_outcomes", status: readerPending},
-	{file: "tools_outcome.go", line: 612, tool: "find_failed_patterns", status: readerPending},
+	{file: "tools_outcome.go", line: 443, tool: "record_outcome", status: readerPass},
+	{file: "tools_outcome.go", line: 522, tool: "record_outcome", status: readerPass},
+	{file: "tools_outcome.go", line: 614, tool: "evaluate_outcome", status: readerPass},
+	{file: "tools_outcome.go", line: 644, tool: "list_recent_outcomes", status: readerPass},
+	{file: "tools_outcome.go", line: 690, tool: "find_failed_patterns", status: readerPass},
 	// tools_playbook.go
-	{file: "tools_playbook.go", line: 69, tool: "list_playbooks", status: readerPending},
+	{file: "tools_playbook.go", line: 100, tool: "list_playbooks", status: readerPass},
 	// tools_procedural.go
-	{file: "tools_procedural.go", line: 145, tool: "add_procedural", status: readerPending},
-	{file: "tools_procedural.go", line: 180, tool: "query_procedural", status: readerPending},
-	{file: "tools_procedural.go", line: 198, tool: "mark_procedural_used", status: readerPending},
-	{file: "tools_procedural.go", line: 272, tool: "recall", status: readerPending}, // partial: episodic branch already safe
+	{file: "tools_procedural.go", line: 272, tool: "add_procedural", status: readerPass},
+	{file: "tools_procedural.go", line: 307, tool: "query_procedural", status: readerPass},
+	{file: "tools_procedural.go", line: 325, tool: "mark_procedural_used", status: readerPass},
+	{file: "tools_procedural.go", line: 399, tool: "recall", status: readerPass}, // partial: episodic branch already safe
 	// tools_proposal.go
-	{file: "tools_proposal.go", line: 158, tool: "propose_goal", status: readerPending},
-	{file: "tools_proposal.go", line: 200, tool: "propose_project", status: readerPending},
-	{file: "tools_proposal.go", line: 208, tool: "list_pending_proposals", status: readerPending},
-	{file: "tools_proposal.go", line: 255, tool: "confirm_proposals", status: readerPending},
-	{file: "tools_proposal.go", line: 329, tool: "confirm_proposal", status: readerPending},
-	{file: "tools_proposal.go", line: 381, tool: "confirm_proposal", status: readerPending},
-	{file: "tools_proposal.go", line: 413, tool: "confirm_proposal", status: readerPending},
-	{file: "tools_proposal.go", line: 467, tool: "confirm_proposal", status: readerPending},
-	{file: "tools_proposal.go", line: 469, tool: "confirm_proposal", status: readerPending},
+	{file: "tools_proposal.go", line: 314, tool: "propose_goal", status: readerPass},
+	{file: "tools_proposal.go", line: 356, tool: "propose_project", status: readerPass},
+	{file: "tools_proposal.go", line: 364, tool: "list_pending_proposals", status: readerPass},
+	{file: "tools_proposal.go", line: 485, tool: "confirm_proposal", status: readerPass},
+	{file: "tools_proposal.go", line: 537, tool: "confirm_proposal", status: readerPass},
+	{file: "tools_proposal.go", line: 569, tool: "confirm_proposal", status: readerPass},
+	{file: "tools_proposal.go", line: 623, tool: "confirm_proposal", status: readerPass},
+	{file: "tools_proposal.go", line: 625, tool: "confirm_proposal", status: readerPass},
 	// tools_reflection.go
-	{file: "tools_reflection.go", line: 86, tool: "generate_reflection", status: readerPending},
-	{file: "tools_reflection.go", line: 201, tool: "list_reflections", status: readerPending},
-	{file: "tools_reflection.go", line: 226, tool: "get_latest_reflection", status: readerPending},
-	{file: "tools_reflection.go", line: 246, tool: "analyze_recent_patterns", status: readerPending},
+	{file: "tools_reflection.go", line: 147, tool: "generate_reflection", status: readerPass},
+	{file: "tools_reflection.go", line: 262, tool: "list_reflections", status: readerPass},
+	{file: "tools_reflection.go", line: 283, tool: "get_latest_reflection", status: readerPass},
+	{file: "tools_reflection.go", line: 307, tool: "analyze_recent_patterns", status: readerPass},
 	// tools_session.go
 	{file: "tools_session.go", line: 98, tool: "set_session_handoff", status: readerPass},
 	{file: "tools_session.go", line: 142, tool: "mark_next_action_done", status: readerPass},
 	// tools_skill.go
-	{file: "tools_skill.go", line: 210, tool: "extract_skill", status: readerPending},
-	{file: "tools_skill.go", line: 242, tool: "search_skills", status: readerPending},
-	{file: "tools_skill.go", line: 266, tool: "use_skill", status: readerPending},
-	{file: "tools_skill.go", line: 313, tool: "update_skill_from_outcome", status: readerPending},
-	{file: "tools_skill.go", line: 339, tool: "list_relevant_skills", status: readerPending},
+	{file: "tools_skill.go", line: 330, tool: "extract_skill", status: readerPass},
+	{file: "tools_skill.go", line: 362, tool: "search_skills", status: readerPass},
+	{file: "tools_skill.go", line: 386, tool: "use_skill", status: readerPass},
+	{file: "tools_skill.go", line: 433, tool: "update_skill_from_outcome", status: readerPass},
+	{file: "tools_skill.go", line: 459, tool: "list_relevant_skills", status: readerPass},
 	// tools_vision.go
-	{file: "tools_vision.go", line: 132, tool: "add_vision_item", status: readerPending},
-	{file: "tools_vision.go", line: 134, tool: "add_vision_item", status: readerPending},
-	{file: "tools_vision.go", line: 161, tool: "list_vision_items", status: readerPending},
-	{file: "tools_vision.go", line: 205, tool: "update_vision_item", status: readerPending},
-	{file: "tools_vision.go", line: 263, tool: "promote_vision_to_task", status: readerPending},
+	{file: "tools_vision.go", line: 185, tool: "add_vision_item", status: readerPass},
+	{file: "tools_vision.go", line: 187, tool: "add_vision_item", status: readerPass},
+	{file: "tools_vision.go", line: 214, tool: "list_vision_items", status: readerPass},
+	{file: "tools_vision.go", line: 258, tool: "update_vision_item", status: readerPass},
+	{file: "tools_vision.go", line: 316, tool: "promote_vision_to_task", status: readerPass},
 	// tools_status.go
-	{file: "tools_status.go", line: 87, tool: "generate_project_status", status: readerPending},
+	{file: "tools_status.go", line: 97, tool: "generate_project_status", status: readerPass},
 	// tools_watchdog.go
-	{file: "tools_watchdog.go", line: 126, tool: "analyze_agent_behavior", status: readerPending},
-	{file: "tools_watchdog.go", line: 570, tool: "detect_unclosed_loops", status: readerPending},
-	// tools_worksession.go — 1 of 4 pending converted this dispatch
-	{file: "tools_worksession.go", line: 365, tool: "start_work", status: readerPending},
-	{file: "tools_worksession.go", line: 412, tool: "get_active_work", status: readerPass},
-	{file: "tools_worksession.go", line: 795, tool: "finish_work", status: readerPending},
-	{file: "tools_worksession.go", line: 856, tool: "list_recent_work_sessions", status: readerPending},
-	{file: "tools_worksession.go", line: 1166, tool: "get_work_session_trace", status: readerPass},
+	{file: "tools_watchdog.go", line: 185, tool: "analyze_agent_behavior", status: readerPass},
+	{file: "tools_watchdog.go", line: 629, tool: "detect_unclosed_loops", status: readerPass},
+	// tools_worksession.go
+	{file: "tools_worksession.go", line: 370, tool: "start_work", status: readerPass},
+	{file: "tools_worksession.go", line: 417, tool: "get_active_work", status: readerPass},
+	{file: "tools_worksession.go", line: 836, tool: "finish_work", status: readerPass},
+	{file: "tools_worksession.go", line: 914, tool: "list_recent_work_sessions", status: readerPass},
+	{file: "tools_worksession.go", line: 1224, tool: "get_work_session_trace", status: readerPass},
 }
 
 // wantStoredDataReaderTotal is the documented `stored` subtotal from
-// .specs/2026-08-20-u13-inventory.md (87 of the 102 total jsonText( call
-// sites; the other 15 are `computed` and are not tracked here).
-const wantStoredDataReaderTotal = 87
+// .specs/2026-08-20-u13-inventory.md, minus one row Phase B overturned.
+//
+// Phase A classified tools_proposal.go's confirm_proposals batch-REJECT
+// return as `stored`. It is not: that path returns proposal.BatchConfirmResult
+// (internal/proposal/proposal.go), whose only fields are a UUID string, a
+// bool, two ints and ErrMsg — no stored free text of any kind. The same
+// applies to its batchAccept twin. Both were dropped from the table during
+// integration, so the subtotal is 86 of the 100 real call sites (the raw grep
+// total of 102 counts two comment-only false positives — see
+// TestStoredDataReaderInventory_GrepCountMatchesCode).
+//
+// ErrMsg is NOT a loophole here: it carries a store error string
+// (internal/proposal/store.go), which is U14's (error-message hygiene)
+// jurisdiction, not U13's — a boundary renderer on a field whose content is
+// a Go error would be the wrong tool for the wrong threat.
+const wantStoredDataReaderTotal = 86
 
 // TestStoredDataReaderInventory_TotalMatchesDocumentedCount pins
 // storedDataReaders' length against the inventory doc. If someone edits the
@@ -231,45 +243,53 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 }
 
 // TestAllStoredDataReaders_PassThroughBoundaryRenderer is U13's structural
-// acceptance test (2026-08-20-mcp-surface-spec.md, U13 criterion 2). Phase A
-// intentionally does NOT assert every entry is PASS — only 6 of 87 stored
-// sites are wired at this point in the rollout, and asserting the rest would
-// make this test permanently red for a reason nobody would fix ("the test is
-// just always red"), which defeats its purpose as a signal. Instead it:
-//  1. Asserts every entry has a valid status (catches typos in the table).
-//  2. Asserts PASS+PENDING partitions the full set (no entry silently
-//     omitted from both buckets).
-//  3. Behaviourally PROVES every PASS entry converted or reused THIS
-//     dispatch actually neutralises a forged marker — see the
-//     TestHandle*_NeutralizesForgedMarker* tests below, each of which
-//     t.Run-subtests one PASS row here by tool name so a reader can see the
-//     inventory and its proof side by side.
-//  4. Logs the PENDING list at Info-equivalent verbosity (t.Log) so `go test
-//     -v` output doubles as the Phase B fan-out list without needing to
-//     re-open the .specs file.
+// acceptance test (2026-08-20-mcp-surface-spec.md, U13 criterion 2).
+//
+// The Phase A edition of this test deliberately TOLERATED readerPending rows,
+// because asserting on them while 81 of 87 sites were still unwired would have
+// made it permanently red for a reason nobody could fix in one dispatch. That
+// tolerance was scaffolding for the rollout, and it is exactly what let a
+// mutation of a converted call site stay green during Phase B verification:
+// the table records a claim, and a table that only checks its own formatting
+// checks nothing about the code. The sweep is complete, so the tolerance is
+// gone — a readerPending row is now a failure, which is what makes adding a
+// new unwired reader cost something.
+//
+// What this test is and is not:
+//   - IT IS the gate that says "no stored-data reader is knowingly unwired".
+//   - IT IS NOT proof that a given row is wired — a row's status is an
+//     assertion by whoever edited the table. The proof is behavioural, in the
+//     TestHandle*_NeutralizesForgedMarker* tests in this file and in
+//     u13_phase_b_b{1,2,3,4}_test.go, one per converted site.
+//   - The guard against a NEW reader slipping in unlisted is
+//     TestStoredDataReaderInventory_GrepCountMatchesCode, which pins the raw
+//     call-site count against the code and goes red on any addition.
 func TestAllStoredDataReaders_PassThroughBoundaryRenderer(t *testing.T) {
-	var passCount, pendingCount int
+	var passCount int
 	pending := make([]string, 0, len(storedDataReaders))
 	for _, r := range storedDataReaders {
 		switch r.status {
 		case readerPass:
 			passCount++
 		case readerPending:
-			pendingCount++
 			pending = append(pending, r.file+":"+itoa(r.line)+" "+r.tool)
 		default:
 			t.Errorf("%s:%d (%s) has unknown status %q — must be PASS or PENDING",
 				r.file, r.line, r.tool, r.status)
 		}
 	}
-	if passCount+pendingCount != len(storedDataReaders) {
+	if passCount+len(pending) != len(storedDataReaders) {
 		t.Fatalf("passCount(%d)+pendingCount(%d) != total(%d) — an entry has neither status",
-			passCount, pendingCount, len(storedDataReaders))
+			passCount, len(pending), len(storedDataReaders))
 	}
-	t.Logf("stored-data readers: %d PASS, %d PENDING (Phase B fan-out list follows)", passCount, pendingCount)
-	for _, p := range pending {
-		t.Log("  PENDING: " + p)
+	if len(pending) > 0 {
+		t.Errorf("%d stored-data reader(s) still PENDING — U13 requires every one to route "+
+			"through a boundary renderer before it reaches an LLM context:", len(pending))
+		for _, p := range pending {
+			t.Error("  PENDING: " + p)
+		}
 	}
+	t.Logf("stored-data readers: %d/%d PASS", passCount, len(storedDataReaders))
 }
 
 // itoa (tools_health_drift_test.go) is reused here for the same reason it

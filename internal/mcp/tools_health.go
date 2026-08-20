@@ -96,6 +96,29 @@ type disciplineSample struct {
 	RepoName   string    `json:"repo_name,omitempty"`
 }
 
+// newDisciplineSample projects one discipline event into the shape
+// system_health surfaces. It exists so the two drift walkers
+// (collectDisciplineHealth and EvaluateDisciplineDrift, its test-facing
+// twin) cannot neutralise differently — they previously built this struct
+// literal independently, and only one of them would have been fixed by a
+// call-site edit.
+//
+// RepoName is stored free text, not a server-computed label: it originates
+// in a caller-supplied argument (sync_repo's `name`, start_work's
+// `repo_name`) and is copied into the discipline event at write time with
+// no boundary-marker screening, so a forged marker in a repo name used to
+// reach system_health's discipline.recent_drifts[] verbatim — U13
+// (.specs/2026-08-20-mcp-surface-spec.md). ToolName is the registered tool
+// name, a server-owned constant, and needs no neutralisation; ObservedAt is
+// a timestamp.
+func newDisciplineSample(ev discipline.Event) disciplineSample {
+	return disciplineSample{
+		ToolName:   ev.ToolName,
+		ObservedAt: ev.ObservedAt,
+		RepoName:   clipSafe(ev.RepoName, repoShortFieldMaxRunes),
+	}
+}
+
 const (
 	// driftWindow is how far back from a mutating call we look for a
 	// log_decision / confirm_plan event in the same session. Anything
@@ -281,11 +304,7 @@ func (s *Server) collectDisciplineHealth(ctx context.Context) disciplineHealth {
 		}
 		health.DriftCount24h++
 		if len(health.RecentDrifts) < maxDisciplineSamples {
-			health.RecentDrifts = append(health.RecentDrifts, disciplineSample{
-				ToolName:   ev.ToolName,
-				ObservedAt: ev.ObservedAt,
-				RepoName:   ev.RepoName,
-			})
+			health.RecentDrifts = append(health.RecentDrifts, newDisciplineSample(ev))
 		}
 	}
 	return health
@@ -393,11 +412,7 @@ func EvaluateDisciplineDrift(
 		}
 		health.DriftCount24h++
 		if len(health.RecentDrifts) < maxDisciplineSamples {
-			health.RecentDrifts = append(health.RecentDrifts, disciplineSample{
-				ToolName:   ev.ToolName,
-				ObservedAt: ev.ObservedAt,
-				RepoName:   ev.RepoName,
-			})
+			health.RecentDrifts = append(health.RecentDrifts, newDisciplineSample(ev))
 		}
 	}
 	return health
