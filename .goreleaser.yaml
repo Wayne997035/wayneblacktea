@@ -291,14 +291,24 @@ checksum:
   extra_files:
     - glob: ./build/dxt/staging/wayneblacktea.dxt
 
+# cosign v3 起改用 bundle:憑證與簽章合併成一個 .sigstore.json,而
+# --output-signature / --output-certificate 被廢棄。**它們不是失敗,是被忽略** ——
+# 新格式下 cosign 仍要寫 bundle,而沒人給路徑,於是它拿空字串去開檔:
+#   Error: signing dist/checksums.txt: create bundle file: open : no such file or directory
+# v1.0.0 的第一次發佈就是掛在這裡(7 支 binary 全建完、打包完、checksum 算完,
+# 掛在最後一步),GitHub Release 因此完全沒有建立。
+#
+# goreleaser **沒有** ${bundle} 樣板變數(只有 ${artifact} / ${artifactID} /
+# ${signature} / ${certificate}),所以正解是把 signature 設成 bundle 檔名、
+# 再餵給 --bundle。依 https://goreleaser.com/blog/cosign-v3/
 signs:
   - cmd: cosign
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
-      - --yes
-      - --output-signature=${signature}
-      - --output-certificate=${certificate}
+      - --bundle=${signature}
       - ${artifact}
+      - --yes
     artifacts: checksum
     output: true
 

@@ -341,12 +341,11 @@ Release binaries are signed with [cosign](https://docs.sigstore.dev/cosign/overv
 cosign verify-blob \
   --certificate-identity-regexp "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/.*" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --signature wayneblacktea_checksums.txt.sig \
-  --certificate wayneblacktea_checksums.txt.pem \
+  --bundle wayneblacktea_checksums.txt.sigstore.json \
   wayneblacktea_checksums.txt
 ```
 
-The `.sig` and `.pem` files are attached to each GitHub Release alongside the binaries. The identity regex is anchored to the release workflow on a semver tag; verification is fail-closed.
+One `.sigstore.json` bundle is attached to each GitHub Release alongside the binaries; it carries both the signature and the certificate (cosign v3 replaced the separate `--signature` / `--certificate` pair). The identity regex is anchored to the release workflow on a semver tag; verification is fail-closed.
 
 ### Scripted install (curl | bash / irm | iex)
 

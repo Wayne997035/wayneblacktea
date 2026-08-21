@@ -54,15 +54,17 @@ Always include `?sslmode=require` in `DATABASE_URL` for any network-accessible P
 
 ## Release artifact signing
 
-Binaries published in GitHub Releases are signed using Sigstore keyless signing (cosign). Each release includes `.pem` and `.bundle` files alongside the binary archives. To verify:
+Binaries published in GitHub Releases are signed using Sigstore keyless signing (cosign).
+Signing covers `checksums.txt`, and the checksum file covers every archive — so verifying
+the one bundle transitively verifies all binaries. Each release includes a single
+`checksums.txt.sigstore.json` bundle carrying both signature and certificate. To verify:
 
 ```bash
 cosign verify-blob \
-  --certificate <binary>.pem \
-  --bundle <binary>.bundle \
-  --certificate-identity "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/<version>" \
+  --bundle wayneblacktea_checksums.txt.sigstore.json \
+  --certificate-identity-regexp "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/.*" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  <binary>
+  wayneblacktea_checksums.txt
 ```
 
 ---

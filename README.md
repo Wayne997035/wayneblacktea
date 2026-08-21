@@ -178,15 +178,24 @@ Read the `wayneblacktea://system/build-info` MCP resource (or `GET /health`
 for a bare liveness check) to see exactly which build is running. Two
 fields matter:
 
-- `version` and `build_id` **carry the same value** — both read
-  `buildinfo.EffectiveVersion()`, which is also what the MCP handshake's
-  `serverInfo.version` reports. Reading either one answers "which build is
-  this". They are kept as two fields so a client can read the build identity
-  without having to know that `version` carries two possible shapes.
-- That value is the real release tag when the running binary was produced by
-  a tagged `goreleaser` release. Otherwise — including every current Railway
-  production deploy, since this repo has no git tags and
-  `.github/workflows/release.yml` has never run — it is a synthetic,
+- `version` and `build_id` **carry different values on purpose** — they
+  answer different questions:
+  - **`version` — which release?** Reads `buildinfo.EffectiveVersion()`,
+    which is also what the MCP handshake's `serverInfo.version` reports.
+  - **`build_id` — which build exactly?** Reads `buildinfo.FullBuildID()`:
+    `<commit>@<RFC3339 build time>`, with the commit **verbatim** rather than
+    truncated, so it can be handed straight to `git show`. `version`
+    truncates to 12 hex because it has to stay sortable; that prefix is
+    readable but not enough to identify an object with certainty.
+
+  They were briefly identical, which made `build_id` carry nothing `version`
+  did not already say. What the original defect required was only that
+  `version` never report the raw `"dev"` sentinel for a build that knows its
+  own commit — the equality was a side effect of the first fix, not the goal.
+- `version` is the real release tag when the running binary was produced by a
+  tagged `goreleaser` release — `v1.0.0` onward. Otherwise — including every
+  Railway production deploy, which is built from a branch rather than a tag —
+  it is a synthetic,
   Go-pseudo-version-shaped identifier: `v0.0.0-<build-time-yyyymmddhhmmss>-<commit-sha12>`,
   derived from the build's commit SHA and build timestamp (`build/Dockerfile`
   reads these from Railway's `RAILWAY_GIT_COMMIT_SHA` build arg). **The
@@ -221,12 +230,15 @@ Release binaries will be signed with [cosign](https://docs.sigstore.dev/cosign/o
 cosign verify-blob \
   --certificate-identity-regexp "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/.*" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --signature wayneblacktea_checksums.txt.sig \
-  --certificate wayneblacktea_checksums.txt.pem \
+  --bundle wayneblacktea_checksums.txt.sigstore.json \
   wayneblacktea_checksums.txt
 ```
 
-The `.sig` and `.pem` files are attached to each GitHub Release alongside the binaries.
+One `.sigstore.json` bundle is attached to each GitHub Release alongside the binaries; it
+carries both the signature and the certificate. cosign v3 replaced the separate
+`--signature` / `--certificate` pair with this single `--bundle` — passing the old flags to
+a v3 cosign does not fail, it is silently **ignored**, which is how the first `v1.0.0`
+release attempt died at the signing step with an empty bundle path.
 
 ## What this *isn't*
 
