@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -13,6 +12,59 @@ import (
 )
 
 const maxListDecisionsLimit = 100
+
+// Read-time bounds for db.Decision's free-text fields, applied by
+// wrapUntrustedDecision before jsonText — U13 (2026-08-20-mcp-surface-
+// spec.md). log_decision/list_decisions register no mcp.MaxLength on any of
+// these fields today (checkDecisionNoise below only screens for tag-noise,
+// not length), so these bounds exist purely to stop marker-stuffing /
+// pathological-growth content from reaching an unbounded read. They are
+// intentionally generous — this is a full-record read, not the
+// session-start token-diet payload get_today_context enforces via
+// goalTitleMaxRunes/projectTitleMaxRunes/taskTitleMaxRunes (tools_context.go)
+// — legitimate content should never hit these caps.
+const (
+	decisionTitleMaxRunes = 500
+	decisionBodyMaxRunes  = 20000
+)
+
+// wrapUntrustedDecision returns a copy of d with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedArchSnapshot's copy-not-mutate contract (tools_arch.go): the
+// caller's row (and any cache holding it) must not end up with
+// fence/neutralisation baked into its stored text. nil in, nil out.
+//
+// ID, ProjectID, RepoName, CreatedAt, WorkspaceID, Embedding, TaskID and the
+// embedding-provenance fields are left untouched — none of them is free text
+// an LLM authored, so none carries injection risk. RepoName specifically is
+// validator.IsValidRepoName-gated at every write path in this codebase
+// ([a-zA-Z0-9_.-]{1,100}), which forecloses embedding a marker string in it.
+func wrapUntrustedDecision(d *db.Decision) *db.Decision {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.Title = clipSafe(d.Title, decisionTitleMaxRunes)
+	out.Context = clipSafe(d.Context, decisionBodyMaxRunes)
+	out.Decision = clipSafe(d.Decision, decisionBodyMaxRunes)
+	out.Rationale = clipSafe(d.Rationale, decisionBodyMaxRunes)
+	if d.Alternatives.Valid {
+		out.Alternatives.String = clipSafe(d.Alternatives.String, decisionBodyMaxRunes)
+	}
+	return &out
+}
+
+// wrapUntrustedDecisions maps wrapUntrustedDecision over a slice, preserving
+// element order and a nil/empty distinction is not needed here — every
+// caller of this helper already normalises decisions to a non-nil, possibly
+// empty slice before calling it (list tools MUST return [] not null).
+func wrapUntrustedDecisions(decisions []db.Decision) []db.Decision {
+	out := make([]db.Decision, len(decisions))
+	for i := range decisions {
+		out[i] = *wrapUntrustedDecision(&decisions[i])
+	}
+	return out
+}
 
 func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 	// The "CALL when ... confirmed" wording below is calling-convention
@@ -67,13 +119,20 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	p := decision.LogParams{
-		Title:        title,
-		Context:      decCtx,
-		Decision:     dec,
-		Rationale:    rationale,
-		RepoName:     stringArg(args, "repo_name"),
-		Alternatives: stringArg(args, "alternatives"),
-		Source:       decision.SourceManual,
+		Title:          title,
+		Context:        decCtx,
+		Decision:       dec,
+		Rationale:      rationale,
+		RepoName:       stringArg(args, "repo_name"),
+		Alternatives:   stringArg(args, "alternatives"),
+		Source:         decision.SourceManual,
+		ActorSessionID: s.auditSessionID(ctx),
+		// ConfirmedByHuman is deliberately left at its false zero value: this
+		// tool has no confirmation gate of its own (see its description
+		// above — "the tool has no confirmation gate of its own"), so
+		// calling it does not prove a human confirmed anything. true is
+		// reserved for a future real human-confirmation gate (GTD 41ef0520);
+		// no MCP path is entitled to set it yet.
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -92,10 +151,10 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 
 	d, err := s.decision.Log(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("logging decision: %v", err)), nil
+		return storeErrorResult("logging decision", err), nil
 	}
 	s.launchAtomize("decisions", d.ID, d.Decision+" "+d.Rationale)
-	return jsonText(d)
+	return jsonText(wrapUntrustedDecision(d))
 }
 
 // handleListDecisions implements the P3.0a Stage B truth table:
@@ -134,10 +193,10 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 
 	decisions, err := s.decision.List(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+		return storeErrorResult("loading decisions", err), nil
 	}
 	if decisions == nil {
 		decisions = []db.Decision{} // list tools MUST return [] not null — a nil slice serializes to JSON null
 	}
-	return jsonText(decisions)
+	return jsonText(wrapUntrustedDecisions(decisions))
 }

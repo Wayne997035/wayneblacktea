@@ -110,6 +110,24 @@ func (s *Store) DueReviews(ctx context.Context, limit int) ([]DueReview, error) 
 	return reviews, nil
 }
 
+// GetScheduleState returns the current CardState for scheduleID, scoped to
+// the store's configured workspace. See StoreIface.GetScheduleState (Ω7 fix)
+// for the full rationale. Raw SQL (not sqlc) matches the pattern already
+// used by ReviewHistory/LearningStats in this same file.
+func (s *Store) GetScheduleState(ctx context.Context, scheduleID uuid.UUID) (CardState, error) {
+	const q = `SELECT stability, difficulty, review_count FROM review_schedule
+		WHERE id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`
+	var cs CardState
+	err := s.pool.QueryRow(ctx, q, scheduleID, s.workspaceID).Scan(&cs.Stability, &cs.Difficulty, &cs.ReviewCount)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CardState{}, ErrNotFound
+		}
+		return CardState{}, fmt.Errorf("loading review schedule %s: %w", scheduleID, err)
+	}
+	return cs, nil
+}
+
 // SubmitReview applies the FSRS algorithm and updates the review schedule.
 func (s *Store) SubmitReview(ctx context.Context, scheduleID uuid.UUID, currentState CardState, rating Rating) error {
 	newStability, newDifficulty, intervalDays := NextState(currentState, rating)

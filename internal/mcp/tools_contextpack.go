@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/contextpack"
@@ -130,13 +129,21 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 
 	pack, err := s.contextAssembler.Assemble(ctx, cpReq)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("assembling context: %v", err)), nil
+		return storeErrorResult("assembling context", err), nil
 	}
 
 	// contextpack.Pack carries its own snake_case json tags (the wire
 	// contract at docs/wayneblacktea-2.0-development-prompt.md:265-291), so
 	// no wrapper struct is needed here.
-	return jsonText(pack)
+	//
+	// U13: Pack.Items[].Summary aggregates summaries pulled from decisions,
+	// knowledge, procedural, skills, outcomes, reflection, behaviorrule and
+	// session read ports — none of which neutralise on the way in, so this is
+	// the single choke point where a forged boundary marker stored in any of
+	// those domains would reach the model. wrapUntrustedContextPack lives in
+	// tools_worksession.go (start_work returns the same contextpack.Pack);
+	// both call sites share it so the two paths cannot drift apart.
+	return jsonText(wrapUntrustedContextPack(pack))
 }
 
 // clampBudgetChars applies the assemble_context default/clamp rule: unset or

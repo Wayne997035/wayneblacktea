@@ -12,24 +12,29 @@ import (
 )
 
 const createDecision = `-- name: CreateDecision :one
-INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id, source)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source
+INSERT INTO decisions (project_id, repo_name, title, context, decision, rationale, alternatives, workspace_id, task_id, source, actor_session_id, confirmed_by_human)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human
 `
 
 type CreateDecisionParams struct {
-	ProjectID    pgtype.UUID `json:"project_id"`
-	RepoName     pgtype.Text `json:"repo_name"`
-	Title        string      `json:"title"`
-	Context      string      `json:"context"`
-	Decision     string      `json:"decision"`
-	Rationale    string      `json:"rationale"`
-	Alternatives pgtype.Text `json:"alternatives"`
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-	TaskID       pgtype.UUID `json:"task_id"`
-	Source       string      `json:"source"`
+	ProjectID        pgtype.UUID `json:"project_id"`
+	RepoName         pgtype.Text `json:"repo_name"`
+	Title            string      `json:"title"`
+	Context          string      `json:"context"`
+	Decision         string      `json:"decision"`
+	Rationale        string      `json:"rationale"`
+	Alternatives     pgtype.Text `json:"alternatives"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	TaskID           pgtype.UUID `json:"task_id"`
+	Source           string      `json:"source"`
+	ActorSessionID   pgtype.Text `json:"actor_session_id"`
+	ConfirmedByHuman bool        `json:"confirmed_by_human"`
 }
 
+// actor_session_id / confirmed_by_human (migration 000076): caller-code-path
+// values only, never decoded from an MCP/HTTP payload — see
+// internal/decision.LogParams's ActorSessionID/ConfirmedByHuman doc comments.
 func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error) {
 	row := q.db.QueryRow(ctx, createDecision,
 		arg.ProjectID,
@@ -42,6 +47,8 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		arg.WorkspaceID,
 		arg.TaskID,
 		arg.Source,
+		arg.ActorSessionID,
+		arg.ConfirmedByHuman,
 	)
 	var i Decision
 	err := row.Scan(
@@ -61,12 +68,14 @@ func (q *Queries) CreateDecision(ctx context.Context, arg CreateDecisionParams) 
 		&i.EmbeddingModel,
 		&i.EmbeddingDim,
 		&i.Source,
+		&i.ActorSessionID,
+		&i.ConfirmedByHuman,
 	)
 	return i, err
 }
 
 const listAllDecisions = `-- name: ListAllDecisions :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY created_at DESC
 LIMIT $2
@@ -103,6 +112,8 @@ func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsPara
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
 			&i.Source,
+			&i.ActorSessionID,
+			&i.ConfirmedByHuman,
 		); err != nil {
 			return nil, err
 		}
@@ -115,7 +126,7 @@ func (q *Queries) ListAllDecisions(ctx context.Context, arg ListAllDecisionsPara
 }
 
 const listDecisionsByProject = `-- name: ListDecisionsByProject :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE project_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -154,6 +165,8 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
 			&i.Source,
+			&i.ActorSessionID,
+			&i.ConfirmedByHuman,
 		); err != nil {
 			return nil, err
 		}
@@ -166,7 +179,7 @@ func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsB
 }
 
 const listDecisionsByRepo = `-- name: ListDecisionsByRepo :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE repo_name = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -205,6 +218,8 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
 			&i.Source,
+			&i.ActorSessionID,
+			&i.ConfirmedByHuman,
 		); err != nil {
 			return nil, err
 		}
@@ -217,7 +232,7 @@ func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRe
 }
 
 const listDecisionsByTaskID = `-- name: ListDecisionsByTaskID :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE task_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 ORDER BY created_at DESC
@@ -256,6 +271,8 @@ func (q *Queries) ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsBy
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
 			&i.Source,
+			&i.ActorSessionID,
+			&i.ConfirmedByHuman,
 		); err != nil {
 			return nil, err
 		}
@@ -268,7 +285,7 @@ func (q *Queries) ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsBy
 }
 
 const listDecisionsFiltered = `-- name: ListDecisionsFiltered :many
-SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source FROM decisions
+SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
   AND ($2::uuid IS NULL OR project_id = $2)
   AND ($3::text IS NULL OR repo_name = $3)
@@ -323,6 +340,8 @@ func (q *Queries) ListDecisionsFiltered(ctx context.Context, arg ListDecisionsFi
 			&i.EmbeddingModel,
 			&i.EmbeddingDim,
 			&i.Source,
+			&i.ActorSessionID,
+			&i.ConfirmedByHuman,
 		); err != nil {
 			return nil, err
 		}

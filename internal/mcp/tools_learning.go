@@ -3,9 +3,9 @@ package mcp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -19,12 +19,13 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 
 	ms.AddTool(mcp.NewTool(
 		"submit_review",
-		mcp.WithDescription("Submits a review rating for a concept and updates the next review schedule."),
+		mcp.WithDescription(
+			"Submits a review rating for a concept and updates the next review schedule. "+
+				"The current stability/difficulty/review_count are read from the stored schedule "+
+				"server-side — do not pass them.",
+		),
 		mcp.WithString("schedule_id", mcp.Description("Review schedule UUID"), mcp.Required()),
 		mcp.WithNumber("rating", mcp.Description("Rating: 1=Again, 2=Hard, 3=Good, 4=Easy"), mcp.Required()),
-		mcp.WithNumber("stability", mcp.Description("Current stability value from get_due_reviews")),
-		mcp.WithNumber("difficulty", mcp.Description("Current difficulty value from get_due_reviews")),
-		mcp.WithNumber("review_count", mcp.Description("Current review count from get_due_reviews")),
 	), s.handleSubmitReview)
 
 	ms.AddTool(mcp.NewTool(
@@ -36,12 +37,49 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 	), s.handleCreateConcept)
 }
 
+// learningTextMaxRunes bounds DueReview/Concept Title/Content on read — U13
+// (2026-08-20-mcp-surface-spec.md). Neither field has a write-time
+// neutralisation step (create_concept below only requires non-empty), so
+// this is sized like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes
+// (tools_gtd.go) — generous enough that legitimate content never trips it.
+const learningTextMaxRunes = gtdBodyMaxRunes
+
+// wrapUntrustedDueReview returns a copy of r with Title/Content clipSafe'd
+// (tools_context.go).
+func wrapUntrustedDueReview(r learning.DueReview) learning.DueReview {
+	r.Title = clipSafe(r.Title, learningTextMaxRunes)
+	r.Content = clipSafe(r.Content, learningTextMaxRunes)
+	return r
+}
+
+// wrapUntrustedDueReviews maps wrapUntrustedDueReview over a slice, always
+// non-nil (preserves get_due_reviews' "[] never null" list contract).
+func wrapUntrustedDueReviews(reviews []learning.DueReview) []learning.DueReview {
+	out := make([]learning.DueReview, len(reviews))
+	for i, r := range reviews {
+		out[i] = wrapUntrustedDueReview(r)
+	}
+	return out
+}
+
+// wrapUntrustedConcept returns a copy of c with Title/Content clipSafe'd.
+// nil in, nil out.
+func wrapUntrustedConcept(c *db.Concept) *db.Concept {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.Title = clipSafe(c.Title, learningTextMaxRunes)
+	out.Content = clipSafe(c.Content, learningTextMaxRunes)
+	return &out
+}
+
 func (s *Server) handleGetDueReviews(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	reviews, err := s.learning.DueReviews(ctx, 50)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading due reviews: %v", err)), nil
+		return storeErrorResult("loading due reviews", err), nil
 	}
-	return jsonText(reviews)
+	return jsonText(wrapUntrustedDueReviews(reviews))
 }
 
 func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -57,21 +95,27 @@ func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("rating must be between 1 and 4"), nil
 	}
 
-	state := learning.CardState{
-		Stability:   floatArg(args, "stability"),
-		Difficulty:  floatArg(args, "difficulty"),
-		ReviewCount: int(numberArg(args, "review_count")),
-	}
-	// Default stability if not provided.
-	if state.Stability == 0 {
-		state.Stability = 1.0
+	// Ω7 fix (mcp-surface spec, backend-security-design.md §2.1): the
+	// current CardState is read from the DB, never trusted from the caller.
+	// submit_review used to accept stability/difficulty/review_count as
+	// LLM-supplied "current state" params; an omitted or wrong review_count
+	// made NextState treat a mature, many-times-reviewed schedule as a fresh
+	// card, silently resetting it to a much shorter interval. Reading state
+	// server-side removes that trust boundary entirely instead of trying to
+	// distinguish "omitted" from "wrong."
+	state, err := s.learning.GetScheduleState(ctx, scheduleID)
+	if err != nil {
+		if errors.Is(err, learning.ErrNotFound) {
+			return mcp.NewToolResultError("review schedule not found"), nil
+		}
+		return storeErrorResult("loading review schedule", err), nil
 	}
 
 	if err := s.learning.SubmitReview(ctx, scheduleID, state, learning.Rating(ratingVal)); err != nil {
 		if errors.Is(err, learning.ErrNotFound) {
 			return mcp.NewToolResultError("review schedule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("submitting review: %v", err)), nil
+		return storeErrorResult("submitting review", err), nil
 	}
 	return mcp.NewToolResultText("review submitted"), nil
 }
@@ -100,7 +144,7 @@ func (s *Server) handleCreateConcept(ctx context.Context, req mcp.CallToolReques
 
 	concept, err := s.learning.CreateConcept(ctx, title, content, tags)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating concept: %v", err)), nil
+		return storeErrorResult("creating concept", err), nil
 	}
-	return jsonText(concept)
+	return jsonText(wrapUntrustedConcept(concept))
 }

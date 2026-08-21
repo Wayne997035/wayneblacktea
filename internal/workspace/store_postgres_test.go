@@ -43,7 +43,8 @@ func run(m *testing.M) int {
 	// pre-installed. Migration 000005_knowledge.up.sql does
 	// `CREATE EXTENSION vector` so the vanilla `postgres:16-alpine` image
 	// fails with `extension "vector" is not available`.
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -145,9 +146,9 @@ func TestUpsertRepo_PerWorkspaceConflict(t *testing.T) {
 
 	repoA, err := storeA.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:          repoName,
-		Path:          "/home/a/shared-repo-name",
-		Description:   "workspace A copy",
-		CurrentBranch: "main",
+		Path:          strPtr("/home/a/shared-repo-name"),
+		Description:   strPtr("workspace A copy"),
+		CurrentBranch: strPtr("main"),
 	})
 	if err != nil {
 		t.Fatalf("storeA.UpsertRepo: %v", err)
@@ -160,9 +161,9 @@ func TestUpsertRepo_PerWorkspaceConflict(t *testing.T) {
 
 	repoB, err := storeB.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:          repoName,
-		Path:          "/home/b/shared-repo-name",
-		Description:   "workspace B copy",
-		CurrentBranch: "develop",
+		Path:          strPtr("/home/b/shared-repo-name"),
+		Description:   strPtr("workspace B copy"),
+		CurrentBranch: strPtr("develop"),
 	})
 	if err != nil {
 		t.Fatalf("storeB.UpsertRepo: %v", err)
@@ -189,7 +190,8 @@ func TestUpsertRepo_PerWorkspaceConflict(t *testing.T) {
 
 	// Assert both repos exist as distinct rows in the DB.
 	var count int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM repos WHERE name = $1`, repoName,
 	).Scan(&count); err != nil {
 		t.Fatalf("count repos by name: %v", err)
@@ -213,10 +215,10 @@ func TestUpsertRepo_SameWorkspaceUpdate(t *testing.T) {
 
 	first, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            repoName,
-		Path:            "/repos/my-project",
-		Description:     "initial description",
-		CurrentBranch:   "main",
-		NextPlannedStep: "setup CI",
+		Path:            strPtr("/repos/my-project"),
+		Description:     strPtr("initial description"),
+		CurrentBranch:   strPtr("main"),
+		NextPlannedStep: strPtr("setup CI"),
 	})
 	if err != nil {
 		t.Fatalf("first UpsertRepo: %v", err)
@@ -229,10 +231,10 @@ func TestUpsertRepo_SameWorkspaceUpdate(t *testing.T) {
 
 	second, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            repoName,
-		Path:            "/repos/my-project",
-		Description:     "updated description",
-		CurrentBranch:   "feature/x",
-		NextPlannedStep: "write tests",
+		Path:            strPtr("/repos/my-project"),
+		Description:     strPtr("updated description"),
+		CurrentBranch:   strPtr("feature/x"),
+		NextPlannedStep: strPtr("write tests"),
 	})
 	if err != nil {
 		t.Fatalf("second UpsertRepo: %v", err)
@@ -256,7 +258,8 @@ func TestUpsertRepo_SameWorkspaceUpdate(t *testing.T) {
 
 	// Exactly one row must exist for this (workspace_id, name) pair.
 	var count int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT COUNT(*) FROM repos WHERE workspace_id = $1 AND name = $2`, wsID, repoName,
 	).Scan(&count); err != nil {
 		t.Fatalf("count repos: %v", err)

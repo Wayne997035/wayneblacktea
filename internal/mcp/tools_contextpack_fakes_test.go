@@ -507,8 +507,8 @@ func (noopWorkSessionStore) Checkpoint(context.Context, worksession.CheckpointPa
 	return nil, nil
 }
 
-func (noopWorkSessionStore) Finish(context.Context, worksession.FinishParams) (*worksession.Session, error) {
-	return nil, nil
+func (noopWorkSessionStore) Finish(context.Context, worksession.FinishParams) (*worksession.Session, []uuid.UUID, error) {
+	return nil, nil, nil
 }
 
 func (noopWorkSessionStore) GetByID(context.Context, uuid.UUID, uuid.UUID) (*worksession.Session, error) {

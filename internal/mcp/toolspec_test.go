@@ -302,6 +302,101 @@ func TestDecodeToolArgs_AllKinds(t *testing.T) {
 	}
 }
 
+// TestDecodeToolArgs_RejectsFractionalIntFields is U12's bad-case acceptance
+// criterion (F9, 2026-08-20-mcp-surface-spec.md): decodeIntField used to
+// silently truncate a fractional number into an int/int16/int32 field
+// (int64(nv)) with no error at all — e.g. priority=2.5 became 2 and the
+// caller had no way to know their exact input was not applied. Table test
+// over both int-kind fields decodeTestArgs declares (int32 and int16),
+// matching the spec's "every registered numeric field" framing for this
+// decode path.
+func TestDecodeToolArgs_RejectsFractionalIntFields(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"int32 field, fractional", map[string]any{"count": 2.5}, "count must be a whole number, got 2.5"},
+		{"int16 field, fractional", map[string]any{"importance": 1.1}, "importance must be a whole number, got 1.1"},
+		{"int32 field, negative fractional", map[string]any{"count": -3.7}, "count must be a whole number, got -3.7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out decodeTestArgs
+			r := decodeToolArgs(tc.args, &out)
+			if r == nil || !r.IsError {
+				t.Fatalf("expected a whole-number error, decode silently succeeded with out=%+v", out)
+			}
+			if resultText(r) != tc.want {
+				t.Errorf("message = %q, want %q", resultText(r), tc.want)
+			}
+		})
+	}
+}
+
+// TestDecodeToolArgs_WholeNumberIntFields_Accepted is the positive control
+// for TestDecodeToolArgs_RejectsFractionalIntFields: a whole-number float64
+// (however it arrives — JSON numbers always decode to float64) must still
+// decode successfully, unaffected by the new guard.
+func TestDecodeToolArgs_WholeNumberIntFields_Accepted(t *testing.T) {
+	var out decodeTestArgs
+	r := decodeToolArgs(map[string]any{"count": 3.0, "importance": -1.0}, &out)
+	if r != nil {
+		t.Fatalf("whole-number floats should decode cleanly, got: %s", resultText(r))
+	}
+	if out.Count != 3 {
+		t.Errorf("Count = %d, want 3", out.Count)
+	}
+	if out.Importance != -1 {
+		t.Errorf("Importance = %d, want -1", out.Importance)
+	}
+}
+
+// ---- requireIntArg() tests (server.go) — U12's non-seam-path guard,
+// sharing isWholeNumber with decodeIntField above. ----
+
+func TestRequireIntArg_RejectsFractional(t *testing.T) {
+	_, r := requireIntArg(map[string]any{"step": 2.5}, "step")
+	if r == nil || !r.IsError {
+		t.Fatal("expected a whole-number error for step=2.5")
+	}
+	if resultText(r) != "step must be a whole number, got 2.5" {
+		t.Errorf("message = %q", resultText(r))
+	}
+}
+
+func TestRequireIntArg_Missing(t *testing.T) {
+	_, r := requireIntArg(map[string]any{}, "step")
+	if r == nil || !r.IsError {
+		t.Fatal("expected a required error for missing step")
+	}
+	if resultText(r) != "step is required" {
+		t.Errorf("message = %q", resultText(r))
+	}
+}
+
+func TestRequireIntArg_WrongType(t *testing.T) {
+	_, r := requireIntArg(map[string]any{"step": "one"}, "step")
+	if r == nil || !r.IsError {
+		t.Fatal("expected a type error for a string step")
+	}
+	if resultText(r) != "step must be a number" {
+		t.Errorf("message = %q", resultText(r))
+	}
+}
+
+// TestRequireIntArg_WholeNumberAccepted is the positive control: a present,
+// whole-number, correctly-typed value decodes cleanly with no error result.
+func TestRequireIntArg_WholeNumberAccepted(t *testing.T) {
+	v, r := requireIntArg(map[string]any{"step": 3.0}, "step")
+	if r != nil {
+		t.Fatalf("expected no error, got: %s", resultText(r))
+	}
+	if v != 3 {
+		t.Errorf("value = %d, want 3", v)
+	}
+}
+
 func TestDecodeToolArgs_AbsentOptionalFieldsStayNil(t *testing.T) {
 	var out decodeTestArgs
 	if r := decodeToolArgs(map[string]any{}, &out); r != nil {

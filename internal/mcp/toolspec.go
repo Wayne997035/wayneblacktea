@@ -440,11 +440,20 @@ func decodeBoolField(key string, raw any, fv reflect.Value, ptr bool) *mcp.CallT
 	return nil
 }
 
-// decodeIntField decodes a JSON number into an int/int16/int32 field.
+// decodeIntField decodes a JSON number into an int/int16/int32 field,
+// rejecting values with a fractional part instead of silently truncating
+// them (F9, 2026-08-20-mcp-surface-spec.md U12): int64(nv) used to accept
+// e.g. priority=2.5 and store 2 with no error at all — the caller had no way
+// to know their input was not applied as given. isWholeNumber is the same
+// guard requireIntArg (server.go) uses for the non-seam call sites this
+// decode path does not cover.
 func decodeIntField(key string, raw any, fv reflect.Value) *mcp.CallToolResult {
 	nv, ok := raw.(float64)
 	if !ok {
 		return mcp.NewToolResultError(key + " must be a number")
+	}
+	if !isWholeNumber(nv) {
+		return mcp.NewToolResultError(fmt.Sprintf("%s must be a whole number, got %v", key, nv))
 	}
 	fv.SetInt(int64(nv))
 	return nil

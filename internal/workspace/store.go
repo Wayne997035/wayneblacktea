@@ -126,13 +126,18 @@ func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (*db.Repo, e
 		return nil, fmt.Errorf("UpsertRepo requires a non-nil workspaceID after migration 000028")
 	}
 	row, err := s.q.UpsertRepo(ctx, db.UpsertRepoParams{
-		Name:            p.Name,
-		Path:            pgconv.ToText(p.Path),
-		Description:     pgconv.ToText(p.Description),
-		Language:        pgconv.ToText(p.Language),
-		CurrentBranch:   pgconv.ToText(p.CurrentBranch),
+		Name: p.Name,
+		// ToTextPtr (not ToText): the UPDATE branch's CASE WHEN checks
+		// whether the bound parameter itself is NULL to decide
+		// preserve-vs-replace (Ω6) — ToText's "" -> NULL collapse would
+		// make an explicit empty-string clear indistinguishable from
+		// omission, the exact bug this fixes.
+		Path:            pgconv.ToTextPtr(p.Path),
+		Description:     pgconv.ToTextPtr(p.Description),
+		Language:        pgconv.ToTextPtr(p.Language),
+		CurrentBranch:   pgconv.ToTextPtr(p.CurrentBranch),
 		KnownIssues:     p.KnownIssues,
-		NextPlannedStep: pgconv.ToText(p.NextPlannedStep),
+		NextPlannedStep: pgconv.ToTextPtr(p.NextPlannedStep),
 		WorkspaceID:     s.workspaceID,
 	})
 	if err != nil {

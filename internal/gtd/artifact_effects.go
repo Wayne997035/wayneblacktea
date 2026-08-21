@@ -24,7 +24,15 @@ type ArtifactStore interface {
 // task. Returns the updated task on success, nil if no side-effect applied or
 // the update failed (caller uses the original completed task in that case).
 // SECURITY: only stores the URL string — no HTTP fetch is ever made.
-func ApplyArtifactSideEffects(ctx context.Context, store ArtifactStore, id uuid.UUID, task *db.Task, artifact string) *db.Task {
+//
+// task is intentionally unused (P7 fix): the commit-SHA side effect used to
+// read task.CommitSHAs and append in Go before writing the whole array back
+// — a TOCTOU race under concurrent CompleteTask calls on the same task. The
+// append is now atomic at the SQL layer (UpdateTaskParams.AppendCommitSHA),
+// so this function no longer needs the caller's already-loaded task at all.
+// Kept in the signature to avoid an unrelated call-site change at
+// gtd_handler.go's only caller.
+func ApplyArtifactSideEffects(ctx context.Context, store ArtifactStore, id uuid.UUID, _ *db.Task, artifact string) *db.Task {
 	artifact = strings.TrimSpace(artifact)
 	if artifact == "" {
 		return nil
@@ -34,12 +42,9 @@ func ApplyArtifactSideEffects(ctx context.Context, store ArtifactStore, id uuid.
 	if validator.GitHubPRURLRe.MatchString(artifact) {
 		up.PRUrl = &artifact
 	} else if CommitSHARe.MatchString(artifact) {
-		newSHAs := make([]string, len(task.CommitSHAs)+1)
-		copy(newSHAs, task.CommitSHAs)
-		newSHAs[len(task.CommitSHAs)] = artifact
-		up.CommitSHAs = newSHAs
+		up.AppendCommitSHA = &artifact
 	}
-	if up.PRUrl == nil && up.CommitSHAs == nil {
+	if up.PRUrl == nil && up.AppendCommitSHA == nil {
 		return nil
 	}
 	updated, err := store.UpdateTask(ctx, id, up)

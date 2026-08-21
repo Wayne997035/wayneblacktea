@@ -12,6 +12,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// sentinelVersion is buildinfo.Version's own zero-ldflags default (see that
+// package's var block) — these tests assert against this exact value rather
+// than an arbitrary "dev"-looking string, so a failure here means the
+// sentinel itself changed behaviour, not that the test drifted from it.
+const sentinelVersion = "dev"
+
 // rpcServerInfo issues a real "initialize" call over the JSON-RPC entry point
 // (the same one both transports use — server.go's MCPServer doc comment) and
 // returns the decoded serverInfo block.
@@ -74,8 +80,9 @@ func TestMCPServer_VersionComesFromBuildinfo(t *testing.T) {
 // indistinguishable from a tagged one (that indistinguishability was the
 // original bug: "0.1.0" looked real and never changed).
 func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
-	if buildinfo.Version != "dev" {
-		t.Errorf("buildinfo.Version = %q in an ldflags-less test build, want sentinel %q", buildinfo.Version, "dev")
+	if buildinfo.Version != sentinelVersion {
+		t.Errorf("buildinfo.Version = %q in an ldflags-less test build, want sentinel %q",
+			buildinfo.Version, sentinelVersion)
 	}
 	if buildinfo.Commit != "none" {
 		t.Errorf("buildinfo.Commit = %q in an ldflags-less test build, want sentinel %q", buildinfo.Commit, "none")
@@ -86,9 +93,82 @@ func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
 
 	s := newTestResourceServer(t)
 	info := rpcServerInfo(t, s.MCPServer())
-	if info.Version != "dev" {
+	if info.Version != sentinelVersion {
 		t.Errorf("serverInfo.version = %q, want the sentinel %q to survive unchanged into serverInfo",
-			info.Version, "dev")
+			info.Version, sentinelVersion)
+	}
+}
+
+// TestMCPServer_VersionFallsBackToBuildIDWhenSentinel is U6's acceptance
+// criterion for serverInfo.version reading buildinfo.EffectiveVersion()
+// (server.go:471, 2026-08-20-mcp-surface-spec.md): when Version is at its
+// "dev" sentinel but Commit/Date carry real production values (the state
+// every current Railway deploy is in — no git tag has ever driven one, see
+// README's new "Checking what's running" section), serverInfo.version must
+// report the synthetic build ID instead of the bare "dev" sentinel.
+func TestMCPServer_VersionFallsBackToBuildIDWhenSentinel(t *testing.T) {
+	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
+	buildinfo.Version = sentinelVersion
+	buildinfo.Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
+	buildinfo.Date = "2026-08-16T07:43:48Z"
+	t.Cleanup(func() {
+		buildinfo.Version, buildinfo.Commit, buildinfo.Date = origV, origC, origD
+	})
+
+	const wantBuildID = "v0.0.0-20260816074348-5b87fcbf4b78"
+
+	s := newTestResourceServer(t)
+	info := rpcServerInfo(t, s.MCPServer())
+
+	if info.Version != wantBuildID {
+		t.Errorf("serverInfo.version = %q, want the synthetic build ID %q (Version was at its \"dev\" "+
+			"sentinel — EffectiveVersion must fall back to BuildID(), not report \"dev\" verbatim)",
+			info.Version, wantBuildID)
+	}
+	if info.Version == sentinelVersion {
+		t.Error("serverInfo.version = \"dev\" — EffectiveVersion did not fall back to BuildID() even " +
+			"though Commit/Date carried real values")
+	}
+}
+
+// TestResourceBuildInfo_BuildIDMatchesServerInfo is the build_id half of
+// TestResourceBuildInfo_MatchesServerInfo below: build_id and
+// serverInfo.version both read buildinfo.EffectiveVersion() (server.go's
+// MCPServer doc comment), so they can never independently drift — even when
+// Version is at its sentinel and both are falling back to a synthetic
+// BuildID() value rather than echoing buildinfo.Version directly.
+func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
+	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
+	buildinfo.Version = sentinelVersion
+	buildinfo.Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
+	buildinfo.Date = "2026-08-16T07:43:48Z"
+	t.Cleanup(func() {
+		buildinfo.Version, buildinfo.Commit, buildinfo.Date = origV, origC, origD
+	})
+
+	s := newTestResourceServer(t)
+	info := rpcServerInfo(t, s.MCPServer())
+
+	contents, err := s.handleResourceBuildInfo(context.Background(), mcpmsg.ReadResourceRequest{})
+	if err != nil {
+		t.Fatalf("handleResourceBuildInfo: %v", err)
+	}
+	var got buildInfoResource
+	parseResourceJSON(t, contents, &got)
+
+	if got.BuildID != info.Version {
+		t.Errorf("resource build_id %q != serverInfo.version %q — the two have drifted apart",
+			got.BuildID, info.Version)
+	}
+	if got.BuildID == sentinelVersion {
+		t.Error("resource build_id = \"dev\" — EffectiveVersion did not fall back to BuildID()")
+	}
+	// version (the plain, non-fallback field) stays at the raw sentinel —
+	// only build_id/serverInfo.version apply the fallback. This is the
+	// contract buildIDNote documents for readers of the resource.
+	if got.Version != sentinelVersion {
+		t.Errorf("resource version = %q, want the raw sentinel %q unchanged (build_id is the "+
+			"fallback-aware field, version is not)", got.Version, sentinelVersion)
 	}
 }
 
@@ -187,10 +267,11 @@ func TestResourceBuildInfo_PostgresBackend(t *testing.T) {
 
 // TestResourceBuildInfo_NoUnexpectedFields is the compensating control for
 // the dispatch threat surface (build info is easy to accidentally widen into
-// an environment/secret dump): the resource's JSON MUST carry exactly the 6
-// declared fields and nothing else. A future author adding a field to
-// buildInfoResource without updating this allowlist fails loudly here
-// instead of silently shipping whatever they added.
+// an environment/secret dump): the resource's JSON MUST carry exactly the 8
+// declared fields (6 pre-U6 + build_id/build_id_note, U6:
+// 2026-08-20-mcp-surface-spec.md) and nothing else. A future author adding a
+// field to buildInfoResource without updating this allowlist fails loudly
+// here instead of silently shipping whatever they added.
 func TestResourceBuildInfo_NoUnexpectedFields(t *testing.T) {
 	s := newTestResourceServer(t)
 
@@ -205,7 +286,10 @@ func TestResourceBuildInfo_NoUnexpectedFields(t *testing.T) {
 		t.Fatalf("unmarshal as map: %v", err)
 	}
 
-	want := []string{"generated_at", "version", "commit", "build_date", "protocol_version", "backend"}
+	want := []string{
+		"generated_at", "version", "commit", "build_date", "protocol_version", "backend",
+		"build_id", "build_id_note",
+	}
 	sort.Strings(want)
 	got := make([]string, 0, len(asMap))
 	for k := range asMap {

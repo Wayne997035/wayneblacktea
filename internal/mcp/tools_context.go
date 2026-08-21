@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -32,9 +31,8 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 				"yet due, surfaced early so they aren't missed). This is a compact index, not full records: long "+
 				"text is clipped with a trailing … and lists are capped (the *_total fields report the real "+
 				"counts). To read anything clipped, run expand_tools(group=\"gtd\") first — get_task, get_project "+
-				"and list_goals are hidden until then. get_project_arch(slug) is core and returns the "+
-				"architecture snapshot. For the pending handoff's full intent, context_summary and next_actions, "+
-				"read the resource wayneblacktea://session/handoff/latest.",
+				"and list_goals are hidden until then. For the pending handoff's full intent, context_summary "+
+				"and next_actions, read the resource wayneblacktea://session/handoff/latest.",
 		),
 	), s.handleGetTodayContext)
 
@@ -45,7 +43,9 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 
 	ms.AddTool(mcp.NewTool(
 		"sync_repo",
-		mcp.WithDescription("Creates or updates a repository entry with current state."),
+		mcp.WithDescription("Creates or updates a repository entry with current state. All params "+
+			"except name are optional and preserve their stored value when omitted — pass an "+
+			"empty string to explicitly clear one."),
 		mcp.WithString("name", mcp.Description("Repository name (unique key)"), mcp.Required()),
 		mcp.WithString("path", mcp.Description("Local filesystem path")),
 		mcp.WithString("description", mcp.Description("Short description")),
@@ -552,15 +552,15 @@ func (s *Server) fetchLatestStatusSnapshot(ctx context.Context) *latestStatusSna
 func (r *todayContextRaw) toolError() *mcp.CallToolResult {
 	switch {
 	case r.goalsErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading goals: %v", r.goalsErr))
+		return storeErrorResult("loading goals", r.goalsErr)
 	case r.projectsErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading projects: %v", r.projectsErr))
+		return storeErrorResult("loading projects", r.projectsErr)
 	case r.progressErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading progress: %v", r.progressErr))
+		return storeErrorResult("loading progress", r.progressErr)
 	case r.handoffErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading handoff: %v", r.handoffErr))
+		return storeErrorResult("loading handoff", r.handoffErr)
 	case r.pulledErr != nil:
-		return mcp.NewToolResultError(fmt.Sprintf("loading pull-forward tasks: %v", r.pulledErr))
+		return storeErrorResult("loading pull-forward tasks", r.pulledErr)
 	default:
 		return nil
 	}
@@ -589,12 +589,118 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 	return jsonText(raw.toContext())
 }
 
+// Read-time bounds for db.Repo's free-text fields, applied by
+// wrapUntrustedRepo before jsonText — U13 (2026-08-20-mcp-surface-spec.md).
+// sync_repo's args declare no mcp.MaxLength on any of them, so these exist
+// purely to stop marker-stuffing / pathological-growth content from
+// reaching an unbounded read, sized like wrapUntrustedTask/wrapUntrustedProject's
+// gtdTitleMaxRunes/gtdBodyMaxRunes (tools_gtd.go) rather than this file's own
+// small session-start caps above (a different, budget-constrained payload).
+const (
+	repoShortFieldMaxRunes = gtdTitleMaxRunes // path, language, current_branch, each known_issues entry
+	repoLongFieldMaxRunes  = gtdBodyMaxRunes  // description, next_planned_step
+)
+
+// wrapUntrustedRepo returns a copy of r with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedTask/wrapUntrustedProject's (tools_gtd.go) copy-not-mutate
+// contract. nil in, nil out.
+//
+// Both list_active_repos and sync_repo route through this (Phase A
+// inventory, .specs/2026-08-20-u13-inventory.md §3 tools_context.go, which
+// corrected the dispatch's original "already wired" assumption for this
+// file): sync_repo's own echo of the caller's just-written value is
+// deliberately NOT given buildPendingHandoffView's echo exemption here —
+// the repo row is workspace-shared and re-read later by list_active_repos in
+// a different, possibly untrusted session, so wiring both call sites the
+// same way avoids a silent asymmetry between them.
+// [F160-06] Name is clipped too, added to this function. sync_repo's "name"
+// argument has no write-time validation at all (handleSyncRepo only rejects
+// the empty string) — it is caller-controlled free text exactly like Path/
+// Description/Language/CurrentBranch/NextPlannedStep below, and this
+// function had silently left it out; caught by the reflective field-
+// coverage test (u13_wrap_field_coverage_test.go), not noticed by hand.
+// Status remains untouched: it is DB-managed and not a field of
+// workspace.UpsertRepoParams, so sync_repo cannot set it at all.
+func wrapUntrustedRepo(r *db.Repo) *db.Repo {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.Name = clipSafe(r.Name, repoShortFieldMaxRunes)
+	if r.Path.Valid {
+		out.Path.String = clipSafe(r.Path.String, repoShortFieldMaxRunes)
+	}
+	if r.Description.Valid {
+		out.Description.String = clipSafe(r.Description.String, repoLongFieldMaxRunes)
+	}
+	if r.Language.Valid {
+		out.Language.String = clipSafe(r.Language.String, repoShortFieldMaxRunes)
+	}
+	if r.CurrentBranch.Valid {
+		out.CurrentBranch.String = clipSafe(r.CurrentBranch.String, repoShortFieldMaxRunes)
+	}
+	if r.NextPlannedStep.Valid {
+		out.NextPlannedStep.String = clipSafe(r.NextPlannedStep.String, repoLongFieldMaxRunes)
+	}
+	if len(r.KnownIssues) > 0 {
+		issues := make([]string, len(r.KnownIssues))
+		for i, iss := range r.KnownIssues {
+			issues[i] = clipSafe(iss, repoShortFieldMaxRunes)
+		}
+		out.KnownIssues = issues
+	}
+	return &out
+}
+
 func (s *Server) handleListActiveRepos(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	repos, err := s.workspace.ActiveRepos(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading repos: %v", err)), nil
+		return storeErrorResult("loading repos", err), nil
 	}
-	return jsonText(repos)
+	out := make([]db.Repo, len(repos))
+	for i := range repos {
+		out[i] = *wrapUntrustedRepo(&repos[i])
+	}
+	return jsonText(out)
+}
+
+// syncRepoOptionalStringArgs extracts sync_repo's 5 optional fields using
+// optionalStringArg's presence semantics (Ω6, 2026-08-20-mcp-surface-spec.md):
+// a nil *string means the field was entirely absent from the call and the
+// stored value must be preserved, not wiped to "". Bundled into one struct
+// (rather than 5 separate local vars) purely to keep handleSyncRepo under the
+// gocyclo threshold with an early-return per field.
+type syncRepoOptionalStringArgs struct {
+	path, description, language, currentBranch, nextPlannedStep *string
+}
+
+// parseSyncRepoOptionalArgs runs optionalStringArg over sync_repo's 5
+// optional fields, short-circuiting on the first type-mismatch error.
+func parseSyncRepoOptionalArgs(args map[string]any) (syncRepoOptionalStringArgs, *mcp.CallToolResult) {
+	var out syncRepoOptionalStringArgs
+	var errResult *mcp.CallToolResult
+	out.path, errResult = optionalStringArg(args, "path")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.description, errResult = optionalStringArg(args, "description")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.language, errResult = optionalStringArg(args, "language")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.currentBranch, errResult = optionalStringArg(args, "current_branch")
+	if errResult != nil {
+		return out, errResult
+	}
+	out.nextPlannedStep, errResult = optionalStringArg(args, "next_planned_step")
+	if errResult != nil {
+		return out, errResult
+	}
+	return out, nil
 }
 
 func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -604,16 +710,21 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("name is required"), nil
 	}
 
+	opt, errResult := parseSyncRepoOptionalArgs(args)
+	if errResult != nil {
+		return errResult, nil
+	}
+
 	repo, err := s.workspace.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            name,
-		Path:            stringArg(args, "path"),
-		Description:     stringArg(args, "description"),
-		Language:        stringArg(args, "language"),
-		CurrentBranch:   stringArg(args, "current_branch"),
-		NextPlannedStep: stringArg(args, "next_planned_step"),
+		Path:            opt.path,
+		Description:     opt.description,
+		Language:        opt.language,
+		CurrentBranch:   opt.currentBranch,
+		NextPlannedStep: opt.nextPlannedStep,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("syncing repo: %v", err)), nil
+		return storeErrorResult("syncing repo", err), nil
 	}
-	return jsonText(repo)
+	return jsonText(wrapUntrustedRepo(repo))
 }

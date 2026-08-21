@@ -93,7 +93,7 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 
 	h, err := s.session.SetHandoff(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("setting handoff: %v", err)), nil
+		return storeErrorResult("setting handoff", err), nil
 	}
 	return jsonText(buildPendingHandoffView(h))
 }
@@ -108,7 +108,7 @@ func (s *Server) handleResolveHandoff(ctx context.Context, req mcp.CallToolReque
 	if err := s.session.Resolve(ctx, id); errors.Is(err, session.ErrNotFound) {
 		return mcp.NewToolResultError("handoff not found"), nil
 	} else if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("resolving handoff: %v", err)), nil
+		return storeErrorResult("resolving handoff", err), nil
 	}
 
 	return mcp.NewToolResultText("handoff resolved"), nil
@@ -121,7 +121,12 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 		return errResult, nil
 	}
 
-	stepN := numberArg(args, "step")
+	// requireIntArg (server.go, U12) rejects a fractional step (e.g. 2.5)
+	// instead of numberArg's old silent int32(v) truncation to 2.
+	stepN, errResult := requireIntArg(args, "step")
+	if errResult != nil {
+		return errResult, nil
+	}
 	if stepN < 0 || stepN > maxNextActionItems {
 		return mcp.NewToolResultError(fmt.Sprintf("step out of range: must be 0-%d", maxNextActionItems)), nil
 	}
@@ -132,7 +137,7 @@ func (s *Server) handleMarkNextActionDone(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError("handoff not found or step does not exist"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("marking next action done: %v", err)), nil
+		return storeErrorResult("marking next action done", err), nil
 	}
 	return jsonText(buildHardenedHandoffView(h))
 }
@@ -218,6 +223,14 @@ func validateNextActionFields(a session.NextAction) string {
 	if a.Title == "" {
 		return "title is required"
 	}
+	// F8 (2026-08-20-mcp-surface-spec.md U10): step previously had NO range
+	// check at write time, while mark_next_action_done's own step param was
+	// already bounded to 0-maxNextActionItems — a step value written here
+	// outside that range could never be marked done later. Reusing the same
+	// constant closes that mismatch instead of introducing a second number.
+	if a.Step < 0 || a.Step > maxNextActionItems {
+		return fmt.Sprintf("step must be between 0 and %d", maxNextActionItems)
+	}
 	for _, f := range nextActionControlCharFields(a) {
 		if len([]rune(f.value)) > maxNextActionFieldLen {
 			return fmt.Sprintf("%s exceeds %d characters", f.name, maxNextActionFieldLen)
@@ -250,10 +263,20 @@ func parseAndValidateNextActions(raw string) ([]session.NextAction, string) {
 	if len(actions) > maxNextActionItems {
 		return nil, fmt.Sprintf("next_actions: at most %d items allowed", maxNextActionItems)
 	}
+	// F8: no uniqueness check previously existed either — two items sharing
+	// the same step meant mark_next_action_done's "actions[i].Step == step"
+	// scan (session/store.go MarkNextActionDone) would silently only ever
+	// reach the first match, and the second item could never be marked done
+	// on its own.
+	seenSteps := make(map[int]bool, len(actions))
 	for i, a := range actions {
 		if reason := validateNextActionFields(a); reason != "" {
 			return nil, fmt.Sprintf("next_actions[%d]: %s", i, reason)
 		}
+		if seenSteps[a.Step] {
+			return nil, fmt.Sprintf("next_actions[%d]: duplicate step %d", i, a.Step)
+		}
+		seenSteps[a.Step] = true
 		if actions[i].Status == "" {
 			actions[i].Status = session.NextActionPending
 		}

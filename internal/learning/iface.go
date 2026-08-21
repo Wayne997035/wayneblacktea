@@ -53,6 +53,19 @@ func ComputeConceptStatus(reviewCount int, intervalDays float64) string {
 type StoreIface interface {
 	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
 	DueReviews(ctx context.Context, limit int) ([]DueReview, error)
+	// GetScheduleState returns the current CardState for scheduleID, scoped
+	// to the store's configured workspace. Returns ErrNotFound when no
+	// review_schedule row matches. Ω7 fix (mcp-surface spec, backend-
+	// security-design.md §2.1 — LLM tool input is adversarial): submit_review
+	// used to accept stability/difficulty/review_count as caller-supplied
+	// "current state" params instead of the MCP handler reading them from
+	// here; an omitted/zero review_count silently routed a mature schedule
+	// through SubmitReview's initial-review branch and overwrote it with a
+	// fresh, much shorter interval. SubmitReview's own currentState
+	// parameter is unchanged (still used directly by internal/handler's HTTP
+	// path and internal/scheduler) — this is an additive method, not a
+	// signature change to SubmitReview.
+	GetScheduleState(ctx context.Context, scheduleID uuid.UUID) (CardState, error)
 	SubmitReview(ctx context.Context, scheduleID uuid.UUID, currentState CardState, rating Rating) error
 	CountDueReviews(ctx context.Context) (int, error)
 	ListForAIReview(ctx context.Context, minReviewCount int) ([]ConceptForReview, error)

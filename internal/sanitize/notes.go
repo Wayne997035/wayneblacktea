@@ -44,6 +44,15 @@ func skipAnsi(runes []rune, pos int) int {
 }
 
 // isAnsiFinal reports whether r is the final byte of a CSI sequence.
+// A CSI sequence is ESC '[' followed by zero or more parameter bytes
+// (0x30-0x3F) and intermediate bytes (0x20-0x2F), terminated by exactly one
+// final byte in 0x40-0x7E (ECMA-48 §5.4). The previous version only
+// recognised letters plus '@'/'~', so punctuation final bytes like '^' or
+// '_' were treated as non-final: skipAnsi kept scanning past them and
+// consumed the next real letter it found (often the first character of the
+// following text) as the final byte instead, silently eating that
+// character. codex F20 repro: "ESC[0^KEEP" lost the leading "K" because '^'
+// (0x5E) wasn't recognised as final and 'K' was consumed as if it were.
 func isAnsiFinal(r rune) bool {
-	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '@' || r == '~'
+	return r >= 0x40 && r <= 0x7E
 }

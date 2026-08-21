@@ -44,7 +44,21 @@ cd build && task build-frontend
 go run ./cmd/server -env .env
 ```
 
-The server listens on port `8420` by default (set `PORT=<n>` in `.env` to override). Open `http://localhost:8420` in your browser.
+The server listens on port `8420` by default (set `PORT=<n>` in `.env` to override). Open `http://localhost:8420` in your browser. Take the port from the `http server started on :PORT` line the server prints — that is the authoritative value if you overrode it.
+
+### Checking it actually came up
+
+Three routes, three different auth rules (`cmd/server/main.go`):
+
+| Route | Auth | Use it for |
+|---|---|---|
+| `GET /health` (:197) | none | Liveness. Returns `200 {"status":"ok"}`. This is what `wbt setup` waits on. |
+| `POST /api/session` (:207) | none (rate-limited 10/min per IP) | Trades your API key for a `wbt_session` cookie — the browser's path. |
+| everything else under `/api` (:209) | `X-API-Key` header | Normal API calls. |
+
+The trap is the third row versus the second: **`curl` succeeding with the header does not prove the browser can get in**, because the web UI never sends that header — it logs in through `POST /api/session` and then rides the cookie (`web/src/lib/api.ts` `loginWithKey` → `pages/LoginPage.tsx`). If you are testing the UI, walk the session/cookie path yourself first.
+
+Also note the web UI is embedded into the binary via `//go:embed web/dist` (`cmd/server/main.go`), so a front-end change you did not `npm run build` will not appear — you will be looking at the previously built bundle.
 
 ## 3. Run the seed command
 

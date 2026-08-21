@@ -366,6 +366,22 @@ var expectedNewEntries = map[string]bool{
 	"index|idx_outcomes_one_open_draft": true,
 }
 
+// migrations/sqlite/000076_decision_actor_provenance.up.sql (U15 contract
+// layer) adds two new columns — actor_session_id and confirmed_by_human — to
+// the decisions table. Unlike idx_outcomes_one_open_draft above, this is NOT
+// a new expectedNewEntries key: table|decisions already exists in the golden
+// baseline (with the source column from 000073), so the new columns are
+// hand-added directly to testdata/schema_golden.sql's existing table|decisions
+// line, mirroring how 000074's outcomes.supersedes_id column was hand-added
+// to table|outcomes rather than routed through this map. Same KNOWN
+// LIMITATION as that precedent: this hand-edit is not itself derived from a
+// replay or generator, so it could in principle drift from what the real
+// migration produces — TestMigration000076_SQLite_UpDownUp
+// (internal/decision/actor_provenance_contract_test.go) is the independent
+// check against that: it applies 000076's real up.sql via golang-migrate and
+// asserts the columns exist via PRAGMA table_info against the resulting DB,
+// so it cannot be fooled by a wrong hand-edit here.
+
 // acceptedDifferences lists schema objects present in BOTH golden and the
 // migration-runner-built schema, but whose content is known to differ in a
 // way that has been explicitly reviewed and accepted as functionally inert —

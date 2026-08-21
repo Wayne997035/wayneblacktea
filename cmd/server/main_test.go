@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/labstack/echo/v4"
 )
 
 func TestResolveAllowedOrigins(t *testing.T) {
@@ -161,5 +163,58 @@ func TestResolveIPExtractor_TrustedProxyCIDRUsesXFF(t *testing.T) {
 func TestResolveIPExtractor_InvalidCIDR(t *testing.T) {
 	if _, err := resolveIPExtractor("not-a-cidr"); err == nil {
 		t.Fatal("resolveIPExtractor() err = nil, want error")
+	}
+}
+
+// TestRateLimiter_FloodsOneIdentityGets429 is U19's acceptance criterion
+// (F14, 2026-08-20-mcp-surface-spec.md): /mcp previously had no rate limit
+// at all — every other route family in this file (mutationRL, activityRL,
+// postToolUseRL, etc.) already had one. Exercises newMCPRateLimiter()
+// directly against a minimal Echo instance (mirrors how resolveIPExtractor's
+// tests above exercise their function in isolation, without wiring the full
+// server) rather than the full server's DB/store dependencies, which are
+// orthogonal to what this test proves.
+//
+// (1) flooding one identity (IP) with rapid requests eventually gets a 429.
+// (2) a second, different identity is NOT throttled by the first's flood —
+// echo's RateLimiterMemoryStore keys by IP by default (the same default
+// every other rate limiter in this file already relies on), so isolation is
+// a property of the shared store, not something newMCPRateLimiter adds.
+func TestRateLimiter_FloodsOneIdentityGets429(t *testing.T) {
+	e := echo.New()
+	e.Any("/mcp", func(c echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	}, newMCPRateLimiter())
+
+	request := func(remoteIP string) int {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp", nil)
+		req.RemoteAddr = remoteIP + ":12345"
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	const floodIdentity = "203.0.113.5"
+	got429 := false
+	// mcpRateLimit is also the default Burst size (echo's
+	// NewRateLimiterMemoryStore doc comment: "Burst will be set to the
+	// rounded down value of the configured rate if not provided") — this
+	// many rapid, no-sleep requests exhausts the token bucket within the
+	// loop, no real time delay needed.
+	const attempts = mcpRateLimit + 20
+	for range attempts {
+		if code := request(floodIdentity); code == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatalf("flooding one identity with %d rapid requests never received a 429", attempts)
+	}
+
+	const otherIdentity = "203.0.113.9"
+	if code := request(otherIdentity); code == http.StatusTooManyRequests {
+		t.Error("a different identity was throttled by the first identity's flood — " +
+			"rate limiter isolation is broken")
 	}
 }

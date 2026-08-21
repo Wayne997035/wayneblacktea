@@ -13,7 +13,8 @@ import (
 )
 
 func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("propose_behavior_rule",
+	ms.AddTool(mcp.NewTool(
+		"propose_behavior_rule",
 		mcp.WithDescription(
 			"Proposes a new behavior rule with status='proposed'. "+
 				"The rule enters the proposal queue and must be promoted via "+
@@ -35,7 +36,8 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 			mcp.Description("Initial confidence score between 0.0 and 1.0. Defaults to 0.50 when absent or out of range.")),
 	), s.handleProposeBehaviorRule)
 
-	ms.AddTool(mcp.NewTool("list_behavior_rules",
+	ms.AddTool(mcp.NewTool(
+		"list_behavior_rules",
 		mcp.WithDescription(
 			"Lists persisted behavior rules, ordered by creation time descending. "+
 				"Use status filter to view only proposed/active/rejected/deprecated rules.",
@@ -46,7 +48,8 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 			mcp.Description("Maximum number of rules to return. Default: 20, max: 100.")),
 	), s.handleListBehaviorRules)
 
-	ms.AddTool(mcp.NewTool("apply_behavior_rules",
+	ms.AddTool(mcp.NewTool(
+		"apply_behavior_rules",
 		mcp.WithDescription(
 			"Applies an outcome to a behavior rule, adjusting confidence and conditionally "+
 				"transitioning status. outcome='success' on a proposed rule transitions it to 'active' "+
@@ -61,7 +64,8 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 			mcp.Description("Outcome to apply. One of: success, failure. Required.")),
 	), s.handleApplyBehaviorRules)
 
-	ms.AddTool(mcp.NewTool("deprecate_behavior_rule",
+	ms.AddTool(mcp.NewTool(
+		"deprecate_behavior_rule",
 		mcp.WithDescription(
 			"Sets a behavior rule's status to 'deprecated'. Idempotent: "+
 				"already-deprecated rules return success without error. "+
@@ -71,6 +75,38 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 			mcp.Required(),
 			mcp.Description("UUID of the behavior rule to deprecate. Required.")),
 	), s.handleDeprecateBehaviorRule)
+}
+
+// behaviorRuleTextMaxRunes bounds Condition/Action on read — U13
+// (2026-08-20-mcp-surface-spec.md). sanitizeRuleText already caps write-time
+// length at 2000 runes (see the two sanitizeRuleText(..., 2000) calls
+// below), so this read-time bound is length-equal, not tighter; what it adds
+// is the boundary-marker neutralisation clipSafe performs that
+// sanitizeRuleText does not.
+const behaviorRuleTextMaxRunes = 2000
+
+// wrapUntrustedBehaviorRule returns a copy of r with Condition/Action
+// clipSafe'd (tools_context.go). Mirrors wrapUntrustedTask's (tools_gtd.go)
+// copy-not-mutate contract. nil in, nil out.
+func wrapUntrustedBehaviorRule(r *behaviorrule.BehaviorRule) *behaviorrule.BehaviorRule {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.Condition = clipSafe(r.Condition, behaviorRuleTextMaxRunes)
+	out.Action = clipSafe(r.Action, behaviorRuleTextMaxRunes)
+	return &out
+}
+
+// wrapUntrustedBehaviorRules maps wrapUntrustedBehaviorRule over a slice,
+// preserving nil-vs-empty (list_behavior_rules already guards nil -> [] at
+// its own call site before this runs).
+func wrapUntrustedBehaviorRules(rules []*behaviorrule.BehaviorRule) []*behaviorrule.BehaviorRule {
+	out := make([]*behaviorrule.BehaviorRule, len(rules))
+	for i, r := range rules {
+		out[i] = wrapUntrustedBehaviorRule(r)
+	}
+	return out
 }
 
 // handleProposeBehaviorRule creates a new behavior rule with status='proposed'.
@@ -87,7 +123,7 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 	var err error
 	condition, err = sanitizeRuleText(condition, 2000)
 	if err != nil {
-		return mcp.NewToolResultError("condition: " + err.Error()), nil
+		return inputErrorResult("condition", err), nil
 	}
 
 	action := stringArg(args, "action")
@@ -96,7 +132,7 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 	}
 	action, err = sanitizeRuleText(action, 2000)
 	if err != nil {
-		return mcp.NewToolResultError("action: " + err.Error()), nil
+		return inputErrorResult("action", err), nil
 	}
 
 	sourceType := stringArg(args, "source_type")
@@ -126,16 +162,16 @@ func (s *Server) handleProposeBehaviorRule(ctx context.Context, req mcp.CallTool
 	if srcIDStr != "" {
 		srcID, err := uuid.Parse(srcIDStr)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("source_id: invalid UUID: %v", err)), nil
+			return inputErrorResult("source_id: invalid UUID", err), nil
 		}
 		params.SourceID = &srcID
 	}
 
 	r, err := s.behaviorRule.Propose(ctx, params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("proposing behavior rule: %v", err)), nil
+		return storeErrorResult("proposing behavior rule", err), nil
 	}
-	return jsonText(r)
+	return jsonText(wrapUntrustedBehaviorRule(r))
 }
 
 // handleListBehaviorRules returns behavior rules, optionally filtered by status.
@@ -169,12 +205,12 @@ func (s *Server) handleListBehaviorRules(ctx context.Context, req mcp.CallToolRe
 
 	rules, err := s.behaviorRule.List(ctx, params)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing behavior rules: %v", err)), nil
+		return storeErrorResult("listing behavior rules", err), nil
 	}
 	if rules == nil {
 		rules = []*behaviorrule.BehaviorRule{}
 	}
-	return jsonText(rules)
+	return jsonText(wrapUntrustedBehaviorRules(rules))
 }
 
 // handleApplyBehaviorRules applies an outcome to a behavior rule.
@@ -190,7 +226,7 @@ func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolR
 	}
 	ruleID, err := uuid.Parse(ruleIDStr)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("rule_id: invalid UUID: %v", err)), nil
+		return inputErrorResult("rule_id: invalid UUID", err), nil
 	}
 
 	outcome := stringArg(args, "outcome")
@@ -203,9 +239,9 @@ func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolR
 		if errors.Is(err, behaviorrule.ErrNotFound) {
 			return mcp.NewToolResultError("behavior rule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("applying outcome: %v", err)), nil
+		return storeErrorResult("applying outcome", err), nil
 	}
-	return jsonText(r)
+	return jsonText(wrapUntrustedBehaviorRule(r))
 }
 
 // sanitizeRuleText validates and truncates rule text fields (condition, action).
@@ -237,7 +273,7 @@ func (s *Server) handleDeprecateBehaviorRule(ctx context.Context, req mcp.CallTo
 	}
 	ruleID, err := uuid.Parse(ruleIDStr)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("rule_id: invalid UUID: %v", err)), nil
+		return inputErrorResult("rule_id: invalid UUID", err), nil
 	}
 
 	r, err := s.behaviorRule.Deprecate(ctx, ruleID)
@@ -245,7 +281,7 @@ func (s *Server) handleDeprecateBehaviorRule(ctx context.Context, req mcp.CallTo
 		if errors.Is(err, behaviorrule.ErrNotFound) {
 			return mcp.NewToolResultError("behavior rule not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("deprecating behavior rule: %v", err)), nil
+		return storeErrorResult("deprecating behavior rule", err), nil
 	}
-	return jsonText(r)
+	return jsonText(wrapUntrustedBehaviorRule(r))
 }

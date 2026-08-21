@@ -200,6 +200,20 @@ func nullStringIfEmpty(s string) any {
 	return s
 }
 
+// nullStringPtr converts an optional *string into a bindable any using
+// presence semantics: nil binds as SQL NULL ("caller didn't pass this
+// field"); a non-nil pointer — even to "" — binds as that exact string (an
+// explicit value, including an explicit clear). Unlike nullStringIfEmpty,
+// nullStringPtr does NOT collapse "" into NULL — see pgconv.ToTextPtr's doc
+// comment (same fix, PG side) for why that collapse is the root cause of
+// Ω6's omission-clobber bug.
+func nullStringPtr(v *string) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 // nullStringFromUUID returns NULL for nil pointer, otherwise the canonical UUID string.
 func nullStringFromUUID(id *uuid.UUID) any {
 	if id == nil {
@@ -999,9 +1013,15 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 }
 
 // CompleteTask marks a task completed and records the optional artifact URL.
+// CompleteTask marks a task completed. artifact is presence-aware (Ω4,
+// 2026-08-20-mcp-surface-spec.md): nil preserves whatever is already stored
+// (COALESCE), matching the Postgres-side fix and upsert_project_arch's
+// established summary/file_map convention. Without COALESCE here,
+// re-completing a reopened task without re-supplying artifact silently
+// wiped an already-recorded PR/commit link.
 func (s *GTDStore) CompleteTask(ctx context.Context, id uuid.UUID, artifact *string) (*db.Task, error) {
 	const q = `UPDATE tasks
-		SET status = 'completed', artifact = ?2, updated_at = ?3
+		SET status = 'completed', artifact = COALESCE(?2, artifact), updated_at = ?3
 		WHERE id = ?1
 		  AND (?4 IS NULL OR workspace_id = ?4)`
 	now := nowRFC3339()
@@ -1292,18 +1312,20 @@ func (a *sqliteBeginTaskAdapter) Rollback(context.Context) {
 // mergedTaskFields holds the resolved column values for an UpdateTask write,
 // computed by mergeTaskFields from the existing row and the patch params.
 type mergedTaskFields struct {
-	title          string
-	desc           any
-	priority       int32
-	importance     any
-	assignee       any
-	dueDate        any
-	taskCtx        any
-	status         string
-	kind           string
-	branchName     any
-	prURL          any
-	commitSHAsJSON string
+	title      string
+	desc       any
+	priority   int32
+	importance any
+	assignee   any
+	dueDate    any
+	taskCtx    any
+	status     string
+	kind       string
+	branchName any
+	prURL      any
+	// appendCommitSHA is nil (no-op, commit_shas untouched) or a single SHA
+	// string to atomically append — see mergeTaskPRFields' doc comment.
+	appendCommitSHA any
 }
 
 // mergeTaskFields merges non-nil patch params over the existing task row values,
@@ -1385,19 +1407,15 @@ func mergeTaskPRFields(existing *db.Task, p gtd.UpdateTaskParams, m *mergedTaskF
 		m.prURL = existing.PRUrl.String
 	}
 
-	// commit_shas: nil → preserve; non-nil → replace entirely.
-	commitSHAs := existing.CommitSHAs
-	if p.CommitSHAs != nil {
-		commitSHAs = p.CommitSHAs
-	}
-	if len(commitSHAs) == 0 {
-		m.commitSHAsJSON = "[]"
-		return
-	}
-	if b, marshalErr := json.Marshal(commitSHAs); marshalErr == nil {
-		m.commitSHAsJSON = string(b)
-	} else {
-		m.commitSHAsJSON = "[]"
+	// commit_shas: nil → untouched (no-op); non-nil → atomically append this
+	// single SHA at the SQL layer (json_insert in the UPDATE query below),
+	// never a Go-side read-modify-write of the whole array. The old
+	// "replace entirely" merge here raced under concurrent complete_task
+	// calls on the same task — both callers would read the same pre-update
+	// array and the second write would silently discard the first's SHA
+	// (P7, 2026-08-20 mcp-surface-spec).
+	if p.AppendCommitSHA != nil {
+		m.appendCommitSHA = *p.AppendCommitSHA
 	}
 }
 
@@ -1437,6 +1455,10 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		return nil, fmt.Errorf("updating task %s: %w", id, rerr)
 	}
 
+	// commit_shas is appended atomically at the SQL layer via json_insert —
+	// see mergeTaskPRFields' doc comment for why. ?13 is nil (SQL NULL) when
+	// the caller didn't pass AppendCommitSHA, in which case the CASE leaves
+	// commit_shas untouched entirely.
 	const q = `UPDATE tasks
 		SET title       = ?2,
 		    description = ?3,
@@ -1449,7 +1471,7 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		    kind        = ?10,
 		    branch_name = ?11,
 		    pr_url      = ?12,
-		    commit_shas = ?13,
+		    commit_shas = CASE WHEN ?13 IS NOT NULL THEN json_insert(COALESCE(commit_shas, '[]'), '$[#]', ?13) ELSE commit_shas END,
 		    updated_at  = ?14
 		WHERE id = ?1
 		  AND (?15 IS NULL OR workspace_id = ?15)`
@@ -1457,7 +1479,7 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 	res, err := s.db.conn.ExecContext(
 		ctx, q,
 		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status, m.kind,
-		m.branchName, m.prURL, m.commitSHAsJSON,
+		m.branchName, m.prURL, m.appendCommitSHA,
 		now, s.db.workspaceArg(),
 	)
 	if err != nil {

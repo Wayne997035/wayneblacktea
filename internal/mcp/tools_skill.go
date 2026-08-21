@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
@@ -11,6 +10,126 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// Read-time bounds for skill.Skill's free-text fields, applied by
+// wrapUntrustedSkill before jsonText — U13 (2026-08-20-mcp-surface-spec.md).
+// Name/Description mirror their write-time caps
+// (validateSkillName/validateSkillDescription: 200/5000 runes).
+// Triggers/Steps/FailureModes/VerificationChecklist have no write-time
+// per-item cap (handleExtractSkill only validates the raw comma-separated
+// string as a whole via validateSkillCSVField, which screens control chars,
+// not length) — skillItemMaxRunes is a read-time backstop against
+// marker-stuffing / pathological growth only, same rationale as
+// decisionTitleMaxRunes/decisionBodyMaxRunes (tools_decision.go).
+// skillNotesMaxRunes mirrors validateNotes' write-time cap and bounds the
+// "notes" leaf inside Examples entries (see neutralizeSkillExamples).
+const (
+	skillNameMaxRunes  = 200
+	skillBodyMaxRunes  = 5000
+	skillItemMaxRunes  = 2000
+	skillNotesMaxRunes = 2000
+)
+
+// wrapUntrustedSkill returns a copy of sk with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract: the
+// caller's *skill.Skill (and any cache holding it) must not end up with
+// fence/neutralisation baked into its stored text. nil in, nil out.
+//
+// Steps/FailureModes/VerificationChecklist are literally step-by-step
+// instructions an assistant wrote — exactly the shape a forged marker plus
+// injected instruction would want to hide inside (backend-security-
+// design.md §2.1: treat LLM-authored text as adversarial regardless of
+// which model wrote it, not exempt because "it's our own model's output").
+//
+// ID, WorkspaceID, SourceAtomIDs, SuccessCount, FailureCount, LastUsedAt,
+// CreatedAt, UpdatedAt are left untouched — none is free text an LLM
+// authored.
+func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
+	if sk == nil {
+		return nil
+	}
+	out := *sk
+	out.Name = clipSafe(sk.Name, skillNameMaxRunes)
+	out.Description = clipSafe(sk.Description, skillBodyMaxRunes)
+	out.Triggers = clipSafeSkillStrings(sk.Triggers)
+	out.Steps = clipSafeSkillStrings(sk.Steps)
+	out.FailureModes = clipSafeSkillStrings(sk.FailureModes)
+	out.VerificationChecklist = clipSafeSkillStrings(sk.VerificationChecklist)
+	out.Examples = neutralizeSkillExamples(sk.Examples)
+	return &out
+}
+
+// wrapUntrustedSkills maps wrapUntrustedSkill over a slice of pointers,
+// preserving order. Callers (search_skills, list_relevant_skills) already
+// normalise nil results to []*skill.Skill{} before calling this (list tools
+// MUST return [] not null), so no nil/empty special-casing is needed here.
+func wrapUntrustedSkills(skills []*skill.Skill) []*skill.Skill {
+	out := make([]*skill.Skill, len(skills))
+	for i, sk := range skills {
+		out[i] = wrapUntrustedSkill(sk)
+	}
+	return out
+}
+
+// clipSafeSkillStrings applies clipSafe to every element of a []string
+// field, preserving order (nil in yields nil out, so JSON null-vs-[]
+// semantics for Triggers etc. are unaffected by wrapping).
+func clipSafeSkillStrings(items []string) []string {
+	if items == nil {
+		return nil
+	}
+	out := make([]string, len(items))
+	for i, v := range items {
+		out[i] = clipSafe(v, skillItemMaxRunes)
+	}
+	return out
+}
+
+// neutralizeSkillExamples walks the Examples entries UpdateFromOutcome
+// appends (map[string]string at write time —
+// internal/storage/sqlite/skill.go's UpdateFromOutcome — round-tripped
+// through JSON storage as map[string]any on read) and neutralizes the
+// "notes" value, the only free-text a caller authors in this shape
+// (outcome_id is a code-layer reference ID, "at" is a server-generated
+// timestamp). Any element shape this walk doesn't recognize is left
+// untouched rather than dropped, so a store schema change degrades to
+// no-op instead of silently deleting data.
+func neutralizeSkillExamples(examples []any) []any {
+	if examples == nil {
+		return nil
+	}
+	out := make([]any, len(examples))
+	for i, e := range examples {
+		switch m := e.(type) {
+		case map[string]any:
+			cp := make(map[string]any, len(m))
+			for k, v := range m {
+				if k == "notes" {
+					if sv, ok := v.(string); ok {
+						cp[k] = clipSafe(sv, skillNotesMaxRunes)
+						continue
+					}
+				}
+				cp[k] = v
+			}
+			out[i] = cp
+		case map[string]string:
+			cp := make(map[string]string, len(m))
+			for k, v := range m {
+				if k == "notes" {
+					cp[k] = clipSafe(v, skillNotesMaxRunes)
+					continue
+				}
+				cp[k] = v
+			}
+			out[i] = cp
+		default:
+			out[i] = e
+		}
+	}
+	return out
+}
 
 func (s *Server) registerSkillTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
@@ -75,7 +194,9 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 		mcp.WithString("outcome_id",
 			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK)")),
 		mcp.WithBoolean("success",
-			mcp.Description("true = success outcome, false = failure outcome")),
+			mcp.Description("REQUIRED: true = success outcome, false = failure outcome. No default — "+
+				"omitting this is rejected rather than silently recorded as a failure."),
+			mcp.Required()),
 		mcp.WithString("notes",
 			mcp.Description("Notes about the outcome (max 2000 chars)"),
 			mcp.MaxLength(2000)),
@@ -139,6 +260,20 @@ func validateNotes(notes string) string {
 	return ""
 }
 
+// hasBoolArg reports whether key is present in args and holds a JSON boolean
+// value (true or false) — distinguishes "omitted" from "explicitly false".
+// Ω8 fix (mcp-surface spec, backend-security-design.md §2.1): boolArg's
+// missing-key default of false made an omitted update_skill_from_outcome
+// `success` argument silently record a FAILURE outcome — the opposite of
+// "caller forgot to say" being a no-op or an error. mcp.Required() on the
+// tool schema is client-side advisory only (mcp-go does not enforce it
+// server-side, see the existing "X is required" checks throughout this
+// package), so the server-side check below is what actually rejects it.
+func hasBoolArg(args map[string]any, key string) bool {
+	_, ok := args[key].(bool)
+	return ok
+}
+
 // handleExtractSkill implements the extract_skill MCP tool.
 func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
@@ -187,11 +322,11 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 
 	sk, err := s.skill.Add(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("extracting skill: %v", err)), nil
+		return storeErrorResult("extracting skill", err), nil
 	}
 
 	s.launchAtomize("skills", mustParseUUID(sk.ID), name+" "+description)
-	return jsonText(sk)
+	return jsonText(wrapUntrustedSkill(sk))
 }
 
 // handleSearchSkills implements the search_skills MCP tool.
@@ -218,12 +353,12 @@ func (s *Server) handleSearchSkills(ctx context.Context, req mcp.CallToolRequest
 
 	results, err := s.skill.Search(ctx, f)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("searching skills: %v", err)), nil
+		return storeErrorResult("searching skills", err), nil
 	}
 	if results == nil {
 		results = []*skill.Skill{}
 	}
-	return jsonText(results)
+	return jsonText(wrapUntrustedSkills(results))
 }
 
 // handleUseSkill implements the use_skill MCP tool.
@@ -245,9 +380,9 @@ func (s *Server) handleUseSkill(ctx context.Context, req mcp.CallToolRequest) (*
 		if errors.Is(err, skill.ErrNotFound) {
 			return mcp.NewToolResultError("skill not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("using skill: %v", err)), nil
+		return storeErrorResult("using skill", err), nil
 	}
-	return jsonText(sk)
+	return jsonText(wrapUntrustedSkill(sk))
 }
 
 // handleUpdateSkillFromOutcome implements the update_skill_from_outcome MCP tool.
@@ -263,6 +398,11 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 		return mcp.NewToolResultError(msg), nil
 	}
 
+	if !hasBoolArg(args, "success") {
+		return mcp.NewToolResultError(
+			"success is required: true = success outcome, false = failure outcome (no default)",
+		), nil
+	}
 	success := boolArg(args, "success")
 
 	var wsStr *string
@@ -283,13 +423,13 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 		if errors.Is(err, skill.ErrNotFound) {
 			return mcp.NewToolResultError("skill not found"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("updating skill from outcome: %v", err)), nil
+		return storeErrorResult("updating skill from outcome", err), nil
 	}
 
 	if notes != "" {
 		s.launchAtomize("skills", mustParseUUID(sk.ID), notes)
 	}
-	return jsonText(sk)
+	return jsonText(wrapUntrustedSkill(sk))
 }
 
 // handleListRelevantSkills implements the list_relevant_skills MCP tool.
@@ -310,12 +450,12 @@ func (s *Server) handleListRelevantSkills(ctx context.Context, req mcp.CallToolR
 
 	results, err := s.skill.ListRelevant(ctx, wsStr, query, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing relevant skills: %v", err)), nil
+		return storeErrorResult("listing relevant skills", err), nil
 	}
 	if results == nil {
 		results = []*skill.Skill{}
 	}
-	return jsonText(results)
+	return jsonText(wrapUntrustedSkills(results))
 }
 
 // mustParseUUID parses a UUID string and returns a zero UUID on failure.

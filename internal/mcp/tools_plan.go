@@ -74,7 +74,7 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	}
 	var phases []phaseInput
 	if err := json.Unmarshal([]byte(rawPhases), &phases); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid phases JSON: %v", err)), nil
+		return inputErrorResult("invalid phases JSON", err), nil
 	}
 	if len(phases) == 0 {
 		return mcp.NewToolResultError("phases must not be empty"), nil
@@ -83,7 +83,7 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	var decisions []decisionInput
 	if raw := stringArg(args, "decisions"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &decisions); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid decisions JSON: %v", err)), nil
+			return inputErrorResult("invalid decisions JSON", err), nil
 		}
 	}
 
@@ -111,35 +111,51 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	// doc comment for the two documented exceptions to the atomicity claim.
 	createdTasks, taskIDs, loggedDecisions, err := s.materializePlan(ctx, phases, decisions, projectID, repoName)
 	if err != nil {
-		return mcp.NewToolResultError(planResultText(createdTasks, loggedDecisions, nil, err)), nil
+		// U14: the failure text must NOT carry err — materializePlan wraps
+		// store and transaction errors, so %v here handed the caller pgx
+		// wire messages naming tables and constraints. The partial-progress
+		// listing below it is the part that mattered to the caller and is
+		// kept; the error itself goes to the log.
+		logToolError("confirming plan", err)
+		return mcp.NewToolResultError(planResultText(createdTasks, loggedDecisions, nil, true)), nil
 	}
 
 	// Always create an in_progress work session (D2: no bool flag).
 	// Best-effort: work session failure must not block the tasks/decisions result.
 	sessionID := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs, assignee)
 
-	return mcp.NewToolResultText(planResultText(createdTasks, loggedDecisions, sessionID, nil)), nil
+	return mcp.NewToolResultText(planResultText(createdTasks, loggedDecisions, sessionID, false)), nil
 }
 
+// planFailedHeadline is the client-facing text for a confirm_plan failure.
+//
+// It carries no error detail by design — U14. materializePlan wraps store and
+// transaction errors, so the old "Plan confirmation failed: %v" handed an LLM
+// (and therefore whoever reads its context) pgx wire messages naming tables
+// and constraints. What the caller can actually act on is the partial-progress
+// listing that follows this line; the error itself goes to the server log via
+// logToolError.
+const planFailedHeadline = "Plan confirmation failed."
+
 // planResultText renders confirm_plan's response text for both the success
-// path (planErr == nil) and the partial-failure path (planErr != nil).
+// path (failed == false) and the partial-failure path (failed == true).
 //
 // P-atomicity-honesty: createPhaseTasksWithIDs / logPlanDecisions return
 // whatever was successfully created BEFORE an error instead of discarding it
 // (the old behavior threw the partial slices away on error, so the caller
 // had no way to learn which tasks/decisions — if any — actually exist after
 // a mid-loop failure; it had to re-list everything to find out). When
-// planErr is non-nil but nothing was created yet (createdTasks and
+// failed is true but nothing was created yet (createdTasks and
 // loggedDecisions both empty — e.g. the very first phase task fails, or an
 // atomic backend rolled the whole transaction back), the plain error message
 // is returned without the empty "already created" headers.
-func planResultText(createdTasks, loggedDecisions []string, sessionID *string, planErr error) string {
-	if planErr != nil && len(createdTasks) == 0 && len(loggedDecisions) == 0 {
-		return fmt.Sprintf("Plan confirmation failed: %v", planErr)
+func planResultText(createdTasks, loggedDecisions []string, sessionID *string, failed bool) string {
+	if failed && len(createdTasks) == 0 && len(loggedDecisions) == 0 {
+		return planFailedHeadline
 	}
 	var sb strings.Builder
-	if planErr != nil {
-		fmt.Fprintf(&sb, "Plan confirmation failed: %v\n", planErr)
+	if failed {
+		fmt.Fprintf(&sb, "%s\n", planFailedHeadline)
 		fmt.Fprintf(&sb, "Already created before the failure — tasks (%d):\n", len(createdTasks))
 	} else {
 		fmt.Fprintf(&sb, "Plan confirmed. Tasks created (%d):\n", len(createdTasks))
@@ -149,7 +165,7 @@ func planResultText(createdTasks, loggedDecisions []string, sessionID *string, p
 	}
 	if len(loggedDecisions) > 0 {
 		label := "Decisions logged"
-		if planErr != nil {
+		if failed {
 			label = "Decisions logged before the failure"
 		}
 		fmt.Fprintf(&sb, "\n%s (%d):\n", label, len(loggedDecisions))
@@ -231,14 +247,15 @@ func (s *Server) materializePlanPg(
 			continue
 		}
 		dec, derr := decTx.Log(ctx, decision.LogParams{
-			ProjectID:    projectID,
-			RepoName:     repoName,
-			Title:        d.Title,
-			Context:      d.Context,
-			Decision:     d.Decision,
-			Rationale:    d.Rationale,
-			Alternatives: d.Alternatives,
-			Source:       decision.SourceManual,
+			ProjectID:      projectID,
+			RepoName:       repoName,
+			Title:          d.Title,
+			Context:        d.Context,
+			Decision:       d.Decision,
+			Rationale:      d.Rationale,
+			Alternatives:   d.Alternatives,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if derr != nil {
 			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
@@ -303,14 +320,15 @@ func (s *Server) materializePlanSQLite(
 			continue
 		}
 		if _, derr := s.sqliteDecision.LogTx(ctx, tx, decision.LogParams{
-			ProjectID:    projectID,
-			RepoName:     repoName,
-			Title:        d.Title,
-			Context:      d.Context,
-			Decision:     d.Decision,
-			Rationale:    d.Rationale,
-			Alternatives: d.Alternatives,
-			Source:       decision.SourceManual,
+			ProjectID:      projectID,
+			RepoName:       repoName,
+			Title:          d.Title,
+			Context:        d.Context,
+			Decision:       d.Decision,
+			Rationale:      d.Rationale,
+			Alternatives:   d.Alternatives,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		}); derr != nil {
 			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
 		}
@@ -388,14 +406,15 @@ func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput
 			continue
 		}
 		dec, err := s.decision.Log(ctx, decision.LogParams{
-			ProjectID:    projectID,
-			RepoName:     repoName,
-			Title:        d.Title,
-			Context:      d.Context,
-			Decision:     d.Decision,
-			Rationale:    d.Rationale,
-			Alternatives: d.Alternatives,
-			Source:       decision.SourceManual,
+			ProjectID:      projectID,
+			RepoName:       repoName,
+			Title:          d.Title,
+			Context:        d.Context,
+			Decision:       d.Decision,
+			Rationale:      d.Rationale,
+			Alternatives:   d.Alternatives,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if err != nil {
 			return logged, fmt.Errorf("logging decision %q (%d already logged): %w", d.Title, len(logged), err)

@@ -154,6 +154,49 @@ func TestLearningStore_SubmitReviewUpdatesCountAndNotFound(t *testing.T) {
 	}
 }
 
+// TestLearningStore_GetScheduleState_MatchesDBRow verifies GetScheduleState
+// (Ω7 fix) reads back exactly what SubmitReview wrote — the SQLite sibling
+// of TestStore_GetScheduleState_MatchesDBRow (Postgres).
+func TestLearningStore_GetScheduleState_MatchesDBRow(t *testing.T) {
+	s := openLearningStore(t, ":memory:", "")
+	if _, err := s.CreateConcept(context.Background(), "get schedule state", "content", nil); err != nil {
+		t.Fatalf("CreateConcept: %v", err)
+	}
+	reviews, err := s.DueReviews(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("DueReviews: %v", err)
+	}
+	scheduleID := reviews[0].ScheduleID
+
+	state := learning.CardState{Stability: 1.0, Difficulty: 0.3, ReviewCount: 0}
+	for range 3 {
+		if err := s.SubmitReview(context.Background(), scheduleID, state, learning.Good); err != nil {
+			t.Fatalf("SubmitReview: %v", err)
+		}
+		got, err := s.GetScheduleState(context.Background(), scheduleID)
+		if err != nil {
+			t.Fatalf("GetScheduleState: %v", err)
+		}
+		state = got
+	}
+
+	if state.ReviewCount != 3 {
+		t.Errorf("ReviewCount after 3 reviews: got %d, want 3", state.ReviewCount)
+	}
+	if state.Stability <= 0 {
+		t.Errorf("Stability: got %v, want > 0", state.Stability)
+	}
+}
+
+// TestLearningStore_GetScheduleState_NotFound verifies ErrNotFound for an
+// unknown schedule ID.
+func TestLearningStore_GetScheduleState_NotFound(t *testing.T) {
+	s := openLearningStore(t, ":memory:", "")
+	if _, err := s.GetScheduleState(context.Background(), uuid.New()); !errors.Is(err, learning.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestLearningStore_WorkspaceIsolation(t *testing.T) {
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:learning-" + uuid.New().String() + "?mode=memory&cache=shared"

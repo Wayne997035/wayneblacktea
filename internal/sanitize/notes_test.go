@@ -34,6 +34,47 @@ func TestNotes(t *testing.T) {
 	}
 }
 
+// TestSanitizeNotes_PunctuationCSIFinalByte is U17's exact codex repro (F20):
+// a CSI sequence terminated by a punctuation final byte ('^', 0x5E) used to
+// not be recognised as final, so skipAnsi kept scanning and consumed the
+// next letter it found ('K' in "KEEP") as if it were the final byte —
+// silently eating the leading character of the following text.
+func TestSanitizeNotes_PunctuationCSIFinalByte(t *testing.T) {
+	got := sanitize.Notes("ESC\x1b[0^KEEP")
+	want := "ESCKEEP"
+	if got != want {
+		t.Errorf("Notes(%q) = %q, want %q (full \"KEEP\" must survive)", "ESC\x1b[0^KEEP", got, want)
+	}
+}
+
+// TestSanitizeNotes_CSIFinalByteRange is a table test over the full
+// ECMA-48 §5.4 final-byte range (0x40-0x7E) — every byte in that range must
+// terminate the CSI sequence and let the following text through untouched,
+// not just the letters isAnsiFinal recognised before the U17 fix.
+func TestSanitizeNotes_CSIFinalByteRange(t *testing.T) {
+	for b := rune(0x40); b <= 0x7E; b++ {
+		in := "pre\x1b[3" + string(b) + "post"
+		want := "prepost"
+		got := sanitize.Notes(in)
+		if got != want {
+			t.Errorf("final byte %q (0x%X): Notes(%q) = %q, want %q", string(b), b, in, got, want)
+		}
+	}
+}
+
+// TestSanitizeNotes_NonFinalByteContinuesScanning is the inverse of the CSI
+// final-byte range test: a byte outside 0x40-0x7E (e.g. a digit, which is a
+// CSI parameter byte) must NOT terminate the sequence — the scan continues
+// until a real final byte is found, so the escape sequence's intended
+// content ('9' here) is consumed, not leaked into the output.
+func TestSanitizeNotes_NonFinalByteContinuesScanning(t *testing.T) {
+	got := sanitize.Notes("pre\x1b[39mpost")
+	want := "prepost"
+	if got != want {
+		t.Errorf("Notes(%q) = %q, want %q", "pre\x1b[39mpost", got, want)
+	}
+}
+
 func TestNotes_Idempotent(t *testing.T) {
 	inputs := []string{
 		"foo\x00\x1b[2Jbar",

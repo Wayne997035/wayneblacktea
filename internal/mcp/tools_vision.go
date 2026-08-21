@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -23,6 +22,71 @@ const (
 	mcpVisionMaxTitleRunes      = 255
 	mcpVisionMaxWhyBlockedRunes = 2000
 )
+
+// visionParentInitiativeMaxRunes / visionContextMDMaxRunes are read-time
+// bounds for the two vision.VisionItem free-text fields that have no
+// write-time cap of their own (unlike Title/WhyBlocked above) — U13
+// (2026-08-20-mcp-surface-spec.md). Generous read-time-only backstop
+// against marker-stuffing, same rationale as decisionBodyMaxRunes
+// (tools_decision.go).
+const (
+	visionParentInitiativeMaxRunes = mcpVisionMaxTitleRunes
+	visionContextMDMaxRunes        = 20000
+)
+
+// wrapUntrustedVisionItem returns a copy of v with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract. nil
+// in, nil out.
+//
+// DependsOn (task IDs), Status, PromotedTaskID and the timestamp fields are
+// left untouched — none is free text a caller/LLM authored; Status is
+// vision.VisionStatus, a closed enum set only by add_vision_item's fixed
+// initial value and promote_vision_to_task's fixed terminal value.
+//
+// [F160-06] RepoName is now clipped too — the doc comment this replaces
+// listed it alongside the genuinely-computed fields above, but
+// add_vision_item's "repo_name" argument is plain caller-supplied text with
+// no write-time validation at all (unlike RepoName elsewhere in this
+// package, e.g. db.Project's, which IS regex-gated); the claim that it
+// carried no free text was wrong, caught by the reflective field-coverage
+// test (u13_wrap_field_coverage_test.go), not noticed by hand.
+func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	out.Title = clipSafe(v.Title, mcpVisionMaxTitleRunes)
+	out.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
+	out.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
+	out.ContextMD = clipSafe(v.ContextMD, visionContextMDMaxRunes)
+	out.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
+	return &out
+}
+
+// wrapUntrustedVisionItemSummary is wrapUntrustedVisionItem's sibling for
+// vision.VisionItemSummary (the list_vision_items projection, which omits
+// ContextMD entirely — see VisionItemSummary's doc comment). RepoName is
+// clipped for the same [F160-06] reason as wrapUntrustedVisionItem's above.
+func wrapUntrustedVisionItemSummary(v vision.VisionItemSummary) vision.VisionItemSummary {
+	v.Title = clipSafe(v.Title, mcpVisionMaxTitleRunes)
+	v.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
+	v.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
+	v.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
+	return v
+}
+
+// wrapUntrustedVisionItemSummaries maps wrapUntrustedVisionItemSummary over
+// a slice, preserving order. list_vision_items already normalises nil to
+// []vision.VisionItemSummary{} before calling this (list tools MUST return
+// [] not null).
+func wrapUntrustedVisionItemSummaries(items []vision.VisionItemSummary) []vision.VisionItemSummary {
+	out := make([]vision.VisionItemSummary, len(items))
+	for i, v := range items {
+		out[i] = wrapUntrustedVisionItemSummary(v)
+	}
+	return out
+}
 
 func (s *Server) registerVisionTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
@@ -55,7 +119,12 @@ func (s *Server) registerVisionTools(ms *server.MCPServer) {
 		mcp.WithDescription("Updates a vision item's status or context. Auto-sets last_discussed_at to NOW() if not provided."),
 		mcp.WithString("id", mcp.Description("Vision item UUID"), mcp.Required()),
 		mcp.WithString("status", mcp.Description("New status: open, discussing, maturing, promoted, dismissed")),
-		mcp.WithString("context_md", mcp.Description("Updated markdown context notes")),
+		mcp.WithString("context_md", mcp.Description(
+			"Updated markdown context notes. REPLACES the stored value entirely — no "+
+				"append/merge. Omitting this field (or passing an empty string) leaves "+
+				"the stored value unchanged; there is no way to explicitly clear it via "+
+				"this tool.",
+		)),
 		mcp.WithString("last_discussed_at", mcp.Description("Override discussion timestamp in RFC3339 format")),
 	), s.handleUpdateVisionItem)
 
@@ -102,7 +171,7 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 	var dependsOn []string
 	if raw := stringArg(args, "depends_on"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &dependsOn); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("depends_on must be a valid JSON array: %v", err)), nil
+			return inputErrorResult("depends_on must be a valid JSON array", err), nil
 		}
 	}
 
@@ -121,12 +190,13 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 
 	item, err := s.vision.Add(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding vision item: %v", err)), nil
+		return storeErrorResult("adding vision item", err), nil
 	}
+	safeItem := wrapUntrustedVisionItem(item)
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"item": item, "warnings": allWarnings})
+		return jsonText(map[string]any{"item": safeItem, "warnings": allWarnings})
 	}
-	return jsonText(item)
+	return jsonText(safeItem)
 }
 
 func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -148,12 +218,12 @@ func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequ
 
 	items, err := s.vision.List(ctx, filter)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing vision items: %v", err)), nil
+		return storeErrorResult("listing vision items", err), nil
 	}
 	if items == nil {
 		items = []vision.VisionItemSummary{}
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedVisionItemSummaries(items))
 }
 
 func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -195,9 +265,9 @@ func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError("vision item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating vision item: %v", err)), nil
+		return storeErrorResult("updating vision item", err), nil
 	}
-	return jsonText(item)
+	return jsonText(wrapUntrustedVisionItem(item))
 }
 
 func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -213,7 +283,7 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("vision item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading vision item: %v", err)), nil
+		return storeErrorResult("loading vision item", err), nil
 	}
 
 	// Determine GTD task title.
@@ -242,7 +312,7 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 	}
 	task, err := s.gtd.CreateTask(ctx, taskParams)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating GTD task: %v", err)), nil
+		return storeErrorResult("creating GTD task", err), nil
 	}
 
 	// Mark vision item as promoted.
@@ -252,11 +322,11 @@ func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("vision item not found after task creation"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("promoting vision item: %v", err)), nil
+		return storeErrorResult("promoting vision item", err), nil
 	}
 
 	return jsonText(map[string]any{
-		"task":        task,
-		"vision_item": promoted,
+		"task":        wrapUntrustedTask(task),
+		"vision_item": wrapUntrustedVisionItem(promoted),
 	})
 }

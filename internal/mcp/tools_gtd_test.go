@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -501,8 +502,9 @@ func TestListTasks_DefaultSummary_OmitsHeavyFields(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
+	sha := "abc1234"
 	if _, err := s.gtd.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{
-		CommitSHAs: []string{"abc1234"},
+		AppendCommitSHA: &sha,
 	}); err != nil {
 		t.Fatalf("UpdateTask (commit_shas): %v", err)
 	}
@@ -962,5 +964,30 @@ func TestAddTask_EmptyDueDate_HardError(t *testing.T) {
 	})
 	if !r.IsError {
 		t.Fatalf("empty due_date must error, got: %s", resultText(r))
+	}
+}
+
+// TestF160_03_WrapUntrustedGoalsReturnsNonNilOnNilInput pins wrapUntrustedGoals'
+// non-nil-return guarantee directly at the unit level — the guarantee
+// dashboard/overview (resources.go) relies on to keep its wire shape `[]`
+// rather than `null`. A regression here (e.g. someone "optimising" the
+// function to `if goals == nil { return nil }`) would silently flip the
+// resource's wire shape without this test catching it at the Go level.
+func TestF160_03_WrapUntrustedGoalsReturnsNonNilOnNilInput(t *testing.T) {
+	got := wrapUntrustedGoals(nil)
+	if got == nil {
+		t.Fatal("wrapUntrustedGoals(nil) returned nil, want a non-nil, zero-length slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("wrapUntrustedGoals(nil) returned %d element(s), want 0", len(got))
+	}
+
+	// Positive control: a real, non-empty input still round-trips with its
+	// content intact — a version that returns non-nil by discarding the input
+	// entirely would pass the check above and still be a regression.
+	in := []db.Goal{{Title: "real goal"}}
+	got = wrapUntrustedGoals(in)
+	if len(got) != 1 || got[0].Title != "real goal" {
+		t.Errorf("wrapUntrustedGoals(%+v) = %+v, want the single real goal preserved", in, got)
 	}
 }

@@ -96,13 +96,10 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 				"slug is the repo name (e.g. \"wayneblacktea\"), "+
 				"summary is a one-paragraph human-readable architecture description, "+
 				"file_map is a JSON object mapping file paths to their purpose, "+
-				"last_commit_sha is the current HEAD SHA for staleness detection. "+
-				"summary and file_map share one patch-semantics rule: omit the field "+
-				"entirely to leave the stored value untouched; pass it (even an empty "+
-				"value) to explicitly replace the stored value. last_commit_sha does NOT "+
-				"follow that rule — every call overwrites it, and omitting it clears it "+
-				"to \"\" the same as passing \"\" would; always pass the current HEAD SHA "+
-				"when you have it.",
+				"last_commit_sha is the current HEAD SHA. summary and file_map are "+
+				"patch semantics (omit to leave untouched, pass any value to replace); "+
+				"last_commit_sha always REPLACES, including on omission — see its own "+
+				"field description below.",
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier (unique key)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description(
@@ -118,27 +115,22 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 				`clear it (both mean the same empty map), or a JSON object to replace it.`,
 		)),
 		mcp.WithString("last_commit_sha", mcp.Description(
-			`Current git HEAD SHA (run git rev-parse HEAD), used for staleness detection. `+
-				`UNLIKE summary/file_map, this field always REPLACES the stored value with `+
-				`whatever you pass — pass a SHA string to replace it with that SHA. `+
-				`OMITTING this field also replaces the stored value, clearing it to "" `+
-				`rather than leaving it untouched (the same result as passing "" `+
-				`explicitly). Pass the current HEAD SHA when you have it; if you don't, `+
-				`it is safe to omit — get_project_arch's stale field is always false `+
-				`regardless (this server does not compute staleness itself), so clearing `+
-				`this value only means the next comparison a caller makes against `+
-				`git rev-parse HEAD will read "" and correctly treat the snapshot as `+
-				`needing a re-read.`,
+			`Current git HEAD SHA (run git rev-parse HEAD). UNLIKE summary/file_map, `+
+				`this field always REPLACES the stored value — passing a SHA sets it, `+
+				`and OMITTING this field also clears it to "" (never left untouched, `+
+				`same result as passing "" explicitly). Pass the current HEAD SHA when `+
+				`you have it; if you don't, it is safe to omit — this server does not `+
+				`track drift itself, so compare the returned last_commit_sha against `+
+				`git rev-parse HEAD yourself when you need to know if a refresh is due.`,
 		)),
 	), s.handleUpsertProjectArch)
 
 	ms.AddTool(mcp.NewTool(
 		"get_project_arch",
 		mcp.WithDescription(
-			"Retrieve the stored architecture snapshot for a project. "+
-				"The returned stale field is always false — this server does not compute "+
-				"it; compare the returned last_commit_sha with `git rev-parse HEAD` "+
-				"yourself to determine whether the snapshot is stale. "+
+			"Retrieve the stored architecture snapshot for a project. This server "+
+				"does not track drift itself — compare the returned last_commit_sha "+
+				"with `git rev-parse HEAD` yourself to see whether a refresh is due. "+
 				"Returns an error when no snapshot has been stored yet.",
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier"), mcp.Required()),
@@ -279,7 +271,7 @@ func (s *Server) handleUpsertProjectArch(ctx context.Context, req mcp.CallToolRe
 		m := map[string]string{}
 		if rawFileMap != "" {
 			if err := json.Unmarshal([]byte(rawFileMap), &m); err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("file_map must be a valid JSON object: %v", err)), nil
+				return inputErrorResult("file_map must be a valid JSON object", err), nil
 			}
 		}
 		fileMap = &m
@@ -368,10 +360,6 @@ func (s *Server) handleGetProjectArch(ctx context.Context, req mcp.CallToolReque
 		slog.Error("get_project_arch: store error", "err", err)
 		return mcp.NewToolResultError("failed to retrieve architecture snapshot"), nil
 	}
-
-	// stale field is set false by the store; callers should compare
-	// snap.last_commit_sha with `git rev-parse HEAD` themselves.
-	snap.Stale = false
 
 	includeFileMap := boolArg(args, "include_file_map")
 	return jsonText(wrapUntrustedArchSnapshot(snap, includeFileMap))

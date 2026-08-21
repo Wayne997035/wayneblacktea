@@ -86,7 +86,7 @@ func (s *Server) handleDetectCompletionCandidates(ctx context.Context, req mcp.C
 		LookbackDays:   lookbackDays,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("detect_completion_candidates failed: %v", err)), nil
+		return storeErrorResult("detect_completion_candidates failed", err), nil
 	}
 
 	type candidateSummary struct {
@@ -136,13 +136,13 @@ func (s *Server) handleReconcileDashboard(ctx context.Context, req mcp.CallToolR
 		LookbackDays:   7,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("reconcile_dashboard detection failed: %v", err)), nil
+		return storeErrorResult("reconcile_dashboard detection failed", err), nil
 	}
 
 	// List all pending.
 	pending, err := store.ListPendingCandidates(ctx, s.workspaceID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("reconcile_dashboard list pending failed: %v", err)), nil
+		return storeErrorResult("reconcile_dashboard list pending failed", err), nil
 	}
 
 	// Count by reason.

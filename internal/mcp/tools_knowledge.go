@@ -112,6 +112,68 @@ func splitKnowledgeTags(raw string) []string {
 	return tags
 }
 
+// Read-time bounds for db.KnowledgeItem/atom.Atom free-text fields, applied
+// by wrapUntrustedKnowledgeItem(s)/wrapUntrustedAtom(s) before jsonText —
+// U13 (2026-08-20-mcp-surface-spec.md). sanitizeKnowledgeText below only
+// rejects control characters at write time, never neutralises a forged
+// boundary marker — these exist purely to close that read-side gap, sized
+// like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes (tools_gtd.go).
+const (
+	knowledgeTitleMaxRunes = gtdTitleMaxRunes
+	knowledgeBodyMaxRunes  = gtdBodyMaxRunes
+)
+
+// wrapUntrustedKnowledgeItem returns a copy of item with Title/Content
+// clipSafe'd. Mirrors wrapUntrustedTask's (tools_gtd.go) copy-not-mutate
+// contract. nil in, nil out.
+//
+// [F160-06] Url and HeadingPath are clipped too, added to this function:
+//   - Url: add_knowledge's write-time check (validateKnowledgeArgs) only
+//     requires an http(s):// PREFIX, which does not foreclose a forged
+//     marker appearing later in the string.
+//   - HeadingPath: derived at write time from caller-supplied markdown
+//     heading text (internal/knowledge/markdown.go's HeadingPath builder),
+//     so it carries the same risk as Title/Content. tools_knowledge_nav.go's
+//     OWN separate response type already clips this identical column
+//     (knowledgeNavItem.HeadingPath) for navigate_knowledge/outline_knowledge
+//     — this function is the parallel, previously-unwired path for
+//     add_knowledge/search_knowledge/list_knowledge.
+//
+// Type remains untouched: validateKnowledgeArgs validates it against a
+// closed set (article/til/bookmark/zettelkasten) at write time.
+func wrapUntrustedKnowledgeItem(item *db.KnowledgeItem) *db.KnowledgeItem {
+	if item == nil {
+		return nil
+	}
+	out := *item
+	out.Title = clipSafe(item.Title, knowledgeTitleMaxRunes)
+	out.Content = clipSafe(item.Content, knowledgeBodyMaxRunes)
+	if item.Url.Valid {
+		out.Url.String = clipSafe(item.Url.String, knowledgeTitleMaxRunes)
+	}
+	if item.HeadingPath.Valid {
+		out.HeadingPath.String = clipSafe(item.HeadingPath.String, knowledgeTitleMaxRunes)
+	}
+	return &out
+}
+
+// wrapUntrustedKnowledgeItems maps wrapUntrustedKnowledgeItem over a slice.
+// Always returns a non-nil slice (len 0 for nil/empty input) so callers that
+// return it straight to jsonText keep the "[] never null" list contract.
+func wrapUntrustedKnowledgeItems(items []db.KnowledgeItem) []db.KnowledgeItem {
+	out := make([]db.KnowledgeItem, len(items))
+	for i := range items {
+		out[i] = *wrapUntrustedKnowledgeItem(&items[i])
+	}
+	return out
+}
+
+// wrapUntrustedAtom / wrapUntrustedAtoms live in tools_atom.go — that file
+// owns the atom.Atom type's read surface. This file's include_atoms=true
+// branch calls them. The tools_atom.go version also clips Keywords and Tags,
+// not just Content, so routing both call sites through it is strictly
+// stronger than a knowledge-local copy would be.
+
 // sanitizeKnowledgeText rejects control characters in title (short,
 // single-line, rendered in lists) and content (long-form, may be markdown so
 // newlines are semantic content and stay allowed). Neither field is silently
@@ -145,7 +207,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	var ccErr error
 	title, content, ccErr = sanitizeKnowledgeText(title, content)
 	if ccErr != nil {
-		return mcp.NewToolResultError(ccErr.Error()), nil
+		return inputErrorResult("", ccErr), nil
 	}
 
 	cleanedTags, reason := sanitizeTags(tags)
@@ -179,7 +241,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	}
 	item, err := s.knowledge.AddItem(ctx, addParams)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding knowledge item: %v", err)), nil
+		return storeErrorResult("adding knowledge item", err), nil
 	}
 
 	atomsQueued := s.atomizer != nil && s.atom != nil
@@ -192,7 +254,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	if perr != nil {
 		slog.Warn("auto-propose concept failed", "knowledge_id", item.ID, "err", perr)
 	}
-	resp := addKnowledgeResult{Item: item}
+	resp := addKnowledgeResult{Item: wrapUntrustedKnowledgeItem(item)}
 	if prop != nil {
 		resp.ConceptProposalID = prop.ID.String()
 	}
@@ -251,11 +313,11 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 		items, err = s.knowledge.Search(ctx, query, limit)
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("searching knowledge: %v", err)), nil
+		return storeErrorResult("searching knowledge", err), nil
 	}
 
 	if !includeAtoms {
-		return jsonText(items)
+		return jsonText(wrapUntrustedKnowledgeItems(items))
 	}
 
 	// include_atoms=true: also search atoms and return separate arrays.
@@ -268,13 +330,7 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, req mcp.CallToolRequ
 			atoms = []atom.Atom{}
 		}
 	}
-	if atoms == nil {
-		atoms = []atom.Atom{}
-	}
-	if items == nil {
-		items = []db.KnowledgeItem{}
-	}
-	return jsonText(searchKnowledgeResult{Items: items, Atoms: atoms})
+	return jsonText(searchKnowledgeResult{Items: wrapUntrustedKnowledgeItems(items), Atoms: wrapUntrustedAtoms(atoms)})
 }
 
 func (s *Server) handleListKnowledge(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -295,9 +351,9 @@ func (s *Server) handleListKnowledge(ctx context.Context, req mcp.CallToolReques
 
 	items, err := s.knowledge.List(ctx, limit, offset)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing knowledge: %v", err)), nil
+		return storeErrorResult("listing knowledge", err), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedKnowledgeItems(items))
 }
 
 func (s *Server) handleSyncToNotion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -316,12 +372,12 @@ func (s *Server) handleSyncToNotion(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("knowledge item %s not found", id)), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching knowledge item: %v", err)), nil
+		return storeErrorResult("fetching knowledge item", err), nil
 	}
 
 	pageURL, err := s.notion.CreatePage(ctx, item.Title, item.Content, item.Type)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating Notion page: %v", err)), nil
+		return storeErrorResult("creating Notion page", err), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Notion page created: %s", pageURL)), nil

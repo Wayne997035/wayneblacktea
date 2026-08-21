@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -542,5 +543,73 @@ func TestUpdateTask_ValidBranchAndPR(t *testing.T) {
 	})
 	if r.IsError {
 		t.Fatalf("update_task with valid branch+pr must succeed, got: %s", resultText(r))
+	}
+}
+
+// --- U1: clobber disclosure (P1/Ω1, spec 2026-08-20-mcp-surface-spec.md) ---
+
+// TestUpdateTaskDescriptionDiscloses pins U1. mergeTaskUpdateFields
+// (gtd/store.go) already REPLACES description whole-string when the field is
+// given (no append/merge) and preserves it on omission — that behaviour is
+// unchanged by this PR. What was missing is disclosure: the registered
+// update_task tool's description FIELD must say so, so a caller cannot
+// mistake "update_task(description=\"add this note\")" for an append.
+func TestUpdateTaskDescriptionDiscloses(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	task, err := s.gtd.CreateTask(context.Background(), gtd.CreateTaskParams{
+		Title:       "disclosure test " + uuid.NewString(),
+		Description: "old",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// bad case: description="new" must still fully replace "old", not append.
+	r := callUpdateTask(t, s, map[string]any{"task_id": task.ID.String(), "description": "new"})
+	if r.IsError {
+		t.Fatalf("update_task description should succeed, got: %s", resultText(r))
+	}
+	got, err := s.gtd.GetTaskByID(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if !got.Description.Valid || got.Description.String != "new" {
+		t.Errorf("description = %+v, want exactly \"new\" (replace, no append survives from \"old\")", got.Description)
+	}
+
+	tool := s.MCPServer().GetTool("update_task")
+	if tool == nil {
+		t.Fatal("update_task not registered on MCPServer()")
+	}
+	descSchema, ok := tool.Tool.InputSchema.Properties["description"].(map[string]any)
+	if !ok {
+		t.Fatalf("update_task InputSchema.Properties[%q] = %#v, want map[string]any",
+			"description", tool.Tool.InputSchema.Properties["description"])
+	}
+	desc, _ := descSchema["description"].(string)
+	if !strings.Contains(desc, "REPLACES") {
+		t.Errorf("update_task's description field does not disclose REPLACES semantics: %q", desc)
+	}
+}
+
+// TestUpdateProjectDescriptionDiscloses is update_project's half of the same
+// disclosure convention (Ω2) — same store-layer behaviour (gtd/store.go
+// buildUpdateProjectParams: description falls back to existing only when the
+// arg is the empty string), same missing-disclosure gap fixed the same way.
+func TestUpdateProjectDescriptionDiscloses(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	tool := s.MCPServer().GetTool("update_project")
+	if tool == nil {
+		t.Fatal("update_project not registered on MCPServer()")
+	}
+	descSchema, ok := tool.Tool.InputSchema.Properties["description"].(map[string]any)
+	if !ok {
+		t.Fatalf("update_project InputSchema.Properties[%q] = %#v, want map[string]any",
+			"description", tool.Tool.InputSchema.Properties["description"])
+	}
+	desc, _ := descSchema["description"].(string)
+	if !strings.Contains(desc, "REPLACES") {
+		t.Errorf("update_project's description field does not disclose REPLACES semantics: %q", desc)
 	}
 }

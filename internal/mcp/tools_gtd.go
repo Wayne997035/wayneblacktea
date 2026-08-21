@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -152,7 +153,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Omitted params preserve the existing value. Use update_project_status to change status only."),
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 			mcp.WithString("title", mcp.Description("Updated display title"), mcp.MaxLength(500)),
-			mcp.WithString("description", mcp.Description("Updated description"), mcp.MaxLength(5000)),
+			mcp.WithString("description", mcp.Description(
+				"Updated description. REPLACES the stored value entirely — no append/merge; "+
+					"omit to leave unchanged.",
+			), mcp.MaxLength(5000)),
 			mcp.WithString("area", mcp.Description("Work area (e.g. engineering, personal)")),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
 			mcp.WithString("status",
@@ -192,7 +196,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"add_task",
 			mcp.WithDescription(
 				"CALL immediately when follow-up work is identified during discussion. "+
-					"Creates a task optionally under a project.",
+					"Creates a task optionally under a project. See initial_instructions "+
+					"(Per-tool detail) for kind values, the assignee allowlist, and "+
+					"priority-vs-importance.",
 			),
 			mcp.WithString("title", mcp.Description("Task title"), mcp.Required()),
 			mcp.WithString("project_id", mcp.Description("Parent project UUID")),
@@ -263,13 +269,17 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"update_task",
 			mcp.WithDescription("Updates mutable fields of a task; all params except task_id are optional "+
 				"and omitted ones keep their value. MUST call with status=\"in_progress\" the moment work "+
-				"starts. Use complete_task, NEVER update_task, to mark a task completed."),
+				"starts. Use complete_task, NEVER update_task, to mark a task completed. See "+
+				"initial_instructions (Per-tool detail) for the full omission/clear semantics per field."),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithString("status",
 				mcp.Description("pending | in_progress | cancelled"),
 				mcp.Enum("pending", "in_progress", "cancelled")),
 			mcp.WithString("title", mcp.Description("Updated title"), mcp.MaxLength(2000)),
-			mcp.WithString("description", mcp.Description("Updated details"), mcp.MaxLength(10000)),
+			mcp.WithString("description", mcp.Description(
+				"Updated details. REPLACES the stored value entirely — no append/merge; "+
+					"omit to leave unchanged.",
+			), mcp.MaxLength(10000)),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower runs first")),
 			mcp.WithNumber("importance", mcp.Description("Importance 1-3, 1=high")),
 			mcp.WithString("assignee", mcp.Description("Owner: claude | codex | human"), mcp.MaxLength(200)),
@@ -335,7 +345,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Permanently deletes a task. TWO-STEP: first call with only task_id "+
 					"returns {deletion_token, expires_at}; second call MUST include "+
 					"confirm=true and deletion_token to perform the delete. Tokens "+
-					"expire after 60s.",
+					"expire after 60s and MUST be confirmed from the same MCP session "+
+					"that issued them — a token cannot be handed off to a different "+
+					"session/connection to complete the delete.",
 			),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
@@ -451,15 +463,147 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	), seam("begin_task", s.handleBeginTask))
 }
 
+// Read-time bounds for db.Task/db.Project's free-text fields, applied by
+// wrapUntrustedTask/wrapUntrustedProject before jsonText — U13
+// (2026-08-20-mcp-surface-spec.md). Write-time caps on these fields are
+// inconsistent across tools today (update_task.title has mcp.MaxLength(500),
+// add_task.title has none at all), so these read-time bounds intentionally
+// sit ABOVE every existing write cap — they exist to stop marker-stuffing /
+// pathological-growth content from reaching an unbounded read, not to
+// replicate the session-start token-diet get_today_context enforces via
+// taskTitleMaxRunes/projectTitleMaxRunes (tools_context.go, a DIFFERENT,
+// much smaller cap for a DIFFERENT, budget-constrained payload). Legitimate
+// content on a get_task/get_project-class full read should never hit these.
+const (
+	gtdTitleMaxRunes = 2000
+	gtdBodyMaxRunes  = 20000
+)
+
+// wrapUntrustedTask returns a copy of t with every free-text field
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
+// wrapUntrustedArchSnapshot's (tools_arch.go) and wrapUntrustedDecision's
+// (tools_decision.go) copy-not-mutate contract. nil in, nil out.
+//
+// Checklist is deliberately NOT touched here: it is raw JSON bytes ([]byte)
+// encoding a []gtd.ChecklistItem, each of which carries its own free-text
+// Title/FileRef/Notes — neutralising those requires unmarshal-walk-remarshal,
+// not a plain clipSafe(string) call, and is out of this template's scope
+// (Phase A dispatch note: flagged to Lead as a distinct implementation
+// pattern, not silently skipped). Artifact/BranchName/PRUrl are left as-is:
+// applyArtifactSideEffects/validateBeginTaskLinkageArgs already constrain
+// them to URL/SHA/branch-name shapes at the write paths that set them, which
+// forecloses embedding a multi-line forged marker. Assignee is left as-is:
+// gtd.NormalizeActor is a whitelist, not free text.
+func wrapUntrustedTask(t *db.Task) *db.Task {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	out.Title = clipSafe(t.Title, gtdTitleMaxRunes)
+	if t.Description.Valid {
+		out.Description.String = clipSafe(t.Description.String, gtdBodyMaxRunes)
+	}
+	if t.Context.Valid {
+		out.Context.String = clipSafe(t.Context.String, gtdBodyMaxRunes)
+	}
+	return &out
+}
+
+// wrapUntrustedProject is wrapUntrustedTask's sibling for db.Project — see
+// its doc comment for the shared rationale. Name is included alongside
+// Title: unlike Task, a project's Name doubles as its lookup key
+// (get_project(name)) but is still caller-supplied free text at
+// create_project time, validated only by validator.IsValidRepoName's
+// separate repo_name field, not Name itself.
+//
+// Area is clipped too — [F160-06]. It is a plain, unvalidated create_project
+// argument (handleCreateProject only defaults it to "projects" when empty,
+// never checks its content) that this function had silently left
+// unprotected; caught by the reflective field-coverage test
+// (u13_wrap_field_coverage_test.go), not noticed by hand. Status and
+// RepoName are the two OTHER db.Project string fields and remain
+// intentionally untouched — Status is a closed ProjectStatus enum
+// (validated in handleUpdateProjectStatus) and RepoName is regex-validated
+// (validator.IsValidRepoName) — see that test's exemption list for both.
+func wrapUntrustedProject(p *db.Project) *db.Project {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.Name = clipSafe(p.Name, gtdTitleMaxRunes)
+	out.Title = clipSafe(p.Title, gtdTitleMaxRunes)
+	if p.Description.Valid {
+		out.Description.String = clipSafe(p.Description.String, gtdBodyMaxRunes)
+	}
+	out.Area = clipSafe(p.Area, gtdTitleMaxRunes)
+	return &out
+}
+
+// wrapUntrustedGoal is wrapUntrustedTask's sibling for db.Goal — U13 Phase B
+// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1026/1047). Same
+// copy-not-mutate contract, nil in/nil out.
+//
+// [F160-06] Area is now clipped too. The doc comment this replaces argued
+// Area/Status were both safe to leave as-is because "neither list_goals nor
+// create_goal's PENDING inventory entries flag them as needing this
+// treatment" — that reasoning was itself the bug this dispatch's root-cause
+// finding names: deciding whether to protect a field by consulting a
+// hand-maintained list, rather than by checking whether the field is
+// caller-supplied free text. create_goal's "area" argument has no write-time
+// validation at all (gtd.CreateGoal passes it straight through), so it is
+// exactly as caller-controlled as Title/Description. Status remains
+// untouched: unlike Area, it genuinely is not caller-writable — CreateGoal
+// never accepts a status argument and no update-goal-status tool exists, so
+// the column stays at its DB default.
+func wrapUntrustedGoal(g *db.Goal) *db.Goal {
+	if g == nil {
+		return nil
+	}
+	out := *g
+	out.Title = clipSafe(g.Title, gtdTitleMaxRunes)
+	if g.Description.Valid {
+		out.Description.String = clipSafe(g.Description.String, gtdBodyMaxRunes)
+	}
+	if g.Area.Valid {
+		out.Area.String = clipSafe(g.Area.String, gtdTitleMaxRunes)
+	}
+	return &out
+}
+
+// wrapUntrustedGoals maps wrapUntrustedGoal over a slice, mirroring
+// wrapUntrustedDecisions' (tools_decision.go) same pattern for a []T sibling.
+//
+// [F160-03] Guarantees a non-nil return: nil/empty in, non-nil (possibly
+// zero-length) []db.Goal out — make([]db.Goal, len(goals)) below returns a
+// non-nil slice regardless of whether goals itself is nil, since len(nil)
+// is 0. dashboard/overview (resources.go) depends on exactly this to keep
+// the wire shape `"goals": []` rather than `"goals": null` when there are no
+// goals — the guarantee lives HERE, in the function already producing it as
+// a side effect of make(), not in a nil-check at the resource handler (which
+// used to duplicate the check redundantly, one layer downstream of where it
+// actually takes effect). TestF160_03_WrapUntrustedGoalsReturnsNonNilOnNilInput
+// pins this directly.
+func wrapUntrustedGoals(goals []db.Goal) []db.Goal {
+	out := make([]db.Goal, len(goals))
+	for i := range goals {
+		out[i] = *wrapUntrustedGoal(&goals[i])
+	}
+	return out
+}
+
 func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*mcp.CallToolResult, error) {
 	projects, err := s.gtd.ListActiveProjects(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading projects: %v", err)), nil
+		return storeErrorResult("loading projects", err), nil
 	}
 	if projects == nil {
 		projects = []db.Project{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
 	}
-	return jsonText(projects)
+	out := make([]db.Project, len(projects))
+	for i := range projects {
+		out[i] = *wrapUntrustedProject(&projects[i])
+	}
+	return jsonText(out)
 }
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
@@ -481,9 +625,9 @@ func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs
 		return mcp.NewToolResultError("project name already exists"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating project: %v", err)), nil
+		return storeErrorResult("creating project", err), nil
 	}
-	return jsonText(project)
+	return jsonText(wrapUntrustedProject(project))
 }
 
 func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs) (*mcp.CallToolResult, error) {
@@ -493,12 +637,12 @@ func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs
 		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading project: %v", err)), nil
+		return storeErrorResult("loading project", err), nil
 	}
 
-	p, toolErr := buildUpdateProjectParams(args, existing)
-	if toolErr != "" {
-		return mcp.NewToolResultError(toolErr), nil
+	p, toolErrMsg := buildUpdateProjectParams(args, existing)
+	if toolErrMsg != "" {
+		return mcp.NewToolResultError(toolErrMsg), nil
 	}
 
 	project, err := s.gtd.UpdateProject(ctx, args.ProjectID, p)
@@ -506,14 +650,14 @@ func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs
 		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
+		return storeErrorResult("updating project", err), nil
 	}
-	return jsonText(project)
+	return jsonText(wrapUntrustedProject(project))
 }
 
 // buildUpdateProjectParams builds a gtd.UpdateProjectParams from typed
 // UpdateProjectArgs, filling omitted fields from the existing project row.
-// Returns a non-empty toolErr string on validation failure. status's
+// Returns a non-empty toolErrMsg string on validation failure. status's
 // enum-membership (when present+non-empty) is already enforced by the seam
 // (update_project's status arg declares mcp.Enum(...) at registration) — no
 // hand-written switch-case needed here.
@@ -602,10 +746,14 @@ type taskSummary struct {
 }
 
 // toTaskSummary converts a db.Task to the compact taskSummary wire format.
+// Title goes through clipSafe (U13 Phase B, tools_gtd.go:772) — same bound
+// wrapUntrustedTask applies to the full-record shape below, since a stored
+// title can carry a forged boundary marker regardless of which shape the
+// caller asked for (summary=true is the list_tasks default).
 func toTaskSummary(t db.Task) taskSummary {
 	ts := taskSummary{
 		ID:       t.ID.String(),
-		Title:    t.Title,
+		Title:    clipSafe(t.Title, gtdTitleMaxRunes),
 		Status:   t.Status,
 		Priority: t.Priority,
 		Kind:     t.Kind,
@@ -666,7 +814,7 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 	}
 	rows, err := s.gtd.TasksFiltered(ctx, f)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading tasks: %v", err)), nil
+		return storeErrorResult("loading tasks", err), nil
 	}
 
 	hasMore := len(rows) > limit
@@ -685,7 +833,14 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		if rows == nil {
 			rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
 		}
-		tasks = rows
+		// U13 Phase B (tools_gtd.go:772): summary=false returns full db.Task
+		// rows, so each one goes through wrapUntrustedTask the same as
+		// get_task's single-record read (line ~793).
+		wrapped := make([]db.Task, len(rows))
+		for i := range rows {
+			wrapped[i] = *wrapUntrustedTask(&rows[i])
+		}
+		tasks = wrapped
 	}
 
 	return jsonText(map[string]any{
@@ -707,9 +862,9 @@ func (s *Server) handleGetTask(ctx context.Context, args GetTaskArgs) (*mcp.Call
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
+		return storeErrorResult("loading task", err), nil
 	}
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task))
 }
 
 // allowedTransitions maps each source status to the set of valid target statuses.
@@ -736,12 +891,15 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading task: %v", err)), nil
+		return storeErrorResult("loading task", err), nil
 	}
 
-	// Idempotent no-op: same → same, no write.
+	// Idempotent no-op: same → same, no write. U13 Phase B
+	// (tools_gtd.go:825): wrapUntrustedTask same as the write branch below —
+	// this branch returns the raw existing row unchanged, which is a stored
+	// (possibly untrusted) read just like get_task's.
 	if cur.Status == rawStatus {
-		return jsonText(cur)
+		return jsonText(wrapUntrustedTask(cur))
 	}
 
 	// Guard invalid transitions.
@@ -757,9 +915,9 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating task status: %v", err)), nil
+		return storeErrorResult("updating task status", err), nil
 	}
-	return jsonText(updated)
+	return jsonText(wrapUntrustedTask(updated)) // U13 Phase B (tools_gtd.go:843)
 }
 
 // allowedTargets returns a sorted list of allowed target statuses for errMsg.
@@ -803,9 +961,9 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
 	}
 
-	assignee, assigneeErr := resolveAssignee(args.Assignee)
-	if assigneeErr != "" {
-		return mcp.NewToolResultError(assigneeErr), nil
+	assignee, assigneeErrMsg := resolveAssignee(args.Assignee)
+	if assigneeErrMsg != "" {
+		return mcp.NewToolResultError(assigneeErrMsg), nil
 	}
 
 	p := gtd.CreateTaskParams{
@@ -817,9 +975,9 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		Kind:        kind,
 		ProjectID:   args.ProjectID,
 	}
-	imp, impErr := parseImportance(args.Importance)
-	if impErr != "" {
-		return mcp.NewToolResultError(impErr), nil
+	imp, impErrMsg := parseImportance(args.Importance)
+	if impErrMsg != "" {
+		return mcp.NewToolResultError(impErrMsg), nil
 	}
 	p.Importance = imp
 	if msg := applyBranchAndPR(args.BranchName, args.PRUrl, &p); msg != "" {
@@ -838,14 +996,21 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {
 		slog.Warn("add_task: CreateTask failed", "title", args.Title, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("creating task: %v", err)), nil
+		return storeErrorResult("creating task", err), nil
 	}
 
-	// Embed warnings in the result body when present.
+	// Embed warnings in the result body when present. U13 Phase B
+	// (tools_gtd.go:927/929): both return paths echo the just-created task
+	// back to the caller — wrapUntrustedTask, not a same-turn-echo exemption,
+	// because Description/Context/Title are free text the caller supplied
+	// this same call, so the exemption would apply here too EXCEPT this same
+	// task row is also read back later by list_tasks/get_task from a
+	// different session (matches the sync_repo/list_active_repos reasoning
+	// in the U13 inventory) — wire it here for consistency.
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"task": task, "warnings": allWarnings})
+		return jsonText(map[string]any{"task": wrapUntrustedTask(task), "warnings": allWarnings})
 	}
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task))
 }
 
 func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) (*mcp.CallToolResult, error) {
@@ -861,20 +1026,20 @@ func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) 
 	}
 	if err != nil {
 		slog.Warn("complete_task: CompleteTask failed", "task_id", args.TaskID, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("completing task: %v", err)), nil
+		return storeErrorResult("completing task", err), nil
 	}
 
 	// Auto-parse artifact: PR URL → set pr_url; 40-hex SHA → append to commit_shas.
 	// SECURITY: we only store the strings, never fetch the URLs.
 	if artifact != nil && *artifact != "" {
-		if updated := s.applyArtifactSideEffects(ctx, args.TaskID, task, strings.TrimSpace(*artifact)); updated != nil {
+		if updated := s.applyArtifactSideEffects(ctx, args.TaskID, strings.TrimSpace(*artifact)); updated != nil {
 			task = updated
 		}
 	}
 
 	s.seedDraftOutcome(ctx, args.TaskID)
 
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:958)
 }
 
 // seedDraftOutcome best-effort records a result:"unknown" outcome for a
@@ -902,20 +1067,24 @@ func (s *Server) seedDraftOutcome(ctx context.Context, taskID uuid.UUID) {
 // task. Returns the updated task on success, nil if no side-effect applied or
 // the update failed (caller uses the original completed task in that case).
 // SECURITY: only stores the URL string, never makes an HTTP fetch.
-func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, task *db.Task, artifact string) *db.Task {
+//
+// commit_shas is appended atomically at the SQL layer via
+// gtd.UpdateTaskParams.AppendCommitSHA (P7 fix) — this function no longer
+// reads the caller's already-loaded task to compute a merged array in Go,
+// which was a TOCTOU race under concurrent complete_task calls on the same
+// task (the exact duplicate of gtd/artifact_effects.go's HTTP-path bug this
+// PR also fixes).
+func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, artifact string) *db.Task {
 	var up gtd.UpdateTaskParams
 	var artifactKind string
 	if githubPRURLRe.MatchString(artifact) {
 		up.PRUrl = &artifact
 		artifactKind = "pr_url"
 	} else if commitSHARe.MatchString(artifact) {
-		newSHAs := make([]string, len(task.CommitSHAs)+1)
-		copy(newSHAs, task.CommitSHAs)
-		newSHAs[len(task.CommitSHAs)] = artifact
-		up.CommitSHAs = newSHAs
+		up.AppendCommitSHA = &artifact
 		artifactKind = "commit_sha"
 	}
-	if up.PRUrl == nil && up.CommitSHAs == nil {
+	if up.PRUrl == nil && up.AppendCommitSHA == nil {
 		return nil
 	}
 	updated, updateErr := s.gtd.UpdateTask(ctx, id, up)
@@ -933,12 +1102,12 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, tas
 func (s *Server) handleListGoals(ctx context.Context, _ ListGoalsArgs) (*mcp.CallToolResult, error) {
 	goals, err := s.gtd.ActiveGoals(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading goals: %v", err)), nil
+		return storeErrorResult("loading goals", err), nil
 	}
 	if goals == nil {
 		goals = []db.Goal{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
 	}
-	return jsonText(goals)
+	return jsonText(wrapUntrustedGoals(goals)) // U13 Phase B (tools_gtd.go:1026)
 }
 
 func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mcp.CallToolResult, error) {
@@ -957,9 +1126,9 @@ func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mc
 
 	goal, err := s.gtd.CreateGoal(ctx, p)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating goal: %v", err)), nil
+		return storeErrorResult("creating goal", err), nil
 	}
-	return jsonText(goal)
+	return jsonText(wrapUntrustedGoal(goal)) // U13 Phase B (tools_gtd.go:1047)
 }
 
 // parseUpdateTaskArgs translates a validated UpdateTaskArgs into
@@ -993,9 +1162,9 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 		v := args.Priority
 		p.Priority = &v
 	}
-	imp, impErr := parseImportance(args.Importance)
-	if impErr != "" {
-		return p, impErr
+	imp, impErrMsg := parseImportance(args.Importance)
+	if impErrMsg != "" {
+		return p, impErrMsg
 	}
 	p.Importance = imp
 
@@ -1038,7 +1207,7 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 	return p.Status == nil && p.Title == nil && p.Description == nil &&
 		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
 		p.DueDate == nil && p.Context == nil && p.Kind == nil &&
-		p.BranchName == nil && p.PRUrl == nil && p.CommitSHAs == nil
+		p.BranchName == nil && p.PRUrl == nil && p.AppendCommitSHA == nil
 }
 
 // requireAssigneeForInProgress enforces that a task cannot transition to
@@ -1062,7 +1231,7 @@ func (s *Server) requireAssigneeForInProgress(ctx context.Context, id uuid.UUID,
 			return mcp.NewToolResultError("task not found")
 		}
 		slog.Warn("update_task: GetTaskByID failed while checking assignee for in_progress", "task_id", id, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("checking task before in_progress transition: %v", err))
+		return storeErrorResult("checking task before in_progress transition", err)
 	}
 	if existing.Assignee.Valid && strings.TrimSpace(existing.Assignee.String) != "" {
 		return nil
@@ -1088,9 +1257,9 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	}
 	if err != nil {
 		slog.Warn("update_task: UpdateTask failed", "task_id", args.TaskID, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("updating task: %v", err)), nil
+		return storeErrorResult("updating task", err), nil
 	}
-	return jsonText(task)
+	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:1178)
 }
 
 func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProjectStatusArgs) (*mcp.CallToolResult, error) {
@@ -1106,9 +1275,9 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProje
 		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("updating project: %v", err)), nil
+		return storeErrorResult("updating project", err), nil
 	}
-	return jsonText(project)
+	return jsonText(wrapUntrustedProject(project)) // U13 Phase B (tools_gtd.go:1196)
 }
 
 type projectWithDecisions struct {
@@ -1122,25 +1291,107 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", args.Name)), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading project: %v", err)), nil
+		return storeErrorResult("loading project", err), nil
 	}
 
 	decisions, err := s.decision.ByProject(ctx, project.ID, 5)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading decisions: %v", err)), nil
+		return storeErrorResult("loading decisions", err), nil
 	}
 	if decisions == nil {
 		decisions = []db.Decision{} // embedded list MUST be [] not null (a nil slice marshals to JSON null)
 	}
 
-	return jsonText(projectWithDecisions{Project: project, Decisions: decisions})
+	// U13 Phase B (tools_gtd.go:1221): both nested structs are stored reads
+	// unwired before this — Project via wrapUntrustedProject (same helper
+	// used at list_projects/create_project/update_project), Decisions via
+	// wrapUntrustedDecisions (tools_decision.go, same helper list_decisions
+	// already uses).
+	return jsonText(projectWithDecisions{
+		Project:   wrapUntrustedProject(project),
+		Decisions: wrapUntrustedDecisions(decisions),
+	})
 }
 
 func (s *Server) handleLogActivity(ctx context.Context, args LogActivityArgs) (*mcp.CallToolResult, error) {
 	if err := s.gtd.LogActivity(ctx, args.Actor, args.Action, args.ProjectID, args.Notes); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("logging activity: %v", err)), nil
+		return storeErrorResult("logging activity", err), nil
 	}
 	return mcp.NewToolResultText("activity logged"), nil
+}
+
+// currentSessionID returns the calling MCP client session's ID, or "" when
+// ctx carries no tracked session at all (e.g. a transport that doesn't do
+// session tracking, or a direct handler call in tests that never went
+// through the real MCP server dispatch). mcp-go's real session IDs
+// (StreamableHTTP: "mcp-session-"+uuid) never contain ":", which
+// issueDeletionToken/deletionTokenMatchesSession below rely on.
+func currentSessionID(ctx context.Context) string {
+	sess := server.ClientSessionFromContext(ctx)
+	if sess == nil {
+		return ""
+	}
+	return sess.SessionID()
+}
+
+// auditSessionID returns the identity to stamp on an audit-trail row
+// (discipline_events.session_id, decisions.actor_session_id): the calling
+// MCP client's tracked session when ctx carries one, and s.sessionID (the
+// per-process fallback, see its doc comment on Server) otherwise.
+//
+// Unlike currentSessionID, this NEVER returns "". An empty actor column
+// reads as "the write path failed to record who did this", which is a
+// different and strictly worse failure mode than "this call came from a
+// transport with no per-client session concept" — the latter is common
+// (stdio, direct test calls) and s.sessionID still narrows it to "this
+// server process", which is real audit signal. U9's deletion-token binding
+// deliberately does NOT use this helper — see issueDeletionToken's doc
+// comment for why that one call site needs the raw "" instead.
+//
+// MUST only ever be called with ctx, never with a caller-supplied session_id
+// argument — a tool payload is adversarial input (backend-security-design.md
+// §2) and could otherwise forge an actor identity.
+func (s *Server) auditSessionID(ctx context.Context) string {
+	if id := currentSessionID(ctx); id != "" {
+		return id
+	}
+	return s.sessionID
+}
+
+// issueDeletionToken returns the token value returned to the caller in
+// delete_task's step 1 and stored server-side as deletionToken.token
+// (server.go). It is always a bare random UUID — U9's session binding lives
+// in the separate deletionToken.issuedBySession field (set by the caller,
+// handleDeleteTask below), not encoded into the token string itself.
+//
+// Earlier revisions of this mitigation prefixed the token with
+// "<sessionID>:", which meant every place a token could be logged, echoed in
+// an error message, or re-displayed to the calling LLM also leaked which MCP
+// session issued it. The session binding is security bookkeeping the caller
+// never needs to see; keeping it purely server-side (deletionToken struct)
+// gives the same protection — see deletionTokenMatchesSession below — without
+// that leak, and without changing the token's shape for existing callers.
+func issueDeletionToken() string {
+	return uuid.NewString()
+}
+
+// deletionTokenMatchesSession reports whether rec (as stored by
+// handleDeleteTask's step 1) may be confirmed from ctx's current session.
+//
+// Comparison is plain equality against currentSessionID(ctx) — deliberately
+// the RAW value (possibly ""), not auditSessionID's process-level fallback.
+// A token issued with no tracked session (rec.issuedBySession == "") is
+// U9's original task-id-only protection: it is preserved unchanged because
+// it can only match a confirming call that ALSO carries no tracked session,
+// which is exactly "same untracked transport" (stdio, direct test calls) —
+// currentSessionID never returns "" for a transport that has a real,
+// mismatched session, so this is not a wildcard. Using auditSessionID's
+// s.sessionID fallback here instead would turn every untracked-transport
+// call into a match for every OTHER untracked-transport call sharing the
+// same process, which is precisely the universal-key failure mode this
+// function exists to avoid — see U15 dispatch's "acceptance ③" note.
+func deletionTokenMatchesSession(ctx context.Context, rec deletionToken) bool {
+	return currentSessionID(ctx) == rec.issuedBySession
 }
 
 // handleDeleteTask implements a 2-step confirmation flow.
@@ -1150,13 +1401,21 @@ func (s *Server) handleLogActivity(ctx context.Context, args LogActivityArgs) (*
 // {deletion_token, expires_at} to the caller. The task is NOT deleted.
 //
 // Second call (confirm=true + matching deletion_token): verify the token
-// matches the stored value AND has not expired, then call store.DeleteTask.
-// The token is consumed (single-use) regardless of success.
+// matches the stored value, has not expired, AND (when the issuing call had
+// a tracked MCP session) comes from that same session — see
+// issueDeletionToken/deletionTokenMatchesSession — then call
+// store.DeleteTask. The token is consumed (single-use) regardless of
+// success.
 //
-// Rationale: prevent accidental deletion from a hallucinated tool call. An
-// LLM that emits delete_task once gets a token-only response back; deleting
-// requires a second deliberate call. The token must come from us so a malicious
-// upstream client can't synthesize one without first making a "read" call.
+// Rationale: prevent accidental deletion from a hallucinated tool call, AND
+// (partial mitigation, U9) narrow deliberate cross-session replay of a
+// captured token. An LLM that emits delete_task once gets a token-only
+// response back; deleting requires a second deliberate call from the SAME
+// session. The token must come from us so a malicious upstream client can't
+// synthesize one without first making a "read" call. The full fix for a
+// deliberate cross-IDENTITY (not just cross-session) confirm needs
+// authenticated actor identity — F16/U15, not yet landed; see Category S in
+// 2026-08-20-mcp-surface-spec.md.
 func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mcp.CallToolResult, error) {
 	id := args.TaskID
 	confirm := args.Confirm
@@ -1180,9 +1439,13 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 			return mcp.NewToolResultError("too many pending deletions in flight; retry later"), nil
 		}
 
-		token := uuid.NewString()
+		token := issueDeletionToken()
 		expires := s.now().Add(deleteTokenTTL)
-		s.deleteTokens.Store(id.String(), deletionToken{token: token, expiresAt: expires})
+		s.deleteTokens.Store(id.String(), deletionToken{
+			token:           token,
+			expiresAt:       expires,
+			issuedBySession: currentSessionID(ctx),
+		})
 		return jsonText(map[string]any{
 			"status":         "confirmation_required",
 			"task_id":        id.String(),
@@ -1213,10 +1476,19 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	if suppliedToken != rec.token {
 		return mcp.NewToolResultError("deletion_token mismatch"), nil
 	}
+	// U9 partial mitigation (Category S): requester must be the same MCP
+	// session that issued the token, when one was tracked — see
+	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
+	if !deletionTokenMatchesSession(ctx, rec) {
+		return mcp.NewToolResultError(
+			"deletion_token was issued to a different session; call delete_task without confirm " +
+				"from that same session to obtain a new token",
+		), nil
+	}
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
 		slog.Warn("delete_task: DeleteTask failed", "task_id", id, "err", err)
-		return mcp.NewToolResultError(fmt.Sprintf("deleting task: %v", err)), nil
+		return storeErrorResult("deleting task", err), nil
 	}
 	return mcp.NewToolResultText("task deleted"), nil
 }
@@ -1234,7 +1506,7 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWork
 	now := time.Now()
 	tasks, err := s.gtd.UpcomingTasks(ctx, now, days, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("loading upcoming tasks: %v", err)), nil
+		return storeErrorResult("loading upcoming tasks", err), nil
 	}
 
 	groups := gtd.GroupUpcomingTasks(tasks, now, time.UTC, days, limit)
@@ -1245,6 +1517,41 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWork
 		body = "No upcoming tasks found."
 	}
 	return mcp.NewToolResultText(header + body), nil
+}
+
+// wrapUntrustedChecklistItems returns a copy of items with each item's
+// free-text fields (Title, FileRef, Notes, EvidenceURL) clipSafe'd (bounded +
+// boundary-marker-neutralised) — U13 Phase B
+// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1440/1460/1475).
+// sanitiseMCPText (gtd.SanitiseChecklistText) only strips control
+// chars/nulls at write time; it does not neutralise boundary-marker text, so
+// a forged "=== END STORED CONTEXT ===" survives into the stored row and was
+// read back verbatim by all three checklist handlers before this change.
+//
+// EvidenceURL is included even though the inventory's field list for these
+// three sites names only Title/FileRef/Notes: it is set from
+// task_checklist_toggle's caller-supplied evidence_url argument through the
+// exact same sanitiseMCPText-only path (handleChecklistToggle below), so it
+// is the same class of gap as handleGetUpcomingWork's raw-title render
+// (flagged separately in the U13 inventory despite not being a jsonText
+// call site) — caught while implementing this helper rather than left for a
+// later pass.
+func wrapUntrustedChecklistItems(items []gtd.ChecklistItem) []gtd.ChecklistItem {
+	out := make([]gtd.ChecklistItem, len(items))
+	for i, it := range items {
+		out[i] = it
+		out[i].Title = clipSafe(it.Title, gtdTitleMaxRunes)
+		if it.FileRef != "" {
+			out[i].FileRef = clipSafe(it.FileRef, gtdBodyMaxRunes)
+		}
+		if it.Notes != "" {
+			out[i].Notes = clipSafe(it.Notes, gtdBodyMaxRunes)
+		}
+		if it.EvidenceURL != "" {
+			out[i].EvidenceURL = clipSafe(it.EvidenceURL, gtdBodyMaxRunes)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleChecklistAddItem(ctx context.Context, args ChecklistAddItemArgs) (*mcp.CallToolResult, error) {
@@ -1276,9 +1583,9 @@ func (s *Server) handleChecklistAddItem(ctx context.Context, args ChecklistAddIt
 		return mcp.NewToolResultError("task not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("adding checklist item: %v", err)), nil
+		return storeErrorResult("adding checklist item", err), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1440)
 }
 
 func (s *Server) handleChecklistToggle(ctx context.Context, args ChecklistToggleArgs) (*mcp.CallToolResult, error) {
@@ -1296,9 +1603,9 @@ func (s *Server) handleChecklistToggle(ctx context.Context, args ChecklistToggle
 		return mcp.NewToolResultError("task or item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("toggling checklist item: %v", err)), nil
+		return storeErrorResult("toggling checklist item", err), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1460)
 }
 
 func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistCompleteArgs) (*mcp.CallToolResult, error) {
@@ -1311,9 +1618,9 @@ func (s *Server) handleChecklistComplete(ctx context.Context, args ChecklistComp
 		return mcp.NewToolResultError("task or item not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("completing checklist item: %v", err)), nil
+		return storeErrorResult("completing checklist item", err), nil
 	}
-	return jsonText(items)
+	return jsonText(wrapUntrustedChecklistItems(items)) // U13 Phase B (tools_gtd.go:1475)
 }
 
 // validateBeginTaskLinkageArgs checks the optional branch_name/pr_url args
@@ -1351,7 +1658,7 @@ func (s *Server) persistAssigneeBeforeBegin(ctx context.Context, id uuid.UUID, i
 		if errors.Is(err, gtd.ErrNotFound) {
 			return mcp.NewToolResultError("task not found: " + idStr)
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("persisting assignee before begin: %v", err))
+		return storeErrorResult("persisting assignee before begin", err)
 	}
 	return nil
 }
@@ -1375,16 +1682,97 @@ func (s *Server) persistBeginTaskLinkage(
 	}
 	updated, err := s.gtd.UpdateTask(ctx, id, up)
 	if err != nil {
-		return task, mcp.NewToolResultError(fmt.Sprintf("beginning task linkage persist: %v", err))
+		return task, storeErrorResult("beginning task linkage persist", err)
 	}
 	return updated, nil
+}
+
+// resolveBeginTaskRepoName resolves the repo_name a work session created for
+// task should be scoped to: the task's own project's repo_name when set,
+// else primaryProjectSlug (tools_context.go) — the same single-tenant
+// fallback get_project_arch's default slug already uses for "no specific
+// project" contexts. Never returns "" (worksession.CreateParams.RepoName is
+// required and rejects empty).
+func (s *Server) resolveBeginTaskRepoName(ctx context.Context, task *db.Task) string {
+	if task.ProjectID.Valid {
+		pid := workspaceUUIDFromPgtype(task.ProjectID)
+		if project, err := s.gtd.GetProjectByID(ctx, pid); err == nil &&
+			project.RepoName.Valid && project.RepoName.String != "" {
+			return project.RepoName.String
+		}
+	}
+	return primaryProjectSlug
+}
+
+// attachBeginTaskWorkSession creates (or, if one is already active for this
+// task's repo, reuses) a real worksession.Session and links id to it as the
+// primary task — so the work_session_id begin_task returns is a real,
+// persisted row checkpoint_work/finish_work can operate on, not a phantom
+// UUID (F17, 2026-08-20-mcp-surface-spec.md U16). Best-effort: a failure here
+// never fails begin_task's primary guarantee (the task is already in_progress
+// by the time this runs) — on failure the caller gets no work_session_id
+// rather than a fabricated one.
+//
+// Source="other" and Goal=task.Title reuse the narrowest existing
+// conventions rather than inventing new ones: "other" is already a valid
+// worksession source (tools_worksession.go's validWorkSessionSources) with no
+// more specific value fitting "created as a side effect of begin_task"; Goal
+// has no independent input on this call path, and "the goal of this session
+// is to complete this task" is the literal, unambiguous reading for a
+// single-task session.
+func (s *Server) attachBeginTaskWorkSession(ctx context.Context, id uuid.UUID, task *db.Task, assignee string) uuid.UUID {
+	if s.workSession == nil {
+		return uuid.Nil
+	}
+	wsID := s.workspaceUUIDVal()
+	repoName := s.resolveBeginTaskRepoName(ctx, task)
+
+	var projectID *uuid.UUID
+	if task.ProjectID.Valid {
+		pid := workspaceUUIDFromPgtype(task.ProjectID)
+		projectID = &pid
+	}
+
+	sess, err := s.workSession.Create(ctx, worksession.CreateParams{
+		WorkspaceID: wsID,
+		RepoName:    repoName,
+		ProjectID:   projectID,
+		Title:       task.Title,
+		Goal:        task.Title,
+		Source:      "other",
+		TaskIDs:     []uuid.UUID{id},
+		Assignee:    assignee,
+	})
+	if err == nil {
+		return sess.ID
+	}
+	if !errors.Is(err, worksession.ErrAlreadyActive) {
+		slog.Warn("begin_task: worksession.Create failed (non-fatal, no work_session_id returned)",
+			"task_id", id, "err", err)
+		return uuid.Nil
+	}
+
+	// Another session is already in_progress for this repo — attach this
+	// task to it rather than failing begin_task's primary guarantee.
+	active, err := s.workSession.GetActive(ctx, wsID, repoName)
+	if err != nil || active.Session == nil {
+		slog.Warn("begin_task: GetActive after ErrAlreadyActive failed (non-fatal, no work_session_id returned)",
+			"task_id", id, "err", err)
+		return uuid.Nil
+	}
+	if err := s.workSession.LinkTask(ctx, active.Session.ID, id, "primary"); err != nil {
+		slog.Warn("begin_task: LinkTask into active session failed (non-fatal, no work_session_id returned)",
+			"task_id", id, "session_id", active.Session.ID, "err", err)
+		return uuid.Nil
+	}
+	return active.Session.ID
 }
 
 func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.CallToolResult, error) {
 	idStr := args.TaskID
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		return mcp.NewToolResultError("invalid task_id: " + err.Error()), nil
+		return inputErrorResult("invalid task_id", err), nil
 	}
 
 	branchName := args.BranchName
@@ -1393,9 +1781,9 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return mcp.NewToolResultError(msg), nil
 	}
 
-	assignee, assigneeErr := resolveAssignee(args.Assignee)
-	if assigneeErr != "" {
-		return mcp.NewToolResultError(assigneeErr), nil
+	assignee, assigneeErrMsg := resolveAssignee(args.Assignee)
+	if assigneeErrMsg != "" {
+		return mcp.NewToolResultError(assigneeErrMsg), nil
 	}
 	if errResult := s.persistAssigneeBeforeBegin(ctx, id, idStr, assignee); errResult != nil {
 		return errResult, nil
@@ -1406,7 +1794,7 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return mcp.NewToolResultError("task not found: " + idStr), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("beginning task: %v", err)), nil
+		return storeErrorResult("beginning task", err), nil
 	}
 
 	task, errResult := s.persistBeginTaskLinkage(ctx, id, task, branchName, prURL)
@@ -1414,11 +1802,24 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 		return errResult, nil
 	}
 
-	return jsonText(map[string]any{
-		"task":                   task,
+	// U13 Phase B (tools_gtd.go:1668): wrapUntrustedTask ONLY for the
+	// response map's "task" field — branch_name_suggestion and
+	// attachBeginTaskWorkSession below still use the original unwrapped
+	// task (its Title feeds gtd.TitleToBranchSlug and the new work
+	// session's own Title/Goal), matching wrapUntrustedTask's
+	// copy-not-mutate contract.
+	resp := map[string]any{
+		"task":                   wrapUntrustedTask(task),
 		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
-		"work_session_id":        uuid.New().String(),
-	})
+	}
+	// work_session_id is a real, persisted worksession.Session row
+	// (checkpoint_work/finish_work-compatible) when the side effect
+	// succeeds — see attachBeginTaskWorkSession's doc comment (F17). Omitted
+	// entirely on failure rather than falling back to a fabricated UUID.
+	if sessID := s.attachBeginTaskWorkSession(ctx, id, task, assignee); sessID != uuid.Nil {
+		resp["work_session_id"] = sessID.String()
+	}
+	return jsonText(resp)
 }
 
 // sanitiseMCPText strips null bytes and control characters from LLM-emitted text.
@@ -1436,7 +1837,16 @@ func workspaceUUIDFromPgtype(pg pgtype.UUID) uuid.UUID {
 	return uuid.UUID(pg.Bytes)
 }
 
-// renderUpcomingBuckets formats the 5 task buckets as plain text for MCP responses.
+// renderUpcomingBuckets formats the 5 task buckets as plain text for MCP
+// responses. get_upcoming_work (handleGetUpcomingWork) is the one stored-data
+// reader in this file the jsonText-based grep cannot find — it returns
+// mcp.NewToolResultText, not JSON — so a raw t.Title here was interpolated
+// straight into plain text with no boundary-marker neutralisation at all
+// (U13 inventory §"Not caught by the jsonText grep at all"). Titles are
+// neutralised only, not clipSafe-clipped: this render has never capped
+// length (unlike jsonText-based callers that go through wrapUntrustedTask),
+// so clipping here would be a new, unrelated behaviour change outside this
+// dispatch's scope.
 func renderUpcomingBuckets(groups gtd.UpcomingGroups) string {
 	appendBucket := func(sb []byte, label string, bucket []db.Task) []byte {
 		if len(bucket) == 0 {
@@ -1448,7 +1858,7 @@ func renderUpcomingBuckets(groups gtd.UpcomingGroups) string {
 			if t.DueDate.Valid {
 				due = " [due: " + t.DueDate.Time.UTC().Format("2006-01-02") + "]"
 			}
-			sb = append(sb, fmt.Sprintf("- [%s] %s%s\n", t.Status, t.Title, due)...)
+			sb = append(sb, fmt.Sprintf("- [%s] %s%s\n", t.Status, neutralizeBoundaryMarkers(t.Title), due)...)
 		}
 		return append(sb, '\n')
 	}

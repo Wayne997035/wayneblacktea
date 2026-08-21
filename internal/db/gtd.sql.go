@@ -57,7 +57,7 @@ func (q *Queries) BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams
 }
 
 const completeTask = `-- name: CompleteTask :one
-UPDATE tasks SET status = 'completed', artifact = $1, updated_at = NOW()
+UPDATE tasks SET status = 'completed', artifact = COALESCE($1, artifact), updated_at = NOW()
 WHERE id = $2
   AND ($3::uuid IS NULL OR workspace_id = $3)
 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
@@ -69,6 +69,11 @@ type CompleteTaskParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
+// artifact is presence-aware (Ω4, 2026-08-20-mcp-surface-spec.md): omitting
+// it (sqlc.narg → SQL NULL) preserves whatever is already stored, matching
+// upsert_project_arch.summary/file_map's established convention. Without
+// COALESCE, re-completing a reopened task without re-supplying artifact
+// silently wiped an already-recorded PR/commit link.
 func (q *Queries) CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error) {
 	row := q.db.QueryRow(ctx, completeTask, arg.Artifact, arg.ID, arg.WorkspaceID)
 	var i Task

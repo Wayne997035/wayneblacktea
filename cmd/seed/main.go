@@ -519,11 +519,14 @@ func seedRepos(ctx context.Context, store *workspace.Store) int {
 	repos := discoverRepos(root)
 	synced := 0
 	for _, r := range repos {
+		// Non-nil pointers even when the discovered value is "": seeding
+		// always explicitly sets what it found (or found nothing for), it
+		// never means "leave this field untouched" (Ω6 presence semantics).
 		_, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 			Name:        r.name,
-			Path:        r.path,
-			Language:    r.language,
-			Description: r.desc,
+			Path:        &r.path,
+			Language:    &r.language,
+			Description: &r.desc,
 		})
 		if err != nil {
 			slog.Warn("failed to upsert repo", "name", r.name, "err", err)

@@ -36,6 +36,10 @@ func (s *stubLearningStore) DueReviews(_ context.Context, _ int) ([]learning.Due
 	return nil, nil
 }
 
+func (s *stubLearningStore) GetScheduleState(_ context.Context, _ uuid.UUID) (learning.CardState, error) {
+	return learning.CardState{}, nil
+}
+
 func (s *stubLearningStore) SubmitReview(_ context.Context, _ uuid.UUID, _ learning.CardState, _ learning.Rating) error {
 	return nil
 }

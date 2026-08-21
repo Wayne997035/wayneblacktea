@@ -100,24 +100,34 @@ type reconcileMCPAmbiguous struct {
 // reconcileMatchesOut converts gtd.Match values into the MCP-JSON shape.
 // Shared by the preview response (matches computed just now) and the confirm
 // response (matches echoed back from the stored reconcileConfirmation).
+//
+// [F160-01/02] PRUrl is regex-shape-constrained at input parsing
+// (reconcileMCPValidate: validator.GitHubPRURLRe), which forecloses forged
+// marker text on its own. PRHeadRef is only screened for control characters
+// there (reconcileMCPHasControlChars) — no newlines, but the marker text
+// itself is single-line, so a caller-supplied head_ref could still smuggle
+// it verbatim. neutralizeBoundaryMarkers here matches the same defence-in-
+// depth judgement neutralizeSessionMetadataFields (tools_worksession.go)
+// already applies to its own single-line-enforced fields.
 func reconcileMatchesOut(matches []gtd.Match) []reconcileMCPMatch {
 	out := make([]reconcileMCPMatch, 0, len(matches))
 	for _, m := range matches {
 		out = append(out, reconcileMCPMatch{
 			TaskID: m.TaskID.String(), Reason: string(m.Reason),
-			PRUrl: m.PRUrl, PRHeadRef: m.PRHeadRef,
+			PRUrl: m.PRUrl, PRHeadRef: neutralizeBoundaryMarkers(m.PRHeadRef),
 		})
 	}
 	return out
 }
 
-// reconcileAmbiguousOut converts gtd.Ambiguous values into the MCP-JSON shape.
+// reconcileAmbiguousOut converts gtd.Ambiguous values into the MCP-JSON
+// shape. See reconcileMatchesOut's doc comment for PRHeadRef's treatment.
 func reconcileAmbiguousOut(ambig []gtd.Ambiguous) []reconcileMCPAmbiguous {
 	out := make([]reconcileMCPAmbiguous, 0, len(ambig))
 	for _, a := range ambig {
 		out = append(out, reconcileMCPAmbiguous{
 			TaskID: a.TaskID.String(), Reason: string(a.Reason),
-			PRUrl: a.PRUrl, PRHeadRef: a.PRHeadRef,
+			PRUrl: a.PRUrl, PRHeadRef: neutralizeBoundaryMarkers(a.PRHeadRef),
 		})
 	}
 	return out
@@ -158,7 +168,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	var p reconcileMCPPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return mcp.NewToolResultError("invalid payload JSON: " + err.Error()), nil
+		return inputErrorResult("invalid payload JSON", err), nil
 	}
 	// Short-circuit BEFORE the prune+cap+token-issuance block below. Without
 	// this check, a completely empty merged_prs:[] payload still ran the full
@@ -190,7 +200,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	result, err := gtd.MatchMergedPRs(ctx, s.gtd, prs)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("match: %v", err)), nil
+		return storeErrorResult("match", err), nil
 	}
 
 	// BatchCompleteTasksByPRMatch and WriteAutoApplied are deliberately NOT
@@ -323,7 +333,7 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	// absent from this map even though it is still present in rec.matches.
 	appliedIDs, err := s.gtd.BatchCompleteTasksByPRMatch(ctx, rec.matches)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("batch complete: %v", err)), nil
+		return storeErrorResult("batch complete", err), nil
 	}
 
 	// Round-3 Finding 2: only write a completion_candidates 'auto_applied'

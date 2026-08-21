@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -323,5 +324,135 @@ func TestDeleteTask_PruneExpiredOnWrite(t *testing.T) {
 	})
 	if remaining != 1 {
 		t.Errorf("after prune expected 1 entry in deleteTokens, got %d", remaining)
+	}
+}
+
+// --- U9: session-binding partial mitigation (Category S, 2026-08-20-mcp-surface-spec.md) ---
+//
+// fakeClientSession is a minimal server.ClientSession for tests: only
+// SessionID matters here, the other 3 methods are unused by
+// currentSessionID/issueDeletionToken/deletionTokenMatchesSession.
+type fakeClientSession struct{ id string }
+
+func (f fakeClientSession) SessionID() string                                      { return f.id }
+func (f fakeClientSession) NotificationChannel() chan<- mcpmsg.JSONRPCNotification { return nil }
+func (f fakeClientSession) Initialize()                                            {}
+func (f fakeClientSession) Initialized() bool                                      { return true }
+
+// callDeleteTaskCtx is callDeleteTask with a caller-supplied context, so
+// tests can simulate a specific (or absent) MCP client session via
+// s.MCPServer().WithContext.
+func callDeleteTaskCtx(t *testing.T, ctx context.Context, s *Server, args map[string]any) *mcpmsg.CallToolResult {
+	t.Helper()
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = args
+	res, err := seam("delete_task", s.handleDeleteTask)(ctx, req)
+	if err != nil {
+		t.Fatalf("delete_task error: %v", err)
+	}
+	return res
+}
+
+// TestDeleteTask_CrossSessionConfirmRejected is U9's bad case: identity A
+// (session A) issues the deletion token; identity B (session B) attempts
+// step 2 with that exact token string. Rejected — task not deleted. This is
+// the session-transport-level partial mitigation, not the full
+// authenticated-actor-identity fix (blocked on F16/U15, not yet landed) —
+// see issueDeletionToken's doc comment for the distinction.
+func TestDeleteTask_CrossSessionConfirmRejected(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	ctxA := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "session-A"})
+	ctxB := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "session-B"})
+
+	r1 := callDeleteTaskCtx(t, ctxA, s, map[string]any{"task_id": id.String()})
+	token := extractToken(t, r1)
+
+	r2 := callDeleteTaskCtx(t, ctxB, s, map[string]any{
+		"task_id": id.String(), "confirm": true, "deletion_token": token,
+	})
+	if !r2.IsError {
+		t.Fatalf("cross-session confirm must be rejected, got: %s", resultText(r2))
+	}
+	if !strings.Contains(resultText(r2), "different session") {
+		t.Errorf("error should mention session mismatch, got: %s", resultText(r2))
+	}
+
+	if _, err := s.gtd.GetTaskByID(context.Background(), id); err != nil {
+		t.Errorf("task should still exist after rejected cross-session confirm, GetTaskByID: %v", err)
+	}
+}
+
+// TestDeleteTask_SameSessionConfirmSucceeds is U9's positive control: the
+// same identity (session) completes both steps — unchanged behaviour, task
+// deleted.
+func TestDeleteTask_SameSessionConfirmSucceeds(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	ctx := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "session-same"})
+
+	r1 := callDeleteTaskCtx(t, ctx, s, map[string]any{"task_id": id.String()})
+	token := extractToken(t, r1)
+
+	r2 := callDeleteTaskCtx(t, ctx, s, map[string]any{
+		"task_id": id.String(), "confirm": true, "deletion_token": token,
+	})
+	if r2.IsError {
+		t.Fatalf("same-session confirm must succeed, got: %s", resultText(r2))
+	}
+	if _, err := s.gtd.GetTaskByID(context.Background(), id); !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("task should be deleted after same-session confirm, got err: %v", err)
+	}
+}
+
+// TestDeleteTask_NoTrackedSessionUnchangedBehaviour pins the fallback: when
+// ctx carries no session at all (e.g. context.Background(), exactly what
+// every OTHER test in this file uses), the original task-id-only protection
+// applies unchanged — same-string confirm succeeds regardless of "session".
+// This is what TestDeleteTask_SecondCallWithValidTokenSucceeds already
+// covers end-to-end; this test exists to name the fallback explicitly so a
+// future change can't silently start requiring a session everywhere.
+func TestDeleteTask_NoTrackedSessionUnchangedBehaviour(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	r1 := callDeleteTask(t, s, map[string]any{"task_id": id.String()})
+	token := extractToken(t, r1)
+
+	r2 := callDeleteTask(t, s, map[string]any{
+		"task_id": id.String(), "confirm": true, "deletion_token": token,
+	})
+	if r2.IsError {
+		t.Fatalf("no-session confirm must still succeed (unchanged fallback), got: %s", resultText(r2))
+	}
+}
+
+// TestDeleteTask_TokenDoesNotLeakSessionID is U9's format regression guard:
+// an earlier revision of this mitigation prefixed the returned token with
+// "<sessionID>:", which meant any transcript, log, or error message that
+// captured the token also disclosed which MCP session issued it. The
+// session binding now lives entirely server-side (deletionToken.issuedBySession)
+// — the value returned to the caller MUST be an opaque random UUID with no
+// structural relationship to the issuing session's ID.
+func TestDeleteTask_TokenDoesNotLeakSessionID(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	const sessionID = "session-leak-probe"
+	ctx := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: sessionID})
+
+	r := callDeleteTaskCtx(t, ctx, s, map[string]any{"task_id": id.String()})
+	token := extractToken(t, r)
+
+	if strings.Contains(token, ":") {
+		t.Errorf("deletion_token must not contain ':', got %q", token)
+	}
+	if strings.Contains(token, sessionID) {
+		t.Errorf("deletion_token must not contain the issuing session ID as a substring, got %q", token)
+	}
+	if _, err := uuid.Parse(token); err != nil {
+		t.Errorf("deletion_token must be a bare UUID, got %q (parse err: %v)", token, err)
 	}
 }

@@ -20,9 +20,6 @@ type Snapshot struct {
 	FileMap       map[string]string `json:"file_map,omitempty"`
 	LastCommitSHA string            `json:"last_commit_sha"`
 	UpdatedAt     time.Time         `json:"updated_at"`
-	// Stale is populated at the MCP layer by comparing LastCommitSHA with the
-	// live HEAD. The store always sets it false; callers add their own logic.
-	Stale bool `json:"stale"`
 }
 
 // UpsertParams collects the inputs for UpsertSnapshot.

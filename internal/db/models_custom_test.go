@@ -246,3 +246,167 @@ func TestPendingProposalMarshalJSON_RoundTripStability(t *testing.T) {
 		t.Errorf("missing expected key %q in output: %s", k, raw)
 	}
 }
+
+// --- PR160 M-3/M-2: Decision.MarshalJSON must never emit actor_session_id
+// or confirmed_by_human, regardless of how the value reaches json.Marshal. ---
+
+// TestDecisionMarshalJSON_HidesActorSessionIDAndConfirmedByHuman is the core
+// bad-case check: a row carrying a real, distinguishable session ID must not
+// leak that value — in any form, including as a JSON key — into the wire
+// output. confirmed_by_human is dropped for the same reason PR160 M-2
+// flagged: the field always writes false today (no confirmation gate
+// exists yet), so surfacing it reads as a false "not human-approved" signal.
+func TestDecisionMarshalJSON_HidesActorSessionIDAndConfirmedByHuman(t *testing.T) {
+	const leakedSessionID = "mcp-session-1111-should-never-leak"
+
+	row := db.Decision{
+		ID:               uuid.New(),
+		Title:            "some decision",
+		Context:          "ctx",
+		Decision:         "dec",
+		Rationale:        "rat",
+		Source:           "manual",
+		ActorSessionID:   pgtype.Text{String: leakedSessionID, Valid: true},
+		ConfirmedByHuman: true,
+	}
+
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+
+	if strings.Contains(string(raw), leakedSessionID) {
+		t.Errorf("output leaks the raw actor_session_id value %q: %s", leakedSessionID, raw)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("output not valid JSON: %v (raw: %s)", err, raw)
+	}
+	if _, present := decoded["actor_session_id"]; present {
+		t.Errorf("output contains the actor_session_id key (raw: %s)", raw)
+	}
+	if _, present := decoded["confirmed_by_human"]; present {
+		t.Errorf("output contains the confirmed_by_human key (raw: %s)", raw)
+	}
+}
+
+// TestDecisionMarshalJSON_PreservesOtherFields verifies every field OTHER
+// than the two dropped audit fields still comes through with the exact
+// same wire representation pgtype's own MarshalJSON methods already
+// produced — proving decisionJSON did not accidentally reshape a kept
+// field's format (e.g. UUID form, RFC3339Nano timestamp precision) while
+// removing the two audit fields.
+func TestDecisionMarshalJSON_PreservesOtherFields(t *testing.T) {
+	id := uuid.New()
+	projectID := uuid.New()
+	wsID := uuid.New()
+	taskID := uuid.New()
+	created := time.Date(2026, 8, 20, 9, 15, 30, 123000000, time.UTC)
+
+	row := db.Decision{
+		ID:                id,
+		ProjectID:         pgtype.UUID{Bytes: [16]byte(projectID), Valid: true},
+		RepoName:          pgtype.Text{String: "wayneblacktea", Valid: true},
+		Title:             "use Echo",
+		Context:           "need HTTP framework",
+		Decision:          "use echo/v4",
+		Rationale:         "minimal, fast",
+		Alternatives:      pgtype.Text{String: "gin, chi", Valid: true},
+		CreatedAt:         pgtype.Timestamptz{Time: created, Valid: true},
+		WorkspaceID:       pgtype.UUID{Bytes: [16]byte(wsID), Valid: true},
+		Embedding:         []byte{1, 2, 3, 4},
+		TaskID:            pgtype.UUID{Bytes: [16]byte(taskID), Valid: true},
+		EmbeddingProvider: pgtype.Text{String: "anthropic", Valid: true},
+		EmbeddingModel:    pgtype.Text{String: "voyage-3", Valid: true},
+		EmbeddingDim:      pgtype.Int4{Int32: 1024, Valid: true},
+		Source:            "manual",
+		ActorSessionID:    pgtype.Text{String: "some-session", Valid: true},
+		ConfirmedByHuman:  false,
+	}
+
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("output not valid JSON: %v (raw: %s)", err, raw)
+	}
+
+	checks := map[string]any{
+		"id":                 id.String(),
+		"project_id":         projectID.String(),
+		"repo_name":          "wayneblacktea",
+		"title":              "use Echo",
+		"context":            "need HTTP framework",
+		"decision":           "use echo/v4",
+		"rationale":          "minimal, fast",
+		"alternatives":       "gin, chi",
+		"created_at":         "2026-08-20T09:15:30.123Z",
+		"workspace_id":       wsID.String(),
+		"task_id":            taskID.String(),
+		"embedding_provider": "anthropic",
+		"embedding_model":    "voyage-3",
+		"embedding_dim":      float64(1024),
+		"source":             "manual",
+	}
+	for key, want := range checks {
+		if got := decoded[key]; got != want {
+			t.Errorf("%s = %v, want %v (full: %s)", key, got, want, raw)
+		}
+	}
+	// Embedding round-trips as base64 (Go's default []byte JSON encoding —
+	// decisionJSON declares it as plain []byte, same as Decision itself).
+	if _, present := decoded["embedding"]; !present {
+		t.Errorf("embedding key missing from output (raw: %s)", raw)
+	}
+}
+
+// TestDecisionMarshalJSON_HoldsRegardlessOfEmbeddingShape is the structural
+// guarantee this method exists for: it must hold no matter HOW a future
+// handler or MCP tool embeds a db.Decision when it calls json.Marshal —
+// value, pointer, inside a slice, inside a map[string]any, inside an `any`
+// slice, or as a named field of another response struct. This is what makes
+// the fix a type-level defense rather than a per-call-site wrapper: a NEW
+// handler that does `c.JSON(status, someDecision)` tomorrow inherits this
+// guarantee automatically, without needing to know M-3/M-2 ever existed.
+func TestDecisionMarshalJSON_HoldsRegardlessOfEmbeddingShape(t *testing.T) {
+	const leakedSessionID = "mcp-session-shape-probe"
+	d := db.Decision{
+		ID:             uuid.New(),
+		Title:          "shape probe",
+		ActorSessionID: pgtype.Text{String: leakedSessionID, Valid: true},
+	}
+
+	type wrapperResponse struct {
+		Decision *db.Decision `json:"decision,omitempty"`
+	}
+
+	cases := map[string]any{
+		"bare value":                d,
+		"pointer":                   &d,
+		"slice of values":           []db.Decision{d},
+		"slice of pointers":         []*db.Decision{&d},
+		"map[string]any value":      map[string]any{"decision": d},
+		"any-slice element":         []any{d},
+		"named struct field (ptr)":  wrapperResponse{Decision: &d},
+		"nested in another wrapper": map[string]any{"outer": map[string]any{"decision": &d}},
+	}
+
+	for name, v := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw, err := json.Marshal(v)
+			if err != nil {
+				t.Fatalf("json.Marshal(%s) returned error: %v", name, err)
+			}
+			if strings.Contains(string(raw), leakedSessionID) {
+				t.Errorf("%s: output leaks actor_session_id value: %s", name, raw)
+			}
+			if strings.Contains(string(raw), "actor_session_id") {
+				t.Errorf("%s: output contains the actor_session_id key: %s", name, raw)
+			}
+		})
+	}
+}

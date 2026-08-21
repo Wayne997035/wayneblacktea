@@ -15,6 +15,11 @@ type Querier interface {
 	// already in_progress, preventing duplicate activity_log rows on concurrent calls.
 	// Returns pgx.ErrNoRows when the task is already in_progress or not found.
 	BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams) (Task, error)
+	// artifact is presence-aware (Ω4, 2026-08-20-mcp-surface-spec.md): omitting
+	// it (sqlc.narg → SQL NULL) preserves whatever is already stored, matching
+	// upsert_project_arch.summary/file_map's established convention. Without
+	// COALESCE, re-completing a reopened task without re-supplying artifact
+	// silently wiped an already-recorded PR/commit link.
 	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
 	CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	// Returns count of tasks that are "relevant to this week":
@@ -23,6 +28,9 @@ type Querier interface {
 	CountWeeklyRelevantTasks(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
 	CreateActivityLog(ctx context.Context, arg CreateActivityLogParams) (ActivityLog, error)
 	CreateConcept(ctx context.Context, arg CreateConceptParams) (Concept, error)
+	// actor_session_id / confirmed_by_human (migration 000076): caller-code-path
+	// values only, never decoded from an MCP/HTTP payload — see
+	// internal/decision.LogParams's ActorSessionID/ConfirmedByHuman doc comments.
 	CreateDecision(ctx context.Context, arg CreateDecisionParams) (Decision, error)
 	CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error)
 	CreatePendingProposal(ctx context.Context, arg CreatePendingProposalParams) (PendingProposal, error)
@@ -77,6 +85,14 @@ type Querier interface {
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)
 	UpdateReviewSchedule(ctx context.Context, arg UpdateReviewScheduleParams) (ReviewSchedule, error)
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)
+	// path/description/language/current_branch/next_planned_step are
+	// presence-aware (Ω6, 2026-08-20-mcp-surface-spec.md): the CASE checks the
+	// bound PARAMETER ($2/$3/$4/$5/$7), not EXCLUDED.<col> (which post-INSERT is
+	// never NULL — it's whatever the VALUES clause carried). NULL means the
+	// caller omitted the field (preserve stored value); a non-NULL value
+	// (including "") means an explicit set. Without this, every sync_repo call
+	// that didn't re-specify a field silently wiped it. known_issues already had
+	// this protection.
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error)
 }
 

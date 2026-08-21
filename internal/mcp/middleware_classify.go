@@ -79,8 +79,12 @@ func tryAcquireClassifyToken(now time.Time) bool {
 //
 // All DB writes use context.Background() so they survive request-context
 // cancellation — the tool response is already delivered by the time the
-// goroutine commits to the DB.
-func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary string) {
+// goroutine commits to the DB. actorSessionID is the ONE piece of request
+// state that must be captured before that handoff (U15): it is the caller's
+// resolved Server.auditSessionID, passed in by autoLogMiddleware from the
+// still-live request ctx, and threaded through to logMCPDecision so the
+// implicit decision this call may produce still records who triggered it.
+func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary, actorSessionID string) {
 	if s.classifier == nil || !significantTools[toolName] {
 		return
 	}
@@ -113,7 +117,7 @@ func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary strin
 			if result.IsDecision && result.Title != "" {
 				bgCtx, cancel := context.WithTimeout(context.Background(), mcpClassifyTimeout)
 				defer cancel()
-				if err := s.logMCPDecision(bgCtx, result.Title, toolName); err != nil {
+				if err := s.logMCPDecision(bgCtx, result.Title, toolName, actorSessionID); err != nil {
 					slog.Warn(
 						"maybeClassifyToolCall: log decision failed",
 						"tool", toolName,
@@ -149,8 +153,11 @@ func (s *Server) maybeClassifyToolCall(toolName, argSummary, resultSummary strin
 
 // logMCPDecision persists an implicit decision extracted from a MCP tool call.
 // Dedup: if a decision with the same title (case-insensitive) exists in the
-// last 10, it is skipped to prevent flooding.
-func (s *Server) logMCPDecision(ctx context.Context, title, toolName string) error {
+// last 10, it is skipped to prevent flooding. actorSessionID identifies which
+// MCP client session's tool call the classifier was reacting to — an "auto"
+// decision still has a real triggering identity, it's just not the same as a
+// hand-typed log_decision call (U15).
+func (s *Server) logMCPDecision(ctx context.Context, title, toolName, actorSessionID string) error {
 	runes := []rune(title)
 	if len(runes) > mcpDecisionMaxTitle {
 		title = string(runes[:mcpDecisionMaxTitle])
@@ -169,11 +176,12 @@ func (s *Server) logMCPDecision(ctx context.Context, title, toolName string) err
 	}
 
 	_, err := s.decision.Log(ctx, decision.LogParams{
-		Title:     title,
-		Context:   "auto-extracted from MCP tool call: " + toolName,
-		Decision:  title,
-		Rationale: "implicitly decided via tool invocation",
-		Source:    decision.SourceAuto,
+		Title:          title,
+		Context:        "auto-extracted from MCP tool call: " + toolName,
+		Decision:       title,
+		Rationale:      "implicitly decided via tool invocation",
+		Source:         decision.SourceAuto,
+		ActorSessionID: actorSessionID,
 	})
 	if err != nil {
 		return fmt.Errorf("log mcp decision: %w", err)

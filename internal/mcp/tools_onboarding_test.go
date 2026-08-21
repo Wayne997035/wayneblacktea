@@ -125,6 +125,53 @@ func TestMCPProtocolAppendix_KeepsDetailMovedOutOfDescriptions(t *testing.T) {
 	}
 }
 
+// TestInitialInstructions_NotMandatoryLanguage is U11's acceptance criterion
+// (Category Σ decision 1, 2026-08-20-mcp-surface-spec.md): initial_instructions
+// moves from mandatory-every-session to on-demand, triggered ONLY by a tool's
+// own description pointing here — never "once per session" / "at session
+// start" ambient framing, which contradicted the code's own design-intent
+// comment (server.go's mcpInstructions doc comment: "served on demand").
+//
+// (2) depends on Lane A's tools_gtd.go edit (add_task/update_task's
+// "See initial_instructions (Per-tool detail) for X" pointer sentences,
+// exact wording locked in the dispatch spec) landing in the same merged PR
+// — this lane produces the protocol text only, per the dispatch's file
+// ownership split.
+func TestInitialInstructions_NotMandatoryLanguage(t *testing.T) {
+	old := []string{"once per session", "at session start"}
+	for _, phrase := range old {
+		if strings.Contains(mcpInstructions, phrase) {
+			t.Errorf("mcpInstructions still contains the old mandatory-language phrase %q", phrase)
+		}
+	}
+
+	_, ms := newTestMCPServer(t)
+	registered := ms.ListTools()
+
+	initialInstructionsTool, ok := registered["initial_instructions"]
+	if !ok {
+		t.Fatal("initial_instructions is not registered on the server")
+	}
+	for _, phrase := range old {
+		if strings.Contains(initialInstructionsTool.Tool.Description, phrase) {
+			t.Errorf("initial_instructions' registered description still contains %q: %q",
+				phrase, initialInstructionsTool.Tool.Description)
+		}
+	}
+
+	for _, toolName := range []string{"add_task", "update_task"} {
+		tool, ok := registered[toolName]
+		if !ok {
+			t.Fatalf("%s is not registered on the server", toolName)
+		}
+		if !strings.Contains(tool.Tool.Description, "See initial_instructions") {
+			t.Errorf("%s's description does not point to initial_instructions — U11's trigger "+
+				"condition requires every tool whose appendix-only content lacks an in-description "+
+				"pointer to carry one. Got: %q", toolName, tool.Tool.Description)
+		}
+	}
+}
+
 func TestMCPInstructions_NotEmpty(t *testing.T) {
 	if mcpInstructions == "" {
 		t.Fatal("mcpInstructions constant must not be empty")

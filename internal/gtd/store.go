@@ -1035,7 +1035,6 @@ type taskUpdateMergedFields struct {
 	kind        string
 	branchName  pgtype.Text
 	prURL       pgtype.Text
-	commitSHAs  []string
 }
 
 // mergeTaskUpdateFields applies UpdateTask's "nil means keep existing" merge
@@ -1102,11 +1101,6 @@ func mergeTaskUpdateFields(p *UpdateTaskParams, existing *db.Task) taskUpdateMer
 		prURL = existing.PRUrl
 	}
 
-	commitSHAs := existing.CommitSHAs
-	if p.CommitSHAs != nil {
-		commitSHAs = p.CommitSHAs
-	}
-
 	return taskUpdateMergedFields{
 		title:       title,
 		description: description,
@@ -1118,7 +1112,6 @@ func mergeTaskUpdateFields(p *UpdateTaskParams, existing *db.Task) taskUpdateMer
 		kind:        kind,
 		branchName:  branchName,
 		prURL:       prURL,
-		commitSHAs:  commitSHAs,
 	}
 }
 
@@ -1140,6 +1133,12 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		return nil, fmt.Errorf("updating task %s: %w", id, err)
 	}
 
+	// commit_shas is append-only, atomically, at the SQL layer — never a
+	// Go-side read-modify-write of the array (P7: that pattern raced under
+	// concurrent complete_task calls on the same task, TOCTOU between the
+	// getTaskByID read above and this UPDATE). $12 is nil (NULL) when the
+	// caller didn't pass AppendCommitSHA, in which case commit_shas is left
+	// untouched entirely.
 	const q = `UPDATE tasks
 		SET title       = $1,
 		    description = $2,
@@ -1152,7 +1151,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		    kind        = $9,
 		    branch_name = $10,
 		    pr_url      = $11,
-		    commit_shas = $12,
+		    commit_shas = CASE WHEN $12::text IS NOT NULL THEN array_append(commit_shas, $12::text) ELSE commit_shas END,
 		    updated_at  = NOW()
 		WHERE id = $13
 		  AND ($14::uuid IS NULL OR workspace_id = $14)
@@ -1163,7 +1162,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		ctx, q,
 		merged.title, merged.description, merged.priority, merged.importance, assignee,
 		merged.dueDate, merged.taskContext, merged.status, merged.kind,
-		merged.branchName, merged.prURL, merged.commitSHAs,
+		merged.branchName, merged.prURL, p.AppendCommitSHA,
 		id, s.workspaceID,
 	)
 	if err != nil {

@@ -112,11 +112,6 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description("What was accomplished since last checkpoint (required)"), mcp.Required(), mcp.MaxLength(5000)),
-		mcp.WithString("completed_task_ids", mcp.Description(`JSON array of task UUIDs completed in this segment`)),
-		mcp.WithString("new_task_titles", mcp.Description(`JSON array of new task titles to add`)),
-		mcp.WithString("new_decisions", mcp.Description(`JSON array of decision titles to log`)),
-		mcp.WithString("blockers", mcp.Description(`JSON array of blocker descriptions`)),
-		mcp.WithString("next_actions", mcp.Description(`JSON array of next-action descriptions`)),
 	), s.handleCheckpointWork)
 
 	ms.AddTool(mcp.NewTool(
@@ -131,10 +126,18 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
 		mcp.WithString("summary", mcp.Description("Final summary of what was accomplished (required)"), mcp.Required(), mcp.MaxLength(5000)),
-		mcp.WithString("completed_task_ids", mcp.Description(`JSON array of task UUIDs completed`)),
+		mcp.WithString("completed_task_ids", mcp.Description(
+			"JSON array of task UUIDs completed. Omitting this (or sending []) completes NONE of the "+
+				"tasks linked to this session by default — set complete_all_linked_tasks=true to mark every "+
+				"linked task completed instead of enumerating IDs.",
+		)),
+		mcp.WithBoolean("complete_all_linked_tasks", mcp.Description(
+			"When completed_task_ids is omitted or empty, set true to mark every task linked to this "+
+				"session as completed. Defaults to false (omitting completed_task_ids completes none). "+
+				"Ignored when completed_task_ids is non-empty.",
+		)),
 		mcp.WithString("deferred_task_ids", mcp.Description(`JSON array of task UUIDs deferred to next session`)),
 		mcp.WithString("artifact", mcp.Description("PR URL or artifact reference (optional)")),
-		mcp.WithString("follow_up_tasks", mcp.Description(`JSON array of new follow-up task titles`)),
 		mcp.WithString("new_decisions", mcp.Description(`JSON array of decision titles to log`)),
 		mcp.WithString("verification_status",
 			mcp.Description("How this session's work was verified: not_run | passed | failed | unknown")),
@@ -194,7 +197,7 @@ func parseOptionalUUID(args map[string]any, field string) (*uuid.UUID, *mcp.Call
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid %s UUID: %v", field, err))
+		return nil, inputErrorResultf(err, "invalid %s UUID", field)
 	}
 	return &id, nil
 }
@@ -208,7 +211,7 @@ func parseTaskIDsFromField(args map[string]any, field string) ([]uuid.UUID, *mcp
 	}
 	var rawIDs []string
 	if err := json.Unmarshal([]byte(raw), &rawIDs); err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid %s JSON: %v", field, err))
+		return nil, inputErrorResultf(err, "invalid %s JSON", field)
 	}
 	if len(rawIDs) > 50 {
 		return nil, mcp.NewToolResultError(fmt.Sprintf("%s exceeds limit: got %d, max 50", field, len(rawIDs)))
@@ -217,7 +220,7 @@ func parseTaskIDsFromField(args map[string]any, field string) ([]uuid.UUID, *mcp
 	for _, rawID := range rawIDs {
 		id, err := uuid.Parse(rawID)
 		if err != nil {
-			return nil, mcp.NewToolResultError(fmt.Sprintf("invalid UUID in %s %q: %v", field, rawID, err))
+			return nil, inputErrorResultf(err, "invalid UUID in %s %q", field, rawID)
 		}
 		ids = append(ids, id)
 	}
@@ -352,13 +355,18 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 				"another session is already in_progress for this repo — call finish_work or get_active_work first",
 			), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("start_work failed: %v", err)), nil
+		return storeErrorResult("start_work failed", err), nil
 	}
 
 	slog.Info("start_work", "session_id", sess.ID, "workspace_id", s.workspaceUUIDVal(), "repo_name", repoName)
 
 	pack := s.assembleStartWorkContext(ctx, sess.ID, goal, repoName, taskIDs)
 
+	// U13 Phase B (tools_worksession.go:365): title/goal/repo_name are this
+	// same call's own just-supplied arguments (same-turn echo, exempt — see
+	// wrapUntrustedContextPack's doc comment); context_pack is NOT exempt —
+	// it aggregates other sessions'/domains' stored text via
+	// contextpack.Assemble.
 	return jsonText(map[string]any{
 		"session_id":   sess.ID,
 		"status":       sess.Status,
@@ -367,7 +375,7 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		"repo_name":    sess.RepoName,
 		"started_at":   sess.StartedAt,
 		"linked_tasks": len(taskIDs),
-		"context_pack": pack,
+		"context_pack": wrapUntrustedContextPack(pack),
 	})
 }
 
@@ -386,7 +394,25 @@ func (s *Server) handleGetActiveWork(ctx context.Context, req mcp.CallToolReques
 	wsID := s.workspaceUUIDVal()
 	result, err := s.workSession.GetActive(ctx, wsID, repoName)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get_active_work failed: %v", err)), nil
+		return storeErrorResult("get_active_work failed", err), nil
+	}
+	// U13 (2026-08-20-mcp-surface-spec.md): result.Session is read back from
+	// a session that may have been started by an earlier, possibly
+	// untrusted, call — unlike start_work's own response below (which only
+	// ever echoes what THIS call just wrote), so it needs the same
+	// treatment get_work_session_trace already applies to the same
+	// *worksession.Session type. LastCheckpoint is the free-text summary
+	// argument checkpoint_work persists (5000 chars, no boundary-marker
+	// screening at write time) — neutralizePtr (boundary_markers.go) is the
+	// shared helper for exactly this "optional *string, nil-safe" shape.
+	if result != nil {
+		result.Session = wrapUntrustedVerificationOutputExcerpt(result.Session)
+		result.Session = wrapUntrustedFinalSummary(result.Session)
+		result.Session = neutralizeSessionMetadataFields(result.Session)
+		if result.LastCheckpoint != nil {
+			neutralized := neutralizePtr(result.LastCheckpoint)
+			result.LastCheckpoint = &neutralized
+		}
 	}
 	return jsonText(result)
 }
@@ -424,7 +450,7 @@ func (s *Server) handleCheckpointWork(ctx context.Context, req mcp.CallToolReque
 		if errors.Is(err, worksession.ErrNotFound) {
 			return mcp.NewToolResultError("session not found or not in checkpointable state"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("checkpoint_work failed: %v", err)), nil
+		return storeErrorResult("checkpoint_work failed", err), nil
 	}
 
 	return jsonText(map[string]any{
@@ -526,7 +552,7 @@ func parseFinishWorkEvidence(args map[string]any) ([]worksession.EvidenceInput, 
 	}
 	var items []finishWorkEvidenceItem
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return nil, mcp.NewToolResultError(fmt.Sprintf("invalid evidence JSON: %v", err))
+		return nil, inputErrorResult("invalid evidence JSON", err)
 	}
 	if len(items) > maxEvidenceItems {
 		return nil, mcp.NewToolResultError(
@@ -580,6 +606,35 @@ func parseFinishWorkEvidence(args map[string]any) ([]worksession.EvidenceInput, 
 		})
 	}
 	return out, nil
+}
+
+// wrapUntrustedContextPack returns a copy of pack with every item's Summary
+// clipSafe'd (bounded + boundary-marker-neutralised) — U13 Phase B
+// (.specs/2026-08-20-u13-inventory.md, tools_worksession.go:365). pack.Items
+// aggregates summaries assembled from decisions/knowledge/procedural/
+// skills/outcomes/reflection/behaviorrule/session read ports (contextpack.
+// Assemble) — none of those source domains neutralise boundary-marker text
+// at write time, so a payload planted in any one of them reaches start_work's
+// response unless neutralised here. Objective is left as-is: it is always the
+// caller's own "goal" argument from THIS SAME call (assembleStartWorkContext
+// passes goal straight through as contextpack.Request.Objective), matching
+// the established same-turn-echo exemption (buildPendingHandoffView,
+// tools_session.go) — unlike Items, which are pulled from other
+// sessions'/domains' stored rows. A nil pack is returned unmodified.
+func wrapUntrustedContextPack(pack *contextpack.Pack) *contextpack.Pack {
+	if pack == nil {
+		return nil
+	}
+	out := *pack
+	if len(pack.Items) > 0 {
+		items := make([]contextpack.Item, len(pack.Items))
+		copy(items, pack.Items)
+		for i := range items {
+			items[i].Summary = clipSafe(items[i].Summary, gtdBodyMaxRunes)
+		}
+		out.Items = items
+	}
+	return &out
 }
 
 // resolveAutoOutcomeTaskID picks the task ID to attach an auto-created
@@ -717,16 +772,16 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		artifact = &raw
 	}
 
-	// Log new_decisions before finishing the session (best-effort, non-fatal).
-	s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), stringArg(args, "repo_name"))
+	completeAllLinkedTasks := boolArg(args, "complete_all_linked_tasks")
 
 	slog.Info("finish_work", "session_id", sessID, "workspace_id", s.workspaceUUIDVal())
-	sess, err := s.workSession.Finish(ctx, worksession.FinishParams{
+	sess, completedIDs, err := s.workSession.Finish(ctx, worksession.FinishParams{
 		SessionID:                 sessID,
 		Summary:                   summary,
 		CompletedTaskIDs:          completedTaskIDs,
 		DeferredTaskIDs:           deferredTaskIDs,
 		Artifact:                  artifact,
+		CompleteAllLinkedTasks:    completeAllLinkedTasks,
 		VerificationStatus:        evidenceParams.verificationStatus,
 		VerificationCommand:       evidenceParams.verificationCommand,
 		VerificationOutputExcerpt: evidenceParams.verificationOutputExcerpt,
@@ -737,19 +792,56 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		if errors.Is(err, worksession.ErrNotFound) {
 			return mcp.NewToolResultError("session not found or already completed/cancelled"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("finish_work failed: %v", err)), nil
+		return storeErrorResult("finish_work failed", err), nil
 	}
+	if completedIDs == nil {
+		completedIDs = []uuid.UUID{}
+	}
+
+	// Log new_decisions only after Finish has succeeded (U20 fix —
+	// backend-security-design.md §5.2: logging decisions BEFORE Finish
+	// validated the session left orphaned manual-source decision rows behind
+	// whenever Finish then failed — e.g. a bad/already-completed session_id
+	// — since decisions were already committed with nothing to attach them
+	// to. Finish's own session-exists + status check now doubles as the
+	// validation gate the fix pattern calls for).
+	//
+	// repo_name comes from sess.RepoName (the session's own repo, already
+	// known server-side), NOT from a "repo_name" tool argument — finish_work
+	// never registered that param in its schema (only start_work/
+	// get_active_work/list_recent_work_sessions did), so stringArg(args,
+	// "repo_name") was always "". Every decision logged via finish_work's
+	// new_decisions therefore had RepoName="" — unreachable from
+	// list_decisions(repo_name), the one query path the MCP protocol
+	// mandates before answering an architecture/past-decision question. Data
+	// wasn't lost, but it was permanently unreachable through the only
+	// enforced read path — same failure class as this PR's Category Ω
+	// (write and read semantics diverging). Reading it back from sess avoids
+	// asking the caller to repeat something the server already knows, and
+	// avoids a new "caller's repo_name disagrees with the session's actual
+	// repo" inconsistency a schema param would introduce.
+	decisionResult := s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), sess.RepoName)
 
 	outcomeID := s.autoCreateOutcomeOnFailure(
 		ctx, sessID, sess, completedTaskIDs, deferredTaskIDs, evidenceParams.finalResult, summary,
 	)
 
+	// U13 Phase B (tools_worksession.go:795): final_report echoes
+	// sess.FinalSummary — the exact field get_work_session_trace/
+	// get_active_work already fence via wrapUntrustedFinalSummary. Reused
+	// here (not a new helper) purely as a call-site fix: this response was
+	// simply not calling it before.
+	wrappedSess := wrapUntrustedFinalSummary(sess)
+
 	return jsonText(map[string]any{
-		"session_id":   sess.ID,
-		"status":       sess.Status,
-		"completed_at": sess.CompletedAt,
-		"final_report": sess.FinalSummary,
-		"outcome_id":   outcomeID,
+		"session_id":         sess.ID,
+		"status":             sess.Status,
+		"completed_at":       sess.CompletedAt,
+		"final_report":       wrappedSess.FinalSummary,
+		"outcome_id":         outcomeID,
+		"completed_task_ids": completedIDs,
+		"decisions_logged":   decisionResult.Logged,
+		"decisions_skipped":  decisionResult.Skipped,
 	})
 }
 
@@ -786,11 +878,28 @@ func (s *Server) handleListRecentWorkSessions(ctx context.Context, req mcp.CallT
 
 	sessions, err := s.workSession.ListRecent(ctx, s.workspaceUUIDVal(), repoName, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("list_recent_work_sessions failed: %v", err)), nil
+		return storeErrorResult("list_recent_work_sessions failed", err), nil
 	}
 
+	// U13 Phase B (tools_worksession.go:856): reuses neutralizeSessionMetadataFields
+	// (Title/Goal, pre-existing) — the gap this site had. FinalResult is
+	// intentionally left untouched: the U13 inventory's suggested helper for
+	// this row named "clipSafe on FinalResult", but migration
+	// 000065_work_sessions_evidence (both migrations/ and migrations/sqlite/)
+	// puts a `CHECK (final_result IN ('success','failure','partial','unknown',
+	// 'regressed'))` directly on the column on BOTH backends — no write path
+	// (MCP, HTTP, CLI, or a hypothetical future caller) can ever persist a
+	// value outside that 5-item enum, verified by attempting exactly that via
+	// a direct s.workSession.Finish call in this dispatch's test suite (it
+	// fails with a CHECK constraint violation, not a validation error).
+	// neutralizeSessionMetadataFields' own doc comment already documents
+	// FinalResult (with Status/Source/VerificationStatus) as "genuinely
+	// safe-because, not a gap" for exactly this reason — the inventory row
+	// for this site contradicted that pre-existing, already-verified
+	// classification elsewhere in the same file.
 	summaries := make([]workSessionSummary, 0, len(sessions))
-	for _, sess := range sessions {
+	for i := range sessions {
+		sess := neutralizeSessionMetadataFields(&sessions[i])
 		summaries = append(summaries, workSessionSummary{
 			ID:                 sess.ID,
 			Title:              sess.Title,
@@ -1097,12 +1206,12 @@ func (s *Server) handleGetWorkSessionTrace(ctx context.Context, req mcp.CallTool
 		if errors.Is(err, worksession.ErrNotFound) {
 			return mcp.NewToolResultError(fmt.Sprintf("session %s not found", sessID)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("get_work_session_trace failed: %v", err)), nil
+		return storeErrorResult("get_work_session_trace failed", err), nil
 	}
 
 	evidence, err := s.workSession.GetEvidence(ctx, sessID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get_work_session_trace failed: %v", err)), nil
+		return storeErrorResult("get_work_session_trace failed", err), nil
 	}
 	if evidence == nil {
 		evidence = []worksession.Evidence{}
@@ -1123,20 +1232,49 @@ func (s *Server) workspaceUUIDVal() uuid.UUID {
 	return *s.workspaceID
 }
 
+// finishWorkDecisionResult summarizes what logFinishWorkDecisions actually
+// did (U20 fix — backend-security-design.md §2.1/§5.2: hitting the 50-item
+// cap, or a malformed/noisy title, used to be reported only via slog.Warn on
+// the server, with finish_work's response giving the caller no signal at
+// all that some decisions were silently dropped). Logged counts successful
+// decision.Log calls; Skipped carries one short human-readable entry per
+// item that was not logged, so a caller (typically an LLM agent) can see
+// and react to the gap instead of assuming every decision landed.
+type finishWorkDecisionResult struct {
+	Logged  int      `json:"logged"`
+	Skipped []string `json:"skipped,omitempty"`
+}
+
+// truncateForFinishWorkLog caps s at 80 runes for safe inclusion in a slog
+// field or the finish_work response's Skipped list — the raw title is
+// LLM-controlled free text (backend-security-design.md §2.1) and may itself
+// be the noisy/oversized value being reported on.
+func truncateForFinishWorkLog(s string) string {
+	if runes := []rune(s); len(runes) > 80 {
+		return string(runes[:80]) + "..."
+	}
+	return s
+}
+
 // logFinishWorkDecisions parses a JSON array of decision title strings from
-// rawDecisions and logs each one via s.decision.Log. All errors are logged as
-// Warn so the finish_work call is never aborted by a failed decision write.
-func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, rawDecisions, repoName string) {
+// rawDecisions and logs each one via s.decision.Log. Every skip (invalid
+// JSON, over-cap, noisy title, control chars, or a failed Log call) is
+// non-fatal to finish_work as a whole but is now reported back in the
+// returned finishWorkDecisionResult, not just logged server-side.
+func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, rawDecisions, repoName string) finishWorkDecisionResult {
+	var result finishWorkDecisionResult
 	if rawDecisions == "" {
-		return
+		return result
 	}
 	var titles []string
 	if err := json.Unmarshal([]byte(rawDecisions), &titles); err != nil {
 		slog.Warn("finish_work: invalid new_decisions JSON, skipping", "session_id", sessID, "err", err)
-		return
+		result.Skipped = append(result.Skipped, "new_decisions: invalid JSON, entire array skipped")
+		return result
 	}
 	const maxFinishWorkDecisions = 50
 	if len(titles) > maxFinishWorkDecisions {
+		overCap := len(titles) - maxFinishWorkDecisions
 		slog.Warn(
 			"finish_work: new_decisions exceeds cap, truncating",
 			"session_id", sessID,
@@ -1144,17 +1282,22 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 			"cap", maxFinishWorkDecisions,
 		)
 		titles = titles[:maxFinishWorkDecisions]
+		result.Skipped = append(result.Skipped, fmt.Sprintf(
+			"%d decisions beyond the %d-item cap were not logged", overCap, maxFinishWorkDecisions,
+		))
 	}
 	for _, title := range titles {
 		if title == "" {
 			continue
 		}
+		logTitle := truncateForFinishWorkLog(title)
 		if reason := checkField("title", title); reason != "" {
 			slog.Warn(
 				"finish_work: skipping noisy decision title",
 				"session_id", sessID,
 				"reason", reason,
 			)
+			result.Skipped = append(result.Skipped, fmt.Sprintf("%q: %s", logTitle, reason))
 			continue
 		}
 		if reason := checkCommandField("title", title); reason != "" {
@@ -1163,23 +1306,25 @@ func (s *Server) logFinishWorkDecisions(ctx context.Context, sessID uuid.UUID, r
 				"session_id", sessID,
 				"reason", reason,
 			)
+			result.Skipped = append(result.Skipped, fmt.Sprintf("%q: %s", logTitle, reason))
 			continue
 		}
 		if _, logErr := s.decision.Log(ctx, decision.LogParams{
-			Title:    title,
-			RepoName: repoName,
-			Source:   decision.SourceManual,
+			Title:          title,
+			RepoName:       repoName,
+			Source:         decision.SourceManual,
+			ActorSessionID: s.auditSessionID(ctx),
 		}); logErr != nil {
-			logTitle := title
-			if runes := []rune(logTitle); len(runes) > 80 {
-				logTitle = string(runes[:80]) + "..."
-			}
 			slog.Warn(
 				"finish_work: failed to log decision",
 				"session_id", sessID,
 				"title", logTitle,
 				"err", logErr,
 			)
+			result.Skipped = append(result.Skipped, fmt.Sprintf("%q: log failed", logTitle))
+			continue
 		}
+		result.Logged++
 	}
+	return result
 }

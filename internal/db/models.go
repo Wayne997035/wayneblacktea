@@ -96,6 +96,8 @@ type Decision struct {
 	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
 	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
 	Source            string             `json:"source"`
+	ActorSessionID    pgtype.Text        `json:"actor_session_id"`
+	ConfirmedByHuman  bool               `json:"confirmed_by_human"`
 }
 
 // MCP tool-call audit trail for meta-rule drift detection; 30-day TTL via task discipline-prune
@@ -262,6 +264,8 @@ type Outcome struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	RelatedRuleIds []uuid.UUID        `json:"related_rule_ids"`
 	WorkSessionID  pgtype.UUID        `json:"work_session_id"`
+	SupersedesID   pgtype.UUID        `json:"supersedes_id"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
 type PendingProposal struct {

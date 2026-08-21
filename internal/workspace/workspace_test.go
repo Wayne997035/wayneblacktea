@@ -13,6 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// strPtr returns a pointer to s, for building presence-aware
+// workspace.UpsertRepoParams literals in this file's tests (Ω6).
+func strPtr(s string) *string { return &s }
+
 func setupPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -46,7 +50,7 @@ func TestUpsertAndGetRepo(t *testing.T) {
 
 	repo, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:     "test-repo-" + t.Name(),
-		Language: "go",
+		Language: strPtr("go"),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRepo: %v", err)
@@ -86,7 +90,7 @@ func TestUpsertRepo_UpdateExisting(t *testing.T) {
 	name := "test-upsert-update-" + t.Name()
 	first, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:     name,
-		Language: "go",
+		Language: strPtr("go"),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRepo first: %v", err)
@@ -100,9 +104,9 @@ func TestUpsertRepo_UpdateExisting(t *testing.T) {
 
 	second, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:          name,
-		Language:      "go",
-		CurrentBranch: "main",
-		Description:   "updated description",
+		Language:      strPtr("go"),
+		CurrentBranch: strPtr("main"),
+		Description:   strPtr("updated description"),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRepo second: %v", err)

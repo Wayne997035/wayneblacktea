@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -123,11 +124,16 @@ type Server struct {
 	// backends — wired in at New() time.
 	discipline discipline.Store
 
-	// sessionID is the per-process identifier written into every
-	// discipline_events row. We have no real "MCP session" abstraction so we
-	// derive it from PID + start time; this is sufficient for the 15-minute
-	// drift window and survives a restart cleanly (the new ID won't conflate
-	// with the old session's mutating calls).
+	// sessionID is the per-process fallback identifier used by
+	// auditSessionID (tools_gtd.go) whenever ctx carries no tracked MCP
+	// client session — e.g. stdio transports that don't do session
+	// tracking, or a direct handler call in a test. Real per-client
+	// sessions (server.ClientSessionFromContext) are the primary source for
+	// discipline_events.session_id and decisions.actor_session_id; this
+	// field only fills the gap so those columns are never written empty
+	// (U15). Derived from PID + start time, which is sufficient for the
+	// 15-minute drift window and survives a restart cleanly (the new ID
+	// won't conflate with the old session's mutating calls).
 	sessionID string
 
 	// workspaceID is populated from WORKSPACE_ID env at New time for use by
@@ -188,6 +194,15 @@ type Server struct {
 type deletionToken struct {
 	token     string
 	expiresAt time.Time
+	// issuedBySession is the MCP client session (currentSessionID) live at
+	// step-1 issue time, or "" when that call carried no tracked session.
+	// U9 fix: this used to be encoded INTO token itself as a
+	// "<sessionID>:<random>" prefix, which meant any place that logs or
+	// echoes a token also leaked which session issued it. Keeping it here
+	// instead means the returned token stays a bare random UUID — see
+	// issueDeletionToken/deletionTokenMatchesSession (tools_gtd.go) for how
+	// this field is set and checked.
+	issuedBySession string
 }
 
 // deleteTokenTTL is the window during which an issued deletion token remains
@@ -303,10 +318,13 @@ func (s *Server) now() time.Time {
 	return s.nowFn()
 }
 
-// newSessionID returns a per-process identifier used as session_id when
-// recording discipline_events. Since the MCP server has no real session
-// concept yet, we derive it from PID + start time (millis). Format keeps it
-// shorter than a UUID and human-readable in logs.
+// newSessionID returns a per-process identifier used as the fallback actor
+// identity (s.sessionID, see its field doc) when a caller has no tracked
+// per-client MCP session. The server DOES have a real per-client session
+// concept (server.ClientSessionFromContext, surfaced via currentSessionID /
+// auditSessionID in tools_gtd.go) — this ID only covers the untracked-caller
+// gap. Derived from PID + start time (millis); format keeps it shorter than
+// a UUID and human-readable in logs.
 func newSessionID() string {
 	return fmt.Sprintf("mcp-%d-%d", os.Getpid(), time.Now().UnixMilli())
 }
@@ -385,8 +403,9 @@ func (s *Server) WithMergedPRsStore(store mergedprs.Store) *Server {
 const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — CORE PROTOCOL
 
 tools/list = core set only; hidden tools stay callable by name, and
-expand_tools reveals more. Call initial_instructions once per session for the
-full routing table.
+expand_tools reveals more. Call initial_instructions only when the tool
+description you are currently reading says "See initial_instructions
+(Per-tool detail) for X" — never speculatively, never "just in case."
 
 ## Session start
 get_today_context (pulled_forward = important not-yet-due tasks = real
@@ -434,9 +453,13 @@ upsert_project_arch.
 // that asymmetry is the feature's safety net, and TestAllTools_CallableWhenHidden
 // pins it. Both transports (HTTP at cmd/server/main.go and stdio via
 // internal/mcprunner) go through this one constructor, so both get it —
-// including buildinfo.Version below (GTD 61838147): neither transport threads
-// a version value in separately, so there is exactly one place that can drift
-// from the other. See buildinfo's package doc for the ldflags that populate it.
+// including buildinfo.EffectiveVersion() below (GTD 61838147, extended U6):
+// neither transport threads a version value in separately, so there is
+// exactly one place that can drift from the other. EffectiveVersion falls
+// back to a synthetic build ID (buildinfo.BuildID) when Version is at its
+// "dev" sentinel — the common case for every Railway production deploy,
+// which sets Commit/Date but never a real Version (no git tag drives those
+// builds). See buildinfo's package doc for the ldflags that populate it.
 func (s *Server) MCPServer() *server.MCPServer {
 	opts := []server.ServerOption{
 		server.WithInstructions(mcpInstructions),
@@ -468,7 +491,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 	if progressiveDisclosureEnabled() {
 		opts = append(opts, server.WithToolFilter(s.filterToolsForSession))
 	}
-	ms := server.NewMCPServer("wayneblacktea", buildinfo.Version, opts...)
+	ms := server.NewMCPServer("wayneblacktea", buildinfo.EffectiveVersion(), opts...)
 	s.registerOnboardingTools(ms)
 	s.registerExpandTools(ms)
 	s.registerContextTools(ms)
@@ -508,10 +531,51 @@ func stringArg(args map[string]any, key string) string {
 	return v
 }
 
-// numberArg extracts a float64 argument and returns it as int32.
+// numberArg extracts a float64 argument and returns it as int32, silently
+// truncating any fractional part (F9, 2026-08-20-mcp-surface-spec.md U12:
+// e.g. priority=2.5 becomes 2 with no error). Kept as-is for its existing
+// call sites — changing its signature to reject fractional input would
+// require updating every caller in the same commit, which spans files this
+// PR's lane split does not own (tools_atom.go, tools_behaviorrule.go,
+// tools_contextpack.go, tools_decision.go, tools_health.go,
+// tools_knowledge.go, tools_learning.go, tools_outcome.go,
+// tools_procedural.go, tools_proposal.go, tools_reflection.go,
+// tools_skill.go, tools_vision.go, tools_watchdog.go, tools_worksession.go —
+// see this dispatch's final report for the tracked list). New call sites
+// should use requireIntArg below instead, which shares isWholeNumber's guard
+// with decodeIntField (toolspec.go) and rejects rather than truncates.
 func numberArg(args map[string]any, key string) int32 {
 	v, _ := args[key].(float64)
 	return int32(v)
+}
+
+// isWholeNumber reports whether v has no fractional part — the one shared
+// guard behind both decodeIntField (toolspec.go, seam-validated tools) and
+// requireIntArg (below, new non-seam call sites). F9's root cause was this
+// check not existing in EITHER path (int64(nv) and int32(v) both truncated
+// silently); this is deliberately the single place that check now lives.
+func isWholeNumber(v float64) bool {
+	return v == math.Trunc(v)
+}
+
+// requireIntArg extracts a required integer argument, returning a
+// ready-to-send MCP error result when the key is missing, non-numeric, or
+// carries a fractional part (see numberArg's doc comment for why numberArg
+// itself keeps its old truncating behaviour instead of being changed
+// in-place). Prefer this over numberArg for any new or migrated call site.
+func requireIntArg(args map[string]any, key string) (int32, *mcp.CallToolResult) {
+	raw, present := args[key]
+	if !present {
+		return 0, mcp.NewToolResultError(key + " is required")
+	}
+	v, ok := raw.(float64)
+	if !ok {
+		return 0, mcp.NewToolResultError(key + " must be a number")
+	}
+	if !isWholeNumber(v) {
+		return 0, mcp.NewToolResultError(fmt.Sprintf("%s must be a whole number, got %v", key, v))
+	}
+	return int32(v), nil
 }
 
 // boolArg extracts a boolean argument from MCP tool arguments. Missing or

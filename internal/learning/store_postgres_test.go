@@ -75,6 +75,70 @@ func TestStore_SubmitReview_HappyPath(t *testing.T) {
 	}
 }
 
+// TestStore_GetScheduleState_MatchesDBRow verifies GetScheduleState reads
+// back exactly what SubmitReview wrote (Ω7 fix — the MCP handler now uses
+// this instead of trusting caller-supplied stability/difficulty/
+// review_count).
+func TestStore_GetScheduleState_MatchesDBRow(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := learning.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	concept, err := store.CreateConcept(ctx, "get schedule state", "verify read-back", []string{"srs"})
+	if err != nil {
+		t.Fatalf("CreateConcept: %v", err)
+	}
+	due, err := store.DueReviews(ctx, 10)
+	if err != nil {
+		t.Fatalf("DueReviews: %v", err)
+	}
+	var scheduleID uuid.UUID
+	for _, d := range due {
+		if d.ConceptID == concept.ID {
+			scheduleID = d.ScheduleID
+		}
+	}
+	if scheduleID == uuid.Nil {
+		t.Fatalf("expected a due review schedule for concept %s", concept.ID)
+	}
+
+	// Advance the schedule several times so review_count > 0 and stability
+	// has moved off its 1.0 default — a "mature" schedule.
+	state := learning.CardState{Stability: 1.0, Difficulty: 0.3, ReviewCount: 0}
+	for range 3 {
+		if err := store.SubmitReview(ctx, scheduleID, state, learning.Good); err != nil {
+			t.Fatalf("SubmitReview: %v", err)
+		}
+		got, err := store.GetScheduleState(ctx, scheduleID)
+		if err != nil {
+			t.Fatalf("GetScheduleState: %v", err)
+		}
+		state = got
+	}
+
+	if state.ReviewCount != 3 {
+		t.Errorf("ReviewCount after 3 reviews: got %d, want 3", state.ReviewCount)
+	}
+	if state.Stability <= 0 {
+		t.Errorf("Stability: got %v, want > 0", state.Stability)
+	}
+}
+
+// TestStore_GetScheduleState_NotFound verifies ErrNotFound for an unknown
+// schedule ID.
+func TestStore_GetScheduleState_NotFound(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := learning.NewStore(pool, &wsID)
+	ctx := context.Background()
+
+	_, err := store.GetScheduleState(ctx, uuid.New())
+	if err != learning.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
 // TestStore_DueReviews_EmptyReturnsEmptyArrayNotNull is the Postgres-side
 // regression lock for the empty-list-must-be-[]-not-null contract: DueReviews
 // already builds reviews := make([]DueReview, 0, len(rows)) (store.go:93), so

@@ -187,7 +187,7 @@ func TestWorkSessionStore_StatusTransitions(t *testing.T) {
 	}
 
 	// Finish transitions to completed.
-	done, err := store.Finish(ctx, worksession.FinishParams{
+	done, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID,
 		Summary:   "all done",
 	})
@@ -212,7 +212,7 @@ func TestWorkSessionStore_FinishNotFound(t *testing.T) {
 	store := newStore(t, wsID)
 	ctx := context.Background()
 
-	_, err := store.Finish(ctx, worksession.FinishParams{
+	_, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: uuid.New(),
 		Summary:   "ghost",
 	})
@@ -641,7 +641,7 @@ func TestFinishWork_AutoMarksTasksCompleted(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, err = store.Finish(ctx, worksession.FinishParams{
+	_, _, err = store.Finish(ctx, worksession.FinishParams{
 		SessionID:        sess.ID,
 		Summary:          "done",
 		CompletedTaskIDs: []uuid.UUID{taskA, taskB},
@@ -658,9 +658,13 @@ func TestFinishWork_AutoMarksTasksCompleted(t *testing.T) {
 	}
 }
 
-// TestFinishWork_NoTaskIDs verifies that finish_work (Finish) marks ALL linked
-// session tasks as completed when CompletedTaskIDs is empty.
-func TestFinishWork_NoTaskIDs(t *testing.T) {
+// TestFinishWork_NoTaskIDs_CompleteAllLinkedTasksOptIn verifies that finish_work
+// (Finish) marks ALL linked session tasks as completed when CompletedTaskIDs
+// is empty AND the caller explicitly opts in via CompleteAllLinkedTasks
+// (Ω5 fix — the fallback-to-all-linked behavior this test covers is now
+// opt-in, not the default; see TestFinishWork_OmittedCompletedTaskIDsAffectsNone
+// for the default-false case).
+func TestFinishWork_NoTaskIDs_CompleteAllLinkedTasksOptIn(t *testing.T) {
 	wsID := uuid.New().String()
 	db := openTestDB(t, wsID)
 	store := wbtsqlite.NewWorkSessionStore(db)
@@ -678,13 +682,18 @@ func TestFinishWork_NoTaskIDs(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Finish with no CompletedTaskIDs — store must discover linked tasks automatically.
-	_, err = store.Finish(ctx, worksession.FinishParams{
-		SessionID: sess.ID,
-		Summary:   "done without explicit task ids",
+	// Finish with no CompletedTaskIDs but CompleteAllLinkedTasks=true — store
+	// must discover linked tasks automatically.
+	_, completedIDs, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:              sess.ID,
+		Summary:                "done without explicit task ids, opted into complete-all",
+		CompleteAllLinkedTasks: true,
 	})
 	if err != nil {
 		t.Fatalf("Finish: %v", err)
+	}
+	if len(completedIDs) != 2 {
+		t.Errorf("completedIDs: got %d ids, want 2", len(completedIDs))
 	}
 
 	if got := queryTaskStatus(t, db, taskA.String()); got != statusCompleted {
@@ -692,6 +701,47 @@ func TestFinishWork_NoTaskIDs(t *testing.T) {
 	}
 	if got := queryTaskStatus(t, db, taskB.String()); got != statusCompleted {
 		t.Errorf("taskB status: got %q, want completed", got)
+	}
+}
+
+// TestFinishWork_OmittedCompletedTaskIDsAffectsNone is U7's Ω5 bad-case red
+// test: omitting completed_task_ids (CompleteAllLinkedTasks left at its
+// false default) must complete NEITHER linked task — the pre-fix behavior
+// (silently completing every linked task) must not occur.
+func TestFinishWork_OmittedCompletedTaskIDsAffectsNone(t *testing.T) {
+	wsID := uuid.New().String()
+	db := openTestDB(t, wsID)
+	store := wbtsqlite.NewWorkSessionStore(db)
+	ctx := context.Background()
+
+	taskA := uuid.New()
+	taskB := uuid.New()
+	insertTestTask(t, db, wsID, taskA.String())
+	insertTestTask(t, db, wsID, taskB.String())
+
+	p := makeCreateParams(uuid.MustParse(wsID), "omitted-completed-repo")
+	p.TaskIDs = []uuid.UUID{taskA, taskB}
+	sess, err := store.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, completedIDs, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID: sess.ID,
+		Summary:   "done, completed_task_ids omitted, no opt-in",
+	})
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if len(completedIDs) != 0 {
+		t.Errorf("completedIDs: got %v, want empty (bad case: omission must not silently complete linked tasks)", completedIDs)
+	}
+
+	if got := queryTaskStatus(t, db, taskA.String()); got == statusCompleted {
+		t.Errorf("taskA must NOT be completed when completed_task_ids is omitted, got %q", got)
+	}
+	if got := queryTaskStatus(t, db, taskB.String()); got == statusCompleted {
+		t.Errorf("taskB must NOT be completed when completed_task_ids is omitted, got %q", got)
 	}
 }
 
@@ -746,7 +796,7 @@ func TestFinish_WritesEvidenceColumns(t *testing.T) {
 	}
 
 	outcomeID := uuid.New()
-	done, err := store.Finish(ctx, worksession.FinishParams{
+	done, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID:                 sess.ID,
 		Summary:                   "verified and shipped",
 		VerificationStatus:        strPtr(evidenceStatusPassed),
@@ -897,14 +947,14 @@ func TestListRecent_DescOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create old: %v", err)
 	}
-	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessOld.ID, Summary: "done"}); err != nil {
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessOld.ID, Summary: "done"}); err != nil {
 		t.Fatalf("Finish old: %v", err)
 	}
 	sessNew, err := store.Create(ctx, makeCreateParams(uuid.MustParse(wsID), "recent-repo-new"))
 	if err != nil {
 		t.Fatalf("Create new: %v", err)
 	}
-	if _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessNew.ID, Summary: "done"}); err != nil {
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{SessionID: sessNew.ID, Summary: "done"}); err != nil {
 		t.Fatalf("Finish new: %v", err)
 	}
 
@@ -1037,7 +1087,7 @@ func TestFinish_RejectsControlCharsInVerificationCommand(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, err = store.Finish(ctx, worksession.FinishParams{
+	_, _, err = store.Finish(ctx, worksession.FinishParams{
 		SessionID:           sess.ID,
 		Summary:             "done",
 		VerificationCommand: strPtr("task check\nrm -rf /"),
@@ -1083,7 +1133,7 @@ func TestFinish_WithEvidence(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID: sess.ID,
 		Summary:   "done with evidence",
 		Evidence: []worksession.EvidenceInput{
@@ -1108,8 +1158,12 @@ func TestFinish_WithEvidence(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestFinishWork_DeferredOnly_ExcludesFromFallback verifies that when
-// CompletedTaskIDs is empty (triggering the fallback-to-linked-tasks path),
-// tasks listed in DeferredTaskIDs are excluded from that fallback set.
+// CompletedTaskIDs is empty and the caller opts into the
+// fallback-to-linked-tasks path via CompleteAllLinkedTasks, tasks listed in
+// DeferredTaskIDs are still excluded from that fallback set — deferred
+// always wins, even under the opt-in complete-all path (Ω5 fix: the
+// fallback itself is now opt-in, but this invariant on top of it is
+// unchanged).
 func TestFinishWork_DeferredOnly_ExcludesFromFallback(t *testing.T) {
 	wsID := uuid.New().String()
 	db := openTestDB(t, wsID)
@@ -1128,12 +1182,14 @@ func TestFinishWork_DeferredOnly_ExcludesFromFallback(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// No CompletedTaskIDs — fallback discovers linked tasks, but taskB is
-	// deferred and must be excluded from that fallback.
-	if _, err := store.Finish(ctx, worksession.FinishParams{
-		SessionID:       sess.ID,
-		Summary:         "deferred taskB to next session",
-		DeferredTaskIDs: []uuid.UUID{taskB},
+	// No CompletedTaskIDs, opted into complete-all-linked — fallback
+	// discovers linked tasks, but taskB is deferred and must be excluded
+	// from that fallback.
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
+		SessionID:              sess.ID,
+		Summary:                "deferred taskB to next session",
+		DeferredTaskIDs:        []uuid.UUID{taskB},
+		CompleteAllLinkedTasks: true,
 	}); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -1167,7 +1223,7 @@ func TestFinishWork_CompletedAndDeferred_NoOverlap(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID:        sess.ID,
 		Summary:          "taskA done, taskB deferred",
 		CompletedTaskIDs: []uuid.UUID{taskA},
@@ -1206,7 +1262,7 @@ func TestFinishWork_CompletedDeferredOverlap_DeferredWins(t *testing.T) {
 	}
 
 	// taskB is listed in BOTH completed and deferred — deferred must win.
-	if _, err := store.Finish(ctx, worksession.FinishParams{
+	if _, _, err := store.Finish(ctx, worksession.FinishParams{
 		SessionID:        sess.ID,
 		Summary:          "conflicting lists for taskB",
 		CompletedTaskIDs: []uuid.UUID{taskA, taskB},

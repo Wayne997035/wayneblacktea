@@ -420,6 +420,111 @@ func TestHandleCheckpointWork_MissingSummary(t *testing.T) {
 	}
 }
 
+// TestCheckpointWorkAndFinishWork_DeadParamsRemoved is U4's bad-case red
+// test: checkpoint_work's 5 dead params (completed_task_ids/new_task_titles/
+// new_decisions/blockers/next_actions — registered but never read by
+// handleCheckpointWork) and finish_work's dead follow_up_tasks param must no
+// longer appear in the registered tool schema. checkpoint_work's
+// new_decisions is distinct from finish_work's own (live) new_decisions
+// param of the same name on a different tool — only the checkpoint_work
+// registration is dead.
+func TestCheckpointWorkAndFinishWork_DeadParamsRemoved(t *testing.T) {
+	_, ms := newTestMCPServer(t)
+	registered := ms.ListTools()
+
+	chk, ok := registered["checkpoint_work"]
+	if !ok {
+		t.Fatal("checkpoint_work is not registered")
+	}
+	chkRaw, err := json.Marshal(chk.Tool)
+	if err != nil {
+		t.Fatalf("marshal checkpoint_work schema: %v", err)
+	}
+	chkSchema := string(chkRaw)
+	for _, dead := range []string{"completed_task_ids", "new_task_titles", "new_decisions", "blockers", "next_actions"} {
+		if strings.Contains(chkSchema, `"`+dead+`"`) {
+			t.Errorf("checkpoint_work schema still contains dead param %q: %s", dead, chkSchema)
+		}
+	}
+
+	fin, ok := registered["finish_work"]
+	if !ok {
+		t.Fatal("finish_work is not registered")
+	}
+	finRaw, err := json.Marshal(fin.Tool)
+	if err != nil {
+		t.Fatalf("marshal finish_work schema: %v", err)
+	}
+	finSchema := string(finRaw)
+	if strings.Contains(finSchema, `"follow_up_tasks"`) {
+		t.Errorf("finish_work schema still contains dead param %q: %s", "follow_up_tasks", finSchema)
+	}
+	// Positive control: finish_work's own new_decisions is live and must
+	// still be present (only checkpoint_work's copy was dead).
+	if !strings.Contains(finSchema, `"new_decisions"`) {
+		t.Error("finish_work schema is missing new_decisions — it is a live param, must not have been removed")
+	}
+}
+
+// TestHandleFinishWork_NewDecisionsReachableByRepoName is the bad-case red
+// test for the repo_name gap the Lead asked to fix after PR160 Lane C's
+// first pass: finish_work never registered a repo_name tool argument (only
+// start_work/get_active_work/list_recent_work_sessions did), so
+// stringArg(args, "repo_name") inside logFinishWorkDecisions was always "" —
+// every decision logged via finish_work's new_decisions had RepoName="" and
+// was permanently unreachable via list_decisions(repo_name), the one query
+// path the MCP protocol mandates before answering an architecture/
+// past-decision question. The fix reads sess.RepoName (the session's own
+// repo) instead of a caller-supplied argument that never existed on the
+// schema. This test seeds a decision through finish_work and asserts it is
+// found by list_decisions filtered on the session's repo — not just that a
+// row exists in the table.
+func TestHandleFinishWork_NewDecisionsReachableByRepoName(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	repoName := "finish-work-decision-repo"
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": repoName,
+		"title":     "repo_name reachability test",
+		"goal":      "verify new_decisions logged via finish_work is reachable by repo_name",
+	})
+	if startR.IsError {
+		t.Fatalf("start_work failed: %s", resultText(startR))
+	}
+	sessID := startSessionID(t, startR)
+
+	uniqueTitle := "finish_work decision reachability check " + sessID
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":    sessID,
+		"summary":       "done",
+		"new_decisions": `["` + uniqueTitle + `"]`,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(r))
+	}
+	var finishResult map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &finishResult); err != nil {
+		t.Fatalf("unmarshal finish result: %v", err)
+	}
+	if got, _ := finishResult["decisions_logged"].(float64); got != 1 {
+		t.Fatalf("precondition failed: decisions_logged = %v, want 1", finishResult["decisions_logged"])
+	}
+
+	listR := callListDecisions(t, s, map[string]any{
+		"repo_name": repoName,
+		"limit":     float64(50),
+	})
+	if listR.IsError {
+		t.Fatalf("list_decisions failed: %s", resultText(listR))
+	}
+	if !strings.Contains(resultText(listR), uniqueTitle) {
+		t.Errorf("list_decisions(repo_name=%q) did not find decision %q logged via finish_work — "+
+			"bad case: decision was recorded with the wrong (empty) repo_name and is unreachable "+
+			"from the one query path the MCP protocol mandates.\nresponse: %s",
+			repoName, uniqueTitle, resultText(listR))
+	}
+}
+
 // ---- finish_work ----
 
 func TestHandleFinishWork_Success(t *testing.T) {
@@ -730,6 +835,163 @@ func TestHandleFinishWork_WithDecisions(t *testing.T) {
 	})
 	if r2.IsError {
 		t.Fatalf("finish_work with noisy decisions must still succeed (best-effort), got: %s", resultText(r2))
+	}
+	var result2 map[string]any
+	if err := json.Unmarshal([]byte(resultText(r2)), &result2); err != nil {
+		t.Fatalf("unmarshal finish result 2: %v", err)
+	}
+	// U20: the noisy title's skip must now be signalled in the response, not
+	// only in the server-side log.
+	if got, _ := result2["decisions_logged"].(float64); got != 1 {
+		t.Errorf("decisions_logged: got %v, want 1 (only \"clean decision title\" should log)", result2["decisions_logged"])
+	}
+	skipped, _ := result2["decisions_skipped"].([]any)
+	if len(skipped) != 1 {
+		t.Errorf("decisions_skipped: got %v, want exactly 1 entry for the noisy title", result2["decisions_skipped"])
+	}
+}
+
+// TestHandleFinishWork_FailedFinishCreatesNoOrphanDecision is U20's bad-case
+// red test: when Finish itself fails validation (an already-completed
+// session_id here), new_decisions must NOT have been logged — the pre-fix
+// ordering (log decisions, then call Finish) left orphaned manual-source
+// decision rows on exactly this path.
+func TestHandleFinishWork_FailedFinishCreatesNoOrphanDecision(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "orphan-decision-repo",
+		"title":     "orphan decision test",
+		"goal":      "verify no orphan decision on failed finish",
+	})
+	if startR.IsError {
+		t.Fatalf("start_work failed: %s", resultText(startR))
+	}
+	sessID := startSessionID(t, startR)
+
+	// First finish_work call succeeds and flips the session to completed.
+	firstR := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "first finish",
+	})
+	if firstR.IsError {
+		t.Fatalf("first finish_work failed: %s", resultText(firstR))
+	}
+
+	// Second finish_work call on the now-completed session must fail
+	// (ErrNotFound path) — it carries new_decisions that must NOT be logged.
+	uniqueTitle := "orphan-decision-repo unique decision " + sessID
+	secondR := callFinishWork(t, s, map[string]any{
+		"session_id":    sessID,
+		"summary":       "second finish attempt",
+		"new_decisions": `["` + uniqueTitle + `"]`,
+	})
+	if !secondR.IsError {
+		t.Fatal("expected second finish_work on an already-completed session to fail")
+	}
+
+	rows, err := s.decision.ByRepo(context.Background(), "orphan-decision-repo", 50)
+	if err != nil {
+		t.Fatalf("decision.ByRepo: %v", err)
+	}
+	for _, row := range rows {
+		if row.Title == uniqueTitle {
+			t.Errorf("decision %q was logged despite finish_work failing — orphan decision (U20 bad case)", uniqueTitle)
+		}
+	}
+}
+
+// ---- finish_work: Ω5 complete_all_linked_tasks flag (MCP layer, end to end) ----
+
+// TestHandleFinishWork_OmittedCompletedTaskIDs_CompletesNone is Ω5's bad-case
+// red test at the MCP handler layer (store-layer coverage lives in
+// internal/worksession/store_test.go's TestFinishWork_OmittedCompletedTaskIDsAffectsNone):
+// omitting completed_task_ids (complete_all_linked_tasks left at its default)
+// must complete neither linked task, and the response's completed_task_ids
+// must list none.
+func TestHandleFinishWork_OmittedCompletedTaskIDs_CompletesNone(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	taskA := uuid.New().String()
+	taskB := uuid.New().String()
+	insertMCPTestTask(t, db, "", taskA)
+	insertMCPTestTask(t, db, "", taskB)
+
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "omitted-completed-e2e-repo",
+		"title":     "t",
+		"goal":      "g",
+		"task_ids":  `["` + taskA + `","` + taskB + `"]`,
+	})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id": sessID,
+		"summary":    "done, completed_task_ids omitted via MCP handler",
+	})
+	if r.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(r))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	completed, _ := result["completed_task_ids"].([]any)
+	if len(completed) != 0 {
+		t.Errorf("completed_task_ids: got %v, want empty (bad case)", result["completed_task_ids"])
+	}
+
+	if got := queryMCPTaskStatus(t, db, taskA); got == taskStatusCompleted {
+		t.Errorf("taskA must NOT be completed when completed_task_ids is omitted, got %q", got)
+	}
+	if got := queryMCPTaskStatus(t, db, taskB); got == taskStatusCompleted {
+		t.Errorf("taskB must NOT be completed when completed_task_ids is omitted, got %q", got)
+	}
+}
+
+// TestHandleFinishWork_CompleteAllLinkedTasksOptIn_ReportsAffectedIDs is the
+// positive control for the test above: setting complete_all_linked_tasks=true
+// with completed_task_ids omitted restores the old "complete everything"
+// behavior, and the response's completed_task_ids lists exactly which tasks
+// were affected (Lead's requirement — a silent default swap in either
+// direction is not acceptable, the caller must be able to see what happened).
+func TestHandleFinishWork_CompleteAllLinkedTasksOptIn_ReportsAffectedIDs(t *testing.T) {
+	s, db := newTestWorkSessionServerWithDB(t)
+	taskA := uuid.New().String()
+	taskB := uuid.New().String()
+	insertMCPTestTask(t, db, "", taskA)
+	insertMCPTestTask(t, db, "", taskB)
+
+	startR := callStartWork(t, s, map[string]any{
+		"repo_name": "complete-all-e2e-repo",
+		"title":     "t",
+		"goal":      "g",
+		"task_ids":  `["` + taskA + `","` + taskB + `"]`,
+	})
+	sessID := startSessionID(t, startR)
+
+	r := callFinishWork(t, s, map[string]any{
+		"session_id":                sessID,
+		"summary":                   "done, opted into complete_all_linked_tasks",
+		"complete_all_linked_tasks": true,
+	})
+	if r.IsError {
+		t.Fatalf("finish_work failed: %s", resultText(r))
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resultText(r)), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	completed, _ := result["completed_task_ids"].([]any)
+	if len(completed) != 2 {
+		t.Errorf("completed_task_ids: got %v, want 2 entries", result["completed_task_ids"])
+	}
+
+	if got := queryMCPTaskStatus(t, db, taskA); got != taskStatusCompleted {
+		t.Errorf("taskA status: got %q, want completed", got)
+	}
+	if got := queryMCPTaskStatus(t, db, taskB); got != taskStatusCompleted {
+		t.Errorf("taskB status: got %q, want completed", got)
 	}
 }
 

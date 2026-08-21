@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -22,14 +21,22 @@ type knowledgeNavItem struct {
 	CreatedAt    string `json:"created_at,omitempty"`
 }
 
+// navItemFromDB projects a db.KnowledgeItem into the lightweight nav shape.
+// Title/HeadingPath go through clipSafe (tools_context.go) — U13
+// (2026-08-20-mcp-surface-spec.md); reusing tools_knowledge.go's
+// knowledgeTitleMaxRunes keeps this file's bound in sync with the same
+// column's cap on the full-record readers (add_knowledge/search_knowledge/
+// list_knowledge). One fix here covers all 3 call sites in this file
+// (navigate_knowledge's root/children branches and outline_knowledge) since
+// every one of them funnels through this function.
 func navItemFromDB(item *db.KnowledgeItem) knowledgeNavItem {
 	nav := knowledgeNavItem{
 		ID:    item.ID.String(),
-		Title: item.Title,
+		Title: clipSafe(item.Title, knowledgeTitleMaxRunes),
 		Type:  item.Type,
 	}
 	if item.HeadingPath.Valid {
-		nav.HeadingPath = item.HeadingPath.String
+		nav.HeadingPath = clipSafe(item.HeadingPath.String, knowledgeTitleMaxRunes)
 	}
 	if item.HeadingLevel.Valid {
 		nav.HeadingLevel = int(item.HeadingLevel.Int32)
@@ -70,7 +77,7 @@ func (s *Server) handleNavigateKnowledge(ctx context.Context, req mcp.CallToolRe
 		// List root items (parent_id IS NULL).
 		items, err := s.knowledge.ListRoots(ctx)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing root knowledge items: %v", err)), nil
+			return storeErrorResult("listing root knowledge items", err), nil
 		}
 		nav := make([]knowledgeNavItem, 0, len(items))
 		for _, item := range items {
@@ -86,7 +93,7 @@ func (s *Server) handleNavigateKnowledge(ctx context.Context, req mcp.CallToolRe
 
 	items, err := s.knowledge.ListChildren(ctx, parentID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing children of %s: %v", rawParentID, err)), nil
+		return storeErrorResultf(err, "listing children of %s", rawParentID), nil
 	}
 	nav := make([]knowledgeNavItem, 0, len(items))
 	for _, item := range items {
@@ -104,7 +111,7 @@ func (s *Server) handleOutlineKnowledge(ctx context.Context, req mcp.CallToolReq
 
 	items, err := s.knowledge.ListChildren(ctx, itemID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("outlining knowledge item %s: %v", itemID, err)), nil
+		return storeErrorResultf(err, "outlining knowledge item %s", itemID), nil
 	}
 	nav := make([]knowledgeNavItem, 0, len(items))
 	for _, item := range items {

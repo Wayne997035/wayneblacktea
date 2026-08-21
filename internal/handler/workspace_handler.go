@@ -28,14 +28,22 @@ func (h *WorkspaceHandler) ListRepos(c echo.Context) error {
 	return c.JSON(http.StatusOK, repos)
 }
 
+// upsertRepoRequest's optional fields are *string (not string) so
+// encoding/json's standard pointer-unmarshal behaviour distinguishes "key
+// absent from the JSON body" (nil, preserve stored value) from "key present
+// with an empty string" (non-nil *string pointing at "", explicit clear) —
+// Ω6, 2026-08-20-mcp-surface-spec.md. A plain string field folds both into
+// "", which is the omission-clobber bug this type change closes on the HTTP
+// path (workspace.UpsertRepoParams already required this type on the Go
+// side once its fields became presence-aware).
 type upsertRepoRequest struct {
 	Name            string   `json:"name"`
-	Path            string   `json:"path"`
-	Description     string   `json:"description"`
-	Language        string   `json:"language"`
-	CurrentBranch   string   `json:"current_branch"`
+	Path            *string  `json:"path"`
+	Description     *string  `json:"description"`
+	Language        *string  `json:"language"`
+	CurrentBranch   *string  `json:"current_branch"`
 	KnownIssues     []string `json:"known_issues"`
-	NextPlannedStep string   `json:"next_planned_step"`
+	NextPlannedStep *string  `json:"next_planned_step"`
 }
 
 // UpsertRepo creates or updates a repo.

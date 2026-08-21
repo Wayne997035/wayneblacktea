@@ -65,6 +65,179 @@ const (
 	actionReject = "reject"
 )
 
+// ---------------------------------------------------------------------------
+// U13 Phase B — boundary-marker neutralisation for tools_proposal.go
+// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// ---------------------------------------------------------------------------
+
+// proposalPayloadFieldMaxRunes bounds each individual string value found
+// while neutralising a JSON blob (pending_proposals.payload here; watchdog
+// Findings[].Detail and outcome.Outcome.Metrics/Evaluation.Lessons/
+// ImprovementSuggestions reuse the same walker from their own files).
+// Mirrors decisionBodyMaxRunes/gtdBodyMaxRunes: generous, read-time-only,
+// above every existing write-time cap (decodeGoalParams et al. already cap
+// total payload size in bytes at write/materialise time) — exists purely to
+// stop marker-stuffing / pathological growth on read.
+const proposalPayloadFieldMaxRunes = 20000
+
+// wrapUntrustedProposal returns a copy of p with Payload run through
+// neutralizeJSONBlob — U13. Mirrors wrapUntrustedDecision/wrapUntrustedTask's
+// copy-not-mutate contract (never mutates the caller's row or any cache
+// holding it). nil in, nil out.
+//
+// [F160-06] ProposedBy and Reason are neutralised too, added to this
+// function. ProposedBy is a plain, unvalidated propose_goal/propose_project
+// argument (stringArg(args, "proposed_by") — no allowlist, unlike Type/
+// Status below); Reason has no write path in this codebase today (the
+// column is never populated by anything that currently runs), but nothing
+// stops a future write path from doing so without revisiting this function,
+// so it gets the same defence-in-depth treatment rather than being silently
+// exempted on the strength of "nothing writes it yet". Type and Status
+// remain untouched — both are closed proposal.Type/proposal.Status enums,
+// validated at write time.
+func wrapUntrustedProposal(p *db.PendingProposal) *db.PendingProposal {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.Payload = neutralizeJSONBlob(p.Payload, proposalPayloadFieldMaxRunes)
+	if p.ProposedBy.Valid {
+		out.ProposedBy.String = neutralizeBoundaryMarkers(p.ProposedBy.String)
+	}
+	if p.Reason.Valid {
+		out.Reason.String = neutralizeBoundaryMarkers(p.Reason.String)
+	}
+	return &out
+}
+
+// wrapUntrustedProposals maps wrapUntrustedProposal over a slice, preserving
+// element order — mirrors wrapUntrustedDecisions.
+func wrapUntrustedProposals(props []db.PendingProposal) []db.PendingProposal {
+	out := make([]db.PendingProposal, len(props))
+	for i := range props {
+		out[i] = *wrapUntrustedProposal(&props[i])
+	}
+	return out
+}
+
+// neutralizeCreatedEntity neutralises the free-text fields of the
+// materialised entity confirm_proposal/confirm_proposals return under
+// confirmResult.Created — U13. created's concrete type varies by
+// proposal.Type AND by which of the three materialise paths
+// (materializeFromPayloadPg / ...Iface / ...SQLiteTx) ran, so this is a type
+// switch over every shape those functions actually produce, not a single
+// wrapUntrusted* call. Reuses wrapUntrustedProject/wrapUntrustedTask/
+// wrapUntrustedDecision (tools_gtd.go / tools_decision.go) where a shared
+// helper already exists; db.Goal/db.Concept/db.KnowledgeItem/
+// playbook.Playbook get an inline clipSafe here because no shared wrapper
+// exists yet for their own tools (tracked separately as PENDING in the U13
+// inventory — this does not change THEIR jsonText call sites, only the copy
+// embedded in confirm_proposal's response).
+func neutralizeCreatedEntity(created any) any {
+	switch v := created.(type) {
+	case nil:
+		return nil
+	case *db.Goal:
+		return neutralizeProposalGoal(v)
+	case *db.Project:
+		return wrapUntrustedProject(v)
+	case *db.Task:
+		return wrapUntrustedTask(v)
+	case *db.Decision:
+		return wrapUntrustedDecision(v)
+	case *db.Concept:
+		return neutralizeProposalConcept(v)
+	case *db.KnowledgeItem:
+		return neutralizeProposalKnowledgeItem(v)
+	case *playbook.Playbook:
+		return neutralizeProposalPlaybook(v)
+	case map[string]string:
+		// SQLite-tx materialise path (materializeFromPayloadSQLiteTx) returns
+		// {"id": ..., "title": ...} / {"id": ..., "name": ..., "title": ...}
+		// for goal/project/concept/decision instead of a typed struct.
+		out := make(map[string]string, len(v))
+		for k, val := range v {
+			if k == "id" {
+				out[k] = val
+				continue
+			}
+			out[k] = clipSafe(val, proposalPayloadFieldMaxRunes)
+		}
+		return out
+	case map[string]any:
+		// materializeTaskPg/Iface's {"task": *db.Task, "warnings": []string}
+		// shape (add_task-style vagueness warnings). "warnings" is
+		// validator-emitted fixed text (validator.CheckTaskInput), not
+		// stored free text — left as-is.
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[k] = val
+		}
+		if t, ok := out["task"].(*db.Task); ok {
+			out["task"] = wrapUntrustedTask(t)
+		}
+		return out
+	default:
+		// Every case above is exhaustive over what materializeFromPayload{Pg,
+		// Iface,SQLiteTx} can currently return — a new materialiser branch
+		// landing here without updating this switch is exactly the kind of
+		// silent gap U13 exists to prevent, so this is loud (slog.Warn), not
+		// a silent pass-through.
+		slog.Warn("neutralizeCreatedEntity: unrecognised type for confirm_proposal Created field",
+			"go_type", fmt.Sprintf("%T", created))
+		return created
+	}
+}
+
+// neutralizeProposalGoal/neutralizeProposalConcept/
+// neutralizeProposalKnowledgeItem/neutralizeProposalPlaybook are
+// neutralizeCreatedEntity's per-type helpers for the domain structs that
+// don't yet have a shared wrapUntrusted* in this package (see
+// neutralizeCreatedEntity's doc comment). Suffixed "Proposal" to avoid
+// colliding with a future dedicated wrapUntrustedGoal/... in tools_gtd.go /
+// tools_knowledge.go / tools_playbook.go once Phase B reaches those files.
+func neutralizeProposalGoal(g *db.Goal) *db.Goal {
+	if g == nil {
+		return nil
+	}
+	out := *g
+	out.Title = clipSafe(g.Title, gtdTitleMaxRunes)
+	if g.Description.Valid {
+		out.Description.String = clipSafe(g.Description.String, gtdBodyMaxRunes)
+	}
+	return &out
+}
+
+func neutralizeProposalConcept(c *db.Concept) *db.Concept {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.Title = clipSafe(c.Title, gtdTitleMaxRunes)
+	out.Content = clipSafe(c.Content, gtdBodyMaxRunes)
+	return &out
+}
+
+func neutralizeProposalKnowledgeItem(k *db.KnowledgeItem) *db.KnowledgeItem {
+	if k == nil {
+		return nil
+	}
+	out := *k
+	out.Title = clipSafe(k.Title, gtdTitleMaxRunes)
+	out.Content = clipSafe(k.Content, gtdBodyMaxRunes)
+	return &out
+}
+
+func neutralizeProposalPlaybook(p *playbook.Playbook) *playbook.Playbook {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.TriggerPattern = clipSafe(p.TriggerPattern, gtdTitleMaxRunes)
+	out.ActionTemplate = clipSafe(p.ActionTemplate, gtdBodyMaxRunes)
+	return &out
+}
+
 func (s *Server) registerProposalTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"confirm_proposals",
@@ -144,7 +317,7 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 		DueDate:     dueDate,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("encoding payload: %v", err)), nil
+		return storeErrorResult("encoding payload", err), nil
 	}
 
 	row, err := s.proposal.Create(ctx, proposal.CreateParams{
@@ -153,9 +326,9 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 		ProposedBy: stringArg(args, "proposed_by"),
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating proposal: %v", err)), nil
+		return storeErrorResult("creating proposal", err), nil
 	}
-	return jsonText(row)
+	return jsonText(wrapUntrustedProposal(row))
 }
 
 func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -186,7 +359,7 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 		Priority:    priority,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("encoding payload: %v", err)), nil
+		return storeErrorResult("encoding payload", err), nil
 	}
 
 	row, err := s.proposal.Create(ctx, proposal.CreateParams{
@@ -195,17 +368,17 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 		ProposedBy: stringArg(args, "proposed_by"),
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("creating proposal: %v", err)), nil
+		return storeErrorResult("creating proposal", err), nil
 	}
-	return jsonText(row)
+	return jsonText(wrapUntrustedProposal(row))
 }
 
 func (s *Server) handleListPendingProposals(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rows, err := s.proposal.ListPending(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing pending proposals: %v", err)), nil
+		return storeErrorResult("listing pending proposals", err), nil
 	}
-	return jsonText(rows)
+	return jsonText(wrapUntrustedProposals(rows))
 }
 
 func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -250,7 +423,7 @@ func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolReq
 	// Reject path stays on BatchConfirm — no materialiser to run.
 	result, err := s.proposal.BatchConfirm(ctx, ids, proposal.StatusRejected)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("batch confirm: %v", err)), nil
+		return storeErrorResult("batch confirm", err), nil
 	}
 	return jsonText(result)
 }
@@ -324,9 +497,9 @@ func (s *Server) handleConfirmProposal(ctx context.Context, req mcp.CallToolRequ
 			return mcp.NewToolResultError("proposal not found or already resolved"), nil
 		}
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("rejecting: %v", err)), nil
+			return storeErrorResult("rejecting", err), nil
 		}
-		return jsonText(confirmResult{Proposal: row})
+		return jsonText(confirmResult{Proposal: wrapUntrustedProposal(row)})
 	case actionAccept:
 		return s.acceptProposal(ctx, id)
 	default:
@@ -350,7 +523,7 @@ func (s *Server) acceptProposal(ctx context.Context, id uuid.UUID) (*mcp.CallToo
 func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallToolResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("beginning tx: %v", err)), nil
+		return storeErrorResult("beginning tx", err), nil
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // safe: no-op if already committed
 
@@ -359,7 +532,7 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+		return storeErrorResult("fetching proposal", err), nil
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
@@ -373,12 +546,12 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 
 	resolved, err := s.pgProposal.WithTx(tx).Resolve(ctx, id, proposal.StatusAccepted)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal: %v", err)), nil
+		return storeErrorResult("resolving proposal", err), nil
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("committing: %v", err)), nil
+		return storeErrorResult("committing", err), nil
 	}
-	return jsonText(confirmResult{Proposal: resolved, Created: created})
+	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
 
 // acceptProposalSequential is the SQLite-backed best-effort path. modernc.org/
@@ -395,7 +568,7 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+		return storeErrorResult("fetching proposal", err), nil
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
@@ -408,9 +581,9 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 
 	resolved, err := s.proposal.Resolve(ctx, id, proposal.StatusAccepted)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal (entity already created): %v", err)), nil
+		return storeErrorResult("resolving proposal (entity already created)", err), nil
 	}
-	return jsonText(confirmResult{Proposal: resolved, Created: created})
+	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
 
 // acceptProposalSQLite runs the materialise + resolve sequence inside a single
@@ -430,7 +603,7 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		return mcp.NewToolResultError("proposal not found"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("fetching proposal: %v", err)), nil
+		return storeErrorResult("fetching proposal", err), nil
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
@@ -438,7 +611,7 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 
 	tx, err := s.sqliteProposal.DB().BeginTx(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("beginning transaction: %v", err)), nil
+		return storeErrorResult("beginning transaction", err), nil
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 
@@ -451,11 +624,11 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 		if errors.Is(err, proposal.ErrNotFound) {
 			return mcp.NewToolResultError("proposal already resolved by concurrent request"), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("resolving proposal: %v", err)), nil
+		return storeErrorResult("resolving proposal", err), nil
 	}
 
 	if err := tx.Commit(); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("committing transaction: %v", err)), nil
+		return storeErrorResult("committing transaction", err), nil
 	}
 
 	created = s.runSQLitePostCommitMaterialisers(ctx, id, prop, created)
@@ -464,9 +637,9 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 	resolved, err := s.proposal.Get(ctx, id)
 	if err != nil {
 		// Commit succeeded — return partial result rather than an error.
-		return jsonText(confirmResult{Created: created})
+		return jsonText(confirmResult{Created: neutralizeCreatedEntity(created)})
 	}
-	return jsonText(confirmResult{Proposal: resolved, Created: created})
+	return jsonText(confirmResult{Proposal: wrapUntrustedProposal(resolved), Created: neutralizeCreatedEntity(created)})
 }
 
 // runSQLitePostCommitMaterialisers runs the post-commit materialise step for
@@ -602,7 +775,7 @@ func (s *Server) materializeTaskSQLite(_ context.Context, _ *sql.Tx, prop *db.Pe
 // TypeDecision. Extracted from the switch to keep gocyclo low; the decision
 // path is the only one that requires the dedicated *DecisionStore handle.
 func (s *Server) materializeDecisionSQLite(ctx context.Context, tx *sql.Tx, prop *db.PendingProposal) (any, string) {
-	dp, errMsg := decodeDecisionParams(prop.Payload)
+	dp, errMsg := decodeDecisionParams(prop.Payload, s.auditSessionID(ctx))
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -699,7 +872,7 @@ func (s *Server) materializeTaskPg(ctx context.Context, tx pgx.Tx, prop *db.Pend
 // materializeDecisionPg is the per-type Postgres-Tx materialiser for
 // TypeDecision. Extracted from the switch to keep gocyclo low.
 func (s *Server) materializeDecisionPg(ctx context.Context, tx pgx.Tx, prop *db.PendingProposal) (any, string) {
-	dp, errMsg := decodeDecisionParams(prop.Payload)
+	dp, errMsg := decodeDecisionParams(prop.Payload, s.auditSessionID(ctx))
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -796,7 +969,7 @@ func (s *Server) materializeTaskIface(ctx context.Context, prop *db.PendingPropo
 // materializeDecisionIface is the per-type backend-agnostic materialiser for
 // TypeDecision. Extracted from the switch to keep gocyclo low.
 func (s *Server) materializeDecisionIface(ctx context.Context, prop *db.PendingProposal) (any, string) {
-	dp, errMsg := decodeDecisionParams(prop.Payload)
+	dp, errMsg := decodeDecisionParams(prop.Payload, s.auditSessionID(ctx))
 	if errMsg != "" {
 		return nil, errMsg
 	}
@@ -876,7 +1049,13 @@ func decodeKnowledgePayload(payload []byte) (proposal.KnowledgePayload, string) 
 // strip) is the drafter's job — by the time the proposal is on the queue
 // the user has reviewed it. Empty title still produces an error so the
 // proposal stays pending instead of materialising garbage.
-func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
+// actorSessionID identifies whose MCP session called confirm_proposal (the
+// materialising call) — not the (unknown) origin of the auto-drafted
+// proposal itself. Threaded in as a parameter rather than set post-decode by
+// each of the 3 call sites so the returned decision.LogParams value stays
+// self-contained (U15; also keeps this struct literal visible to the
+// structural test in u15_actor_session_test.go).
+func decodeDecisionParams(payload []byte, actorSessionID string) (decision.LogParams, string) {
 	var p proposal.DecisionProposerPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return decision.LogParams{}, fmt.Sprintf("decoding decision payload: %v", err)
@@ -920,7 +1099,8 @@ func decodeDecisionParams(payload []byte) (decision.LogParams, string) {
 		// A human accepting a proposal does NOT change its auto origin — the
 		// decision was inferred by a TypeDecision materialiser, not confirmed
 		// fresh by an operator (P3.0a Step 6).
-		Source: decision.SourceAuto,
+		Source:         decision.SourceAuto,
+		ActorSessionID: actorSessionID,
 	}, ""
 }
 
