@@ -31,7 +31,7 @@ _UNSAFE_PATH_CHARS = re.compile(r'[\x00\r\n]')
 # literal citation-shaped strings in source — both are git-tracked, so a
 # repo-wide `git grep -F <ticket text substring>` finds the ticket
 # describing itself. Found via fixture regression testing (GTD
-# fix/gtd-audit-tests-and-gate): ticket 6f306618's branch-name mention
+# fix/gtd-audit-tests-and-gate): ticket 5656cfde's branch-name mention
 # ("mcp-token-diet-v2") only self-matched inside
 # testdata/known_tickets.json, producing a false CITED_BUT_MARKED_UNFIXED.
 SELF_DIR = "scripts/gtd-code-audit"
