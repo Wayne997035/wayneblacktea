@@ -178,24 +178,38 @@ Read the `wayneblacktea://system/build-info` MCP resource (or `GET /health`
 for a bare liveness check) to see exactly which build is running. Two
 fields matter:
 
-- `version` is the real release tag ONLY when the running binary was
-  produced by a tagged `goreleaser` release — otherwise it is `"dev"`.
-  **As of this writing, this repo has 0 git tags and `.github/workflows/
-  release.yml` has never run** — every deployed build, including every
-  current Railway production deploy, reports `version: "dev"`. Do not read
-  a `"dev"` version as "something is misconfigured"; it is the expected
-  state until the first tag is pushed.
-- `build_id` is always present regardless of whether a real tag exists. When
-  `version` is `"dev"` it reports a synthetic, Go-pseudo-version-shaped
-  identifier instead: `v0.0.0-<build-time-yyyymmddhhmmss>-<commit-sha12>`,
+- `version` and `build_id` **carry the same value** — both read
+  `buildinfo.EffectiveVersion()`, which is also what the MCP handshake's
+  `serverInfo.version` reports. Reading either one answers "which build is
+  this". They are kept as two fields so a client can read the build identity
+  without having to know that `version` carries two possible shapes.
+- That value is the real release tag when the running binary was produced by
+  a tagged `goreleaser` release. Otherwise — including every current Railway
+  production deploy, since this repo has no git tags and
+  `.github/workflows/release.yml` has never run — it is a synthetic,
+  Go-pseudo-version-shaped identifier: `v0.0.0-<build-time-yyyymmddhhmmss>-<commit-sha12>`,
   derived from the build's commit SHA and build timestamp (`build/Dockerfile`
   reads these from Railway's `RAILWAY_GIT_COMMIT_SHA` build arg). **The
-  timestamp is BUILD time, not COMMIT time** — it is captured when the
-  Docker image is built, not when the commit was authored, so it will differ
-  from the pseudo-version string `go list -m` would compute for the same
-  commit (measured drift on this repo: ~20 seconds between commit time and
-  build time). Treat `build_id` as "which build produced this response," not
-  as a stand-in for a real Go module pseudo-version.
+  timestamp is BUILD time, not COMMIT time** — it is captured when the Docker
+  image is built, not when the commit was authored, so it will differ from
+  the pseudo-version string `go list -m` would compute for the same commit
+  (measured drift on this repo: ~20 seconds). Treat it as "which build
+  produced this response," not as a stand-in for a real Go module
+  pseudo-version.
+- **`"dev"` means the binary has no injected build identity** — a plain
+  `go build` or `go test`, or a container build where
+  `RAILWAY_GIT_COMMIT_SHA` never reached `build/Dockerfile`. The `-ldflags`
+  injection always runs; without that arg it injects the `none` default that
+  `COMMIT` carries, and `BuildID()` returns the sentinel rather than deriving
+  an identifier from it. (A *malformed* — non-hex — value is a different
+  path: the build fails closed, `build/Dockerfile:74-77`. A blocked deploy is
+  loud; a forged build identity would be silent.) The sentinel is
+  deliberately not version-shaped so an identity-less build can never be
+  mistaken for a real one. **A Railway deploy reporting `"dev"` is a defect,
+  not the expected state** — either the build arg was dropped, or the
+  resource is not reading `buildinfo.EffectiveVersion()`. The second of those
+  shipped once, and readers who looked only at this field concluded from it
+  that production was running stale code.
 
 ## Verifying release binaries
 

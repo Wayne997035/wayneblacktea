@@ -163,12 +163,26 @@ func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
 	if got.BuildID == sentinelVersion {
 		t.Error("resource build_id = \"dev\" — EffectiveVersion did not fall back to BuildID()")
 	}
-	// version (the plain, non-fallback field) stays at the raw sentinel —
-	// only build_id/serverInfo.version apply the fallback. This is the
-	// contract buildIDNote documents for readers of the resource.
-	if got.Version != sentinelVersion {
-		t.Errorf("resource version = %q, want the raw sentinel %q unchanged (build_id is the "+
-			"fallback-aware field, version is not)", got.Version, sentinelVersion)
+	// version applies the SAME fallback as build_id and serverInfo.version.
+	// This assertion previously demanded the opposite — that version stay at
+	// the raw "dev" sentinel — which contradicted the ruling it was written
+	// under (decision 1a7a310a: "Version 仍是哨兵時 serverInfo.version 與
+	// resource.version 同步回傳 build_id") and shipped to production, where a
+	// deploy that knew its own commit still reported version="dev". A test
+	// that pins the violation as the contract is worse than no test: it makes
+	// the defect look verified.
+	if got.Version != info.Version {
+		t.Errorf("resource version %q != serverInfo.version %q — decision 1a7a310a requires both to "+
+			"report the build identity when buildinfo.Version is at its sentinel", got.Version, info.Version)
+	}
+	if got.Version != got.BuildID {
+		t.Errorf("resource version %q != build_id %q — both must read buildinfo.EffectiveVersion()",
+			got.Version, got.BuildID)
+	}
+	if got.Version == sentinelVersion {
+		t.Errorf("resource version = %q on a build that has a real commit (%q) and build date (%q) — "+
+			"a reader of this field alone would conclude production is running an identity-less build",
+			got.Version, buildinfo.Commit, buildinfo.Date)
 	}
 }
 
@@ -202,6 +216,16 @@ func TestResourceBuildInfo_MatchesServerInfo(t *testing.T) {
 	}
 	if got.Version != "canary-version-7a1b" {
 		t.Errorf("resource version = %q, want canary %q", got.Version, "canary-version-7a1b")
+	}
+	// 真 tag 分支的 build_id 斷言。缺了它,把 resources.go 的 BuildID 換成姐妹函式
+	// buildinfo.BuildID() 會編譯得過、全套測試仍綠,而這個分支實際分岔成
+	// version="canary-version-7a1b" vs build_id="dev" —— 已用 mutation 實測證實。
+	// sentinel 分支由 TestResourceBuildInfo_BuildIDMatchesServerInfo 守,兩支合起來
+	// 才蓋住 buildIDNote 對外宣稱的「兩欄同值」。
+	if got.BuildID != got.Version {
+		t.Errorf("resource build_id %q != version %q on the real-tag branch — both must read "+
+			"buildinfo.EffectiveVersion(); buildIDNote tells readers the two carry the same value",
+			got.BuildID, got.Version)
 	}
 	if got.Commit != "canary-commit-2e9f" {
 		t.Errorf("resource commit = %q, want canary %q", got.Commit, "canary-commit-2e9f")

@@ -824,27 +824,30 @@ type buildInfoResource struct {
 	Backend         string `json:"backend"`
 	// BuildID and BuildIDNote are U6's addition (2026-08-20-mcp-surface-spec.md):
 	// always emitted (not omitempty) so the resource's field SHAPE never
-	// changes between a tagged release and an untagged production deploy —
-	// only the VALUES differ (real tag: BuildID equals Version; sentinel:
-	// BuildID is the synthetic buildinfo.BuildID() identifier). A field that
-	// silently appears/disappears depending on build state is a worse API
-	// than one that is always present and sometimes redundant.
+	// changes between a tagged release and an untagged production deploy.
+	// BuildID and Version now carry the SAME value — both read
+	// buildinfo.EffectiveVersion() — because a reader who looks only at
+	// "version" must never see an identity-less-looking string for a build
+	// that does in fact know its own identity. BuildID is kept as a distinct
+	// field so a client can read the build identity without having to know
+	// that "version" carries two possible shapes.
 	BuildID     string `json:"build_id"`
 	BuildIDNote string `json:"build_id_note"`
 }
 
-// buildIDNote explains both version and build_id in one place so a reader
-// of this resource never has to guess which one to trust or why they can
-// differ. Kept as a package-level const (not inlined) so
-// TestResourceBuildInfo_NoUnexpectedFields's forbidden-substring scan and any
-// future byte-budget test measure the exact same string this handler emits.
-const buildIDNote = "version is the real release tag when this build was produced by a tagged " +
-	"goreleaser release (see README's \"Checking what's running\"); every other build — including every " +
-	"current Railway production deploy, which has never been driven by a git tag — leaves version at " +
-	"the \"dev\" sentinel and reports build_id instead: a synthetic v0.0.0-<build-time>-<commit12> " +
-	"identifier derived from this specific build's commit and build timestamp. build_id is ALWAYS " +
-	"present and, when version is a real tag, equals it exactly (see buildinfo.EffectiveVersion) — " +
-	"prefer build_id over version when identifying which exact build produced this response."
+// buildIDNote explains what version and build_id carry so a reader of this
+// resource never has to guess which one to trust. Kept as a package-level
+// const (not inlined) so TestResourceBuildInfo_NoUnexpectedFields's
+// forbidden-substring scan and any future byte-budget test measure the exact
+// same string this handler emits.
+const buildIDNote = "version and build_id carry the same value: this specific binary's build " +
+	"identity. It is the real release tag when a tagged goreleaser release produced the build " +
+	"(see README's \"Checking what's running\"), and otherwise — including every current Railway " +
+	"production deploy, which has never been driven by a git tag — a synthetic " +
+	"v0.0.0-<build-time>-<commit12> identifier derived from this build's own commit and build " +
+	"timestamp. A build with no injected identity at all (a plain go build or go test) reports the " +
+	"\"dev\" sentinel in both fields: deliberately not version-shaped, so an identity-less build can " +
+	"never be mistaken for a real one."
 
 func (s *Server) handleResourceBuildInfo(
 	_ context.Context,
@@ -852,24 +855,36 @@ func (s *Server) handleResourceBuildInfo(
 ) ([]mcp.ResourceContents, error) {
 	const uri = "wayneblacktea://system/build-info"
 
-	// Version/Commit/BuildDate read from buildinfo — the same package
-	// server.go's MCPServer() reads for serverInfo.version, so this resource
-	// and the initialize response can never independently drift (server.go's
-	// MCPServer doc comment). ProtocolVersion is mcp-go's own compiled-in
-	// LATEST_PROTOCOL_VERSION constant, not a value this server invented —
-	// it is the highest protocol version this build understands, regardless
-	// of which version an individual client negotiates down to. BuildID reads
-	// buildinfo.EffectiveVersion() — the SAME function server.go's
-	// serverInfo.version reads — so the two can never independently drift
-	// (mirrors the Version/serverInfo.version relationship one line above).
+	// Version AND BuildID both read buildinfo.EffectiveVersion() — the SAME
+	// function server.go passes to NewMCPServer for serverInfo.version — so
+	// this resource and the initialize response can never independently
+	// drift. Reading the raw buildinfo.Version here instead is the specific
+	// defect this wiring exists to prevent: it made a Railway deploy that
+	// knows its own commit report version="dev", and three separate readers
+	// (two recorded in decision 1a7a310a's context, one after) concluded from
+	// that field alone that production was running stale code.
+	// Commit/BuildDate stay raw on purpose — they are the inputs the identity
+	// is derived from, and a reader diagnosing a malformed build_id needs to
+	// see them unprocessed. ProtocolVersion is mcp-go's own compiled-in
+	// LATEST_PROTOCOL_VERSION constant, not a value this server invented — it
+	// is the highest protocol version this build understands, regardless of
+	// which version an individual client negotiates down to.
+	// 一次求值、兩個欄位共用。這**不是**編譯期保證 —— 共用一個變數擋不住有人把其中
+	// 一處換成 buildinfo.BuildID() 之類的姐妹函式,那樣仍然編譯得過。等式由測試守:
+	// sentinel 分支歸 TestResourceBuildInfo_BuildIDMatchesServerInfo,真 tag 分支歸
+	// TestResourceBuildInfo_MatchesServerInfo,兩支都斷言 Version == BuildID。
+	// 這段註解原本宣稱「編譯期事實」,被 mutation 證偽:換成姐妹函式後 go build 過、
+	// 7 支測試全綠,而真 tag 分支實際分岔。改成單次求值仍然值得做(少一個可以各自
+	// 漂移的呼叫點),但**它的正確性來源是那兩支測試,不是編譯器**。
+	identity := buildinfo.EffectiveVersion()
 	out := buildInfoResource{
 		GeneratedAt:     s.now().UTC().Format(time.RFC3339),
-		Version:         buildinfo.Version,
+		Version:         identity,
 		Commit:          buildinfo.Commit,
 		BuildDate:       buildinfo.Date,
 		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 		Backend:         s.backendKind(),
-		BuildID:         buildinfo.EffectiveVersion(),
+		BuildID:         identity,
 		BuildIDNote:     buildIDNote,
 	}
 	return marshalResource(uri, out)
