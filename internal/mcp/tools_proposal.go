@@ -84,12 +84,29 @@ const proposalPayloadFieldMaxRunes = 20000
 // neutralizeJSONBlob — U13. Mirrors wrapUntrustedDecision/wrapUntrustedTask's
 // copy-not-mutate contract (never mutates the caller's row or any cache
 // holding it). nil in, nil out.
+//
+// [F160-06] ProposedBy and Reason are neutralised too, added to this
+// function. ProposedBy is a plain, unvalidated propose_goal/propose_project
+// argument (stringArg(args, "proposed_by") — no allowlist, unlike Type/
+// Status below); Reason has no write path in this codebase today (the
+// column is never populated by anything that currently runs), but nothing
+// stops a future write path from doing so without revisiting this function,
+// so it gets the same defence-in-depth treatment rather than being silently
+// exempted on the strength of "nothing writes it yet". Type and Status
+// remain untouched — both are closed proposal.Type/proposal.Status enums,
+// validated at write time.
 func wrapUntrustedProposal(p *db.PendingProposal) *db.PendingProposal {
 	if p == nil {
 		return nil
 	}
 	out := *p
 	out.Payload = neutralizeJSONBlob(p.Payload, proposalPayloadFieldMaxRunes)
+	if p.ProposedBy.Valid {
+		out.ProposedBy.String = neutralizeBoundaryMarkers(p.ProposedBy.String)
+	}
+	if p.Reason.Valid {
+		out.Reason.String = neutralizeBoundaryMarkers(p.Reason.String)
+	}
 	return &out
 }
 

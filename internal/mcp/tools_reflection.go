@@ -46,12 +46,23 @@ const (
 // source decision's rationale can survive verbatim into a generated
 // insight string. Widening the conversion here rather than deferring it —
 // see the dispatch report for the explicit divergence note.
+// [F160-06] RelatedEntityType is neutralised too, added to this function:
+// applyRelatedEntity only rejects null bytes/newlines
+// (a single-line-only check), it is not a closed enum — unlike Type
+// (reflection.AllowedTypes), a caller can put arbitrary single-line text
+// there, and the marker text this package neutralises against
+// (storedContextMarkerEnd etc.) is itself single-line, so a control-char
+// check alone does not foreclose it.
 func wrapUntrustedReflection(r *reflection.Reflection) *reflection.Reflection {
 	if r == nil {
 		return nil
 	}
 	out := *r
 	out.Summary = clipSafe(r.Summary, reflectionSummaryMaxRunes)
+	if r.RelatedEntityType != nil {
+		neutralized := neutralizeBoundaryMarkers(*r.RelatedEntityType)
+		out.RelatedEntityType = &neutralized
+	}
 	// neutralizeJSONBlob (boundary_markers.go) is the package's single JSON
 	// walker — U13 integration folded this file's own copy into it. Unlike
 	// that copy, a blob that fails to unmarshal is clipSafe'd rather than

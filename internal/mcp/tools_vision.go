@@ -39,8 +39,18 @@ const (
 // wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract. nil
 // in, nil out.
 //
-// DependsOn (task IDs), Status, RepoName, PromotedTaskID and the timestamp
-// fields are left untouched — none is free text a caller/LLM authored.
+// DependsOn (task IDs), Status, PromotedTaskID and the timestamp fields are
+// left untouched — none is free text a caller/LLM authored; Status is
+// vision.VisionStatus, a closed enum set only by add_vision_item's fixed
+// initial value and promote_vision_to_task's fixed terminal value.
+//
+// [F160-06] RepoName is now clipped too — the doc comment this replaces
+// listed it alongside the genuinely-computed fields above, but
+// add_vision_item's "repo_name" argument is plain caller-supplied text with
+// no write-time validation at all (unlike RepoName elsewhere in this
+// package, e.g. db.Project's, which IS regex-gated); the claim that it
+// carried no free text was wrong, caught by the reflective field-coverage
+// test (u13_wrap_field_coverage_test.go), not noticed by hand.
 func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
 	if v == nil {
 		return nil
@@ -50,16 +60,19 @@ func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
 	out.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
 	out.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
 	out.ContextMD = clipSafe(v.ContextMD, visionContextMDMaxRunes)
+	out.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
 	return &out
 }
 
 // wrapUntrustedVisionItemSummary is wrapUntrustedVisionItem's sibling for
 // vision.VisionItemSummary (the list_vision_items projection, which omits
-// ContextMD entirely — see VisionItemSummary's doc comment).
+// ContextMD entirely — see VisionItemSummary's doc comment). RepoName is
+// clipped for the same [F160-06] reason as wrapUntrustedVisionItem's above.
 func wrapUntrustedVisionItemSummary(v vision.VisionItemSummary) vision.VisionItemSummary {
 	v.Title = clipSafe(v.Title, mcpVisionMaxTitleRunes)
 	v.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
 	v.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
+	v.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
 	return v
 }
 

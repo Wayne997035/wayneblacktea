@@ -126,6 +126,21 @@ const (
 // wrapUntrustedKnowledgeItem returns a copy of item with Title/Content
 // clipSafe'd. Mirrors wrapUntrustedTask's (tools_gtd.go) copy-not-mutate
 // contract. nil in, nil out.
+//
+// [F160-06] Url and HeadingPath are clipped too, added to this function:
+//   - Url: add_knowledge's write-time check (validateKnowledgeArgs) only
+//     requires an http(s):// PREFIX, which does not foreclose a forged
+//     marker appearing later in the string.
+//   - HeadingPath: derived at write time from caller-supplied markdown
+//     heading text (internal/knowledge/markdown.go's HeadingPath builder),
+//     so it carries the same risk as Title/Content. tools_knowledge_nav.go's
+//     OWN separate response type already clips this identical column
+//     (knowledgeNavItem.HeadingPath) for navigate_knowledge/outline_knowledge
+//     — this function is the parallel, previously-unwired path for
+//     add_knowledge/search_knowledge/list_knowledge.
+//
+// Type remains untouched: validateKnowledgeArgs validates it against a
+// closed set (article/til/bookmark/zettelkasten) at write time.
 func wrapUntrustedKnowledgeItem(item *db.KnowledgeItem) *db.KnowledgeItem {
 	if item == nil {
 		return nil
@@ -133,6 +148,12 @@ func wrapUntrustedKnowledgeItem(item *db.KnowledgeItem) *db.KnowledgeItem {
 	out := *item
 	out.Title = clipSafe(item.Title, knowledgeTitleMaxRunes)
 	out.Content = clipSafe(item.Content, knowledgeBodyMaxRunes)
+	if item.Url.Valid {
+		out.Url.String = clipSafe(item.Url.String, knowledgeTitleMaxRunes)
+	}
+	if item.HeadingPath.Valid {
+		out.HeadingPath.String = clipSafe(item.HeadingPath.String, knowledgeTitleMaxRunes)
+	}
 	return &out
 }
 

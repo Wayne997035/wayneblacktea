@@ -515,6 +515,16 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 // (get_project(name)) but is still caller-supplied free text at
 // create_project time, validated only by validator.IsValidRepoName's
 // separate repo_name field, not Name itself.
+//
+// Area is clipped too — [F160-06]. It is a plain, unvalidated create_project
+// argument (handleCreateProject only defaults it to "projects" when empty,
+// never checks its content) that this function had silently left
+// unprotected; caught by the reflective field-coverage test
+// (u13_wrap_field_coverage_test.go), not noticed by hand. Status and
+// RepoName are the two OTHER db.Project string fields and remain
+// intentionally untouched — Status is a closed ProjectStatus enum
+// (validated in handleUpdateProjectStatus) and RepoName is regex-validated
+// (validator.IsValidRepoName) — see that test's exemption list for both.
 func wrapUntrustedProject(p *db.Project) *db.Project {
 	if p == nil {
 		return nil
@@ -525,15 +535,26 @@ func wrapUntrustedProject(p *db.Project) *db.Project {
 	if p.Description.Valid {
 		out.Description.String = clipSafe(p.Description.String, gtdBodyMaxRunes)
 	}
+	out.Area = clipSafe(p.Area, gtdTitleMaxRunes)
 	return &out
 }
 
 // wrapUntrustedGoal is wrapUntrustedTask's sibling for db.Goal — U13 Phase B
 // (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1026/1047). Same
-// copy-not-mutate contract, nil in/nil out. Area/Status are left as-is: both
-// are short caller-supplied values but neither list_goals nor create_goal's
-// PENDING inventory entries flag them as needing this treatment, unlike
-// Title/Description.
+// copy-not-mutate contract, nil in/nil out.
+//
+// [F160-06] Area is now clipped too. The doc comment this replaces argued
+// Area/Status were both safe to leave as-is because "neither list_goals nor
+// create_goal's PENDING inventory entries flag them as needing this
+// treatment" — that reasoning was itself the bug this dispatch's root-cause
+// finding names: deciding whether to protect a field by consulting a
+// hand-maintained list, rather than by checking whether the field is
+// caller-supplied free text. create_goal's "area" argument has no write-time
+// validation at all (gtd.CreateGoal passes it straight through), so it is
+// exactly as caller-controlled as Title/Description. Status remains
+// untouched: unlike Area, it genuinely is not caller-writable — CreateGoal
+// never accepts a status argument and no update-goal-status tool exists, so
+// the column stays at its DB default.
 func wrapUntrustedGoal(g *db.Goal) *db.Goal {
 	if g == nil {
 		return nil
@@ -542,6 +563,9 @@ func wrapUntrustedGoal(g *db.Goal) *db.Goal {
 	out.Title = clipSafe(g.Title, gtdTitleMaxRunes)
 	if g.Description.Valid {
 		out.Description.String = clipSafe(g.Description.String, gtdBodyMaxRunes)
+	}
+	if g.Area.Valid {
+		out.Area.String = clipSafe(g.Area.String, gtdTitleMaxRunes)
 	}
 	return &out
 }

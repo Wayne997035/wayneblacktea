@@ -614,11 +614,20 @@ const (
 // the repo row is workspace-shared and re-read later by list_active_repos in
 // a different, possibly untrusted session, so wiring both call sites the
 // same way avoids a silent asymmetry between them.
+// [F160-06] Name is clipped too, added to this function. sync_repo's "name"
+// argument has no write-time validation at all (handleSyncRepo only rejects
+// the empty string) — it is caller-controlled free text exactly like Path/
+// Description/Language/CurrentBranch/NextPlannedStep below, and this
+// function had silently left it out; caught by the reflective field-
+// coverage test (u13_wrap_field_coverage_test.go), not noticed by hand.
+// Status remains untouched: it is DB-managed and not a field of
+// workspace.UpsertRepoParams, so sync_repo cannot set it at all.
 func wrapUntrustedRepo(r *db.Repo) *db.Repo {
 	if r == nil {
 		return nil
 	}
 	out := *r
+	out.Name = clipSafe(r.Name, repoShortFieldMaxRunes)
 	if r.Path.Valid {
 		out.Path.String = clipSafe(r.Path.String, repoShortFieldMaxRunes)
 	}
