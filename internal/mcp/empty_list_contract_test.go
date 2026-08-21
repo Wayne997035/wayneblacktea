@@ -88,9 +88,9 @@ type emptyListContractCase struct {
 //
 // New list-returning MCP tool -> add one row here. That is the entire point
 // of this table: a future omission is caught by "this tool has no row here",
-// not by a fresh manual review pass (see .claude/rules/backend-security-
-// design.md and ~/.claude/harness/pitfalls.md:60 for why per-endpoint ad hoc
-// tests alone are not sufficient).
+// not by a fresh manual review pass. Per-endpoint ad hoc tests are not
+// sufficient — they only cover the endpoints someone remembered to write one
+// for, and a missing test is indistinguishable from a passing one.
 //
 // Dual-backend: the Postgres half of this same contract, for the tools that
 // differ by backend (get_due_reviews, list_pending_proposals), lives in

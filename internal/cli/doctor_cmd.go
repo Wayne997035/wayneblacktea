@@ -60,7 +60,7 @@ type DoctorSnapshot struct {
 	SessionSummary   string    `json:"session_summary,omitempty"`
 
 	// GoalsDue and TopPending are the OPS-1 delivery-visibility fields,
-	// consumed by _project/.claude/hooks/session-start.sh. Both are
+	// consumed by an external session-start hook. Both are
 	// deliberately NOT `omitempty`: GoalsDue MUST always render as "[]"
 	// (never omitted/null) and TopPending MUST always render as an object
 	// or explicit "null" — see newDoctorSnapshot for the always-non-nil

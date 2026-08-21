@@ -11,7 +11,7 @@ import (
 // call against this enum before issuing the UPDATE, so nothing — including a
 // prompt-injected MCP tool call carrying an arbitrary string — can write an
 // unrecognised status into the column
-// (.claude/rules/backend-security-design.md §2: adversarial input handling).
+// (adversarial input handling: treat every stored string as attacker-shaped).
 //
 // Values mirror the migration COMMENT on the column
 // (migrations/000062_memory_atoms_promoted_status.up.sql): 'pending | done |

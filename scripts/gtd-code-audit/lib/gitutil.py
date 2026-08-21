@@ -88,8 +88,7 @@ class GitOps:
             # Explicit noqa below: argv list, never shell=True — every element
             # (including anything derived from ticket text via the callers
             # in rules.py) is passed as an inert argv entry, not shell text.
-            # "git" resolves via PATH deliberately (same as scan-review.py's
-            # convention elsewhere in this repo).
+            # "git" resolves via PATH deliberately.
             r = subprocess.run(  # noqa: S603
                 ["git", "-C", str(self.repo_root), *args],  # noqa: S607
                 capture_output=True, text=True, timeout=self.timeout,
@@ -149,9 +148,8 @@ class GitOps:
         """Ticket text often drops the directory prefix ('context_render.go'
         instead of 'internal/cli/context_render.go'). Find the unique
         tracked file ending in /<basename>; ambiguous or zero matches
-        return None rather than guessing (same policy as scan-review.py's
-        _resolve — dangerous to silently pick wrong file in a security
-        audit tool)."""
+        return None rather than guessing — silently picking the wrong file
+        in a security audit tool is worse than reporting nothing."""
         if self._ls_files_cache is None:
             rc, out, _ = self._run(["ls-files"])
             self._ls_files_cache = out.splitlines() if rc == 0 else []

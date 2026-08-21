@@ -28,11 +28,9 @@ after `list_tasks`/`get_today_context` surfaces candidate work and before
 
 **This is a manual step — nothing calls it automatically.** A ticket sitting
 in `pending` status is not, by itself, a signal to re-run this; the residual
-gap is that a human has to remember to run it. `_project/CLAUDE.md`'s manual
-scripts table is where that reminder should live (this repo's `scripts/`
-directory is not itself wired to any hook) — flagged to Lead in the
-dispatch completion report rather than self-edited, since `.claude/**` is
-out of scope for this ticket.
+gap is that a human has to remember to run it. This repo's `scripts/`
+directory is not wired to any hook, so the reminder has to live wherever
+your workspace keeps its list of manual steps.
 
 ## Usage
 
@@ -53,9 +51,8 @@ python3 audit.py --json
 python3 audit.py --repo /path/to/other/checkout
 ```
 
-Every run (unless `--no-write`) writes a dated report to `reports/` — same
-convention as `scripts/ai-review/scan-review.py` and
-`scripts/pitfalls-gc/pitfalls-gc.py`. There is **no `--apply` flag and no
+Every run (unless `--no-write`) writes a dated report to `reports/`. There
+is **no `--apply` flag and no
 write path to the `tasks` table anywhere in this package** — `lib/db.py`
 only ever issues `SELECT`.
 
