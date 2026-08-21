@@ -44,7 +44,7 @@
     "id": "57d28d87-20e0-4ce1-a02d-44f5d1330576",
     "status": "completed",
     "title": "[wbt][PR#157 二軍 🔴 Critical] 新 handoff resource 的 repo_name 未中性化 — 可從圍欄外注入,實測單一 payload 出現 3 個結束標記",
-    "description": "internal/mcp/resources.go:503 —— repo_name 只做 textValue(),沒有 neutralize / clip / fence。不受信任的內容可注入偽造的圍欄結束標記,使實際輸出的結束標記數量超過設計上限,讓部分內容落在合法圍欄之外 = 圍欄逃逸。\n\n二軍 runtime 判定 bypass-possible,已用 resources/list 驗證該 resource 真的 over-the-wire 可達,不是理論風險。\n\n同型缺陷在 internal/mcp/tools_context.go:316 為 pre-existing —— **兩處都要修**,只修新的那處等於留著同一條路。\n\n同一行還有第二個問題(見 🟠 單):repo_name 寫端讀端皆無長度上限,實測接受 200,000 rune、resource 回傳 200,242 bytes。兩者可用同一個修法一起關掉。\n\nacceptance:\n- repo_name 走與 intent/context_summary 相同的 clip + fence + neutralise 路徑\n- 回歸測試:塞入含真實結束標記的 repo_name,斷言輸出中結束標記數量不超過設計上限,且注入文字落在圍欄內\n- tools_context.go:316 同款修好,有測試\n- PoC 步驟見 .reviews/pr157/r1-security-engineer.md",
+    "description": "internal/mcp/resources.go:503 —— repo_name 只做 textValue(),沒有 neutralize / clip / fence。不受信任的內容可注入偽造的圍欄結束標記,使實際輸出的結束標記數量超過設計上限,讓部分內容落在合法圍欄之外 = 圍欄逃逸。\n\n二軍 runtime 判定 bypass-possible,已用 resources/list 驗證該 resource 真的 over-the-wire 可達,不是理論風險。\n\n同型缺陷在 internal/mcp/tools_context.go:316 為 pre-existing —— **兩處都要修**,只修新的那處等於留著同一條路。\n\n同一行還有第二個問題(見 🟠 單):repo_name 寫端讀端皆無長度上限,實測接受 200,000 rune、resource 回傳 200,242 bytes。兩者可用同一個修法一起關掉。\n\nacceptance:\n- repo_name 走與 intent/context_summary 相同的 clip + fence + neutralise 路徑\n- 回歸測試:塞入含真實結束標記的 repo_name,斷言輸出中結束標記數量不超過設計上限,且注入文字落在圍欄內\n- tools_context.go:316 同款修好,有測試\n- PoC 步驟見該輪的二軍報告",
     "created_at": "2000-08-15 02:53:00.208999+00",
     "fixture_category": "positive_verified"
   },
@@ -100,7 +100,7 @@
     "id": "79f8c97b-d7f8-409e-8fbd-f7679b48f64a",
     "status": "pending",
     "title": "[wbt][PR#157 二軍 🔵 彙整] 三則 Suggestion:DSN 繞過連線預算 / boolArg 不吃字串化 bool / DB 錯誤原文回 client",
-    "description": "branch: 待開。PR #157 二軍 round 1 的 🔵 Suggestion 彙整,皆不擋 merge。明細見 .reviews/pr157/r1-security-engineer.md。\n\n一、`internal/storage/factory.go:390` —— DSN 可以繞過連線預算。W7 剛把 MaxConns 集中成具名常數並加了 ratchet 測試,但 DSN 解析路徑是否會覆寫這個常數尚待確認,若會就要一起納入 ratchet。\n\n二、`internal/mcp/server.go:493` —— `boolArg` 不接受字串化的 bool(`\"true\"` / `\"false\"`)。W2 新加的 `include_file_map` 正是 bool 參數,若某些 MCP client 送字串化布林,會靜默當成 false —— 那會直接觸發本輪那張 file_map 資料流失的單。值得一併查。\n\n三、`internal/mcp/resources.go:490` —— DB 錯誤原文直接回給 client,可能洩漏 schema / 連線細節。\n\nacceptance:三則各自判定「修」或「記錄為接受」,不得默默略過。第二則與 file_map 資料流失單有關聯,優先。",
+    "description": "branch: 待開。PR #157 二軍 round 1 的 🔵 Suggestion 彙整,皆不擋 merge。明細見該輪的二軍報告。\n\n一、`internal/storage/factory.go:390` —— DSN 可以繞過連線預算。W7 剛把 MaxConns 集中成具名常數並加了 ratchet 測試,但 DSN 解析路徑是否會覆寫這個常數尚待確認,若會就要一起納入 ratchet。\n\n二、`internal/mcp/server.go:493` —— `boolArg` 不接受字串化的 bool(`\"true\"` / `\"false\"`)。W2 新加的 `include_file_map` 正是 bool 參數,若某些 MCP client 送字串化布林,會靜默當成 false —— 那會直接觸發本輪那張 file_map 資料流失的單。值得一併查。\n\n三、`internal/mcp/resources.go:490` —— DB 錯誤原文直接回給 client,可能洩漏 schema / 連線細節。\n\nacceptance:三則各自判定「修」或「記錄為接受」,不得默默略過。第二則與 file_map 資料流失單有關聯,優先。",
     "created_at": "2000-08-15 02:54:38.072055+00",
     "fixture_category": "positive_claimed_by_dispatch"
   },

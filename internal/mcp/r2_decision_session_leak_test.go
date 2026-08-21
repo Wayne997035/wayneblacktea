@@ -37,8 +37,8 @@ func callListDecisionsCtx(t *testing.T, ctx context.Context, s *Server, args map
 	return resultText(result)
 }
 
-// TestListDecisions_DoesNotLeakOtherSessionActorSessionID reproduces the
-// exact PoC in .reviews/pr160/r1-security-engineer.md: session A writes a
+// TestListDecisions_DoesNotLeakOtherSessionActorSessionID pins a security
+// review finding: session A writes a
 // decision, session B (a different MCP client) calls list_decisions and
 // must NOT be able to read session A's actor_session_id — in any form,
 // anywhere in the response text — while the write-side audit trail (the DB

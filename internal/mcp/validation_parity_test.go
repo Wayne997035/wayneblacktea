@@ -21,7 +21,7 @@ import (
 // ---------------------------------------------------------------------------
 // Sprint 8-7 MCP vs HTTP validation-parity matrix.
 //
-// SA gap-audit (.reviews/sprint-8-7/sa-gap-audit.md) found seven concepts
+// A gap audit found seven concepts
 // (A-G) where MCP tools and HTTP handlers enforced different strength
 // guarantees for the same domain concept — downstream code cannot tell which
 // transport a row came through, so the two paths disagreeing means the
