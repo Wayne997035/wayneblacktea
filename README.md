@@ -191,7 +191,7 @@ fields matter:
   `version` never report the raw `"dev"` sentinel for a build that knows its
   own commit — the equality was a side effect of the first fix, not the goal.
 - `version` is the release tag when the binary carries one. There are two ways
-  it can: `go install …@v1.0.0` bakes the module version into the build info,
+  it can: `go install …@v1.0.1` bakes the module version into the build info,
   and `build/Dockerfile` can inject one through `-ldflags`. Otherwise —
   including every Railway production deploy, which builds from a branch rather
   than a tag — it is a synthetic,
