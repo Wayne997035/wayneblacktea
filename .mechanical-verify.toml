@@ -1,0 +1,44 @@
+# 機械驗收引擎的 repo 級規則資料(ADR-0003:引擎泛用,規則是資料住各 repo)。
+#
+# 讀它的是 scripts/mechanical-verify/mv/repoconfig.py。
+# 未列出的軸 = 啟用;要停用某條軸必須在 [axes] 明寫 false 並附理由,
+# 因為「漏寫」與「刻意不跑」在輸出上分不出來,而只有寫下來的那個看得見。
+
+[stack]
+language = "go"
+# ticket.mutation 用它跑單一具名測試。argv list,NEVER 字串 —— 外部輸入只能當
+# argv 參數,不進 shell(scripts/ai-review/CLAUDE.md 的既定信念)。
+test_command = ["go", "test", "./...", "-count=1", "-run"]
+
+[paths]
+# ⚠ 這三個都**不在 repo 根**。寫死 root 的軸在這個 repo 會回 not-applicable,
+# 讀起來像通過 —— 這份設定檔存在的理由就是這件事。
+golangci = "build/.golangci.yml"
+dockerfile = "build/Dockerfile"
+ci_workflows = ".github/workflows"
+
+migrations = "migrations"
+sqlite_migrations = "migrations/sqlite"
+sqlc_config = "sqlc.yaml"
+
+# 開工單 / 收工單落點,給 ticket.* 與 decision.verbatim 用。
+# 它是 gitignored,所以隔離 worktree 裡不存在 —— 判定器要往主 checkout 找。
+implement_records = ".implement"
+
+[axes]
+# 目前沒有任何軸被停用。要停一條就在這裡加一行 false,並在行上寫「不跑會漏掉什麼」。
+
+# ── 例外宣告 ──────────────────────────────────────────────────────────────
+# 比對 Finding.where 的 glob。被豁免的命中**不會從證據包消失** —— 它們渲染在
+# 「被 repo 設定豁免的命中」一節,連同下面這個 why。豁免會過期,而過期不會有
+# 東西叫,所以理由要寫得讓三個月後的人判斷得出它還成不成立。
+
+[[exceptions]]
+axis = "army5.M5"
+where = "migrations/00000[1-9]_*"
+why = "migrations/sqlite/000012_sqlite_baseline.up.sql 是刻意的合併基線,檔頭自述『schema state as of Postgres migration 000012, the point at which per-migration SQLite twins (000013+) begin』;它建 11 個 table,與 PG 000001-000010 建的 11 個**逐個表名對得上**(不只數量相同)。逐檔孿生從 000013 才開始,所以 000001-000010 沒有孿生是設計不是缺漏。翻盤條件:哪天有人往 000001-000010 補孿生檔,這條就該拿掉。"
+
+[[exceptions]]
+axis = "army5.M5"
+where = "migrations/00001[01]_*"
+why = "同上一條的延續:000010 也在合併基線涵蓋範圍內(000011 這個編號從未被使用,PG 由 000010 直接跳 000012,所以它不是被豁免的檔,只是樣態上順帶蓋到一個不存在的名字)。分成兩條而不是寫一個大範圍的 glob,是為了讓每一條精確蓋住它要蓋的檔 —— 過寬的樣態會連同未來新增的 migration 一起靜靜吃掉,而被吃掉的命中跟軸沒抓到長得一樣。實測(拿 mv/axes_sql.py 的 check_m5() 真實演算法重跑全部 76 個 PG migration)這兩條合起來恰好吃掉 10 個命中,即 000001-000010,000012 之後一個都沒被誤吃;六位固定寬度的編號讓未來的 migration 在數學上不可能落進這兩個樣態。"
