@@ -1,6 +1,9 @@
 package buildinfo
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // sentinelVersion/sentinelCommit/sentinelDate are buildinfo.go's own package-
 // level constants (this file shares the package, not a _test-suffixed one) —
@@ -118,6 +121,54 @@ func TestBuildID_ShortCommitFallsBack(t *testing.T) {
 // production deploy today — no git tag ever drove one, see README's new
 // "Checking what's running" section), EffectiveVersion must return BuildID's
 // output rather than the bare "dev" sentinel.
+// FullBuildID answers a different question from BuildID: which build exactly,
+// not which release line. These pin the two differences that make it worth
+// having as a separate field — the commit is NOT truncated, and the timestamp
+// keeps its RFC3339 punctuation. If either drifts back toward BuildID's shape,
+// the field stops being able to answer its question and quietly becomes a
+// duplicate of version, which is the state it was in before.
+func TestFullBuildID_RealValues(t *testing.T) {
+	resetSentinels(t)
+	Version = sentinelVersion
+	Commit = testCommitSHA
+	Date = testBuildDate
+
+	want := testCommitSHA + "@2026-08-16T07:43:48Z"
+	got := FullBuildID()
+	if got != want {
+		t.Errorf("FullBuildID() = %q, want %q", got, want)
+	}
+	if got == BuildID() {
+		t.Errorf("FullBuildID() == BuildID() == %q — the two must answer different questions", got)
+	}
+	if !strings.Contains(got, testCommitSHA) {
+		t.Errorf("FullBuildID() = %q does not contain the commit verbatim %q — truncating it "+
+			"defeats the reason this function exists apart from BuildID", got, testCommitSHA)
+	}
+}
+
+func TestFullBuildID_FallsBackToSentinel(t *testing.T) {
+	cases := []struct {
+		name         string
+		commit, date string
+	}{
+		{"sentinel commit", sentinelCommit, testBuildDate},
+		{"short commit", "abc123", testBuildDate},
+		{"malformed date", testCommitSHA, "not-a-date"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resetSentinels(t)
+			Version, Commit, Date = sentinelVersion, c.commit, c.date
+			got := FullBuildID()
+			if got != sentinelVersion {
+				t.Errorf("FullBuildID() = %q, want sentinel %q — an identity that looks real but "+
+					"is not is worse than an obviously-fake one", got, sentinelVersion)
+			}
+		})
+	}
+}
+
 func TestEffectiveVersion_FallsBackWhenSentinel(t *testing.T) {
 	resetSentinels(t)
 	Version = sentinelVersion
