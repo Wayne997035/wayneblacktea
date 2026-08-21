@@ -548,6 +548,17 @@ func wrapUntrustedGoal(g *db.Goal) *db.Goal {
 
 // wrapUntrustedGoals maps wrapUntrustedGoal over a slice, mirroring
 // wrapUntrustedDecisions' (tools_decision.go) same pattern for a []T sibling.
+//
+// [F160-03] Guarantees a non-nil return: nil/empty in, non-nil (possibly
+// zero-length) []db.Goal out — make([]db.Goal, len(goals)) below returns a
+// non-nil slice regardless of whether goals itself is nil, since len(nil)
+// is 0. dashboard/overview (resources.go) depends on exactly this to keep
+// the wire shape `"goals": []` rather than `"goals": null` when there are no
+// goals — the guarantee lives HERE, in the function already producing it as
+// a side effect of make(), not in a nil-check at the resource handler (which
+// used to duplicate the check redundantly, one layer downstream of where it
+// actually takes effect). TestF160_03_WrapUntrustedGoalsReturnsNonNilOnNilInput
+// pins this directly.
 func wrapUntrustedGoals(goals []db.Goal) []db.Goal {
 	out := make([]db.Goal, len(goals))
 	for i := range goals {

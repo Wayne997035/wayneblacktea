@@ -177,21 +177,27 @@ func (s *Server) handleResourceDashboardOverview(
 ) ([]mcp.ResourceContents, error) {
 	const uri = "wayneblacktea://dashboard/overview"
 
+	// [F160-03] No nil-guard here: wrapUntrustedGoals(nil) already returns a
+	// non-nil, zero-length slice (its own doc comment, tools_gtd.go) — a
+	// guard at this call site would be dead code duplicating a guarantee the
+	// callee already provides, one layer downstream of where it actually
+	// takes effect. TestF160_03_DashboardOverviewEmptyGoalsAndProjectsWireShapeIsEmptyArray
+	// pins the resulting wire shape end-to-end.
 	goals, err := s.gtd.ActiveGoals(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("overview resource: loading goals: %w", err)
 	}
-	if goals == nil {
-		goals = []db.Goal{}
-	}
 	goals = wrapUntrustedGoals(goals)
 
+	// [F160-03] Same guarantee as goals above, but for db.Project there is no
+	// wrapUntrustedProjects plural helper to attach it to (only the singular
+	// wrapUntrustedProject exists) — so the non-nil guarantee lives HERE, in
+	// this make() call, which is the actual, only source of it for this
+	// field. make([]db.Project, len(projects)) returns non-nil regardless of
+	// whether projects itself is nil.
 	projects, err := s.gtd.ListActiveProjects(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("overview resource: loading projects: %w", err)
-	}
-	if projects == nil {
-		projects = []db.Project{}
 	}
 	wrappedProjects := make([]db.Project, len(projects))
 	for i := range projects {
@@ -301,6 +307,14 @@ func (s *Server) handleResourceDashboardUpcoming(
 // the same treatment get_upcoming_work's renderUpcomingBuckets (tools_gtd.go)
 // already applies to the identical underlying data via neutralizeBoundaryMarkers;
 // this resource reads the exact same stored, attacker-influenced field.
+//
+// [F160-03] Guarantees a non-nil return, same contract as wrapUntrustedGoals
+// (tools_gtd.go): make([]resourceUpcomingItem, 0, len(tasks)) below is
+// non-nil regardless of whether tasks is nil, which is what keeps each of
+// dashboard/upcoming's five bucket fields (today/tomorrow/day_after/upcoming/
+// unscheduled_important) at wire shape `[]` rather than `null` when a bucket
+// is empty. TestF160_03_DashboardUpcomingEmptyGroupsWireShapeIsEmptyArray
+// pins the resulting wire shape end-to-end for all five.
 func toResourceUpcomingItems(tasks []db.Task) []resourceUpcomingItem {
 	out := make([]resourceUpcomingItem, 0, len(tasks))
 	for _, t := range tasks {

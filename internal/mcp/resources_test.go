@@ -146,6 +146,38 @@ func TestResource_DashboardOverview_WorkspaceID(t *testing.T) {
 	}
 }
 
+// TestF160_03_DashboardOverviewEmptyGoalsAndProjectsWireShapeIsEmptyArray
+// pins the actual wire-level property F160-03 exists to guarantee: on an
+// empty DB, "goals" and "projects" must serialise as `[]`, never `null`. A
+// nil slice in Go marshals to JSON null — TestResource_DashboardOverview_Empty
+// above only checks the KEY is present (json.Unmarshal into map[string]any
+// puts an entry for a null value too, so `_, found` is true either way and
+// would not catch a regression to null); this test reads the raw JSON text
+// so a `null` regression is caught at the byte level, not laundered through
+// an unmarshal step that can't tell `[]` from `null` once decoded into `any`.
+func TestF160_03_DashboardOverviewEmptyGoalsAndProjectsWireShapeIsEmptyArray(t *testing.T) {
+	s := newTestResourceServer(t)
+
+	contents, err := s.handleResourceDashboardOverview(context.Background(), mcpmsg.ReadResourceRequest{})
+	if err != nil {
+		t.Fatalf("handleResourceDashboardOverview: %v", err)
+	}
+	raw := resourceRawText(t, contents)
+
+	if !strings.Contains(raw, `"goals":[]`) {
+		t.Errorf(`"goals" did not serialise as [] on an empty DB: %s`, raw)
+	}
+	if strings.Contains(raw, `"goals":null`) {
+		t.Errorf(`"goals" serialised as null instead of [] — F160-03 regression: %s`, raw)
+	}
+	if !strings.Contains(raw, `"projects":[]`) {
+		t.Errorf(`"projects" did not serialise as [] on an empty DB: %s`, raw)
+	}
+	if strings.Contains(raw, `"projects":null`) {
+		t.Errorf(`"projects" serialised as null instead of [] — F160-03 regression: %s`, raw)
+	}
+}
+
 // TestResource_DashboardOverview_NilHandoff verifies that session.ErrNotFound
 // (no handoff in DB) is handled gracefully — pending_handoff=false, no error.
 func TestResource_DashboardOverview_NilHandoff(t *testing.T) {
@@ -243,6 +275,35 @@ func TestResource_DashboardUpcoming_Empty(t *testing.T) {
 	for _, bucket := range []string{"today", "tomorrow", "day_after", "upcoming", "unscheduled_important"} {
 		if _, found := groups[bucket]; !found {
 			t.Errorf("groups missing bucket %q", bucket)
+		}
+	}
+}
+
+// TestF160_03_DashboardUpcomingEmptyGroupsWireShapeIsEmptyArray is
+// TestF160_03_DashboardOverviewEmptyGoalsAndProjectsWireShapeIsEmptyArray's
+// sibling for dashboard/upcoming (P3 in the F160-03 dispatch note: every
+// array-emitting resource needs this pin, not just overview). All five
+// buckets already default to non-nil via toResourceUpcomingItems'
+// make(..., 0, len(tasks)) (see its doc comment), so this test is
+// expected to pass without a code change — it exists to make that property
+// a regression-checked fact instead of an unverified claim.
+func TestF160_03_DashboardUpcomingEmptyGroupsWireShapeIsEmptyArray(t *testing.T) {
+	s := newTestResourceServer(t)
+
+	contents, err := s.handleResourceDashboardUpcoming(context.Background(), mcpmsg.ReadResourceRequest{})
+	if err != nil {
+		t.Fatalf("handleResourceDashboardUpcoming: %v", err)
+	}
+	raw := resourceRawText(t, contents)
+
+	for _, bucket := range []string{"today", "tomorrow", "day_after", "upcoming", "unscheduled_important"} {
+		wantEmpty := `"` + bucket + `":[]`
+		wantNull := `"` + bucket + `":null`
+		if !strings.Contains(raw, wantEmpty) {
+			t.Errorf("bucket %q did not serialise as [] on an empty DB: %s", bucket, raw)
+		}
+		if strings.Contains(raw, wantNull) {
+			t.Errorf("bucket %q serialised as null instead of [] — F160-03 regression: %s", bucket, raw)
 		}
 	}
 }
