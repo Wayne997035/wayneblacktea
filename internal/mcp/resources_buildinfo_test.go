@@ -156,12 +156,23 @@ func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
 	var got buildInfoResource
 	parseResourceJSON(t, contents, &got)
 
-	if got.BuildID != info.Version {
-		t.Errorf("resource build_id %q != serverInfo.version %q — the two have drifted apart",
-			got.BuildID, info.Version)
+	// build_id answers "which build exactly", version answers "which release".
+	// They MUST NOT be equal here: equality means build_id carries nothing
+	// version does not already say, which is the state this test used to pin.
+	if got.BuildID == got.Version {
+		t.Errorf("resource build_id == version == %q — build_id must carry the exact build "+
+			"(commit verbatim + build time), not repeat the release identifier", got.BuildID)
+	}
+	// The whole point of the verbatim commit: a 12-hex prefix is readable but
+	// not enough to hand to `git show` with certainty.
+	if !strings.HasPrefix(got.BuildID, buildinfo.Commit+"@") {
+		t.Errorf("resource build_id %q does not start with the full injected commit %q + \"@\" — "+
+			"a truncated commit defeats the reason this field exists apart from version",
+			got.BuildID, buildinfo.Commit)
 	}
 	if got.BuildID == sentinelVersion {
-		t.Error("resource build_id = \"dev\" — EffectiveVersion did not fall back to BuildID()")
+		t.Error("resource build_id = \"dev\" on a build with a real commit and date — " +
+			"FullBuildID did not produce an identity")
 	}
 	// version applies the SAME fallback as build_id and serverInfo.version.
 	// This assertion previously demanded the opposite — that version stay at
@@ -175,9 +186,13 @@ func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
 		t.Errorf("resource version %q != serverInfo.version %q — decision 1a7a310a requires both to "+
 			"report the build identity when buildinfo.Version is at its sentinel", got.Version, info.Version)
 	}
-	if got.Version != got.BuildID {
-		t.Errorf("resource version %q != build_id %q — both must read buildinfo.EffectiveVersion()",
-			got.Version, got.BuildID)
+	// version MUST still apply the fallback — that is decision 1a7a310a's actual
+	// requirement, and it is independent of whether build_id happens to equal it.
+	// Equality was a side effect of the first fix, never the goal; pinning the
+	// side effect is how build_id ended up carrying zero information.
+	if got.Version != buildinfo.EffectiveVersion() {
+		t.Errorf("resource version %q != buildinfo.EffectiveVersion() %q",
+			got.Version, buildinfo.EffectiveVersion())
 	}
 	if got.Version == sentinelVersion {
 		t.Errorf("resource version = %q on a build that has a real commit (%q) and build date (%q) — "+
@@ -217,15 +232,18 @@ func TestResourceBuildInfo_MatchesServerInfo(t *testing.T) {
 	if got.Version != "canary-version-7a1b" {
 		t.Errorf("resource version = %q, want canary %q", got.Version, "canary-version-7a1b")
 	}
-	// 真 tag 分支的 build_id 斷言。缺了它,把 resources.go 的 BuildID 換成姐妹函式
-	// buildinfo.BuildID() 會編譯得過、全套測試仍綠,而這個分支實際分岔成
-	// version="canary-version-7a1b" vs build_id="dev" —— 已用 mutation 實測證實。
-	// sentinel 分支由 TestResourceBuildInfo_BuildIDMatchesServerInfo 守,兩支合起來
-	// 才蓋住 buildIDNote 對外宣稱的「兩欄同值」。
-	if got.BuildID != got.Version {
-		t.Errorf("resource build_id %q != version %q on the real-tag branch — both must read "+
-			"buildinfo.EffectiveVersion(); buildIDNote tells readers the two carry the same value",
-			got.BuildID, got.Version)
+	// 真 tag 分支:version 是 tag,build_id 走自己那條路。這個 fixture 只注入
+	// Version,沒注入合法的 Commit/Date,所以 build_id 落回 "dev" —— 那是對的,
+	// 「有 tag」與「知道自己是哪一次建置」是兩件獨立的事,goreleaser 會兩個都注入。
+	// 缺了這條斷言,把 BuildID 換回 EffectiveVersion() 會編譯得過且全套測試仍綠。
+	if got.BuildID == got.Version {
+		t.Errorf("resource build_id == version == %q on the real-tag branch — build_id must not "+
+			"repeat the tag; it identifies the build, not the release", got.BuildID)
+	}
+	if got.BuildID != sentinelVersion {
+		t.Errorf("resource build_id = %q, want the %q sentinel — this fixture injects no valid "+
+			"commit/date, so there is no exact-build identity to report",
+			got.BuildID, sentinelVersion)
 	}
 	if got.Commit != "canary-commit-2e9f" {
 		t.Errorf("resource commit = %q, want canary %q", got.Commit, "canary-commit-2e9f")

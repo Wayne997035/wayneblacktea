@@ -106,6 +106,37 @@ func BuildID() string {
 	return "v0.0.0-" + t.UTC().Format(buildIDTimeLayout) + "-" + Commit[:commitShaLen]
 }
 
+// FullBuildID identifies the exact build, where BuildID identifies the release
+// line. They answer different questions and must not be collapsed into one
+// value: "which release is this?" is answered by a sortable pseudo-version
+// (BuildID, and through it EffectiveVersion); "which build exactly?" is
+// answered here.
+//
+// Shape: "<commit>@<RFC3339 UTC build time>". Two deliberate differences from
+// BuildID's shape:
+//
+//   - the commit is emitted VERBATIM, never truncated to commitShaLen. A
+//     12-hex prefix is enough to be readable but not enough to hand to
+//     `git show` with certainty; this field exists so a reader can go from a
+//     running service to the exact object without guessing.
+//   - the timestamp keeps its RFC3339 punctuation instead of collapsing to
+//     buildIDTimeLayout. Nothing sorts on this field — it is an identifier,
+//     not a version — so readability wins over compactness.
+//
+// Returns the same "dev" sentinel as BuildID under the same conditions, for
+// the same reason: an identity that looks real but isn't is worse than an
+// obviously-fake one.
+func FullBuildID() string {
+	if Commit == sentinelCommit || len(Commit) < commitShaLen {
+		return sentinelVersion
+	}
+	t, err := time.Parse(time.RFC3339, Date)
+	if err != nil {
+		return sentinelVersion
+	}
+	return Commit + "@" + t.UTC().Format(time.RFC3339)
+}
+
 // EffectiveVersion returns Version when it carries a real (non-sentinel)
 // value — a goreleaser tagged release — otherwise falls back to BuildID()
 // (itself "dev" when no build identity was injected at all). This is the

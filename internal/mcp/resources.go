@@ -825,12 +825,12 @@ type buildInfoResource struct {
 	// BuildID and BuildIDNote are U6's addition (2026-08-20-mcp-surface-spec.md):
 	// always emitted (not omitempty) so the resource's field SHAPE never
 	// changes between a tagged release and an untagged production deploy.
-	// BuildID and Version now carry the SAME value — both read
-	// buildinfo.EffectiveVersion() — because a reader who looks only at
-	// "version" must never see an identity-less-looking string for a build
-	// that does in fact know its own identity. BuildID is kept as a distinct
-	// field so a client can read the build identity without having to know
-	// that "version" carries two possible shapes.
+	//
+	// BuildID carries what Version cannot: the commit VERBATIM plus the build
+	// timestamp. Version is a release identifier and must stay sortable, so it
+	// truncates the commit to 12 hex — enough to read, not enough to hand to
+	// `git show` with certainty. This field is the one a reader uses to get
+	// from a running service to the exact object.
 	BuildID     string `json:"build_id"`
 	BuildIDNote string `json:"build_id_note"`
 }
@@ -840,14 +840,15 @@ type buildInfoResource struct {
 // const (not inlined) so TestResourceBuildInfo_NoUnexpectedFields's
 // forbidden-substring scan and any future byte-budget test measure the exact
 // same string this handler emits.
-const buildIDNote = "version and build_id carry the same value: this specific binary's build " +
-	"identity. It is the real release tag when a tagged goreleaser release produced the build " +
-	"(see README's \"Checking what's running\"), and otherwise — including every current Railway " +
-	"production deploy, which has never been driven by a git tag — a synthetic " +
-	"v0.0.0-<build-time>-<commit12> identifier derived from this build's own commit and build " +
-	"timestamp. A build with no injected identity at all (a plain go build or go test) reports the " +
-	"\"dev\" sentinel in both fields: deliberately not version-shaped, so an identity-less build can " +
-	"never be mistaken for a real one."
+const buildIDNote = "version answers WHICH RELEASE: the real tag when a tagged goreleaser release " +
+	"produced the build (see README's \"Checking what's running\"), and otherwise — including every " +
+	"current Railway production deploy, which has never been driven by a git tag — a synthetic " +
+	"v0.0.0-<build-time>-<commit12> pseudo-version that sorts below every real tag. " +
+	"build_id answers WHICH BUILD EXACTLY: <commit>@<RFC3339 build time>, with the commit verbatim " +
+	"rather than truncated, so it can be handed straight to `git show`. The two are deliberately " +
+	"different values. A build with no injected identity at all (a plain go build or go test) " +
+	"reports the \"dev\" sentinel in BOTH fields: deliberately not version-shaped, so an " +
+	"identity-less build can never be mistaken for a real one."
 
 func (s *Server) handleResourceBuildInfo(
 	_ context.Context,
@@ -869,22 +870,33 @@ func (s *Server) handleResourceBuildInfo(
 	// LATEST_PROTOCOL_VERSION constant, not a value this server invented — it
 	// is the highest protocol version this build understands, regardless of
 	// which version an individual client negotiates down to.
-	// 一次求值、兩個欄位共用。這**不是**編譯期保證 —— 共用一個變數擋不住有人把其中
-	// 一處換成 buildinfo.BuildID() 之類的姐妹函式,那樣仍然編譯得過。等式由測試守:
-	// sentinel 分支歸 TestResourceBuildInfo_BuildIDMatchesServerInfo,真 tag 分支歸
-	// TestResourceBuildInfo_MatchesServerInfo,兩支都斷言 Version == BuildID。
-	// 這段註解原本宣稱「編譯期事實」,被 mutation 證偽:換成姐妹函式後 go build 過、
-	// 7 支測試全綠,而真 tag 分支實際分岔。改成單次求值仍然值得做(少一個可以各自
-	// 漂移的呼叫點),但**它的正確性來源是那兩支測試,不是編譯器**。
-	identity := buildinfo.EffectiveVersion()
+	// version and build_id answer DIFFERENT questions and therefore carry
+	// different values:
+	//   version  — which release line is this? A real tag, or a sortable
+	//              pseudo-version that ranks below every real tag.
+	//   build_id — which build exactly? The commit verbatim (never truncated)
+	//              plus the build timestamp.
+	// They were briefly identical, which made build_id carry zero information
+	// beyond version. That is not what the original defect required: the
+	// requirement was that `version` NEVER reports the raw "dev" sentinel for
+	// a build that does know its own commit — equality was a side effect of
+	// the first fix, not the goal.
+	//
+	// NEVER re-collapse them into one variable to "keep them in sync". They
+	// are not supposed to be in sync; what must hold is that BOTH fall back to
+	// the same "dev" sentinel when no identity was injected at all, so an
+	// identity-less build can never be mistaken for a real one. That invariant
+	// is held by tests, not by the compiler — a previous version of this
+	// comment claimed a compile-time guarantee and mutation testing falsified
+	// it (swapping one call for a sister function built fine and stayed green).
 	out := buildInfoResource{
 		GeneratedAt:     s.now().UTC().Format(time.RFC3339),
-		Version:         identity,
+		Version:         buildinfo.EffectiveVersion(),
 		Commit:          buildinfo.Commit,
 		BuildDate:       buildinfo.Date,
 		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 		Backend:         s.backendKind(),
-		BuildID:         identity,
+		BuildID:         buildinfo.FullBuildID(),
 		BuildIDNote:     buildIDNote,
 	}
 	return marshalResource(uri, out)
