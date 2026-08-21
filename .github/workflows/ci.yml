@@ -6,7 +6,8 @@ on:
   pull_request:
     branches: [master]
 
-# Least-privilege: read-only token. Write access is only in release.yml.
+# Least-privilege: read-only token. No workflow in this repo needs write —
+# releases are git tags served by the Go module proxy, not built artifacts.
 permissions:
   contents: read
 

@@ -61,7 +61,10 @@ type preToolUsePayload struct {
 	TranscriptPath string          `json:"transcript_path"`
 }
 
-// Version metadata injected at link time via goreleaser ldflags.
+// Version metadata injected at link time via -ldflags. Nothing sets these on
+// the `go install <module>@<tag>` path this binary ships through, so they stay
+// at their sentinels there; the module version lives in the build info instead
+// (see internal/buildinfo.moduleIdentity).
 var (
 	version = "dev"
 	commit  = "none"

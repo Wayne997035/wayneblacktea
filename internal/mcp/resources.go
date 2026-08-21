@@ -840,9 +840,10 @@ type buildInfoResource struct {
 // const (not inlined) so TestResourceBuildInfo_NoUnexpectedFields's
 // forbidden-substring scan and any future byte-budget test measure the exact
 // same string this handler emits.
-const buildIDNote = "version answers WHICH RELEASE: the real tag when a tagged goreleaser release " +
-	"produced the build (see README's \"Checking what's running\"), and otherwise — including every " +
-	"current Railway production deploy, which has never been driven by a git tag — a synthetic " +
+const buildIDNote = "version answers WHICH RELEASE: the release tag when the binary carries one — " +
+	"either baked in by `go install <module>@<tag>` or injected via -ldflags (see README's " +
+	"\"Checking what's running\") — and otherwise, including every Railway production deploy, " +
+	"which builds from a branch rather than a tag, a synthetic " +
 	"v0.0.0-<build-time>-<commit12> pseudo-version that sorts below every real tag. " +
 	"build_id answers WHICH BUILD EXACTLY: <commit>@<RFC3339 build time>, with the commit verbatim " +
 	"rather than truncated, so it can be handed straight to `git show`. The two are deliberately " +

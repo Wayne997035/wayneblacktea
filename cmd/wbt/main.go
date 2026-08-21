@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Wayne997035/wayneblacktea/internal/buildinfo"
 	"github.com/Wayne997035/wayneblacktea/internal/cli"
 )
 
@@ -31,8 +32,13 @@ import (
 //
 //	-X main.version=<tag> -X main.commit=<sha> -X main.date=<iso8601>
 //
-// goreleaser populates these on tagged release builds; local `go build`
-// without ldflags produces "dev" / "none" / "unknown" sentinel values.
+// **Nothing sets these any more.** This CLI is distributed with
+// `go install <module>@<version>`, which injects no ldflags — the version
+// arrives inside the binary's build info instead, and
+// buildinfo.EffectiveVersion() reads it. The vars are kept because `commit`
+// and `date` still have no build-info equivalent on the module-proxy path
+// (a proxy install has no VCS revision), so they stay at their sentinels and
+// printVersion prints them as such. NEVER print `version` directly.
 var (
 	version = "dev"
 	commit  = "none"
@@ -140,8 +146,16 @@ func runHookSubcmd(args []string, run func([]string) error) error {
 
 // printVersion writes "<binary> <version> (<commit>)" to stdout. Install
 // scripts parse the second whitespace-separated token as the version.
+//
+// `go install <module>@<version>` — the way this CLI is distributed — injects
+// no ldflags, so the package-level `version` var stays at its "dev" sentinel.
+// The version is in the binary regardless: the toolchain bakes it into the
+// build info. buildinfo.EffectiveVersion() reads that, so **NEVER print the
+// raw `version` var here** — doing so made `go install …@v1.0.0` report "dev",
+// which is the exact "identity-less-looking string for a build that knows its
+// own identity" this project already fixed once on the MCP resource.
 func printVersion() {
-	fmt.Printf("%s %s (%s)\n", filepath.Base(os.Args[0]), version, commit)
+	fmt.Printf("%s %s (%s)\n", filepath.Base(os.Args[0]), buildinfo.EffectiveVersion(), commit)
 	if date != "unknown" {
 		fmt.Printf("built %s\n", date)
 	}

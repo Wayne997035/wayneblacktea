@@ -21,7 +21,40 @@
 // MCPServer doc comment).
 package buildinfo
 
-import "time"
+import (
+	"runtime/debug"
+	"time"
+)
+
+// devModuleVersion is what the Go toolchain reports for a binary built from a
+// working tree rather than fetched from the module proxy. It is not a version.
+const devModuleVersion = "(devel)"
+
+// moduleIdentity returns (version, sum) that `go install <module>@<version>`
+// baked into this binary, or ("", "") when there is none.
+//
+// This is the distribution model this project actually uses: the git tag is
+// the release, the module proxy does the delivery, and `go install
+// github.com/Wayne997035/wayneblacktea/cmd/wbt@v1.0.0` is the install command.
+// Nothing injects ldflags on that path — the version arrives inside the binary
+// instead, put there by the toolchain, along with the module's h1 sum, which
+// the checksum database verifies at install time.
+//
+// A `go build` from a checkout reports "(devel)" here; that is not an identity
+// and MUST NOT be treated as one, or every local dev build would claim to be a
+// release. Railway's image is exactly that case — it builds from a checkout
+// and gets its identity from ldflags instead.
+func moduleIdentity() (string, string) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok || bi == nil {
+		return "", ""
+	}
+	v := bi.Main.Version
+	if v == "" || v == devModuleVersion {
+		return "", ""
+	}
+	return v, bi.Main.Sum
+}
 
 // Version, Commit, and Date are set at link time via:
 //
@@ -29,11 +62,16 @@ import "time"
 //	-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit=<sha>
 //	-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date=<iso8601>
 //
-// .goreleaser.yaml sets these for the `server` and `wbt` build ids (the
-// binaries that can run an MCP server — HTTP and stdio respectively) on every
-// tagged release, so a release build reports its real tag/commit/date.
-// build/Dockerfile sets them for the Railway production image via
-// VERSION/COMMIT/BUILD_DATE build args (see that file's builder stage).
+// build/Dockerfile sets Commit/Date for the Railway production image via
+// COMMIT/BUILD_DATE build args (see that file's builder stage); it leaves
+// Version at the sentinel, because a branch build is not a release.
+//
+// **Nothing sets Version any more.** The binary-release pipeline that used to
+// (goreleaser on a tag push) was removed: this project distributes through the
+// git tag plus the Go module proxy, and `go install <module>@<tag>` injects no
+// ldflags. The version travels inside the build info instead — moduleIdentity()
+// reads it, and EffectiveVersion() prefers it over the pseudo-version. The
+// ldflags path is kept because build/Dockerfile can still use it.
 //
 // A plain `go build` / `go test` with no ldflags — every local dev build and
 // every test run — leaves these at their sentinel defaults. The defaults are
@@ -76,9 +114,8 @@ const buildIDTimeLayout = "20060102150405"
 // from Commit and Date: "v0.0.0-<yyyymmddhhmmss>-<sha12>". It exists for
 // Railway production deploys, which set Commit/Date (from
 // RAILWAY_GIT_COMMIT_SHA, build/Dockerfile) but never Version — there is no
-// git tag driving those builds (goreleaser only runs on a tagged release),
-// so EffectiveVersion falls back to this instead of reporting the bare "dev"
-// sentinel for every production build forever.
+// git tag driving those builds, so EffectiveVersion falls back to this instead
+// of reporting the bare "dev" sentinel for every production build forever.
 //
 // Deliberately NOT a real Go pseudo-version: the timestamp is BUILD time
 // (Date, set at Docker build time), not COMMIT time (which Railway's build
@@ -128,6 +165,13 @@ func BuildID() string {
 // obviously-fake one.
 func FullBuildID() string {
 	if Commit == sentinelCommit || len(Commit) < commitShaLen {
+		// 沒有 ldflags,但可能是 `go install <module>@<version>` 裝的。那條路徑
+		// 沒有 commit 可注入,卻有更強的東西:module 的 h1 sum —— 它釘住的是這個
+		// 版本的**完整位元組**,而 checksum database 在安裝當下驗過。拿它當「哪一次
+		// 建置」比回哨兵誠實:那個 binary 確實知道自己是誰。
+		if v, sum := moduleIdentity(); v != "" && sum != "" {
+			return v + " " + sum
+		}
 		return sentinelVersion
 	}
 	t, err := time.Parse(time.RFC3339, Date)
@@ -138,17 +182,26 @@ func FullBuildID() string {
 }
 
 // EffectiveVersion returns Version when it carries a real (non-sentinel)
-// value — a goreleaser tagged release — otherwise falls back to BuildID()
-// (itself "dev" when no build identity was injected at all). This is the
+// value — an -ldflags-injected tag — then the module version a
+// `go install <module>@<tag>` baked in, and finally BuildID()
+// (itself "dev" when no build identity is available at all). This is the
 // single function internal/mcp reads for both serverInfo.version
 // (server.go) and the wayneblacktea://system/build-info resource
 // (resources.go): reading the same function from both places is what keeps
 // them from independently drifting apart, the same structural guarantee
 // buildinfo's package doc already describes for Version/Commit/Date
 // themselves.
+// 三層,由強到弱。NEVER 調換順序:ldflags 是建置者的明示宣告,module 版本是
+// 工具鏈的事實,pseudo-version 是從 commit+時間推導出來的最後手段。
+//  1. ldflags 注入的真 tag(Railway 映像走這條,由 build/Dockerfile 設定)
+//  2. `go install <module>@<version>` baked 進去的 module 版本
+//  3. BuildID() 的 pseudo-version;三者皆無時它自己回 dev 哨兵
 func EffectiveVersion() string {
 	if Version != sentinelVersion {
 		return Version
+	}
+	if v, _ := moduleIdentity(); v != "" {
+		return v
 	}
 	return BuildID()
 }

@@ -69,8 +69,6 @@ claude mcp get wayneblacktea    # 應顯示 ✔ Connected
 |------|------|------|
 | go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | 已裝 Go 1.26+ — 建議方式 |
 | 從原始碼建置 | `git clone ... && cd build && task build-wbt && wbt setup` | 開發者；詳見 [`docs/install.md`](./docs/install.md) |
-| DXT | 從 [release](https://github.com/Wayne997035/wayneblacktea/releases) 下載 `wayneblacktea.dxt`，在 Claude Desktop 開啟 | Claude Desktop — **需要已發布的 release** |
-| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | **需要已發布的 release**（目前尚無 release binary） |
 
 Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)，常見問題見 [Troubleshooting](./docs/install.md#troubleshooting)。
 
@@ -175,20 +173,15 @@ Agent 不需要記得呼叫工具，server 會自動接住：
 
 ## 驗證 release binary
 
-Release binary 用 [cosign](https://docs.sigstore.dev/cosign/overview/) keyless 簽章（GitHub OIDC）。下載後驗證：
+`go install` 本身就驗過了。工具鏈抓的每一個模組都會對照 [Go checksum database](https://sum.golang.org) 的 `h1:` 雜湊檢查,fail-closed —— 被竄改或替換的模組會讓安裝失敗,沒有旗標可以略過。那正是 cosign 簽章原本要提供的保證,差別在於它不需要任何人記得跑驗證指令。
+
+要看一個 binary 到底是什麼:
 
 ```bash
-# 安裝 cosign：https://docs.sigstore.dev/cosign/system_config/installation/
-
-cosign verify-blob \
-  --certificate-identity-regexp "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/.*" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --signature wayneblacktea_checksums.txt.sig \
-  --certificate wayneblacktea_checksums.txt.pem \
-  wayneblacktea_checksums.txt
+go version -m $(command -v wbt)
 ```
 
-`.sig` 和 `.pem` 檔案隨每個 GitHub Release 的 binary 一起附上。
+`mod` 那行有模組路徑、版本與 `h1:` 雜湊。`wbt version` 讀同一份 build info,所以用 proxy 裝的 binary 不需要任何 link-time 注入就報得出真版本。
 
 ## 這 *不是* 什麼
 

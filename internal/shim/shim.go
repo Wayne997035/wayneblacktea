@@ -54,8 +54,9 @@ func ExecWbt(subcmd string, args []string) int {
 }
 
 // ResolveWbt locates the wbt binary, preferring PATH and falling back to the
-// directory containing the calling process executable (matches how
-// scripts/install.sh drops shims and the real binary into the same prefix).
+// directory containing the calling process executable — `go install` puts
+// every cmd/* binary in the same GOBIN, so a shim can find wbt beside itself
+// even when GOBIN is not on PATH.
 func ResolveWbt() (string, error) {
 	if p, err := exec.LookPath("wbt"); err == nil {
 		return p, nil
