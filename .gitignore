@@ -76,3 +76,7 @@ migrations/**/*.bak
 scripts/*/reports/
 __pycache__/
 .ruff_cache/
+
+# 機械驗收引擎的設定 —— 住引擎側 (_project/scripts/mechanical-verify/configs/),
+# 不進這個公開 repo:它通篇引用只有本工作區才有的私有工具路徑。
+.mechanical-verify.toml
