@@ -104,7 +104,7 @@ full argument; the short version:
   `testdata/known_tickets.json` and in adversarial test payloads in
   `test_audit.py`, both git-tracked — without this exclusion, a ticket can
   corroborate itself just by existing in this tool's own fixtures (found
-  via fixture regression: ticket 6f306618's branch-name mention only
+  via fixture regression: ticket 5656cfde's branch-name mention only
   self-matched inside `testdata/known_tickets.json`, producing a false
   `CITED_BUT_MARKED_UNFIXED`).
 - **Anchor counts are capped** (`lib/extract.py::MAX_ANCHORS_PER_CATEGORY`,
@@ -173,11 +173,20 @@ measured: 5 identical adversarial tickets back-to-back after the first,
 
 ## Fixture provenance (`testdata/known_tickets.json`)
 
-16 real tickets from wayneblacktea's own GTD, captured 2026-08-15. Each is
-tagged `fixture_category`:
+16 tickets modeled on real wayneblacktea GTD review findings, captured
+2026-08-15. **This is a public repo, so as of 2026-08-22 the `id` (UUID),
+`created_at` (timestamp), and any reproduction-technique wording in the
+`title`/`description` fields are synthetic** — the originals were verbatim
+copies of real internal ticket text and are no longer stored here
+(F167-01/F167-02/F167-03). `file:line` anchors and extracted symbols are
+left as the real repo coordinates they always were: they're the input
+`extract.py`/`rules.py` exercise, not sensitive data, since the code they
+point at is already public in this same repo. `testdata/` has no other
+file containing real data (F167-04). Each ticket is tagged
+`fixture_category`:
 
 - `positive_verified` (11 tickets: all 4 PR#151 findings + 6 of PR#157's
-  original 11-ticket wave + `7610088f`, moved here — see below) — manually
+  original 11-ticket wave + `72de9051`, moved here — see below) — manually
   confirmed already fixed in code *before* writing the corresponding rule,
   by reading the actual current file content (not by trusting ticket text
   or GTD status — several of these were still `pending`/`in_progress` in
@@ -185,7 +194,7 @@ tagged `fixture_category`:
   `test_audit.py::test_verified_positive_fixtures_flagged_suspect` asserts
   every one of these gets `SUSPECT_ALREADY_FIXED`.
 - `negative_verified` (0 tickets, by design — see below). Historically held
-  1 ticket (`7610088f`, `GET /api/projects` returning active-only) which was
+  1 ticket (`72de9051`, `GET /api/projects` returning active-only) which was
   **moved to `positive_verified` during GTD `fix/gtd-audit-tests-and-gate`**:
   commit `582741d` (`fix: GET /api/projects now applies the status query
   param instead of ignoring it`) already implements the fix — and that
@@ -205,7 +214,7 @@ tagged `fixture_category`:
   `wayneblacktea/CLAUDE.md`, not tracked as a bug), and computes
   `created_at` **at test-run time** from that file's own last-commit
   timestamp rather than trusting a frozen calendar date — the exact axis
-  that made `7610088f` rot.
+  that made `72de9051` rot.
 - `positive_claimed_by_dispatch` (5 tickets) — **the dispatch that
   commissioned this script said all 11 of PR#157's original wave "should be
   flagged already-fixed"; direct code inspection while building the rules
