@@ -250,7 +250,7 @@ If missing, add the appropriate directory to your shell profile and restart your
 | **Build from source** | See [Build from source](#build-from-source) below | Requires Go 1.26+, Node.js 22+, Task. |
 
 There is no pre-built-binary channel. Distribution is the git tag plus the Go module proxy —
-`go install …@v1.0.0` fetches, verifies against the checksum database, and builds. Homebrew
+`go install …@v1.0.1` fetches, verifies against the checksum database, and builds. Homebrew
 casks, DXT packages, `curl | bash` installers, and cosign signing were all removed once
 `go install` was shown to cover every case they were built for; the removed pipeline had
 never successfully produced a release.
@@ -352,7 +352,7 @@ go version -m $(command -v wbt)
 The `mod` line carries the module path, the version, and the `h1:` sum:
 
 ```
-mod  github.com/Wayne997035/wayneblacktea  v1.0.0  h1:Sv3vlBd5HKOxG2ZbhSks8q2SxB11DLxV8BKwEq0/YXs=
+mod  github.com/Wayne997035/wayneblacktea  v1.0.1  h1:+amKxjD400dKOJWCAMN3mCO/BSdgOq2ozkZFkMUI3Ag=
 ```
 
 `wbt version` reads the same build info, so a proxy-installed binary reports its real version
