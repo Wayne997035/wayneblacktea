@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/buildinfo"
 	"github.com/Wayne997035/wayneblacktea/internal/cli"
 	"gopkg.in/yaml.v3"
 )
@@ -70,7 +71,14 @@ func TestPrintVersion_Format(t *testing.T) {
 	}
 	os.Stdout = w
 	os.Args = []string{"/usr/local/bin/wbt"}
-	version = "1.2.3"
+	// 版本來源是 buildinfo.EffectiveVersion(),不是 main.version —— 這支 CLI 用
+	// `go install <module>@<version>` 散佈,那條路徑不注入 ldflags,所以
+	// main.version 永遠停在哨兵。這裡設的是 EffectiveVersion 真正會讀的那個。
+	// 本測試原本設 main.version 並期望它被印出來,那是在釘一條已經沒有人餵值的路。
+	origBIVersion := buildinfo.Version
+	buildinfo.Version = "1.2.3"
+	t.Cleanup(func() { buildinfo.Version = origBIVersion })
+	version = "should-not-be-printed"
 	commit = "abc123"
 	date = "unknown" // suppress the second line for parser test
 

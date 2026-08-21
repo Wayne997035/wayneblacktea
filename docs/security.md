@@ -52,17 +52,27 @@ Always include `?sslmode=require` in `DATABASE_URL` for any network-accessible P
 
 ---
 
-## Release artifact signing
+## Release artifact integrity
 
-Binaries published in GitHub Releases are signed using Sigstore keyless signing (cosign). Each release includes `.pem` and `.bundle` files alongside the binary archives. To verify:
+**This project publishes no binaries.** A release is a git tag; the Go module proxy serves the
+tagged source and `go install` builds it locally. There is therefore no artifact to sign and no
+signature for anyone to verify — the attack surface that cosign signing existed to cover is not
+present.
+
+Integrity is enforced by the [Go checksum database](https://sum.golang.org) instead. Every module
+the toolchain fetches is checked against its `h1:` hash, **fail-closed**: a tampered or
+substituted module aborts the install. Two properties matter here and neither was true of the
+signing setup this replaced:
+
+- It runs **by default**. Nobody has to remember a verify command, and there is no
+  `--skip-verify` for a hurried user to reach for.
+- It is **append-only and publicly auditable** (transparency log), so a backdated substitution is
+  detectable rather than merely signed-by-whoever-held-the-key.
+
+To inspect what a built binary is:
 
 ```bash
-cosign verify-blob \
-  --certificate <binary>.pem \
-  --bundle <binary>.bundle \
-  --certificate-identity "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/<version>" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  <binary>
+go version -m $(command -v wbt)   # the `mod` line carries module path, version, and h1: sum
 ```
 
 ---

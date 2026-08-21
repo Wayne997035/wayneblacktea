@@ -129,9 +129,11 @@ tasks:
         sh: date -u +%Y-%m-%dT%H:%M:%SZ
     cmds:
       - mkdir -p bin
-      # Version stays the "dev" sentinel (internal/buildinfo's own default —
-      # only goreleaser tagged releases set a real version, matching the
-      # existing cmd/wbt convention). Commit/Date ARE injected here so a
+      # Version stays the "dev" sentinel (internal/buildinfo's own default).
+      # A local build is not a release, and EffectiveVersion() falls through to
+      # the pseudo-version derived from Commit/Date — a `go install …@vX.Y.Z`
+      # build is the one that carries a real version, and it gets it from the
+      # module proxy's build info, not from here. Commit/Date ARE injected so a
       # locally-built server can still answer "which commit is this" via
       # wayneblacktea://system/build-info, without pretending to be a
       # release.

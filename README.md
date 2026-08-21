@@ -68,10 +68,8 @@ Sister commands:
 | go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go 1.26+ installed — recommended |
 | Build from source | `git clone ... && cd build && task build-wbt && wbt setup` | Developers; see [`docs/install.md`](./docs/install.md) |
 | Run the server directly | `npm run build && go run ./cmd/server -env .env` | Hacking on the server or the web UI — see [`docs/quickstart.md`](./docs/quickstart.md) for the port, the three auth rules, and why `curl` succeeding does not mean the browser can log in |
-| DXT | Download `wayneblacktea.dxt` from a [release](https://github.com/Wayne997035/wayneblacktea/releases) and open in Claude Desktop | Claude Desktop — **requires a published release** |
-| curl \| bash | `curl -fsSL https://raw.githubusercontent.com/Wayne997035/wayneblacktea/master/scripts/install.sh \| bash` | **Requires a published release** (no release binaries yet) |
 
-See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, pre-built release binary options, and [Troubleshooting](./docs/install.md#troubleshooting).
+See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and [Troubleshooting](./docs/install.md#troubleshooting).
 
 ## 5-minute onboarding
 
@@ -178,15 +176,25 @@ Read the `wayneblacktea://system/build-info` MCP resource (or `GET /health`
 for a bare liveness check) to see exactly which build is running. Two
 fields matter:
 
-- `version` and `build_id` **carry the same value** — both read
-  `buildinfo.EffectiveVersion()`, which is also what the MCP handshake's
-  `serverInfo.version` reports. Reading either one answers "which build is
-  this". They are kept as two fields so a client can read the build identity
-  without having to know that `version` carries two possible shapes.
-- That value is the real release tag when the running binary was produced by
-  a tagged `goreleaser` release. Otherwise — including every current Railway
-  production deploy, since this repo has no git tags and
-  `.github/workflows/release.yml` has never run — it is a synthetic,
+- `version` and `build_id` **carry different values on purpose** — they
+  answer different questions:
+  - **`version` — which release?** Reads `buildinfo.EffectiveVersion()`,
+    which is also what the MCP handshake's `serverInfo.version` reports.
+  - **`build_id` — which build exactly?** Reads `buildinfo.FullBuildID()`:
+    `<commit>@<RFC3339 build time>`, with the commit **verbatim** rather than
+    truncated, so it can be handed straight to `git show`. `version`
+    truncates to 12 hex because it has to stay sortable; that prefix is
+    readable but not enough to identify an object with certainty.
+
+  They were briefly identical, which made `build_id` carry nothing `version`
+  did not already say. What the original defect required was only that
+  `version` never report the raw `"dev"` sentinel for a build that knows its
+  own commit — the equality was a side effect of the first fix, not the goal.
+- `version` is the release tag when the binary carries one. There are two ways
+  it can: `go install …@v1.0.0` bakes the module version into the build info,
+  and `build/Dockerfile` can inject one through `-ldflags`. Otherwise —
+  including every Railway production deploy, which builds from a branch rather
+  than a tag — it is a synthetic,
   Go-pseudo-version-shaped identifier: `v0.0.0-<build-time-yyyymmddhhmmss>-<commit-sha12>`,
   derived from the build's commit SHA and build timestamp (`build/Dockerfile`
   reads these from Railway's `RAILWAY_GIT_COMMIT_SHA` build arg). **The
@@ -211,22 +219,22 @@ fields matter:
   shipped once, and readers who looked only at this field concluded from it
   that production was running stale code.
 
-## Verifying release binaries
+## Verifying what you installed
 
-Release binaries will be signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signing via GitHub OIDC once the first tagged release is published. To verify a future downloaded binary:
+There is no separate verify step, because `go install` already does it. Every module the
+toolchain fetches is checked against its `h1:` hash in the
+[Go checksum database](https://sum.golang.org), fail-closed — a tampered or substituted module
+makes the install fail. That is the guarantee cosign signing was there to provide, except it
+holds without anyone remembering to run a verify command.
+
+To see what a binary actually is:
 
 ```bash
-# Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
-
-cosign verify-blob \
-  --certificate-identity-regexp "https://github.com/Wayne997035/wayneblacktea/.github/workflows/release.yml@refs/tags/.*" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --signature wayneblacktea_checksums.txt.sig \
-  --certificate wayneblacktea_checksums.txt.pem \
-  wayneblacktea_checksums.txt
+go version -m $(command -v wbt)
 ```
 
-The `.sig` and `.pem` files are attached to each GitHub Release alongside the binaries.
+The `mod` line carries the module path, the version, and the `h1:` sum. `wbt version` reads the
+same build info, so a proxy-installed binary reports its real version with no link-time injection.
 
 ## What this *isn't*
 

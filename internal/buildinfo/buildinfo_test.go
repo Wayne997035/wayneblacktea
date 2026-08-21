@@ -116,11 +116,6 @@ func TestBuildID_ShortCommitFallsBack(t *testing.T) {
 	}
 }
 
-// TestEffectiveVersion_FallsBackWhenSentinel is U6's acceptance criterion for
-// EffectiveVersion: when Version is at its sentinel (every Railway
-// production deploy today — no git tag ever drove one, see README's new
-// "Checking what's running" section), EffectiveVersion must return BuildID's
-// output rather than the bare "dev" sentinel.
 // FullBuildID answers a different question from BuildID: which build exactly,
 // not which release line. These pin the two differences that make it worth
 // having as a separate field — the commit is NOT truncated, and the timestamp
@@ -169,6 +164,10 @@ func TestFullBuildID_FallsBackToSentinel(t *testing.T) {
 	}
 }
 
+// TestEffectiveVersion_FallsBackWhenSentinel is U6's acceptance criterion for
+// EffectiveVersion: when Version is at its sentinel (every Railway production
+// deploy — those build from a branch, so no tag drives them), EffectiveVersion
+// must return BuildID's output rather than the bare "dev" sentinel.
 func TestEffectiveVersion_FallsBackWhenSentinel(t *testing.T) {
 	resetSentinels(t)
 	Version = sentinelVersion
@@ -186,7 +185,7 @@ func TestEffectiveVersion_FallsBackWhenSentinel(t *testing.T) {
 }
 
 // TestEffectiveVersion_RealTagUnchanged is EffectiveVersion's non-fallback
-// half: a goreleaser tagged release sets Version to a real tag, and that
+// half: an -ldflags-injected tag sets Version to a real tag, and that
 // value must pass through unchanged regardless of what Commit/Date hold —
 // a real tag is never replaced by a synthetic build ID.
 func TestEffectiveVersion_RealTagUnchanged(t *testing.T) {

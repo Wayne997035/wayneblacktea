@@ -234,7 +234,7 @@ func TestResourceBuildInfo_MatchesServerInfo(t *testing.T) {
 	}
 	// 真 tag 分支:version 是 tag,build_id 走自己那條路。這個 fixture 只注入
 	// Version,沒注入合法的 Commit/Date,所以 build_id 落回 "dev" —— 那是對的,
-	// 「有 tag」與「知道自己是哪一次建置」是兩件獨立的事,goreleaser 會兩個都注入。
+	// 「有 tag」與「知道自己是哪一次建置」是兩件獨立的事。
 	// 缺了這條斷言,把 BuildID 換回 EffectiveVersion() 會編譯得過且全套測試仍綠。
 	if got.BuildID == got.Version {
 		t.Errorf("resource build_id == version == %q on the real-tag branch — build_id must not "+
