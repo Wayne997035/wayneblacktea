@@ -149,16 +149,28 @@ var storedDataReaders = []storedDataReader{
 	{file: "tools_proposal.go", tool: "confirm_proposal", status: readerPass},
 	{file: "tools_proposal.go", tool: "confirm_proposal", status: readerPass},
 	{file: "tools_proposal.go", tool: "confirm_proposal", status: readerPass},
-	// tools_reconcile.go — added this dispatch (F160-01/02 backfill): PRHeadRef
-	// now routed through neutralizeBoundaryMarkers (reconcileMatchesOut/
-	// reconcileAmbiguousOut, tools_reconcile.go) as defence in depth against a
-	// single-line forged marker — PRUrl is regex-shape-constrained at input
-	// parsing (reconcileMCPValidate: validator.GitHubPRURLRe) and Reason is a
-	// closed gtd.MatchReason enum, neither can carry one. All 3 jsonText( call
-	// sites (no_match short-circuit, confirmation_required preview, and
-	// applied/confirm) belong to the single reconcile_merged_prs tool (2-step
-	// confirm flow) — mirrors set_task_status/add_task's existing
-	// multiple-rows-one-tool convention above.
+	// tools_reconcile.go — added this dispatch (F160-01/02 backfill). All 3
+	// jsonText( call sites (no_match short-circuit, confirmation_required
+	// preview, and applied/confirm) belong to the single reconcile_merged_prs
+	// tool (2-step confirm flow) — mirrors set_task_status/add_task's
+	// existing multiple-rows-one-tool convention above.
+	//
+	// Two of the three (no_match, confirmation_required) are pure same-turn
+	// echo — Match/Ambiguous.PRHeadRef is gtd.reconcile.go's `pr.HeadRef`,
+	// read straight out of THIS call's own merged_prs input (三軍/round-2
+	// verification: "呼叫端自己送進來的回音, 不是 stored data"). The third
+	// (applied/confirm) reads the SAME struct back out of a server-held
+	// token (s.reconcileTokens, up to 60s TTL) set by an EARLIER preview
+	// call — still the same caller/session by construction (only the
+	// preview caller holds the token), but structurally the same
+	// "value crosses a call boundary via server-side state" shape as
+	// worksession.Session's fields (neutralizeSessionMetadataFields), which
+	// DO get neutralised here despite also originating from a caller
+	// argument. PRHeadRef is routed through neutralizeBoundaryMarkers
+	// (reconcileMatchesOut/reconcileAmbiguousOut) as defence in depth for
+	// that shared struct — PRUrl is regex-shape-constrained at input
+	// parsing (reconcileMCPValidate: validator.GitHubPRURLRe) and Reason is
+	// a closed gtd.MatchReason enum, neither can carry a marker regardless.
 	{file: "tools_reconcile.go", tool: "reconcile_merged_prs", status: readerPass},
 	{file: "tools_reconcile.go", tool: "reconcile_merged_prs", status: readerPass},
 	{file: "tools_reconcile.go", tool: "reconcile_merged_prs", status: readerPass},
@@ -294,9 +306,14 @@ var storedDataSelfDefinitionExclusions = map[string]int{
 // This dispatch's F160-01/02 backfill adds 3 tools_reconcile.go rows (90 + 3
 // = 93) after the [F160-02] set-difference audit found 17 real call sites
 // the table didn't account for (grepped fresh, not copied from any prior
-// report): 3 needed a real fix (tools_reconcile.go's PRHeadRef, now PASS
-// rows above) and 14 are legitimate computed exclusions
-// (storedDataComputedExclusions above).
+// report): 14 are legitimate computed exclusions
+// (storedDataComputedExclusions above — 二軍/三軍 round-2 review already
+// manually verified 12 of these 14 as safe; the other 2, tools_proposal.go's
+// batch confirm/accept, were already documented above this const before
+// this dispatch). The remaining 3 (tools_reconcile.go) got an additional
+// defence-in-depth fix (PRHeadRef neutralisation) rather than a bare
+// exclusion — see that row's own comment above for why one of its three
+// call sites is not pure same-turn echo.
 const wantStoredDataReaderTotal = 93
 
 // TestStoredDataReaderInventory_TotalMatchesDocumentedCount pins
