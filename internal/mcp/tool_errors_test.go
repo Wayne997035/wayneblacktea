@@ -35,9 +35,16 @@ var rawErrorIdent = regexp.MustCompile(`\b\w*[eE]rr\b`)
 // scanNewToolResultErrorCall is one `NewToolResultError(` call site found by
 // scanNewToolResultErrorCalls: its 1-based source line and its complete,
 // bracket-matched argument text.
+//
+// unparseable is [F160-05]'s fail-closed signal: matchClosingParen could not
+// find this call's closing paren (see scanNewToolResultErrorCalls). args is
+// empty in that case — there is no reliable argument text to show — and the
+// caller (TestNoRawErrorReachesToolResult) MUST treat unparseable as a
+// violation on its own, not merely skip it.
 type scanNewToolResultErrorCall struct {
-	line int
-	args string
+	line        int
+	args        string
+	unparseable bool
 }
 
 // scanNewToolResultErrorCalls finds every `NewToolResultError(` call in body
@@ -59,8 +66,30 @@ type scanNewToolResultErrorCall struct {
 // the call's own grouping (ordinary Go source, not a contrived case — see the
 // example above). matchClosingParen treats those spans as opaque so their
 // parens never affect depth.
+//
+// [F160-04] The NEEDLE search itself is ALSO masked against comments/strings
+// via maskCommentsAndStrings, run once up front — not just the argument scan
+// after a needle is found. Without this, a needle that merely APPEARS inside
+// a `//` comment (this file's own doc comments name-drop
+// "NewToolResultError(" as prose, e.g. the paragraph above) is mistaken for a
+// real call site whenever the comment text happens to contain a balanced
+// pair of parens after it — a false positive that inflates the call-site
+// count for no code reason.
+//
+// [F160-05] When a needle IS a real call site but matchClosingParen still
+// can't balance it (malformed/truncated input, or — as found in
+// tool_errors.go's own pre-fix doc comment before [F160-04]'s masking
+// existed — a needle inside a comment whose "closing" paren never actually
+// arrives before EOF), this used to `break` and silently abandon the rest of
+// the file: every real call site AFTER the unparseable one went unscanned
+// and unchecked. That is fail-OPEN — the exact failure mode this whole gate
+// exists to prevent, just moved into the gate itself. The fix is fail-
+// CLOSED: record an `unparseable: true` violation entry for the needle that
+// couldn't be balanced, and keep scanning from right after IT so every
+// subsequent real call site in the file is still found and still checked.
 func scanNewToolResultErrorCalls(body string) []scanNewToolResultErrorCall {
 	const needle = "NewToolResultError("
+	masked := maskCommentsAndStrings(body) // [F160-04]
 	var calls []scanNewToolResultErrorCall
 	searchFrom := 0
 	for {
@@ -69,13 +98,27 @@ func scanNewToolResultErrorCalls(body string) []scanNewToolResultErrorCall {
 			break
 		}
 		callStart := searchFrom + rel
+		if masked[callStart] {
+			// [F160-04] The needle text itself sits inside a comment or
+			// string literal — not a real call site. Skip past it and keep
+			// looking; do NOT run matchClosingParen on it at all, since
+			// running it is exactly what produced tool_errors.go's real
+			// [F160-05] failure (a comment's own prose parens never close in
+			// a way that matches the call-site shape).
+			searchFrom = callStart + len(needle)
+			continue
+		}
 		argStart := callStart + len(needle)
 		argEnd, ok := matchClosingParen(body, argStart)
 		if !ok {
-			// Unbalanced/truncated — cannot happen in a file that compiles,
-			// but stop scanning this file rather than loop forever on
-			// malformed input.
-			break
+			// [F160-05] Fail closed: record it, then keep scanning past this
+			// needle rather than aborting the whole file.
+			calls = append(calls, scanNewToolResultErrorCall{
+				line:        1 + strings.Count(body[:callStart], "\n"),
+				unparseable: true,
+			})
+			searchFrom = argStart
+			continue
 		}
 		calls = append(calls, scanNewToolResultErrorCall{
 			line: 1 + strings.Count(body[:callStart], "\n"),
@@ -84,6 +127,63 @@ func scanNewToolResultErrorCalls(body string) []scanNewToolResultErrorCall {
 		searchFrom = argEnd + 1
 	}
 	return calls
+}
+
+// maskCommentsAndStrings returns a slice the same length as body where index
+// i is true iff body[i] lies inside a `//` line comment, a `/* */` block
+// comment, a double-quoted string/rune literal, or a backtick raw string —
+// [F160-04]. scanNewToolResultErrorCalls consults this BEFORE treating a
+// needle match as a real call site, so example text inside a doc comment (or
+// a needle-shaped string literal) is never counted.
+//
+// This deliberately duplicates matchClosingParen's four skip* helpers'
+// classification logic rather than sharing a walker with it: matchClosingParen
+// only needs to know when IT should stop treating parens as call-grouping
+// (a local, depth-scoped question starting mid-call), while this function
+// answers a different, whole-file question — "is byte i comment/string text
+// at all" — asked BEFORE any call site has been found. Forcing one shared
+// walker to answer both would need it to track two different starting
+// positions and two different stopping conditions simultaneously.
+func maskCommentsAndStrings(body string) []bool {
+	masked := make([]bool, len(body))
+	i := 0
+	for i < len(body) {
+		switch {
+		case body[i] == '"':
+			start := i
+			i = skipQuoted(body, i, '"')
+			markMasked(masked, start, i)
+		case body[i] == '`':
+			start := i
+			i = skipRawString(body, i)
+			markMasked(masked, start, i)
+		case body[i] == '\'':
+			start := i
+			i = skipQuoted(body, i, '\'')
+			markMasked(masked, start, i)
+		case body[i] == '/' && i+1 < len(body) && body[i+1] == '/':
+			start := i
+			i = skipToEOL(body, i)
+			markMasked(masked, start, i)
+		case body[i] == '/' && i+1 < len(body) && body[i+1] == '*':
+			start := i
+			i = skipBlockComment(body, i)
+			markMasked(masked, start, i)
+		default:
+			i++
+		}
+	}
+	return masked
+}
+
+// markMasked sets masked[start:end] to true, clamped to masked's bounds.
+func markMasked(masked []bool, start, end int) {
+	if end > len(masked) {
+		end = len(masked)
+	}
+	for j := start; j < end; j++ {
+		masked[j] = true
+	}
 }
 
 // matchClosingParen returns the index of the ')' that closes the '(' whose
@@ -205,6 +305,15 @@ func TestNoRawErrorReachesToolResult(t *testing.T) {
 			continue // the helpers themselves are where err legitimately lives
 		}
 		for _, call := range scanNewToolResultErrorCalls(body) {
+			if call.unparseable {
+				// [F160-05] Fail closed: a call the scanner could not
+				// balance is itself a violation — "the scanner couldn't
+				// verify this one" must block the gate, not silently pass
+				// it through unexamined.
+				violations = append(violations, name+":"+itoa(call.line)+
+					"  <UNPARSEABLE: matchClosingParen could not balance this call's parens>")
+				continue
+			}
 			if rawErrorIdent.MatchString(call.args) {
 				violations = append(violations, name+":"+itoa(call.line)+"  "+oneLine(call.args))
 			}
@@ -308,6 +417,109 @@ func TestMatchClosingParen_StringLiteralParenDoesNotMiscountDepth(t *testing.T) 
 	want := `"a) b"`
 	if got != want {
 		t.Errorf("matched args = %q, want %q — the ')' inside the string literal was treated as closing the call", got, want)
+	}
+}
+
+// TestF160_04_CommentNeedleWithBalancedParensNotCountedAsCallSite is
+// [F160-04]'s required bad case: a `//` comment that name-drops
+// "NewToolResultError(" as prose and happens to have a balanced closing
+// paren shortly after it — exactly tool_errors.go's real line 40 shape
+// before this fix (the doc comment explaining what the gate checks, which
+// itself contains the literal text it is describing). Without needle-search
+// masking, matchClosingParen finds a spurious "call" here (its args are the
+// prose between the two parens) and counts it as a call site even though no
+// code calls anything on this line.
+func TestF160_04_CommentNeedleWithBalancedParensNotCountedAsCallSite(t *testing.T) {
+	src := `package mcp
+
+// mcp.NewToolResultError(...) call anywhere in this package (outside this
+// file) may contain an error-shaped identifier in its argument list.
+func h() {
+	return mcp.NewToolResultError("real call, unrelated to the comment above")
+}
+`
+	calls := scanNewToolResultErrorCalls(src)
+	if len(calls) != 1 {
+		t.Fatalf("scanNewToolResultErrorCalls found %d call(s), want exactly 1 (the real call on the "+
+			"return line) — the comment's own name-dropped \"NewToolResultError(...) ... (outside this\" "+
+			"text must not be counted as a second call site: %+v", len(calls), calls)
+	}
+	if calls[0].unparseable {
+		t.Fatalf("the one call found was flagged unparseable, want the real call's balanced args: %+v", calls[0])
+	}
+	if !strings.Contains(calls[0].args, "real call") {
+		t.Errorf("the call found was not the real one on the return line: %q", calls[0].args)
+	}
+}
+
+// TestF160_05_UnparseableCallDoesNotAbortRestOfFile is [F160-05]'s required
+// bad case: hits the "scanner gives up early" direction none of the
+// pre-existing tests covered. A needle whose parens matchClosingParen can
+// never balance (an opening paren inside it that is never closed anywhere
+// else in the file) must NOT stop the scan — the old `break` behaviour is
+// exactly the tool_errors.go bug: real call sites physically AFTER the
+// unparseable one went unscanned and unchecked, silently.
+func TestF160_05_UnparseableCallDoesNotAbortRestOfFile(t *testing.T) {
+	src := `package mcp
+
+func broken() {
+	return mcp.NewToolResultError(unbalanced(
+}
+
+func legit() {
+	return mcp.NewToolResultError("this call sits after the broken one"), nil
+}
+`
+	calls := scanNewToolResultErrorCalls(src)
+	if len(calls) != 2 {
+		t.Fatalf("scanNewToolResultErrorCalls found %d call(s), want 2 (the unparseable one AND the "+
+			"real one that follows it) — a `break` on the first would silently drop the second: %+v",
+			len(calls), calls)
+	}
+	if !calls[0].unparseable {
+		t.Errorf("first call should be flagged unparseable (its parens never balance): %+v", calls[0])
+	}
+	if calls[1].unparseable {
+		t.Errorf("second call is a real, balanced call and must not be flagged unparseable: %+v", calls[1])
+	}
+	if !strings.Contains(calls[1].args, "sits after the broken one") {
+		t.Errorf("second call's args were not recovered correctly: %q", calls[1].args)
+	}
+}
+
+// TestF160_05_MaskedNeedleCountMatchesScanCountAcrossPackage is this
+// dispatch's acceptance criterion for [F160-04]/[F160-05] together (dispatch
+// note: superseding the prior report's raw strings.Count-based criterion,
+// which would leave tool_errors.go permanently red at 6-vs-4 — that compared
+// against the WRONG baseline, one that still counted the two comment-only
+// needles). For every non-test .go file in this package, the needle count
+// AFTER masking out comments/strings must equal
+// len(scanNewToolResultErrorCalls(src)) exactly: every real call site is
+// found (no [F160-05] fail-open gap) and nothing else is counted (no
+// [F160-04] false positive).
+func TestF160_05_MaskedNeedleCountMatchesScanCountAcrossPackage(t *testing.T) {
+	const needle = "NewToolResultError("
+	files := goSourceFilesInPackageDir(t)
+	for name, body := range files {
+		masked := maskCommentsAndStrings(body)
+		wantCount := 0
+		searchFrom := 0
+		for {
+			rel := strings.Index(body[searchFrom:], needle)
+			if rel < 0 {
+				break
+			}
+			pos := searchFrom + rel
+			if !masked[pos] {
+				wantCount++
+			}
+			searchFrom = pos + len(needle)
+		}
+		gotCount := len(scanNewToolResultErrorCalls(body))
+		if gotCount != wantCount {
+			t.Errorf("%s: scanNewToolResultErrorCalls found %d call(s), want %d "+
+				"(masked-needle count) — coverage gap or false positive", name, gotCount, wantCount)
+		}
 	}
 }
 
