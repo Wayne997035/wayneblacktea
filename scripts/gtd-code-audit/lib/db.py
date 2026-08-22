@@ -91,9 +91,8 @@ def fetch_tasks(env_local: Path, status: str = "pending",
         # reaching psql as a single argv element is inert to shell
         # metacharacters — S603/S607 fire on any subprocess call generically
         # and don't distinguish this from an actually-dangerous shell=True
-        # invocation. "psql" is resolved via PATH like every other script
-        # in this repo (see scan-review.py); pinning an absolute path would
-        # just break on machines where it's installed elsewhere.
+        # invocation. "psql" is resolved via PATH; pinning an absolute path
+        # would just break on machines where it's installed elsewhere.
         r = subprocess.run(  # noqa: S603
             ["psql", dsn, "--csv", "-c", query],  # noqa: S607
             capture_output=True, text=True, timeout=timeout, env=env,

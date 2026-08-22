@@ -84,9 +84,8 @@ delete, deprecate, or change any tool.
 3. **Telemetry.** `internal/discipline` persists every mutating tool call to
    `discipline_events` (30-day TTL, `build/Taskfile.yml discipline-prune`). This
    analysis is read-only and does **not** connect to the production Aiven Postgres
-   instance (Boundaries: no prod DB). A local dev SQLite file
-   (`/Users/waynechen/_project/wayneblacktea/wayneblacktea.db`, outside this worktree,
-   pre-existing) was queried read-only (`sqlite3 -readonly ... "SELECT tool_name,
+   instance (Boundaries: no prod DB). A pre-existing local dev SQLite file
+   outside this worktree was queried read-only (`sqlite3 -readonly ... "SELECT tool_name,
    COUNT(*), MIN(observed_at), MAX(observed_at) FROM discipline_events GROUP BY
    tool_name"`) as a best-effort signal only. Result: **3 rows total** — `add_task`
    (1, 2026-07-20T08:14:54Z), `begin_task` (1, 2026-07-20T08:15:00Z), `update_task`

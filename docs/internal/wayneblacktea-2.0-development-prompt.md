@@ -85,10 +85,8 @@ Use these sources as constraints, not as cargo-cult architecture:
 
 Before proposing or changing code:
 
-1. Read workspace policy:
-   - `/Users/waynechen/_project/CLAUDE.md`
-   - `/Users/waynechen/_project/.claude/rules/dev-rules.md`
-   - relevant `.claude/skills/**` entry files
+1. Read whatever workspace-level policy your environment defines (coding
+   standards, commit/PR rules, and the entry files for any skills it ships).
 2. Read project files:
    - `CLAUDE.md`
    - `docs/architecture.md`

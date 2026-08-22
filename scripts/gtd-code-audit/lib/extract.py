@@ -82,7 +82,7 @@ MAX_ANCHORS_PER_CATEGORY = 50
 # grep-match somewhere in almost any large codebase's comments. Left
 # unfiltered, "Minor" alone produced a false SUSPECT_ALREADY_FIXED on a
 # ticket with zero relationship to the matched line (found via fixture
-# testing: 5d29b5d1 "Minor" matched an unrelated comment in atomizer.go).
+# testing: 61c67e15 "Minor" matched an unrelated comment in atomizer.go).
 # This stoplist is deliberately the tag vocabulary, not a general English
 # dictionary — a real Go identifier is never one of these bare words.
 _PASCAL_STOPLIST = {

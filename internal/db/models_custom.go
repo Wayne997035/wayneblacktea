@@ -5,8 +5,9 @@
 // from clobber. Keep this file for MarshalJSON / MarshalText / Stringer methods
 // that need to override default reflection-based shapes for sqlc rows.
 //
-// See `_project/.claude/rules/backend-security-design.md` §3 on hiding internal
-// type shapes from API surfaces.
+// Internal type shapes stay off API surfaces: a row struct is storage detail,
+// so anything crossing the boundary gets an explicit marshaller here rather
+// than leaking sqlc's reflection default.
 
 package db
 

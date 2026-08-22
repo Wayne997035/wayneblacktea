@@ -53,7 +53,7 @@ class TestExtractAnchors(unittest.TestCase):
         # Every ticket's title carries a severity tag ("🟡 Minor", "🟠
         # Major", "🔴 Critical"). Left unfiltered these match PASCAL_RE and
         # produced a real false SUSPECT_ALREADY_FIXED via fixture testing
-        # (5d29b5d1's "Minor" matched an unrelated comment elsewhere).
+        # (61c67e15's "Minor" matched an unrelated comment elsewhere).
         a = extract.extract_anchors("[wbt][PR#157 一軍 🟡 Minor] 標題", "🟠 Major 的內容")
         self.assertNotIn("Minor", a["symbols"])
         self.assertNotIn("Major", a["symbols"])
@@ -263,7 +263,7 @@ class TestRulesDecisionTree(unittest.TestCase):
     def test_measurement_citation_marked_still_unfixed_downgrades(self):
         # Same match, but the surrounding code text self-documents the
         # limit as NOT fixed — must not be reported as a fix. This is the
-        # exact false-positive fixture testing caught on 48bf052d.
+        # exact false-positive fixture testing caught on cd64c30d.
         git = FakeGit(
             grep_results={"80,687": [("internal/mcp/resources.go", 495)]},
             contexts={("internal/mcp/resources.go", 495):
@@ -366,7 +366,7 @@ def _repo_root():
 class TestGitOpsSelfExclusion(unittest.TestCase):
     """grep_fixed() must never let this tool's own testdata/tests count as
     corroborating evidence — see SELF_EXCLUDE_PATHSPEC's docstring in
-    lib/gitutil.py. Regression coverage for ticket 6f306618's false
+    lib/gitutil.py. Regression coverage for ticket 5656cfde's false
     CITED_BUT_MARKED_UNFIXED (branch name in the ticket's own description
     self-matched inside testdata/known_tickets.json)."""
 
@@ -498,7 +498,7 @@ class TestKnownFixtureRegression(unittest.TestCase):
 
         Currently vacuous by design: `known_tickets.json` has ZERO
         `negative_verified` entries (see README.md "Fixture provenance" —
-        the one real ticket that lived here, 7610088f, was moved to
+        the one real ticket that lived here, 72de9051, was moved to
         `positive_verified` because its anchor file
         (internal/handler/gtd_handler.go) genuinely got fixed by commit
         582741d, which had already landed in this checkout's history
@@ -535,7 +535,7 @@ class TestKnownFixtureRegression(unittest.TestCase):
         real bug ticket, "fixing" this would require a deliberate
         architecture decision (switching SQLite to some ANN index), not an
         incidental commit — so it will not silently flip to "fixed"
-        the way 7610088f did.
+        the way 72de9051 did.
 
         `created_at` is computed HERE, at test-run time, as the anchor
         file's own last-commit timestamp — NOT a frozen calendar date. The

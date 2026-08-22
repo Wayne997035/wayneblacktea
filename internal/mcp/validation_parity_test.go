@@ -21,15 +21,15 @@ import (
 // ---------------------------------------------------------------------------
 // Sprint 8-7 MCP vs HTTP validation-parity matrix.
 //
-// SA gap-audit (.reviews/sprint-8-7/sa-gap-audit.md) found seven concepts
+// A gap audit found seven concepts
 // (A-G) where MCP tools and HTTP handlers enforced different strength
 // guarantees for the same domain concept — downstream code cannot tell which
 // transport a row came through, so the two paths disagreeing means the
 // weaker path's guarantee doesn't actually hold.
 //
-// Per pitfalls.md:60 (wayneblacktea PR #149: three review rounds, each one
-// only patching the previously-found hole because 10 hardcoded if-tests
-// covered "known bugs" instead of the input space), this file is ONE
+// Learned the hard way in PR #149 — three review rounds, each one only
+// patching the previously-found hole because 10 hardcoded if-tests covered
+// "known bugs" instead of the input space. So this file is ONE
 // table-driven matrix, not seven independent hardcoded tests. Each row is a
 // "concept x validation dimension" pair that drives BOTH the MCP tool and
 // the HTTP handler against the SAME kind of input and asserts they agree
@@ -50,7 +50,7 @@ import (
 // produced: whether the write was rejected, and — only when accepted — a
 // value read back from the REAL store (never a value the sanitizer itself
 // computed) for content-parity assertions. This is the assertion-source
-// discipline from pitfalls.md:60: asserting "sanitize(x) == sanitize(x)" is
+// discipline PR #149 forced: asserting "sanitize(x) == sanitize(x)" is
 // tautological and can't catch a broken sanitizer; asserting "what actually
 // landed in the DB == this literal I computed by hand" can.
 type parityOutcome struct {

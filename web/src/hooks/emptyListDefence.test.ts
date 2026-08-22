@@ -1,8 +1,8 @@
 /**
  * Cross-cutting contract test: every list-returning query hook MUST guarantee
  * an array even when the backend responds with JSON `null` for an empty list
- * (sqlite nil-slice → JSON null is a known backend behaviour — see
- * .reviews/sprint-8-7/sa-gap-audit.md §2). The guard lives in each hook's
+ * (sqlite nil-slice → JSON null is a known backend behaviour). The guard
+ * lives in each hook's
  * `select: (data) => data ?? []`, mirroring the pre-existing pattern in
  * useTasks.ts (`useTasksByProject` / `useAllTasks`).
  *

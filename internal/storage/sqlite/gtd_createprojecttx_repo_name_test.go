@@ -9,7 +9,7 @@ import (
 )
 
 // TestGTDStore_CreateProjectTx_InvalidRepoName is the SQLite half of sprint
-// 8-7 gap G: SA gap-audit (.reviews/sprint-8-7/sa-gap-audit.md) found that
+// 8-7 gap G: a gap audit found that
 // GTDStore.CreateProjectTx (the confirm_proposal materialisation path used by
 // internal/mcp/tools_proposal.go's materializeFromPayloadSQLiteTx) never
 // validated repo_name, even though its sibling non-Tx CreateProject

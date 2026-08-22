@@ -71,12 +71,11 @@ migrations/**/*.bak
 .reviews/
 .implement/
 
-# Python tooling working artifacts (scripts/gtd-code-audit/ etc.) — same
-# convention as _project/.gitignore's scripts/*/reports/.
+# Python tooling working artifacts (scripts/gtd-code-audit/ etc.)
 scripts/*/reports/
 __pycache__/
 .ruff_cache/
 
-# 機械驗收引擎的設定 —— 住引擎側 (_project/scripts/mechanical-verify/configs/),
-# 不進這個公開 repo:它通篇引用只有本工作區才有的私有工具路徑。
+# External tooling config — the tool that reads it is not part of this repo,
+# so a tracked copy would be a dead reference for anyone cloning.
 .mechanical-verify.toml
