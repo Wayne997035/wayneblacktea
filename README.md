@@ -22,16 +22,15 @@
 
 Prerequisites: Go **1.26.4+** (tracks the `go` directive in [`go.mod`](./go.mod) — check that file if this number looks stale), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`).
 
-`go install .../cmd/wbt@latest` only builds the `wbt` CLI — `wbt setup` also needs a `wayneblacktea-server` binary, which embeds the built web UI. Build both from a clone first:
+Build `wbt` and `wayneblacktea-server` from the same clone. `go install .../cmd/wbt@latest` resolves to the latest tagged release from the Go module proxy — mixing that with a server built from your clone (whatever commit that is) gives you two binaries from two different versions with no warning:
 
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
 npm --prefix web ci              # web/package-lock.json is committed, so use ci
 npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
-cd build && task build-server    # produces ../bin/wayneblacktea-server
-# put <repo>/bin on PATH, or pass wbt setup --server-bin=<absolute path> below
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+cd build && task build-server && task build-wbt   # produces ../bin/wayneblacktea-server and ../bin/wbt
+export PATH="$(cd .. && pwd)/bin:$PATH"           # or pass wbt setup --server-bin=<absolute path>
 wbt setup
 ```
 

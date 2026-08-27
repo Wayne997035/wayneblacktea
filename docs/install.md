@@ -13,20 +13,19 @@
 
 ## Quick start
 
-`go install .../cmd/wbt@latest` only builds the `wbt` CLI. `wbt setup` also needs a `wayneblacktea-server` binary, which embeds the built web UI via `//go:embed` — build both from a clone first:
+Build `wbt` and `wayneblacktea-server` from the same clone. `go install .../cmd/wbt@latest` resolves to the latest tagged release from the Go module proxy — mixing that with a server built from your clone (whatever commit that is) gives you two binaries from two different versions with no warning:
 
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
 npm --prefix web ci              # web/package-lock.json is committed, so use ci
 npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
-cd build && task build-server    # produces ../bin/wayneblacktea-server
-# put <repo>/bin on PATH, or pass wbt setup --server-bin=<absolute path> below
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+cd build && task build-server && task build-wbt   # produces ../bin/wayneblacktea-server and ../bin/wbt
+export PATH="$(cd .. && pwd)/bin:$PATH"           # or pass wbt setup --server-bin=<absolute path>
 wbt setup
 ```
 
-Once `wayneblacktea-server` is built and reachable, `wbt setup` does end-to-end:
+Once both binaries are built and on PATH, `wbt setup` does end-to-end:
 
 1. Reads or creates global config (macOS: `~/Library/Application Support/wayneblacktea/config.yaml`; Linux: `~/.config/wayneblacktea/config.yaml`; mode 0600).
 2. Ensures the SQLite directory exists (default backend, zero infra).
@@ -174,23 +173,12 @@ Set via `ANTHROPIC_API_KEY` in your shell environment or in `config.yaml`. After
 ## Upgrading
 
 ```bash
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt setup
-```
-
-`wbt setup` is idempotent: it re-registers the MCP entry with the current binary path and restarts the server if the PID file points to an exited process. To force a fresh server immediately: `wbt restart`.
-
-Schema migrations run automatically when the server starts — there is no manual migration step for `go install` users.
-
-For build-from-source upgrades:
-
-```bash
 git pull
 cd build && task build-server build-wbt && cd ..
 wbt restart
 ```
 
-Migrations are idempotent — applying already-applied migrations is safe.
+`wbt restart` is idempotent: it re-registers the MCP entry with the current binary path and restarts the server if the PID file points to an exited process. Schema migrations run automatically when the server starts and are themselves idempotent — applying already-applied migrations is safe, and there is no manual migration step.
 
 ### Migration from earlier wbt
 
@@ -254,8 +242,8 @@ If missing, add the appropriate directory to your shell profile and restart your
 
 | Channel | Command | Notes |
 |---------|---------|-------|
-| **go install + local server build** (recommended) | See [Quick start](#quick-start) above | Requires Go 1.26.4+, Node.js 22+, Task. Works today. |
-| **Build from source** | See [Build from source](#build-from-source) below | Requires Go 1.26.4+, Node.js 22+, Task. |
+| **Clone + build both binaries** (recommended) | See [Quick start](#quick-start) above | Requires Go 1.26.4+, Node.js 22+, Task. Works today. |
+| **Build from source (full dev setup)** | See [Build from source](#build-from-source) below | Requires Go 1.26.4+, Node.js 22+, Task. |
 
 There is no pre-built-binary channel. Distribution is the git tag plus the Go module proxy —
 `go install …@v1.0.1` fetches, verifies against the checksum database, and builds. Homebrew

@@ -22,16 +22,15 @@
 
 前置需求：Go **1.26.4+**（版本以 [`go.mod`](./go.mod) 的 `go` 指令為準，這個數字若看起來過期以該檔為準）、Node.js 22+、[Task](https://taskfile.dev/)（`go install github.com/go-task/task/v3/cmd/task@latest`）。
 
-`go install .../cmd/wbt@latest` 只會裝出 `wbt` 這支 CLI —— `wbt setup` 還需要一支內嵌了 web UI 的 `wayneblacktea-server`，得先從原始碼把兩者都建出來：
+`wbt` 跟 `wayneblacktea-server` 要從同一份 clone 建出來。`go install .../cmd/wbt@latest` 會從 Go module proxy 解到最新的 release tag —— 混著用本機 clone 建出來的 server（不管你 clone 到哪個 commit），會讓你手上兩支 binary 是不同版本，而且不會有任何警告：
 
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
 npm --prefix web ci              # web/package-lock.json 有進版控，所以用 ci
 npm --prefix web run build       # 產生 web/dist，cmd/server 的 go:embed 需要它
-cd build && task build-server    # 產出 ../bin/wayneblacktea-server
-# 把 <repo>/bin 放進 PATH，或改用下面的 wbt setup --server-bin=<絕對路徑>
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+cd build && task build-server && task build-wbt   # 產出 ../bin/wayneblacktea-server 和 ../bin/wbt
+export PATH="$(cd .. && pwd)/bin:$PATH"           # 或改用 wbt setup --server-bin=<絕對路徑>
 wbt setup
 ```
 

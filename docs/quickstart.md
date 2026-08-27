@@ -2,7 +2,7 @@
 
 Get wayneblacktea running locally in under 10 minutes.
 
-> **Just want to use it?** See [`install.md`](./install.md#quick-start) for the verified end-to-end install (clone, build the web UI + server, `go install` the `wbt` CLI, `wbt setup`), sister commands (`wbt status` / `wbt stop` / `wbt restart`), Postgres, Docker, and release binary options.
+> **Just want to use it?** See [`install.md`](./install.md#quick-start) for the verified end-to-end install (clone, build the web UI + server + `wbt` CLI from the same checkout, `wbt setup`), sister commands (`wbt status` / `wbt stop` / `wbt restart`), Postgres, Docker, and release binary options.
 >
 > The rest of this page is for **contributors / from-source builds**: cloning the repo, seeding demo data, hacking on the web UI.
 
