@@ -30,9 +30,11 @@ cd wayneblacktea
 npm --prefix web ci              # web/package-lock.json is committed, so use ci
 npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
 cd build && task build-server && task build-wbt   # produces ../bin/wayneblacktea-server and ../bin/wbt
-export PATH="$(cd .. && pwd)/bin:$PATH"           # or pass wbt setup --server-bin=<absolute path>
+install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
+
+Make sure `~/.local/bin` is on your `PATH` — if it isn't, either add it to your shell profile or `install` to a directory that already is.
 
 `wbt setup` does end-to-end: creates the SQLite store, reclaims the TCP port if something's squatting on it, spawns `wayneblacktea-server` in the background (PID file under `$XDG_STATE_HOME/wayneblacktea/`), waits for `/health`, and registers the HTTP MCP transport with Claude Code:
 

@@ -30,9 +30,11 @@ cd wayneblacktea
 npm --prefix web ci              # web/package-lock.json 有進版控，所以用 ci
 npm --prefix web run build       # 產生 web/dist，cmd/server 的 go:embed 需要它
 cd build && task build-server && task build-wbt   # 產出 ../bin/wayneblacktea-server 和 ../bin/wbt
-export PATH="$(cd .. && pwd)/bin:$PATH"           # 或改用 wbt setup --server-bin=<絕對路徑>
+install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
+
+確認 `~/.local/bin` 在你的 `PATH` 上——不在的話,把它加進 shell 設定,或改 `install` 到一個已經在 `PATH` 上的目錄。
 
 `wbt setup` 一條龍：建立 SQLite 目錄、解析 port、佔用就 reclaim、用 `nohup` 在背景啟動 `wayneblacktea-server`（PID file 寫到 `$XDG_STATE_HOME/wayneblacktea/`）、輪詢 `/health`，最後用 `claude mcp add --transport http` 把 HTTP MCP 註冊到 Claude Code。
 

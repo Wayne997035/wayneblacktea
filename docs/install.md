@@ -21,11 +21,13 @@ cd wayneblacktea
 npm --prefix web ci              # web/package-lock.json is committed, so use ci
 npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
 cd build && task build-server && task build-wbt   # produces ../bin/wayneblacktea-server and ../bin/wbt
-export PATH="$(cd .. && pwd)/bin:$PATH"           # or pass wbt setup --server-bin=<absolute path>
+install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
 
-Once both binaries are built and on PATH, `wbt setup` does end-to-end:
+Make sure `~/.local/bin` is on your `PATH` — if it isn't, either add it to your shell profile or `install` to a directory that already is.
+
+Once both binaries are built and installed, `wbt setup` does end-to-end:
 
 1. Reads or creates global config (macOS: `~/Library/Application Support/wayneblacktea/config.yaml`; Linux: `~/.config/wayneblacktea/config.yaml`; mode 0600).
 2. Ensures the SQLite directory exists (default backend, zero infra).
@@ -175,6 +177,7 @@ Set via `ANTHROPIC_API_KEY` in your shell environment or in `config.yaml`. After
 ```bash
 git pull
 cd build && task build-server build-wbt && cd ..
+install -m 0755 bin/wbt bin/wayneblacktea-server ~/.local/bin/
 wbt restart
 ```
 
@@ -266,13 +269,13 @@ Managed providers (Railway, Aiven, Supabase) have pgvector available — enable 
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
-go build -o bin/wbt ./cmd/wbt
 # Set DATABASE_URL in ~/.config/wayneblacktea/config.yaml or export it before running setup.
 # wbt setup will use the DATABASE_URL env var and auto-detect the Postgres backend.
 export DATABASE_URL="postgres://user:pass@host/db?sslmode=require"
 cd build && task migrate-up && cd ..   # apply Postgres migrations
 cd build && task build-server build-wbt && cd ..
-./bin/wbt setup                        # spawns server in background, registers MCP
+install -m 0755 bin/wbt bin/wayneblacktea-server ~/.local/bin/
+wbt setup                              # spawns server in background, registers MCP
 ```
 
 Required environment variables (server / PG mode):
