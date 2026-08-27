@@ -7,18 +7,25 @@
 | macOS | 13+ (lsof + setsid compatibility) |
 | Linux | kernel 4.18+, glibc 2.28+ (for ss fallback and nohup) |
 | Windows | Not supported in Phase 2 — the lifecycle package returns `ErrUnsupported`; use `wbt mcp` (stdio) manually |
-| Go | 1.26+ (for `go install` path) |
+| Go | 1.26.4+ (tracks the `go` directive in [`go.mod`](../go.mod) — check that file if this number looks stale) |
 | Node.js | 22+ (build-from-source only) |
 | Task | latest (build-from-source only — `go install github.com/go-task/task/v3/cmd/task@latest`) |
 
 ## Quick start
 
+Build `wbt` and `wayneblacktea-server` from the same clone. `go install .../cmd/wbt@latest` resolves to the latest tagged release from the Go module proxy — mixing that with a server built from your clone (whatever commit that is) gives you two binaries from two different versions with no warning:
+
 ```bash
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+git clone https://github.com/Wayne997035/wayneblacktea.git
+cd wayneblacktea
+cd build && task build-frontend && task build-server && task build-wbt   # build-frontend copies web/dist into cmd/server/web/dist, which cmd/server's go:embed needs
+install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
 
-`wbt setup` is the one-command install (shipped in Phase 2). It does end-to-end:
+Make sure `~/.local/bin` is on your `PATH` — if it isn't, either add it to your shell profile or `install` to a directory that already is.
+
+Once both binaries are built and installed, `wbt setup` does end-to-end:
 
 1. Reads or creates global config (macOS: `~/Library/Application Support/wayneblacktea/config.yaml`; Linux: `~/.config/wayneblacktea/config.yaml`; mode 0600).
 2. Ensures the SQLite directory exists (default backend, zero infra).
@@ -166,23 +173,13 @@ Set via `ANTHROPIC_API_KEY` in your shell environment or in `config.yaml`. After
 ## Upgrading
 
 ```bash
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
-wbt setup
-```
-
-`wbt setup` is idempotent: it re-registers the MCP entry with the current binary path and restarts the server if the PID file points to an exited process. To force a fresh server immediately: `wbt restart`.
-
-Schema migrations run automatically when the server starts — there is no manual migration step for `go install` users.
-
-For build-from-source upgrades:
-
-```bash
 git pull
 cd build && task build-server build-wbt && cd ..
+install -m 0755 bin/wbt bin/wayneblacktea-server ~/.local/bin/
 wbt restart
 ```
 
-Migrations are idempotent — applying already-applied migrations is safe.
+`wbt restart` is idempotent: it re-registers the MCP entry with the current binary path and restarts the server if the PID file points to an exited process. Schema migrations run automatically when the server starts and are themselves idempotent — applying already-applied migrations is safe, and there is no manual migration step.
 
 ### Migration from earlier wbt
 
@@ -246,8 +243,8 @@ If missing, add the appropriate directory to your shell profile and restart your
 
 | Channel | Command | Notes |
 |---------|---------|-------|
-| **go install** (recommended) | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Requires Go 1.26+. Works today. |
-| **Build from source** | See [Build from source](#build-from-source) below | Requires Go 1.26+, Node.js 22+, Task. |
+| **Clone + build both binaries** (recommended) | See [Quick start](#quick-start) above | Requires Go 1.26.4+, Node.js 22+, Task. Works today. |
+| **Build from source (full dev setup)** | See [Build from source](#build-from-source) below | Requires Go 1.26.4+, Node.js 22+, Task. |
 
 There is no pre-built-binary channel. Distribution is the git tag plus the Go module proxy —
 `go install …@v1.0.1` fetches, verifies against the checksum database, and builds. Homebrew
@@ -270,13 +267,13 @@ Managed providers (Railway, Aiven, Supabase) have pgvector available — enable 
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
-go build -o bin/wbt ./cmd/wbt
 # Set DATABASE_URL in ~/.config/wayneblacktea/config.yaml or export it before running setup.
 # wbt setup will use the DATABASE_URL env var and auto-detect the Postgres backend.
 export DATABASE_URL="postgres://user:pass@host/db?sslmode=require"
 cd build && task migrate-up && cd ..   # apply Postgres migrations
-cd build && task build-server build-wbt && cd ..
-./bin/wbt setup                        # spawns server in background, registers MCP
+cd build && task build-frontend build-server build-wbt && cd ..
+install -m 0755 bin/wbt bin/wayneblacktea-server ~/.local/bin/
+wbt setup                              # spawns server in background, registers MCP
 ```
 
 Required environment variables (server / PG mode):
@@ -305,7 +302,7 @@ docker build --build-arg VITE_API_KEY="${API_KEY}" -f build/Dockerfile -t wayneb
 docker run --rm -p "${PORT:-8420}:${PORT:-8420}" --env-file .env wayneblacktea
 ```
 
-Three-stage build: Node 22-alpine builds the React dashboard → golang:1.26-alpine builds the Go binary with the dashboard embedded → alpine:3.21 runtime (non-root, `ca-certificates` only). Healthcheck: `GET /health` returns `200 OK`.
+Three-stage build: Node 22-alpine builds the React dashboard → golang:1.26.4-alpine builds the Go binary with the dashboard embedded → alpine:3.21 runtime (non-root, `ca-certificates` only). Healthcheck: `GET /health` returns `200 OK`.
 
 ## Railway / production deploy
 
@@ -322,7 +319,7 @@ matrix has to be maintained or kept in sync with the platforms people actually r
 
 ## Build from source
 
-Prerequisites: Go 1.26+, Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`), and PostgreSQL 14+ with pgvector (Postgres mode only).
+Prerequisites: Go 1.26.4+ (tracks the `go` directive in [`go.mod`](../go.mod)), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`), and PostgreSQL 14+ with pgvector (Postgres mode only).
 
 ```bash
 cd build

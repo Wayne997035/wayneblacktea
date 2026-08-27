@@ -20,12 +20,21 @@
 
 ## 安裝
 
+前置需求：Go **1.26.4+**（版本以 [`go.mod`](./go.mod) 的 `go` 指令為準，這個數字若看起來過期以該檔為準）、Node.js 22+、[Task](https://taskfile.dev/)（`go install github.com/go-task/task/v3/cmd/task@latest`）。
+
+`wbt` 跟 `wayneblacktea-server` 要從同一份 clone 建出來。`go install .../cmd/wbt@latest` 會從 Go module proxy 解到最新的 release tag —— 混著用本機 clone 建出來的 server（不管你 clone 到哪個 commit），會讓你手上兩支 binary 是不同版本，而且不會有任何警告：
+
 ```bash
-go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
+git clone https://github.com/Wayne997035/wayneblacktea.git
+cd wayneblacktea
+cd build && task build-frontend && task build-server && task build-wbt   # build-frontend 把 web/dist 複製進 cmd/server/web/dist，cmd/server 的 go:embed 需要它
+install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
 
-就這樣。`wbt setup` 一條龍：建立 SQLite 目錄、解析 port、佔用就 reclaim、用 `nohup` 在背景啟動 `wayneblacktea-server`（PID file 寫到 `$XDG_STATE_HOME/wayneblacktea/`）、輪詢 `/health`，最後用 `claude mcp add --transport http` 把 HTTP MCP 註冊到 Claude Code。
+確認 `~/.local/bin` 在你的 `PATH` 上——不在的話,把它加進 shell 設定,或改 `install` 到一個已經在 `PATH` 上的目錄。
+
+`wbt setup` 一條龍：建立 SQLite 目錄、解析 port、佔用就 reclaim、用 `nohup` 在背景啟動 `wayneblacktea-server`（PID file 寫到 `$XDG_STATE_HOME/wayneblacktea/`）、輪詢 `/health`，最後用 `claude mcp add --transport http` 把 HTTP MCP 註冊到 Claude Code。
 
 ```
 $ wbt setup
@@ -63,14 +72,11 @@ claude mcp get wayneblacktea    # 應顯示 ✔ Connected
 
 核心 MCP 記憶功能不需要 Anthropic API key。Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)，常見問題見 [Troubleshooting](./docs/install.md#troubleshooting)。
 
-### 安裝管道
+### 其他跑法
 
 | 管道 | 指令 | 適合 |
 |------|------|------|
-| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | 已裝 Go 1.26+ — 建議方式 |
-| 從原始碼建置 | `git clone ... && cd build && task build-wbt && wbt setup` | 開發者；詳見 [`docs/install.md`](./docs/install.md) |
-
-Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.md)，常見問題見 [Troubleshooting](./docs/install.md#troubleshooting)。
+| 直接跑 server | `cd build && task build-frontend && cd .. && go run ./cmd/server -env .env` | 想改 server 或 web UI 的人 — port、三條路線的認證規則、以及為什麼 `curl` 通不代表瀏覽器登得進去，見 [`docs/quickstart.md`](./docs/quickstart.md) |
 
 ## 5 分鐘 onboarding
 
@@ -102,24 +108,26 @@ Postgres、Docker、Railway 部署方式見 [`docs/install.md`](./docs/install.m
 
 ```mermaid
 flowchart TD
-    CC["Claude Code\n(wbt mcp — stdio)"]
-    CURL["HTTP 客戶端\n(dashboard / curl)"]
-    HTTPMCP["HTTP MCP transport\n(/mcp)"]
+    CC["Claude Code<br/>(wbt mcp — stdio)"]
+    CURL["HTTP 客戶端<br/>(dashboard / curl)"]
+    HTTPMCP["HTTP MCP transport<br/>(/mcp)"]
+    SRV["wayneblacktea-server<br/>(Echo HTTP + mcp-go)"]
+    STORES["Store interfaces<br/>gtd · decision · knowledge · session<br/>proposal · vision · learning · workspace"]
+    SQLITE["SQLite<br/>(本機開發，零 infra)"]
+    PG["Postgres + pgvector<br/>(Aiven / Railway)"]
+    AI["AI providers<br/>Anthropic · Gemini embeddings<br/>Groq (Discord bot)"]
+    SCHED["Scheduler<br/>週六 reflection<br/>auto-consolidation · decay prune"]
+    DISCORD["Discord bot"]
 
-    CC   -->|MCP stdio|        SRV
-    CURL -->|REST /api/star|   SRV
+    CC -->|MCP stdio| SRV
+    CURL -->|REST /api/star| SRV
     HTTPMCP -->|MCP over HTTP| SRV
-
-    SRV["wayneblacktea-server\n(Echo HTTP + mcp-go)"]
-
-    SRV --> STORES["Store interfaces\ngtd · decision · knowledge · session\nproposal · vision · learning · workspace"]
-
-    STORES --> SQLITE["SQLite\n(本機開發，零 infra)"]
-    STORES --> PG["Postgres + pgvector\n(Aiven / Railway)"]
-
-    SRV --> AI["AI providers\nAnthropic · Gemini embeddings\nGroq (Discord bot)"]
-    SRV --> SCHED["Scheduler\n週六 reflection\nauto-consolidation · decay prune"]
-    SRV --> DISCORD["Discord bot"]
+    SRV --> STORES
+    STORES --> SQLITE
+    STORES --> PG
+    SRV --> AI
+    SRV --> SCHED
+    SRV --> DISCORD
 ```
 
 同一個 process 同時服務 MCP stdio、HTTP REST、HTTP MCP — 不用跑多個元件。
