@@ -2,13 +2,13 @@
 
 Get wayneblacktea running locally in under 10 minutes.
 
-> **Just want to use it?** Run `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` — that's the entire install. See [`install.md`](./install.md) for the one-command flow, sister commands (`wbt status` / `wbt stop` / `wbt restart`), Postgres, Docker, and release binary options.
+> **Just want to use it?** See [`install.md`](./install.md#quick-start) for the verified end-to-end install (clone, build the web UI + server, `go install` the `wbt` CLI, `wbt setup`), sister commands (`wbt status` / `wbt stop` / `wbt restart`), Postgres, Docker, and release binary options.
 >
 > The rest of this page is for **contributors / from-source builds**: cloning the repo, seeding demo data, hacking on the web UI.
 
 ## Prerequisites
 
-- Go 1.26+ (`go version`)
+- Go 1.26.4+ (tracks the `go` directive in [`../go.mod`](../go.mod) — check that file if this number looks stale; `go version`)
 - Node.js 22+ (for the web UI build step — matches the `node:22-alpine` Docker build stage)
 - A running PostgreSQL instance **or** set `STORAGE_BACKEND=sqlite` to skip Postgres entirely
 
@@ -58,7 +58,7 @@ Three routes, three different auth rules (`cmd/server/main.go`):
 
 The trap is the third row versus the second: **`curl` succeeding with the header does not prove the browser can get in**, because the web UI never sends that header — it logs in through `POST /api/session` and then rides the cookie (`web/src/lib/api.ts` `loginWithKey` → `pages/LoginPage.tsx`). If you are testing the UI, walk the session/cookie path yourself first.
 
-Also note the web UI is embedded into the binary via `//go:embed web/dist` (`cmd/server/main.go`), so a front-end change you did not `npm run build` will not appear — you will be looking at the previously built bundle.
+Also note the web UI is embedded into the binary via `//go:embed web/dist` (`cmd/server/main.go`), so a front-end change you did not rebuild with `task build-frontend` (step 2 above) will not appear — you will be looking at the previously built bundle.
 
 ## 3. Run the seed command
 

@@ -20,12 +20,22 @@
 
 ## Install
 
+Prerequisites: Go **1.26.4+** (tracks the `go` directive in [`go.mod`](./go.mod) — check that file if this number looks stale), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`).
+
+`go install .../cmd/wbt@latest` only builds the `wbt` CLI — `wbt setup` also needs a `wayneblacktea-server` binary, which embeds the built web UI. Build both from a clone first:
+
 ```bash
+git clone https://github.com/Wayne997035/wayneblacktea.git
+cd wayneblacktea
+npm --prefix web ci              # web/package-lock.json is committed, so use ci
+npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
+cd build && task build-server    # produces ../bin/wayneblacktea-server
+# put <repo>/bin on PATH, or pass wbt setup --server-bin=<absolute path> below
 go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest
 wbt setup
 ```
 
-That's it. `wbt setup` does end-to-end: creates the SQLite store, reclaims the TCP port if something's squatting on it, spawns `wayneblacktea-server` in the background (PID file under `$XDG_STATE_HOME/wayneblacktea/`), waits for `/health`, and registers the HTTP MCP transport with Claude Code:
+`wbt setup` does end-to-end: creates the SQLite store, reclaims the TCP port if something's squatting on it, spawns `wayneblacktea-server` in the background (PID file under `$XDG_STATE_HOME/wayneblacktea/`), waits for `/health`, and registers the HTTP MCP transport with Claude Code:
 
 ```
 $ wbt setup
@@ -61,13 +71,11 @@ Sister commands:
 | `wbt setup --no-mcp` | Skip the `claude mcp add` step |
 | `wbt init` | Deprecated alias for `wbt setup` |
 
-### Install channels
+### Other ways to run it
 
 | Channel | Command | Best for |
 |---------|---------|----------|
-| go install | `go install github.com/Wayne997035/wayneblacktea/cmd/wbt@latest && wbt setup` | Go 1.26+ installed — recommended |
-| Build from source | `git clone ... && cd build && task build-wbt && wbt setup` | Developers; see [`docs/install.md`](./docs/install.md) |
-| Run the server directly | `npm run build && go run ./cmd/server -env .env` | Hacking on the server or the web UI — see [`docs/quickstart.md`](./docs/quickstart.md) for the port, the three auth rules, and why `curl` succeeding does not mean the browser can log in |
+| Run the server directly | `npm --prefix web run build && go run ./cmd/server -env .env` | Hacking on the server or the web UI — see [`docs/quickstart.md`](./docs/quickstart.md) for the port, the three auth rules, and why `curl` succeeding does not mean the browser can log in |
 
 See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and [Troubleshooting](./docs/install.md#troubleshooting).
 
@@ -101,24 +109,26 @@ Full tool reference: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
 
 ```mermaid
 flowchart TD
-    CC["Claude Code\n(wbt mcp — stdio)"]
-    CURL["HTTP clients\n(dashboard / curl)"]
-    HTTPMCP["HTTP MCP transport\n(/mcp)"]
+    CC["Claude Code<br/>(wbt mcp — stdio)"]
+    CURL["HTTP clients<br/>(dashboard / curl)"]
+    HTTPMCP["HTTP MCP transport<br/>(/mcp)"]
+    SRV["wayneblacktea-server<br/>(Echo HTTP + mcp-go)"]
+    STORES["Store interfaces<br/>gtd · decision · knowledge · session<br/>proposal · vision · learning · workspace"]
+    SQLITE["SQLite<br/>(local dev, zero infra)"]
+    PG["Postgres + pgvector<br/>(Aiven / Railway)"]
+    AI["AI providers<br/>Anthropic · Gemini embeddings<br/>Groq (Discord bot)"]
+    SCHED["Scheduler<br/>Saturday reflection<br/>auto-consolidation · decay prune"]
+    DISCORD["Discord bot"]
 
-    CC   -->|MCP stdio|       SRV
-    CURL -->|REST /api/star|  SRV
+    CC -->|MCP stdio| SRV
+    CURL -->|REST /api/star| SRV
     HTTPMCP -->|MCP over HTTP| SRV
-
-    SRV["wayneblacktea-server\n(Echo HTTP + mcp-go)"]
-
-    SRV --> STORES["Store interfaces\ngtd · decision · knowledge · session\nproposal · vision · learning · workspace"]
-
-    STORES --> SQLITE["SQLite\n(local dev, zero infra)"]
-    STORES --> PG["Postgres + pgvector\n(Aiven / Railway)"]
-
-    SRV --> AI["AI providers\nAnthropic · Gemini embeddings\nGroq (Discord bot)"]
-    SRV --> SCHED["Scheduler\nSaturday reflection\nauto-consolidation · decay prune"]
-    SRV --> DISCORD["Discord bot"]
+    SRV --> STORES
+    STORES --> SQLITE
+    STORES --> PG
+    SRV --> AI
+    SRV --> SCHED
+    SRV --> DISCORD
 ```
 
 One process serves MCP stdio, HTTP REST, and HTTP MCP — no separate components to run.
