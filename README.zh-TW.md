@@ -27,9 +27,7 @@
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
-npm --prefix web ci              # web/package-lock.json 有進版控，所以用 ci
-npm --prefix web run build       # 產生 web/dist，cmd/server 的 go:embed 需要它
-cd build && task build-server && task build-wbt   # 產出 ../bin/wayneblacktea-server 和 ../bin/wbt
+cd build && task build-frontend && task build-server && task build-wbt   # build-frontend 把 web/dist 複製進 cmd/server/web/dist，cmd/server 的 go:embed 需要它
 install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
@@ -78,7 +76,7 @@ claude mcp get wayneblacktea    # 應顯示 ✔ Connected
 
 | 管道 | 指令 | 適合 |
 |------|------|------|
-| 直接跑 server | `npm --prefix web run build && go run ./cmd/server -env .env` | 想改 server 或 web UI 的人 — port、三條路線的認證規則、以及為什麼 `curl` 通不代表瀏覽器登得進去，見 [`docs/quickstart.md`](./docs/quickstart.md) |
+| 直接跑 server | `cd build && task build-frontend && cd .. && go run ./cmd/server -env .env` | 想改 server 或 web UI 的人 — port、三條路線的認證規則、以及為什麼 `curl` 通不代表瀏覽器登得進去，見 [`docs/quickstart.md`](./docs/quickstart.md) |
 
 ## 5 分鐘 onboarding
 

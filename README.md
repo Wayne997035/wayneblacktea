@@ -27,9 +27,7 @@ Build `wbt` and `wayneblacktea-server` from the same clone. `go install .../cmd/
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
-npm --prefix web ci              # web/package-lock.json is committed, so use ci
-npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
-cd build && task build-server && task build-wbt   # produces ../bin/wayneblacktea-server and ../bin/wbt
+cd build && task build-frontend && task build-server && task build-wbt   # build-frontend copies web/dist into cmd/server/web/dist, which cmd/server's go:embed needs
 install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
@@ -76,7 +74,7 @@ Sister commands:
 
 | Channel | Command | Best for |
 |---------|---------|----------|
-| Run the server directly | `npm --prefix web run build && go run ./cmd/server -env .env` | Hacking on the server or the web UI — see [`docs/quickstart.md`](./docs/quickstart.md) for the port, the three auth rules, and why `curl` succeeding does not mean the browser can log in |
+| Run the server directly | `cd build && task build-frontend && cd .. && go run ./cmd/server -env .env` | Hacking on the server or the web UI — see [`docs/quickstart.md`](./docs/quickstart.md) for the port, the three auth rules, and why `curl` succeeding does not mean the browser can log in |
 
 See [`docs/install.md`](./docs/install.md) for Postgres, Docker, Railway, and [Troubleshooting](./docs/install.md#troubleshooting).
 

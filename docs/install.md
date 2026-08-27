@@ -18,9 +18,7 @@ Build `wbt` and `wayneblacktea-server` from the same clone. `go install .../cmd/
 ```bash
 git clone https://github.com/Wayne997035/wayneblacktea.git
 cd wayneblacktea
-npm --prefix web ci              # web/package-lock.json is committed, so use ci
-npm --prefix web run build       # produces web/dist, which cmd/server's go:embed needs
-cd build && task build-server && task build-wbt   # produces ../bin/wayneblacktea-server and ../bin/wbt
+cd build && task build-frontend && task build-server && task build-wbt   # build-frontend copies web/dist into cmd/server/web/dist, which cmd/server's go:embed needs
 install -m 0755 ../bin/wbt ../bin/wayneblacktea-server ~/.local/bin/
 wbt setup
 ```
@@ -273,7 +271,7 @@ cd wayneblacktea
 # wbt setup will use the DATABASE_URL env var and auto-detect the Postgres backend.
 export DATABASE_URL="postgres://user:pass@host/db?sslmode=require"
 cd build && task migrate-up && cd ..   # apply Postgres migrations
-cd build && task build-server build-wbt && cd ..
+cd build && task build-frontend build-server build-wbt && cd ..
 install -m 0755 bin/wbt bin/wayneblacktea-server ~/.local/bin/
 wbt setup                              # spawns server in background, registers MCP
 ```
