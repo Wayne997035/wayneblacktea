@@ -16,6 +16,7 @@ import io
 import os
 import re
 import subprocess
+
 import sys
 from pathlib import Path
 
@@ -24,6 +25,22 @@ CSV_COLUMNS = ["id", "status", "kind", "priority", "title", "description",
 ALLOWED_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 UUID_RE = re.compile(
     r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+
+
+_DSN_CRED = re.compile(r"(?<=://)([^:/@\s]+):([^@/\s]+)(?=@)")
+
+
+def mask_dsn(text):
+    """把任何 `scheme://user:password@host` 的密碼換成 `***`。
+
+    **NEVER 只遮我們自己組的那一份字串。** 實際外洩的路徑是例外物件:
+    `subprocess.TimeoutExpired` / `CalledProcessError` 的 `str()` 會把**整個 argv**
+    印出來,而 DSN 就是其中一個元素 —— 於是密碼從 `RuntimeError(f"...{e}")` 這條路
+    進到 stdout、進到 session transcript、再被複製進報告與 handoff。
+    遮在訊息組裝的那一刻,才涵蓋得到所有例外型別。
+    """
+    return _DSN_CRED.sub(r"\1:***", str(text))
 
 
 def _load_env_local(env_path: Path) -> dict:
@@ -98,9 +115,10 @@ def fetch_tasks(env_local: Path, status: str = "pending",
             capture_output=True, text=True, timeout=timeout, env=env,
         )
     except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"psql 執行失敗: {e}") from e
+        raise RuntimeError(f"psql 執行失敗: {mask_dsn(e)}") from e
     if r.returncode != 0:
-        raise RuntimeError(f"psql 回傳非 0(exit {r.returncode}): {r.stderr.strip()}")
+        raise RuntimeError(
+            f"psql 回傳非 0(exit {r.returncode}): {mask_dsn(r.stderr.strip())}")
 
     reader = csv.DictReader(io.StringIO(r.stdout))
     return [dict(row) for row in reader]
