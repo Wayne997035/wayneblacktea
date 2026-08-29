@@ -1,11 +1,23 @@
 -- All queries take workspace_id as the named nullable arg @workspace_id.
 -- NULL → no filter (legacy mode); UUID → strict per-workspace scope.
 
+-- [F170-04] row_limit/row_offset: this query had no LIMIT at all, so its
+-- result — and therefore the list_projects MCP response — grew with the
+-- table, with nothing between a large projects table and the caller's
+-- context window. Callers that genuinely want every row (the HTTP dashboard,
+-- context_handler) pass db.UnboundedRowLimit; that keeps their contract
+-- while making the cap a decision each caller states rather than one nobody
+-- can make.
+--
+-- The id tiebreaker is required, not cosmetic: (priority, updated_at) is not
+-- unique, and OFFSET paging over a non-total order silently drops and repeats
+-- rows across pages.
 -- name: ListActiveProjects :many
 SELECT * FROM projects
 WHERE status = 'active'
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
-ORDER BY priority ASC, updated_at DESC;
+ORDER BY priority ASC, updated_at DESC, id ASC
+LIMIT sqlc.arg('row_limit')::int OFFSET sqlc.arg('row_offset')::int;
 
 -- name: GetProjectByName :one
 SELECT * FROM projects
@@ -30,11 +42,16 @@ WHERE id = sqlc.arg('id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 RETURNING *;
 
+-- [F170-05] row_limit/row_offset — same reasoning as ListActiveProjects
+-- above. The id tiebreaker matters more here than anywhere: due_date is
+-- nullable and goals without one all sort equal, so unpaginated order was
+-- already arbitrary among them and OFFSET paging would have been unstable.
 -- name: ListActiveGoals :many
 SELECT * FROM goals
 WHERE status = 'active'
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
-ORDER BY due_date ASC NULLS LAST;
+ORDER BY due_date ASC NULLS LAST, id ASC
+LIMIT sqlc.arg('row_limit')::int OFFSET sqlc.arg('row_offset')::int;
 
 -- name: CreateGoal :one
 INSERT INTO goals (title, description, area, due_date, workspace_id)

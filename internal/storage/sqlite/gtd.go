@@ -236,12 +236,23 @@ func nullTimeArg(t *time.Time) any {
 // ----- StoreIface methods -----
 
 // ListActiveProjects returns all active projects in the configured workspace.
+// [F170-04] — unbounded by contract; ActiveProjectsPage is the capped variant.
 func (s *GTDStore) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
+	return s.ActiveProjectsPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ActiveProjectsPage returns at most limit active projects starting at offset,
+// ordered identically to ListActiveProjects — [F170-04]. Mirrors
+// gtd.Store.ActiveProjectsPage (Postgres), including the id tiebreaker that
+// makes OFFSET paging stable when (priority, updated_at) ties.
+func (s *GTDStore) ActiveProjectsPage(ctx context.Context, limit, offset int32) ([]db.Project, error) {
 	const q = `SELECT ` + projectsSelectCols + ` FROM projects
 		WHERE status = 'active'
 		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY priority ASC, updated_at DESC`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+		ORDER BY priority ASC, updated_at DESC, id ASC
+		LIMIT ?2 OFFSET ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(),
+		db.ClampRowLimit(limit), db.ClampRowOffset(offset))
 	if err != nil {
 		return nil, errWrap("ListActiveProjects", err)
 	}
@@ -270,10 +281,15 @@ func (s *GTDStore) ProjectsFiltered(ctx context.Context, status string) ([]db.Pr
 	)
 	switch status {
 	case "", "active":
+		// [F170-04] id tiebreaker added alongside ListActiveProjects': the
+		// byte-identity contract between these two ("" → same rows, same
+		// order) is asserted by
+		// TestSQLiteStore_ProjectsFiltered_ActiveDefault_ByteIdenticalToListActiveProjects
+		// and only holds if BOTH order totally.
 		const q = `SELECT ` + projectsSelectCols + ` FROM projects
 			WHERE status = 'active'
 			  AND (?1 IS NULL OR workspace_id = ?1)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
 	case "all":
 		const q = `SELECT ` + projectsSelectCols + ` FROM projects
@@ -1108,14 +1124,24 @@ func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projec
 }
 
 // ActiveGoals returns all active goals ordered by due_date ascending NULLS last.
+// [F170-05] — unbounded by contract; ActiveGoalsPage is the capped variant.
 func (s *GTDStore) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
+	return s.ActiveGoalsPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ActiveGoalsPage returns at most limit active goals starting at offset,
+// ordered identically to ActiveGoals — [F170-05]. The id tiebreaker matters
+// most here: goals with no due_date all sort equal.
+func (s *GTDStore) ActiveGoalsPage(ctx context.Context, limit, offset int32) ([]db.Goal, error) {
 	// SQLite: NULLS LAST is supported since 3.30 (2019-10). modernc.org/sqlite
 	// ships modern SQLite, so the syntax is safe.
 	const q = `SELECT ` + goalsSelectCols + ` FROM goals
 		WHERE status = 'active'
 		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY due_date ASC NULLS LAST`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+		ORDER BY due_date ASC NULLS LAST, id ASC
+		LIMIT ?2 OFFSET ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(),
+		db.ClampRowLimit(limit), db.ClampRowOffset(offset))
 	if err != nil {
 		return nil, errWrap("ActiveGoals", err)
 	}

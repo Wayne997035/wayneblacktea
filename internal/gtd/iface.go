@@ -19,6 +19,18 @@ import (
 // unit-of-work design is settled (Phase C+).
 type StoreIface interface {
 	ListActiveProjects(ctx context.Context) ([]db.Project, error)
+	// ActiveProjectsPage is ListActiveProjects with a row cap — [F170-04].
+	// Same rows, same order, at most limit of them starting at offset.
+	// list_projects (MCP) uses it; ListActiveProjects stays for the callers
+	// whose contract really is "every row", so adding the cap could not
+	// silently truncate them.
+	//
+	// limit <= 0 yields ONE row, not all of them (db.ClampRowLimit): a zero
+	// limit is almost always an unset field, and resolving that to "no cap"
+	// is how a pagination guard gets switched off by accident. Callers pass
+	// limit+1 to detect has_more without a COUNT query, the same convention
+	// TasksFiltered uses.
+	ActiveProjectsPage(ctx context.Context, limit, offset int32) ([]db.Project, error)
 	// ProjectsFiltered backs the `?status=` query param on GET /api/projects
 	// (ListProjects). Status "" or "active" → active only (byte-identical to
 	// ListActiveProjects, preserving the historical GET /api/projects
@@ -124,6 +136,9 @@ type StoreIface interface {
 	// enforce the 365-day TTL per backend-security-design.md §1.3.
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
+	// ActiveGoalsPage is ActiveGoals with a row cap — [F170-05]. Same
+	// contract as ActiveProjectsPage above.
+	ActiveGoalsPage(ctx context.Context, limit, offset int32) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error)
 	// UpdateTask performs a partial update of a task, replacing only the fields

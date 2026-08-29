@@ -208,6 +208,22 @@ func (s *stubGTDWithGoals) ActiveGoals(_ context.Context) ([]db.Goal, error) {
 	return s.goals, nil
 }
 
+// ActiveGoalsPage must be overridden explicitly, not left to the embedded
+// *stubGTDStore: Go embedding is not virtual dispatch, so the promoted method
+// would page over the EMBEDDED stub's (always empty) goals and quietly report
+// zero rows for a fixture that has some.
+func (s *stubGTDWithGoals) ActiveGoalsPage(_ context.Context, limit, offset int32) ([]db.Goal, error) {
+	lo := int(db.ClampRowOffset(offset))
+	if lo >= len(s.goals) {
+		return nil, nil
+	}
+	hi := lo + int(db.ClampRowLimit(limit))
+	if hi > len(s.goals) {
+		hi = len(s.goals)
+	}
+	return s.goals[lo:hi], nil
+}
+
 // TestWeeklyGoalReview_PayloadShape ensures the JSON payload written by
 // runWeeklyGoalReview matches proposal.KnowledgePayload and uses type='knowledge'.
 func TestWeeklyGoalReview_PayloadShape(t *testing.T) {

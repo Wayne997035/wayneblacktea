@@ -48,10 +48,25 @@ type Querier interface {
 	GetRepoByName(ctx context.Context, arg GetRepoByNameParams) (Repo, error)
 	GetTasksByProject(ctx context.Context, arg GetTasksByProjectParams) ([]Task, error)
 	HandoffsSince(ctx context.Context, arg HandoffsSinceParams) ([]SessionHandoff, error)
-	ListActiveGoals(ctx context.Context, workspaceID pgtype.UUID) ([]Goal, error)
+	// [F170-05] row_limit/row_offset — same reasoning as ListActiveProjects
+	// above. The id tiebreaker matters more here than anywhere: due_date is
+	// nullable and goals without one all sort equal, so unpaginated order was
+	// already arbitrary among them and OFFSET paging would have been unstable.
+	ListActiveGoals(ctx context.Context, arg ListActiveGoalsParams) ([]Goal, error)
 	// All queries take workspace_id as the named nullable arg @workspace_id.
 	// NULL → no filter (legacy mode); UUID → strict per-workspace scope.
-	ListActiveProjects(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error)
+	// [F170-04] row_limit/row_offset: this query had no LIMIT at all, so its
+	// result — and therefore the list_projects MCP response — grew with the
+	// table, with nothing between a large projects table and the caller's
+	// context window. Callers that genuinely want every row (the HTTP dashboard,
+	// context_handler) pass db.UnboundedRowLimit; that keeps their contract
+	// while making the cap a decision each caller states rather than one nobody
+	// can make.
+	//
+	// The id tiebreaker is required, not cosmetic: (priority, updated_at) is not
+	// unique, and OFFSET paging over a non-total order silently drops and repeats
+	// rows across pages.
+	ListActiveProjects(ctx context.Context, arg ListActiveProjectsParams) ([]Project, error)
 	ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) ([]Repo, error)
 	ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error)
 	ListConcepts(ctx context.Context, arg ListConceptsParams) ([]Concept, error)
@@ -67,7 +82,12 @@ type Querier interface {
 	// that get excluded.
 	ListDecisionsFiltered(ctx context.Context, arg ListDecisionsFilteredParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
-	ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error)
+	// [F170-06] row_limit/row_offset — same reasoning as gtd.sql's
+	// ListActiveProjects. The `id DESC` tiebreaker also brings this query into
+	// line with the SQLite twin (internal/storage/sqlite/proposal.go's
+	// ListPending), which already ordered by created_at DESC, id DESC; the two
+	// backends disagreed on tie order before this.
+	ListPendingProposals(ctx context.Context, arg ListPendingProposalsParams) ([]PendingProposal, error)
 	// All-statuses variant of GetTasksByProject. Used by the ProjectDetailPage to
 	// render both the "open" and the "completed/cancelled" sections; the default
 	// GetTasksByProject query stays active-only so existing GTD list pages don't

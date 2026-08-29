@@ -69,6 +69,10 @@ func (s *stubProposalStore) ListPending(_ context.Context) ([]db.PendingProposal
 	return nil, nil
 }
 
+func (s *stubProposalStore) ListPendingPage(_ context.Context, _, _ int32) ([]db.PendingProposal, error) {
+	return nil, nil
+}
+
 func (s *stubProposalStore) ListAll(_ context.Context, _ string, _ int32) ([]db.PendingProposal, error) {
 	return nil, nil
 }

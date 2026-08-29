@@ -137,12 +137,21 @@ func (s *ProposalStore) ListAll(ctx context.Context, proposalType string, limit 
 }
 
 // ListPending returns all pending proposals, newest first.
+// [F170-06] — unbounded by contract; ListPendingPage is the capped variant.
 func (s *ProposalStore) ListPending(ctx context.Context) ([]db.PendingProposal, error) {
+	return s.ListPendingPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ListPendingPage returns at most limit pending proposals starting at offset,
+// newest first — [F170-06]. Mirrors proposal.Store.ListPendingPage (Postgres).
+func (s *ProposalStore) ListPendingPage(ctx context.Context, limit, offset int32) ([]db.PendingProposal, error) {
 	const q = `SELECT ` + pendingProposalsSelectCols + ` FROM pending_proposals
 		WHERE status = 'pending'
 		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY created_at DESC, id DESC`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?2 OFFSET ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(),
+		db.ClampRowLimit(limit), db.ClampRowOffset(offset))
 	if err != nil {
 		return nil, errWrap("ListPendingProposals", err)
 	}

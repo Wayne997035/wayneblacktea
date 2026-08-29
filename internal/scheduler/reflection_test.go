@@ -69,6 +69,14 @@ func (s *stubGTDStore) LogActivity(_ context.Context, _, _ string, _ *uuid.UUID,
 	return nil
 }
 func (s *stubGTDStore) ActiveGoals(_ context.Context) ([]db.Goal, error) { return nil, nil }
+func (s *stubGTDStore) ActiveGoalsPage(_ context.Context, _, _ int32) ([]db.Goal, error) {
+	return nil, nil
+}
+
+func (s *stubGTDStore) ActiveProjectsPage(_ context.Context, _, _ int32) ([]db.Project, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*db.Goal, error) {
 	return nil, nil
 }
@@ -212,6 +220,10 @@ func (s *stubProposalStore) Create(_ context.Context, p proposal.CreateParams) (
 }
 
 func (s *stubProposalStore) Get(_ context.Context, _ uuid.UUID) (*db.PendingProposal, error) {
+	return nil, nil
+}
+
+func (s *stubProposalStore) ListPendingPage(_ context.Context, _, _ int32) ([]db.PendingProposal, error) {
 	return nil, nil
 }
 

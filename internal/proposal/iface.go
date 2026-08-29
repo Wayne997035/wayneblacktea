@@ -14,6 +14,12 @@ type StoreIface interface {
 	Create(ctx context.Context, p CreateParams) (*db.PendingProposal, error)
 	Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, error)
 	ListPending(ctx context.Context) ([]db.PendingProposal, error)
+	// ListPendingPage is ListPending with a row cap — [F170-06]. Same rows,
+	// same order, at most limit of them starting at offset;
+	// list_pending_proposals (MCP) uses it while the HTTP handler, dashboard
+	// and scheduler keep the uncapped ListPending. limit <= 0 yields ONE row
+	// (db.ClampRowLimit), never "all".
+	ListPendingPage(ctx context.Context, limit, offset int32) ([]db.PendingProposal, error)
 	// ListAll returns all proposals of the given type regardless of status,
 	// newest first, up to limit rows. Used by GET /api/proposals?status=.
 	ListAll(ctx context.Context, proposalType string, limit int32) ([]db.PendingProposal, error)

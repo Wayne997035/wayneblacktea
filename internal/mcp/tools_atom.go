@@ -341,7 +341,13 @@ func (s *Server) handlePromoteAtomToKnowledge(ctx context.Context, req mcp.CallT
 func (s *Server) fetchAtomForPromotion(ctx context.Context, atomID uuid.UUID) (atom.Atom, string) {
 	result, err := s.atom.Traverse(ctx, atomID, 1)
 	if err != nil {
-		return atom.Atom{}, fmt.Sprintf("looking up atom: %v", err)
+		// [F170-08] Found by the provenance gate, not by inspection: this is
+		// the SAME class as tools_proposal.go's 27 sites — a store error
+		// stringified into an errMsg that promote_atom_to_knowledge hands to
+		// mcp.NewToolResultError two frames up (tools_atom.go:330), invisible
+		// to the old needle because the identifier is named errMsg. The store
+		// error now reaches the log only.
+		return atom.Atom{}, storeErrorText("looking up atom", err)
 	}
 	if result == nil || len(result.Atoms) == 0 {
 		return atom.Atom{}, fmt.Sprintf("atom %s not found", atomID)

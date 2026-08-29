@@ -50,6 +50,14 @@ func (m *mockProposalStore) Get(_ context.Context, _ uuid.UUID) (*db.PendingProp
 	return nil, proposal.ErrNotFound
 }
 
+func (m *mockProposalStore) ListPendingPage(ctx context.Context, limit, offset int32) ([]db.PendingProposal, error) {
+	rows, err := m.ListPending(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pageFakeRows(rows, limit, offset), nil
+}
+
 func (m *mockProposalStore) ListPending(_ context.Context) ([]db.PendingProposal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -190,6 +198,18 @@ func (m *mockClassifyGTDStore) LogActivity(_ context.Context, _, _ string, _ *uu
 
 func (m *mockClassifyGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, error) {
 	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) ActiveProjectsPage(_ context.Context, _, _ int32) ([]db.Project, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) ActiveGoalsPage(ctx context.Context, limit, offset int32) ([]db.Goal, error) {
+	rows, err := m.ActiveGoals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pageFakeRows(rows, limit, offset), nil
 }
 
 func (m *mockClassifyGTDStore) ProjectsFiltered(_ context.Context, _ string) ([]db.Project, error) {

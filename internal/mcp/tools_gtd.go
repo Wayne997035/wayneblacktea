@@ -39,7 +39,15 @@ func resolveAssignee(raw string) (string, string) {
 	}
 	normalized, err := gtd.NormalizeActor(raw)
 	if err != nil {
-		return "", err.Error()
+		// [F170-08] Routed through inputErrorText rather than left as a bare
+		// err.Error(): NormalizeActor rejects the caller's OWN assignee
+		// argument against a fixed allowlist, so echoing it is correct and
+		// deliberate — inputErrorText's contract. The text is byte-identical;
+		// what changes is that the judgement is now stated instead of left for
+		// the next reader (and for the provenance gate) to infer. This one
+		// call site covers add_task, begin_task, plan and worksession, which
+		// all reach it through resolveAssigneeArg.
+		return "", inputErrorText("", err)
 	}
 	return normalized, ""
 }
@@ -125,7 +133,15 @@ const maxPendingDeletions = 256
 func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	s.addTool(ms, mcp.NewTool(
 		"list_projects",
-		mcp.WithDescription("Returns all active projects."),
+		// [F170-04] The description no longer says "all": it used to, while
+		// the handler now returns a page. A tool whose description overstates
+		// what it returns is worse than an uncapped one — the caller stops
+		// looking for the rest.
+		mcp.WithDescription("Returns one page of active projects, highest priority first. "+
+			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
+			"Read-only."),
+		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), seam("list_projects", s.handleListProjects))
 
 	s.addTool(
@@ -244,7 +260,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 
 	s.addTool(ms, mcp.NewTool(
 		"list_goals",
-		mcp.WithDescription("Returns all active goals ordered by due date."),
+		// [F170-05] See list_projects above for why "all" had to go.
+		mcp.WithDescription("Returns one page of active goals ordered by due date. "+
+			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
+			"Read-only."),
+		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), seam("list_goals", s.handleListGoals))
 
 	s.addTool(
@@ -591,19 +612,71 @@ func wrapUntrustedGoals(goals []db.Goal) []db.Goal {
 	return out
 }
 
-func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*mcp.CallToolResult, error) {
-	projects, err := s.gtd.ListActiveProjects(ctx)
+const (
+	// listPageDefaultLimit / listPageMaxLimit are the row-cap policy shared by
+	// the list tools — the same 50 / 200 handleListTasks (:777) inlines.
+	listPageDefaultLimit = 50
+	listPageMaxLimit     = 200
+)
+
+// listPageBounds applies that policy to a raw limit/offset pair — [F170-04].
+//
+// A helper rather than three more inline copies because F170-04/05/06 add
+// three call sites at once and the three tools have to agree. handleListTasks
+// keeps its own inline copy in this dispatch on purpose: it is the template
+// two other parallel work-streams are copying from right now, and rewriting it
+// underneath them would break all three at merge. Folding it in is a
+// follow-up, not a silent drive-by.
+func listPageBounds(rawLimit, rawOffset int32) (limit, offset int) {
+	limit = int(rawLimit)
+	if limit <= 0 {
+		limit = listPageDefaultLimit
+	}
+	if limit > listPageMaxLimit {
+		limit = listPageMaxLimit
+	}
+	offset = int(rawOffset)
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// handleListProjects returns one page of active projects.
+//
+// [F170-04] It used to return every active project, because neither this
+// handler nor ListActiveProjects' SQL had any cap: the response size was
+// whatever the projects table happened to be, and a caller could spend an
+// arbitrary share of its own context window on one tool call. The response is
+// now an OBJECT rather than a bare array — the page is only honest if the
+// caller can see limit/offset/returned/has_more, and a truncated bare array
+// looks exactly like a complete one.
+func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) (*mcp.CallToolResult, error) {
+	limit, offset := listPageBounds(args.Limit, args.Offset)
+
+	// limit+1 detects has_more without a second COUNT query — same trick as
+	// handleListTasks.
+	projects, err := s.gtd.ActiveProjectsPage(ctx, int32(limit+1), int32(offset))
 	if err != nil {
 		return storeErrorResult("loading projects", err), nil
 	}
-	if projects == nil {
-		projects = []db.Project{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	hasMore := len(projects) > limit
+	if hasMore {
+		projects = projects[:limit]
 	}
+	// make() with an explicit length: a nil slice marshals to JSON null, and
+	// list tools MUST return [].
 	out := make([]db.Project, len(projects))
 	for i := range projects {
 		out[i] = *wrapUntrustedProject(&projects[i])
 	}
-	return jsonText(out)
+	return jsonText(map[string]any{
+		"projects": out,
+		"returned": len(out),
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": hasMore,
+	})
 }
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
@@ -1099,15 +1172,28 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, art
 	return updated
 }
 
-func (s *Server) handleListGoals(ctx context.Context, _ ListGoalsArgs) (*mcp.CallToolResult, error) {
-	goals, err := s.gtd.ActiveGoals(ctx)
+// handleListGoals returns one page of active goals — [F170-05], same shape and
+// same reasoning as handleListProjects above.
+func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.CallToolResult, error) {
+	limit, offset := listPageBounds(args.Limit, args.Offset)
+
+	goals, err := s.gtd.ActiveGoalsPage(ctx, int32(limit+1), int32(offset))
 	if err != nil {
 		return storeErrorResult("loading goals", err), nil
 	}
-	if goals == nil {
-		goals = []db.Goal{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	hasMore := len(goals) > limit
+	if hasMore {
+		goals = goals[:limit]
 	}
-	return jsonText(wrapUntrustedGoals(goals)) // U13 Phase B (tools_gtd.go:1026)
+	// wrapUntrustedGoals is nil-safe and always returns a non-nil slice
+	// ([F160-03]), so the [] -not-null contract holds without a guard here.
+	return jsonText(map[string]any{
+		"goals":    wrapUntrustedGoals(goals), // U13 Phase B (tools_gtd.go:1026)
+		"returned": len(goals),
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": hasMore,
+	})
 }
 
 func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mcp.CallToolResult, error) {
@@ -1171,7 +1257,7 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 	if args.Assignee != "" {
 		normalized, normErr := gtd.NormalizeActor(args.Assignee)
 		if normErr != nil {
-			return p, normErr.Error()
+			return p, inputErrorText("", normErr) // [F170-08] see resolveAssignee
 		}
 		p.Assignee = &normalized
 	}

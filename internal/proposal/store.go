@@ -84,8 +84,23 @@ func (s *Store) Get(ctx context.Context, id uuid.UUID) (*db.PendingProposal, err
 }
 
 // ListPending returns all proposals awaiting user resolution, newest first.
+//
+// [F170-06] Contract unchanged: the query gained row_limit / row_offset and
+// this method passes db.UnboundedRowLimit, so the HTTP handler, the dashboard
+// and the scheduler keep receiving every pending row. ListPendingPage is the
+// capped variant the MCP tool uses.
 func (s *Store) ListPending(ctx context.Context) ([]db.PendingProposal, error) {
-	rows, err := s.q.ListPendingProposals(ctx, s.workspaceID)
+	return s.ListPendingPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ListPendingPage returns at most limit pending proposals starting at offset,
+// newest first — [F170-06].
+func (s *Store) ListPendingPage(ctx context.Context, limit, offset int32) ([]db.PendingProposal, error) {
+	rows, err := s.q.ListPendingProposals(ctx, db.ListPendingProposalsParams{
+		WorkspaceID: s.workspaceID,
+		RowLimit:    db.ClampRowLimit(limit),
+		RowOffset:   db.ClampRowOffset(offset),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending proposals: %w", err)
 	}

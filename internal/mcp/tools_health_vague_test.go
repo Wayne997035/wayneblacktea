@@ -149,6 +149,10 @@ func (f *fakeHealthProposalStore) ListPending(_ context.Context) ([]db.PendingPr
 	return nil, nil
 }
 
+func (f *fakeHealthProposalStore) ListPendingPage(_ context.Context, _, _ int32) ([]db.PendingProposal, error) {
+	return nil, nil
+}
+
 func (f *fakeHealthProposalStore) ListAll(_ context.Context, _ string, _ int32) ([]db.PendingProposal, error) {
 	return nil, nil
 }

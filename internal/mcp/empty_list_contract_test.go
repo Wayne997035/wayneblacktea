@@ -108,14 +108,19 @@ func TestEmptyListContract_MCP_SQLite(t *testing.T) {
 			wantBareArray: true,
 		},
 		{
-			name:          "list_goals",
-			run:           func(t *testing.T, s *Server) *mcpmsg.CallToolResult { return callListGoals(t, s, map[string]any{}) },
-			wantBareArray: true,
+			// [F170-05] Nested field since list_goals started paging: the
+			// response is {"goals": [...], "limit":..., "has_more":...}. The
+			// contract itself is unchanged — the field must be [] and never
+			// null.
+			name:      "list_goals",
+			run:       func(t *testing.T, s *Server) *mcpmsg.CallToolResult { return callListGoals(t, s, map[string]any{}) },
+			wantField: "goals",
 		},
 		{
-			name:          "list_projects",
-			run:           func(t *testing.T, s *Server) *mcpmsg.CallToolResult { return callListProjects(t, s, map[string]any{}) },
-			wantBareArray: true,
+			// [F170-04] Nested field, same reason as list_goals above.
+			name:      "list_projects",
+			run:       func(t *testing.T, s *Server) *mcpmsg.CallToolResult { return callListProjects(t, s, map[string]any{}) },
+			wantField: "projects",
 		},
 		{
 			name:          "list_decisions",
@@ -139,9 +144,11 @@ func TestEmptyListContract_MCP_SQLite(t *testing.T) {
 			// unlike ListAll, whose two callers (HTTP ListProposals handler,
 			// watchdog's internal iteration) each already tolerate a nil slice.
 			// Fixed in the same store-layer pattern as DueReviews (this PR).
-			name:          "list_pending_proposals",
-			run:           callListPendingProposalsContract,
-			wantBareArray: true,
+			// [F170-06] Nested field since list_pending_proposals started
+			// paging: {"proposals": [...], "limit":..., "has_more":...}.
+			name:      "list_pending_proposals",
+			run:       callListPendingProposalsContract,
+			wantField: "proposals",
 		},
 		{
 			// Nested field: response is {"tasks": [...], "summary":..., ...},
