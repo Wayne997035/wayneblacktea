@@ -95,6 +95,10 @@ func decisionProposerEnabled() bool {
 		return true
 	}
 	switch strings.ToLower(raw) {
+	//nolint:goconst // one truthy-env-value set shared with tools_expand.go's
+	// identical env switch; naming one of four siblings hurts readability.
+	// Extracting a shared predicate is tracked as a follow-up — not done in a
+	// lint-only round because it restructures two already-reviewed files.
 	case "1", "true", "yes", "on":
 		return false
 	}

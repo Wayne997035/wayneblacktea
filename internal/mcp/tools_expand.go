@@ -207,7 +207,10 @@ func progressiveDisclosureEnabled() bool {
 	// predicate rather than restructure two files in a lint-only round) and a
 	// Go predeclared-identifier check in the provenance gate, which is the
 	// same spelling by coincidence.
-	//nolint:goconst // one truthy-env-value set; naming one of four siblings hurts readability.
+	// The goconst directive lives on the sibling switch in
+	// middleware_decision_proposer.go — that is the site goconst reports once
+	// the package crosses its occurrence threshold. Keeping a second directive
+	// here would be flagged unused by nolintlint.
 	case "1", "true", "yes", "on":
 		return false
 	}
