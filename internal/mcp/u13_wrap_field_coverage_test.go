@@ -654,16 +654,14 @@ var knownUnprotectedFields = map[string]string{
 	"skill.Skill via wrapUntrustedSkill|SourceAtomIDs[]": "wrapUntrustedSkill (tools_skill.go) routes " +
 		"Steps/Triggers/FailureModes/VerificationChecklist through clipSafeSkillStrings but leaves " +
 		"SourceAtomIDs untouched — the elements are id-shaped by convention only, never validated as UUIDs.",
-	"skill.Skill via wrapUntrustedSkill|Examples[]": "Examples is []any holding arbitrary JSON decoded " +
-		"from the skills row; neutralizeSkillExamples (tools_skill.go) only neutralises the \"notes\" leaf " +
-		"of a map-shaped entry, so a bare string element reaches the response verbatim. neutralizeJSONBlob " +
-		"(boundary_markers.go) is the existing helper that fits. GTD bcf0d357 / SEC-07.",
-	"skill.Skill via wrapUntrustedSkill|Examples[]{key}": "[F170-18] surfaced by the walker's new " +
-		"nested-map fixture: neutralizeSkillExamples copies every map KEY through byte-for-byte (it only " +
-		"inspects the value under the literal key \"notes\"). Same class as the neutralizeAnyValue map-key " +
-		"hole [F170-17] closed, in a second walker that predates it. GTD bcf0d357 / SEC-07.",
-	"skill.Skill via wrapUntrustedSkill|Examples[]{value}": "[F170-18] same fixture: any map value whose " +
-		"key is NOT \"notes\" is copied through untouched by neutralizeSkillExamples. GTD bcf0d357 / SEC-07.",
+	// [F170-SEC-R3-01] The three Examples[] entries that stood here —
+	// Examples[], Examples[]{key} and Examples[]{value} — are gone because
+	// neutralizeSkillExamples no longer uses a key-name allowlist: it routes
+	// the whole structure through neutralizeAnyValue, which neutralises keys
+	// and values at every depth. Their removal is not bookkeeping;
+	// TestF170_11_KnownUnprotectedFieldsStillReflectReality fails while a
+	// protected field is still listed here, so leaving them would have been
+	// the red test rather than the tidy one.
 }
 
 // TestF160_06_AllExemptionsHaveNonEmptyReason guards wrapUntrustedCases'

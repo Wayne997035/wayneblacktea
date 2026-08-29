@@ -21,13 +21,24 @@ import (
 // not length) — skillItemMaxRunes is a read-time backstop against
 // marker-stuffing / pathological growth only, same rationale as
 // decisionTitleMaxRunes/decisionBodyMaxRunes (tools_decision.go).
-// skillNotesMaxRunes mirrors validateNotes' write-time cap and bounds the
-// "notes" leaf inside Examples entries (see neutralizeSkillExamples).
+// skillNotesMaxRunes mirrors validateNotes' write-time cap and bounds every
+// key and string leaf inside Examples entries (see neutralizeSkillExamples —
+// it is the whole structure's bound, not just the "notes" field's).
 const (
 	skillNameMaxRunes  = 200
 	skillBodyMaxRunes  = 5000
 	skillItemMaxRunes  = 2000
 	skillNotesMaxRunes = 2000
+
+	// [F170-SEC-R3-01] outcome_id had no bound at any layer: no MaxLength on
+	// the schema, no server-side check, and examples is append-only, so one
+	// caller could grow a skill row without limit and spend a later session's
+	// context window reading it back. 200 runes is the same cap
+	// validateSkillName uses for the other id-shaped-by-convention field.
+	// This bounds the value; it deliberately does NOT reject non-UUID input,
+	// because outcome_id is documented as a free reference (task ID, decision
+	// ID, no FK) and rejecting would break callers that rely on that.
+	skillOutcomeIDMaxRunes = 200
 )
 
 // wrapUntrustedSkill returns a copy of sk with every free-text field
@@ -89,12 +100,28 @@ func clipSafeSkillStrings(items []string) []string {
 // neutralizeSkillExamples walks the Examples entries UpdateFromOutcome
 // appends (map[string]string at write time —
 // internal/storage/sqlite/skill.go's UpdateFromOutcome — round-tripped
-// through JSON storage as map[string]any on read) and neutralizes the
-// "notes" value, the only free-text a caller authors in this shape
-// (outcome_id is a code-layer reference ID, "at" is a server-generated
-// timestamp). Any element shape this walk doesn't recognize is left
-// untouched rather than dropped, so a store schema change degrades to
+// through JSON storage as map[string]any on read) and neutralises EVERY key
+// and EVERY string value it reaches, at every depth. Non-string leaves
+// (numbers, bools, nil) and element shapes the walk does not recognise are
+// passed through rather than dropped, so a store schema change degrades to
 // no-op instead of silently deleting data.
+//
+// [F170-SEC-R3-01] This used to neutralise only the value under the literal
+// key "notes", on the stated grounds that notes was "the only free-text a
+// caller authors in this shape (outcome_id is a code-layer reference ID)".
+// That sentence was false. outcome_id is an ordinary caller-supplied tool
+// argument — handleUpdateSkillFromOutcome reads it with stringArg — so a
+// forged boundary marker placed there was copied byte-for-byte into
+// search_skills / use_skill / list_relevant_skills, i.e. into a later
+// session's context. The notes leaf coming back neutralised in the same
+// payload is what made it look covered.
+//
+// The lesson is the shape, not the field: a key-name allowlist inside a
+// neutraliser is silently wrong for every key nobody thought of, and adding
+// "outcome_id" to the list would leave the next key equally exposed. So the
+// whole structure now goes through neutralizeAnyValue — the same walker
+// neutralizeJSONBlob uses for arbitrary decoded JSON, which already
+// neutralises map keys as well as values.
 func neutralizeSkillExamples(examples []any) []any {
 	if examples == nil {
 		return nil
@@ -102,30 +129,18 @@ func neutralizeSkillExamples(examples []any) []any {
 	out := make([]any, len(examples))
 	for i, e := range examples {
 		switch m := e.(type) {
-		case map[string]any:
-			cp := make(map[string]any, len(m))
-			for k, v := range m {
-				if k == "notes" {
-					if sv, ok := v.(string); ok {
-						cp[k] = clipSafe(sv, skillNotesMaxRunes)
-						continue
-					}
-				}
-				cp[k] = v
-			}
-			out[i] = cp
 		case map[string]string:
+			// neutralizeAnyValue's map case is map[string]any and would drop
+			// this shape into its pass-through default. Handled here in the
+			// same key-and-value form rather than widening the shared walker,
+			// so the element's static type survives the round trip.
 			cp := make(map[string]string, len(m))
 			for k, v := range m {
-				if k == "notes" {
-					cp[k] = clipSafe(v, skillNotesMaxRunes)
-					continue
-				}
-				cp[k] = v
+				cp[clipSafe(k, skillNotesMaxRunes)] = clipSafe(v, skillNotesMaxRunes)
 			}
 			out[i] = cp
 		default:
-			out[i] = e
+			out[i] = neutralizeAnyValue(e, skillNotesMaxRunes, 0)
 		}
 	}
 	return out
@@ -192,7 +207,9 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("UUID of the skill"),
 			mcp.Required()),
 		mcp.WithString("outcome_id",
-			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK)")),
+			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK, "+
+				"not validated as a UUID; max 200 chars)"),
+			mcp.MaxLength(skillOutcomeIDMaxRunes)),
 		mcp.WithBoolean("success",
 			mcp.Description("REQUIRED: true = success outcome, false = failure outcome. No default — "+
 				"omitting this is rejected rather than silently recorded as a failure."),
@@ -412,8 +429,12 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 	}
 
 	p := skill.UpdateFromOutcomeParams{
-		SkillID:   skillID,
-		OutcomeID: stringArg(args, "outcome_id"),
+		SkillID: skillID,
+		// [F170-SEC-R3-01] Bounded server-side, not only in the schema:
+		// mcp-go does not enforce schema constraints on the server (see
+		// hasBoolArg's comment below), so MaxLength above is advisory to the
+		// client and this is the line that actually holds.
+		OutcomeID: clipSafe(stringArg(args, "outcome_id"), skillOutcomeIDMaxRunes),
 		Success:   success,
 		Notes:     notes,
 	}

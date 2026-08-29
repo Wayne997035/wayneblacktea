@@ -365,7 +365,15 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	if token == "" {
 		return mcp.NewToolResultError("reconcile_token is required when confirm=true"), nil
 	}
-	stored, ok := s.reconcileTokens.LoadAndDelete(token)
+	// [F170-SEC-R3-03] Load, not LoadAndDelete: a REFUSAL must not spend the
+	// token. This used to delete first and validate afterwards, so a confirm
+	// carrying the right token from the wrong session destroyed the entry —
+	// and the rightful caller's retry was then answered with "no pending
+	// reconciliation", an explanation that had nothing to do with why it was
+	// actually refused. The token is deleted below, once it is about to be
+	// spent, plus on the two branches whose entry is unusable anyway.
+	// tools_gtd.go's delete_task path is the same property and moves with it.
+	stored, ok := s.reconcileTokens.Load(token)
 	if !ok {
 		return mcp.NewToolResultError(
 			"no pending reconciliation for this reconcile_token; call without confirm first to obtain matches and a token",
@@ -373,9 +381,13 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	}
 	rec, ok := stored.(reconcileConfirmation)
 	if !ok {
+		// Unusable either way — drop it so a retry gets the plain "no pending
+		// reconciliation" answer instead of this one until the TTL expires.
+		s.reconcileTokens.Delete(token)
 		return mcp.NewToolResultError("internal: reconcile token state corrupted"), nil
 	}
 	if s.now().After(rec.expiresAt) {
+		s.reconcileTokens.Delete(token)
 		return mcp.NewToolResultError("reconcile_token expired; call without confirm to obtain a new token"), nil
 	}
 	// [F170-12] The confirming call must present the same session id the
@@ -387,12 +399,20 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	// silent success: a caller that is told "applied: 0" cannot tell "nothing
 	// matched" from "you were refused", and the whole point of this branch is
 	// that somebody tried to spend a token that was not theirs.
+	//
+	// [F170-SEC-R3-03] It is also not a silent INVALIDATION: the token stays
+	// live for its remaining TTL so the session it was actually issued to can
+	// still spend it. Guessing the token is not made cheaper by this — the
+	// map is keyed by the token itself, so an attacker who reaches this
+	// branch already holds a server-generated UUID.
 	if !reconcileTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(
 			"reconcile_token was issued to a different session; call reconcile_merged_prs without " +
 				"confirm from that same session to obtain a new token",
 		), nil
 	}
+	// Single-use: validated, so spend it now, before any row is touched.
+	s.reconcileTokens.Delete(token)
 
 	// appliedIDs is keyed by TaskID for exactly the matches whose guarded
 	// UPDATE (status IN ('pending','in_progress') at apply time) actually

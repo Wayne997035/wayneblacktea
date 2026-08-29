@@ -1581,33 +1581,59 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	if suppliedToken == "" {
 		return mcp.NewToolResultError("deletion_token is required when confirm=true"), nil
 	}
-	stored, ok := s.deleteTokens.LoadAndDelete(id.String())
+	// [F170-SEC-R3-03] Load, not LoadAndDelete — same property as
+	// tools_reconcile.go's confirm path, and documented as one property, so
+	// the two must not drift. Validating after deleting meant a refusal
+	// destroyed the pending deletion, and the rightful caller's retry got
+	// "no pending deletion" instead of the real reason.
+	//
+	// ⚠ The two refusal branches below are deliberately NOT symmetric, and
+	// the asymmetry is the point. This map is keyed by TASK ID, not by the
+	// token, so a caller who knows only a task id can reach the token
+	// comparison; letting that branch off without consuming would turn the
+	// 60s window into a free guessing gallery for the token. The session
+	// branch has no such exposure — reaching it already required presenting
+	// the correct token — so that one is the non-consuming refusal.
+	stored, ok := s.deleteTokens.Load(id.String())
 	if !ok {
 		return mcp.NewToolResultError("no pending deletion for this task_id; call without confirm first to obtain a token"), nil
 	}
 	rec, ok := stored.(deletionToken)
 	if !ok {
+		// Unusable either way — drop it rather than answering "corrupted"
+		// until the TTL expires.
+		s.deleteTokens.Delete(id.String())
 		return mcp.NewToolResultError("internal: deletion token state corrupted"), nil
 	}
 	if s.now().After(rec.expiresAt) {
+		s.deleteTokens.Delete(id.String())
 		return mcp.NewToolResultError("deletion_token expired; call without confirm to obtain a new token"), nil
 	}
 	// Constant-time string compare on equal-length inputs would be ideal, but
 	// these tokens are generated server-side UUIDs and never exposed to
 	// untrusted parties in the comparison window — plain equality is fine.
+	//
+	// Consuming on mismatch is the anti-guessing measure described above: one
+	// wrong token burns the pending deletion.
 	if suppliedToken != rec.token {
+		s.deleteTokens.Delete(id.String())
 		return mcp.NewToolResultError("deletion_token mismatch"), nil
 	}
 	// U9 partial mitigation (Category S): the confirming call must present
 	// the same session id the issuing call carried, when one was tracked.
 	// [F170-20]: that is a knowledge check, not an identity check — see
 	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
+	//
+	// [F170-SEC-R3-03] Non-consuming: the token stays live for its remaining
+	// TTL so the session it was issued to can still spend it.
 	if !deletionTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(
 			"deletion_token was issued to a different session; call delete_task without confirm " +
 				"from that same session to obtain a new token",
 		), nil
 	}
+	// Single-use: validated, so spend it now, before the row is touched.
+	s.deleteTokens.Delete(id.String())
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
 		slog.Warn("delete_task: DeleteTask failed", "task_id", id, "err", err)

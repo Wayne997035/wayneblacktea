@@ -398,11 +398,27 @@ func (a *Assembler) retrieveSession(ctx context.Context, warnings *[]Warning) []
 // warnStoreErr logs a non-fatal single-source retrieval failure and records
 // it as a Pack-visible Warning. Callers continue with whatever other sources
 // succeeded.
+//
+// [F170-SEC-R3-02] The Warning names the SOURCE and nothing else. Warnings
+// is a json-tagged field of Pack, and Pack is marshalled whole into the
+// assemble_context and start_work tool responses, so putting the raw store
+// error here delivered the pgx / modernc-sqlite text into an LLM's context:
+// PoC-verified to carry the Aiven host, port, database name, DB user, the
+// violated constraint's name and the SQLSTATE. Bounding and neutralising the
+// string downstream (tools_worksession.go) cannot fix that — by then the
+// error object is gone and only redaction at the source is possible.
+//
+// The "<op> failed" shape is deliberately byte-identical to storeErrorText
+// (internal/mcp/tool_errors.go), so the two redaction policies stay ONE
+// policy. If a caller-facing sentinel ever needs to survive this boundary,
+// mirror that function's errors.Is loop over callerFacingSentinels rather
+// than inventing a second rule here. The full error is not lost: it stays in
+// the slog.Warn line below, which never crosses the wire.
 func warnStoreErr(warnings *[]Warning, source string, err error) {
 	slog.Warn("contextpack.retrieve: store call failed, skipping source", "source", source, "error", err)
 	*warnings = append(*warnings, Warning{
 		Type:    "store_error",
-		Summary: fmt.Sprintf("%s: %v", source, err),
+		Summary: source + " failed",
 	})
 }
 
