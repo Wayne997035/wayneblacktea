@@ -116,36 +116,47 @@ func (p PendingProposal) MarshalJSON() ([]byte, error) {
 // which is false — it is "this feature is not wired up yet". Re-add it once
 // a real confirmation gate exists to set it meaningfully.
 //
+// [F170-03] embedding, embedding_provider, embedding_model and embedding_dim
+// are dropped for a third reason: payload size. Embedding is the raw pgvector
+// blob, which encoding/json renders as base64 — a 3072-dimension float32
+// vector is 12,288 bytes of column, ~16,400 bytes of base64, per decision
+// row. list_decisions returns many rows at once, so a single call could
+// spend six figures of a caller's context window on a field no consumer
+// reads: web/ has zero references to any of the four, no tool description or
+// mcpInstructions names them, and the only Go readers of Decision.Embedding
+// (SearchByCosine, cmd/wbt reembed/doctor) work on the Go struct or raw SQL
+// columns, never on this JSON shape. The three provider/model/dim scalars go
+// with it because they only describe the vector that is no longer here.
+// The columns themselves and every DB read/write are untouched — this method
+// governs json.Marshal(Decision) only.
+//
 // Every other field reuses Decision's own pgtype.* types (not a hand-reshaped
 // plain-Go mirror like pendingProposalJSON above) specifically so its wire
 // representation — null-vs-value, RFC3339Nano timestamps, UUID string form —
 // stays byte-identical to what encoding/json already produced for Decision
-// before this type existed (pgtype.Text/UUID/Timestamptz/Int4 all implement
-// json.Marshaler themselves); only the two audit fields disappear.
+// before this type existed (pgtype.Text/UUID/Timestamptz all implement
+// json.Marshaler themselves); only the audit and embedding fields disappear.
 type decisionJSON struct {
-	ID                uuid.UUID          `json:"id"`
-	ProjectID         pgtype.UUID        `json:"project_id"`
-	RepoName          pgtype.Text        `json:"repo_name"`
-	Title             string             `json:"title"`
-	Context           string             `json:"context"`
-	Decision          string             `json:"decision"`
-	Rationale         string             `json:"rationale"`
-	Alternatives      pgtype.Text        `json:"alternatives"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
-	Embedding         []byte             `json:"embedding"`
-	TaskID            pgtype.UUID        `json:"task_id"`
-	EmbeddingProvider pgtype.Text        `json:"embedding_provider"`
-	EmbeddingModel    pgtype.Text        `json:"embedding_model"`
-	EmbeddingDim      pgtype.Int4        `json:"embedding_dim"`
-	Source            string             `json:"source"`
+	ID           uuid.UUID          `json:"id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	RepoName     pgtype.Text        `json:"repo_name"`
+	Title        string             `json:"title"`
+	Context      string             `json:"context"`
+	Decision     string             `json:"decision"`
+	Rationale    string             `json:"rationale"`
+	Alternatives pgtype.Text        `json:"alternatives"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	Source       string             `json:"source"`
 }
 
-// MarshalJSON hides Decision.ActorSessionID and Decision.ConfirmedByHuman
-// from every JSON serialization boundary in this codebase (handler.JSON
-// responses, MCP jsonText, any future c.JSON(decision) call site) —
-// PR160 M-3 / M-2. Declared on the VALUE receiver, not a pointer: pgtype's
-// own MarshalJSON methods (Text, UUID, Timestamptz — see this package's
+// MarshalJSON hides Decision.ActorSessionID, Decision.ConfirmedByHuman and
+// the four embedding fields from every JSON serialization boundary in this
+// codebase (handler.JSON responses, MCP jsonText, any future
+// c.JSON(decision) call site) — PR160 M-3 / M-2, [F170-03]. Declared on the
+// VALUE receiver, not a pointer: pgtype's own MarshalJSON methods (Text,
+// UUID, Timestamptz — see this package's
 // go.sum-pinned pgx/v5) all use value receivers for the identical reason
 // mcp.safeSessionHandoff documents (internal/mcp/session_handoff_safe.go):
 // encoding/json only special-cases a pointer receiver when the value being
@@ -155,28 +166,26 @@ type decisionJSON struct {
 // []db.Decision, *db.Decision, map[string]any{"decision": d}, []any{d}, a
 // struct field — all of them.
 //
-// The write path is untouched: Decision.ActorSessionID/ConfirmedByHuman
-// still round-trip through the DB exactly as before (this method only
+// The write path is untouched: Decision.ActorSessionID/ConfirmedByHuman and
+// the four embedding fields still round-trip through the DB exactly as
+// before, and SearchByCosine still reads Decision.Embedding off the Go
+// struct (this method only
 // governs json.Marshal(Decision), never affects DB reads/writes, which go
 // through pgx's binary/text wire protocol, not encoding/json).
 func (d Decision) MarshalJSON() ([]byte, error) {
 	out := decisionJSON{
-		ID:                d.ID,
-		ProjectID:         d.ProjectID,
-		RepoName:          d.RepoName,
-		Title:             d.Title,
-		Context:           d.Context,
-		Decision:          d.Decision,
-		Rationale:         d.Rationale,
-		Alternatives:      d.Alternatives,
-		CreatedAt:         d.CreatedAt,
-		WorkspaceID:       d.WorkspaceID,
-		Embedding:         d.Embedding,
-		TaskID:            d.TaskID,
-		EmbeddingProvider: d.EmbeddingProvider,
-		EmbeddingModel:    d.EmbeddingModel,
-		EmbeddingDim:      d.EmbeddingDim,
-		Source:            d.Source,
+		ID:           d.ID,
+		ProjectID:    d.ProjectID,
+		RepoName:     d.RepoName,
+		Title:        d.Title,
+		Context:      d.Context,
+		Decision:     d.Decision,
+		Rationale:    d.Rationale,
+		Alternatives: d.Alternatives,
+		CreatedAt:    d.CreatedAt,
+		WorkspaceID:  d.WorkspaceID,
+		TaskID:       d.TaskID,
+		Source:       d.Source,
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

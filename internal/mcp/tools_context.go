@@ -36,9 +36,33 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 		),
 	), s.handleGetTodayContext)
 
+	// [F170-01] limit/offset are advertised here but validated in the handler
+	// (parseRepoPagingArgs) rather than by the toolspec seam: this tool keeps
+	// its raw mcp.CallToolRequest signature, because migrating it to
+	// s.addTool + seam() would change handleListActiveRepos' signature and
+	// break its existing caller in u13_phase_b_b4_test.go, a file this
+	// dispatch does not own.
+	//
+	// [F170-02] The description names the *_truncated flags and the
+	// full-record path. sync_repo is deliberately labelled a WRITE: it is the
+	// only single-repo read this server exposes, but it re-stamps the row
+	// (workspace.sql UpsertRepo sets last_activity = EXCLUDED.last_activity
+	// and updated_at = NOW()), so an agent must not be led to treat it as a
+	// free read to escape truncation.
 	ms.AddTool(mcp.NewTool(
 		"list_active_repos",
-		mcp.WithDescription("Returns all active repositories in the workspace."),
+		mcp.WithDescription("Returns active repositories in the workspace, most recent activity first. "+
+			"Paginated: pass limit (default 20, max 100) and offset to page; the response reports "+
+			"limit, offset, returned and has_more so you can tell whether rows remain. "+
+			"This is a LIST VIEW, not the full record: description and next_planned_step are projected "+
+			"to 500 runes, name/path/language/current_branch and each known_issues entry to 120, and "+
+			"known_issues to 5 entries; any field the projection shortened carries its own "+
+			"\"<field>_truncated\": true — absent or false means you have the whole value. "+
+			"The full stored text of one repo comes back from sync_repo called with only that repo's "+
+			"name, but sync_repo is a WRITE that re-stamps the row, so call it only when you also "+
+			"intend to update the repo."),
+		mcp.WithNumber("limit", mcp.Description("Max repos per page (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), s.handleListActiveRepos)
 
 	ms.AddTool(mcp.NewTool(
@@ -601,6 +625,58 @@ const (
 	repoLongFieldMaxRunes  = gtdBodyMaxRunes  // description, next_planned_step
 )
 
+// Row and field bounds for list_active_repos' LIST VIEW — [F170-01],
+// [F170-02]. These are separate from wrapUntrustedRepo's caps above on
+// purpose: those bound a SINGLE record read (sync_repo) and are sized to keep
+// a legitimate description intact, while these bound a response that carries
+// many records at once and is paid for by the caller's context window on
+// every call.
+//
+// Applied in the handler rather than as a SQL LIMIT on ListActiveRepos, for
+// the same reason maxContextGoals/maxContextProjects are (see their comment
+// above): workspace.StoreIface.ActiveRepos is shared with the web UI's
+// GET /api/workspace/repos (internal/handler/workspace_handler.go ListRepos)
+// and, through it, with `wbt reconcile`, which enumerates every repo slug to
+// decide what to reconcile (internal/cli/reconcile.go fetchActiveRepos). A
+// LIMIT in the shared query would silently shorten both — reconcile would
+// skip repos with no error — which is a worse bug than the one being fixed.
+//
+// Worst-case arithmetic, pinned by TestHandleListActiveRepos_AdversarialBudget:
+// 4 short fields and repoListMaxKnownIssues entries at
+// repoListShortFieldMaxRunes, plus description and next_planned_step at
+// repoListFieldMaxRunes, is (4 + 5) * 121 + 2 * 501 ≈ 2,091 runes of text and
+// ~400 of keys, ids, timestamps and truncation flags — ~2,500 runes per row,
+// against a row with no upper bound at all today. The default limit of 20 is
+// what keeps the realistic ceiling five times below the 100-row clamp.
+const (
+	// listActiveReposDefaultLimit / listActiveReposMaxLimit mirror
+	// handleListTasks' (tools_gtd.go) limit<=0 → default, clamp-to-max
+	// contract with this tool's own, smaller numbers: a repo row carries far
+	// more free text than a task summary, so 20/100 rather than 50/200.
+	listActiveReposDefaultLimit = 20
+	listActiveReposMaxLimit     = 100
+
+	// repoListFieldMaxRunes is the list view's projection for the two fields
+	// that legitimately hold prose: description and next_planned_step.
+	repoListFieldMaxRunes = 500
+	// repoListShortFieldMaxRunes projects the fields that are short by nature
+	// — name, path, language, current_branch and each known_issues entry.
+	// Nothing enforces that at write time (sync_repo declares no
+	// mcp.MaxLength on any of them and the columns are TEXT), so read-side is
+	// where it gets enforced; wrapUntrustedRepo's repoShortFieldMaxRunes
+	// (2,000) is the single-record bound and would otherwise make four
+	// incidental fields the dominant term in a payload whose entire purpose
+	// is to be a compact index. 120 runes is several times the longest real
+	// value of any of them (a repo slug, a filesystem path, "Go", a branch
+	// name, a one-line known issue).
+	repoListShortFieldMaxRunes = 120
+	// repoListMaxKnownIssues caps the ELEMENT COUNT of known_issues. Per
+	// element wrapUntrustedRepo already clips the text, but nothing bounded
+	// how many elements a row may carry, so a single repo record could grow
+	// the response without limit even under a row cap.
+	repoListMaxKnownIssues = 5
+)
+
 // wrapUntrustedRepo returns a copy of r with every free-text field
 // clipSafe'd (bounded + boundary-marker-neutralised) — U13. Mirrors
 // wrapUntrustedTask/wrapUntrustedProject's (tools_gtd.go) copy-not-mutate
@@ -653,16 +729,215 @@ func wrapUntrustedRepo(r *db.Repo) *db.Repo {
 	return &out
 }
 
-func (s *Server) handleListActiveRepos(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+// repoListItem is list_active_repos' wire row — [F170-02]. Every db.Repo
+// field is spelled out rather than embedding db.Repo, for the same reason
+// decisionJSON (internal/db/models_custom.go) spells out db.Decision: an
+// embedded struct that later grows its own MarshalJSON would promote that
+// method onto this type and make the *_truncated flags silently vanish from
+// the wire.
+//
+// The flags are the whole point of the type. A projection that shortens a
+// field without saying so turns a bounded payload into silent data loss —
+// the caller cannot tell "this repo has no next step" from "the next step
+// was cut", and there is no error anywhere to notice. Each flag is
+// omitempty, so an untruncated row pays nothing for them.
+type repoListItem struct {
+	ID                       uuid.UUID          `json:"id"`
+	Name                     string             `json:"name"`
+	Path                     pgtype.Text        `json:"path"`
+	Description              pgtype.Text        `json:"description"`
+	Language                 pgtype.Text        `json:"language"`
+	Status                   string             `json:"status"`
+	CurrentBranch            pgtype.Text        `json:"current_branch"`
+	KnownIssues              []string           `json:"known_issues"`
+	NextPlannedStep          pgtype.Text        `json:"next_planned_step"`
+	LastActivity             pgtype.Timestamptz `json:"last_activity"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	NameTruncated            bool               `json:"name_truncated,omitempty"`
+	PathTruncated            bool               `json:"path_truncated,omitempty"`
+	DescriptionTruncated     bool               `json:"description_truncated,omitempty"`
+	LanguageTruncated        bool               `json:"language_truncated,omitempty"`
+	CurrentBranchTruncated   bool               `json:"current_branch_truncated,omitempty"`
+	KnownIssuesTruncated     bool               `json:"known_issues_truncated,omitempty"`
+	NextPlannedStepTruncated bool               `json:"next_planned_step_truncated,omitempty"`
+}
+
+// clipRepoListField projects one free-text field to maxRunes, reporting
+// whether the projection actually shortened it — [F170-02].
+//
+// "Shortened" is measured on the rune count BEFORE clipSafe, not by
+// comparing input to output: clipSafe also neutralises boundary markers, and
+// a short field carrying a forged marker comes back different without having
+// been truncated at all. Reporting that as truncation would send the caller
+// chasing a full record that it already has.
+func clipRepoListField(s string, maxRunes int) (string, bool) {
+	return clipSafe(s, maxRunes), utf8.RuneCountInString(s) > maxRunes
+}
+
+// clipRepoListText is clipRepoListField over a nullable column. SQL NULL is
+// left as NULL and never reported as truncated.
+func clipRepoListText(t pgtype.Text, maxRunes int) (pgtype.Text, bool) {
+	if !t.Valid {
+		return t, false
+	}
+	clipped, truncated := clipRepoListField(t.String, maxRunes)
+	t.String = clipped
+	return t, truncated
+}
+
+// clipRepoListIssues bounds known_issues on both axes — element count and
+// per-element length — and reports truncation if EITHER applied. [F170-02]
+func clipRepoListIssues(issues []string) ([]string, bool) {
+	if len(issues) == 0 {
+		return issues, false
+	}
+	truncated := len(issues) > repoListMaxKnownIssues
+	kept := issues
+	if truncated {
+		kept = issues[:repoListMaxKnownIssues]
+	}
+	out := make([]string, len(kept))
+	for i, issue := range kept {
+		clipped, cut := clipRepoListField(issue, repoListShortFieldMaxRunes)
+		out[i] = clipped
+		truncated = truncated || cut
+	}
+	return out, truncated
+}
+
+// toRepoListItem projects one already-wrapUntrustedRepo'd row into the list
+// view. It runs AFTER wrapUntrustedRepo, not instead of it, so the boundary-
+// marker neutralisation contract U13 pins for this type still holds for every
+// field regardless of what this projection does. [F170-02]
+func toRepoListItem(r *db.Repo) repoListItem {
+	name, nameTruncated := clipRepoListField(r.Name, repoListShortFieldMaxRunes)
+	path, pathTruncated := clipRepoListText(r.Path, repoListShortFieldMaxRunes)
+	description, descriptionTruncated := clipRepoListText(r.Description, repoListFieldMaxRunes)
+	language, languageTruncated := clipRepoListText(r.Language, repoListShortFieldMaxRunes)
+	branch, branchTruncated := clipRepoListText(r.CurrentBranch, repoListShortFieldMaxRunes)
+	step, stepTruncated := clipRepoListText(r.NextPlannedStep, repoListFieldMaxRunes)
+	issues, issuesTruncated := clipRepoListIssues(r.KnownIssues)
+
+	return repoListItem{
+		ID:                       r.ID,
+		Name:                     name,
+		Path:                     path,
+		Description:              description,
+		Language:                 language,
+		Status:                   r.Status,
+		CurrentBranch:            branch,
+		KnownIssues:              issues,
+		NextPlannedStep:          step,
+		LastActivity:             r.LastActivity,
+		CreatedAt:                r.CreatedAt,
+		UpdatedAt:                r.UpdatedAt,
+		WorkspaceID:              r.WorkspaceID,
+		NameTruncated:            nameTruncated,
+		PathTruncated:            pathTruncated,
+		DescriptionTruncated:     descriptionTruncated,
+		LanguageTruncated:        languageTruncated,
+		CurrentBranchTruncated:   branchTruncated,
+		KnownIssuesTruncated:     issuesTruncated,
+		NextPlannedStepTruncated: stepTruncated,
+	}
+}
+
+// optionalIntArg extracts an optional integer argument, applying the same
+// whole-number guard requireIntArg (server.go) applies to required ones: an
+// absent key yields 0 with no error, but a present-but-fractional or
+// non-numeric value is REJECTED rather than silently truncated the way
+// numberArg would (F9). Declared here rather than alongside its siblings in
+// server.go because this dispatch does not own that file. [F170-01]
+func optionalIntArg(args map[string]any, key string) (int32, *mcp.CallToolResult) {
+	raw, present := args[key]
+	if !present {
+		return 0, nil
+	}
+	v, ok := raw.(float64)
+	if !ok {
+		return 0, mcp.NewToolResultError(key + " must be a number")
+	}
+	if !isWholeNumber(v) {
+		return 0, mcp.NewToolResultError(key + " must be a whole number")
+	}
+	return int32(v), nil
+}
+
+// parseRepoPagingArgs reads and clamps list_active_repos' limit/offset:
+// limit <= 0 → listActiveReposDefaultLimit, clamped to listActiveReposMaxLimit;
+// offset < 0 → 0. Same contract as handleListTasks (tools_gtd.go). [F170-01]
+func parseRepoPagingArgs(args map[string]any) (limit, offset int, errResult *mcp.CallToolResult) {
+	rawLimit, errResult := optionalIntArg(args, "limit")
+	if errResult != nil {
+		return 0, 0, errResult
+	}
+	rawOffset, errResult := optionalIntArg(args, "offset")
+	if errResult != nil {
+		return 0, 0, errResult
+	}
+
+	limit = int(rawLimit)
+	if limit <= 0 {
+		limit = listActiveReposDefaultLimit
+	}
+	if limit > listActiveReposMaxLimit {
+		limit = listActiveReposMaxLimit
+	}
+	offset = int(rawOffset)
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset, nil
+}
+
+// sliceRepoPage returns the [offset, offset+limit) window of repos plus
+// whether any rows remain past it. An offset past the end yields an empty
+// window and has_more=false rather than an error — the caller paged off the
+// end, which is how it learns to stop. [F170-01]
+func sliceRepoPage(repos []db.Repo, limit, offset int) (page []db.Repo, hasMore bool) {
+	total := len(repos)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return repos[start:end], end < total
+}
+
+// handleListActiveRepos returns one bounded page of the workspace's active
+// repos. Both bounds are new in [F170-01]/[F170-02]: before them this handler
+// returned every active row with every free-text field at its full
+// single-record cap, which is the most expensive response this server can
+// produce and had no upper bound at all.
+func (s *Server) handleListActiveRepos(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	limit, offset, errResult := parseRepoPagingArgs(req.GetArguments())
+	if errResult != nil {
+		return errResult, nil
+	}
+
 	repos, err := s.workspace.ActiveRepos(ctx)
 	if err != nil {
 		return storeErrorResult("loading repos", err), nil
 	}
-	out := make([]db.Repo, len(repos))
-	for i := range repos {
-		out[i] = *wrapUntrustedRepo(&repos[i])
+
+	page, hasMore := sliceRepoPage(repos, limit, offset)
+	out := make([]repoListItem, len(page))
+	for i := range page {
+		out[i] = toRepoListItem(wrapUntrustedRepo(&page[i]))
 	}
-	return jsonText(out)
+
+	return jsonText(map[string]any{
+		"repos":    out,
+		"returned": len(out),
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": hasMore,
+	})
 }
 
 // syncRepoOptionalStringArgs extracts sync_repo's 5 optional fields using
