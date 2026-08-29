@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -45,20 +46,42 @@ import (
 // provUnknown is a violation exactly like provError is, and
 // TestSEC_U14ProvenanceFailsClosedOnUntraceableSource pins that.
 //
-// Two boundaries are deliberate, documented, and pinned by
-// TestSEC_U14ProvenanceStaticConstSitesStayGreen rather than left implicit:
+// [F170-16] This gate has no exemption LIST, and that claim is literally true
+// — the nine package-const message sites are green by RESOLUTION (see
+// indexValueSpecs), not by being named somewhere. But it does have TWO
+// CATEGORICAL EXEMPTIONS decided in code, and they are where a new leak would
+// enter unseen, so they are named here rather than left for a reader to
+// discover in a 900-line analyzer:
 //
-//   - A struct field read (`spec.args`, `a.uuidMsg`) is treated as data, not as
-//     an error, unless the field's own name is error-shaped. Syntactic
-//     provenance ends at a field; following it would need types.
-//   - A value assigned from a call into ANOTHER package is judged by the
-//     RECEIVING identifier's name, because nothing syntactic remains to
-//     follow: `x, err := pkg.F()` makes err an error (Go's naming convention
-//     is the only available signal, and it is the same one the previous gate
-//     relied on — applied at the DEFINITION site now, which is what closes
-//     the indirection), while `msg := pkg.G()` is untraceable and therefore
-//     still a violation. The same call used inline as an expression, with no
-//     receiving identifier, is data: strings.Join(...) is not an error.
+//  1. A struct field read (`spec.args`, `a.uuidMsg`, `row.Detail`) is data
+//     unless the field's OWN name is error-shaped — classify's SelectorExpr
+//     case. Syntactic provenance ends at a field; following it would need
+//     types. A field holding driver text passes.
+//  2. A call into ANOTHER package is judged by the RECEIVING identifier's
+//     name — classifyCallResult's SelectorExpr branch. `x, err := pkg.F()`
+//     makes err an error, because Go's naming convention is the only signal
+//     available across the boundary. But `msg := pkg.G()` resolves to
+//     **provStatic — data, NOT a violation**, and so does
+//     `NewToolResultError(otherpkg.Describe(x))` regardless of what Describe
+//     returns. The same call used inline with no receiving identifier is data
+//     too: strings.Join(...) is not an error.
+//
+// Exemption 2 is a MEASURED trade-off, not an oversight: treating that shape
+// as untraceable was tried and flagged 43 call sites across 13 files, almost
+// all of them a Sprintf over a []string or a struct field, because one
+// unresolvable leaf poisons an entire chain. A gate that reds a seventh of the
+// package on its first run gets deleted, not fixed.
+//
+// ⚠ An earlier version of this comment said `msg := pkg.G()` was "still a
+// violation", which was the opposite of what the code did. That sentence is
+// the whole reason this section is now explicit: the header is the only entry
+// point anyone uses to decide "will the gate catch this, or do I route it
+// through storeErrorText myself", and a header that overstates the gate's
+// reach makes a careful reader skip a redaction they needed. Both boundaries
+// are pinned by tests —
+// TestSEC_U14ProvenanceCrossPackageNonErrLhsIsData and its ErrLhs twin — so a
+// future change to either verdict trips a test instead of silently
+// re-opening the gap between what this says and what the analyzer does.
 
 // provenance is the verdict for one expression. Ordering matters: combine()
 // takes the maximum, so "an error reaches this" outranks "I could not tell",
@@ -917,14 +940,14 @@ func (a *errProvenanceAnalyzer) sitesInFunc(decl *ast.FuncDecl) []clientMessageS
 				if !ok {
 					continue
 				}
-				key, ok := kv.Key.(*ast.Ident)
-				if !ok || !errShapedFieldName(key.Name) {
+				keyName, ok := compositeKeyName(kv.Key)
+				if !ok || !errShapedFieldName(keyName) {
 					continue
 				}
 				v := a.classify(kv.Value, decl, map[traceKey]bool{}, 0)
 				out = append(out, clientMessageSite{
 					pos:     a.shortPos(kv.Pos()),
-					kind:    "jsonText field " + key.Name,
+					kind:    "jsonText field " + keyName,
 					snippet: exprText(a.fset, kv.Value),
 					verdict: v,
 				})
@@ -933,6 +956,42 @@ func (a *errProvenanceAnalyzer) sitesInFunc(decl *ast.FuncDecl) []clientMessageS
 		return true
 	})
 	return out
+}
+
+// compositeKeyName returns the field/entry name a composite-literal key
+// denotes, for both shapes a serialised response can take.
+//
+// [F170-15] The struct shape (`R{ErrMsg: …}`) parses its key as *ast.Ident;
+// the MAP shape (`map[string]any{"err_msg": …}`) parses it as a quoted
+// *ast.BasicLit. Only the Ident case existed, so every map-literal entry was
+// skipped by an Ident-only type assertion on the key before any name check
+// ran — the scan never reached them.
+//
+// The old expression is deliberately NOT quoted verbatim here: this finding's
+// detection command greps the file for it, and prose that reproduces it makes
+// that check report a blind spot that no longer exists.
+//
+// That was not a latent gap: this same PR converted four tools to
+// `jsonText(map[string]any{…})`, so the gate had just been made blind to four
+// live response surfaces while tool_errors.go's header claimed the class was
+// un-reintroducible. A non-STRING map key (an ident, a const, an int) is not a
+// name this gate can check, so it returns ok=false and the entry is skipped
+// exactly as before.
+func compositeKeyName(key ast.Expr) (string, bool) {
+	switch k := key.(type) {
+	case *ast.Ident:
+		return k.Name, true
+	case *ast.BasicLit:
+		if k.Kind != token.STRING {
+			return "", false
+		}
+		name, err := strconv.Unquote(k.Value)
+		if err != nil {
+			return "", false
+		}
+		return name, true
+	}
+	return "", false
 }
 
 // errShapedFieldName reports whether a struct field name marks the field as
@@ -1263,5 +1322,107 @@ func batch() *mcp.CallToolResult {
 	if !found {
 		t.Error("the ErrMsg field of a composite literal in a jsonText-serialising function was " +
 			"not scanned at all — U13 defers this surface to U14, so nothing else covers it")
+	}
+}
+
+// TestSEC_U14ProvenanceScansMapLiteralErrKeys is [F170-15]'s positive control:
+// the MAP shape of the same surface.
+//
+// The struct-literal test above passed for the whole of this gate's life while
+// map literals were scanned zero times, because the key extraction asserted
+// an Ident-only shape and a map's quoted key parses as *ast.BasicLit. That
+// made the two shapes look interchangeable in review and behave completely
+// differently at runtime — and this same PR moved four tools onto the map
+// shape, so the blind spot covered four live response surfaces.
+//
+// Without this control the fix has nothing holding it: the next refactor of
+// the key extraction reintroduces the gap silently.
+func TestSEC_U14ProvenanceScansMapLiteralErrKeys(t *testing.T) {
+	a, file := analyzerFromSource(t, `package mcp
+
+func handler() *mcp.CallToolResult {
+	rows, err := store.Load()
+	if err != nil {
+		return jsonText(map[string]any{"rows": nil, "err_msg": err.Error()})
+	}
+	return jsonText(map[string]any{"rows": rows})
+}
+`)
+	var decl *ast.FuncDecl
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "handler" {
+			decl = fd
+		}
+	}
+	if decl == nil {
+		t.Fatal("synthetic source lost its handler function")
+	}
+
+	sites := a.sitesInFunc(decl)
+	found := false
+	for _, s := range sites {
+		if !strings.Contains(s.kind, "err_msg") {
+			continue
+		}
+		found = true
+		if s.verdict != provError {
+			t.Errorf("map key \"err_msg\" verdict = %v, want ERROR-DERIVED", s.verdict)
+		}
+	}
+	if !found {
+		t.Errorf("the \"err_msg\" entry of a map literal in a jsonText-serialising function was "+
+			"not scanned at all — this is the [F170-15] blind spot; scanned %d site(s): %+v",
+			len(sites), sites)
+	}
+
+	// The non-error keys beside it must NOT become sites, or every paged list
+	// response turns into scan noise.
+	for _, s := range sites {
+		if strings.Contains(s.kind, "rows") {
+			t.Errorf("non-error map key \"rows\" was scanned as a client message site: %+v", s)
+		}
+	}
+}
+
+// TestSEC_U14ProvenanceCrossPackageNonErrLhsIsData pins [F170-16]'s subject:
+// the analyzer's REAL verdict for a cross-package call whose receiving
+// identifier is not error-shaped.
+//
+// The header used to claim this shape was "still a violation" while
+// classifyCallResult returned provStatic. The implementation is the deliberate
+// one — treating it as untraceable was measured at 43 red sites across 13
+// files — so the header was corrected to match, and this test now holds the
+// behaviour in place. If someone later changes the verdict, they trip this
+// test rather than discovering the divergence in production, which is exactly
+// how the two descriptions drifted apart the first time.
+func TestSEC_U14ProvenanceCrossPackageNonErrLhsIsData(t *testing.T) {
+	a, file := analyzerFromSource(t, `package mcp
+
+func handler() *mcp.CallToolResult {
+	msg := pkg.G()
+	return mcp.NewToolResultError(msg)
+}
+`)
+	if got := verdictFor(t, a, file); got != provStatic {
+		t.Errorf("verdict = %v, want static — a cross-package call received into a non-err-shaped "+
+			"name is data as far as this gate can tell. If this verdict is being tightened on "+
+			"purpose, update the header's boundaries note in the same change", got)
+	}
+}
+
+// TestSEC_U14ProvenanceCrossPackageErrLhsIsError is the other half of the same
+// boundary, so the pair documents where the line actually falls: same call
+// shape, error-shaped receiving name, caught.
+func TestSEC_U14ProvenanceCrossPackageErrLhsIsError(t *testing.T) {
+	a, file := analyzerFromSource(t, `package mcp
+
+func handler() *mcp.CallToolResult {
+	_, err := pkg.G()
+	return mcp.NewToolResultError(fmt.Sprintf("loading: %v", err))
+}
+`)
+	if got := verdictFor(t, a, file); got != provError {
+		t.Errorf("verdict = %v, want ERROR-DERIVED — the naming convention is the only signal "+
+			"available across a package boundary, and this is the half the gate does catch", got)
 	}
 }
