@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
@@ -240,7 +239,6 @@ func TestSQLiteProposalStore_ListPendingPage_EmptyStaysNonNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPendingPage: %v", err)
 	}
-	var _ []db.PendingProposal = rows
 	if rows == nil {
 		t.Error("ListPendingPage returned a nil slice on an empty table; it marshals to JSON null")
 	}

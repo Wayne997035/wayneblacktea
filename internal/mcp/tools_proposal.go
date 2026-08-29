@@ -391,11 +391,11 @@ func (s *Server) handleListPendingProposals(ctx context.Context, req mcp.CallToo
 	args := req.GetArguments()
 	limit, offset := listPageBounds(numberArg(args, "limit"), numberArg(args, "offset"))
 
-	rows, err := s.proposal.ListPendingPage(ctx, int32(limit+1), int32(offset))
+	rows, err := s.proposal.ListPendingPage(ctx, limit+1, offset)
 	if err != nil {
 		return storeErrorResult("listing pending proposals", err), nil
 	}
-	hasMore := len(rows) > limit
+	hasMore := len(rows) > int(limit)
 	if hasMore {
 		rows = rows[:limit]
 	}

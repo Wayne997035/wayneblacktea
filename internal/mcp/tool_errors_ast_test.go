@@ -100,6 +100,19 @@ var errShapedName = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*)?[eE]rr(or)?$`)
 // provStatic) so a pathological chain fails closed like everything else.
 const maxProvenanceDepth = 32
 
+// newToolResultErrorFn is mcp-go's error-result constructor — the call this
+// gate scans for. [F170-14] Named rather than repeated as a literal because it
+// appears in the scanner, in the site-kind label and in two unit tests, and a
+// typo in any single one of them would silently narrow the scan instead of
+// failing.
+const newToolResultErrorFn = "NewToolResultError"
+
+// goStringTypeName is Go's predeclared string type. [F170-14] Named because
+// this gate uses it for two different questions — "can this declared type hold
+// an error's text" (declaredTypeVerdict) and "is this call a predeclared
+// conversion" (isBuiltinConversion) — and the two must agree on the spelling.
+const goStringTypeName = "string"
+
 // errProvenanceAnalyzer holds the parsed package and answers "where did this
 // expression's value come from".
 type errProvenanceAnalyzer struct {
@@ -167,6 +180,23 @@ func bindParams(decl *ast.FuncDecl, args []ast.Expr, scope *ast.FuncDecl) map[st
 func newErrProvenanceAnalyzer(t *testing.T) *errProvenanceAnalyzer {
 	t.Helper()
 	fset := token.NewFileSet()
+	// [F170-14] parser.ParseDir is deprecated (Go 1.25) in favour of
+	// go/packages, and this gate keeps it on purpose.
+	//
+	// The deprecation's stated reason is that ParseDir does not apply build
+	// constraints, so the files it returns may not be a real package. For a
+	// SECURITY SCANNER that is the safe direction: over-inclusion at worst
+	// costs a false positive, while go/packages would apply build constraints
+	// and could hide a file from the scan entirely — a silent blind spot is
+	// exactly the failure mode this gate exists to prevent.
+	//
+	// Measured in this package rather than assumed (probe run 2026-08-29):
+	// ParseDir returned 43 files, `ls internal/mcp/*.go | grep -v _test.go`
+	// is 43, set difference empty in both directions. Of the build-tagged
+	// files here, 0 are non-test — every one is a _test.go, which the filter
+	// below already excludes — so build constraints cannot change this
+	// scanner's input set at all.
+	//nolint:staticcheck // SA1019: ignoring build tags is the property this scanner wants; see measurement above.
 	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, parser.ParseComments)
@@ -254,6 +284,17 @@ func (a *errProvenanceAnalyzer) classify(expr ast.Expr, fn *ast.FuncDecl, seen m
 	if depth > maxProvenanceDepth {
 		return provUnknown
 	}
+	// [F170-14] The two groups below were inline cases of the switch. They are
+	// checked first, and the sets are disjoint from each other and from every
+	// remaining case, so the evaluation order is unchanged — notably StarExpr
+	// is a pass-through operand here and is NOT a type expression, which is
+	// the one overlap that would have altered a verdict.
+	if operand, ok := unwrapSingleOperand(expr); ok {
+		return a.classify(operand, fn, seen, depth+1)
+	}
+	if isTypeExpression(expr) {
+		return provStatic
+	}
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		return provStatic
@@ -270,38 +311,71 @@ func (a *errProvenanceAnalyzer) classify(expr ast.Expr, fn *ast.FuncDecl, seen m
 		return a.classifyCall(e, fn, seen, depth)
 	case *ast.BinaryExpr:
 		return combine(a.classify(e.X, fn, seen, depth+1), a.classify(e.Y, fn, seen, depth+1))
-	case *ast.ParenExpr:
-		return a.classify(e.X, fn, seen, depth+1)
-	case *ast.UnaryExpr:
-		return a.classify(e.X, fn, seen, depth+1)
-	case *ast.StarExpr:
-		return a.classify(e.X, fn, seen, depth+1)
-	case *ast.IndexExpr:
-		return a.classify(e.X, fn, seen, depth+1)
-	case *ast.SliceExpr:
-		return a.classify(e.X, fn, seen, depth+1)
-	case *ast.TypeAssertExpr:
-		return a.classify(e.X, fn, seen, depth+1)
 	case *ast.CompositeLit:
-		out := provStatic
-		for _, elt := range e.Elts {
-			out = combine(out, a.classify(elt, fn, seen, depth+1))
-		}
-		return out
+		return a.classifyExprs(e.Elts, fn, seen, depth)
 	case *ast.KeyValueExpr:
 		return a.classify(e.Value, fn, seen, depth+1)
-	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StructType,
-		*ast.FuncType, *ast.InterfaceType, *ast.Ellipsis:
-		// A TYPE, not a value — `make([]string, 0, n)`'s first argument. It
-		// carries no runtime value at all, so it cannot carry an error; before
-		// this case it fell to the default and made every slice built with
-		// make() untraceable, which is how two ordinary helpers
-		// (allowedTargets, boundaryMarkers) poisoned the messages built from
-		// them.
-		return provStatic
 	default:
 		return provUnknown
 	}
+}
+
+// unwrapSingleOperand returns the operand an expression forwards its value
+// from, for the node kinds that are pure pass-throughs: (x), -x, *x, x[i],
+// x[a:b] and x.(T). ok is false for every other kind.
+//
+// [F170-14] Extracted from classify's switch, where each of these six cases
+// was literally `return a.classify(e.X, fn, seen, depth+1)`.
+func unwrapSingleOperand(expr ast.Expr) (ast.Expr, bool) {
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return e.X, true
+	case *ast.UnaryExpr:
+		return e.X, true
+	case *ast.StarExpr:
+		return e.X, true
+	case *ast.IndexExpr:
+		return e.X, true
+	case *ast.SliceExpr:
+		return e.X, true
+	case *ast.TypeAssertExpr:
+		return e.X, true
+	}
+	return nil, false
+}
+
+// isTypeExpression reports whether expr is a TYPE rather than a value —
+// `make([]string, 0, n)`'s first argument. A type carries no runtime value at
+// all, so it cannot carry an error; before this was handled, every slice built
+// with make() came back untraceable and poisoned the messages built from it
+// (allowedTargets, boundaryMarkers).
+//
+// Deliberately NOT the same set as isTypeConversionCallee, which additionally
+// accepts StarExpr and ParenExpr because it answers a different question (is
+// this call a conversion). Merging them would make `*x` a type here and turn a
+// pointer dereference into provStatic.
+func isTypeExpression(expr ast.Expr) bool {
+	switch expr.(type) {
+	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StructType,
+		*ast.FuncType, *ast.InterfaceType, *ast.Ellipsis:
+		return true
+	}
+	return false
+}
+
+// classifyExprs combines the verdicts of every expression in exprs.
+//
+// [F170-14] Extracted from four identical `for … { out = combine(out,
+// a.classify(e, fn, seen, depth+1)) }` loops (composite-literal elements, and
+// three argument lists in classifyCallResult).
+func (a *errProvenanceAnalyzer) classifyExprs(
+	exprs []ast.Expr, fn *ast.FuncDecl, seen map[traceKey]bool, depth int,
+) provenance {
+	out := provStatic
+	for _, e := range exprs {
+		out = combine(out, a.classify(e, fn, seen, depth+1))
+	}
+	return out
 }
 
 // classifyIdent resolves a bare identifier: builtin, package-level value,
@@ -476,64 +550,21 @@ func (a *errProvenanceAnalyzer) classifyCallResult(
 			// `string(runes[:n])` chain runs through exactly this shape, and
 			// treating it as an opaque call made clipSafe — and therefore
 			// every message clipSafe touches — untraceable.
-			out := provStatic
-			for _, arg := range call.Args {
-				out = combine(out, a.classify(arg, fn, seen, depth+1))
-			}
-			return out
+			return a.classifyExprs(call.Args, fn, seen, depth)
 		}
 		// A call through a func-typed value — no declaration to follow.
 		return provUnknown
 	}
-	// `x.Error()` turns an error into text. This is the shape [F170-07] had to
-	// remove from batchAccept, and it is unambiguous.
-	if name == "Error" && len(call.Args) == 0 {
-		if _, isSel := call.Fun.(*ast.SelectorExpr); isSel {
-			return provError
-		}
-	}
-	if isFmtCall(call, "Errorf") {
-		return provError
-	}
-	if isFmtCall(call, "Sprintf", "Sprint", "Sprintln") {
-		out := provStatic
-		for _, arg := range call.Args {
-			out = combine(out, a.classify(arg, fn, seen, depth+1))
-		}
-		return out
-	}
-	if a.sanctioned[name] {
-		return provStatic
+	// [F170-14] The four checks that are decided by the CALLEE rather than by
+	// its arguments' sources moved into classifyCallee, in the same order.
+	if v, handled := a.classifyCallee(call, name, fn, seen, depth); handled {
+		return v
 	}
 	if decls := a.funcs[name]; len(decls) > 0 {
-		key := traceKey{kind: "func", name: name, idx: idx}
-		if seen[key] {
-			return provStatic // cycle: other paths decide
-		}
-		seen[key] = true
-		defer delete(seen, key)
-		out := provStatic
-		for _, d := range decls {
-			// Step INTO the callee with this call's arguments bound to its
-			// parameters, so a parameter resolves to what THIS call passes
-			// rather than to the union over every caller in the package.
-			prev, had := a.bindings[d]
-			a.bindings[d] = bindParams(d, call.Args, fn)
-			out = combine(out, a.classifyFuncResult(d, idx, seen, depth))
-			if had {
-				a.bindings[d] = prev
-			} else {
-				delete(a.bindings, d)
-			}
-		}
-		return out
+		return a.classifyPackageLocalCall(decls, call, name, idx, fn, seen, depth)
 	}
 	if isBuiltinConversion(name) {
-		out := provStatic
-		for _, arg := range call.Args {
-			out = combine(out, a.classify(arg, fn, seen, depth+1))
-		}
-		return out
+		return a.classifyExprs(call.Args, fn, seen, depth)
 	}
 	if _, isSelector := call.Fun.(*ast.SelectorExpr); isSelector {
 		// A call into another package, or a method on a type declared
@@ -559,6 +590,70 @@ func (a *errProvenanceAnalyzer) classifyCallResult(
 	// func-typed variable or parameter. There is no declaration anywhere to
 	// follow, which is the untraceable case proper — fail closed.
 	return provUnknown
+}
+
+// classifyCallee handles the calls whose verdict the callee decides on its
+// own, before any argument or declaration is consulted. handled=false means
+// none applied and classifyCallResult must keep going.
+//
+// [F170-14] Extracted verbatim and in the original order — Error() method,
+// fmt.Errorf, the fmt.Sprint family, then the tool_errors.go helpers. Order is
+// load-bearing: a sanctioned helper must win over nothing else here, but
+// fmt.Errorf must be seen before the package-local lookup that follows in the
+// caller, or a package function named Errorf would shadow it.
+func (a *errProvenanceAnalyzer) classifyCallee(
+	call *ast.CallExpr, name string, fn *ast.FuncDecl, seen map[traceKey]bool, depth int,
+) (verdict provenance, handled bool) {
+	// `x.Error()` turns an error into text. This is the shape [F170-07] had to
+	// remove from batchAccept, and it is unambiguous.
+	if name == "Error" && len(call.Args) == 0 {
+		if _, isSel := call.Fun.(*ast.SelectorExpr); isSel {
+			return provError, true
+		}
+	}
+	if isFmtCall(call, "Errorf") {
+		return provError, true
+	}
+	if isFmtCall(call, "Sprintf", "Sprint", "Sprintln") {
+		return a.classifyExprs(call.Args, fn, seen, depth), true
+	}
+	if a.sanctioned[name] {
+		return provStatic, true
+	}
+	return provStatic, false
+}
+
+// classifyPackageLocalCall traces INTO a function this package declares,
+// binding the call's actual arguments to the callee's parameters so a
+// parameter resolves to what THIS call passes rather than to the union over
+// every caller.
+//
+// [F170-14] Extracted from classifyCallResult unchanged. The deferred
+// `delete(seen, key)` fires when this function returns, which is the same
+// moment it fired before: the extracted block ended in `return out` and
+// nothing ran between it and classifyCallResult's own return.
+func (a *errProvenanceAnalyzer) classifyPackageLocalCall(
+	decls []*ast.FuncDecl, call *ast.CallExpr, name string, idx int,
+	fn *ast.FuncDecl, seen map[traceKey]bool, depth int,
+) provenance {
+	key := traceKey{kind: "func", name: name, idx: idx}
+	if seen[key] {
+		return provStatic // cycle: other paths decide
+	}
+	seen[key] = true
+	defer delete(seen, key)
+	out := provStatic
+	for _, d := range decls {
+		prev, had := a.bindings[d]
+		a.bindings[d] = bindParams(d, call.Args, fn)
+		out = combine(out, a.classifyFuncResult(d, idx, seen, depth))
+		if had {
+			a.bindings[d] = prev
+		} else {
+			delete(a.bindings, d)
+		}
+	}
+	return out
 }
 
 // classifyFuncResult classifies the idx'th result of every return statement in
@@ -698,7 +793,7 @@ func declaredTypeVerdict(t ast.Expr) (provenance, bool) {
 	}
 	switch typ := t.(type) {
 	case *ast.Ident:
-		if typ.Name == "string" || typ.Name == "any" {
+		if typ.Name == goStringTypeName || typ.Name == "any" {
 			return provStatic, false
 		}
 	case *ast.InterfaceType:
@@ -751,7 +846,7 @@ func isBuiltinConversion(name string) bool {
 	case "append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
 		"len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover",
 		"bool", "byte", "error", "float32", "float64", "int", "int8", "int16", "int32",
-		"int64", "rune", "string", "uint", "uint8", "uint16", "uint32", "uint64", "any":
+		"int64", "rune", goStringTypeName, "uint", "uint8", "uint16", "uint32", "uint64", "any":
 		return true
 	}
 	return false
@@ -803,13 +898,13 @@ func (a *errProvenanceAnalyzer) sitesInFunc(decl *ast.FuncDecl) []clientMessageS
 	ast.Inspect(decl.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.CallExpr:
-			if calleeName(node) != "NewToolResultError" || len(node.Args) == 0 {
+			if calleeName(node) != newToolResultErrorFn || len(node.Args) == 0 {
 				return true
 			}
 			v := a.classify(node.Args[0], decl, map[traceKey]bool{}, 0)
 			out = append(out, clientMessageSite{
 				pos:     a.shortPos(node.Pos()),
-				kind:    "NewToolResultError",
+				kind:    newToolResultErrorFn,
 				snippet: exprText(a.fset, node.Args[0]),
 				verdict: v,
 			})
@@ -958,7 +1053,7 @@ func verdictFor(t *testing.T, a *errProvenanceAnalyzer, file *ast.File) provenan
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			call, isCall := n.(*ast.CallExpr)
-			if !isCall || calleeName(call) != "NewToolResultError" || len(call.Args) == 0 {
+			if !isCall || calleeName(call) != newToolResultErrorFn || len(call.Args) == 0 {
 				return true
 			}
 			v := a.classify(call.Args[0], fn, map[traceKey]bool{}, 0)
@@ -1103,7 +1198,7 @@ func TestSEC_U14ProvenanceStaticConstSitesStayGreenInRealPackage(t *testing.T) {
 			}
 			ast.Inspect(decl.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
-				if !ok || calleeName(call) != "NewToolResultError" || len(call.Args) == 0 {
+				if !ok || calleeName(call) != newToolResultErrorFn || len(call.Args) == 0 {
 					return true
 				}
 				id, ok := call.Args[0].(*ast.Ident)

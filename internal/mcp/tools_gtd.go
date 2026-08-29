@@ -627,15 +627,23 @@ const (
 // two other parallel work-streams are copying from right now, and rewriting it
 // underneath them would break all three at merge. Folding it in is a
 // follow-up, not a silent drive-by.
-func listPageBounds(rawLimit, rawOffset int32) (limit, offset int) {
-	limit = int(rawLimit)
+// [F170-13] Returns int32, the width the store's paging API takes, so the
+// three call sites hand the result straight through with no conversion. The
+// earlier version returned int and each caller wrote int32(limit+1) — three
+// narrowing conversions that gosec G115 flags as potential overflow, and
+// correctly so: nothing in the TYPE said the value was bounded, only this
+// function's body did. Returning int32 moves "cannot overflow" from a comment
+// into the signature. limit is clamped to listPageMaxLimit here, so limit+1 at
+// a call site is at most 201 and cannot wrap.
+func listPageBounds(rawLimit, rawOffset int32) (limit, offset int32) {
+	limit = rawLimit
 	if limit <= 0 {
 		limit = listPageDefaultLimit
 	}
 	if limit > listPageMaxLimit {
 		limit = listPageMaxLimit
 	}
-	offset = int(rawOffset)
+	offset = rawOffset
 	if offset < 0 {
 		offset = 0
 	}
@@ -656,11 +664,11 @@ func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) 
 
 	// limit+1 detects has_more without a second COUNT query — same trick as
 	// handleListTasks.
-	projects, err := s.gtd.ActiveProjectsPage(ctx, int32(limit+1), int32(offset))
+	projects, err := s.gtd.ActiveProjectsPage(ctx, limit+1, offset)
 	if err != nil {
 		return storeErrorResult("loading projects", err), nil
 	}
-	hasMore := len(projects) > limit
+	hasMore := len(projects) > int(limit)
 	if hasMore {
 		projects = projects[:limit]
 	}
@@ -1177,11 +1185,11 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, art
 func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.CallToolResult, error) {
 	limit, offset := listPageBounds(args.Limit, args.Offset)
 
-	goals, err := s.gtd.ActiveGoalsPage(ctx, int32(limit+1), int32(offset))
+	goals, err := s.gtd.ActiveGoalsPage(ctx, limit+1, offset)
 	if err != nil {
 		return storeErrorResult("loading goals", err), nil
 	}
-	hasMore := len(goals) > limit
+	hasMore := len(goals) > int(limit)
 	if hasMore {
 		goals = goals[:limit]
 	}

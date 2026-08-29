@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -441,6 +442,54 @@ func TestF170_04_ListHandlersAskTheStoreForOneMorePage(t *testing.T) {
 // proposals", which after paging would tell a caller it had seen the whole set
 // when it had seen fifty rows. It also pins that adding limit/offset did not
 // turn a read-only tool's description into something that invites writes.
+// TestF170_13_ListPageBoundsClampsWithinInt32 pins the clamp at the function
+// that now carries it in its TYPE.
+//
+// [F170-13] listPageBounds returns int32 so the three call sites can pass the
+// result straight to the store with no narrowing conversion — gosec G115 was
+// right to flag those conversions, because nothing in the old `int` signature
+// said the value was bounded. The bound is only a type guarantee while this
+// clamp holds, so it gets a direct test rather than relying on the handler
+// tests to notice: they seed 500 rows and would still look correct if the
+// clamp let a larger page through, as long as the fixture ran out first.
+//
+// Revert either clamp branch and this goes red immediately.
+func TestF170_13_ListPageBoundsClampsWithinInt32(t *testing.T) {
+	cases := []struct {
+		name                 string
+		rawLimit, rawOffset  int32
+		wantLimit, wantOffet int32
+	}{
+		{"absent means default", 0, 0, listPageDefaultLimit, 0},
+		{"negative limit means default", -1, 0, listPageDefaultLimit, 0},
+		{"in range is kept", 30, 7, 30, 7},
+		{"at the cap is kept", listPageMaxLimit, 0, listPageMaxLimit, 0},
+		{"over the cap is clamped", listPageMaxLimit + 1, 0, listPageMaxLimit, 0},
+		{"far over the cap is clamped", 10000, 0, listPageMaxLimit, 0},
+		{"MaxInt32 is clamped", math.MaxInt32, 0, listPageMaxLimit, 0},
+		{"negative offset floors at zero", 50, -5, 50, 0},
+		{"MinInt32 offset floors at zero", 50, math.MinInt32, 50, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limit, offset := listPageBounds(tc.rawLimit, tc.rawOffset)
+			if limit != tc.wantLimit || offset != tc.wantOffet {
+				t.Errorf("listPageBounds(%d, %d) = (%d, %d), want (%d, %d)",
+					tc.rawLimit, tc.rawOffset, limit, offset, tc.wantLimit, tc.wantOffet)
+			}
+			// The whole point of the int32 return: callers pass limit+1 with no
+			// conversion, so that expression must not be able to wrap.
+			if limit+1 <= 0 {
+				t.Errorf("limit+1 = %d wrapped or went non-positive — the store would be asked "+
+					"for a nonsense page size", limit+1)
+			}
+			if limit > listPageMaxLimit {
+				t.Errorf("limit %d exceeds the cap %d", limit, listPageMaxLimit)
+			}
+		})
+	}
+}
+
 func TestF170_04_ListToolDescriptionsDoNotPromiseEverything(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	registered := s.MCPServer().ListTools()
