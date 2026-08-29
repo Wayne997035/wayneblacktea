@@ -495,9 +495,14 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 // taskTitleMaxRunes/projectTitleMaxRunes (tools_context.go, a DIFFERENT,
 // much smaller cap for a DIFFERENT, budget-constrained payload). Legitimate
 // content on a get_task/get_project-class full read should never hit these.
+//
+// [F170-19] commitSHAMaxRunes bounds each CommitSHAs entry, sized like
+// atomKeywordMaxRunes (tools_atom.go). A real SHA is 40 runes, so this never
+// touches a legitimate value.
 const (
-	gtdTitleMaxRunes = 2000
-	gtdBodyMaxRunes  = 20000
+	gtdTitleMaxRunes  = 2000
+	gtdBodyMaxRunes   = 20000
+	commitSHAMaxRunes = 200
 )
 
 // wrapUntrustedTask returns a copy of t with every free-text field
@@ -515,6 +520,14 @@ const (
 // them to URL/SHA/branch-name shapes at the write paths that set them, which
 // forecloses embedding a multi-line forged marker. Assignee is left as-is:
 // gtd.NormalizeActor is a whitelist, not free text.
+//
+// [F170-19] CommitSHAs IS clipped, unlike the Artifact/BranchName/PRUrl group
+// it sits next to. The distinction is real, not cosmetic: those three are
+// shape-constrained by applyArtifactSideEffects/validateBeginTaskLinkageArgs
+// at write time, whereas the same write path appends to CommitSHAs without
+// ever checking that an entry looks like a SHA. It was one of the seven gaps
+// [F170-11]'s walker found; the fix landed here rather than in that sprint
+// because this file belonged to a different engineer at the time.
 func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t == nil {
 		return nil
@@ -526,6 +539,12 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	}
 	if t.Context.Valid {
 		out.Context.String = clipSafe(t.Context.String, gtdBodyMaxRunes)
+	}
+	// len()>0 guard preserves nil so `"commit_shas":null` does not silently
+	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
+	// wrapUntrustedAtom (tools_atom.go).
+	if len(t.CommitSHAs) > 0 {
+		out.CommitSHAs = clipSafeSlice(t.CommitSHAs, commitSHAMaxRunes)
 	}
 	return &out
 }
@@ -1472,6 +1491,15 @@ func issueDeletionToken() string {
 // deletionTokenMatchesSession reports whether rec (as stored by
 // handleDeleteTask's step 1) may be confirmed from ctx's current session.
 //
+// ⚠ [F170-20] issuedBySession is a CLIENT-SUPPLIED, UNAUTHENTICATED value —
+// the streamable-HTTP transport validates a session id's format but never
+// its existence, so a caller can present any well-formed id. Matching it
+// proves the caller KNOWS the victim's random session id; it is NOT an
+// authentication boundary and MUST NEVER be the only thing guarding a side
+// effect. Here the deletion token is the other half and is what actually
+// gates the delete. reconcileTokenMatchesSession (tools_reconcile.go) holds
+// the full write-up for both call sites — one property, one explanation.
+//
 // Comparison is plain equality against currentSessionID(ctx) — deliberately
 // the RAW value (possibly ""), not auditSessionID's process-level fallback.
 // A token issued with no tracked session (rec.issuedBySession == "") is
@@ -1570,8 +1598,9 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	if suppliedToken != rec.token {
 		return mcp.NewToolResultError("deletion_token mismatch"), nil
 	}
-	// U9 partial mitigation (Category S): requester must be the same MCP
-	// session that issued the token, when one was tracked — see
+	// U9 partial mitigation (Category S): the confirming call must present
+	// the same session id the issuing call carried, when one was tracked.
+	// [F170-20]: that is a knowledge check, not an identity check — see
 	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
 	if !deletionTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(

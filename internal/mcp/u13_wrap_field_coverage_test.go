@@ -288,23 +288,50 @@ func forgeSlice(fv reflect.Value, path string, depth int, res *walkResult) {
 		fv.Set(sl)
 		res.forged[path+"[]"] = marker
 	case elem.Kind() == reflect.Interface:
-		marker := forgedMarker(path + "[]")
-		fv.Set(reflect.ValueOf([]any{marker}).Convert(fv.Type()))
-		res.forged[path+"[]"] = marker
+		// [F170-18] Three positions, not one. A `[]any` element is whatever
+		// the stored JSON held, and skill.Skill.Examples actually carries
+		// MAP-shaped entries in production (neutralizeSkillExamples' doc
+		// comment, tools_skill.go) — a fixture of bare strings therefore
+		// never exercises the shape the field really has, so a wrap function
+		// that only handles one named leaf inside those maps looks fully
+		// covered.
+		strMarker := forgedMarker(path + "[]")
+		keyMarker := forgedMarker(path + "[]{key}")
+		valMarker := forgedMarker(path + "[]{value}")
+		fv.Set(reflect.ValueOf([]any{
+			strMarker,
+			map[string]any{keyMarker: valMarker},
+		}).Convert(fv.Type()))
+		res.forged[path+"[]"] = strMarker
+		res.forged[path+"[]{key}"] = keyMarker
+		res.forged[path+"[]{value}"] = valMarker
 	case elem.Kind() == reflect.Uint8:
 		// []byte / json.RawMessage: the text lives INSIDE an encoded JSON
 		// document, so the marker has to be planted the same way production
 		// data gets there — as a string value in a real object — or the wrap
 		// function's neutralizeJSONBlob would be handed garbage and the test
 		// would prove nothing about the path that actually matters.
-		marker := forgedMarker(path + "[]byte")
-		blob, err := json.Marshal(map[string]string{"forged": marker})
+		//
+		// [F170-18] BOTH the key and the value carry a marker, recorded as
+		// two independent paths. encoding/json writes a map key verbatim into
+		// the response, so a forged marker in a KEY escapes exactly as well
+		// as one in a value. The fixture this replaces used the literal key
+		// "forged", which meant all nine blob positions in the audit were
+		// only ever proving the value path — and that is precisely how the
+		// map-key hole in neutralizeAnyValue (boundary_markers.go) survived
+		// underneath a green, quantified "差額 0" audit. A coverage control
+		// that cannot express the shape of a live bug is worse than none,
+		// because it is a stronger false all-clear.
+		keyMarker := forgedMarker(path + "[]byte{key}")
+		valMarker := forgedMarker(path + "[]byte")
+		blob, err := json.Marshal(map[string]string{keyMarker: valMarker})
 		if err != nil {
 			res.unforgeable[path+"[]byte"] = fv.Type().String() + " (fixture marshal failed)"
 			return
 		}
 		fv.Set(reflect.ValueOf(blob).Convert(fv.Type()))
-		res.forged[path+"[]byte"] = marker
+		res.forged[path+"[]byte{key}"] = keyMarker
+		res.forged[path+"[]byte"] = valMarker
 	case elem.Kind() == reflect.Struct:
 		sl := reflect.MakeSlice(fv.Type(), 1, 1)
 		fv.Set(sl)
@@ -624,25 +651,19 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 // instead of leaving a stale "known gap" nobody rechecks. That is the same
 // failure mode this whole file exists to prevent, pointed at itself.
 var knownUnprotectedFields = map[string]string{
-	"db.Task via wrapUntrustedTask|CommitSHAs[]": "wrapUntrustedTask (tools_gtd.go) neutralises no " +
-		"element of CommitSHAs; write path is applyArtifactSideEffects, which does not constrain the " +
-		"value to a SHA shape either. Fix belongs in tools_gtd.go — owned by another engineer this sprint.",
-	"db.Concept via wrapUntrustedConcept|Tags[]": "wrapUntrustedConcept (tools_learning.go) neutralises " +
-		"Name/Description but not Tags; create_concept takes tags as free-text caller input.",
-	"db.KnowledgeItem via wrapUntrustedKnowledgeItem|Tags[]": "wrapUntrustedKnowledgeItem " +
-		"(tools_knowledge.go) neutralises Title/Content/Url but not Tags; add_knowledge takes tags as " +
-		"free-text caller input.",
 	"skill.Skill via wrapUntrustedSkill|SourceAtomIDs[]": "wrapUntrustedSkill (tools_skill.go) routes " +
 		"Steps/Triggers/FailureModes/VerificationChecklist through clipSafeSkillStrings but leaves " +
 		"SourceAtomIDs untouched — the elements are id-shaped by convention only, never validated as UUIDs.",
 	"skill.Skill via wrapUntrustedSkill|Examples[]": "Examples is []any holding arbitrary JSON decoded " +
-		"from the skills row; wrapUntrustedSkill has no walker for it, so any string nested inside reaches " +
-		"the response verbatim. neutralizeJSONBlob (boundary_markers.go) is the existing helper that fits.",
-	"vision.VisionItem via wrapUntrustedVisionItem|DependsOn[]": "wrapUntrustedVisionItem " +
-		"(tools_vision.go) neutralises Title/Description/Notes but not DependsOn; add_vision_item takes " +
-		"depends_on as free-text caller input.",
-	"vision.VisionItemSummary via wrapUntrustedVisionItemSummary|DependsOn[]": "same gap as " +
-		"vision.VisionItem.DependsOn above — the summary projection shares the stored slice.",
+		"from the skills row; neutralizeSkillExamples (tools_skill.go) only neutralises the \"notes\" leaf " +
+		"of a map-shaped entry, so a bare string element reaches the response verbatim. neutralizeJSONBlob " +
+		"(boundary_markers.go) is the existing helper that fits. GTD bcf0d357 / SEC-07.",
+	"skill.Skill via wrapUntrustedSkill|Examples[]{key}": "[F170-18] surfaced by the walker's new " +
+		"nested-map fixture: neutralizeSkillExamples copies every map KEY through byte-for-byte (it only " +
+		"inspects the value under the literal key \"notes\"). Same class as the neutralizeAnyValue map-key " +
+		"hole [F170-17] closed, in a second walker that predates it. GTD bcf0d357 / SEC-07.",
+	"skill.Skill via wrapUntrustedSkill|Examples[]{value}": "[F170-18] same fixture: any map value whose " +
+		"key is NOT \"notes\" is copied through untouched by neutralizeSkillExamples. GTD bcf0d357 / SEC-07.",
 }
 
 // TestF160_06_AllExemptionsHaveNonEmptyReason guards wrapUntrustedCases'
@@ -894,6 +915,169 @@ func TestF170_11_WalkerReachesMapAndNestedStructFields(t *testing.T) {
 	if len(res.unforgeable) != 0 {
 		t.Errorf("contextpack.Pack reported unforgeable fields %v — it is fully walkable today; "+
 			"a new field of an unhandled shape needs a disposition", res.unforgeable)
+	}
+}
+
+// vacuousForgePositions names every forge position whose marker is NOT
+// visible in the type's own marshalled output even BEFORE any wrap function
+// runs — so the coverage assertion on it can never fail, whatever the wrap
+// function does.
+//
+// [F170-18] This is the same class of defect SEC-02 was raised for, found
+// while recounting the audit after fixing it: a position reported as covered
+// whose check is structurally incapable of going red. Leaving it unnamed
+// would mean shipping a second instance of the exact defect this round
+// exists to close. Every entry here is a []byte field with no custom
+// MarshalJSON, which encoding/json base64-encodes — the marker is present in
+// the field but not as readable text in the response.
+//
+// This is NOT a statement that those fields are unprotected. [F170-17] does
+// reach them; TestF170_17_OutcomeMetricsKeyIsSanitised proves it by asserting
+// on the field's own bytes rather than on the response. It is a statement
+// that THIS walker cannot be the thing that proves it, so nobody should read
+// its green as covering them.
+//
+// Keyed "<case typeName>|<field path>", exactly like knownUnprotectedFields,
+// and policed in both directions by
+// TestF170_18_VacuousForgePositionsAreNamed.
+var vacuousForgePositions = map[string]string{
+	"db.Task via wrapUntrustedTask|Checklist[]byte": "db.Task has no custom MarshalJSON, so " +
+		"encoding/json base64-encodes Checklist; the marker is in the blob but not as readable text.",
+	"db.Task via wrapUntrustedTask|Checklist[]byte{key}": "same base64 rendering as Checklist[]byte.",
+	"db.Decision via wrapUntrustedDecision|Embedding[]byte": "db.Decision's custom MarshalJSON " +
+		"(internal/db/models_custom.go) omits Embedding entirely — it never reaches a response at all.",
+	"db.Decision via wrapUntrustedDecision|Embedding[]byte{key}": "same omission as Embedding[]byte.",
+	"outcome.Outcome via wrapUntrustedOutcome|Metrics[]byte": "outcome.Outcome has no custom " +
+		"MarshalJSON, so Metrics is base64-encoded in the response. Sanitisation IS applied — see " +
+		"TestF170_17_OutcomeMetricsKeyIsSanitised, which asserts on the field bytes instead.",
+	"outcome.Outcome via wrapUntrustedOutcome|Metrics[]byte{key}":       "same base64 rendering as Metrics[]byte.",
+	"outcome.Evaluation via wrapUntrustedEvaluation|Lessons[]byte":      "same base64 rendering as Metrics[]byte.",
+	"outcome.Evaluation via wrapUntrustedEvaluation|Lessons[]byte{key}": "same base64 rendering as Metrics[]byte.",
+	"outcome.Evaluation via wrapUntrustedEvaluation|ImprovementSuggestions[]byte": "same base64 " +
+		"rendering as Metrics[]byte.",
+	"outcome.Evaluation via wrapUntrustedEvaluation|ImprovementSuggestions[]byte{key}": "same base64 " +
+		"rendering as Metrics[]byte.",
+}
+
+// TestF170_18_VacuousForgePositionsAreNamed makes an unfalsifiable assertion
+// impossible to add silently.
+//
+// A forge position whose marker is invisible in the unwrapped output passes
+// the coverage test no matter what the wrap function does. Counting it as
+// covered is how an audit inflates its own numbers — the "154 positions, 差額
+// 0" figure that SEC-02 called a false all-clear included nine such
+// positions.
+//
+// Policed in both directions: an unnamed vacuous position fails (someone
+// added an unfalsifiable check), and a named position that turns out to be
+// visible also fails (the entry is stale and is now suppressing a real
+// assertion). Exempted paths are skipped — an exemption already declares that
+// the marker is allowed to survive, so vacuity says nothing extra about them.
+func TestF170_18_VacuousForgePositionsAreNamed(t *testing.T) {
+	seen := map[string]bool{}
+	for _, c := range wrapUntrustedCases {
+		bare := c.blank()
+		res := forgeStringFields(bare)
+		raw, err := json.Marshal(bare)
+		if err != nil {
+			t.Fatalf("%s: marshal unwrapped fixture: %v", c.typeName, err)
+		}
+		for _, path := range sortedPaths(res.forged) {
+			if _, exempt := c.exemptions[path]; exempt {
+				continue
+			}
+			key := c.typeName + "|" + path
+			reason, named := vacuousForgePositions[key]
+			visible := strings.Contains(string(raw), res.forged[path])
+			if named {
+				seen[key] = true
+				if strings.TrimSpace(reason) == "" {
+					t.Errorf("%s: vacuous-position entry has an empty reason", key)
+				}
+			}
+			switch {
+			case !visible && !named:
+				t.Errorf("%s: the forged marker is not visible in the type's own marshalled output, "+
+					"so the coverage assertion on this position CANNOT FAIL and proves nothing. "+
+					"Either assert on the field's decoded bytes in a dedicated test, or name it in "+
+					"vacuousForgePositions with the reason it cannot render.", key)
+			case visible && named:
+				t.Errorf("%s: listed in vacuousForgePositions but the marker IS visible in the "+
+					"unwrapped output — the entry is stale and is suppressing a real assertion. "+
+					"Delete it.", key)
+			}
+		}
+	}
+	for key := range vacuousForgePositions {
+		if !seen[key] {
+			t.Errorf("vacuousForgePositions[%q] matched no forged path — the field or case was "+
+				"renamed/removed and this entry is now dead", key)
+		}
+	}
+}
+
+// blobProbe is a synthetic type carrying one []byte and one []any field, used
+// only by TestF170_18_WalkerForgesBothKeyAndValueInsideBlobs.
+type blobProbe struct {
+	Blob []byte
+	Any  []any
+}
+
+// TestF170_18_WalkerForgesBothKeyAndValueInsideBlobs asserts the walker's own
+// fixture shape, not any wrap function's behaviour.
+//
+// [F170-18] Every other test in this file can only fail if the walker
+// REACHES a position. That makes the walker's fixture a silent single point
+// of failure: a future simplification of forgeSlice's Uint8 branch back to a
+// literal key ("forged") would make the whole suite greener, not redder,
+// while removing the only probe that can see a map-key escape. This test is
+// what makes that simplification red.
+//
+// It asserts on the marshalled bytes, so it fails if the marker is planted in
+// the wrong position even when both paths are recorded.
+func TestF170_18_WalkerForgesBothKeyAndValueInsideBlobs(t *testing.T) {
+	probe := &blobProbe{}
+	res := forgeStringFields(probe)
+
+	for _, path := range []string{"Blob[]byte{key}", "Blob[]byte", "Any[]", "Any[]{key}", "Any[]{value}"} {
+		if _, ok := res.forged[path]; !ok {
+			t.Errorf("walker did not forge %q — a blob/interface position that carries attacker text "+
+				"is no longer probed. got: %v", path, sortedPaths(res.forged))
+		}
+	}
+	if len(res.unforgeable) != 0 {
+		t.Errorf("blobProbe reported unforgeable fields %v — both shapes are handled today", res.unforgeable)
+	}
+
+	// The []byte fixture must be a real JSON object whose KEY is the marker,
+	// not merely a recorded path with the marker parked somewhere else.
+	var decoded map[string]string
+	if err := json.Unmarshal(probe.Blob, &decoded); err != nil {
+		t.Fatalf("the []byte fixture is not a JSON object — neutralizeJSONBlob would be handed "+
+			"garbage and every blob assertion would prove nothing: %v (raw=%q)", err, probe.Blob)
+	}
+	keyMarker := res.forged["Blob[]byte{key}"]
+	valMarker := res.forged["Blob[]byte"]
+	got, ok := decoded[keyMarker]
+	if !ok {
+		t.Errorf("the forged marker is not a KEY of the []byte fixture; keys=%v", sortedPaths(decoded))
+	}
+	if ok && got != valMarker {
+		t.Errorf("the []byte fixture's value under the forged key = %q, want the value marker %q",
+			got, valMarker)
+	}
+
+	// The []any fixture must contain a nested MAP, which is the shape
+	// skill.Skill.Examples actually holds — a slice of bare strings only
+	// would leave neutralizeSkillExamples' map branch unexercised.
+	nested := false
+	for _, e := range probe.Any {
+		if _, isMap := e.(map[string]any); isMap {
+			nested = true
+		}
+	}
+	if !nested {
+		t.Errorf("the []any fixture has no map-shaped element: %#v", probe.Any)
 	}
 }
 

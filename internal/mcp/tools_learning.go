@@ -62,8 +62,29 @@ func wrapUntrustedDueReviews(reviews []learning.DueReview) []learning.DueReview 
 	return out
 }
 
+// conceptTagMaxRunes bounds each Tags entry on read. Sized like
+// atomKeywordMaxRunes (tools_atom.go) rather than learningTextMaxRunes: a tag
+// is a label, not a body, so a cap three orders of magnitude smaller still
+// never touches a legitimate value while bounding what one poisoned row can
+// contribute to a list_concepts response.
+const conceptTagMaxRunes = 200
+
 // wrapUntrustedConcept returns a copy of c with Title/Content clipSafe'd.
 // nil in, nil out.
+//
+// [F170-19] Tags is clipped too. create_concept takes tags as free-text
+// caller input with no write-time validation, and list_concepts renders them
+// straight back into an LLM context alongside fields that ARE fenced — which
+// is the whole reason boundary_markers.go neutralises the entire marker set
+// on every field rather than only the pair belonging to the field being
+// processed. This was one of the seven gaps [F170-11]'s walker found and
+// pinned in knownUnprotectedFields; it is the same escape class as F160-10,
+// just a different field.
+//
+// The len()>0 guard mirrors wrapUntrustedAtom (tools_atom.go): clipSafeSlice
+// allocates unconditionally, so calling it on a nil slice would turn a JSON
+// `null` into `[]` — a silent wire-contract change for every concept that has
+// no tags.
 func wrapUntrustedConcept(c *db.Concept) *db.Concept {
 	if c == nil {
 		return nil
@@ -71,6 +92,9 @@ func wrapUntrustedConcept(c *db.Concept) *db.Concept {
 	out := *c
 	out.Title = clipSafe(c.Title, learningTextMaxRunes)
 	out.Content = clipSafe(c.Content, learningTextMaxRunes)
+	if len(c.Tags) > 0 {
+		out.Tags = clipSafeSlice(c.Tags, conceptTagMaxRunes)
+	}
 	return &out
 }
 

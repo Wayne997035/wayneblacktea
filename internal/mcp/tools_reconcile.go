@@ -308,6 +308,31 @@ func (s *Server) handleReconcileMergedPRsPreview(
 // handleReconcileMergedPRsPreview) may be confirmed from ctx's current
 // session.
 //
+// ⚠ [F170-20] WHAT THIS ACTUALLY PROVES — read this before building anything
+// on top of it. issuedBySession is a CLIENT-SUPPLIED, UNAUTHENTICATED value.
+// cmd/server/main.go constructs the streamable-HTTP transport with no session
+// option, so mcp-go's default StatelessGeneratingSessionIdManager applies and
+// its Validate checks the "mcp-session-" prefix and UUID format ONLY — it
+// explicitly does not check existence, and handlePost takes the id straight
+// from the request header for every non-initialize call. A caller can
+// therefore put any well-formed id in the header and currentSessionID will
+// return it.
+//
+// So this comparison is a proof of KNOWLEDGE of the victim's random session
+// id, not a proof of identity. It is worth having: combined with the token it
+// raises the attack precondition from "hold the token" to "hold the token AND
+// know the victim's session id", and a full audit of every session-id writer
+// (PR170 r1 security review, verified_clean) found no channel that discloses
+// one. But what makes it safe today is that nothing happens to print the
+// value — not any control. It is NOT an authentication boundary and MUST
+// NEVER be the only thing guarding a side effect; a second server-issued
+// secret (here: the token) has to be present too.
+//
+// Real per-actor identity would need server.WithSessionIdManager plus
+// per-actor credentials. That was considered and deliberately declined —
+// decision 6562eae6: single-tenant system, one user, so the benefit is
+// ~zero against the cost of designing key issuance and rotation.
+//
 // [F170-12] (closes GTD [F160-11] "reconcile confirm token 無 session 綁定",
 // PoC verified, OWASP LLM08) Deliberately identical in shape and in semantics to
 // deletionTokenMatchesSession (tools_gtd.go) — same problem, so the same
@@ -353,12 +378,15 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	if s.now().After(rec.expiresAt) {
 		return mcp.NewToolResultError("reconcile_token expired; call without confirm to obtain a new token"), nil
 	}
-	// [F170-12] The requester must be the same MCP session the preview call
-	// issued this token to. A mismatch is an explicit tool ERROR, never a
-	// silent no-op and never a silent success: a caller that is told
-	// "applied: 0" cannot tell "nothing matched" from "you were refused", and
-	// the whole point of this branch is that somebody tried to spend a token
-	// that was not theirs.
+	// [F170-12] The confirming call must present the same session id the
+	// preview call carried. [F170-20]: that is a knowledge check, not an
+	// identity check — see reconcileTokenMatchesSession's doc comment for
+	// what it does and does not prove.
+	//
+	// A mismatch is an explicit tool ERROR, never a silent no-op and never a
+	// silent success: a caller that is told "applied: 0" cannot tell "nothing
+	// matched" from "you were refused", and the whole point of this branch is
+	// that somebody tried to spend a token that was not theirs.
 	if !reconcileTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(
 			"reconcile_token was issued to a different session; call reconcile_merged_prs without " +

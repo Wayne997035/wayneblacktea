@@ -202,6 +202,16 @@ type deletionToken struct {
 	// instead means the returned token stays a bare random UUID — see
 	// issueDeletionToken/deletionTokenMatchesSession (tools_gtd.go) for how
 	// this field is set and checked.
+	//
+	// ⚠ [F170-20] This value is CLIENT-SUPPLIED and UNAUTHENTICATED: the
+	// transport validates a session id's format but never its existence, so
+	// a caller can present any well-formed id. Matching it proves the caller
+	// KNOWS the victim's random session id — it is NOT an authentication
+	// boundary and MUST NEVER be the only thing guarding a side effect. The
+	// deletion token is the other half and is what actually gates this.
+	// reconcileTokenMatchesSession (tools_reconcile.go) carries the full
+	// explanation; both fields share one property, so they share one write-up
+	// rather than two that can drift.
 	issuedBySession string
 }
 
@@ -234,6 +244,13 @@ type reconcileConfirmation struct {
 	// the token itself, so any caller holding it could spend it. That is
 	// LLM08 (excessive agency) with a real blast radius — confirm applies the
 	// stored match-set, closing real GTD tasks.
+	//
+	// ⚠ [F170-20] Same caveat as deletionToken.issuedBySession above: this is
+	// a CLIENT-SUPPLIED, UNAUTHENTICATED value. It raises the precondition
+	// from "hold the token" to "hold the token AND know the victim's session
+	// id"; it is NOT an authentication boundary and MUST NEVER be the only
+	// thing guarding a side effect. Full explanation lives on
+	// reconcileTokenMatchesSession (tools_reconcile.go).
 	issuedBySession string
 }
 
