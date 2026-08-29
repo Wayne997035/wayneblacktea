@@ -668,12 +668,23 @@ func neutralizeProvenanceMap(prov map[string]string) map[string]string {
 // path today, because "which of these is reachable" is exactly the
 // per-field judgement call that produced the gap in the first place.
 //
-// Warning.Summary is fmt.Sprintf("%s: %v", source, err) (retrieval.go's
-// warnStoreErr) — a driver error string can embed the row text that provoked
-// it, so it is treated as free text (clipSafe, bounded) rather than as a
-// server literal. Omitted.Reason is the literal "budget" at the only site
-// that builds one today (scorer.go trimToBudget); it is neutralised anyway so
-// a future non-literal reason does not silently become a new escape.
+// Warning.Summary is a server literal since [F170-SEC-R3-02]: warnStoreErr
+// (contextpack/retrieval.go) emits "<source> failed" and keeps the error
+// object in its slog line only. It used to be fmt.Sprintf("%s: %v", source,
+// err), and this paragraph went on saying so after the change — a false
+// statement about a security-relevant field, sitting in the doc comment of
+// the function that is its last line of defence, which is the exact shape
+// F170 exists to remove.
+//
+// The clipSafe below stays, and it is worth being precise about what it does
+// and does not do: it neutralises boundary markers and bounds length. It does
+// NOT redact. Redaction happens at the source, where the error object still
+// exists; if this comment ever reads as though clipSafe is the redacting
+// control, the wrong layer will get "fixed" next time.
+//
+// Omitted.Reason is the literal "budget" at the only site that builds one
+// today (scorer.go trimToBudget); it is neutralised anyway so a future
+// non-literal reason does not silently become a new escape.
 func wrapUntrustedContextPack(pack *contextpack.Pack) *contextpack.Pack {
 	if pack == nil {
 		return nil

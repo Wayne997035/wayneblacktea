@@ -33,6 +33,51 @@ import (
 // fails to typecheck under `-tags integration` — and a package that fails to
 // typecheck degrades every other linter's view of it, which is how this was
 // found.
+// TestSEC171_01_AllFiveCSVArgumentsScreenControlChars pins the write half.
+//
+// extract_skill takes five comma-separated arguments and ran
+// validateSkillCSVField on four of them. Measured before the fix: a newline
+// was rejected in triggers, steps, failure_modes and verification_checklist,
+// and accepted in source_atom_ids — making it the one argument where a forged
+// boundary marker could occupy a line of its own in the rendered response.
+//
+// The test is written as a table over all five rather than as a single case
+// for the field that was broken, because the defect was an asymmetry. A test
+// that only exercised source_atom_ids would pass just as happily if someone
+// later removed the check from a different one.
+//
+// Mutation proof: delete the source_atom_ids validation from
+// handleExtractSkill and the source_atom_ids row goes red while the other four
+// stay green.
+func TestSEC171_01_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
+	for _, field := range []string{
+		"triggers", "steps", "failure_modes", "verification_checklist", "source_atom_ids",
+	} {
+		t.Run(field, func(t *testing.T) {
+			store := &stubSkillStore{returnSkill: &skill.Skill{Name: "csv probe"}}
+			s := newSkillServer(store)
+
+			args := map[string]any{
+				"name":        "csv probe",
+				"description": "checks that every comma-separated argument screens control characters",
+				field:         "alpha\nbeta",
+			}
+			r := callExtractSkill(t, s, args)
+
+			if !r.IsError {
+				t.Fatalf("%s accepted a newline; the other CSV arguments reject it, and this is "+
+					"the field where that difference let a forged fence own a line", field)
+			}
+			if !strings.Contains(resultText(r), field) {
+				t.Errorf("the rejection should name the offending field, got: %s", resultText(r))
+			}
+			if store.returnSkill != nil && len(store.lastAddParams.Name) > 0 {
+				t.Errorf("%s reached the store despite being rejected", field)
+			}
+		})
+	}
+}
+
 func TestF170SECR301_OutcomeIDIsBoundedServerSide(t *testing.T) {
 	oversized := strings.Repeat("A", skillOutcomeIDMaxRunes*3)
 

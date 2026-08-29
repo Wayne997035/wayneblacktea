@@ -402,17 +402,37 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	//
 	// [F170-SEC-R3-03] It is also not a silent INVALIDATION: the token stays
 	// live for its remaining TTL so the session it was actually issued to can
-	// still spend it. Guessing the token is not made cheaper by this — the
-	// map is keyed by the token itself, so an attacker who reaches this
-	// branch already holds a server-generated UUID.
+	// still spend it. That is safe here for a specific reason — reaching this
+	// branch already required presenting the token, so the refusal cannot
+	// teach an attacker anything they did not already know. (The earlier
+	// version of this comment justified the asymmetry as anti-brute-force;
+	// that argument does not survive its own arithmetic — roughly 7,200
+	// guesses fit in the 60s TTL, against a 122-bit UUID.)
 	if !reconcileTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(
 			"reconcile_token was issued to a different session; call reconcile_merged_prs without " +
 				"confirm from that same session to obtain a new token",
 		), nil
 	}
-	// Single-use: validated, so spend it now, before any row is touched.
-	s.reconcileTokens.Delete(token)
+	// [SEC171-02] Spend atomically. Load-then-Delete is check-then-act: two
+	// concurrent confirms both passed validation before either deleted, and
+	// both applied — measured at 6 of 40 iterations with 8 callers on a
+	// barrier. server.go:227 documents this record as "consumed exactly once
+	// by the confirm call", so the guarantee is stated; this is what enforces
+	// it.
+	//
+	// LoadAndDelete rather than CompareAndDelete, and the reason is the KEY,
+	// not the value: reconcileTokens is keyed by the token itself, so no other
+	// caller's record can occupy this key and there is nothing to compare
+	// against. (CompareAndDelete would also panic here — reconcileConfirmation
+	// holds []gtd.Match and []gtd.Ambiguous, so it is uncomparable. Do not
+	// "align" this with delete_task's CompareAndDelete if that ever changes;
+	// they differ because their keys differ.)
+	if _, ok := s.reconcileTokens.LoadAndDelete(token); !ok {
+		return mcp.NewToolResultError(
+			"no pending reconciliation for this reconcile_token; call without confirm first to obtain matches and a token",
+		), nil
+	}
 
 	// appliedIDs is keyed by TaskID for exactly the matches whose guarded
 	// UPDATE (status IN ('pending','in_progress') at apply time) actually

@@ -31,13 +31,22 @@ const (
 	skillNotesMaxRunes = 2000
 
 	// [F170-SEC-R3-01] outcome_id had no bound at any layer: no MaxLength on
-	// the schema, no server-side check, and examples is append-only, so one
-	// caller could grow a skill row without limit and spend a later session's
-	// context window reading it back. 200 runes is the same cap
-	// validateSkillName uses for the other id-shaped-by-convention field.
-	// This bounds the value; it deliberately does NOT reject non-UUID input,
-	// because outcome_id is documented as a free reference (task ID, decision
-	// ID, no FK) and rejecting would break callers that rely on that.
+	// the schema and no server-side check, so a single value could be
+	// arbitrarily long. 200 runes is the same cap validateSkillName uses for
+	// the other id-shaped-by-convention field. It deliberately does NOT reject
+	// non-UUID input, because outcome_id is documented as a free reference
+	// (task ID, decision ID, no FK) and rejecting would break callers.
+	//
+	// ⚠ This bounds ONE VALUE, not the array. examples is append-only and has
+	// no entry-count limit at any layer, so a caller can still grow a skill
+	// row without bound one entry at a time — measured at 1000 appends =
+	// 2,257,001 bytes in a single tool response, paid by every later session
+	// that reads that skill. An earlier version of this comment claimed this
+	// cap closed that; it does not, and saying so here is the same false
+	// assurance the rest of this file exists to remove. Bounding the entry
+	// count belongs at the write path where the count is known
+	// (UpdateFromOutcome, both stores) and is a data-retention decision, not a
+	// bug fix — tracked as GTD 17f08ba8.
 	skillOutcomeIDMaxRunes = 200
 )
 
@@ -53,9 +62,21 @@ const (
 // design.md §2.1: treat LLM-authored text as adversarial regardless of
 // which model wrote it, not exempt because "it's our own model's output").
 //
-// ID, WorkspaceID, SourceAtomIDs, SuccessCount, FailureCount, LastUsedAt,
-// CreatedAt, UpdatedAt are left untouched — none is free text an LLM
-// authored.
+// SourceAtomIDs is treated exactly like the other four comma-separated
+// fields, because it IS one: extract_skill takes source_atom_ids as a plain
+// string argument and splitCSV's the caller's text straight into it. The
+// paragraph that used to stand here said "ID, WorkspaceID, SourceAtomIDs …
+// are left untouched — none is free text an LLM authored", and for
+// SourceAtomIDs that was false. It was the sentence, not the field, that made
+// this look covered: knownUnprotectedFields
+// (u13_wrap_field_coverage_test.go) said the opposite — "id-shaped by
+// convention only, never validated as UUIDs" — and two artifacts disagreeing
+// is how a live gap keeps the appearance of being accounted for. PoC-verified
+// end to end: a forged fence in source_atom_ids reached search_skills
+// verbatim while Steps in the same payload came back neutralised.
+//
+// ID, WorkspaceID, SuccessCount, FailureCount, LastUsedAt, CreatedAt and
+// UpdatedAt are still left untouched — those really are server-assigned.
 func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
 	if sk == nil {
 		return nil
@@ -67,6 +88,7 @@ func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
 	out.Steps = clipSafeSkillStrings(sk.Steps)
 	out.FailureModes = clipSafeSkillStrings(sk.FailureModes)
 	out.VerificationChecklist = clipSafeSkillStrings(sk.VerificationChecklist)
+	out.SourceAtomIDs = clipSafeSkillStrings(sk.SourceAtomIDs)
 	out.Examples = neutralizeSkillExamples(sk.Examples)
 	return &out
 }
@@ -168,6 +190,12 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("Comma-separated common failure modes to watch for")),
 		mcp.WithString("verification_checklist",
 			mcp.Description("Comma-separated verification checks to confirm success")),
+		// No mcp.MaxLength here, deliberately, and none on its four siblings
+		// either: the five comma-separated arguments share one bounding
+		// policy — screened for control characters at write time
+		// (validateSkillCSVField) and capped per element at read time
+		// (clipSafeSkillStrings). Adding a schema length to this one field
+		// alone would imply the other four are bounded that way too.
 		mcp.WithString("source_atom_ids",
 			mcp.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
 	), s.handleExtractSkill)
@@ -320,6 +348,15 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 	if msg := validateSkillCSVField(rawVerification, "verification_checklist"); msg != "" {
 		return mcp.NewToolResultError(msg), nil
 	}
+	// source_atom_ids was the only one of the five CSV arguments that skipped
+	// this check. Measured per field before the fix: a newline was rejected in
+	// triggers, steps, failure_modes and verification_checklist, and accepted
+	// here — making it the one argument where a forged boundary marker could
+	// occupy a line of its own in the rendered response.
+	rawSourceAtomIDs := stringArg(args, "source_atom_ids")
+	if msg := validateSkillCSVField(rawSourceAtomIDs, "source_atom_ids"); msg != "" {
+		return mcp.NewToolResultError(msg), nil
+	}
 
 	p := skill.AddParams{
 		Name:                  name,
@@ -328,7 +365,7 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 		Steps:                 splitCSV(rawSteps),
 		FailureModes:          splitCSV(rawFailureModes),
 		VerificationChecklist: splitCSV(rawVerification),
-		SourceAtomIDs:         splitCSV(stringArg(args, "source_atom_ids")),
+		SourceAtomIDs:         splitCSV(rawSourceAtomIDs),
 		Examples:              []any{},
 	}
 

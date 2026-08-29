@@ -650,19 +650,29 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 // be protected after all, which forces whoever fixes one to delete its entry
 // instead of leaving a stale "known gap" nobody rechecks. That is the same
 // failure mode this whole file exists to prevent, pointed at itself.
-var knownUnprotectedFields = map[string]string{
-	"skill.Skill via wrapUntrustedSkill|SourceAtomIDs[]": "wrapUntrustedSkill (tools_skill.go) routes " +
-		"Steps/Triggers/FailureModes/VerificationChecklist through clipSafeSkillStrings but leaves " +
-		"SourceAtomIDs untouched — the elements are id-shaped by convention only, never validated as UUIDs.",
-	// [F170-SEC-R3-01] The three Examples[] entries that stood here —
-	// Examples[], Examples[]{key} and Examples[]{value} — are gone because
-	// neutralizeSkillExamples no longer uses a key-name allowlist: it routes
-	// the whole structure through neutralizeAnyValue, which neutralises keys
-	// and values at every depth. Their removal is not bookkeeping;
-	// TestF170_11_KnownUnprotectedFieldsStillReflectReality fails while a
-	// protected field is still listed here, so leaving them would have been
-	// the red test rather than the tidy one.
-}
+// This table is now EMPTY, and that is the state to defend rather than a
+// milestone to celebrate: an empty list means every string field a caller can
+// write is neutralised on the way out, so the walker's assertions are the only
+// thing standing between a forged fence and a later session's context.
+//
+// The four entries that stood here were removed in one PR, and how the last
+// one went is worth keeping:
+//
+//   - Examples[], Examples[]{key}, Examples[]{value} — closed by routing
+//     neutralizeSkillExamples through neutralizeAnyValue instead of a
+//     key-name allowlist.
+//   - SourceAtomIDs[] — closed by giving it the clipSafeSkillStrings its four
+//     sibling CSV fields already had. Its exemption reason claimed the
+//     elements were "id-shaped by convention"; the report that first deferred
+//     it said they were "server-generated ids"; wrapUntrustedSkill's own doc
+//     comment said the field was not LLM-authored free text. Three artifacts,
+//     three different stories, one unvalidated tool argument. Nobody read them
+//     side by side until a PoC put a forged fence through it.
+//
+// So: adding an entry here is allowed, but it buys nothing on its own. A gap
+// that is written down is still a gap, and the write-up is exactly what makes
+// the next reader stop looking.
+var knownUnprotectedFields = map[string]string{}
 
 // TestF160_06_AllExemptionsHaveNonEmptyReason guards wrapUntrustedCases'
 // exemption lists against becoming exactly the kind of unreviewed dumping

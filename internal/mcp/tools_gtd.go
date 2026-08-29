@@ -1588,12 +1588,17 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	// "no pending deletion" instead of the real reason.
 	//
 	// ⚠ The two refusal branches below are deliberately NOT symmetric, and
-	// the asymmetry is the point. This map is keyed by TASK ID, not by the
-	// token, so a caller who knows only a task id can reach the token
-	// comparison; letting that branch off without consuming would turn the
-	// 60s window into a free guessing gallery for the token. The session
-	// branch has no such exposure — reaching it already required presenting
-	// the correct token — so that one is the non-consuming refusal.
+	// the asymmetry is the point. A refusal may decline to consume the token
+	// only when REACHING that refusal already proves the caller holds the
+	// secret. This map is keyed by TASK ID, not by the token, so a caller who
+	// knows only a task id reaches the token comparison without holding
+	// anything — that branch must consume. The session branch is reached only
+	// after the correct token was presented, so it can refuse for free.
+	//
+	// (An earlier version justified this as anti-brute-force. That argument
+	// does not survive its own arithmetic — roughly 7,200 guesses fit in the
+	// 60s TTL, against a 122-bit UUID — and a wrong reason for a right rule
+	// is what the next reader inherits.)
 	stored, ok := s.deleteTokens.Load(id.String())
 	if !ok {
 		return mcp.NewToolResultError("no pending deletion for this task_id; call without confirm first to obtain a token"), nil
@@ -1632,8 +1637,24 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 				"from that same session to obtain a new token",
 		), nil
 	}
-	// Single-use: validated, so spend it now, before the row is touched.
-	s.deleteTokens.Delete(id.String())
+	// [SEC171-02] Spend atomically, and spend THIS record specifically.
+	//
+	// Load-then-Delete was check-then-act: two concurrent confirms both passed
+	// validation before either deleted. It had a second failure mode this map
+	// has and reconcile's does not — keyed by task id, an unconditional Delete
+	// removes whatever occupies that key now, which may be a token another
+	// session obtained after we loaded ours.
+	//
+	// CompareAndDelete closes both: it removes the entry only if it is still
+	// the one we validated. deletionToken's fields are all comparable
+	// (string, time.Time, string), which is what makes this legal here —
+	// reconcile's record is not, and uses LoadAndDelete for that reason plus
+	// its key being the token itself.
+	if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
+		return mcp.NewToolResultError(
+			"no pending deletion for this task_id; call without confirm first to obtain a token",
+		), nil
+	}
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
 		slog.Warn("delete_task: DeleteTask failed", "task_id", id, "err", err)
