@@ -143,9 +143,20 @@ func insertTaskRaw(t *testing.T, conn *sql.DB, id string, due *string) {
 func readDueDate(t *testing.T, conn *sql.DB, table, id string) *string {
 	t.Helper()
 	var got sql.NullString
-	// #nosec G202 -- table is a test-local literal ("goals"/"tasks"), never input.
-	err := conn.QueryRowContext(context.Background(),
-		`SELECT due_date FROM `+table+` WHERE id = ?`, id).Scan(&got)
+	// Whitelist, not interpolation. An identifier cannot be bound as a parameter,
+	// so the only way to keep this query free of concatenation is to enumerate the
+	// tables the test actually uses. A new table added here fails loudly at
+	// t.Fatalf rather than silently building SQL from whatever string arrived.
+	var q string
+	switch table {
+	case "goals":
+		q = `SELECT due_date FROM goals WHERE id = ?`
+	case "tasks":
+		q = `SELECT due_date FROM tasks WHERE id = ?`
+	default:
+		t.Fatalf("readDueDate: unsupported table %q — add it to the whitelist above", table)
+	}
+	err := conn.QueryRowContext(context.Background(), q, id).Scan(&got)
 	if err != nil {
 		t.Fatalf("read %s.due_date for %s: %v", table, id, err)
 	}

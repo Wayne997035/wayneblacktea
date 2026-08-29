@@ -315,6 +315,9 @@ func TestF170_20_SessionBindingDocsDoNotClaimIdentity(t *testing.T) {
 		"requester must be the same",
 	}
 	for _, file := range sessionDocSites {
+		//nolint:gosec // G304 false positive: file comes from sessionDocSites, a
+		// package-level slice of three literal filenames declared above; no
+		// external input reaches this path.
 		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
