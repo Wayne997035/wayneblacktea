@@ -220,6 +220,21 @@ type reconcileConfirmation struct {
 	ambiguous []gtd.Ambiguous
 	noMatch   int
 	expiresAt time.Time
+	// [F170-12] issuedBySession is the MCP client session
+	// (currentSessionID) live at preview time, or "" when that call carried
+	// no tracked session. Same field, same semantics and same reason as
+	// deletionToken.issuedBySession above: the token handed back to the
+	// caller stays a bare random UUID, so nothing that logs or echoes a
+	// reconcile_token also leaks which session issued it — see
+	// reconcileTokenMatchesSession (tools_reconcile.go) for how it is
+	// checked.
+	//
+	// Without this field the token was the ONLY thing standing between a
+	// second client and a batch task-completion: reconcileTokens is keyed by
+	// the token itself, so any caller holding it could spend it. That is
+	// LLM08 (excessive agency) with a real blast radius — confirm applies the
+	// stored match-set, closing real GTD tasks.
+	issuedBySession string
 }
 
 // reconcileTokenTTL is the window during which an issued reconcile token

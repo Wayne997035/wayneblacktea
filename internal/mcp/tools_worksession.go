@@ -608,8 +608,41 @@ func parseFinishWorkEvidence(args map[string]any) ([]worksession.EvidenceInput, 
 	return out, nil
 }
 
-// wrapUntrustedContextPack returns a copy of pack with every item's Summary
-// clipSafe'd (bounded + boundary-marker-neutralised) — U13 Phase B
+// neutralizeProvenanceMap returns a copy of prov with EVERY key and EVERY
+// value boundary-marker-neutralised. nil in, nil out (an empty map and a
+// missing map are different things on the wire and both are meaningful to a
+// reader).
+//
+// [F170-09] Key-side neutralisation is not theatre-for-symmetry: encoding/json
+// emits a map key verbatim into the response text, so a forged marker sitting
+// in a KEY escapes exactly as well as one in a value. Today every key
+// contextpack writes is a server literal (retrieval.go's itemFromX helpers use
+// "source_table"/"recent"/"repo_name"/"task_id"/"project_id"/"files"/
+// "success_count"/"confidence"/"result" and nothing else), so this half is
+// defence in depth against a future itemFromX that derives a key from stored
+// text — the same judgement wrapUntrustedArchSnapshot's FileMap loop
+// (tools_arch.go) already made, and this is deliberately the same shape so the
+// two cannot drift into two different answers for the same problem.
+//
+// Values are neutralised, NOT clipped, for the same reason FileMap's are:
+// clipping a key can collapse two distinct keys into one and silently drop an
+// entry, and the values here are short by construction (UUID strings, a repo
+// name, a joined file list already bounded at write time). Bounding the whole
+// response is the payload-cap layer's job, not this function's.
+func neutralizeProvenanceMap(prov map[string]string) map[string]string {
+	if prov == nil {
+		return nil
+	}
+	out := make(map[string]string, len(prov))
+	for k, v := range prov {
+		out[neutralizeBoundaryMarkers(k)] = neutralizeBoundaryMarkers(v)
+	}
+	return out
+}
+
+// wrapUntrustedContextPack returns a copy of pack with every caller-reachable
+// free-text field of every Item / Warning / Omitted entry clipSafe'd (bounded
+// + boundary-marker-neutralised) or neutralised — U13 Phase B
 // (.specs/2026-08-20-u13-inventory.md, tools_worksession.go:365). pack.Items
 // aggregates summaries assembled from decisions/knowledge/procedural/
 // skills/outcomes/reflection/behaviorrule/session read ports (contextpack.
@@ -621,6 +654,26 @@ func parseFinishWorkEvidence(args map[string]any) ([]worksession.EvidenceInput, 
 // the established same-turn-echo exemption (buildPendingHandoffView,
 // tools_session.go) — unlike Items, which are pulled from other
 // sessions'/domains' stored rows. A nil pack is returned unmodified.
+//
+// [F170-09] (closes GTD [F160-10] "contextpack.Item.Provenance 未消毒", PoC
+// verified) Summary used to be the ONLY field this function touched, and the
+// gap that made that wrong is not hypothetical: itemFromSessionHandoff
+// (retrieval.go:698) copies session_handoffs.repo_name straight into
+// Provenance["repo_name"], and set_session_handoff applies no injection
+// filtering at write time — so a forged fence marker planted there reached the
+// model verbatim through a field nobody was looking at. The same is true of
+// itemFromWorkSession (:527) and itemFromProject (:503). Provenance,
+// Item.Type/SourceTable/Reasons, Warning.Type/Summary and Omitted.Type/Reason
+// are ALL neutralised here now rather than only the ones with a demonstrated
+// path today, because "which of these is reachable" is exactly the
+// per-field judgement call that produced the gap in the first place.
+//
+// Warning.Summary is fmt.Sprintf("%s: %v", source, err) (retrieval.go's
+// warnStoreErr) — a driver error string can embed the row text that provoked
+// it, so it is treated as free text (clipSafe, bounded) rather than as a
+// server literal. Omitted.Reason is the literal "budget" at the only site
+// that builds one today (scorer.go trimToBudget); it is neutralised anyway so
+// a future non-literal reason does not silently become a new escape.
 func wrapUntrustedContextPack(pack *contextpack.Pack) *contextpack.Pack {
 	if pack == nil {
 		return nil
@@ -631,8 +684,32 @@ func wrapUntrustedContextPack(pack *contextpack.Pack) *contextpack.Pack {
 		copy(items, pack.Items)
 		for i := range items {
 			items[i].Summary = clipSafe(items[i].Summary, gtdBodyMaxRunes)
+			items[i].Type = neutralizeBoundaryMarkers(items[i].Type)
+			items[i].SourceTable = neutralizeBoundaryMarkers(items[i].SourceTable)
+			if len(items[i].Reasons) > 0 {
+				items[i].Reasons = clipSafeSlice(items[i].Reasons, gtdBodyMaxRunes)
+			}
+			items[i].Provenance = neutralizeProvenanceMap(items[i].Provenance)
 		}
 		out.Items = items
+	}
+	if len(pack.Warnings) > 0 {
+		warnings := make([]contextpack.Warning, len(pack.Warnings))
+		copy(warnings, pack.Warnings)
+		for i := range warnings {
+			warnings[i].Type = neutralizeBoundaryMarkers(warnings[i].Type)
+			warnings[i].Summary = clipSafe(warnings[i].Summary, gtdBodyMaxRunes)
+		}
+		out.Warnings = warnings
+	}
+	if len(pack.Omitted) > 0 {
+		omitted := make([]contextpack.Omitted, len(pack.Omitted))
+		copy(omitted, pack.Omitted)
+		for i := range omitted {
+			omitted[i].Type = neutralizeBoundaryMarkers(omitted[i].Type)
+			omitted[i].Reason = clipSafe(omitted[i].Reason, gtdBodyMaxRunes)
+		}
+		out.Omitted = omitted
 	}
 	return &out
 }
