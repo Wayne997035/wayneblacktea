@@ -60,6 +60,14 @@ func (m *mockGTDStore) ListActiveProjects(_ context.Context) ([]db.Project, erro
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) ActiveProjectsPage(_ context.Context, _, _ int32) ([]db.Project, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockGTDStore) ActiveGoalsPage(_ context.Context, _, _ int32) ([]db.Goal, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) ProjectsFiltered(_ context.Context, _ string) ([]db.Project, error) {
 	return nil, errMockNotImpl
 }

@@ -138,11 +138,22 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 	//
 	// U13: Pack.Items[].Summary aggregates summaries pulled from decisions,
 	// knowledge, procedural, skills, outcomes, reflection, behaviorrule and
-	// session read ports — none of which neutralise on the way in, so this is
-	// the single choke point where a forged boundary marker stored in any of
-	// those domains would reach the model. wrapUntrustedContextPack lives in
-	// tools_worksession.go (start_work returns the same contextpack.Pack);
-	// both call sites share it so the two paths cannot drift apart.
+	// session read ports — none of which neutralise on the way in.
+	//
+	// [F170-10] Neutralisation happens in wrapUntrustedContextPack, and it
+	// covers EVERY free-text field of Item / Warning / Omitted — not
+	// Item.Summary alone. The function lives in tools_worksession.go because
+	// start_work returns the same contextpack.Pack; both call sites share it
+	// so the two paths cannot drift apart. See its doc comment for the
+	// per-field disposition, and u13_wrap_field_coverage_test.go for the
+	// walker that fails when a NEW field is added without one.
+	//
+	// Naming ONE field as the place where a payload is stopped is what this
+	// comment must never do again: Item.Provenance, Warnings[] and Omitted[]
+	// reached the model unneutralised for as long as a sentence here asserted
+	// that Summary was the only field that could carry a payload, and a
+	// reader who checked found that assertion and stopped.
+	// TestF170_10_ContextPackCommentMakesNoSingleChokePointClaim guards it.
 	return jsonText(wrapUntrustedContextPack(pack))
 }
 

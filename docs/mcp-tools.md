@@ -178,8 +178,17 @@ so the schemas ship in the tool response itself rather than relying on a re-fetc
 
 ---
 
-### `list_active_repos` / `list_projects` / `list_goals`
-Read-only, no args. Return JSON arrays.
+### `list_active_repos`
+Read-only. Optional: `limit` (default 20, max 100), `offset` (default 0).
+
+Returns an **object**, not a bare array: `repos`, `returned`, `limit`, `offset`, `has_more`.
+
+List-view free-text fields are projected down — `description` and `next_planned_step` to 500 runes; `name`, `path`, `language`, `current_branch` and each `known_issues` element to 120 runes; at most 5 `known_issues` entries. Every shortened field carries its own `<field>_truncated: true` flag, so truncation is never silent. To read a row in full, go through `sync_repo` — but note `sync_repo` is a **write** and re-stamps that row's `last_activity`.
+
+### `list_projects` / `list_goals`
+Read-only. Optional: `limit` (default 50, max 200), `offset` (default 0).
+
+Return an **object**, not a bare array: `projects` / `goals`, plus `returned`, `limit`, `offset`, `has_more`.
 
 ### `list_tasks`
 Optional `project_id` (UUID) filter.
@@ -191,7 +200,9 @@ Optional: `repo_name` (string), `project_id` (UUID), `limit` (default 20). Call 
 Optional: `limit` (default 20), `offset`.
 
 ### `list_pending_proposals`
-No args. Newest first.
+Read-only. Optional: `limit` (default 50, max 200), `offset` (default 0). Newest first.
+
+Returns an **object**, not a bare array: `proposals`, `returned`, `limit`, `offset`, `has_more`.
 
 ### `get_due_reviews`
 No args. Returns up to 50 due concepts with FSRS state fields.

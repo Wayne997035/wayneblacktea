@@ -29,9 +29,14 @@ const (
 // (2026-08-20-mcp-surface-spec.md). Generous read-time-only backstop
 // against marker-stuffing, same rationale as decisionBodyMaxRunes
 // (tools_decision.go).
+//
+// [F170-19] visionDependsOnMaxRunes bounds each DependsOn entry, sized like
+// atomKeywordMaxRunes (tools_atom.go): the entries are meant to be task
+// references, not prose.
 const (
 	visionParentInitiativeMaxRunes = mcpVisionMaxTitleRunes
 	visionContextMDMaxRunes        = 20000
+	visionDependsOnMaxRunes        = 200
 )
 
 // wrapUntrustedVisionItem returns a copy of v with every free-text field
@@ -39,10 +44,18 @@ const (
 // wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract. nil
 // in, nil out.
 //
-// DependsOn (task IDs), Status, PromotedTaskID and the timestamp fields are
-// left untouched — none is free text a caller/LLM authored; Status is
-// vision.VisionStatus, a closed enum set only by add_vision_item's fixed
-// initial value and promote_vision_to_task's fixed terminal value.
+// Status, PromotedTaskID and the timestamp fields are left untouched — none
+// is free text a caller/LLM authored; Status is vision.VisionStatus, a closed
+// enum set only by add_vision_item's fixed initial value and
+// promote_vision_to_task's fixed terminal value.
+//
+// [F170-19] DependsOn is NOT in that list any more. The sentence this
+// replaces called it "(task IDs)" and grouped it with the genuinely-computed
+// fields — but add_vision_item's depends_on argument is plain caller-supplied
+// text that nothing validates as an ID, so the description was a claim about
+// the write path that the write path never made true. Exactly the same
+// mistake this comment block already records for RepoName under [F160-06],
+// and found the same way: by the reflective field-coverage test, not by hand.
 //
 // [F160-06] RepoName is now clipped too — the doc comment this replaces
 // listed it alongside the genuinely-computed fields above, but
@@ -61,18 +74,30 @@ func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
 	out.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
 	out.ContextMD = clipSafe(v.ContextMD, visionContextMDMaxRunes)
 	out.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
+	// len()>0 guard preserves nil so `"depends_on":null` does not silently
+	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
+	// wrapUntrustedAtom (tools_atom.go) and wrapUntrustedConcept.
+	if len(v.DependsOn) > 0 {
+		out.DependsOn = clipSafeSlice(v.DependsOn, visionDependsOnMaxRunes)
+	}
 	return &out
 }
 
 // wrapUntrustedVisionItemSummary is wrapUntrustedVisionItem's sibling for
 // vision.VisionItemSummary (the list_vision_items projection, which omits
 // ContextMD entirely — see VisionItemSummary's doc comment). RepoName is
-// clipped for the same [F160-06] reason as wrapUntrustedVisionItem's above.
+// clipped for the same [F160-06] reason as wrapUntrustedVisionItem's above,
+// and DependsOn for the same [F170-19] reason: this projection reads the same
+// stored slice, so protecting only one of the two would leave the gap open
+// through whichever tool used the other.
 func wrapUntrustedVisionItemSummary(v vision.VisionItemSummary) vision.VisionItemSummary {
 	v.Title = clipSafe(v.Title, mcpVisionMaxTitleRunes)
 	v.WhyBlocked = clipSafe(v.WhyBlocked, mcpVisionMaxWhyBlockedRunes)
 	v.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
 	v.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
+	if len(v.DependsOn) > 0 {
+		v.DependsOn = clipSafeSlice(v.DependsOn, visionDependsOnMaxRunes)
+	}
 	return v
 }
 

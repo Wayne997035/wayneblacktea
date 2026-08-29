@@ -34,38 +34,40 @@ import (
 //   - inputErrorResult — the failure came from validating the caller's own
 //     argument. Echoed back verbatim, because it is about that argument.
 //
-// What the gate actually guarantees, precisely — TestNoRawErrorReachesToolResult
-// (tool_errors_test.go) does NOT enforce "every error goes through these two
-// helpers". It enforces a narrower, purely syntactic property: no
-// mcp.NewToolResultError(...) call anywhere in this package (outside this
-// file) may contain an error-shaped identifier in its argument list. That
-// closes exactly the failure mode this file exists for — a handler
-// interpolating err/someErr/xErr straight into a NewToolResultError call —
-// and nothing else.
+// What the gates actually guarantee, precisely — two tests, two different
+// properties, neither of which is "every error goes through these helpers":
 //
-// It is NOT structural in the stronger sense the previous version of this
-// comment claimed ("the two helpers are the only way through"). Both
-// storeErrorResult and inputErrorResult are themselves thin wrappers around
-// mcp.NewToolResultError — nothing in the type system stops a new handler
-// from calling mcp.NewToolResultError directly with a STATIC string (no err
-// identifier in sight) that nonetheless leaks something else: a hardcoded
-// snippet of internal state, a value assembled without going through either
-// helper, or simply the wrong message for the failure. Of the ~266 direct
-// mcp.NewToolResultError( call sites in this package as of this dispatch,
-// only the 4 inside this file are provably routed through the helpers by
-// construction — the other ~262 pass this gate today because none of them
-// currently happens to interpolate an err-shaped identifier, which is a
-// property of the CURRENT code, not a guarantee the gate imposes on future
-// code. A handler that builds its error text some other way (string
-// concatenation from a non-error variable, a field pulled from a struct that
-// happens to hold driver text, etc.) would not trip this test at all.
+//   - TestNoRawErrorReachesToolResult (tool_errors_test.go) enforces a purely
+//     syntactic property: no mcp.NewToolResultError(...) call anywhere in this
+//     package (outside this file) may contain an error-shaped identifier
+//     LITERALLY INSIDE its argument list.
+//   - TestSEC_U14BypassViaErrMsgIndirection (tool_errors_ast_test.go, [F170-08])
+//     enforces a dataflow property the syntactic one cannot see: the argument
+//     is traced back through local assignments, package-local function returns
+//     and parameters, and the call is red if an error value reaches it by ANY
+//     of those routes. The same trace runs over the Err-shaped fields of
+//     composite literals inside any handler that serialises with jsonText —
+//     a surface no NewToolResultError-shaped needle ever matches. (The
+//     serialiser is deliberately not named with its trailing paren here:
+//     u13_stored_data_inventory_test.go counts that literal text across this
+//     package's non-test files, and prose must not move a gate's count.)
 //
-// Closing that fully — routing every call site through the helpers so the
-// choice is structurally forced rather than incidentally true — is call-site
-// surgery across ~262 locations and is explicitly out of this dispatch's
-// scope (R2 dispatch, U13/U14 gate-hardening round); it is the natural next
-// step if this file's guarantee needs to be strengthened rather than just
-// accurately described.
+// The second gate exists because the first one was bypassed in production
+// code, not in theory: tools_proposal.go's materialise layer put the driver
+// error into a `string` named errMsg and returned it up two frames before
+// anyone called NewToolResultError, and `errMsg` does not match `\b\w*[eE]rr\b`
+// (the trailing "Msg" eats the word boundary). [F170-07] fixed those 27 sites;
+// [F170-08] makes the class un-reintroducible rather than fixed once.
+//
+// What is still NOT guaranteed: neither gate makes the two helpers the only
+// way through. Both are thin wrappers around mcp.NewToolResultError, and
+// nothing in the type system stops a new handler from passing a STATIC string
+// that leaks something else — a hardcoded snippet of internal state, or simply
+// the wrong message for the failure. The AST gate also treats a struct field
+// read whose name is not Err-shaped (`row.Detail`) as data rather than as an
+// error, because a field read is where syntactic provenance ends; a field that
+// happens to hold driver text would pass. That boundary is deliberate and
+// pinned by the AST gate's own positive-control test, not an accident.
 
 // storeErrorResult reports a server-side failure to an MCP client without
 // disclosing what actually broke.
@@ -81,6 +83,24 @@ import (
 // "hygiene" change that also blinded the operator would be a worse bug than
 // the leak it fixed.
 func storeErrorResult(op string, err error) *mcp.CallToolResult {
+	return mcp.NewToolResultError(storeErrorText(op, err))
+}
+
+// storeErrorText is storeErrorResult's message half — the same policy, minus
+// the mcp.CallToolResult wrapper.
+//
+// [F170-07] It exists because not every failure path builds its response
+// where the error happens. tools_proposal.go's materialise layer returns
+// (any, string): the error is consumed inside materializeFromPayload{Pg,
+// Iface,SQLiteTx} and only a STRING survives up to acceptProposal*, which
+// then hands that string to mcp.NewToolResultError. A helper returning
+// *mcp.CallToolResult is unusable at those sites, so all 27 of them did the
+// obvious thing — fmt.Sprintf("creating goal: %v", err) — and put the pgx /
+// modernc-sqlite text (host, port, database name, the violated constraint's
+// name) back on the wire that storeErrorResult exists to keep it off.
+// Returning the text separately lets that indirection layer stay an
+// indirection layer instead of also being a hole.
+func storeErrorText(op string, err error) string {
 	logToolError(op, err)
 	for _, sentinel := range callerFacingSentinels {
 		if errors.Is(err, sentinel) {
@@ -89,10 +109,10 @@ func storeErrorResult(op string, err error) *mcp.CallToolResult {
 			// echoing it would put back exactly what this function exists to
 			// remove; the sentinel's message is the declared, reviewed,
 			// caller-facing half.
-			return mcp.NewToolResultError(op + ": " + sentinel.Error())
+			return op + ": " + sentinel.Error()
 		}
 	}
-	return mcp.NewToolResultError(op + " failed")
+	return op + " failed"
 }
 
 // callerFacingSentinels are domain errors that describe the CALLER's request
@@ -160,10 +180,25 @@ func storeErrorResultf(err error, format string, args ...any) *mcp.CallToolResul
 // field names the argument at fault ("notes", "metrics_json"); pass "" when
 // the error text already identifies it.
 func inputErrorResult(field string, err error) *mcp.CallToolResult {
+	return mcp.NewToolResultError(inputErrorText(field, err))
+}
+
+// inputErrorText is inputErrorResult's message half, for the same reason
+// storeErrorText is storeErrorResult's: a validation helper that hands its
+// caller a plain string rather than a finished result (resolveAssignee,
+// tools_gtd.go) still has to make the store-vs-input judgement, and it is
+// the only place with enough context to make it. Calling this states the
+// judgement explicitly instead of leaving a bare err.Error() for the next
+// reader — and for [F170-08]'s provenance gate — to guess at.
+//
+// It intentionally produces byte-identical text to the err.Error() it
+// replaces, so annotating an existing site changes no client-visible
+// behaviour.
+func inputErrorText(field string, err error) string {
 	if field == "" {
-		return mcp.NewToolResultError(err.Error())
+		return err.Error()
 	}
-	return mcp.NewToolResultError(field + ": " + err.Error())
+	return field + ": " + err.Error()
 }
 
 // inputErrorResultf is inputErrorResult with a formatted field description,

@@ -118,9 +118,13 @@ func splitKnowledgeTags(raw string) []string {
 // rejects control characters at write time, never neutralises a forged
 // boundary marker — these exist purely to close that read-side gap, sized
 // like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes (tools_gtd.go).
+//
+// [F170-19] knowledgeTagMaxRunes is sized like atomKeywordMaxRunes
+// (tools_atom.go) instead: a tag is a label, not a body.
 const (
 	knowledgeTitleMaxRunes = gtdTitleMaxRunes
 	knowledgeBodyMaxRunes  = gtdBodyMaxRunes
+	knowledgeTagMaxRunes   = 200
 )
 
 // wrapUntrustedKnowledgeItem returns a copy of item with Title/Content
@@ -153,6 +157,16 @@ func wrapUntrustedKnowledgeItem(item *db.KnowledgeItem) *db.KnowledgeItem {
 	}
 	if item.HeadingPath.Valid {
 		out.HeadingPath.String = clipSafe(item.HeadingPath.String, knowledgeTitleMaxRunes)
+	}
+	// [F170-19] Tags is caller-supplied free text (add_knowledge's "tags"
+	// argument; validateKnowledgeArgs checks Type against a closed set and
+	// Url for an http(s) prefix, but never looks at Tags) and is rendered
+	// back by list_knowledge/search_knowledge alongside the fenced fields
+	// above. Same escape class as F160-10; found and pinned by [F170-11]'s
+	// walker. len()>0 guard preserves nil so `"tags":null` does not silently
+	// become `"tags":[]` — see wrapUntrustedConcept for the same note.
+	if len(item.Tags) > 0 {
+		out.Tags = clipSafeSlice(item.Tags, knowledgeTagMaxRunes)
 	}
 	return &out
 }

@@ -39,7 +39,15 @@ func resolveAssignee(raw string) (string, string) {
 	}
 	normalized, err := gtd.NormalizeActor(raw)
 	if err != nil {
-		return "", err.Error()
+		// [F170-08] Routed through inputErrorText rather than left as a bare
+		// err.Error(): NormalizeActor rejects the caller's OWN assignee
+		// argument against a fixed allowlist, so echoing it is correct and
+		// deliberate — inputErrorText's contract. The text is byte-identical;
+		// what changes is that the judgement is now stated instead of left for
+		// the next reader (and for the provenance gate) to infer. This one
+		// call site covers add_task, begin_task, plan and worksession, which
+		// all reach it through resolveAssigneeArg.
+		return "", inputErrorText("", err)
 	}
 	return normalized, ""
 }
@@ -125,7 +133,15 @@ const maxPendingDeletions = 256
 func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	s.addTool(ms, mcp.NewTool(
 		"list_projects",
-		mcp.WithDescription("Returns all active projects."),
+		// [F170-04] The description no longer says "all": it used to, while
+		// the handler now returns a page. A tool whose description overstates
+		// what it returns is worse than an uncapped one — the caller stops
+		// looking for the rest.
+		mcp.WithDescription("Returns one page of active projects, highest priority first. "+
+			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
+			"Read-only."),
+		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), seam("list_projects", s.handleListProjects))
 
 	s.addTool(
@@ -244,7 +260,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 
 	s.addTool(ms, mcp.NewTool(
 		"list_goals",
-		mcp.WithDescription("Returns all active goals ordered by due date."),
+		// [F170-05] See list_projects above for why "all" had to go.
+		mcp.WithDescription("Returns one page of active goals ordered by due date. "+
+			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
+			"Read-only."),
+		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), seam("list_goals", s.handleListGoals))
 
 	s.addTool(
@@ -474,9 +495,14 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 // taskTitleMaxRunes/projectTitleMaxRunes (tools_context.go, a DIFFERENT,
 // much smaller cap for a DIFFERENT, budget-constrained payload). Legitimate
 // content on a get_task/get_project-class full read should never hit these.
+//
+// [F170-19] commitSHAMaxRunes bounds each CommitSHAs entry, sized like
+// atomKeywordMaxRunes (tools_atom.go). A real SHA is 40 runes, so this never
+// touches a legitimate value.
 const (
-	gtdTitleMaxRunes = 2000
-	gtdBodyMaxRunes  = 20000
+	gtdTitleMaxRunes  = 2000
+	gtdBodyMaxRunes   = 20000
+	commitSHAMaxRunes = 200
 )
 
 // wrapUntrustedTask returns a copy of t with every free-text field
@@ -494,6 +520,14 @@ const (
 // them to URL/SHA/branch-name shapes at the write paths that set them, which
 // forecloses embedding a multi-line forged marker. Assignee is left as-is:
 // gtd.NormalizeActor is a whitelist, not free text.
+//
+// [F170-19] CommitSHAs IS clipped, unlike the Artifact/BranchName/PRUrl group
+// it sits next to. The distinction is real, not cosmetic: those three are
+// shape-constrained by applyArtifactSideEffects/validateBeginTaskLinkageArgs
+// at write time, whereas the same write path appends to CommitSHAs without
+// ever checking that an entry looks like a SHA. It was one of the seven gaps
+// [F170-11]'s walker found; the fix landed here rather than in that sprint
+// because this file belonged to a different engineer at the time.
 func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t == nil {
 		return nil
@@ -505,6 +539,12 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	}
 	if t.Context.Valid {
 		out.Context.String = clipSafe(t.Context.String, gtdBodyMaxRunes)
+	}
+	// len()>0 guard preserves nil so `"commit_shas":null` does not silently
+	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
+	// wrapUntrustedAtom (tools_atom.go).
+	if len(t.CommitSHAs) > 0 {
+		out.CommitSHAs = clipSafeSlice(t.CommitSHAs, commitSHAMaxRunes)
 	}
 	return &out
 }
@@ -591,19 +631,79 @@ func wrapUntrustedGoals(goals []db.Goal) []db.Goal {
 	return out
 }
 
-func (s *Server) handleListProjects(ctx context.Context, _ ListProjectsArgs) (*mcp.CallToolResult, error) {
-	projects, err := s.gtd.ListActiveProjects(ctx)
+const (
+	// listPageDefaultLimit / listPageMaxLimit are the row-cap policy shared by
+	// the list tools — the same 50 / 200 handleListTasks (:777) inlines.
+	listPageDefaultLimit = 50
+	listPageMaxLimit     = 200
+)
+
+// listPageBounds applies that policy to a raw limit/offset pair — [F170-04].
+//
+// A helper rather than three more inline copies because F170-04/05/06 add
+// three call sites at once and the three tools have to agree. handleListTasks
+// keeps its own inline copy in this dispatch on purpose: it is the template
+// two other parallel work-streams are copying from right now, and rewriting it
+// underneath them would break all three at merge. Folding it in is a
+// follow-up, not a silent drive-by.
+// [F170-13] Returns int32, the width the store's paging API takes, so the
+// three call sites hand the result straight through with no conversion. The
+// earlier version returned int and each caller wrote int32(limit+1) — three
+// narrowing conversions that gosec G115 flags as potential overflow, and
+// correctly so: nothing in the TYPE said the value was bounded, only this
+// function's body did. Returning int32 moves "cannot overflow" from a comment
+// into the signature. limit is clamped to listPageMaxLimit here, so limit+1 at
+// a call site is at most 201 and cannot wrap.
+func listPageBounds(rawLimit, rawOffset int32) (limit, offset int32) {
+	limit = rawLimit
+	if limit <= 0 {
+		limit = listPageDefaultLimit
+	}
+	if limit > listPageMaxLimit {
+		limit = listPageMaxLimit
+	}
+	offset = rawOffset
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// handleListProjects returns one page of active projects.
+//
+// [F170-04] It used to return every active project, because neither this
+// handler nor ListActiveProjects' SQL had any cap: the response size was
+// whatever the projects table happened to be, and a caller could spend an
+// arbitrary share of its own context window on one tool call. The response is
+// now an OBJECT rather than a bare array — the page is only honest if the
+// caller can see limit/offset/returned/has_more, and a truncated bare array
+// looks exactly like a complete one.
+func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) (*mcp.CallToolResult, error) {
+	limit, offset := listPageBounds(args.Limit, args.Offset)
+
+	// limit+1 detects has_more without a second COUNT query — same trick as
+	// handleListTasks.
+	projects, err := s.gtd.ActiveProjectsPage(ctx, limit+1, offset)
 	if err != nil {
 		return storeErrorResult("loading projects", err), nil
 	}
-	if projects == nil {
-		projects = []db.Project{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	hasMore := len(projects) > int(limit)
+	if hasMore {
+		projects = projects[:limit]
 	}
+	// make() with an explicit length: a nil slice marshals to JSON null, and
+	// list tools MUST return [].
 	out := make([]db.Project, len(projects))
 	for i := range projects {
 		out[i] = *wrapUntrustedProject(&projects[i])
 	}
-	return jsonText(out)
+	return jsonText(map[string]any{
+		"projects": out,
+		"returned": len(out),
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": hasMore,
+	})
 }
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
@@ -1099,15 +1199,28 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, art
 	return updated
 }
 
-func (s *Server) handleListGoals(ctx context.Context, _ ListGoalsArgs) (*mcp.CallToolResult, error) {
-	goals, err := s.gtd.ActiveGoals(ctx)
+// handleListGoals returns one page of active goals — [F170-05], same shape and
+// same reasoning as handleListProjects above.
+func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.CallToolResult, error) {
+	limit, offset := listPageBounds(args.Limit, args.Offset)
+
+	goals, err := s.gtd.ActiveGoalsPage(ctx, limit+1, offset)
 	if err != nil {
 		return storeErrorResult("loading goals", err), nil
 	}
-	if goals == nil {
-		goals = []db.Goal{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	hasMore := len(goals) > int(limit)
+	if hasMore {
+		goals = goals[:limit]
 	}
-	return jsonText(wrapUntrustedGoals(goals)) // U13 Phase B (tools_gtd.go:1026)
+	// wrapUntrustedGoals is nil-safe and always returns a non-nil slice
+	// ([F160-03]), so the [] -not-null contract holds without a guard here.
+	return jsonText(map[string]any{
+		"goals":    wrapUntrustedGoals(goals), // U13 Phase B (tools_gtd.go:1026)
+		"returned": len(goals),
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": hasMore,
+	})
 }
 
 func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mcp.CallToolResult, error) {
@@ -1171,7 +1284,7 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 	if args.Assignee != "" {
 		normalized, normErr := gtd.NormalizeActor(args.Assignee)
 		if normErr != nil {
-			return p, normErr.Error()
+			return p, inputErrorText("", normErr) // [F170-08] see resolveAssignee
 		}
 		p.Assignee = &normalized
 	}
@@ -1378,6 +1491,15 @@ func issueDeletionToken() string {
 // deletionTokenMatchesSession reports whether rec (as stored by
 // handleDeleteTask's step 1) may be confirmed from ctx's current session.
 //
+// ⚠ [F170-20] issuedBySession is a CLIENT-SUPPLIED, UNAUTHENTICATED value —
+// the streamable-HTTP transport validates a session id's format but never
+// its existence, so a caller can present any well-formed id. Matching it
+// proves the caller KNOWS the victim's random session id; it is NOT an
+// authentication boundary and MUST NEVER be the only thing guarding a side
+// effect. Here the deletion token is the other half and is what actually
+// gates the delete. reconcileTokenMatchesSession (tools_reconcile.go) holds
+// the full write-up for both call sites — one property, one explanation.
+//
 // Comparison is plain equality against currentSessionID(ctx) — deliberately
 // the RAW value (possibly ""), not auditSessionID's process-level fallback.
 // A token issued with no tracked session (rec.issuedBySession == "") is
@@ -1476,8 +1598,9 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	if suppliedToken != rec.token {
 		return mcp.NewToolResultError("deletion_token mismatch"), nil
 	}
-	// U9 partial mitigation (Category S): requester must be the same MCP
-	// session that issued the token, when one was tracked — see
+	// U9 partial mitigation (Category S): the confirming call must present
+	// the same session id the issuing call carried, when one was tracked.
+	// [F170-20]: that is a knowledge check, not an identity check — see
 	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
 	if !deletionTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(

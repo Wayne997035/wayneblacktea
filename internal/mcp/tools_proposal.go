@@ -282,7 +282,14 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 
 	ms.AddTool(mcp.NewTool(
 		"list_pending_proposals",
-		mcp.WithDescription("Lists all proposals awaiting user resolution, newest first."),
+		// [F170-06] "all" removed: the handler pages now, and a description
+		// promising everything would make a caller stop at the first page
+		// believing it had seen the queue.
+		mcp.WithDescription("Lists one page of proposals awaiting user resolution, newest first. "+
+			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
+			"Read-only — resolving a proposal still requires confirm_proposal."),
+		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), s.handleListPendingProposals)
 
 	ms.AddTool(mcp.NewTool(
@@ -373,12 +380,34 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 	return jsonText(wrapUntrustedProposal(row))
 }
 
-func (s *Server) handleListPendingProposals(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	rows, err := s.proposal.ListPending(ctx)
+// handleListPendingProposals returns one page of pending proposals.
+//
+// [F170-06] It used to return every pending row, and a pending proposal
+// carries a whole JSON payload — so this was the largest per-row list tool on
+// the surface with no cap on either side of it. Response is now an object:
+// limit/offset/returned/has_more, because a truncated bare array is
+// indistinguishable from a complete one.
+func (s *Server) handleListPendingProposals(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	limit, offset := listPageBounds(numberArg(args, "limit"), numberArg(args, "offset"))
+
+	rows, err := s.proposal.ListPendingPage(ctx, limit+1, offset)
 	if err != nil {
 		return storeErrorResult("listing pending proposals", err), nil
 	}
-	return jsonText(wrapUntrustedProposals(rows))
+	hasMore := len(rows) > int(limit)
+	if hasMore {
+		rows = rows[:limit]
+	}
+	return jsonText(map[string]any{
+		// wrapUntrustedProposals allocates with make(), so an empty page
+		// still marshals as [] rather than null.
+		"proposals": wrapUntrustedProposals(rows),
+		"returned":  len(rows),
+		"limit":     limit,
+		"offset":    offset,
+		"has_more":  hasMore,
+	})
 }
 
 func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -438,11 +467,28 @@ func (s *Server) batchAccept(ctx context.Context, ids []uuid.UUID) (*mcp.CallToo
 	for _, id := range ids {
 		res, err := s.acceptProposal(ctx, id)
 		if err != nil {
-			results = append(results, proposal.BatchItemResult{ID: id.String(), OK: false, ErrMsg: err.Error()})
+			// [F170-08] BatchItemResult.ErrMsg reaches the client through
+			// jsonText below, not through mcp.NewToolResultError — so U14's
+			// original needle never saw this line, and U13's inventory
+			// explicitly deferred it to U14 as "a store error string, U14's
+			// jurisdiction" (u13_stored_data_inventory_test.go's
+			// storedDataComputedExclusions). Each gate assumed the other held
+			// it; err.Error() therefore shipped the raw driver text here.
+			// storeErrorText applies the same redaction the singular path
+			// gets; id is the caller's own just-supplied argument, so naming
+			// it in the op keeps the log entry attributable per batch item.
+			results = append(results, proposal.BatchItemResult{
+				ID:     id.String(),
+				OK:     false,
+				ErrMsg: storeErrorText(fmt.Sprintf("accepting proposal %s", id), err),
+			})
 			failed++
 			continue
 		}
 		if res.IsError {
+			// resultErrorText reads back a message acceptProposal already
+			// produced, which [F170-07] made redaction-safe at its source —
+			// re-redacting here would only double the "failed" suffix.
 			results = append(results, proposal.BatchItemResult{
 				ID:     id.String(),
 				OK:     false,
@@ -538,6 +584,13 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
 	}
 
+	// [F170-07] errMsg is redaction-safe by construction now: every producer
+	// inside materializeFromPayload{Pg,Iface,SQLiteTx} routes its store error
+	// through storeErrorText, so what lands here is "<op> failed" (or a
+	// reviewed caller-facing sentinel) while the pgx text — host, port,
+	// database name, the violated constraint's name — goes to the server log
+	// only. Before that this line handed the driver's message straight to an
+	// LLM's context (CWE-209).
 	created, errMsg := s.materializeFromPayloadPg(ctx, tx, prop)
 	if errMsg != "" {
 		_ = tx.Rollback(ctx)
@@ -574,7 +627,7 @@ func (s *Server) acceptProposalSequential(ctx context.Context, id uuid.UUID) (*m
 		return mcp.NewToolResultError(fmt.Sprintf("proposal already %s", prop.Status)), nil
 	}
 
-	created, errMsg := s.materializeFromPayloadIface(ctx, prop)
+	created, errMsg := s.materializeFromPayloadIface(ctx, prop) // [F170-07] see acceptProposalPg
 	if errMsg != "" {
 		return mcp.NewToolResultError(errMsg), nil
 	}
@@ -615,7 +668,7 @@ func (s *Server) acceptProposalSQLite(ctx context.Context, id uuid.UUID) (*mcp.C
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 
-	created, errMsg := s.materializeFromPayloadSQLiteTx(ctx, tx, prop)
+	created, errMsg := s.materializeFromPayloadSQLiteTx(ctx, tx, prop) // [F170-07] see acceptProposalPg
 	if errMsg != "" {
 		return mcp.NewToolResultError(errMsg), nil
 	}
@@ -704,7 +757,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 		}
 		goalID, err := s.sqliteGTD.CreateGoalTx(ctx, tx, gp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating goal: %v", err)
+			return nil, storeErrorText("creating goal", err)
 		}
 		return map[string]string{"id": goalID.String(), "title": gp.Title}, ""
 	case proposal.TypeProject:
@@ -714,7 +767,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 		}
 		projectID, err := s.sqliteGTD.CreateProjectTx(ctx, tx, pp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating project: %v", err)
+			return nil, storeErrorText("creating project", err)
 		}
 		return map[string]string{"id": projectID.String(), "name": pp.Name, "title": pp.Title}, ""
 	case proposal.TypeConcept:
@@ -724,7 +777,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 		}
 		conceptID, err := s.sqliteLearning.CreateConceptTx(ctx, tx, cp.Title, cp.Content, cp.Tags)
 		if err != nil {
-			return nil, fmt.Sprintf("creating concept: %v", err)
+			return nil, storeErrorText("creating concept", err)
 		}
 		return map[string]string{"id": conceptID.String(), "title": cp.Title}, ""
 	case proposal.TypeKnowledge:
@@ -747,7 +800,7 @@ func (s *Server) materializeFromPayloadSQLiteTx(ctx context.Context, tx *sql.Tx,
 		}
 		pb, err := s.playbook.Create(ctx, cp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating playbook: %v", err)
+			return nil, storeErrorText("creating playbook", err)
 		}
 		return pb, ""
 	default:
@@ -784,7 +837,7 @@ func (s *Server) materializeDecisionSQLite(ctx context.Context, tx *sql.Tx, prop
 	}
 	decisionID, err := s.sqliteDecision.LogTx(ctx, tx, dp)
 	if err != nil {
-		return nil, fmt.Sprintf("creating decision: %v", err)
+		return nil, storeErrorText("creating decision", err)
 	}
 	return map[string]string{"id": decisionID.String(), "title": dp.Title}, ""
 }
@@ -805,7 +858,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 		}
 		goal, err := s.pgGTD.WithTx(tx).CreateGoal(ctx, gp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating goal: %v", err)
+			return nil, storeErrorText("creating goal", err)
 		}
 		return goal, ""
 	case proposal.TypeProject:
@@ -815,7 +868,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 		}
 		project, err := s.pgGTD.WithTx(tx).CreateProject(ctx, pp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating project: %v", err)
+			return nil, storeErrorText("creating project", err)
 		}
 		return project, ""
 	case proposal.TypeConcept:
@@ -825,7 +878,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 		}
 		concept, err := s.pgLearning.WithTx(tx).CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
 		if err != nil {
-			return nil, fmt.Sprintf("creating concept: %v", err)
+			return nil, storeErrorText("creating concept", err)
 		}
 		return concept, ""
 	case proposal.TypeKnowledge:
@@ -839,7 +892,7 @@ func (s *Server) materializeFromPayloadPg(ctx context.Context, tx pgx.Tx, prop *
 		}
 		pb, err := s.playbook.Create(ctx, cp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating playbook: %v", err)
+			return nil, storeErrorText("creating playbook", err)
 		}
 		return pb, ""
 	default:
@@ -861,7 +914,7 @@ func (s *Server) materializeTaskPg(ctx context.Context, tx pgx.Tx, prop *db.Pend
 	}
 	task, err := s.pgGTD.WithTx(tx).CreateTask(ctx, params)
 	if err != nil {
-		return nil, fmt.Sprintf("creating task: %v", err)
+		return nil, storeErrorText("creating task", err)
 	}
 	if len(warnings) > 0 {
 		return map[string]any{"task": task, "warnings": warnings}, ""
@@ -881,7 +934,7 @@ func (s *Server) materializeDecisionPg(ctx context.Context, tx pgx.Tx, prop *db.
 	}
 	dec, err := s.pgDecision.WithTx(tx).Log(ctx, dp)
 	if err != nil {
-		return nil, fmt.Sprintf("creating decision: %v", err)
+		return nil, storeErrorText("creating decision", err)
 	}
 	return dec, ""
 }
@@ -902,7 +955,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 		}
 		goal, err := s.gtd.CreateGoal(ctx, gp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating goal: %v", err)
+			return nil, storeErrorText("creating goal", err)
 		}
 		return goal, ""
 	case proposal.TypeProject:
@@ -912,7 +965,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 		}
 		project, err := s.gtd.CreateProject(ctx, pp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating project: %v", err)
+			return nil, storeErrorText("creating project", err)
 		}
 		return project, ""
 	case proposal.TypeConcept:
@@ -922,7 +975,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 		}
 		concept, err := s.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
 		if err != nil {
-			return nil, fmt.Sprintf("creating concept: %v", err)
+			return nil, storeErrorText("creating concept", err)
 		}
 		return concept, ""
 	case proposal.TypeKnowledge:
@@ -936,7 +989,7 @@ func (s *Server) materializeFromPayloadIface(ctx context.Context, prop *db.Pendi
 		}
 		pb, err := s.playbook.Create(ctx, cp)
 		if err != nil {
-			return nil, fmt.Sprintf("creating playbook: %v", err)
+			return nil, storeErrorText("creating playbook", err)
 		}
 		return pb, ""
 	default:
@@ -958,7 +1011,7 @@ func (s *Server) materializeTaskIface(ctx context.Context, prop *db.PendingPropo
 	}
 	task, err := s.gtd.CreateTask(ctx, params)
 	if err != nil {
-		return nil, fmt.Sprintf("creating task: %v", err)
+		return nil, storeErrorText("creating task", err)
 	}
 	if len(warnings) > 0 {
 		return map[string]any{"task": task, "warnings": warnings}, ""
@@ -978,7 +1031,7 @@ func (s *Server) materializeDecisionIface(ctx context.Context, prop *db.PendingP
 	}
 	dec, err := s.decision.Log(ctx, dp)
 	if err != nil {
-		return nil, fmt.Sprintf("creating decision: %v", err)
+		return nil, storeErrorText("creating decision", err)
 	}
 	return dec, ""
 }
@@ -1011,7 +1064,7 @@ func (s *Server) materializeKnowledgeIface(ctx context.Context, prop *db.Pending
 		Source:  prop.ProposedBy.String,
 	})
 	if err != nil {
-		return nil, fmt.Sprintf("creating knowledge item: %v", err)
+		return nil, storeErrorText("creating knowledge item", err)
 	}
 	return item, ""
 }
@@ -1021,7 +1074,7 @@ func (s *Server) materializeKnowledgeIface(ctx context.Context, prop *db.Pending
 func decodeKnowledgePayload(payload []byte) (proposal.KnowledgePayload, string) {
 	var kp proposal.KnowledgePayload
 	if err := json.Unmarshal(payload, &kp); err != nil {
-		return proposal.KnowledgePayload{}, fmt.Sprintf("decoding knowledge payload: %v", err)
+		return proposal.KnowledgePayload{}, storeErrorText("decoding knowledge payload", err)
 	}
 	if kp.Title == "" {
 		return proposal.KnowledgePayload{}, "knowledge payload missing title"
@@ -1058,7 +1111,7 @@ func decodeKnowledgePayload(payload []byte) (proposal.KnowledgePayload, string) 
 func decodeDecisionParams(payload []byte, actorSessionID string) (decision.LogParams, string) {
 	var p proposal.DecisionProposerPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return decision.LogParams{}, fmt.Sprintf("decoding decision payload: %v", err)
+		return decision.LogParams{}, storeErrorText("decoding decision payload", err)
 	}
 	if p.Title == "" {
 		return decision.LogParams{}, "decision payload missing title"
@@ -1109,7 +1162,7 @@ func decodeDecisionParams(payload []byte, actorSessionID string) (decision.LogPa
 func decodeGoalParams(payload []byte) (gtd.CreateGoalParams, string) {
 	var p goalPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return gtd.CreateGoalParams{}, fmt.Sprintf("decoding goal payload: %v", err)
+		return gtd.CreateGoalParams{}, storeErrorText("decoding goal payload", err)
 	}
 	if len(p.Title) > 512 {
 		return gtd.CreateGoalParams{}, "goal title exceeds 512 bytes"
@@ -1128,7 +1181,7 @@ func decodeGoalParams(payload []byte) (gtd.CreateGoalParams, string) {
 	if p.DueDate != "" {
 		t, err := time.Parse(time.RFC3339, p.DueDate)
 		if err != nil {
-			return gtd.CreateGoalParams{}, fmt.Sprintf("invalid due_date in payload: %v", err)
+			return gtd.CreateGoalParams{}, storeErrorText("parsing due_date in payload", err)
 		}
 		gp.DueDate = &t
 	}
@@ -1138,7 +1191,7 @@ func decodeGoalParams(payload []byte) (gtd.CreateGoalParams, string) {
 func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
 	var p projectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return gtd.CreateProjectParams{}, fmt.Sprintf("decoding project payload: %v", err)
+		return gtd.CreateProjectParams{}, storeErrorText("decoding project payload", err)
 	}
 	if len(p.Name) > 512 {
 		return gtd.CreateProjectParams{}, "project name exceeds 512 bytes"
@@ -1162,7 +1215,7 @@ func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
 	if p.GoalID != "" {
 		gid, err := uuid.Parse(p.GoalID)
 		if err != nil {
-			return gtd.CreateProjectParams{}, fmt.Sprintf("invalid goal_id in payload: %v", err)
+			return gtd.CreateProjectParams{}, storeErrorText("parsing goal_id in payload", err)
 		}
 		pp.GoalID = &gid
 	}
@@ -1172,7 +1225,7 @@ func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
 func decodeConceptPayload(payload []byte) (conceptPayload, string) {
 	var p conceptPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return conceptPayload{}, fmt.Sprintf("decoding concept payload: %v", err)
+		return conceptPayload{}, storeErrorText("decoding concept payload", err)
 	}
 	if len(p.Title) > 512 {
 		return conceptPayload{}, "concept title exceeds 512 bytes"
@@ -1194,7 +1247,7 @@ func decodePlaybookPayload(payload []byte, wsID *uuid.UUID) (playbook.CreatePara
 		SourceDecisionIDs []uuid.UUID `json:"source_decision_ids"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return playbook.CreateParams{}, fmt.Sprintf("decoding playbook payload: %v", err)
+		return playbook.CreateParams{}, storeErrorText("decoding playbook payload", err)
 	}
 	if p.TriggerPattern == "" || p.ActionTemplate == "" {
 		return playbook.CreateParams{}, "playbook payload missing trigger_pattern or action_template"
@@ -1232,7 +1285,7 @@ func decodePlaybookPayload(payload []byte, wsID *uuid.UUID) (playbook.CreatePara
 func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams, []string, string) {
 	var tp proposal.TaskPayload
 	if err := json.Unmarshal(payload, &tp); err != nil {
-		return gtd.CreateTaskParams{}, nil, fmt.Sprintf("decoding task payload: %v", err)
+		return gtd.CreateTaskParams{}, nil, storeErrorText("decoding task payload", err)
 	}
 	if tp.Title == "" {
 		return gtd.CreateTaskParams{}, nil, "task payload missing title"

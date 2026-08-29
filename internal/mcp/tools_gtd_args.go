@@ -21,8 +21,13 @@ import "github.com/google/uuid"
 //     0001: preserve-on-omit domain defaulting stays visible to the handler,
 //     never absorbed into generic validation.
 
-// ListProjectsArgs — list_projects takes no arguments.
-type ListProjectsArgs struct{}
+// ListProjectsArgs — list_projects. [F170-04] Limit/Offset are plain int32
+// like ListTasksArgs': absent decodes to 0, and listPageBounds turns 0 into
+// the default page size, so presence never needs to be distinguished here.
+type ListProjectsArgs struct {
+	Limit  int32 `mcp:"limit"`
+	Offset int32 `mcp:"offset"`
+}
 
 // CreateProjectArgs — create_project.
 type CreateProjectArgs struct {
@@ -92,8 +97,12 @@ type CompleteTaskArgs struct {
 	Artifact string    `mcp:"artifact"`
 }
 
-// ListGoalsArgs — list_goals takes no arguments.
-type ListGoalsArgs struct{}
+// ListGoalsArgs — list_goals. [F170-05] Same Limit/Offset contract as
+// ListProjectsArgs.
+type ListGoalsArgs struct {
+	Limit  int32 `mcp:"limit"`
+	Offset int32 `mcp:"offset"`
+}
 
 // CreateGoalArgs — create_goal.
 type CreateGoalArgs struct {

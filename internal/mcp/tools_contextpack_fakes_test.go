@@ -49,7 +49,32 @@ type noopGTDStore struct{}
 
 var _ gtd.StoreIface = noopGTDStore{}
 
+// pageFakeRows applies the same offset-then-limit slicing the real stores get
+// from SQL, so a fake handed limit/offset behaves like the thing it stands in
+// for — [F170-04]. A fake that ignored those arguments would let a handler
+// bug (wrong limit+1 arithmetic, has_more computed off the unpaged length)
+// pass every test in this package.
+func pageFakeRows[T any](rows []T, limit, offset int32) []T {
+	lo := int(db.ClampRowOffset(offset))
+	if lo >= len(rows) {
+		return nil
+	}
+	hi := lo + int(db.ClampRowLimit(limit))
+	if hi > len(rows) {
+		hi = len(rows)
+	}
+	return rows[lo:hi]
+}
+
 func (noopGTDStore) ListActiveProjects(context.Context) ([]db.Project, error) { return nil, nil }
+func (noopGTDStore) ActiveProjectsPage(context.Context, int32, int32) ([]db.Project, error) {
+	return nil, nil
+}
+
+func (noopGTDStore) ActiveGoalsPage(context.Context, int32, int32) ([]db.Goal, error) {
+	return nil, nil
+}
+
 func (noopGTDStore) ProjectsFiltered(context.Context, string) ([]db.Project, error) {
 	return nil, nil
 }

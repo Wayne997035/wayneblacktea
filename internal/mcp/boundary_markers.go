@@ -264,6 +264,35 @@ func neutralizeJSONBlob(raw []byte, maxRunes int) []byte {
 // already-decoded Go values (the shapes encoding/json.Unmarshal into an
 // `any` ever produces: map[string]any, []any, string, float64, bool, nil).
 // depth is capped at jsonBlobMaxDepth (see its doc comment).
+//
+// [F170-17] Map KEYS go through clipSafe as well as values. encoding/json
+// writes a key verbatim into the response, so a forged marker sitting in a
+// key escapes exactly as well as one in a value — and keys here are fully
+// caller-supplied: record_outcome's metrics_json only has to unmarshal into
+// map[string]json.RawMessage (parseRecordOutcomeArgs, tools_outcome.go), the
+// keys are never validated, bounded or sanitised, and the raw bytes are
+// stored verbatim. Every later read through wrapUntrustedOutcome lands back
+// here. Leaving the key path open contradicted this file's own header
+// invariant ("the marker texts are stripped OUT of the content first, so a
+// payload cannot forge a closing marker ... and forge a re-opening one")
+// while the doc comments read as though blobs were covered.
+//
+// This is deliberately the same shape as neutralizeProvenanceMap
+// (tools_worksession.go) — copy the map, transform key AND value, never drop
+// an entry — so the two do not become two different answers to one problem.
+// It differs from that function in ONE respect, on purpose: clipSafe (bounded
+// + neutralised) rather than bare neutralizeBoundaryMarkers. Provenance
+// values are short by construction, which is why clipping would have bought
+// nothing there; a metrics_json key is unbounded caller input, and this
+// function's own value path has always been bounded, so leaving the key
+// unbounded would make it the single unbounded string in a bounding function.
+//
+// ⚠ Key collisions are possible and accepted: two distinct keys that differ
+// only inside marker text collapse into one after neutralisation, and the
+// later one wins (map assignment order is unspecified). That is the same
+// trade the value path already makes, it can only be triggered by a blob an
+// attacker authored, and it is stated HERE rather than left to be discovered
+// by whoever first sees a key go missing.
 func neutralizeAnyValue(v any, maxRunes, depth int) any {
 	if depth > jsonBlobMaxDepth {
 		return boundaryMarkerPlaceholder
@@ -274,7 +303,7 @@ func neutralizeAnyValue(v any, maxRunes, depth int) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			out[k] = neutralizeAnyValue(val, maxRunes, depth+1)
+			out[clipSafe(k, maxRunes)] = neutralizeAnyValue(val, maxRunes, depth+1)
 		}
 		return out
 	case []any:

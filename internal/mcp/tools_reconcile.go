@@ -276,11 +276,18 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	token := uuid.NewString()
 	expires := s.now().Add(reconcileTokenTTL)
+	// [F170-12] issuedBySession is captured from ctx ONLY — never from an
+	// argument. A session id read out of the tool payload would let the
+	// caller nominate whose token this is, which is the forgery this binding
+	// exists to prevent (backend-security-design.md §2.1: LLM tool input is
+	// adversarial; auditSessionID's doc comment, tools_gtd.go, states the same
+	// rule for the audit path).
 	s.reconcileTokens.Store(token, reconcileConfirmation{
-		matches:   result.Matches,
-		ambiguous: result.Ambiguous,
-		noMatch:   result.NoMatch,
-		expiresAt: expires,
+		matches:         result.Matches,
+		ambiguous:       result.Ambiguous,
+		noMatch:         result.NoMatch,
+		expiresAt:       expires,
+		issuedBySession: currentSessionID(ctx),
 	})
 
 	return jsonText(map[string]any{
@@ -295,6 +302,53 @@ func (s *Server) handleReconcileMergedPRsPreview(
 		"message": "Call reconcile_merged_prs again with confirm=true and reconcile_token " +
 			"to apply these completions. Token expires in 60s.",
 	})
+}
+
+// reconcileTokenMatchesSession reports whether rec (as stored by
+// handleReconcileMergedPRsPreview) may be confirmed from ctx's current
+// session.
+//
+// ⚠ [F170-20] WHAT THIS ACTUALLY PROVES — read this before building anything
+// on top of it. issuedBySession is a CLIENT-SUPPLIED, UNAUTHENTICATED value.
+// cmd/server/main.go constructs the streamable-HTTP transport with no session
+// option, so mcp-go's default StatelessGeneratingSessionIdManager applies and
+// its Validate checks the "mcp-session-" prefix and UUID format ONLY — it
+// explicitly does not check existence, and handlePost takes the id straight
+// from the request header for every non-initialize call. A caller can
+// therefore put any well-formed id in the header and currentSessionID will
+// return it.
+//
+// So this comparison is a proof of KNOWLEDGE of the victim's random session
+// id, not a proof of identity. It is worth having: combined with the token it
+// raises the attack precondition from "hold the token" to "hold the token AND
+// know the victim's session id", and a full audit of every session-id writer
+// (PR170 r1 security review, verified_clean) found no channel that discloses
+// one. But what makes it safe today is that nothing happens to print the
+// value — not any control. It is NOT an authentication boundary and MUST
+// NEVER be the only thing guarding a side effect; a second server-issued
+// secret (here: the token) has to be present too.
+//
+// Real per-actor identity would need server.WithSessionIdManager plus
+// per-actor credentials. That was considered and deliberately declined —
+// decision 6562eae6: single-tenant system, one user, so the benefit is
+// ~zero against the cost of designing key issuance and rotation.
+//
+// [F170-12] (closes GTD [F160-11] "reconcile confirm token 無 session 綁定",
+// PoC verified, OWASP LLM08) Deliberately identical in shape and in semantics to
+// deletionTokenMatchesSession (tools_gtd.go) — same problem, so the same
+// answer, rather than a second slightly-different rule to keep in sync.
+// Comparison is plain equality against currentSessionID(ctx): the RAW value
+// (possibly ""), NOT auditSessionID's process-level s.sessionID fallback. A
+// token issued with no tracked session (rec.issuedBySession == "") can only
+// match a confirming call that ALSO carries no tracked session, which is
+// exactly "same untracked transport" (stdio, direct test calls) —
+// currentSessionID never returns "" for a transport that has a real,
+// mismatched session, so "" is not a wildcard. Using the s.sessionID fallback
+// here instead would make every untracked-transport call match every OTHER
+// untracked-transport call in the same process, which is the universal-key
+// failure mode this function exists to avoid.
+func reconcileTokenMatchesSession(ctx context.Context, rec reconcileConfirmation) bool {
+	return currentSessionID(ctx) == rec.issuedBySession
 }
 
 // handleReconcileMergedPRsConfirm implements step 2: apply the EXACT
@@ -323,6 +377,21 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	}
 	if s.now().After(rec.expiresAt) {
 		return mcp.NewToolResultError("reconcile_token expired; call without confirm to obtain a new token"), nil
+	}
+	// [F170-12] The confirming call must present the same session id the
+	// preview call carried. [F170-20]: that is a knowledge check, not an
+	// identity check — see reconcileTokenMatchesSession's doc comment for
+	// what it does and does not prove.
+	//
+	// A mismatch is an explicit tool ERROR, never a silent no-op and never a
+	// silent success: a caller that is told "applied: 0" cannot tell "nothing
+	// matched" from "you were refused", and the whole point of this branch is
+	// that somebody tried to spend a token that was not theirs.
+	if !reconcileTokenMatchesSession(ctx, rec) {
+		return mcp.NewToolResultError(
+			"reconcile_token was issued to a different session; call reconcile_merged_prs without " +
+				"confirm from that same session to obtain a new token",
+		), nil
 	}
 
 	// appliedIDs is keyed by TaskID for exactly the matches whose guarded

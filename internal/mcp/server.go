@@ -202,6 +202,16 @@ type deletionToken struct {
 	// instead means the returned token stays a bare random UUID — see
 	// issueDeletionToken/deletionTokenMatchesSession (tools_gtd.go) for how
 	// this field is set and checked.
+	//
+	// ⚠ [F170-20] This value is CLIENT-SUPPLIED and UNAUTHENTICATED: the
+	// transport validates a session id's format but never its existence, so
+	// a caller can present any well-formed id. Matching it proves the caller
+	// KNOWS the victim's random session id — it is NOT an authentication
+	// boundary and MUST NEVER be the only thing guarding a side effect. The
+	// deletion token is the other half and is what actually gates this.
+	// reconcileTokenMatchesSession (tools_reconcile.go) carries the full
+	// explanation; both fields share one property, so they share one write-up
+	// rather than two that can drift.
 	issuedBySession string
 }
 
@@ -220,6 +230,28 @@ type reconcileConfirmation struct {
 	ambiguous []gtd.Ambiguous
 	noMatch   int
 	expiresAt time.Time
+	// [F170-12] issuedBySession is the MCP client session
+	// (currentSessionID) live at preview time, or "" when that call carried
+	// no tracked session. Same field, same semantics and same reason as
+	// deletionToken.issuedBySession above: the token handed back to the
+	// caller stays a bare random UUID, so nothing that logs or echoes a
+	// reconcile_token also leaks which session issued it — see
+	// reconcileTokenMatchesSession (tools_reconcile.go) for how it is
+	// checked.
+	//
+	// Without this field the token was the ONLY thing standing between a
+	// second client and a batch task-completion: reconcileTokens is keyed by
+	// the token itself, so any caller holding it could spend it. That is
+	// LLM08 (excessive agency) with a real blast radius — confirm applies the
+	// stored match-set, closing real GTD tasks.
+	//
+	// ⚠ [F170-20] Same caveat as deletionToken.issuedBySession above: this is
+	// a CLIENT-SUPPLIED, UNAUTHENTICATED value. It raises the precondition
+	// from "hold the token" to "hold the token AND know the victim's session
+	// id"; it is NOT an authentication boundary and MUST NEVER be the only
+	// thing guarding a side effect. Full explanation lives on
+	// reconcileTokenMatchesSession (tools_reconcile.go).
+	issuedBySession string
 }
 
 // reconcileTokenTTL is the window during which an issued reconcile token

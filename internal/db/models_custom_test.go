@@ -292,11 +292,11 @@ func TestDecisionMarshalJSON_HidesActorSessionIDAndConfirmedByHuman(t *testing.T
 }
 
 // TestDecisionMarshalJSON_PreservesOtherFields verifies every field OTHER
-// than the two dropped audit fields still comes through with the exact
-// same wire representation pgtype's own MarshalJSON methods already
-// produced — proving decisionJSON did not accidentally reshape a kept
-// field's format (e.g. UUID form, RFC3339Nano timestamp precision) while
-// removing the two audit fields.
+// than the two dropped audit fields and the four dropped embedding fields
+// ([F170-03]) still comes through with the exact same wire representation
+// pgtype's own MarshalJSON methods already produced — proving decisionJSON
+// did not accidentally reshape a kept field's format (e.g. UUID form,
+// RFC3339Nano timestamp precision) while removing the six.
 func TestDecisionMarshalJSON_PreservesOtherFields(t *testing.T) {
 	id := uuid.New()
 	projectID := uuid.New()
@@ -336,32 +336,126 @@ func TestDecisionMarshalJSON_PreservesOtherFields(t *testing.T) {
 	}
 
 	checks := map[string]any{
-		"id":                 id.String(),
-		"project_id":         projectID.String(),
-		"repo_name":          "wayneblacktea",
-		"title":              "use Echo",
-		"context":            "need HTTP framework",
-		"decision":           "use echo/v4",
-		"rationale":          "minimal, fast",
-		"alternatives":       "gin, chi",
-		"created_at":         "2026-08-20T09:15:30.123Z",
-		"workspace_id":       wsID.String(),
-		"task_id":            taskID.String(),
-		"embedding_provider": "anthropic",
-		"embedding_model":    "voyage-3",
-		"embedding_dim":      float64(1024),
-		"source":             "manual",
+		"id":           id.String(),
+		"project_id":   projectID.String(),
+		"repo_name":    "wayneblacktea",
+		"title":        "use Echo",
+		"context":      "need HTTP framework",
+		"decision":     "use echo/v4",
+		"rationale":    "minimal, fast",
+		"alternatives": "gin, chi",
+		"created_at":   "2026-08-20T09:15:30.123Z",
+		"workspace_id": wsID.String(),
+		"task_id":      taskID.String(),
+		"source":       "manual",
 	}
 	for key, want := range checks {
 		if got := decoded[key]; got != want {
 			t.Errorf("%s = %v, want %v (full: %s)", key, got, want, raw)
 		}
 	}
-	// Embedding round-trips as base64 (Go's default []byte JSON encoding —
-	// decisionJSON declares it as plain []byte, same as Decision itself).
-	if _, present := decoded["embedding"]; !present {
-		t.Errorf("embedding key missing from output (raw: %s)", raw)
+	// [F170-03] The four embedding fields are populated on the row above and
+	// must NOT appear on the wire. Asserted here as well as in
+	// TestDecisionJSON_OmitsEmbedding so a partial revert — dropping only the
+	// base64 blob but leaving the three provider/model/dim scalars, or vice
+	// versa — fails rather than passing on a technicality.
+	for _, key := range []string{"embedding", "embedding_provider", "embedding_model", "embedding_dim"} {
+		if _, present := decoded[key]; present {
+			t.Errorf("output contains the %s key (raw: %s)", key, raw)
+		}
 	}
+}
+
+// TestDecisionJSON_OmitsEmbedding is [F170-03]'s payload-size assertion: a
+// db.Decision carrying a full 3072-dimension embedding blob must serialise
+// without any of the four embedding fields, and the whole row must stay
+// under decisionNoEmbeddingBudgetBytes.
+//
+// The budget is what makes this a real bound rather than a key-name check:
+// 3072 bytes of []byte render as 4096 bytes of base64, so a revert that
+// re-adds only the blob (and no key literally spelled "embedding" —
+// e.g. renamed to "vector") still fails on size. The cases cover the shapes
+// list_decisions and GET /api/decisions actually emit: a bare row, a row
+// with the provider/model/dim scalars set but no blob (the pre-embed state
+// cmd/wbt reembed backfills), and a multi-row slice.
+func TestDecisionJSON_OmitsEmbedding(t *testing.T) {
+	// decisionNoEmbeddingBudgetBytes bounds one embedding-free decision row
+	// whose free-text fields are empty. Measured, not guessed: the kept
+	// fields are 2 UUIDs, 3 short strings, 3 nullable pgtype wrappers and a
+	// timestamp — well under 500 even with every optional field non-null.
+	const decisionNoEmbeddingBudgetBytes = 500
+
+	// embeddingKeys are the four JSON keys [F170-03] removes. Checked as
+	// keys AND as a raw substring so a nested or renamed re-introduction
+	// still trips at least one assertion.
+	embeddingKeys := []string{"embedding", "embedding_provider", "embedding_model", "embedding_dim"}
+
+	tests := []struct {
+		name string
+		row  db.Decision
+	}{
+		{
+			name: "full 3072-dim embedding blob",
+			row:  db.Decision{ID: uuid.New(), Embedding: make([]byte, 3072)},
+		},
+		{
+			name: "provider/model/dim set without a blob",
+			row: db.Decision{
+				ID:                uuid.New(),
+				EmbeddingProvider: pgtype.Text{String: "anthropic", Valid: true},
+				EmbeddingModel:    pgtype.Text{String: "voyage-3", Valid: true},
+				EmbeddingDim:      pgtype.Int4{Int32: 3072, Valid: true},
+			},
+		},
+		{
+			name: "zero value carries no embedding keys either",
+			row:  db.Decision{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.row)
+			if err != nil {
+				t.Fatalf("json.Marshal: %v", err)
+			}
+			if strings.Contains(string(raw), "embedding") {
+				t.Errorf("output contains the substring %q: %s", "embedding", raw)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("output not valid JSON: %v (raw: %s)", err, raw)
+			}
+			for _, key := range embeddingKeys {
+				if _, present := decoded[key]; present {
+					t.Errorf("output contains the %s key (raw: %s)", key, raw)
+				}
+			}
+			if len(raw) >= decisionNoEmbeddingBudgetBytes {
+				t.Errorf("row is %d bytes, budget is %d — an embedding-shaped field is back on the wire: %s",
+					len(raw), decisionNoEmbeddingBudgetBytes, raw)
+			}
+		})
+	}
+
+	// list_decisions returns a slice; the per-row guarantee must survive it,
+	// because that is the call site whose payload [F170-03] is shrinking.
+	t.Run("slice of rows", func(t *testing.T) {
+		rows := []db.Decision{
+			{ID: uuid.New(), Embedding: make([]byte, 3072)},
+			{ID: uuid.New(), Embedding: make([]byte, 3072)},
+		}
+		raw, err := json.Marshal(rows)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		if strings.Contains(string(raw), "embedding") {
+			t.Errorf("slice output contains the substring %q: %s", "embedding", raw)
+		}
+		if want := len(rows) * decisionNoEmbeddingBudgetBytes; len(raw) >= want {
+			t.Errorf("slice of %d rows is %d bytes, budget is %d: %s", len(rows), len(raw), want, raw)
+		}
+	})
 }
 
 // TestDecisionMarshalJSON_HoldsRegardlessOfEmbeddingShape is the structural

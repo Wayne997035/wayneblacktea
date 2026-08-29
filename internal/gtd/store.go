@@ -53,8 +53,30 @@ func (s *Store) WorkspaceID() pgtype.UUID {
 }
 
 // ListActiveProjects returns all active projects ordered by priority.
+//
+// [F170-04] Contract unchanged — the underlying query gained row_limit /
+// row_offset, and this method passes db.UnboundedRowLimit so its non-MCP
+// callers (HTTP dashboard, context handler, qa-seed) keep getting every row.
+// Truncating them here would have been a silent behaviour change; the callers
+// that need a cap ask for one through ActiveProjectsPage instead.
 func (s *Store) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
-	rows, err := s.q.ListActiveProjects(ctx, s.workspaceID)
+	return s.ActiveProjectsPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ActiveProjectsPage returns at most limit active projects starting at offset,
+// in the same order as ListActiveProjects — [F170-04].
+//
+// It exists because list_projects had no cap of any kind: a proposal-shaped
+// or prompt-injected caller could make one tool call and take as much of the
+// caller's context window as the projects table happened to be big. limit <= 0
+// is treated as "one row" rather than "no limit" so a caller cannot disable
+// the cap by passing 0 through.
+func (s *Store) ActiveProjectsPage(ctx context.Context, limit, offset int32) ([]db.Project, error) {
+	rows, err := s.q.ListActiveProjects(ctx, db.ListActiveProjectsParams{
+		WorkspaceID: s.workspaceID,
+		RowLimit:    db.ClampRowLimit(limit),
+		RowOffset:   db.ClampRowOffset(offset),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing active projects: %w", err)
 	}
@@ -81,11 +103,15 @@ func (s *Store) ProjectsFiltered(ctx context.Context, status string) ([]db.Proje
 	)
 	switch status {
 	case "", "active":
+		// [F170-04] id tiebreaker added alongside ListActiveProjects': the
+		// byte-identity contract between these two is asserted by
+		// TestPGStore_ProjectsFiltered_ActiveDefault_ByteIdenticalToListActiveProjects
+		// and only holds if BOTH order totally.
 		q := `SELECT ` + selectCols + `
 			FROM projects
 			WHERE status = 'active'
 			  AND ($1::uuid IS NULL OR workspace_id = $1)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.dbtx.Query(ctx, q, s.workspaceID)
 	case "all":
 		q := `SELECT ` + selectCols + `
@@ -875,9 +901,20 @@ func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID
 	return nil
 }
 
-// ActiveGoals returns all active goals ordered by due date.
+// ActiveGoals returns all active goals ordered by due date. [F170-05] — see
+// ListActiveProjects for why the unbounded variant is kept.
 func (s *Store) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
-	rows, err := s.q.ListActiveGoals(ctx, s.workspaceID)
+	return s.ActiveGoalsPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ActiveGoalsPage returns at most limit active goals starting at offset, in
+// the same order as ActiveGoals — [F170-05].
+func (s *Store) ActiveGoalsPage(ctx context.Context, limit, offset int32) ([]db.Goal, error) {
+	rows, err := s.q.ListActiveGoals(ctx, db.ListActiveGoalsParams{
+		WorkspaceID: s.workspaceID,
+		RowLimit:    db.ClampRowLimit(limit),
+		RowOffset:   db.ClampRowOffset(offset),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing active goals: %w", err)
 	}

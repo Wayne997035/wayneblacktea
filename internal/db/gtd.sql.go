@@ -506,11 +506,22 @@ const listActiveGoals = `-- name: ListActiveGoals :many
 SELECT id, title, description, status, area, due_date, created_at, updated_at, workspace_id FROM goals
 WHERE status = 'active'
   AND ($1::uuid IS NULL OR workspace_id = $1)
-ORDER BY due_date ASC NULLS LAST
+ORDER BY due_date ASC NULLS LAST, id ASC
+LIMIT $3::int OFFSET $2::int
 `
 
-func (q *Queries) ListActiveGoals(ctx context.Context, workspaceID pgtype.UUID) ([]Goal, error) {
-	rows, err := q.db.Query(ctx, listActiveGoals, workspaceID)
+type ListActiveGoalsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RowOffset   int32       `json:"row_offset"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+// [F170-05] row_limit/row_offset — same reasoning as ListActiveProjects
+// above. The id tiebreaker matters more here than anywhere: due_date is
+// nullable and goals without one all sort equal, so unpaginated order was
+// already arbitrary among them and OFFSET paging would have been unstable.
+func (q *Queries) ListActiveGoals(ctx context.Context, arg ListActiveGoalsParams) ([]Goal, error) {
+	rows, err := q.db.Query(ctx, listActiveGoals, arg.WorkspaceID, arg.RowOffset, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -544,13 +555,31 @@ const listActiveProjects = `-- name: ListActiveProjects :many
 SELECT id, goal_id, name, title, description, status, area, priority, created_at, updated_at, workspace_id, repo_name FROM projects
 WHERE status = 'active'
   AND ($1::uuid IS NULL OR workspace_id = $1)
-ORDER BY priority ASC, updated_at DESC
+ORDER BY priority ASC, updated_at DESC, id ASC
+LIMIT $3::int OFFSET $2::int
 `
+
+type ListActiveProjectsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RowOffset   int32       `json:"row_offset"`
+	RowLimit    int32       `json:"row_limit"`
+}
 
 // All queries take workspace_id as the named nullable arg @workspace_id.
 // NULL → no filter (legacy mode); UUID → strict per-workspace scope.
-func (q *Queries) ListActiveProjects(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error) {
-	rows, err := q.db.Query(ctx, listActiveProjects, workspaceID)
+// [F170-04] row_limit/row_offset: this query had no LIMIT at all, so its
+// result — and therefore the list_projects MCP response — grew with the
+// table, with nothing between a large projects table and the caller's
+// context window. Callers that genuinely want every row (the HTTP dashboard,
+// context_handler) pass db.UnboundedRowLimit; that keeps their contract
+// while making the cap a decision each caller states rather than one nobody
+// can make.
+//
+// The id tiebreaker is required, not cosmetic: (priority, updated_at) is not
+// unique, and OFFSET paging over a non-total order silently drops and repeats
+// rows across pages.
+func (q *Queries) ListActiveProjects(ctx context.Context, arg ListActiveProjectsParams) ([]Project, error) {
+	rows, err := q.db.Query(ctx, listActiveProjects, arg.WorkspaceID, arg.RowOffset, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

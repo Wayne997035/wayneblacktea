@@ -190,7 +190,14 @@ func parseTimestamptz(ns sql.NullString) pgtype.Timestamptz {
 // output which produces 3 fractional digits. Using time.RFC3339Nano would emit
 // up to 9 digits, causing length inconsistencies when comparing timestamps stored
 // by the app vs the DB default expression.
-func nowRFC3339() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
+//
+// [F170-21] The layout is sqliteTimestampLayout (sqlite.go) rather than a
+// third copy of the same literal. This function, nullTimeArg below and
+// pgTimestamptzToString/pgTimestamptzToNullString all have to agree
+// byte-for-byte or a column written by two of them stops comparing correctly;
+// spelling the layout out once is what makes "they agree" checkable instead
+// of a thing you have to grep for.
+func nowRFC3339() string { return time.Now().UTC().Format(sqliteTimestampLayout) }
 
 // nullStringFromText collapses pgtype-style "" to NULL for inserts.
 func nullStringIfEmpty(s string) any {
@@ -226,22 +233,49 @@ func nullStringFromUUID(id *uuid.UUID) any {
 // same RFC3339 TEXT layout this package stores timestamps in (nowRFC3339
 // above), so lexicographic comparison against stored updated_at/created_at
 // columns is chronologically correct.
+//
+// [F170-21] This is the ONLY way a nullable timestamp column may be written
+// on the SQLite side. goals.due_date and tasks.due_date used to be written
+// with time.RFC3339Nano on their Create/Update paths while the Import paths
+// used the fixed layout; RFC3339Nano strips trailing fractional zeros, so the
+// same instant became two different strings ("...T09:00:00Z" vs
+// "...T09:00:00.000Z") and SQLite compares TEXT byte-wise. Once ActiveGoalsPage
+// gained a LIMIT that mis-ordering stopped being a display quirk and started
+// deciding which rows are on page 1.
+//
+// Query BIND parameters carry the same obligation and are written inline as
+// `t.UTC().Format(sqliteTimestampLayout)` (this helper takes a pointer; the
+// range queries below hold values). Binding a different layout than the write
+// paths mis-classifies the boundary row: '.' (0x2E) sorts before 'Z' (0x5A),
+// so a stored "...00.000Z" compares LESS than a bound "...00Z" for the very
+// same instant, and `due_date >= ?` silently drops it.
 func nullTimeArg(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
-	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	return t.UTC().Format(sqliteTimestampLayout)
 }
 
 // ----- StoreIface methods -----
 
 // ListActiveProjects returns all active projects in the configured workspace.
+// [F170-04] — unbounded by contract; ActiveProjectsPage is the capped variant.
 func (s *GTDStore) ListActiveProjects(ctx context.Context) ([]db.Project, error) {
+	return s.ActiveProjectsPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ActiveProjectsPage returns at most limit active projects starting at offset,
+// ordered identically to ListActiveProjects — [F170-04]. Mirrors
+// gtd.Store.ActiveProjectsPage (Postgres), including the id tiebreaker that
+// makes OFFSET paging stable when (priority, updated_at) ties.
+func (s *GTDStore) ActiveProjectsPage(ctx context.Context, limit, offset int32) ([]db.Project, error) {
 	const q = `SELECT ` + projectsSelectCols + ` FROM projects
 		WHERE status = 'active'
 		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY priority ASC, updated_at DESC`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+		ORDER BY priority ASC, updated_at DESC, id ASC
+		LIMIT ?2 OFFSET ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(),
+		db.ClampRowLimit(limit), db.ClampRowOffset(offset))
 	if err != nil {
 		return nil, errWrap("ListActiveProjects", err)
 	}
@@ -270,10 +304,15 @@ func (s *GTDStore) ProjectsFiltered(ctx context.Context, status string) ([]db.Pr
 	)
 	switch status {
 	case "", "active":
+		// [F170-04] id tiebreaker added alongside ListActiveProjects': the
+		// byte-identity contract between these two ("" → same rows, same
+		// order) is asserted by
+		// TestSQLiteStore_ProjectsFiltered_ActiveDefault_ByteIdenticalToListActiveProjects
+		// and only holds if BOTH order totally.
 		const q = `SELECT ` + projectsSelectCols + ` FROM projects
 			WHERE status = 'active'
 			  AND (?1 IS NULL OR workspace_id = ?1)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
 	case "all":
 		const q = `SELECT ` + projectsSelectCols + ` FROM projects
@@ -471,10 +510,8 @@ func (s *GTDStore) ImportTask(ctx context.Context, t db.Task) error {
 // confirm_proposal accept path for atomic cross-store writes.
 func (s *GTDStore) CreateGoalTx(ctx context.Context, tx *sql.Tx, p gtd.CreateGoalParams) (uuid.UUID, error) {
 	id := uuid.New()
-	var dueVal any
-	if p.DueDate != nil {
-		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
-	}
+	// [F170-21] nullTimeArg, not time.RFC3339Nano — see its doc comment.
+	dueVal := nullTimeArg(p.DueDate)
 	const q = `INSERT INTO goals (id, workspace_id, title, description, area, due_date, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`
 	now := nowRFC3339()
@@ -620,9 +657,11 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 // 'completed' so the calendar planning view shows only work that still
 // needs to happen.
 //
-// SQLite stores due_date as RFC3339 TEXT (see CreateTask), so range filters
-// rely on lexicographic comparison — RFC3339 sorts identically to chronologic
-// order at the same UTC offset, which CreateTask enforces (.UTC().Format(...)).
+// SQLite stores due_date as RFC3339 TEXT, so range filters rely on
+// lexicographic comparison. That is only equivalent to chronological order
+// when every stored value AND every bound parameter uses the SAME
+// fixed-width layout — sqliteTimestampLayout, via nullTimeArg on the write
+// side and an explicit .Format() on the bind side. [F170-21]
 func (s *GTDStore) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 		WHERE status IN ('pending','in_progress')
@@ -631,8 +670,10 @@ func (s *GTDStore) TasksByDueDateRange(ctx context.Context, from, to time.Time) 
 		  AND due_date <= ?2
 		  AND (?3 IS NULL OR workspace_id = ?3)
 		ORDER BY due_date ASC, created_at ASC`
-	fromStr := from.UTC().Format(time.RFC3339Nano)
-	toStr := to.UTC().Format(time.RFC3339Nano)
+	// [F170-21] Same layout as the write paths (nullTimeArg) — a bound
+	// RFC3339Nano boundary would drop the row due exactly at `from`.
+	fromStr := from.UTC().Format(sqliteTimestampLayout)
+	toStr := to.UTC().Format(sqliteTimestampLayout)
 	rows, err := s.db.conn.QueryContext(ctx, q, fromStr, toStr, s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("TasksByDueDateRange", err)
@@ -647,8 +688,9 @@ func (s *GTDStore) TasksByDueDateRange(ctx context.Context, from, to time.Time) 
 // historical task_created / task_completed event query.
 //
 // SQLite stores timestamps as RFC3339 TEXT, so range filters rely on
-// lexicographic comparison — RFC3339 sorts identically to chronologic order
-// at the same UTC offset, which CreateTask enforces (.UTC().Format(...)).
+// lexicographic comparison; it matches chronological order only while the
+// stored values and the bound parameters share one fixed-width layout
+// (sqliteTimestampLayout — nowRFC3339 writes these two columns). [F170-21]
 func (s *GTDStore) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 		WHERE (
@@ -658,8 +700,12 @@ func (s *GTDStore) TasksForTimeline(ctx context.Context, from, to time.Time) ([]
 		AND (?3 IS NULL OR workspace_id = ?3)
 		ORDER BY COALESCE(updated_at, created_at) DESC
 		LIMIT 10000`
-	fromStr := from.UTC().Format(time.RFC3339Nano)
-	toStr := to.UTC().Format(time.RFC3339Nano)
+	// [F170-21] created_at/updated_at are written by nowRFC3339 (3 fixed
+	// fractional digits), so the bind has to use that layout too. This pair
+	// was already mismatched before F170-21 — the boundary row was dropped —
+	// and is corrected here because it is the same defect in the same file.
+	fromStr := from.UTC().Format(sqliteTimestampLayout)
+	toStr := to.UTC().Format(sqliteTimestampLayout)
 	rows, err := s.db.conn.QueryContext(ctx, q, fromStr, toStr, s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("TasksForTimeline", err)
@@ -674,10 +720,12 @@ func (s *GTDStore) TasksForTimeline(ctx context.Context, from, to time.Time) ([]
 //     priority-ordered so high-importance surfaces first)
 //
 // SQLite stores timestamps as RFC3339 TEXT; lexicographic comparison works
-// because CreateTask enforces .UTC().Format(time.RFC3339Nano) on due_date.
+// because every due_date write path goes through nullTimeArg's fixed-width
+// sqliteTimestampLayout and windowEndStr below is bound in that same layout.
+// [F170-21]
 func (s *GTDStore) UpcomingTasks(ctx context.Context, refDate time.Time, days, limit int) ([]db.Task, error) {
 	windowEnd := refDate.UTC().AddDate(0, 0, days).Truncate(24 * time.Hour).Add(24*time.Hour - time.Nanosecond)
-	windowEndStr := windowEnd.UTC().Format(time.RFC3339Nano)
+	windowEndStr := windowEnd.UTC().Format(sqliteTimestampLayout) // [F170-21]
 	fetchLimit := limit * 2
 	if fetchLimit < limit {
 		fetchLimit = limit
@@ -702,16 +750,17 @@ func (s *GTDStore) UpcomingTasks(ctx context.Context, refDate time.Time, days, l
 // gtd.PullForwardCap pending/in_progress, importance=1 tasks whose due_date is
 // NULL or falls on/after "tomorrow" (midnight, Asia/Taipei, relative to
 // refDate — see gtd.PullForwardTomorrowStart, shared with the Postgres
-// backend so the two cannot drift). SQLite stores due_date as RFC3339Nano
-// TEXT (UTC), so lexicographic string comparison against the tomorrow-start
-// boundary (itself converted to UTC before formatting) is equivalent to a
-// timestamp comparison — the same invariant UpcomingTasks relies on above.
+// backend so the two cannot drift). SQLite stores due_date as fixed-width
+// RFC3339 TEXT (UTC, sqliteTimestampLayout), so lexicographic string
+// comparison against the tomorrow-start boundary (itself converted to UTC and
+// formatted in that same layout) is equivalent to a timestamp comparison —
+// the same invariant UpcomingTasks relies on above. [F170-21]
 func (s *GTDStore) PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.Task, error) {
 	tomorrowStart, err := gtd.PullForwardTomorrowStart(refDate)
 	if err != nil {
 		return nil, errWrap("PullForwardTasks", err)
 	}
-	tomorrowStartStr := tomorrowStart.UTC().Format(time.RFC3339Nano)
+	tomorrowStartStr := tomorrowStart.UTC().Format(sqliteTimestampLayout) // [F170-21]
 	const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 		WHERE status IN ('pending','in_progress')
 		  AND importance = 1
@@ -800,10 +849,8 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	if p.Importance != nil {
 		importance = int(*p.Importance)
 	}
-	var dueVal any
-	if p.DueDate != nil {
-		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
-	}
+	// [F170-21] nullTimeArg, not time.RFC3339Nano — see its doc comment.
+	dueVal := nullTimeArg(p.DueDate)
 	kind := p.Kind
 	if kind == "" {
 		kind = defaultTaskKind
@@ -868,10 +915,8 @@ func (s *GTDStore) CreateTaskTx(ctx context.Context, tx *sql.Tx, p gtd.CreateTas
 	if p.Importance != nil {
 		importance = int(*p.Importance)
 	}
-	var dueVal any
-	if p.DueDate != nil {
-		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
-	}
+	// [F170-21] nullTimeArg, not time.RFC3339Nano — see its doc comment.
+	dueVal := nullTimeArg(p.DueDate)
 	kind := p.Kind
 	if kind == "" {
 		kind = defaultTaskKind
@@ -1108,14 +1153,24 @@ func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projec
 }
 
 // ActiveGoals returns all active goals ordered by due_date ascending NULLS last.
+// [F170-05] — unbounded by contract; ActiveGoalsPage is the capped variant.
 func (s *GTDStore) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
+	return s.ActiveGoalsPage(ctx, db.UnboundedRowLimit, 0)
+}
+
+// ActiveGoalsPage returns at most limit active goals starting at offset,
+// ordered identically to ActiveGoals — [F170-05]. The id tiebreaker matters
+// most here: goals with no due_date all sort equal.
+func (s *GTDStore) ActiveGoalsPage(ctx context.Context, limit, offset int32) ([]db.Goal, error) {
 	// SQLite: NULLS LAST is supported since 3.30 (2019-10). modernc.org/sqlite
 	// ships modern SQLite, so the syntax is safe.
 	const q = `SELECT ` + goalsSelectCols + ` FROM goals
 		WHERE status = 'active'
 		  AND (?1 IS NULL OR workspace_id = ?1)
-		ORDER BY due_date ASC NULLS LAST`
-	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+		ORDER BY due_date ASC NULLS LAST, id ASC
+		LIMIT ?2 OFFSET ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg(),
+		db.ClampRowLimit(limit), db.ClampRowOffset(offset))
 	if err != nil {
 		return nil, errWrap("ActiveGoals", err)
 	}
@@ -1134,10 +1189,8 @@ func (s *GTDStore) ActiveGoals(ctx context.Context) ([]db.Goal, error) {
 // CreateGoal inserts a new goal.
 func (s *GTDStore) CreateGoal(ctx context.Context, p gtd.CreateGoalParams) (*db.Goal, error) {
 	id := uuid.New()
-	var dueVal any
-	if p.DueDate != nil {
-		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
-	}
+	// [F170-21] nullTimeArg, not time.RFC3339Nano — see its doc comment.
+	dueVal := nullTimeArg(p.DueDate)
 	const q = `INSERT INTO goals (id, workspace_id, title, description, area, due_date, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`
 	now := nowRFC3339()
@@ -1373,10 +1426,14 @@ func mergeTaskBaseFields(existing *db.Task, p gtd.UpdateTaskParams) mergedTaskFi
 	} else if existing.Assignee.Valid {
 		m.assignee = existing.Assignee.String
 	}
+	// [F170-21] Both branches go through nullTimeArg. The else-branch matters
+	// as much as the first: it REWRITES the stored due_date on every update
+	// that omits the field, so leaving it on RFC3339Nano would silently
+	// re-corrupt a row the migration had already normalised.
 	if p.DueDate != nil {
-		m.dueDate = p.DueDate.UTC().Format(time.RFC3339Nano)
+		m.dueDate = nullTimeArg(p.DueDate)
 	} else if existing.DueDate.Valid {
-		m.dueDate = existing.DueDate.Time.UTC().Format(time.RFC3339Nano)
+		m.dueDate = nullTimeArg(&existing.DueDate.Time)
 	}
 	if p.Context != nil {
 		m.taskCtx = nullStringIfEmpty(*p.Context)
@@ -1494,10 +1551,8 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 
 // UpdateGoal performs a full update of a goal by ID, replacing all mutable fields.
 func (s *GTDStore) UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoalParams) (*db.Goal, error) {
-	var dueVal any
-	if p.DueDate != nil {
-		dueVal = p.DueDate.UTC().Format(time.RFC3339Nano)
-	}
+	// [F170-21] nullTimeArg, not time.RFC3339Nano — see its doc comment.
+	dueVal := nullTimeArg(p.DueDate)
 	const q = `UPDATE goals
 		SET title = ?2, description = ?3, area = ?4, status = ?5, due_date = ?6, updated_at = ?7
 		WHERE id = ?1

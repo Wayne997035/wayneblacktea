@@ -80,11 +80,23 @@ const listPendingProposals = `-- name: ListPendingProposals :many
 SELECT id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at, reason FROM pending_proposals
 WHERE status = 'pending'
   AND ($1::uuid IS NULL OR workspace_id = $1)
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
+LIMIT $3::int OFFSET $2::int
 `
 
-func (q *Queries) ListPendingProposals(ctx context.Context, workspaceID pgtype.UUID) ([]PendingProposal, error) {
-	rows, err := q.db.Query(ctx, listPendingProposals, workspaceID)
+type ListPendingProposalsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RowOffset   int32       `json:"row_offset"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+// [F170-06] row_limit/row_offset — same reasoning as gtd.sql's
+// ListActiveProjects. The `id DESC` tiebreaker also brings this query into
+// line with the SQLite twin (internal/storage/sqlite/proposal.go's
+// ListPending), which already ordered by created_at DESC, id DESC; the two
+// backends disagreed on tie order before this.
+func (q *Queries) ListPendingProposals(ctx context.Context, arg ListPendingProposalsParams) ([]PendingProposal, error) {
+	rows, err := q.db.Query(ctx, listPendingProposals, arg.WorkspaceID, arg.RowOffset, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

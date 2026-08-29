@@ -198,6 +198,19 @@ func progressiveDisclosureEnabled() bool {
 		return true
 	}
 	switch strings.ToLower(raw) {
+	// [F170-14] nolint rather than a named constant: these four are one
+	// truthy-env-value set that has to be read as a unit, and naming a
+	// constant for exactly one of four siblings makes the accepted set harder
+	// to see, not easier. The occurrences goconst is counting are not a shared
+	// concept — the other two are middleware_decision_proposer.go's identical
+	// env switch (a real duplicate, tracked as a follow-up to extract a shared
+	// predicate rather than restructure two files in a lint-only round) and a
+	// Go predeclared-identifier check in the provenance gate, which is the
+	// same spelling by coincidence.
+	// The goconst directive lives on the sibling switch in
+	// middleware_decision_proposer.go — that is the site goconst reports once
+	// the package crosses its occurrence threshold. Keeping a second directive
+	// here would be flagged unused by nolintlint.
 	case "1", "true", "yes", "on":
 		return false
 	}

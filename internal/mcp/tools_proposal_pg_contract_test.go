@@ -31,7 +31,14 @@ func TestHandleListPendingProposals_Postgres_EmptyReturnsEmptyArrayNotNull(t *te
 	if r.IsError {
 		t.Fatalf("unexpected tool error: %s", resultText(r))
 	}
-	if got := strings.TrimSpace(resultText(r)); got != "[]" {
-		t.Errorf("raw body = %q, want exactly %q (nil slice must not serialize to JSON null)", got, "[]")
+	// [F170-06] The response is a page object now; the nil-vs-[] property
+	// being pinned is unchanged, only its position in the body.
+	got := strings.TrimSpace(resultText(r))
+	if !strings.Contains(got, `"proposals":[]`) {
+		t.Errorf("raw body = %q, want it to contain %q (nil slice must not serialize to JSON null)",
+			got, `"proposals":[]`)
+	}
+	if strings.Contains(got, `"proposals":null`) {
+		t.Errorf("raw body = %q — the PG store's nil slice reached the wire as JSON null", got)
 	}
 }

@@ -96,28 +96,43 @@ func TestListProjects_EmptyDB(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("empty DB should succeed, got: %s", resultText(r))
 	}
-	var projects []json.RawMessage
-	if err := json.Unmarshal([]byte(resultText(r)), &projects); err != nil {
+	// [F170-04] list_projects returns a page object now, not a bare array.
+	var page struct {
+		Projects []json.RawMessage `json:"projects"`
+		HasMore  bool              `json:"has_more"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &page); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(projects) != 0 {
-		t.Errorf("expected 0 projects, got %d", len(projects))
+	if len(page.Projects) != 0 {
+		t.Errorf("expected 0 projects, got %d", len(page.Projects))
+	}
+	if page.HasMore {
+		t.Error("has_more true on an empty database")
 	}
 }
 
 // TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull covers the nil-guard
-// added for GTD c282cc04 item #3. Asserts the raw JSON text is exactly "[]"
-// — json.Unmarshal into a slice cannot distinguish "null" from "[]" (both
-// decode to a zero-length nil slice), so TestListProjects_EmptyDB above does
-// NOT catch a regression here; only a string-level check does.
+// added for GTD c282cc04 item #3. Asserts on the raw JSON text — json.Unmarshal
+// into a slice cannot distinguish "null" from "[]" (both decode to a
+// zero-length nil slice), so TestListProjects_EmptyDB above does NOT catch a
+// regression here; only a string-level check does.
+//
+// [F170-04] The response is a page object now, so the check moved from "the
+// whole body is []" to "the projects field is [] and never null". The property
+// under test is unchanged.
 func TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	r := callListProjects(t, s, map[string]any{})
 	if r.IsError {
 		t.Fatalf("empty DB should succeed, got: %s", resultText(r))
 	}
-	if got := strings.TrimSpace(resultText(r)); got != "[]" {
-		t.Errorf("raw result = %q, want exactly %q", got, "[]")
+	got := strings.TrimSpace(resultText(r))
+	if !strings.Contains(got, `"projects":[]`) {
+		t.Errorf("raw result = %q, want it to contain %q", got, `"projects":[]`)
+	}
+	if strings.Contains(got, `"projects":null`) {
+		t.Errorf("raw result = %q — a nil slice reached the wire as JSON null", got)
 	}
 }
 
@@ -327,12 +342,19 @@ func TestListGoals_EmptyDB(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("empty DB should succeed, got: %s", resultText(r))
 	}
-	var goals []json.RawMessage
-	if err := json.Unmarshal([]byte(resultText(r)), &goals); err != nil {
+	// [F170-05] list_goals returns a page object now, not a bare array.
+	var page struct {
+		Goals   []json.RawMessage `json:"goals"`
+		HasMore bool              `json:"has_more"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &page); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(goals) != 0 {
-		t.Errorf("expected 0 goals, got %d", len(goals))
+	if len(page.Goals) != 0 {
+		t.Errorf("expected 0 goals, got %d", len(page.Goals))
+	}
+	if page.HasMore {
+		t.Error("has_more true on an empty database")
 	}
 }
 
@@ -345,8 +367,12 @@ func TestListGoals_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("empty DB should succeed, got: %s", resultText(r))
 	}
-	if got := strings.TrimSpace(resultText(r)); got != "[]" {
-		t.Errorf("raw result = %q, want exactly %q", got, "[]")
+	got := strings.TrimSpace(resultText(r))
+	if !strings.Contains(got, `"goals":[]`) { // [F170-05] page object, see list_projects twin
+		t.Errorf("raw result = %q, want it to contain %q", got, `"goals":[]`)
+	}
+	if strings.Contains(got, `"goals":null`) {
+		t.Errorf("raw result = %q — a nil slice reached the wire as JSON null", got)
 	}
 }
 
