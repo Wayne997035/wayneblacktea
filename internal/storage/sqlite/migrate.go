@@ -19,7 +19,8 @@ import (
 // frozenSnapshotVersion + replay, see runMigrations) on the adoption path.
 // Update this constant whenever a new migrations/sqlite/NNNNNN_*.up.sql
 // file is added.
-const latestSQLiteSchemaVersion = 76
+// [F170-21] 76 -> 77 for migrations/sqlite/000077_normalize_due_date_layout.
+const latestSQLiteSchemaVersion = 77
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

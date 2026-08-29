@@ -364,6 +364,22 @@ var expectedNewEntries = map[string]bool{
 	// is produced, beyond this adoption-path bug fix) and is left as
 	// follow-up.
 	"index|idx_outcomes_one_open_draft": true,
+
+	// migrations/sqlite/000077_normalize_due_date_layout.up.sql [F170-21]:
+	// the pre-image store for the goals.due_date / tasks.due_date layout
+	// normalisation. Unlike every other entry in this map it is a TABLE, and
+	// it is deliberately not a schema feature — it exists so 000077's
+	// .down.sql can be a true inverse. The normalisation is many-to-one
+	// ("...00Z" and "...00.000Z" both normalise to "...00.000Z") and
+	// strftime('%f') truncates sub-millisecond digits, so the original text
+	// is not recomputable from the normalised value; the only way to restore
+	// it on a rollback is to have kept it. Dropped by the down migration.
+	//
+	// Post-baseline like idx_outcomes_one_open_draft above: schema.sql is a
+	// frozen pre-E1 snapshot and is not a live target, so a net-new object
+	// from a migration numbered above frozenSnapshotVersion belongs here
+	// rather than in testdata/schema_golden.sql.
+	"table|f170_21_due_date_backup": true,
 }
 
 // migrations/sqlite/000076_decision_actor_provenance.up.sql (U15 contract
