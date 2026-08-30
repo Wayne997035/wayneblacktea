@@ -515,19 +515,23 @@ const (
 // Title/FileRef/Notes — neutralising those requires unmarshal-walk-remarshal,
 // not a plain clipSafe(string) call, and is out of this template's scope
 // (Phase A dispatch note: flagged to Lead as a distinct implementation
-// pattern, not silently skipped). Artifact/BranchName/PRUrl are left as-is:
-// applyArtifactSideEffects/validateBeginTaskLinkageArgs already constrain
-// them to URL/SHA/branch-name shapes at the write paths that set them, which
-// forecloses embedding a multi-line forged marker. Assignee is left as-is:
-// gtd.NormalizeActor is a whitelist, not free text.
+// pattern, not silently skipped). Assignee is left as-is: gtd.NormalizeActor
+// is a whitelist, not free text.
 //
-// [F170-19] CommitSHAs IS clipped, unlike the Artifact/BranchName/PRUrl group
-// it sits next to. The distinction is real, not cosmetic: those three are
-// shape-constrained by applyArtifactSideEffects/validateBeginTaskLinkageArgs
-// at write time, whereas the same write path appends to CommitSHAs without
-// ever checking that an entry looks like a SHA. It was one of the seven gaps
-// [F170-11]'s walker found; the fix landed here rather than in that sprint
-// because this file belonged to a different engineer at the time.
+// [SEC171-19] BranchName/PRUrl are now clipped. A prior version of this
+// comment claimed validator.ValidateBranchName/githubPRURLRe shape-constrain
+// them at write time and left them untouched on that basis — false:
+// ValidateBranchName (internal/validator/branch_name.go) only rejects
+// length>255 and control characters, and githubPRURLRe's owner/repo segments
+// are `[^/]+`. Neither rejects a printable, no-slash, control-character-free
+// forged boundary marker; PoC-verified end to end (update_task accepts it,
+// get_task echoes it back).
+//
+// [SEC171-09] Artifact is clipped for the same class of reason: the claim
+// that applyArtifactSideEffects/validateBeginTaskLinkageArgs shape-constrain
+// it was also false — complete_task (handleCompleteTask) stores the
+// caller's raw artifact string BEFORE applyArtifactSideEffects runs, and
+// that function has no rejection branch. See the field's own comment below.
 func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t == nil {
 		return nil
@@ -539,6 +543,29 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	}
 	if t.Context.Valid {
 		out.Context.String = clipSafe(t.Context.String, gtdBodyMaxRunes)
+	}
+	// [SEC171-19] See wrapUntrustedTask's doc comment: write-time validation
+	// does not shape-constrain these against a printable, no-slash forged
+	// marker. gtdTitleMaxRunes is 2000 (:503) and validator.MaxBranchNameLen
+	// is 255 (internal/validator/branch_name.go:8), so for branch_name the
+	// write-time cap always binds first and this clip only neutralises.
+	if t.BranchName.Valid {
+		out.BranchName.String = clipSafe(t.BranchName.String, gtdTitleMaxRunes)
+	}
+	if t.PRUrl.Valid {
+		out.PRUrl.String = clipSafe(t.PRUrl.String, gtdTitleMaxRunes)
+	}
+	// [SEC171-09] Artifact IS clipped now: complete_task stores the caller's
+	// raw artifact string (handleCompleteTask, tools_gtd.go) BEFORE
+	// applyArtifactSideEffects ever runs, and that function only decides
+	// whether to ALSO set pr_url/commit_shas — it has no rejection path, so a
+	// non-matching artifact (anything that isn't a PR URL or a 40-hex SHA)
+	// reaches the store completely unconstrained. gtdBodyMaxRunes matches the
+	// schema description ("Link or note for the output") rather than
+	// gtdTitleMaxRunes, since a legitimate note-shaped value can be longer
+	// than a title.
+	if t.Artifact.Valid {
+		out.Artifact.String = clipSafe(t.Artifact.String, gtdBodyMaxRunes)
 	}
 	// len()>0 guard preserves nil so `"commit_shas":null` does not silently
 	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
@@ -1581,31 +1608,128 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	if suppliedToken == "" {
 		return mcp.NewToolResultError("deletion_token is required when confirm=true"), nil
 	}
-	stored, ok := s.deleteTokens.LoadAndDelete(id.String())
+	// [F170-SEC-R3-03] Load, not LoadAndDelete — same property as
+	// tools_reconcile.go's confirm path, and documented as one property, so
+	// the two must not drift. Validating after deleting meant a refusal
+	// destroyed the pending deletion, and the rightful caller's retry got
+	// "no pending deletion" instead of the real reason.
+	//
+	// ⚠ The two refusal branches below are deliberately NOT symmetric, and
+	// the asymmetry is the point. A refusal may decline to consume the token
+	// only when REACHING that refusal already proves the caller holds the
+	// secret. This map is keyed by TASK ID, not by the token, so a caller who
+	// knows only a task id reaches the token comparison without holding
+	// anything — that branch must consume. The session branch is reached only
+	// after the correct token was presented, so it can refuse for free.
+	//
+	// (An earlier version justified this as anti-brute-force. That argument
+	// does not survive its own arithmetic — roughly 7,200 guesses fit in the
+	// 60s TTL, against a 122-bit UUID — and a wrong reason for a right rule
+	// is what the next reader inherits.)
+	stored, ok := s.deleteTokens.Load(id.String())
 	if !ok {
 		return mcp.NewToolResultError("no pending deletion for this task_id; call without confirm first to obtain a token"), nil
 	}
 	rec, ok := stored.(deletionToken)
 	if !ok {
+		// [SEC171-13] Unusable either way — drop it rather than answering
+		// "corrupted" until the TTL expires. CompareAndDelete, not
+		// unconditional Delete: this map is keyed by TASK ID, so an
+		// unconditional Delete here could destroy a fresh, valid record
+		// another session obtained for the same task id between our Load
+		// above and this line — the exact cross-session DoS SEC171-13 named.
+		//
+		// No panic risk from using CompareAndDelete on this specific branch,
+		// where the type assertion into rec already failed: `stored` is the
+		// exact `any` Load returned, and sync.Map.CompareAndDelete only
+		// requires `old` (here, `stored`) to be of a comparable type — not
+		// that a later assertion into some other type succeeds. The sole
+		// non-test write path to this map (this file's step-1 issuance,
+		// verified by grep: `s.deleteTokens.Store(` has exactly one non-test
+		// call site) only ever stores a deletionToken{string, time.Time,
+		// string}, and all three of those are comparable, so `stored`'s
+		// dynamic type is always deletionToken in practice — this branch is
+		// defensive against a shape this codebase never actually produces.
+		// Contrast tools_reconcile.go's reconcileConfirmation, which holds
+		// []gtd.Match/[]gtd.Ambiguous and DOES panic under CompareAndDelete —
+		// that comparability difference is why reconcile keeps LoadAndDelete
+		// and this map does not.
+		//
+		// slog.Debug, not silence and not Warn: a false return means another
+		// session's fresh record already replaced this one before we could
+		// refuse — an expected outcome of the fix this branch exists for,
+		// not an anomaly, but still worth an operator-visible trail on a
+		// security-relevant path. Never logs the token itself.
+		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
+			slog.Debug("delete_task: corrupted-record refusal found nothing to clear (already replaced)", "task_id", id)
+		}
 		return mcp.NewToolResultError("internal: deletion token state corrupted"), nil
 	}
 	if s.now().After(rec.expiresAt) {
+		// [SEC171-13] CompareAndDelete for the same reason as the
+		// corrupted-record branch above — see its comment for the full
+		// panic-safety argument, which applies identically here.
+		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
+			slog.Debug("delete_task: expired-token refusal found nothing to clear (already replaced)", "task_id", id)
+		}
 		return mcp.NewToolResultError("deletion_token expired; call without confirm to obtain a new token"), nil
 	}
 	// Constant-time string compare on equal-length inputs would be ideal, but
 	// these tokens are generated server-side UUIDs and never exposed to
 	// untrusted parties in the comparison window — plain equality is fine.
+	//
+	// [SEC171-11] Consuming on mismatch follows the asymmetry rule stated
+	// above (⚠, this map is keyed by TASK ID): reaching this comparison only
+	// requires knowing the task id, not holding the token, so this branch
+	// must consume — it is not, and was never, an anti-guessing measure; the
+	// anti-brute-force framing that phrase pointed at is the one this
+	// function's own comment above already retracts by its own arithmetic.
+	// [SEC171-13] CompareAndDelete, not unconditional Delete — see the
+	// corrupted-record branch above for the full panic-safety argument; it
+	// applies identically here.
 	if suppliedToken != rec.token {
+		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
+			slog.Debug("delete_task: token-mismatch refusal found nothing to clear (already replaced)", "task_id", id)
+		}
 		return mcp.NewToolResultError("deletion_token mismatch"), nil
 	}
 	// U9 partial mitigation (Category S): the confirming call must present
 	// the same session id the issuing call carried, when one was tracked.
 	// [F170-20]: that is a knowledge check, not an identity check — see
 	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
+	//
+	// [F170-SEC-R3-03] Non-consuming: the token stays live for its remaining
+	// TTL so the session it was issued to can still spend it.
 	if !deletionTokenMatchesSession(ctx, rec) {
 		return mcp.NewToolResultError(
 			"deletion_token was issued to a different session; call delete_task without confirm " +
 				"from that same session to obtain a new token",
+		), nil
+	}
+	// [SEC171-02] Spend atomically, and spend THIS record specifically.
+	//
+	// Load-then-Delete was check-then-act: two concurrent confirms both passed
+	// validation before either deleted. It had a second failure mode this map
+	// has and reconcile's does not — keyed by task id, an unconditional Delete
+	// removes whatever occupies that key now, which may be a token another
+	// session obtained after we loaded ours.
+	//
+	// [SEC171-13] CompareAndDelete closes both failure modes here, and — as
+	// of this fix — at every exit from this function, not only here: the
+	// three refusal branches above (corrupted record, expired, token
+	// mismatch) use the identical primitive for the identical reason; see
+	// the first of them for the full panic-safety argument. An earlier
+	// version of this comment claimed CompareAndDelete "closes both" while
+	// those three branches still called the unconditional Delete they were
+	// supposed to replace — true only at this one line, not at the three
+	// that mattered for the cross-session case. deletionToken's fields are
+	// all comparable (string, time.Time, string), which is what makes
+	// CompareAndDelete legal at every one of these four sites — reconcile's
+	// record is not, and uses LoadAndDelete for that reason plus its key
+	// being the token itself.
+	if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
+		return mcp.NewToolResultError(
+			"no pending deletion for this task_id; call without confirm first to obtain a token",
 		), nil
 	}
 

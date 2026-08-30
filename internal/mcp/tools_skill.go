@@ -21,13 +21,33 @@ import (
 // not length) — skillItemMaxRunes is a read-time backstop against
 // marker-stuffing / pathological growth only, same rationale as
 // decisionTitleMaxRunes/decisionBodyMaxRunes (tools_decision.go).
-// skillNotesMaxRunes mirrors validateNotes' write-time cap and bounds the
-// "notes" leaf inside Examples entries (see neutralizeSkillExamples).
+// skillNotesMaxRunes mirrors validateNotes' write-time cap and bounds every
+// key and string leaf inside Examples entries (see neutralizeSkillExamples —
+// it is the whole structure's bound, not just the "notes" field's).
 const (
 	skillNameMaxRunes  = 200
 	skillBodyMaxRunes  = 5000
 	skillItemMaxRunes  = 2000
 	skillNotesMaxRunes = 2000
+
+	// [F170-SEC-R3-01] outcome_id had no bound at any layer: no MaxLength on
+	// the schema and no server-side check, so a single value could be
+	// arbitrarily long. 200 runes is the same cap validateSkillName uses for
+	// the other id-shaped-by-convention field. It deliberately does NOT reject
+	// non-UUID input, because outcome_id is documented as a free reference
+	// (task ID, decision ID, no FK) and rejecting would break callers.
+	//
+	// ⚠ This bounds ONE VALUE, not the array. examples is append-only and has
+	// no entry-count limit at any layer, so a caller can still grow a skill
+	// row without bound one entry at a time — measured at 1000 appends =
+	// 2,257,001 bytes in a single tool response, paid by every later session
+	// that reads that skill. An earlier version of this comment claimed this
+	// cap closed that; it does not, and saying so here is the same false
+	// assurance the rest of this file exists to remove. Bounding the entry
+	// count belongs at the write path where the count is known
+	// (UpdateFromOutcome, both stores) and is a data-retention decision, not a
+	// bug fix — tracked as GTD 17f08ba8.
+	skillOutcomeIDMaxRunes = 200
 )
 
 // wrapUntrustedSkill returns a copy of sk with every free-text field
@@ -42,9 +62,21 @@ const (
 // design.md §2.1: treat LLM-authored text as adversarial regardless of
 // which model wrote it, not exempt because "it's our own model's output").
 //
-// ID, WorkspaceID, SourceAtomIDs, SuccessCount, FailureCount, LastUsedAt,
-// CreatedAt, UpdatedAt are left untouched — none is free text an LLM
-// authored.
+// [SEC171-08] SourceAtomIDs is treated exactly like the other four comma-separated
+// fields, because it IS one: extract_skill takes source_atom_ids as a plain
+// string argument and splitCSV's the caller's text straight into it. The
+// paragraph that used to stand here said "ID, WorkspaceID, SourceAtomIDs …
+// are left untouched — none is free text an LLM authored", and for
+// SourceAtomIDs that was false. It was the sentence, not the field, that made
+// this look covered: knownUnprotectedFields
+// (u13_wrap_field_coverage_test.go) said the opposite — "id-shaped by
+// convention only, never validated as UUIDs" — and two artifacts disagreeing
+// is how a live gap keeps the appearance of being accounted for. PoC-verified
+// end to end: a forged fence in source_atom_ids reached search_skills
+// verbatim while Steps in the same payload came back neutralised.
+//
+// ID, WorkspaceID, SuccessCount, FailureCount, LastUsedAt, CreatedAt and
+// UpdatedAt are still left untouched — those really are server-assigned.
 func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
 	if sk == nil {
 		return nil
@@ -56,6 +88,7 @@ func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
 	out.Steps = clipSafeSkillStrings(sk.Steps)
 	out.FailureModes = clipSafeSkillStrings(sk.FailureModes)
 	out.VerificationChecklist = clipSafeSkillStrings(sk.VerificationChecklist)
+	out.SourceAtomIDs = clipSafeSkillStrings(sk.SourceAtomIDs) // [SEC171-08] read-side neutralisation
 	out.Examples = neutralizeSkillExamples(sk.Examples)
 	return &out
 }
@@ -89,12 +122,28 @@ func clipSafeSkillStrings(items []string) []string {
 // neutralizeSkillExamples walks the Examples entries UpdateFromOutcome
 // appends (map[string]string at write time —
 // internal/storage/sqlite/skill.go's UpdateFromOutcome — round-tripped
-// through JSON storage as map[string]any on read) and neutralizes the
-// "notes" value, the only free-text a caller authors in this shape
-// (outcome_id is a code-layer reference ID, "at" is a server-generated
-// timestamp). Any element shape this walk doesn't recognize is left
-// untouched rather than dropped, so a store schema change degrades to
+// through JSON storage as map[string]any on read) and neutralises EVERY key
+// and EVERY string value it reaches, at every depth. Non-string leaves
+// (numbers, bools, nil) and element shapes the walk does not recognise are
+// passed through rather than dropped, so a store schema change degrades to
 // no-op instead of silently deleting data.
+//
+// [F170-SEC-R3-01] This used to neutralise only the value under the literal
+// key "notes", on the stated grounds that notes was "the only free-text a
+// caller authors in this shape (outcome_id is a code-layer reference ID)".
+// That sentence was false. outcome_id is an ordinary caller-supplied tool
+// argument — handleUpdateSkillFromOutcome reads it with stringArg — so a
+// forged boundary marker placed there was copied byte-for-byte into
+// search_skills / use_skill / list_relevant_skills, i.e. into a later
+// session's context. The notes leaf coming back neutralised in the same
+// payload is what made it look covered.
+//
+// The lesson is the shape, not the field: a key-name allowlist inside a
+// neutraliser is silently wrong for every key nobody thought of, and adding
+// "outcome_id" to the list would leave the next key equally exposed. So the
+// whole structure now goes through neutralizeAnyValue — the same walker
+// neutralizeJSONBlob uses for arbitrary decoded JSON, which already
+// neutralises map keys as well as values.
 func neutralizeSkillExamples(examples []any) []any {
 	if examples == nil {
 		return nil
@@ -102,30 +151,18 @@ func neutralizeSkillExamples(examples []any) []any {
 	out := make([]any, len(examples))
 	for i, e := range examples {
 		switch m := e.(type) {
-		case map[string]any:
-			cp := make(map[string]any, len(m))
-			for k, v := range m {
-				if k == "notes" {
-					if sv, ok := v.(string); ok {
-						cp[k] = clipSafe(sv, skillNotesMaxRunes)
-						continue
-					}
-				}
-				cp[k] = v
-			}
-			out[i] = cp
 		case map[string]string:
+			// neutralizeAnyValue's map case is map[string]any and would drop
+			// this shape into its pass-through default. Handled here in the
+			// same key-and-value form rather than widening the shared walker,
+			// so the element's static type survives the round trip.
 			cp := make(map[string]string, len(m))
 			for k, v := range m {
-				if k == "notes" {
-					cp[k] = clipSafe(v, skillNotesMaxRunes)
-					continue
-				}
-				cp[k] = v
+				cp[clipSafe(k, skillNotesMaxRunes)] = clipSafe(v, skillNotesMaxRunes)
 			}
 			out[i] = cp
 		default:
-			out[i] = e
+			out[i] = neutralizeAnyValue(e, skillNotesMaxRunes, 0)
 		}
 	}
 	return out
@@ -153,6 +190,28 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("Comma-separated common failure modes to watch for")),
 		mcp.WithString("verification_checklist",
 			mcp.Description("Comma-separated verification checks to confirm success")),
+		// [F171-07] No mcp.MaxLength here, deliberately, and none on its four
+		// siblings either: the five comma-separated arguments share one bounding
+		// policy — screened for NUL bytes and newlines at write time
+		// (validateSkillCSVField — that is exactly what it screens; "control
+		// characters" would overstate it, since ESC/BEL/the rest of C0 pass
+		// through, and the write-time check exists to stop a fence gaining
+		// its own line, not to run a general control-character filter) and
+		// capped per element at read time (clipSafeSkillStrings). Adding a
+		// schema length to this one field alone would imply the other four
+		// are bounded that way too.
+		//
+		// [SEC171-14] ⚠ This bounds each ELEMENT, not the element count:
+		// splitCSV of a 1 MB body yields ~500k entries, all of which survive
+		// wrapUntrustedSkill and are re-served on every later read of this
+		// skill. The ceiling is the TRANSPORT (echolog.BodyLimit("1M"),
+		// cmd/server/main.go:175), not this policy — same distinction
+		// skillOutcomeIDMaxRunes' comment above makes for examples, except
+		// there the array is append-only (unbounded over time) and here it
+		// is one request body (bounded, just large). No entry-count cap
+		// exists in handleExtractSkill or either store; adding one is the
+		// same decision as examples' entry-count cap and shares its ticket
+		// (GTD 17f08ba8), not attempted here.
 		mcp.WithString("source_atom_ids",
 			mcp.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
 	), s.handleExtractSkill)
@@ -192,7 +251,9 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("UUID of the skill"),
 			mcp.Required()),
 		mcp.WithString("outcome_id",
-			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK)")),
+			mcp.Description("Reference ID of the outcome (e.g. task ID, decision ID — no FK, "+
+				"not validated as a UUID; max 200 chars)"),
+			mcp.MaxLength(skillOutcomeIDMaxRunes)),
 		mcp.WithBoolean("success",
 			mcp.Description("REQUIRED: true = success outcome, false = failure outcome. No default — "+
 				"omitting this is rejected rather than silently recorded as a failure."),
@@ -216,8 +277,12 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 	), s.handleListRelevantSkills)
 }
 
-// validateSkillName returns an error message if name is empty or contains
-// control characters. Returns empty string on success.
+// [F171-07] validateSkillName returns an error message if name is empty,
+// exceeds the rune cap, or contains a NUL byte or a newline. Returns empty string on
+// success. It does NOT screen control characters generally — ESC/BEL and the
+// rest of C0 pass through; the check exists to stop a name occupying a line of
+// its own in a rendered response, the same narrow policy validateSkillCSVField
+// applies to the five comma-separated arguments.
 func validateSkillName(name string) string {
 	if name == "" {
 		return "name is required"
@@ -231,8 +296,9 @@ func validateSkillName(name string) string {
 	return ""
 }
 
-// validateSkillDescription returns an error message if description violates
-// length or control-character constraints.
+// [F171-07] validateSkillDescription returns an error message if description
+// exceeds the rune cap or contains a NUL byte or a newline. Same narrow screen as
+// validateSkillName, not a general control-character filter.
 func validateSkillDescription(description string) string {
 	if len([]rune(description)) > 5000 {
 		return "description exceeds 5000 character limit"
@@ -303,6 +369,15 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 	if msg := validateSkillCSVField(rawVerification, "verification_checklist"); msg != "" {
 		return mcp.NewToolResultError(msg), nil
 	}
+	// [SEC171-08] source_atom_ids was the only one of the five CSV arguments
+	// that skipped this check. Measured per field before the fix: a newline
+	// was rejected in triggers, steps, failure_modes and verification_checklist,
+	// and accepted here — making it the one argument where a forged boundary
+	// marker could occupy a line of its own in the rendered response.
+	rawSourceAtomIDs := stringArg(args, "source_atom_ids")
+	if msg := validateSkillCSVField(rawSourceAtomIDs, "source_atom_ids"); msg != "" {
+		return mcp.NewToolResultError(msg), nil
+	}
 
 	p := skill.AddParams{
 		Name:                  name,
@@ -311,7 +386,7 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 		Steps:                 splitCSV(rawSteps),
 		FailureModes:          splitCSV(rawFailureModes),
 		VerificationChecklist: splitCSV(rawVerification),
-		SourceAtomIDs:         splitCSV(stringArg(args, "source_atom_ids")),
+		SourceAtomIDs:         splitCSV(rawSourceAtomIDs),
 		Examples:              []any{},
 	}
 
@@ -412,8 +487,12 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 	}
 
 	p := skill.UpdateFromOutcomeParams{
-		SkillID:   skillID,
-		OutcomeID: stringArg(args, "outcome_id"),
+		SkillID: skillID,
+		// [F170-SEC-R3-01] Bounded server-side, not only in the schema:
+		// mcp-go does not enforce schema constraints on the server (see
+		// hasBoolArg's comment below), so MaxLength above is advisory to the
+		// client and this is the line that actually holds.
+		OutcomeID: clipSafe(stringArg(args, "outcome_id"), skillOutcomeIDMaxRunes),
 		Success:   success,
 		Notes:     notes,
 	}

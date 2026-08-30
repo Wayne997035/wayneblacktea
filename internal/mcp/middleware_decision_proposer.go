@@ -90,19 +90,10 @@ func tryAcquireDecisionProposerToken(now time.Time) bool {
 // like "auto" or "default" silently turn the feature off, which surprised
 // operators. Current semantics are explicit opt-OUT only.
 func decisionProposerEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv(disableAutoDecisionsEnvVar))
-	if raw == "" {
-		return true
-	}
-	switch strings.ToLower(raw) {
-	//nolint:goconst // one truthy-env-value set shared with tools_expand.go's
-	// identical env switch; naming one of four siblings hurts readability.
-	// Extracting a shared predicate is tracked as a follow-up — not done in a
-	// lint-only round because it restructures two already-reviewed files.
-	case "1", "true", "yes", "on":
-		return false
-	}
-	return true
+	// The accepted opt-out set lives in truthyEnvOptOut (env_truthy.go),
+	// shared with progressiveDisclosureEnabled — see that function's comment
+	// for why it is shared rather than spelled out twice with a nolint.
+	return !truthyEnvOptOut(os.Getenv(disableAutoDecisionsEnvVar))
 }
 
 // logDecisionProposerStartupOnce is the sync.Once that gates the one-time

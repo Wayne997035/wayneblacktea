@@ -388,12 +388,6 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 			"Kind":   "closed enum validated by validator.IsValidKind at write time",
 			"Assignee": "gtd.NormalizeActor is a whitelist, not free text " +
 				"(wrapUntrustedTask's own doc comment)",
-			"Artifact": "URL/SHA shape constrained at write time by " +
-				"applyArtifactSideEffects/validateBeginTaskLinkageArgs",
-			"BranchName": "branch-name shape constrained at write time by " +
-				"applyArtifactSideEffects/validateBeginTaskLinkageArgs",
-			"PRUrl": "URL shape constrained at write time by " +
-				"applyArtifactSideEffects/validateBeginTaskLinkageArgs",
 		},
 	},
 	{
@@ -650,20 +644,102 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 // be protected after all, which forces whoever fixes one to delete its entry
 // instead of leaving a stale "known gap" nobody rechecks. That is the same
 // failure mode this whole file exists to prevent, pointed at itself.
-var knownUnprotectedFields = map[string]string{
-	"skill.Skill via wrapUntrustedSkill|SourceAtomIDs[]": "wrapUntrustedSkill (tools_skill.go) routes " +
-		"Steps/Triggers/FailureModes/VerificationChecklist through clipSafeSkillStrings but leaves " +
-		"SourceAtomIDs untouched — the elements are id-shaped by convention only, never validated as UUIDs.",
-	"skill.Skill via wrapUntrustedSkill|Examples[]": "Examples is []any holding arbitrary JSON decoded " +
-		"from the skills row; neutralizeSkillExamples (tools_skill.go) only neutralises the \"notes\" leaf " +
-		"of a map-shaped entry, so a bare string element reaches the response verbatim. neutralizeJSONBlob " +
-		"(boundary_markers.go) is the existing helper that fits. GTD bcf0d357 / SEC-07.",
-	"skill.Skill via wrapUntrustedSkill|Examples[]{key}": "[F170-18] surfaced by the walker's new " +
-		"nested-map fixture: neutralizeSkillExamples copies every map KEY through byte-for-byte (it only " +
-		"inspects the value under the literal key \"notes\"). Same class as the neutralizeAnyValue map-key " +
-		"hole [F170-17] closed, in a second walker that predates it. GTD bcf0d357 / SEC-07.",
-	"skill.Skill via wrapUntrustedSkill|Examples[]{value}": "[F170-18] same fixture: any map value whose " +
-		"key is NOT \"notes\" is copied through untouched by neutralizeSkillExamples. GTD bcf0d357 / SEC-07.",
+// [F171-02] This table is EMPTY, and here is exactly what that does and does
+// not prove. It proves: no field currently on THIS list — the one whose claim
+// is checked BOTH ways, by TestF170_11_KnownUnprotectedFieldsStillReflectReality
+// (a listed field must still leak) and by
+// TestF160_06_WrapUntrustedFunctionsProtectEveryStringField (an unlisted,
+// un-exempted field must NOT leak) — is a known, unfixed gap.
+//
+// It does NOT prove "every string field a caller can write is neutralised on
+// the way out". wrapUntrustedFieldExemptions (this file's own type, defined
+// above) is a SEPARATE escape hatch with 46 entries as of this writing —
+// TestF171_02_AcceptedGapSurfaceIsTracked counts and prints every one, and
+// TestF160_06_WrapUntrustedFunctionsProtectEveryStringField SKIPS any field
+// that has one, by design. An exemption's reason string asserts something
+// STRONGER than anything this now-empty table ever asserted — "this field
+// cannot carry attacker text at all" versus "this field can, and here is
+// where the fix lives" — and unlike this table's four former entries,
+// nothing re-verifies that an exemption reason is actually true once it is
+// written. Closing THAT gap needs a per-exemption validator func(string)
+// bool, not a bigger comment; it is tracked separately (GTD 3d4f94be) and
+// deliberately not attempted in this PR.
+//
+// The four entries that stood here were removed in one PR, and how the last
+// one went is worth keeping:
+//
+//   - Examples[], Examples[]{key}, Examples[]{value} — closed by routing
+//     neutralizeSkillExamples through neutralizeAnyValue instead of a
+//     key-name allowlist.
+//   - SourceAtomIDs[] — closed by giving it the clipSafeSkillStrings its four
+//     sibling CSV fields already had. Its exemption reason claimed the
+//     elements were "id-shaped by convention"; the report that first deferred
+//     it said they were "server-generated ids"; wrapUntrustedSkill's own doc
+//     comment said the field was not LLM-authored free text. Three artifacts,
+//     three different stories, one unvalidated tool argument. Nobody read them
+//     side by side until a PoC put a forged fence through it.
+//
+// So: adding an entry here is allowed, but it buys nothing on its own. A gap
+// that is written down is still a gap, and the write-up is exactly what makes
+// the next reader stop looking.
+var knownUnprotectedFields = map[string]string{}
+
+// wrapUntrustedAcceptedGapSurface — [F171-02] — is the total count of named
+// escape-hatch entries across wrapUntrustedCases' exemptions and unforgeable
+// maps plus knownUnprotectedFields, as counted by
+// TestF171_02_AcceptedGapSurfaceIsTracked. It exists so "the coverage tables
+// grew" stops being a side effect nobody chose and starts being a number
+// someone has to deliberately edit in the same diff as the entry that grew
+// it. Bumping it is not itself wrong — a field really can be provably
+// unauthored free text — but a constant is a one-line, easy-to-miss change,
+// which is exactly the failure mode this guards: it does not (and cannot)
+// verify any individual reason is TRUE, only that the total surface area
+// moved on purpose. The real closure — a validator func(string) bool per
+// exemption — is GTD 3d4f94be, not this PR.
+//
+// 46: db.Task's "Artifact" (SEC171-09), "BranchName" and "PRUrl"
+// (SEC171-19) entries — 3 of the 49 exemptions this file originally
+// carried — were REMOVED as their fixes landed (all three fields are now
+// genuinely clipped, not merely claimed to be shape-constrained elsewhere),
+// so this number already reflects those closures rather than needing a
+// follow-up bump.
+const wrapUntrustedAcceptedGapSurface = 46
+
+// TestF171_02_AcceptedGapSurfaceIsTracked prints every entry across the
+// three escape hatches (wrapUntrustedCases' exemptions, its unforgeable, and
+// knownUnprotectedFields) and asserts their combined count against
+// wrapUntrustedAcceptedGapSurface — [F171-02]. This is deliberately a count
+// of ENTRIES, not a sentence about them: a sentence like the one this ticket
+// replaced ("every string field ... is neutralised") can be true or false
+// with nothing to check it against, but a total that a t.Fatalf names by
+// number forces whoever adds the 50th entry to touch this line too, and the
+// failure message says what that person is actually doing.
+func TestF171_02_AcceptedGapSurfaceIsTracked(t *testing.T) {
+	var entries []string
+	for _, c := range wrapUntrustedCases {
+		for field := range c.exemptions {
+			entries = append(entries, c.typeName+" exemptions[\""+field+"\"]")
+		}
+		for field := range c.unforgeable {
+			entries = append(entries, c.typeName+" unforgeable[\""+field+"\"]")
+		}
+	}
+	for key := range knownUnprotectedFields {
+		entries = append(entries, "knownUnprotectedFields[\""+key+"\"]")
+	}
+	sort.Strings(entries)
+	for _, e := range entries {
+		t.Logf("accepted gap: %s", e)
+	}
+	t.Logf("accepted gap surface = %d (want %d)", len(entries), wrapUntrustedAcceptedGapSurface)
+	if len(entries) != wrapUntrustedAcceptedGapSurface {
+		t.Errorf("accepted gap surface = %d, want %d — you are changing the surface area of an "+
+			"already-accepted gap (wrapUntrustedCases' exemptions/unforgeable plus "+
+			"knownUnprotectedFields). If you added an entry, that is a deliberate edit: bump "+
+			"wrapUntrustedAcceptedGapSurface in the same commit, and make sure the entry's own reason "+
+			"string says why. If the count shrank, you closed a gap — update the constant down and "+
+			"say so in the commit message.", len(entries), wrapUntrustedAcceptedGapSurface)
+	}
 }
 
 // TestF160_06_AllExemptionsHaveNonEmptyReason guards wrapUntrustedCases'

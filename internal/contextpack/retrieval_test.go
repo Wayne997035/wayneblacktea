@@ -490,6 +490,10 @@ func TestRetrieveRecentFlag(t *testing.T) {
 // warnings (P1 review finding D)
 // ---------------------------------------------------------------------------
 
+// warnTypeStoreError is the Warning.Type warnStoreErr emits. Named rather
+// than repeated so the assertions below cannot drift apart from each other.
+const warnTypeStoreError = "store_error"
+
 func TestRetrieveStoreErrorSurfacedAsWarning(t *testing.T) {
 	f := newFakes()
 	f.atom.searchErr = errors.New("atom store unavailable")
@@ -498,12 +502,70 @@ func TestRetrieveStoreErrorSurfacedAsWarning(t *testing.T) {
 
 	found := false
 	for _, w := range warnings {
-		if w.Type == "store_error" && strings.Contains(w.Summary, "atom.Search") && strings.Contains(w.Summary, "atom store unavailable") {
+		if w.Type == warnTypeStoreError && strings.Contains(w.Summary, "atom.Search") {
 			found = true
+			// [F170-SEC-R3-02] The source is named; the error text is not.
+			// This assertion used to require the driver text to be PRESENT.
+			if strings.Contains(w.Summary, "atom store unavailable") {
+				t.Errorf("Warning.Summary must not carry the store error text, got %q", w.Summary)
+			}
 		}
 	}
 	if !found {
 		t.Errorf("expected a Warning mentioning atom.Search, got %+v", warnings)
+	}
+}
+
+// TestF170SECR302_StoreErrorWarningRedactsDriverText is the regression for the
+// leak itself, not just for one call site's wording.
+//
+// Pack.Warnings is marshalled whole into the assemble_context and start_work
+// tool responses, so anything warnStoreErr puts in Summary is delivered into
+// an LLM's context. A pgx connection error carries the deployment's identity:
+// the PoC that produced this finding recovered the Aiven host, port, database
+// name, DB user, the violated constraint's name and the SQLSTATE from a real
+// response. Each of those is asserted absent INDIVIDUALLY rather than as one
+// blob, so a partial redaction cannot pass by removing only the easy half.
+//
+// Mutation proof: restore `fmt.Sprintf("%s: %v", source, err)` in
+// warnStoreErr and every subtest below goes red.
+func TestF170SECR302_StoreErrorWarningRedactsDriverText(t *testing.T) {
+	const driverErr = `failed to connect to ` +
+		`host=pg-abc123.aivencloud.com port=23557 database=defaultdb user=avnadmin: ` +
+		`server error (SQLSTATE 23505): duplicate key value violates unique constraint "goals_title_workspace_key"`
+
+	secrets := map[string]string{
+		"host":       "pg-abc123.aivencloud.com",
+		"port":       "23557",
+		"database":   "defaultdb",
+		"user":       "avnadmin",
+		"constraint": "goals_title_workspace_key",
+		"sqlstate":   "23505",
+	}
+
+	f := newFakes()
+	f.atom.searchErr = errors.New(driverErr)
+
+	_, warnings := f.assembler().retrieve(context.Background(), Request{Objective: "test"})
+
+	var summary string
+	for _, w := range warnings {
+		if w.Type == warnTypeStoreError && strings.Contains(w.Summary, "atom.Search") {
+			summary = w.Summary
+		}
+	}
+	if summary == "" {
+		t.Fatalf("no atom.Search store_error warning was produced, so this test proves "+
+			"nothing about redaction; warnings = %+v", warnings)
+	}
+	for label, secret := range secrets {
+		if strings.Contains(summary, secret) {
+			t.Errorf("Warning.Summary leaks the %s (%q): %q", label, secret, summary)
+		}
+	}
+	if summary != "atom.Search failed" {
+		t.Errorf("Summary = %q, want the storeErrorText-shaped %q — the two redaction "+
+			"policies are meant to stay one policy", summary, "atom.Search failed")
 	}
 }
 
