@@ -11,29 +11,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestF170SECR301_OutcomeIDIsBoundedServerSide pins the storage half of
-// [F170-SEC-R3-01]. The read-time walker (zz_sec_f170_r3_skill_examples_test.go)
-// makes rendering safe; this is about what gets written: examples is
-// append-only (`examples || $3::jsonb` on Postgres), and outcome_id had no cap
-// at any layer, so a single caller could grow a skill row without limit and
-// spend a later session's context window reading it back.
-//
-// The assertion is on what the STORE received, not on the schema: mcp-go does
-// not enforce schema constraints server-side (see hasBoolArg's comment in
-// tools_skill.go), so asserting on mcp.MaxLength would be asserting on a
-// request no hostile client is obliged to honour.
-//
-// Note what is deliberately NOT asserted: that outcome_id parses as a UUID.
-// It is documented as a free reference (task ID, decision ID, no FK), so
-// rejecting non-UUID input would be a breaking contract change. Bounding it
-// is not.
-//
-// Build tag: stubSkillStore and callUpdateSkillFromOutcome live in
-// tools_skill_test.go, which is `!integration`; without the same tag this file
-// fails to typecheck under `-tags integration` — and a package that fails to
-// typecheck degrades every other linter's view of it, which is how this was
-// found.
-// TestSEC171_01_AllFiveCSVArgumentsScreenControlChars pins the write half.
+// [SEC171-08] TestSEC171_08_AllFiveCSVArgumentsScreenControlChars pins the
+// write half of the SourceAtomIDs finding (r1's numbering: SEC171-08). It
+// used to be named after SEC171-01, which is a DIFFERENT, still-OPEN finding
+// (the unbounded examples array, deferred to GTD 17f08ba8 — see
+// skillOutcomeIDMaxRunes' own comment in tools_skill.go) — grepping
+// SEC171-01 returned two green tests for a finding this commit does not
+// close. See tools_skill.go:91 and :356 for the matching [SEC171-08]
+// anchors this test's assertions are pinning.
 //
 // extract_skill takes five comma-separated arguments and ran
 // validateSkillCSVField on four of them. Measured before the fix: a newline
@@ -49,7 +34,7 @@ import (
 // Mutation proof: delete the source_atom_ids validation from
 // handleExtractSkill and the source_atom_ids row goes red while the other four
 // stay green.
-func TestSEC171_01_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
+func TestSEC171_08_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
 	for _, field := range []string{
 		"triggers", "steps", "failure_modes", "verification_checklist", "source_atom_ids",
 	} {
@@ -78,6 +63,34 @@ func TestSEC171_01_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
 	}
 }
 
+// TestF170SECR301_OutcomeIDIsBoundedServerSide pins the storage half of
+// [F170-SEC-R3-01]. The read-time walker (zz_sec_f170_r3_skill_examples_test.go)
+// makes rendering safe; this is about what gets written: examples is
+// append-only (`examples || $3::jsonb` on Postgres), and outcome_id had no cap
+// at any layer, so a single caller could grow a skill row without limit and
+// spend a later session's context window reading it back.
+//
+// [F171-06] This bounds the PER-VALUE half only, the same distinction
+// skillOutcomeIDMaxRunes' own comment (tools_skill.go) makes in bold: the
+// array half — examples' unbounded entry count — is a SEPARATE, still-OPEN
+// gap tracked under GTD 17f08ba8, not something this test closes. An earlier
+// version of this test's failure message claimed otherwise.
+//
+// The assertion is on what the STORE received, not on the schema: mcp-go does
+// not enforce schema constraints server-side (see hasBoolArg's comment in
+// tools_skill.go), so asserting on mcp.MaxLength would be asserting on a
+// request no hostile client is obliged to honour.
+//
+// Note what is deliberately NOT asserted: that outcome_id parses as a UUID.
+// It is documented as a free reference (task ID, decision ID, no FK), so
+// rejecting non-UUID input would be a breaking contract change. Bounding it
+// is not.
+//
+// Build tag: stubSkillStore and callUpdateSkillFromOutcome live in
+// tools_skill_test.go, which is `!integration`; without the same tag this file
+// fails to typecheck under `-tags integration` — and a package that fails to
+// typecheck degrades every other linter's view of it, which is how this was
+// found.
 func TestF170SECR301_OutcomeIDIsBoundedServerSide(t *testing.T) {
 	oversized := strings.Repeat("A", skillOutcomeIDMaxRunes*3)
 
@@ -108,7 +121,6 @@ func TestF170SECR301_OutcomeIDIsBoundedServerSide(t *testing.T) {
 			n, skillOutcomeIDMaxRunes, limit)
 	}
 	if got == oversized {
-		t.Error("outcome_id reached the store unclamped — examples is append-only, " +
-			"so this is the unbounded-growth half of the finding")
+		t.Error("outcome_id reached the store unclamped")
 	}
 }

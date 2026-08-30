@@ -62,7 +62,7 @@ const (
 // design.md §2.1: treat LLM-authored text as adversarial regardless of
 // which model wrote it, not exempt because "it's our own model's output").
 //
-// SourceAtomIDs is treated exactly like the other four comma-separated
+// [SEC171-08] SourceAtomIDs is treated exactly like the other four comma-separated
 // fields, because it IS one: extract_skill takes source_atom_ids as a plain
 // string argument and splitCSV's the caller's text straight into it. The
 // paragraph that used to stand here said "ID, WorkspaceID, SourceAtomIDs …
@@ -88,7 +88,7 @@ func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
 	out.Steps = clipSafeSkillStrings(sk.Steps)
 	out.FailureModes = clipSafeSkillStrings(sk.FailureModes)
 	out.VerificationChecklist = clipSafeSkillStrings(sk.VerificationChecklist)
-	out.SourceAtomIDs = clipSafeSkillStrings(sk.SourceAtomIDs)
+	out.SourceAtomIDs = clipSafeSkillStrings(sk.SourceAtomIDs) // [SEC171-08] read-side neutralisation
 	out.Examples = neutralizeSkillExamples(sk.Examples)
 	return &out
 }
@@ -192,10 +192,26 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("Comma-separated verification checks to confirm success")),
 		// No mcp.MaxLength here, deliberately, and none on its four siblings
 		// either: the five comma-separated arguments share one bounding
-		// policy — screened for control characters at write time
-		// (validateSkillCSVField) and capped per element at read time
-		// (clipSafeSkillStrings). Adding a schema length to this one field
-		// alone would imply the other four are bounded that way too.
+		// policy — screened for NUL bytes and newlines at write time
+		// (validateSkillCSVField — that is exactly what it screens; "control
+		// characters" would overstate it, since ESC/BEL/the rest of C0 pass
+		// through, and the write-time check exists to stop a fence gaining
+		// its own line, not to run a general control-character filter) and
+		// capped per element at read time (clipSafeSkillStrings). Adding a
+		// schema length to this one field alone would imply the other four
+		// are bounded that way too.
+		//
+		// [SEC171-14] ⚠ This bounds each ELEMENT, not the element count:
+		// splitCSV of a 1 MB body yields ~500k entries, all of which survive
+		// wrapUntrustedSkill and are re-served on every later read of this
+		// skill. The ceiling is the TRANSPORT (echolog.BodyLimit("1M"),
+		// cmd/server/main.go:175), not this policy — same distinction
+		// skillOutcomeIDMaxRunes' comment above makes for examples, except
+		// there the array is append-only (unbounded over time) and here it
+		// is one request body (bounded, just large). No entry-count cap
+		// exists in handleExtractSkill or either store; adding one is the
+		// same decision as examples' entry-count cap and shares its ticket
+		// (GTD 17f08ba8), not attempted here.
 		mcp.WithString("source_atom_ids",
 			mcp.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
 	), s.handleExtractSkill)
@@ -348,11 +364,11 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 	if msg := validateSkillCSVField(rawVerification, "verification_checklist"); msg != "" {
 		return mcp.NewToolResultError(msg), nil
 	}
-	// source_atom_ids was the only one of the five CSV arguments that skipped
-	// this check. Measured per field before the fix: a newline was rejected in
-	// triggers, steps, failure_modes and verification_checklist, and accepted
-	// here — making it the one argument where a forged boundary marker could
-	// occupy a line of its own in the rendered response.
+	// [SEC171-08] source_atom_ids was the only one of the five CSV arguments
+	// that skipped this check. Measured per field before the fix: a newline
+	// was rejected in triggers, steps, failure_modes and verification_checklist,
+	// and accepted here — making it the one argument where a forged boundary
+	// marker could occupy a line of its own in the rendered response.
 	rawSourceAtomIDs := stringArg(args, "source_atom_ids")
 	if msg := validateSkillCSVField(rawSourceAtomIDs, "source_atom_ids"); msg != "" {
 		return mcp.NewToolResultError(msg), nil
