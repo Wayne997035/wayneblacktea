@@ -546,9 +546,9 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	}
 	// [SEC171-19] See wrapUntrustedTask's doc comment: write-time validation
 	// does not shape-constrain these against a printable, no-slash forged
-	// marker. gtdTitleMaxRunes matches validateBeginTaskLinkageArgs' own
-	// length cap (255 runes) closely enough that legitimate values never hit
-	// it in practice.
+	// marker. gtdTitleMaxRunes is 2000 (:503) and validator.MaxBranchNameLen
+	// is 255 (internal/validator/branch_name.go:8), so for branch_name the
+	// write-time cap always binds first and this clip only neutralises.
 	if t.BranchName.Valid {
 		out.BranchName.String = clipSafe(t.BranchName.String, gtdTitleMaxRunes)
 	}
