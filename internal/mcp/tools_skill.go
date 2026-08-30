@@ -277,8 +277,12 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 	), s.handleListRelevantSkills)
 }
 
-// validateSkillName returns an error message if name is empty or contains
-// control characters. Returns empty string on success.
+// validateSkillName returns an error message if name is empty, exceeds the
+// rune cap, or contains a NUL byte or a newline. Returns empty string on
+// success. It does NOT screen control characters generally — ESC/BEL and the
+// rest of C0 pass through; the check exists to stop a name occupying a line of
+// its own in a rendered response, the same narrow policy validateSkillCSVField
+// applies to the five comma-separated arguments.
 func validateSkillName(name string) string {
 	if name == "" {
 		return "name is required"
@@ -292,8 +296,9 @@ func validateSkillName(name string) string {
 	return ""
 }
 
-// validateSkillDescription returns an error message if description violates
-// length or control-character constraints.
+// validateSkillDescription returns an error message if description exceeds the
+// rune cap or contains a NUL byte or a newline. Same narrow screen as
+// validateSkillName, not a general control-character filter.
 func validateSkillDescription(description string) string {
 	if len([]rune(description)) > 5000 {
 		return "description exceeds 5000 character limit"
