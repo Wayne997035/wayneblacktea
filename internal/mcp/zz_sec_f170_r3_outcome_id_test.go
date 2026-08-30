@@ -17,8 +17,8 @@ import (
 // (the unbounded examples array, deferred to GTD 17f08ba8 — see
 // skillOutcomeIDMaxRunes' own comment in tools_skill.go) — grepping
 // SEC171-01 returned two green tests for a finding this commit does not
-// close. See tools_skill.go:91 and :356 for the matching [SEC171-08]
-// anchors this test's assertions are pinning.
+// close. grep '[SEC171-08]' tools_skill.go for the matching anchors this
+// test's assertions are pinning (line numbers rot; the tag doesn't).
 //
 // extract_skill takes five comma-separated arguments and ran
 // validateSkillCSVField on four of them. Measured before the fix: a newline

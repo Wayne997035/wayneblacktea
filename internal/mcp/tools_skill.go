@@ -190,8 +190,8 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("Comma-separated common failure modes to watch for")),
 		mcp.WithString("verification_checklist",
 			mcp.Description("Comma-separated verification checks to confirm success")),
-		// No mcp.MaxLength here, deliberately, and none on its four siblings
-		// either: the five comma-separated arguments share one bounding
+		// [F171-07] No mcp.MaxLength here, deliberately, and none on its four
+		// siblings either: the five comma-separated arguments share one bounding
 		// policy — screened for NUL bytes and newlines at write time
 		// (validateSkillCSVField — that is exactly what it screens; "control
 		// characters" would overstate it, since ESC/BEL/the rest of C0 pass
@@ -277,8 +277,8 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 	), s.handleListRelevantSkills)
 }
 
-// validateSkillName returns an error message if name is empty, exceeds the
-// rune cap, or contains a NUL byte or a newline. Returns empty string on
+// [F171-07] validateSkillName returns an error message if name is empty,
+// exceeds the rune cap, or contains a NUL byte or a newline. Returns empty string on
 // success. It does NOT screen control characters generally — ESC/BEL and the
 // rest of C0 pass through; the check exists to stop a name occupying a line of
 // its own in a rendered response, the same narrow policy validateSkillCSVField
@@ -296,8 +296,8 @@ func validateSkillName(name string) string {
 	return ""
 }
 
-// validateSkillDescription returns an error message if description exceeds the
-// rune cap or contains a NUL byte or a newline. Same narrow screen as
+// [F171-07] validateSkillDescription returns an error message if description
+// exceeds the rune cap or contains a NUL byte or a newline. Same narrow screen as
 // validateSkillName, not a general control-character filter.
 func validateSkillDescription(description string) string {
 	if len([]rune(description)) > 5000 {

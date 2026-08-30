@@ -515,34 +515,23 @@ const (
 // Title/FileRef/Notes — neutralising those requires unmarshal-walk-remarshal,
 // not a plain clipSafe(string) call, and is out of this template's scope
 // (Phase A dispatch note: flagged to Lead as a distinct implementation
-// pattern, not silently skipped). BranchName/PRUrl are left as-is:
-// validateBeginTaskLinkageArgs (begin_task) and
-// applyBranchAndPR/applyBranchAndPRUpdate (add_task/update_task) shape-
-// constrain BranchName via validator.ValidateBranchName and PRUrl via
-// githubPRURLRe at every write path that sets them — verified by grep, not
-// assumed — which forecloses embedding a multi-line forged marker.
-// complete_task's applyArtifactSideEffects also shape-constrains PRUrl the
-// same way when its regex fires, but never touches BranchName at all.
-// Assignee is left as-is: gtd.NormalizeActor is a whitelist, not free text.
+// pattern, not silently skipped). Assignee is left as-is: gtd.NormalizeActor
+// is a whitelist, not free text.
 //
-// [SEC171-09] Artifact used to sit in the untouched group above on the claim
+// [SEC171-19] BranchName/PRUrl are now clipped. A prior version of this
+// comment claimed validator.ValidateBranchName/githubPRURLRe shape-constrain
+// them at write time and left them untouched on that basis — false:
+// ValidateBranchName (internal/validator/branch_name.go) only rejects
+// length>255 and control characters, and githubPRURLRe's owner/repo segments
+// are `[^/]+`. Neither rejects a printable, no-slash, control-character-free
+// forged boundary marker; PoC-verified end to end (update_task accepts it,
+// get_task echoes it back).
+//
+// [SEC171-09] Artifact is clipped for the same class of reason: the claim
 // that applyArtifactSideEffects/validateBeginTaskLinkageArgs shape-constrain
-// it the same way as its two former siblings. That was false: complete_task
-// (handleCompleteTask) stores the caller's raw artifact string BEFORE
-// applyArtifactSideEffects runs, and that function has no rejection branch —
-// it only decides whether to ALSO set pr_url or append to commit_shas. A
-// caller-supplied artifact that matches neither regex reached the store, and
-// every later reader, completely unconstrained. See the field's own [SEC171-09]
-// comment above for the fix; the exemption entry for it is gone from
-// u13_wrap_field_coverage_test.go, not narrowed.
-//
-// [F170-19] CommitSHAs IS clipped, unlike the BranchName/PRUrl group it sits
-// next to. The distinction is real, not cosmetic: those two are
-// shape-constrained by validateBeginTaskLinkageArgs/applyBranchAndPR(Update)
-// at write time, whereas the same write path appends to CommitSHAs without
-// ever checking that an entry looks like a SHA. It was one of the seven gaps
-// [F170-11]'s walker found; the fix landed here rather than in that sprint
-// because this file belonged to a different engineer at the time.
+// it was also false — complete_task (handleCompleteTask) stores the
+// caller's raw artifact string BEFORE applyArtifactSideEffects runs, and
+// that function has no rejection branch. See the field's own comment below.
 func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t == nil {
 		return nil
@@ -555,9 +544,19 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t.Context.Valid {
 		out.Context.String = clipSafe(t.Context.String, gtdBodyMaxRunes)
 	}
-	// [SEC171-09] Artifact IS clipped now, unlike BranchName/PRUrl which stay
-	// in the untouched group below: complete_task stores the caller's raw
-	// artifact string (handleCompleteTask, tools_gtd.go) BEFORE
+	// [SEC171-19] See wrapUntrustedTask's doc comment: write-time validation
+	// does not shape-constrain these against a printable, no-slash forged
+	// marker. gtdTitleMaxRunes matches validateBeginTaskLinkageArgs' own
+	// length cap (255 runes) closely enough that legitimate values never hit
+	// it in practice.
+	if t.BranchName.Valid {
+		out.BranchName.String = clipSafe(t.BranchName.String, gtdTitleMaxRunes)
+	}
+	if t.PRUrl.Valid {
+		out.PRUrl.String = clipSafe(t.PRUrl.String, gtdTitleMaxRunes)
+	}
+	// [SEC171-09] Artifact IS clipped now: complete_task stores the caller's
+	// raw artifact string (handleCompleteTask, tools_gtd.go) BEFORE
 	// applyArtifactSideEffects ever runs, and that function only decides
 	// whether to ALSO set pr_url/commit_shas — it has no rejection path, so a
 	// non-matching artifact (anything that isn't a PR URL or a 40-hex SHA)

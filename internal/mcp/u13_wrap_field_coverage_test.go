@@ -388,12 +388,6 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 			"Kind":   "closed enum validated by validator.IsValidKind at write time",
 			"Assignee": "gtd.NormalizeActor is a whitelist, not free text " +
 				"(wrapUntrustedTask's own doc comment)",
-			"BranchName": "branch-name shape constrained at write time by " +
-				"validateBeginTaskLinkageArgs/applyBranchAndPR(Update) — verified by grep, unlike " +
-				"Artifact's former entry here (SEC171-09)",
-			"PRUrl": "URL shape constrained at write time by validateBeginTaskLinkageArgs/" +
-				"applyBranchAndPR(Update)/applyArtifactSideEffects — verified by grep, unlike " +
-				"Artifact's former entry here (SEC171-09)",
 		},
 	},
 	{
@@ -659,7 +653,7 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 //
 // It does NOT prove "every string field a caller can write is neutralised on
 // the way out". wrapUntrustedFieldExemptions (this file's own type, defined
-// above) is a SEPARATE escape hatch with 48 entries as of this writing —
+// above) is a SEPARATE escape hatch with 46 entries as of this writing —
 // TestF171_02_AcceptedGapSurfaceIsTracked counts and prints every one, and
 // TestF160_06_WrapUntrustedFunctionsProtectEveryStringField SKIPS any field
 // that has one, by design. An exemption's reason string asserts something
@@ -703,12 +697,13 @@ var knownUnprotectedFields = map[string]string{}
 // moved on purpose. The real closure — a validator func(string) bool per
 // exemption — is GTD 3d4f94be, not this PR.
 //
-// 48, not 49: db.Task's "Artifact" entry — one of the 49 exemptions this
-// file carried before this commit — was REMOVED by SEC171-09's fix in this
-// same PR (the field is now genuinely clipped, not merely claimed to be
-// shape-constrained elsewhere), so this number already reflects that
-// closure rather than needing a follow-up bump.
-const wrapUntrustedAcceptedGapSurface = 48
+// 46: db.Task's "Artifact" (SEC171-09), "BranchName" and "PRUrl"
+// (SEC171-19) entries — 3 of the 49 exemptions this file originally
+// carried — were REMOVED as their fixes landed (all three fields are now
+// genuinely clipped, not merely claimed to be shape-constrained elsewhere),
+// so this number already reflects those closures rather than needing a
+// follow-up bump.
+const wrapUntrustedAcceptedGapSurface = 46
 
 // TestF171_02_AcceptedGapSurfaceIsTracked prints every entry across the
 // three escape hatches (wrapUntrustedCases' exemptions, its unforgeable, and
