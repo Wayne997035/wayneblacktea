@@ -286,3 +286,62 @@ func TestSEC171_13_MismatchRefusalDoesNotDestroyReplacementToken(t *testing.T) {
 		t.Fatalf("B's replacement token was destroyed by A's mismatch refusal: %s", resultText(confirmB))
 	}
 }
+
+// TestSEC171_17_ExpiredRefusalDoesNotDestroyReplacementToken is
+// [SEC171-17]'s regression test — the expired-branch sibling of
+// TestSEC171_13's mismatch-branch test above, sharing the same s.nowFn seam.
+//
+// Session A obtains a token. In the window between A's Load and A's TTL
+// check, session B independently obtains a fresh token for the SAME task id
+// (overwriting A's record — deleteTokens is keyed by task id, not token).
+// The hook then makes A's own TTL check see a time far past A's expiresAt,
+// so A's confirm takes the EXPIRED branch rather than mismatch. Before the
+// fix, that branch did an unconditional Delete, destroying B's brand-new
+// record even though A's own token was never compared against it. After the
+// fix, CompareAndDelete only removes the record it actually validated —
+// A's stale one, which no longer occupies the key — so B's token survives.
+//
+// Mutation proof: put the unconditional Delete back on the expired branch
+// (tools_gtd.go, the `if s.now().After(rec.expiresAt)` block) — this goes red.
+func TestSEC171_17_ExpiredRefusalDoesNotDestroyReplacementToken(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	ctxA := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "sec171-17-A"})
+	tokenA := extractToken(t, callDeleteTaskCtx(t, ctxA, s, map[string]any{"task_id": id.String()}))
+
+	real := s.nowFn
+	var fired bool
+	var tokenB string
+	s.nowFn = func() time.Time {
+		if !fired {
+			fired = true
+			ctxB := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "sec171-17-B"})
+			tokenB = extractToken(t, callDeleteTaskCtx(t, ctxB, s, map[string]any{"task_id": id.String()}))
+			// Only THIS (outermost) call feeds A's own TTL check — nested
+			// calls above (B's own issuance) already returned through the
+			// fired branch below with unmodified real() time.
+			return real().Add(24 * time.Hour)
+		}
+		return real()
+	}
+	confirmA := callDeleteTaskCtx(t, ctxA, s, map[string]any{
+		"task_id":        id.String(),
+		"confirm":        true,
+		"deletion_token": tokenA,
+	})
+	s.nowFn = real
+	if !confirmA.IsError {
+		t.Fatalf("A's confirm should have been refused as expired, got success: %s", resultText(confirmA))
+	}
+
+	ctxB := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "sec171-17-B"})
+	confirmB := callDeleteTaskCtx(t, ctxB, s, map[string]any{
+		"task_id":        id.String(),
+		"confirm":        true,
+		"deletion_token": tokenB,
+	})
+	if confirmB.IsError {
+		t.Fatalf("B's replacement token was destroyed by A's expired refusal: %s", resultText(confirmB))
+	}
+}
