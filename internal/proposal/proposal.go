@@ -42,7 +42,7 @@ const (
 var ErrNotFound = errors.New("proposal: not found")
 
 // ErrPayloadTooLarge is returned by Store.Create when CreateParams.Payload
-// exceeds maxPayloadBytes (store.go) — [F981-05]. Every caller of Create,
+// exceeds MaxPayloadBytes (store.go) — [F981-05]. Every caller of Create,
 // MCP tool handler or otherwise, is protected by this single check at the
 // write path, before any DB call.
 var ErrPayloadTooLarge = errors.New("proposal: payload too large")

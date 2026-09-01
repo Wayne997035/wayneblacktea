@@ -45,7 +45,7 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
 }
 
-// maxPayloadBytes bounds CreateParams.Payload — [F981-05]. Per-field caps in
+// MaxPayloadBytes bounds CreateParams.Payload — [F981-05]. Per-field caps in
 // the mcp-side decoders (decodeGoalParams/decodeProjectParams,
 // internal/mcp/tools_proposal.go) and the seam-side decoders
 // (accept_decode.go) already keep a legitimate goal/project payload well
@@ -56,7 +56,12 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 // propose_project MCP tools, the only confirmed callers of Create at time
 // of writing) reached pending_proposals unbounded before any accept-time
 // decoder cap ever ran.
-const maxPayloadBytes = 128 * 1024
+//
+// Exported (not package-private) so internal/storage/sqlite's ProposalStore
+// — a separate Create implementation for the dual-backend seam — enforces
+// the identical byte limit from one source of truth instead of a duplicated
+// magic number that could silently drift between the two backends.
+const MaxPayloadBytes = 128 * 1024
 
 // Create records a new pending proposal. Payload is opaque JSON; the caller is
 // responsible for marshalling the entity-specific shape.
@@ -66,10 +71,10 @@ const maxPayloadBytes = 128 * 1024
 // store's configured workspace is used.
 func (s *Store) Create(ctx context.Context, p CreateParams) (*db.PendingProposal, error) {
 	// [F981-05] fail-closed size guard before any DB call — see
-	// maxPayloadBytes' doc comment for why 128 KB and what it protects.
-	if len(p.Payload) > maxPayloadBytes {
+	// MaxPayloadBytes' doc comment for why 128 KB and what it protects.
+	if len(p.Payload) > MaxPayloadBytes {
 		return nil, fmt.Errorf("creating proposal: payload %d bytes exceeds %d byte limit: %w",
-			len(p.Payload), maxPayloadBytes, ErrPayloadTooLarge)
+			len(p.Payload), MaxPayloadBytes, ErrPayloadTooLarge)
 	}
 	ws := s.workspaceID
 	if p.WorkspaceID != nil {

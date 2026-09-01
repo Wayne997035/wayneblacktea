@@ -12,7 +12,7 @@ import (
 
 // [F981-05] TestProposalStore_Create_RejectsPayloadOver128KB pins the
 // fail-closed payload size guard at Store.Create's write path
-// (store.go:maxPayloadBytes) — backend-security-design.md §2.1 ("LLM tool
+// (store.go:MaxPayloadBytes) — backend-security-design.md §2.1 ("LLM tool
 // input is hostile"): a prompt-injected agent controls
 // pending_proposals.payload via propose_goal/propose_project, and before
 // this guard nothing checked len(p.Payload) before the row was written.
