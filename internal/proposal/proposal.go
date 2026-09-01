@@ -41,6 +41,12 @@ const (
 // keep the operation idempotent.
 var ErrNotFound = errors.New("proposal: not found")
 
+// ErrPayloadTooLarge is returned by Store.Create when CreateParams.Payload
+// exceeds maxPayloadBytes (store.go) — [F981-05]. Every caller of Create,
+// MCP tool handler or otherwise, is protected by this single check at the
+// write path, before any DB call.
+var ErrPayloadTooLarge = errors.New("proposal: payload too large")
+
 // CreateParams captures the fields required to record a new proposal.
 type CreateParams struct {
 	WorkspaceID *uuid.UUID // nil → unscoped (Phase B1: always nil; B2 wires real workspace)

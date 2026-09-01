@@ -45,6 +45,19 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
 }
 
+// maxPayloadBytes bounds CreateParams.Payload — [F981-05]. Per-field caps in
+// the mcp-side decoders (decodeGoalParams/decodeProjectParams,
+// internal/mcp/tools_proposal.go) and the seam-side decoders
+// (accept_decode.go) already keep a legitimate goal/project payload well
+// under this: title/area 512 B each + description 64 KB sums to well under
+// 128 KB. This is a fail-closed backstop at the write path itself — the
+// gap it closes is that nothing checked len(p.Payload) before this, so an
+// oversized payload from a prompt-injected agent (propose_goal/
+// propose_project MCP tools, the only confirmed callers of Create at time
+// of writing) reached pending_proposals unbounded before any accept-time
+// decoder cap ever ran.
+const maxPayloadBytes = 128 * 1024
+
 // Create records a new pending proposal. Payload is opaque JSON; the caller is
 // responsible for marshalling the entity-specific shape.
 //
@@ -52,6 +65,12 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 // (used e.g. for tests or rare cross-workspace proposals). When nil, the
 // store's configured workspace is used.
 func (s *Store) Create(ctx context.Context, p CreateParams) (*db.PendingProposal, error) {
+	// [F981-05] fail-closed size guard before any DB call — see
+	// maxPayloadBytes' doc comment for why 128 KB and what it protects.
+	if len(p.Payload) > maxPayloadBytes {
+		return nil, fmt.Errorf("creating proposal: payload %d bytes exceeds %d byte limit: %w",
+			len(p.Payload), maxPayloadBytes, ErrPayloadTooLarge)
+	}
 	ws := s.workspaceID
 	if p.WorkspaceID != nil {
 		ws = pgconv.ToUUID(p.WorkspaceID)
