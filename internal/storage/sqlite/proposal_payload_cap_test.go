@@ -52,6 +52,24 @@ func TestProposalStore_Create_RejectsPayloadOver128KB(t *testing.T) {
 	if created.ID == uuid.Nil {
 		t.Error("Create(127 KB payload) returned a zero-value ID — row was not actually created")
 	}
+
+	// [F982-02] Exactly proposal.MaxPayloadBytes — this input exists to
+	// distinguish `>` from `>=` in the guard. 129 KB and 127 KB give the
+	// same verdict under both operators, so neither catches an off-by-one
+	// regression that silently widens the guard to `>=`; only a payload
+	// exactly at the boundary must succeed under `>` and fail under `>=`.
+	atLimit := payloadCapFixture(t, proposal.MaxPayloadBytes)
+	createdAtLimit, err := s.Create(ctx, proposal.CreateParams{
+		Type:       proposal.TypeGoal,
+		Payload:    atLimit,
+		ProposedBy: "payload-cap-test",
+	})
+	if err != nil {
+		t.Fatalf("Create(exactly MaxPayloadBytes payload): unexpected error: %v", err)
+	}
+	if createdAtLimit.ID == uuid.Nil {
+		t.Error("Create(exactly MaxPayloadBytes payload) returned a zero-value ID — row was not actually created")
+	}
 }
 
 // payloadCapFixture returns a valid JSON object of exactly totalBytes length:
