@@ -160,9 +160,3 @@ func ParseMarkdownSections(src string) []Section {
 	}
 	return result
 }
-
-// HasHeadings returns true when src contains at least one ATX heading.
-// Cheap check before a full parse.
-func HasHeadings(src string) bool {
-	return len(ParseMarkdownSections(src)) > 0
-}

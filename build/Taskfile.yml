@@ -86,6 +86,20 @@ tasks:
       - go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./internal/... ./cmd/...
     dir: ..
 
+  # [F981-01] frontend-check and build-frontend used to each maintain their
+  # own byte-identical copy of the 5-line npm-ci/build/copy sequence; a fix to
+  # one and not the other was a "passes locally, fails CI" trap. Both now
+  # delegate to this shared internal task instead.
+  _frontend-build:
+    internal: true
+    cmds:
+      - npm ci --ignore-scripts
+      - npm run build
+      - mkdir -p ../cmd/server/web
+      - rm -rf ../cmd/server/web/dist
+      - cp -r dist ../cmd/server/web/dist
+    dir: ../web
+
   frontend-check:
     desc: "Frontend quality gate — lint, build, test, and copy dist for Go embed (skipped when sources unchanged)"
     sources:
@@ -99,24 +113,15 @@ tasks:
     generates:
       - ../cmd/server/web/dist/**
     cmds:
-      - npm ci --ignore-scripts
+      - task: _frontend-build
       - npm run lint
-      - npm run build
       - npm test
-      - mkdir -p ../cmd/server/web
-      - rm -rf ../cmd/server/web/dist
-      - cp -r dist ../cmd/server/web/dist
     dir: ../web
 
   build-frontend:
     desc: "Build frontend (required by cmd/server //go:embed) — run before task check locally"
     cmds:
-      - npm ci --ignore-scripts
-      - npm run build
-      - mkdir -p ../cmd/server/web
-      - rm -rf ../cmd/server/web/dist
-      - cp -r dist ../cmd/server/web/dist
-    dir: ../web
+      - task: _frontend-build
 
   build-server:
     desc: "Build REST API server binary to bin/, with local build identity (commit/date) injected into internal/buildinfo — GTD 61838147"

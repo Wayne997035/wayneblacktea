@@ -14,7 +14,7 @@ import (
 // Ambiguous multi-actor spellings (e.g. "Codex/Claude", "claude/codex") and
 // role labels that aren't actors (e.g. "backend") are deliberately absent
 // from every entry's aliases — they fall through NormalizeActor's error path
-// instead of being silently guessed. See DryRunBackfillActors below.
+// instead of being silently guessed.
 var actorRegistry = []struct {
 	canonical string
 	aliases   []string // lowercased, trimmed spellings; canonical itself always matches too
@@ -152,34 +152,10 @@ type ActorBackfillResult struct {
 	Reason              string // why manual decision is needed; empty when SuggestedActor is set
 }
 
-// DryRunBackfillActors classifies a batch of existing tasks.assignee values
-// into "safe to auto-normalize" vs "needs manual decision". Pure function —
-// performs no DB I/O and executes no write; a real backfill script runs the
-// actual UPDATE separately, after a human reviews the manual-decision list.
-//
-// Values naming more than one actor (e.g. "Codex/Claude", "claude/codex") or
-// a role rather than an actor (e.g. "backend") are never auto-mapped:
-// NormalizeActor's allowlist already refuses them (absent from
-// actorRegistry's aliases), so they surface here as manual-decision
-// candidates instead of being silently guessed at.
-func DryRunBackfillActors(candidates []ActorBackfillCandidate) []ActorBackfillResult {
-	out := make([]ActorBackfillResult, 0, len(candidates))
-	for _, c := range candidates {
-		canonical, err := NormalizeActor(c.Raw)
-		if err != nil {
-			out = append(out, ActorBackfillResult{
-				ID:                  c.ID,
-				Raw:                 c.Raw,
-				NeedsManualDecision: true,
-				Reason:              "no unambiguous canonical actor match",
-			})
-			continue
-		}
-		out = append(out, ActorBackfillResult{
-			ID:             c.ID,
-			Raw:            c.Raw,
-			SuggestedActor: canonical,
-		})
-	}
-	return out
-}
+// [F981-02] The pure batch-classifier function that used ActorBackfillCandidate
+// / ActorBackfillResult above was removed here: it had zero production callers
+// (only its own test called it, and no cmd/ entrypoint ever wired it up) —
+// waste-audit finding 08dbd246. The two candidate/result types above are kept
+// in place even though they lose their only caller — out of scope for this
+// ticket per its non-goals (not touching other exported symbols); a future
+// waste-audit ticket may revisit them.
