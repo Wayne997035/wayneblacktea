@@ -241,7 +241,8 @@ func insertAtomFixture(t *testing.T, db *wbtsqlite.DB, content string, tags []st
 	parentID := uuid.New()
 	// Encode tags as JSON array.
 	tagsJSON := `["` + strings.Join(tags, `","`) + `"]`
-	err := db.ExecContext(context.Background(),
+	err := db.ExecContext(
+		context.Background(),
 		`INSERT INTO memory_atoms (id, parent_table, parent_id, content, keywords, tags, digest_status, created_at)
 		 VALUES (?, 'test', ?, ?, '[]', ?, ?, datetime('now'))`,
 		id.String(), parentID.String(), content, tagsJSON, digestStatus,
@@ -364,8 +365,8 @@ func TestClipSafeSlice_NilInYieldsNilOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	if string(b) != "null" {
-		t.Errorf("json.Marshal(clipSafeSlice(nil, 10)) = %s, want null", b)
+	if string(b) != nullStr {
+		t.Errorf("json.Marshal(clipSafeSlice(nil, 10)) = %s, want %s", b, nullStr)
 	}
 }
 
