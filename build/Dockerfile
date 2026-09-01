@@ -3,7 +3,7 @@ FROM node:22-alpine AS frontend
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run build
 

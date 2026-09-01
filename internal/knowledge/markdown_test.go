@@ -170,21 +170,9 @@ Child body only.
 	}
 }
 
-// TestHasHeadings verifies the cheap HasHeadings check.
-func TestHasHeadings(t *testing.T) {
-	cases := []struct {
-		input string
-		want  bool
-	}{
-		{"# Heading\n\nBody", true},
-		{"No heading here", false},
-		{"", false},
-		{"## Only H2\n\nStuff", true},
-	}
-	for _, tc := range cases {
-		got := HasHeadings(tc.input)
-		if got != tc.want {
-			t.Errorf("HasHeadings(%q) = %v, want %v", tc.input, got, tc.want)
-		}
-	}
-}
+// [F981-02] The test for the cheap "does this contain any ATX heading" check
+// (and the checking function itself) were removed together: zero production
+// callers (only this test called it) — waste-audit finding 08dbd246. Heading
+// detection is covered by TestParseMarkdownSections_NoHeadings /
+// TestParseMarkdownSections_Empty above via the underlying
+// ParseMarkdownSections, which remains in use.

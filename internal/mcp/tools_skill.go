@@ -84,11 +84,11 @@ func wrapUntrustedSkill(sk *skill.Skill) *skill.Skill {
 	out := *sk
 	out.Name = clipSafe(sk.Name, skillNameMaxRunes)
 	out.Description = clipSafe(sk.Description, skillBodyMaxRunes)
-	out.Triggers = clipSafeSkillStrings(sk.Triggers)
-	out.Steps = clipSafeSkillStrings(sk.Steps)
-	out.FailureModes = clipSafeSkillStrings(sk.FailureModes)
-	out.VerificationChecklist = clipSafeSkillStrings(sk.VerificationChecklist)
-	out.SourceAtomIDs = clipSafeSkillStrings(sk.SourceAtomIDs) // [SEC171-08] read-side neutralisation
+	out.Triggers = clipSafeSlice(sk.Triggers, skillItemMaxRunes)
+	out.Steps = clipSafeSlice(sk.Steps, skillItemMaxRunes)
+	out.FailureModes = clipSafeSlice(sk.FailureModes, skillItemMaxRunes)
+	out.VerificationChecklist = clipSafeSlice(sk.VerificationChecklist, skillItemMaxRunes)
+	out.SourceAtomIDs = clipSafeSlice(sk.SourceAtomIDs, skillItemMaxRunes) // [SEC171-08] read-side neutralisation
 	out.Examples = neutralizeSkillExamples(sk.Examples)
 	return &out
 }
@@ -101,20 +101,6 @@ func wrapUntrustedSkills(skills []*skill.Skill) []*skill.Skill {
 	out := make([]*skill.Skill, len(skills))
 	for i, sk := range skills {
 		out[i] = wrapUntrustedSkill(sk)
-	}
-	return out
-}
-
-// clipSafeSkillStrings applies clipSafe to every element of a []string
-// field, preserving order (nil in yields nil out, so JSON null-vs-[]
-// semantics for Triggers etc. are unaffected by wrapping).
-func clipSafeSkillStrings(items []string) []string {
-	if items == nil {
-		return nil
-	}
-	out := make([]string, len(items))
-	for i, v := range items {
-		out[i] = clipSafe(v, skillItemMaxRunes)
 	}
 	return out
 }
@@ -197,7 +183,7 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 		// characters" would overstate it, since ESC/BEL/the rest of C0 pass
 		// through, and the write-time check exists to stop a fence gaining
 		// its own line, not to run a general control-character filter) and
-		// capped per element at read time (clipSafeSkillStrings). Adding a
+		// capped per element at read time (clipSafeSlice). Adding a
 		// schema length to this one field alone would imply the other four
 		// are bounded that way too.
 		//

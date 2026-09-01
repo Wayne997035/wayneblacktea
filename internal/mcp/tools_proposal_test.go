@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -170,5 +171,126 @@ func TestHandleConfirmProposals_ExactlyMaxIDs_NoProposals(t *testing.T) {
 	// jsonText uses indented JSON so check both compact and indented forms.
 	if !strings.Contains(result, `"failed": 100`) && !strings.Contains(result, `"failed":100`) {
 		t.Errorf("expected failed:100 in result, got: %s", result)
+	}
+}
+
+// ---- decodeGoalParams / decodeProjectParams: empty-title + priority range ----
+//
+// [F981-05] mirrors internal/proposal/accept_decode_length_test.go's coverage
+// of the seam-side decoders — decodeGoalParams/decodeProjectParams (this
+// file) previously lacked the empty-title rejection both have, and
+// decodeProjectParams also lacked the priority 1-5 range check
+// (backend-security-design.md §2.1: LLM tool input is hostile; these
+// decoders run on a payload an agent controls via propose_goal/
+// propose_project).
+
+func TestDecodeGoalParams_EmptyTitle(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    map[string]any
+		wantErr    bool
+		wantSubstr string
+	}{
+		{
+			name:    "non-empty title → ok",
+			payload: map[string]any{"title": "Become CEO", "area": "career"},
+			wantErr: false,
+		},
+		{
+			name:       "empty title → rejected",
+			payload:    map[string]any{"title": "", "area": "career"},
+			wantErr:    true,
+			wantSubstr: "goal payload missing title",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatalf("marshal fixture: %v", err)
+			}
+			_, errMsg := decodeGoalParams(raw)
+			if tc.wantErr {
+				if errMsg == "" {
+					t.Fatalf("decodeGoalParams: want error, got none")
+				}
+				if !strings.Contains(errMsg, tc.wantSubstr) {
+					t.Errorf("errMsg = %q, want substring %q", errMsg, tc.wantSubstr)
+				}
+				return
+			}
+			if errMsg != "" {
+				t.Fatalf("decodeGoalParams: unexpected error: %s", errMsg)
+			}
+		})
+	}
+}
+
+func TestDecodeProjectParams_EmptyTitleAndPriorityRange(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    map[string]any
+		wantErr    bool
+		wantSubstr string
+	}{
+		{
+			name:    "within limits → ok",
+			payload: map[string]any{"name": "proj", "title": "Project", "area": "projects"},
+			wantErr: false,
+		},
+		{
+			name:       "empty title → rejected",
+			payload:    map[string]any{"name": "proj", "title": ""},
+			wantErr:    true,
+			wantSubstr: "project payload missing title",
+		},
+		{
+			name:       "priority out of range (too high) → rejected",
+			payload:    map[string]any{"title": "ok", "priority": 6},
+			wantErr:    true,
+			wantSubstr: "project priority must be 1-5",
+		},
+		{
+			name:       "priority out of range (negative) → rejected",
+			payload:    map[string]any{"title": "ok", "priority": -1},
+			wantErr:    true,
+			wantSubstr: "project priority must be 1-5",
+		},
+		{
+			name:    "priority 1 → ok (boundary)",
+			payload: map[string]any{"title": "ok", "priority": 1},
+			wantErr: false,
+		},
+		{
+			name:    "priority 5 → ok (boundary)",
+			payload: map[string]any{"title": "ok", "priority": 5},
+			wantErr: false,
+		},
+		{
+			name:    "priority 0 (unset) → ok",
+			payload: map[string]any{"title": "ok"},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatalf("marshal fixture: %v", err)
+			}
+			_, errMsg := decodeProjectParams(raw)
+			if tc.wantErr {
+				if errMsg == "" {
+					t.Fatalf("decodeProjectParams: want error, got none")
+				}
+				if !strings.Contains(errMsg, tc.wantSubstr) {
+					t.Errorf("errMsg = %q, want substring %q", errMsg, tc.wantSubstr)
+				}
+				return
+			}
+			if errMsg != "" {
+				t.Fatalf("decodeProjectParams: unexpected error: %s", errMsg)
+			}
+		})
 	}
 }

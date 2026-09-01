@@ -45,6 +45,31 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 	return &Store{q: s.q.WithTx(tx), dbtx: tx, workspaceID: s.workspaceID}
 }
 
+// MaxPayloadBytes bounds CreateParams.Payload — [F981-05], widened to 2 MiB
+// by [F983-01]. This is a fail-closed backstop, NOT a functional limit:
+// per-field caps in the mcp-side decoders (decodeGoalParams/
+// decodeProjectParams, internal/mcp/tools_proposal.go) and the seam-side
+// decoders (accept_decode.go) already keep a legitimate goal/project
+// payload well under this. The 128 KB value this replaced was tighter than
+// internal/handler/knowledge_handler.go's knowledgeMaxContentLen (1 MiB),
+// which bounds the article/til/zettelkasten content that flows into
+// AutoProposeConceptFromKnowledge — so a >128 KB but otherwise-valid
+// knowledge payload could pass knowledge_handler's own check and still get
+// silently rejected here with ErrPayloadTooLarge, while the caller still
+// saw success. 2 MiB restores this guard to a pure backstop against
+// runaway/adversarial payloads without clipping content a legitimate
+// caller already validated. The gap it closes is unchanged: nothing
+// checked len(p.Payload) before this guard existed, so an oversized
+// payload from a prompt-injected agent (propose_goal/propose_project MCP
+// tools, the only confirmed callers of Create at time of writing) reached
+// pending_proposals unbounded before any accept-time decoder cap ever ran.
+//
+// Exported (not package-private) so internal/storage/sqlite's ProposalStore
+// — a separate Create implementation for the dual-backend seam — enforces
+// the identical byte limit from one source of truth instead of a duplicated
+// magic number that could silently drift between the two backends.
+const MaxPayloadBytes = 2 * 1024 * 1024
+
 // Create records a new pending proposal. Payload is opaque JSON; the caller is
 // responsible for marshalling the entity-specific shape.
 //
@@ -52,6 +77,12 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 // (used e.g. for tests or rare cross-workspace proposals). When nil, the
 // store's configured workspace is used.
 func (s *Store) Create(ctx context.Context, p CreateParams) (*db.PendingProposal, error) {
+	// [F981-05] fail-closed size guard before any DB call — see
+	// MaxPayloadBytes' doc comment for why this value and what it protects.
+	if len(p.Payload) > MaxPayloadBytes {
+		return nil, fmt.Errorf("creating proposal: payload %d bytes exceeds %d byte limit: %w",
+			len(p.Payload), MaxPayloadBytes, ErrPayloadTooLarge)
+	}
 	ws := s.workspaceID
 	if p.WorkspaceID != nil {
 		ws = pgconv.ToUUID(p.WorkspaceID)

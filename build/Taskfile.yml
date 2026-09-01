@@ -86,6 +86,33 @@ tasks:
       - go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./internal/... ./cmd/...
     dir: ..
 
+  # [F981-01] frontend-check and build-frontend used to each maintain their
+  # own byte-identical copy of the 5-line npm-ci/build/copy sequence; a fix to
+  # one and not the other was a "passes locally, fails CI" trap. Both now
+  # delegate to these two shared internal tasks instead.
+  #
+  # Split in two (r1 review PR1-R1-01, GTD 496106d8): _frontend-build only
+  # installs+builds; the mkdir/rm/cp copy into cmd/server/web/dist is a
+  # SEPARATE task (_frontend-copy-dist) that frontend-check runs only AFTER
+  # lint/test pass. Copying before the gate ran meant a lint/test failure
+  # still overwrote the //go:embed source directory with an unvetted build —
+  # `go run ./cmd/server` would then serve frontend code that never passed
+  # quality gate.
+  _frontend-build:
+    internal: true
+    cmds:
+      - npm ci --ignore-scripts
+      - npm run build
+    dir: ../web
+
+  _frontend-copy-dist:
+    internal: true
+    cmds:
+      - mkdir -p ../cmd/server/web
+      - rm -rf ../cmd/server/web/dist
+      - cp -r dist ../cmd/server/web/dist
+    dir: ../web
+
   frontend-check:
     desc: "Frontend quality gate — lint, build, test, and copy dist for Go embed (skipped when sources unchanged)"
     sources:
@@ -99,24 +126,17 @@ tasks:
     generates:
       - ../cmd/server/web/dist/**
     cmds:
-      - npm ci --ignore-scripts
+      - task: _frontend-build
       - npm run lint
-      - npm run build
       - npm test
-      - mkdir -p ../cmd/server/web
-      - rm -rf ../cmd/server/web/dist
-      - cp -r dist ../cmd/server/web/dist
+      - task: _frontend-copy-dist
     dir: ../web
 
   build-frontend:
     desc: "Build frontend (required by cmd/server //go:embed) — run before task check locally"
     cmds:
-      - npm ci --ignore-scripts
-      - npm run build
-      - mkdir -p ../cmd/server/web
-      - rm -rf ../cmd/server/web/dist
-      - cp -r dist ../cmd/server/web/dist
-    dir: ../web
+      - task: _frontend-build
+      - task: _frontend-copy-dist
 
   build-server:
     desc: "Build REST API server binary to bin/, with local build identity (commit/date) injected into internal/buildinfo — GTD 61838147"

@@ -70,7 +70,25 @@ func wrapUntrustedAtoms(atoms []atom.Atom) []atom.Atom {
 }
 
 // clipSafeSlice maps clipSafe over every element of ss, preserving order.
+//
+// [F981-04] Sole survivor of three near-identical []string clip-loop
+// helpers (this one, tools_skill.go's former per-skill variant, tools_
+// procedural.go's former per-procedural variant — ticket ff812f80). The nil
+// early-return is a deliberate behaviour change adopted from the two
+// retired functions: nil in, nil out (JSON null), instead of this
+// function's prior make([]string, len(ss)) which turned a nil input into
+// []string{} (JSON []). All 8 pre-existing call sites already guard with
+// `if len(x) > 0` before calling this function (see e.g. wrapUntrustedAtom
+// below, tools_gtd.go, tools_knowledge.go, tools_learning.go,
+// tools_vision.go, tools_worksession.go), so nil never actually reached
+// this function through any of them either before or after this change —
+// the nil early-return is a defensive/direct-caller contract, not a wire-
+// format change at any existing call site (verified per-site, see
+// 收工單 for the full table).
 func clipSafeSlice(ss []string, maxRunes int) []string {
+	if ss == nil {
+		return nil
+	}
 	out := make([]string, len(ss))
 	for i, s := range ss {
 		out[i] = clipSafe(s, maxRunes)

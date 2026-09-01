@@ -671,7 +671,7 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 //   - Examples[], Examples[]{key}, Examples[]{value} — closed by routing
 //     neutralizeSkillExamples through neutralizeAnyValue instead of a
 //     key-name allowlist.
-//   - SourceAtomIDs[] — closed by giving it the clipSafeSkillStrings its four
+//   - SourceAtomIDs[] — closed by giving it the clipSafeSlice call its four
 //     sibling CSV fields already had. Its exemption reason claimed the
 //     elements were "id-shaped by convention"; the report that first deferred
 //     it said they were "server-generated ids"; wrapUntrustedSkill's own doc

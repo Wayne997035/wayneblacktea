@@ -180,6 +180,13 @@ func MatchMergedPRs(
 // ambiguous (a task can carry only one pr_url and pr_url is the more
 // authoritative signal). branch_name CAN be ambiguous — multiple in-flight
 // tasks may share the same branch slug (e.g. when a task was split mid-stream).
+//
+// [F981-03] Exception: kind="fix-pr" tasks are excluded from pr_url_exact
+// candidacy (GTD 7261e78b). By this repo's convention a fix-pr task's pr_url
+// points at the PR that EXPOSED the bug, not the one fixing it, so pr_url_exact
+// on a fix-pr task is a false-positive risk — it would silently auto-complete
+// a review-debt task the moment the PR that merely reported it gets merged.
+// fix-pr tasks can still auto-close, but only via branch_name_exact below.
 func matchSinglePR(
 	pr MergedPR,
 	prURLIndex, branchIndex map[string][]db.Task,
@@ -189,9 +196,19 @@ func matchSinglePR(
 	if pr.URL != "" {
 		k := strings.ToLower(strings.TrimSpace(pr.URL))
 		if hits := prURLIndex[k]; len(hits) > 0 {
+			// [F981-03] Filter out fix-pr tasks before picking a winner — see
+			// function doc above. Three-index slice forces a fresh backing
+			// array so we never mutate prURLIndex's own stored slice.
+			candidates := hits[:0:0]
+			for _, t := range hits {
+				if t.Kind == "fix-pr" {
+					continue
+				}
+				candidates = append(candidates, t)
+			}
 			// pr_url should be uniquely owned by at most one task; if for any
 			// reason it isn't, prefer the most-recent unclaimed task.
-			pick := pickMostRecentUnclaimed(hits, claimed)
+			pick := pickMostRecentUnclaimed(candidates, claimed)
 			if pick != nil {
 				return Match{
 					TaskID:      pick.ID,

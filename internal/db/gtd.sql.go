@@ -669,49 +669,6 @@ func (q *Queries) ListProjectTasksAllStatuses(ctx context.Context, arg ListProje
 	return items, nil
 }
 
-const setTaskVisionItemID = `-- name: SetTaskVisionItemID :one
-UPDATE tasks
-SET vision_item_id = $1,
-    updated_at     = NOW()
-WHERE id = $2
-  AND ($3::uuid IS NULL OR workspace_id = $3)
-RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id
-`
-
-type SetTaskVisionItemIDParams struct {
-	VisionItemID pgtype.UUID `json:"vision_item_id"`
-	ID           uuid.UUID   `json:"id"`
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) SetTaskVisionItemID(ctx context.Context, arg SetTaskVisionItemIDParams) (Task, error) {
-	row := q.db.QueryRow(ctx, setTaskVisionItemID, arg.VisionItemID, arg.ID, arg.WorkspaceID)
-	var i Task
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.Title,
-		&i.Description,
-		&i.Status,
-		&i.Priority,
-		&i.Assignee,
-		&i.DueDate,
-		&i.Artifact,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.WorkspaceID,
-		&i.Importance,
-		&i.Context,
-		&i.Checklist,
-		&i.Kind,
-		&i.BranchName,
-		&i.PRUrl,
-		&i.CommitSHAs,
-		&i.VisionItemID,
-	)
-	return i, err
-}
-
 const updateGoal = `-- name: UpdateGoal :one
 UPDATE goals
 SET title       = $1,

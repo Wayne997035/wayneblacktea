@@ -103,7 +103,7 @@ jobs:
         if: steps.frontend-cache.outputs.cache-hit != 'true'
         run: |
           cd web
-          npm ci
+          npm ci --ignore-scripts
           npm run build
           mkdir -p ../cmd/server/web
           cp -r dist ../cmd/server/web/dist

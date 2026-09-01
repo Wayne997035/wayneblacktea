@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -240,7 +241,8 @@ func insertAtomFixture(t *testing.T, db *wbtsqlite.DB, content string, tags []st
 	parentID := uuid.New()
 	// Encode tags as JSON array.
 	tagsJSON := `["` + strings.Join(tags, `","`) + `"]`
-	err := db.ExecContext(context.Background(),
+	err := db.ExecContext(
+		context.Background(),
 		`INSERT INTO memory_atoms (id, parent_table, parent_id, content, keywords, tags, digest_status, created_at)
 		 VALUES (?, 'test', ?, ?, '[]', ?, ?, datetime('now'))`,
 		id.String(), parentID.String(), content, tagsJSON, digestStatus,
@@ -344,5 +346,67 @@ func TestPromoteAtom_RuneAwareTitleTruncation(t *testing.T) {
 	r := callPromoteAtom(t, s, id.String())
 	if r.IsError {
 		t.Fatalf("expected success for 100-rune CJK atom, got error: %s", resultText(r))
+	}
+}
+
+// TestClipSafeSlice_NilInYieldsNilOut pins F981-04's behaviour-change
+// decision (ticket ff812f80): clipSafeSlice absorbed the nil early-return
+// from tools_skill.go's and tools_procedural.go's now-deleted per-type
+// variants, so nil in now yields nil out (JSON null) instead of the
+// pre-merge []string{} (JSON []). No direct unit test existed on any of the
+// three pre-merge functions — this is new coverage, not a renamed existing
+// test.
+func TestClipSafeSlice_NilInYieldsNilOut(t *testing.T) {
+	got := clipSafeSlice(nil, 10)
+	if got != nil {
+		t.Fatalf("clipSafeSlice(nil, 10) = %#v, want nil", got)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if string(b) != nullStr {
+		t.Errorf("json.Marshal(clipSafeSlice(nil, 10)) = %s, want %s", b, nullStr)
+	}
+}
+
+// TestClipSafeSlice_RuneSafeClip verifies clipSafeSlice clips each element at
+// a rune boundary (delegates to clipSafe per-element, tools_context.go:200),
+// matching the pre-merge clipSafeSlice's own behaviour-freeze contract —
+// F981-04. "héllo" (5 runes) exceeds maxRunes=3 so clipSafe truncates to its
+// first 3 runes and appends clipMarker (U+2026, tools_context.go:166); "x"
+// (1 rune) is under the cap and passes through unchanged — this is clipSafe's
+// documented contract, not something this merge changes.
+func TestClipSafeSlice_RuneSafeClip(t *testing.T) {
+	got := clipSafeSlice([]string{"héllo", "x"}, 3)
+	want := []string{"hél" + clipMarker, "x"}
+	if len(got) != len(want) {
+		t.Fatalf("clipSafeSlice length = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("clipSafeSlice[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestClipSafeSlice_EmptyNonNilStaysEmpty pins the non-nil empty-slice case
+// distinctly from TestClipSafeSlice_NilInYieldsNilOut: a non-nil, zero-length
+// []string{} must stay a non-nil []string{} (JSON []), not be folded into the
+// nil early-return above it — F981-04.
+func TestClipSafeSlice_EmptyNonNilStaysEmpty(t *testing.T) {
+	got := clipSafeSlice([]string{}, 10)
+	if got == nil {
+		t.Fatal("clipSafeSlice([]string{}, 10) = nil, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("clipSafeSlice([]string{}, 10) length = %d, want 0", len(got))
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if string(b) != "[]" {
+		t.Errorf("json.Marshal(clipSafeSlice([]string{}, 10)) = %s, want []", b)
 	}
 }

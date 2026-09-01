@@ -87,14 +87,6 @@ INSERT INTO tasks (project_id, title, description, priority, assignee, due_date,
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
--- name: SetTaskVisionItemID :one
-UPDATE tasks
-SET vision_item_id = sqlc.arg('vision_item_id'),
-    updated_at     = NOW()
-WHERE id = sqlc.arg('id')
-  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
-RETURNING *;
-
 -- name: CompleteTask :one
 -- artifact is presence-aware (Ω4, 2026-08-20-mcp-surface-spec.md): omitting
 -- it (sqlc.narg → SQL NULL) preserves whatever is already stored, matching

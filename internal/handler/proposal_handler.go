@@ -27,6 +27,14 @@ const (
 	// when a downstream materialise/resolve fails for reasons we don't want
 	// to leak (server-side panic, store init not wired, etc). The detail is
 	// already in c.Logger().Errorf — the API surface stays opaque.
+	//
+	// [F981-05] Also now the single 500-response text for every top-level
+	// StatusInternalServerError path in this file — 17 call sites previously
+	// used a differently-worded literal error string instead of this
+	// constant, an inconsistency (not an information-disclosure gap by
+	// itself, since neither wording leaks anything) closed by routing them
+	// all through the same constant a caller could someday key off
+	// consistently.
 	errInternalGeneric = "internal error"
 )
 
@@ -200,7 +208,7 @@ func (h *ProposalHandler) ListPendingProposals(c echo.Context) error {
 	rows, err := h.proposal.ListPending(c.Request().Context())
 	if err != nil {
 		c.Logger().Errorf("ListPendingProposals: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	// Optional server-side type filter (client also filters defensively).
@@ -255,7 +263,7 @@ func (h *ProposalHandler) ListProposals(c echo.Context) error {
 	rows, err := h.proposal.ListAll(c.Request().Context(), proposalType, 200)
 	if err != nil {
 		c.Logger().Errorf("ListProposals: %v", err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	out := make([]pendingProposalResponse, 0, len(rows))
@@ -308,7 +316,7 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 		}
 		if err != nil {
 			c.Logger().Errorf("ConfirmProposal reject %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 		}
 		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
 
@@ -333,7 +341,7 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 	}
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal get %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 	if prop.Status != string(proposal.StatusPending) {
 		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
@@ -363,7 +371,7 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 		}
 		if err != nil {
 			c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 		}
 		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
 	}
@@ -415,7 +423,7 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 		}
 		if err != nil {
 			c.Logger().Errorf("ConfirmProposal resolve task %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 		}
 		return c.JSON(http.StatusOK, confirmResponse{
 			Proposal: toResponse(*resolved),
@@ -430,7 +438,7 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 	})
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal materialise task %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
@@ -440,7 +448,7 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 	}
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal resolve task %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{
 		Proposal: toResponse(*resolved),
@@ -472,7 +480,7 @@ func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Contex
 		}
 		if err != nil {
 			c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 		}
 		return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved)})
 	}
@@ -556,7 +564,7 @@ func (h *ProposalHandler) acceptConcept(c echo.Context, ctx context.Context, id 
 	concept, err := h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
@@ -566,7 +574,7 @@ func (h *ProposalHandler) acceptConcept(c echo.Context, ctx context.Context, id 
 	}
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Concept: concept})
 }
@@ -579,7 +587,7 @@ func (h *ProposalHandler) acceptConcept(c echo.Context, ctx context.Context, id 
 func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
 	if h.decision == nil {
 		c.Logger().Errorf("ConfirmProposal accept %s: decision store not wired", id)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 	dp, errMsg := decodeProposalDecisionPayload(prop.Payload)
 	if errMsg != "" {
@@ -589,7 +597,7 @@ func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id
 	logged, err := h.decision.Log(ctx, dp)
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal materialise decision %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
@@ -602,7 +610,7 @@ func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id
 	}
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Decision: logged})
 }
@@ -618,7 +626,7 @@ func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, i
 
 	if h.knowledge == nil {
 		c.Logger().Errorf("ConfirmProposal knowledge %s: knowledge store not wired", id)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	source := ""
@@ -637,7 +645,7 @@ func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, i
 	})
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal materialise knowledge %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 
 	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
@@ -647,7 +655,7 @@ func (h *ProposalHandler) acceptKnowledge(c echo.Context, ctx context.Context, i
 	}
 	if err != nil {
 		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
+		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
 	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), KnowledgeItem: item})
 }

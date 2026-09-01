@@ -91,78 +91,8 @@ func TestNormalizeActor_EmptyInput(t *testing.T) {
 	}
 }
 
-// TestDryRunBackfillActors_ProductionSample runs the full set of distinct
-// production assignee spellings through the dry-run classifier. Ambiguous
-// dual-actor and role-label values MUST be flagged for manual decision, not
-// auto-mapped to a guess.
-func TestDryRunBackfillActors_ProductionSample(t *testing.T) {
-	candidates := []ActorBackfillCandidate{
-		{ID: "t-claude", Raw: "claude"},
-		{ID: "t-codex", Raw: "codex"},
-		{ID: "t-backend", Raw: "backend"},
-		{ID: "t-codex-claude-slash", Raw: "Codex/Claude"},
-		{ID: "t-claude-codex-slash", Raw: "claude/codex"},
-		{ID: "t-codex-lead", Raw: "Codex Lead"},
-		{ID: "t-claude-dispatch", Raw: "claude (engineer dispatch)"},
-		{ID: "t-claude-code", Raw: "claude-code"},
-	}
-	results := DryRunBackfillActors(candidates)
-	if len(results) != len(candidates) {
-		t.Fatalf("expected %d results, got %d", len(candidates), len(results))
-	}
-
-	byID := make(map[string]ActorBackfillResult, len(results))
-	for _, r := range results {
-		byID[r.ID] = r
-	}
-
-	wantSuggested := map[string]string{
-		"t-claude":          "claude",
-		"t-codex":           "codex",
-		"t-codex-lead":      "codex",
-		"t-claude-dispatch": "claude",
-		"t-claude-code":     "claude",
-	}
-	for id, want := range wantSuggested {
-		r, ok := byID[id]
-		if !ok {
-			t.Fatalf("missing result for %s", id)
-		}
-		if r.NeedsManualDecision {
-			t.Errorf("%s: expected auto-suggestion %q, got NeedsManualDecision (reason: %s)", id, want, r.Reason)
-		}
-		if r.SuggestedActor != want {
-			t.Errorf("%s: SuggestedActor = %q, want %q", id, r.SuggestedActor, want)
-		}
-	}
-
-	wantManual := []string{"t-backend", "t-codex-claude-slash", "t-claude-codex-slash"}
-	for _, id := range wantManual {
-		r, ok := byID[id]
-		if !ok {
-			t.Fatalf("missing result for %s", id)
-		}
-		if !r.NeedsManualDecision {
-			t.Errorf("%s: expected NeedsManualDecision=true, got SuggestedActor=%q", id, r.SuggestedActor)
-		}
-		if r.SuggestedActor != "" {
-			t.Errorf("%s: SuggestedActor must be empty when NeedsManualDecision, got %q", id, r.SuggestedActor)
-		}
-		if r.Reason == "" {
-			t.Errorf("%s: Reason must be non-empty when NeedsManualDecision", id)
-		}
-	}
-}
-
-// TestDryRunBackfillActors_EmptyInput asserts the pure classifier handles an
-// empty candidate slice without panicking and returns an empty (not nil)
-// result slice.
-func TestDryRunBackfillActors_EmptyInput(t *testing.T) {
-	results := DryRunBackfillActors(nil)
-	if results == nil {
-		t.Fatal("expected non-nil empty slice for nil input")
-	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(results))
-	}
-}
+// [F981-02] The two tests that exercised the batch-classifier function
+// removed from actor.go (production-sample + empty-input cases) were removed
+// together with it: zero production callers (only these tests called it, no
+// cmd/ entrypoint) — waste-audit finding 08dbd246. The candidate/result types
+// it used are left in place (out of scope, see actor.go).

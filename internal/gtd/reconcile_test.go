@@ -290,3 +290,144 @@ func TestReconcileMergedPRs_PG_CaseInsensitivePRURL(t *testing.T) {
 		t.Fatalf("matches = %d, want 1 (case-insensitive)", len(result.Matches))
 	}
 }
+
+// TestMatchMergedPRs_FixPRIgnoresPRURL is the regression test for GTD
+// 7261e78b (F981-03): a kind="fix-pr" task's pr_url conventionally points at
+// the PR that EXPOSED the bug, not the one fixing it. Reproduces the exact
+// 2026-08-01 false positive (task 8d5fc94c, PR #149): a fix-pr task with
+// pr_url set to the exposing PR's URL and no branch_name yet must NOT
+// auto-close when that PR merges.
+//
+// Mutation self-proof (manually verified during development, not re-run
+// automatically): reverting the kind=="fix-pr" filter in matchSinglePR's
+// pr_url_exact block makes this test fail — the task reappears in
+// result.Matches with Reason=pr_url_exact.
+func TestMatchMergedPRs_FixPRIgnoresPRURL(t *testing.T) {
+	pool := openTestPgPool(t)
+	store := newPgGTDStore(pool, nil)
+	ctx := context.Background()
+
+	prURL := "https://github.com/owner/repo/pull/149"
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:    "review-debt: fix modeof race",
+		Priority: 3,
+		Kind:     "fix-pr",
+		PRUrl:    &prURL,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Payload mirrors the 2026-08-01 repro: only the exposing PR (#149) is in
+	// the merged-PR list; the task has no branch_name yet (fix not started).
+	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
+		URL:      prURL,
+		HeadRef:  "",
+		MergedAt: time.Now().UTC(),
+		Title:    "fix: mcp capability refactor",
+	}})
+	if err != nil {
+		t.Fatalf("MatchMergedPRs: %v", err)
+	}
+	for _, m := range result.Matches {
+		if m.TaskID == task.ID {
+			t.Fatalf("fix-pr task %s matched via %s — pr_url_exact must be skipped for kind=fix-pr", task.ID, m.Reason)
+		}
+	}
+	if len(result.Matches) != 0 {
+		t.Errorf("matches = %d, want 0 (only the fix-pr task exists in this test)", len(result.Matches))
+	}
+	if result.NoMatch != 1 {
+		t.Errorf("no_match count = %d, want 1", result.NoMatch)
+	}
+
+	got, err := store.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != statusPending {
+		t.Errorf("status = %q, want pending (must not auto-close on pr_url_exact for fix-pr)", got.Status)
+	}
+}
+
+// TestMatchMergedPRs_FixPRStillMatchesViaBranchName verifies the fallback the
+// F981-03 fix relies on: a fix-pr task CAN still auto-close, but only via
+// branch_name_exact — the fix narrows the match condition, it does not
+// exclude fix-pr tasks from matching altogether.
+func TestMatchMergedPRs_FixPRStillMatchesViaBranchName(t *testing.T) {
+	pool := openTestPgPool(t)
+	store := newPgGTDStore(pool, nil)
+	ctx := context.Background()
+
+	branch := "fix/modeof-race"
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:      "review-debt: fix modeof race",
+		Priority:   3,
+		Kind:       "fix-pr",
+		BranchName: &branch,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
+		URL:      "https://github.com/owner/repo/pull/150",
+		HeadRef:  branch,
+		MergedAt: time.Now().UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("MatchMergedPRs: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(result.Matches))
+	}
+	if result.Matches[0].TaskID != task.ID {
+		t.Errorf("matched task = %s, want %s", result.Matches[0].TaskID, task.ID)
+	}
+	if result.Matches[0].Reason != gtd.MatchReasonBranchNameExact {
+		t.Errorf("reason = %q, want branch_name_exact", result.Matches[0].Reason)
+	}
+}
+
+// TestMatchMergedPRs_SharedPRURL_NonFixPRStillMatches: if a pr_url happens to
+// be shared by a fix-pr task and a non-fix-pr task (unusual but possible),
+// only the fix-pr task is excluded from pr_url_exact candidacy — the
+// non-fix-pr task can still match. Pins the F981-03 implementation point:
+// the filter operates on matchSinglePR's local candidate list, not by
+// dropping the PR from consideration entirely.
+func TestMatchMergedPRs_SharedPRURL_NonFixPRStillMatches(t *testing.T) {
+	pool := openTestPgPool(t)
+	store := newPgGTDStore(pool, nil)
+	ctx := context.Background()
+
+	prURL := "https://github.com/owner/repo/pull/151"
+	fixPRTask, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "review-debt", Priority: 3, Kind: "fix-pr", PRUrl: &prURL,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask fixPRTask: %v", err)
+	}
+	featureTask, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "feature work", Priority: 3, Kind: "feature", PRUrl: &prURL,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask featureTask: %v", err)
+	}
+
+	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
+		URL: prURL, HeadRef: "irrelevant", MergedAt: time.Now().UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("MatchMergedPRs: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(result.Matches))
+	}
+	if result.Matches[0].TaskID != featureTask.ID {
+		t.Errorf("matched task = %s, want feature task %s (fix-pr task %s must be excluded)",
+			result.Matches[0].TaskID, featureTask.ID, fixPRTask.ID)
+	}
+	if result.Matches[0].Reason != gtd.MatchReasonPRURLExact {
+		t.Errorf("reason = %q, want pr_url_exact", result.Matches[0].Reason)
+	}
+}

@@ -56,8 +56,8 @@ func wrapUntrustedProceduralMemory(m *procedural.ProceduralMemory) *procedural.P
 	out.Title = clipSafe(m.Title, proceduralTitleMaxRunes)
 	out.WhenToUse = clipSafe(m.WhenToUse, proceduralWhenToUseMaxRunes)
 	out.ApproachMD = clipSafe(m.ApproachMD, proceduralApproachMaxRunes)
-	out.ToolsUsed = clipSafeStringsBounded(m.ToolsUsed, proceduralListItemMaxRunes)
-	out.FilesTouched = clipSafeStringsBounded(m.FilesTouched, proceduralListItemMaxRunes)
+	out.ToolsUsed = clipSafeSlice(m.ToolsUsed, proceduralListItemMaxRunes)
+	out.FilesTouched = clipSafeSlice(m.FilesTouched, proceduralListItemMaxRunes)
 	return &out
 }
 
@@ -70,28 +70,6 @@ func wrapUntrustedProceduralMemories(memories []procedural.ProceduralMemory) []p
 	out := make([]procedural.ProceduralMemory, len(memories))
 	for i := range memories {
 		out[i] = *wrapUntrustedProceduralMemory(&memories[i])
-	}
-	return out
-}
-
-// clipSafeStringsBounded applies clipSafe(v, maxRunes) to every element of
-// a []string field, preserving order (nil in yields nil out).
-//
-// Named distinctly from tools_skill.go's clipSafeSkillStrings (same shape,
-// different maxRunes source) rather than sharing one helper — U13 Phase B
-// fans four engineers out across this package concurrently on independent
-// branches; a shared helper here would need to live in a file none of them
-// owns (boundary_markers.go, explicitly off-limits per dispatch) or risk a
-// same-name/same-package collision if another file's branch reaches for an
-// identically-generic name. Flagged in the dispatch report as a candidate
-// for consolidation into boundary_markers.go once all branches land.
-func clipSafeStringsBounded(items []string, maxRunes int) []string {
-	if items == nil {
-		return nil
-	}
-	out := make([]string, len(items))
-	for i, v := range items {
-		out[i] = clipSafe(v, maxRunes)
 	}
 	return out
 }
@@ -110,9 +88,11 @@ const recallItemBodyMaxRunes = 20000
 // Named/scoped to this file rather than tools_knowledge.go (which owns the
 // rest of db.KnowledgeItem's PENDING inventory rows — add_knowledge,
 // search_knowledge, list_knowledge) for the same parallel-dispatch
-// collision-avoidance reason as clipSafeStringsBounded's doc comment: this
-// handler's call site (handleRecall, tools_procedural.go) is not part of
-// that file's assignment, but returns the identical stored struct.
+// collision-avoidance reason this file's own now-merged clip-loop helper
+// used to carry in its doc comment (ticket ff812f80 consolidated it into
+// clipSafeSlice): this handler's call site (handleRecall, tools_procedural.go)
+// is not part of that file's assignment, but returns the identical stored
+// struct.
 func neutralizeRecallKnowledgeItems(items []db.KnowledgeItem) []db.KnowledgeItem {
 	out := make([]db.KnowledgeItem, len(items))
 	for i, it := range items {

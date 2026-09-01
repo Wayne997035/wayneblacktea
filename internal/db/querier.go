@@ -97,7 +97,6 @@ type Querier interface {
 	ResolveHandoff(ctx context.Context, arg ResolveHandoffParams) (int64, error)
 	ResolvePendingProposal(ctx context.Context, arg ResolvePendingProposalParams) (PendingProposal, error)
 	ReviewedSince(ctx context.Context, arg ReviewedSinceParams) ([]ReviewedSinceRow, error)
-	SetTaskVisionItemID(ctx context.Context, arg SetTaskVisionItemIDParams) (Task, error)
 	UpdateConceptStatus(ctx context.Context, arg UpdateConceptStatusParams) (Concept, error)
 	UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error)
 	UpdateKnowledgeEmbedding(ctx context.Context, arg UpdateKnowledgeEmbeddingParams) error

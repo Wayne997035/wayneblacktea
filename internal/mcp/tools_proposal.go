@@ -1164,6 +1164,11 @@ func decodeGoalParams(payload []byte) (gtd.CreateGoalParams, string) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return gtd.CreateGoalParams{}, storeErrorText("decoding goal payload", err)
 	}
+	// [F981-05] aligns with the seam-side accept_decode.go's DecodeGoalParams,
+	// which already rejected an empty title; this mcp-side decoder did not.
+	if p.Title == "" {
+		return gtd.CreateGoalParams{}, "goal payload missing title"
+	}
 	if len(p.Title) > 512 {
 		return gtd.CreateGoalParams{}, "goal title exceeds 512 bytes"
 	}
@@ -1193,6 +1198,11 @@ func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return gtd.CreateProjectParams{}, storeErrorText("decoding project payload", err)
 	}
+	// [F981-05] aligns with the seam-side accept_decode.go's DecodeProjectParams,
+	// which already rejected an empty title; this mcp-side decoder did not.
+	if p.Title == "" {
+		return gtd.CreateProjectParams{}, "project payload missing title"
+	}
 	if len(p.Name) > 512 {
 		return gtd.CreateProjectParams{}, "project name exceeds 512 bytes"
 	}
@@ -1204,6 +1214,12 @@ func decodeProjectParams(payload []byte) (gtd.CreateProjectParams, string) {
 	}
 	if len(p.Description) > 65536 {
 		return gtd.CreateProjectParams{}, "project description exceeds 64 KB"
+	}
+	// [F981-05] aligns with accept_decode.go's priority range check (projects.priority
+	// has a CHECK (priority BETWEEN 1 AND 5)): 0 means "unset" and is allowed through,
+	// matching gtd.CreateProjectParams' own zero-value-defaults-to-3 convention.
+	if p.Priority != 0 && (p.Priority < 1 || p.Priority > 5) {
+		return gtd.CreateProjectParams{}, "project priority must be 1-5"
 	}
 	pp := gtd.CreateProjectParams{
 		Name:        p.Name,

@@ -58,7 +58,19 @@ func scanPendingProposal(scan func(...any) error) (db.PendingProposal, error) {
 }
 
 // Create records a new pending proposal.
+//
+// [F981-05] Enforces the same MaxPayloadBytes fail-closed size guard as the
+// Postgres store (internal/proposal/store.go's Create) — this is a separate
+// Create implementation for the dual-backend seam, not a wrapper around the
+// Postgres one, so the write-time protection has to be applied here
+// independently or the SQLite backend (the local-dev default, per
+// storage.ResolveFromEnv) would remain exposed to the exact unbounded-
+// payload gap this ticket closes on Postgres.
 func (s *ProposalStore) Create(ctx context.Context, p proposal.CreateParams) (*db.PendingProposal, error) {
+	if len(p.Payload) > proposal.MaxPayloadBytes {
+		return nil, fmt.Errorf("creating proposal: payload %d bytes exceeds %d byte limit: %w",
+			len(p.Payload), proposal.MaxPayloadBytes, proposal.ErrPayloadTooLarge)
+	}
 	workspaceID := s.db.workspaceArg()
 	if p.WorkspaceID != nil {
 		workspaceID = p.WorkspaceID.String()
