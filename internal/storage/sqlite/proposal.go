@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -264,7 +263,10 @@ func (s *ProposalStore) AutoProposeConceptFromKnowledge(
 	if !proposal.ShouldAutoProposeFor(item) {
 		return nil, nil //nolint:nilnil // same sentinel behavior as the Postgres store
 	}
-	payload, err := json.Marshal(proposal.ConceptCandidate{
+	// [F0902-51] proposal.MarshalConceptCandidate instead of json.Marshal —
+	// see its doc comment for why plain json.Marshal's default HTML-escaping
+	// can silently inflate this payload past proposal.MaxPayloadBytes.
+	payload, err := proposal.MarshalConceptCandidate(proposal.ConceptCandidate{
 		Title:          item.Title,
 		Content:        item.Content,
 		Tags:           item.Tags,
