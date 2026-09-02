@@ -1310,15 +1310,16 @@ func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams
 		return gtd.CreateTaskParams{}, nil, "task title exceeds 500 characters"
 	}
 
-	kind := tp.SuggestedKind
-	if kind == "" {
-		kind = validator.KindGeneral
-	}
-	if !validator.IsValidKind(kind) {
-		kind = validator.KindGeneral
-	}
-
+	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
+	// of silently coercing it (GTD f457740e / [F0902-54]) — merged first so
+	// strict mode fails on it like any other vagueness warning. This one
+	// helper backs all three MCP backends (materializeTaskPg,
+	// materializeTaskIface, and materializeTaskSQLite's pre-commit gate).
+	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
 	warnings := validator.CheckTaskInput(tp.Description, kind)
+	if kindWarning != "" {
+		warnings = append([]string{kindWarning}, warnings...)
+	}
 	if len(warnings) > 0 && strict {
 		return gtd.CreateTaskParams{}, warnings, fmt.Sprintf("vagueness check failed: %v", warnings)
 	}

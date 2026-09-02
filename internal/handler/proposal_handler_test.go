@@ -704,6 +704,17 @@ func makeTaskProposal(id uuid.UUID, title, description, kind string) db.PendingP
 // TypeTask validator tests — "TBD" hits validator.vaguenessMarkers.
 const vagueDescriptionFixture = "TBD"
 
+// cleanKindTestDescription passes CheckTaskInput cleanly for kind=general
+// (≥30 runes, contains a file:line reference) — used by the invalid-kind
+// tests below ([F0902-54]) so the only warning asserted is the kind warning,
+// with no description-vagueness noise mixed in.
+const cleanKindTestDescription = "Add slog.Info audit row to confirm_proposal at internal/handler/proposal_handler.go:240 with proposal_id"
+
+// wantKindGeneral names the fallback kind ResolveTaskKind coerces an
+// invalid/empty suggested_kind to; named to avoid a goconst duplicate-string
+// finding across the InvalidKind/EmptyKind tests below.
+const wantKindGeneral = "general"
+
 // confirmTaskProposal runs a single confirm_proposal request against a fresh
 // handler wired with the supplied stores; returns the recorder + parsed body.
 func confirmTaskProposal(
@@ -796,6 +807,103 @@ func TestConfirmProposal_TypeTask_RunsVagueness_NoWarnings(t *testing.T) {
 	}
 }
 
+// TestConfirmProposal_TypeTask_InvalidKind_WarnMode (GTD f457740e /
+// [F0902-54]): an unrecognised suggested_kind, in warn mode, no longer
+// silently coerces to general — the caller now gets a warning naming the
+// bad kind, the task is still created (fail-open, per decision 161d303e),
+// and it lands with kind=general.
+func TestConfirmProposal_TypeTask_InvalidKind_WarnMode(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Bogus kind task", cleanKindTestDescription, "bogus")
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", code, raw)
+	}
+	warnings, ok := body["warnings"].([]any)
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("expected exactly 1 warning (the kind warning), got %v (body=%s)", warnings, raw)
+	}
+	if !strings.Contains(warnings[0].(string), "bogus") {
+		t.Errorf("warning = %q, want it to mention %q", warnings[0], "bogus")
+	}
+	creates := taskStore.snapshot()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 task created in warn mode, got %d", len(creates))
+	}
+	if creates[0].Kind != wantKindGeneral {
+		t.Errorf("task.Kind = %q, want %q (invalid kind falls back)", creates[0].Kind, wantKindGeneral)
+	}
+}
+
+// TestConfirmProposal_TypeTask_InvalidKind_StrictMode (GTD f457740e /
+// [F0902-54]): the same bogus-kind payload under strict mode is now a hard
+// 400 — the kind warning merges into the same warnings slice strict mode
+// already gates on, so no separate branch was added. No task is created and
+// the proposal stays pending.
+func TestConfirmProposal_TypeTask_InvalidKind_StrictMode(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "true")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Bogus kind task", cleanKindTestDescription, "bogus")
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", code, raw)
+	}
+	warnings, ok := body["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("expected non-empty warnings in strict-mode error body, got %v (body=%s)", warnings, raw)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w.(string), "bogus") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one mentioning %q", warnings, "bogus")
+	}
+	if len(taskStore.snapshot()) != 0 {
+		t.Errorf("expected 0 tasks in strict mode, got %d", len(taskStore.snapshot()))
+	}
+	if len(store.resolved) != 0 {
+		t.Errorf("expected proposal to stay pending, got resolved=%v", store.resolved)
+	}
+}
+
+// TestConfirmProposal_TypeTask_EmptyKind_NoWarning is the negative-space
+// control proving empty kind stays silent (GTD f457740e Constraints: NEVER
+// convert empty-kind handling into a warning). Kept alongside the two tests
+// above so a regression that makes ResolveTaskKind warn on "" fails here.
+func TestConfirmProposal_TypeTask_EmptyKind_NoWarning(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Empty kind task", cleanKindTestDescription, "")
+	store := newFakeProposalStore(prop)
+	taskStore := &fakeProposalTaskStore{}
+
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", code, raw)
+	}
+	if warnings, ok := body["warnings"].([]any); ok && len(warnings) > 0 {
+		t.Errorf("expected no warnings for empty kind, got %v", warnings)
+	}
+	creates := taskStore.snapshot()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 task created, got %d", len(creates))
+	}
+	if creates[0].Kind != wantKindGeneral {
+		t.Errorf("task.Kind = %q, want %q", creates[0].Kind, wantKindGeneral)
+	}
+}
+
 // TestConfirmProposal_TypeTask_MalformedPayload: malformed JSON → 400, no task.
 func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 	id := uuid.New()
@@ -821,10 +929,11 @@ func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 // batch-confirm TypeTask round-1 follow-up tests.
 type batchConfirmTypeTaskResp struct {
 	Results []struct {
-		ID      string `json:"id"`
-		OK      bool   `json:"ok"`
-		Skipped bool   `json:"skipped"`
-		Error   string `json:"error"`
+		ID       string   `json:"id"`
+		OK       bool     `json:"ok"`
+		Skipped  bool     `json:"skipped"`
+		Error    string   `json:"error"`
+		Warnings []string `json:"warnings"`
 	} `json:"results"`
 }
 
@@ -928,6 +1037,66 @@ func TestProposalHandler_ConfirmBatch_TypeTask_StrictVague(t *testing.T) {
 	const wantSubstr = "vagueness check failed"
 	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
 		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
+	}
+	if len(taskStore.snapshot()) != 0 {
+		t.Errorf("expected 0 tasks in strict mode, got %d", len(taskStore.snapshot()))
+	}
+	if len(store.resolved) != 0 {
+		t.Errorf("expected proposal to stay pending, got resolved=%v", store.resolved)
+	}
+}
+
+// TestProposalHandler_ConfirmBatch_TypeTask_InvalidKind_WarnMode (GTD
+// f457740e / [F0902-54]): a bogus suggested_kind in warn mode no longer
+// silently vanishes for batch accept — entry.OK stays true, the task is
+// still materialised with kind=general, and the new entry.Warnings field
+// (previously nonexistent — batch accept discarded ALL warn-mode warnings,
+// not just kind ones) now carries the kind message.
+func TestProposalHandler_ConfirmBatch_TypeTask_InvalidKind_WarnMode(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Bogus kind batch task", cleanKindTestDescription, "bogus")
+
+	_, taskStore, resp := runBatchConfirmTypeTask(t, prop, id)
+	if !resp.Results[0].OK {
+		t.Errorf("result.OK = false, want true (error=%q)", resp.Results[0].Error)
+	}
+	if len(resp.Results[0].Warnings) != 1 {
+		t.Fatalf("expected exactly 1 warning (the kind warning), got %v", resp.Results[0].Warnings)
+	}
+	if !strings.Contains(resp.Results[0].Warnings[0], "bogus") {
+		t.Errorf("warning = %q, want it to mention %q", resp.Results[0].Warnings[0], "bogus")
+	}
+	creates := taskStore.snapshot()
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 task created, got %d", len(creates))
+	}
+	if creates[0].Kind != wantKindGeneral {
+		t.Errorf("task.Kind = %q, want %q", creates[0].Kind, wantKindGeneral)
+	}
+}
+
+// TestProposalHandler_ConfirmBatch_TypeTask_InvalidKind_StrictMode (GTD
+// f457740e / [F0902-54]): the same bogus-kind payload under strict mode now
+// hard-fails the batch entry — kindWarning merges into the same warnings
+// slice the existing strict-mode check already gates on, so entry.Error
+// carries "vagueness check failed" plus the kind message, no task is
+// created, and the proposal stays pending.
+func TestProposalHandler_ConfirmBatch_TypeTask_InvalidKind_StrictMode(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "1")
+	id := uuid.New()
+	prop := makeTaskProposal(id, "Bogus kind batch task", cleanKindTestDescription, "bogus")
+
+	store, taskStore, resp := runBatchConfirmTypeTask(t, prop, id)
+	if resp.Results[0].OK {
+		t.Errorf("result.OK = true, want false on strict-mode invalid kind")
+	}
+	const wantSubstr = "vagueness check failed"
+	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
+		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
+	}
+	if !strings.Contains(resp.Results[0].Error, "bogus") {
+		t.Errorf("entry.Error = %q, want it to mention %q", resp.Results[0].Error, "bogus")
 	}
 	if len(taskStore.snapshot()) != 0 {
 		t.Errorf("expected 0 tasks in strict mode, got %d", len(taskStore.snapshot()))

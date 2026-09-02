@@ -277,3 +277,90 @@ func makeStrings(n int, val string) []string {
 	}
 	return out
 }
+
+// invalidKindDecodeTestDescription passes CheckTaskInput cleanly for
+// kind=general (≥30 runes, contains a file:line reference) so the tests
+// below assert exactly one warning (the kind warning).
+const invalidKindDecodeTestDescription = "Fix kind coercion at internal/handler/proposal_handler.go:240"
+
+// TestDecodeTaskParams_InvalidKind (GTD f457740e / [F0902-54]): DecodeTaskParams
+// is the A1-seam copy of the same kind-coercion logic the other 3 call sites
+// share — not yet production-reachable for TypeTask (see doc comment on
+// DecodeTaskParams), but must stay in lockstep so wiring this seam later
+// (A1-seam follow-up, GTD 6d960dce / 1fa9889c) doesn't reintroduce the bug
+// that previously discarded an invalid suggested_kind silently. Table-driven
+// (gocyclo) — mutation check: blank ResolveTaskKind's warning line and the
+// "bogus kind" rows below fail red while "empty kind" stays green.
+func TestDecodeTaskParams_InvalidKind(t *testing.T) {
+	tests := []struct {
+		name              string
+		suggestedKind     string
+		strict            bool
+		wantErrSubstrs    []string // non-empty ⇒ expect a non-nil error containing all of these
+		wantKind          string   // checked only when wantErrSubstrs is empty
+		wantWarningCount  int
+		wantWarningSubstr string
+	}{
+		{
+			name:              "non-strict bogus kind → general + warning",
+			suggestedKind:     "bogus",
+			wantKind:          "general",
+			wantWarningCount:  1,
+			wantWarningSubstr: "bogus",
+		},
+		{
+			name:             "empty kind → general, no warning",
+			suggestedKind:    "",
+			wantKind:         "general",
+			wantWarningCount: 0,
+		},
+		{
+			name:              "strict bogus kind → error contains bogus",
+			suggestedKind:     "bogus",
+			strict:            true,
+			wantErrSubstrs:    []string{"vagueness check failed", "bogus"},
+			wantWarningCount:  1,
+			wantWarningSubstr: "bogus",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(TaskPayload{
+				Title:         "Kind test task",
+				Description:   invalidKindDecodeTestDescription,
+				SuggestedKind: tc.suggestedKind,
+				SourceTool:    "test",
+			})
+			if err != nil {
+				t.Fatalf("marshal fixture: %v", err)
+			}
+			params, warnings, decErr := DecodeTaskParams(payload, tc.strict)
+
+			if len(tc.wantErrSubstrs) > 0 {
+				if decErr == nil {
+					t.Fatal("DecodeTaskParams: want error, got nil")
+				}
+				for _, substr := range tc.wantErrSubstrs {
+					if !strings.Contains(decErr.Error(), substr) {
+						t.Errorf("error = %q, want it to contain %q", decErr.Error(), substr)
+					}
+				}
+			} else {
+				if decErr != nil {
+					t.Fatalf("DecodeTaskParams: unexpected error: %v", decErr)
+				}
+				if params.Kind != tc.wantKind {
+					t.Errorf("params.Kind = %q, want %q", params.Kind, tc.wantKind)
+				}
+			}
+
+			if len(warnings) != tc.wantWarningCount {
+				t.Fatalf("warnings = %v, want %d warning(s)", warnings, tc.wantWarningCount)
+			}
+			if tc.wantWarningSubstr != "" && !strings.Contains(warnings[0], tc.wantWarningSubstr) {
+				t.Errorf("warnings[0] = %q, want substring %q", warnings[0], tc.wantWarningSubstr)
+			}
+		})
+	}
+}
