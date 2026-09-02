@@ -56,8 +56,10 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 			"limit, offset, returned and has_more so you can tell whether rows remain. "+
 			"This is a LIST VIEW, not the full record: description and next_planned_step are projected "+
 			"to 500 runes, name/path/language/current_branch and each known_issues entry to 120, and "+
-			"known_issues to 5 entries; any field the projection shortened carries its own "+
-			"\"<field>_truncated\": true — absent or false means you have the whole value. "+
+			"known_issues to 5 entries; any field the projection changed carries its own "+
+			"\"<field>_truncated\": true, meaning that field differs from the stored value — either "+
+			"it was shortened to fit the cap, or a boundary-marker-like substring inside it was "+
+			"neutralised; false means the field is byte-identical to what is stored. "+
 			"The full stored text of one repo comes back from sync_repo called with only that repo's "+
 			"name, but sync_repo is a WRITE that re-stamps the row, so call it only when you also "+
 			"intend to update the repo."),
@@ -765,15 +767,24 @@ type repoListItem struct {
 }
 
 // clipRepoListField projects one free-text field to maxRunes, reporting
-// whether the projection actually shortened it — [F170-02].
+// whether the projected value differs from the stored value — [F170-02],
+// [F0902-53].
 //
-// "Shortened" is measured on the rune count BEFORE clipSafe, not by
-// comparing input to output: clipSafe also neutralises boundary markers, and
-// a short field carrying a forged marker comes back different without having
-// been truncated at all. Reporting that as truncation would send the caller
-// chasing a full record that it already has.
+// The flag compares OUTPUT to INPUT rather than measuring the input's rune
+// count against maxRunes. That rune-count check under-reported: a short
+// field carrying a forged boundary marker is rewritten by clipSafe (via
+// neutralizeBoundaryMarkers) even though it was never over the cap, so the
+// caller's copy stopped being byte-identical to what is stored while the
+// flag still read false — breaking the "false means you have the whole
+// value" contract this flag exists for. Comparing output to input is a
+// deliberate high-report instead ([F0902-53],
+// 2026-09-02-sprint-dispatch.md decision #3): it also flags the marker-
+// neutralisation case, at the cost of one extra sync_repo round trip for a
+// caller that wants the byte-exact stored value; under-reporting has no
+// such recovery path because the caller never learns anything changed.
 func clipRepoListField(s string, maxRunes int) (string, bool) {
-	return clipSafe(s, maxRunes), utf8.RuneCountInString(s) > maxRunes
+	out := clipSafe(s, maxRunes)
+	return out, out != s
 }
 
 // clipRepoListText is clipRepoListField over a nullable column. SQL NULL is
