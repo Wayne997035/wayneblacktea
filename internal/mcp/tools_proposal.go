@@ -1338,9 +1338,9 @@ func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams
 	}
 	if len(warnings) > 0 && strict {
 		// [F173-08] Single construction point for all three MCP accept
-		// backends' NewToolResultError(errMsg): materializeTaskPg (Pg, :597),
-		// materializeTaskIface (Iface, :632), and materializeTaskSQLite's
-		// pre-commit gate (SQLiteTx, :673) all just propagate this string
+		// backends' NewToolResultError(errMsg): materializeTaskPg (Pg),
+		// materializeTaskIface (Iface), and materializeTaskSQLite's
+		// pre-commit gate (SQLiteTx) all just propagate this string
 		// upward unchanged, so neutralising it once here — before the
 		// caller-supplied kind value (validator.ResolveTaskKind,
 		// task_kind.go:57) can reach any of the three — covers all of them.
