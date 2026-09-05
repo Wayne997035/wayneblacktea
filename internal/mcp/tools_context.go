@@ -780,9 +780,13 @@ type repoListItem struct {
 // flag still read false — breaking the "false means you have the whole
 // value" contract this flag exists for. Comparing output to input is a
 // deliberate high-report instead ([F0902-53]): it also flags the marker-
-// neutralisation case, at the cost of one extra sync_repo round trip for a
-// caller that wants the byte-exact stored value; under-reporting has no
-// such recovery path because the caller never learns anything changed.
+// neutralisation case. The asymmetry is what justifies it: over-reporting
+// costs the caller a check that turns up unchanged text, while
+// under-reporting is silent and unrecoverable, because the caller never
+// learns anything was touched. sync_repo is not the recovery path either —
+// it returns the record at larger caps (2,000 / 20,000 runes) but still
+// truncated and marker-neutralised, so it is not a byte-exact copy of what
+// is stored.
 func clipRepoListField(s string, maxRunes int) (string, bool) {
 	out := clipSafe(s, maxRunes)
 	return out, out != s
