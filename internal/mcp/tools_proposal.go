@@ -1327,7 +1327,17 @@ func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams
 		warnings = append([]string{kindWarning}, warnings...)
 	}
 	if len(warnings) > 0 && strict {
-		return gtd.CreateTaskParams{}, warnings, fmt.Sprintf("vagueness check failed: %v", warnings)
+		// [F173-08] Single construction point for all three MCP accept
+		// backends' NewToolResultError(errMsg): materializeTaskPg (Pg, :597),
+		// materializeTaskIface (Iface, :632), and materializeTaskSQLite's
+		// pre-commit gate (SQLiteTx, :673) all just propagate this string
+		// upward unchanged, so neutralising it once here — before the
+		// caller-supplied kind value (validator.ResolveTaskKind,
+		// task_kind.go:57) can reach any of the three — covers all of them.
+		// Same untrusted-content class as the "warnings" field sanitised in
+		// neutralizeCreatedEntity's map[string]any case (F173-04) above.
+		errMsg := fmt.Sprintf("vagueness check failed: %v", warnings)
+		return gtd.CreateTaskParams{}, warnings, neutralizeBoundaryMarkers(errMsg)
 	}
 
 	return gtd.CreateTaskParams{
