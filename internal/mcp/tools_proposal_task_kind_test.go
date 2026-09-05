@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -95,6 +96,33 @@ func TestDecodeTaskProposalParams_InvalidKind(t *testing.T) {
 	})
 }
 
+// confirmProposalTaskCreated decodes confirm_proposal's response body for the
+// TypeTask warn-mode shape (confirmResult.Created = {"task":{...},"warnings":
+// [...]}), anchoring assertions to the structured warnings field instead of
+// the raw response text. [F173-05] A raw-text substring check on "bogus" can
+// be satisfied by an unrelated echo — confirmResult.Proposal carries the
+// original pending_proposals payload (including suggested_kind="bogus")
+// verbatim — even when ResolveTaskKind emits no warning at all, so it never
+// actually pinned down the mechanism it claimed to guard (r2 spec-verifier
+// trc-1).
+type confirmProposalTaskCreated struct {
+	Created struct {
+		Task struct {
+			Kind string `json:"kind"`
+		} `json:"task"`
+		Warnings []string `json:"warnings"`
+	} `json:"created"`
+}
+
+func decodeConfirmProposalTaskCreated(t *testing.T, body string) confirmProposalTaskCreated {
+	t.Helper()
+	var decoded confirmProposalTaskCreated
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("decode confirm_proposal response JSON: %v; body: %s", err, body)
+	}
+	return decoded
+}
+
 // createTaskProposal inserts a TypeTask pending_proposals row and returns its
 // UUID string. Mirrors createKnowledgeProposal / createDecisionProposal.
 func createTaskProposal(t *testing.T, s *Server, title, description, suggestedKind string) string {
@@ -133,12 +161,16 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected success, got error: %s", resultText(result))
 	}
+	// [F173-05] Structural assertion on created.{task.kind,warnings} — see
+	// confirmProposalTaskCreated's doc comment for why the raw-body
+	// substring check this replaces was a false guard.
 	body := resultText(result)
-	if !strings.Contains(body, "bogus") {
-		t.Errorf("response missing kind warning mentioning %q: %s", "bogus", body)
+	decoded := decodeConfirmProposalTaskCreated(t, body)
+	if decoded.Created.Task.Kind != wantKindGeneral {
+		t.Errorf("created.task.kind = %q, want %q", decoded.Created.Task.Kind, wantKindGeneral)
 	}
-	if !strings.Contains(body, `"general"`) {
-		t.Errorf("response missing kind=general fallback: %s", body)
+	if len(decoded.Created.Warnings) != 1 || !strings.Contains(decoded.Created.Warnings[0], "bogus") {
+		t.Errorf("created.warnings = %v, want exactly 1 warning mentioning %q", decoded.Created.Warnings, "bogus")
 	}
 
 	pp, err := s.proposal.Get(ctx, parseTestUUID(t, propID))
@@ -224,11 +256,15 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_Pg_WarnMode(t *testing.T) {
 	if acceptResult.IsError {
 		t.Fatalf("confirm_proposal accept (PG) returned tool error: %s", resultText(acceptResult))
 	}
+	// [F173-05] Same structural assertion as the SQLite WarnMode test above —
+	// see confirmProposalTaskCreated's doc comment for why the raw-body
+	// substring check this replaces was a false guard.
 	got := resultText(acceptResult)
-	if !strings.Contains(got, "bogus") {
-		t.Errorf("PG response missing kind warning mentioning %q: %s", "bogus", got)
+	decoded := decodeConfirmProposalTaskCreated(t, got)
+	if decoded.Created.Task.Kind != wantKindGeneral {
+		t.Errorf("created.task.kind = %q, want %q", decoded.Created.Task.Kind, wantKindGeneral)
 	}
-	if !strings.Contains(got, `"general"`) {
-		t.Errorf("PG response missing kind=general fallback: %s", got)
+	if len(decoded.Created.Warnings) != 1 || !strings.Contains(decoded.Created.Warnings[0], "bogus") {
+		t.Errorf("created.warnings = %v, want exactly 1 warning mentioning %q", decoded.Created.Warnings, "bogus")
 	}
 }
