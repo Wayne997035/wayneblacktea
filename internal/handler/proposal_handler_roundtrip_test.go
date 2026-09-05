@@ -26,7 +26,7 @@ func jsonEscapeSequence(hex4 string) []byte {
 }
 
 // TestPendingProposalResponse_PayloadStillHTMLEscapedOnOutput — [F0902-51]
-// spec row 5 (.specs/sprint-0902-fixes/5d924019.md Acceptance table row 5)
+// spec row 5 (Acceptance table row 5)
 // and Risk flag D4.
 //
 // proposal.MarshalConceptCandidate (autopropose_marshal_test.go) disables

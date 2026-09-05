@@ -25,10 +25,8 @@ import (
 //
 // Fixture shape reused across these tests — Title/SourceItemID/
 // SourceItemType match the exact values used to independently measure the
-// struct's fixed JSON envelope overhead (133 bytes) in
-// /private/tmp/claude-501/-Users-waynechen--project/0e7d4d07-07b4-4490-a8b7-3d1123ba604c/scratchpad/jsonesc2/main.go
-// and re-verified against the actual MarshalConceptCandidate implementation
-// in .../scratchpad/jsonesc3/main.go.
+// struct's fixed JSON envelope overhead (133 bytes)
+// and re-verified against the actual MarshalConceptCandidate implementation.
 const (
 	fixtureTitle          = "some knowledge item title"
 	fixtureSourceItemID   = "00000000-0000-0000-0000-000000000000"
@@ -51,7 +49,7 @@ func jsonEscapeSequence(hex4 string) []byte {
 }
 
 // TestMarshalConceptCandidate_NoHTMLEscape — [F0902-51] spec row 1
-// (.specs/sprint-0902-fixes/5d924019.md Acceptance table row 1).
+// (Acceptance table row 1).
 func TestMarshalConceptCandidate_NoHTMLEscape(t *testing.T) {
 	c := proposal.ConceptCandidate{Title: "t", Content: `<b>&"hi"</b>`}
 	got, err := proposal.MarshalConceptCandidate(c)
@@ -80,8 +78,7 @@ func TestMarshalConceptCandidate_NoHTMLEscape(t *testing.T) {
 
 // TestMarshalConceptCandidate_DensityRegression — [F0902-52] spec row 2.
 // 1 MiB content, exactly 20% '<' density (209715 '<' + 838861 'a', reusing
-// the exact construction independently verified in
-// scratchpad/jsonesc3/main.go). Pins both: (a) the pre-fix failure this
+// the exact construction independently verified). Pins both: (a) the pre-fix failure this
 // ticket closes — plain json.Marshal exceeds MaxPayloadBytes at this
 // density, a permanent red-before-fix regression guard that stays green
 // forever since it only checks plain json.Marshal's own (unmodified)
@@ -232,7 +229,7 @@ func TestMarshalConceptCandidate_FullQuoteDensityExceedsCap(t *testing.T) {
 }
 
 // TestAutoProposeConceptFromKnowledge_PayloadCap_PG — [F0902-52] spec row 3,
-// Postgres half. Boundaries for this ticket (2026-09-02-sprint-dispatch.md)
+// Postgres half. Boundaries for this ticket [F0902-52]
 // scope engineer A to internal/proposal/autopropose.go,
 // internal/storage/sqlite/proposal.go (one call-site line only), and this
 // package's test files — no new file in internal/storage/sqlite is in
