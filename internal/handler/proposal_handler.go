@@ -399,14 +399,16 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 	// Run the SAME validator that handleAddTask runs — closing the bypass
 	// identified by SA decision 42e0b783. Field name "description" matches the
 	// MCP add_task message so existing warnings translate 1:1.
-	kind := tp.SuggestedKind
-	if kind == "" {
-		kind = validator.KindGeneral
-	}
-	if !validator.IsValidKind(kind) {
-		kind = validator.KindGeneral
-	}
+	//
+	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
+	// of silently coercing it (GTD f457740e / [F0902-54]) — the kind warning
+	// is merged first so strict mode fails on it exactly like any other
+	// vagueness warning.
+	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
 	warnings := validator.CheckTaskInput(tp.Description, kind)
+	if kindWarning != "" {
+		warnings = append([]string{kindWarning}, warnings...)
+	}
 	if len(warnings) > 0 && validator.StrictModeEnabled() {
 		return c.JSON(http.StatusBadRequest, map[string]any{
 			"error":    "vagueness check failed",
@@ -773,6 +775,9 @@ type batchConfirmResultEntry struct {
 	OK      bool   `json:"ok"`
 	Skipped bool   `json:"skipped,omitempty"` // true when proposal was already resolved
 	Error   string `json:"error,omitempty"`
+	// Warnings mirrors confirmResponse.Warnings (line 292) for the batch
+	// path — set only for the TypeTask success branch today ([F0902-54]).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // batchConfirmResponse is returned by ConfirmBatch.
@@ -1030,11 +1035,15 @@ func (h *ProposalHandler) batchResolveOne(
 				// Legacy: resolve-only when task store not wired. Same fallback as
 				// singular acceptTask (line 357). Allow resolve to proceed.
 			} else {
-				kind := m.tp.SuggestedKind
-				if kind == "" || !validator.IsValidKind(kind) {
-					kind = validator.KindGeneral
-				}
+				// ResolveTaskKind surfaces an invalid suggested_kind as a
+				// warning instead of silently coercing it (GTD f457740e /
+				// [F0902-54]) — merged first so strict mode fails on it like
+				// any other vagueness warning.
+				kind, kindWarning := validator.ResolveTaskKind(m.tp.SuggestedKind)
 				warnings := validator.CheckTaskInput(m.tp.Description, kind)
+				if kindWarning != "" {
+					warnings = append([]string{kindWarning}, warnings...)
+				}
 				if len(warnings) > 0 && validator.StrictModeEnabled() {
 					entry.Error = "vagueness check failed: " + strings.Join(warnings, "; ")
 					return entry
@@ -1048,6 +1057,12 @@ func (h *ProposalHandler) batchResolveOne(
 					entry.Error = errInternalGeneric
 					return entry
 				}
+				// Additive (spec f457740e Risk flags D4): entry.Warnings is a
+				// new optional field; front end doesn't read it and no MCP
+				// tool wraps this endpoint. Surfaces warn-mode warnings
+				// (kind + description vagueness) that batch accept
+				// previously discarded entirely.
+				entry.Warnings = warnings
 			}
 		}
 	}

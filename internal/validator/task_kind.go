@@ -1,6 +1,9 @@
 package validator
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // KindGeneral is the default task kind used when none is supplied; centralised
 // here so MCP / HTTP handlers don't duplicate the string literal (goconst).
@@ -19,6 +22,39 @@ func IsValidKind(kind string) bool {
 		}
 	}
 	return false
+}
+
+// maxKindWarningRunes bounds the kind value embedded in ResolveTaskKind's
+// warning text. Valid kinds are short tokens (max 7 chars) — this exists to
+// stop a hostile/malformed suggested_kind (no length cap anywhere upstream,
+// see backend-security-design.md §2.1/§3.1 — proposal payloads are
+// attacker-influenceable LLM tool input) from inflating the warning text
+// landing in an HTTP/MCP response. [F0902-54]
+const maxKindWarningRunes = 80
+
+// ResolveTaskKind coerces a caller-supplied task kind to a valid one,
+// returning a non-empty warning whenever coercion actually changed the
+// value (i.e. kind was non-empty but not in ValidTaskKinds). Empty kind
+// silently resolves to KindGeneral — that is the expected "no kind
+// suggested" case, not an error. [F0902-54]
+//
+// This is the single shared coercion point for all four TypeTask-accept call
+// sites (HTTP single/batch accept, MCP decode, A1-seam decode) — see GTD
+// f457740e: previously each site inlined the same 3-branch coercion and
+// silently discarded the "invalid" signal, so a rejected kind became
+// unobservable to the caller.
+func ResolveTaskKind(kind string) (resolved string, warning string) {
+	if kind == "" {
+		return KindGeneral, ""
+	}
+	if IsValidKind(kind) {
+		return kind, ""
+	}
+	display := kind
+	if r := []rune(kind); len(r) > maxKindWarningRunes {
+		display = string(r[:maxKindWarningRunes]) + "…(truncated)"
+	}
+	return KindGeneral, fmt.Sprintf("kind %q is not a valid task kind; falling back to general", display)
 }
 
 // CheckKindFields verifies that description contains the per-kind required

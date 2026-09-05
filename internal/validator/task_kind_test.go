@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,99 @@ func TestIsValidKind(t *testing.T) {
 			t.Errorf("IsValidKind(%q) = true; want false", k)
 		}
 	}
+}
+
+// TestResolveTaskKind covers the four coercion outcomes GTD f457740e /
+// [F0902-54] added: valid kind passes through with no warning, empty kind
+// silently resolves to general, an invalid kind resolves to general WITH a
+// warning (the bug this task fixes — the four call sites previously
+// discarded this signal), and the 80-rune truncation boundary on a hostile
+// caller-supplied kind value (backend-security-design.md §2.1/§3.1).
+func TestResolveTaskKind(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid_kind", func(t *testing.T) {
+		t.Parallel()
+		for _, k := range []string{"general", "fix-pr", "feature", "refactor", "research", "chore"} {
+			resolved, warning := ResolveTaskKind(k)
+			if resolved != k {
+				t.Errorf("ResolveTaskKind(%q) resolved = %q, want %q", k, resolved, k)
+			}
+			if warning != "" {
+				t.Errorf("ResolveTaskKind(%q) warning = %q, want empty", k, warning)
+			}
+		}
+	})
+
+	t.Run("empty_kind", func(t *testing.T) {
+		t.Parallel()
+		resolved, warning := ResolveTaskKind("")
+		if resolved != KindGeneral {
+			t.Errorf("ResolveTaskKind(\"\") resolved = %q, want %q", resolved, KindGeneral)
+		}
+		if warning != "" {
+			t.Errorf("ResolveTaskKind(\"\") warning = %q, want empty (empty kind must stay silent)", warning)
+		}
+	})
+
+	t.Run("invalid_kind", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name string
+			kind string
+		}{
+			{"unknown token", "bug"},
+			{"case mismatch is invalid — IsValidKind is case-sensitive", "Feature"},
+			{"another case mismatch", "Fix-PR"},
+			{"unrelated string", "sprint"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				resolved, warning := ResolveTaskKind(tc.kind)
+				if resolved != KindGeneral {
+					t.Errorf("ResolveTaskKind(%q) resolved = %q, want %q", tc.kind, resolved, KindGeneral)
+				}
+				want := fmt.Sprintf("kind %q is not a valid task kind; falling back to general", tc.kind)
+				if warning != want {
+					t.Errorf("ResolveTaskKind(%q) warning = %q, want %q", tc.kind, warning, want)
+				}
+			})
+		}
+	})
+
+	t.Run("kind_exceeds_80_runes", func(t *testing.T) {
+		t.Parallel()
+		kind := strings.Repeat("x", 81)
+		resolved, warning := ResolveTaskKind(kind)
+		if resolved != KindGeneral {
+			t.Errorf("resolved = %q, want %q", resolved, KindGeneral)
+		}
+		wantDisplay := strings.Repeat("x", 80) + "…(truncated)"
+		want := fmt.Sprintf("kind %q is not a valid task kind; falling back to general", wantDisplay)
+		if warning != want {
+			t.Errorf("warning = %q, want %q", warning, want)
+		}
+		if strings.Contains(warning, strings.Repeat("x", 81)) {
+			t.Errorf("warning embeds the full untruncated 81-rune value: %q", warning)
+		}
+	})
+
+	t.Run("kind_exactly_80_runes_boundary", func(t *testing.T) {
+		t.Parallel()
+		kind := strings.Repeat("x", 80)
+		resolved, warning := ResolveTaskKind(kind)
+		if resolved != KindGeneral {
+			t.Errorf("resolved = %q, want %q", resolved, KindGeneral)
+		}
+		want := fmt.Sprintf("kind %q is not a valid task kind; falling back to general", kind)
+		if warning != want {
+			t.Errorf("warning = %q, want %q (exact 80-rune value, no truncation suffix)", warning, want)
+		}
+		if strings.Contains(warning, "(truncated)") {
+			t.Errorf("warning wrongly truncated an exactly-80-rune value: %q", warning)
+		}
+	})
 }
 
 func TestCheckKindFields(t *testing.T) {

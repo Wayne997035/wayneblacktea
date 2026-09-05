@@ -234,15 +234,17 @@ func DecodeTaskParams(payload []byte, strict bool) (gtd.CreateTaskParams, []stri
 		return gtd.CreateTaskParams{}, nil, fmt.Errorf("task title exceeds %d characters", taskTitleMaxLen)
 	}
 
-	kind := tp.SuggestedKind
-	if kind == "" {
-		kind = validator.KindGeneral
-	}
-	if !validator.IsValidKind(kind) {
-		kind = validator.KindGeneral
-	}
-
+	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
+	// of silently coercing it (GTD f457740e / [F0902-54]) — merged first so
+	// strict mode fails on it like any other vagueness warning. Not yet
+	// production-reachable for TypeTask (see doc comment above), but must
+	// stay in lockstep with the other three call sites so wiring this seam
+	// later doesn't reintroduce the bug.
+	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
 	warnings := validator.CheckTaskInput(tp.Description, kind)
+	if kindWarning != "" {
+		warnings = append([]string{kindWarning}, warnings...)
+	}
 	if len(warnings) > 0 && strict {
 		return gtd.CreateTaskParams{}, warnings, fmt.Errorf("vagueness check failed: %v", warnings)
 	}

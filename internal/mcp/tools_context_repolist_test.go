@@ -602,3 +602,192 @@ func TestHandleListActiveRepos_NeutralisesBeforeProjecting(t *testing.T) {
 		t.Error("description_truncated = false for a 20,000-rune description")
 	}
 }
+
+// TestHandleListActiveRepos_RepoListFieldMarkerTruncated is [F173-01]'s
+// integration-layer probe, one case per *_truncated field. Each fixture
+// carries a forged storedContextMarkerEnd (26 runes) well under that field's
+// own list-view cap, so the ONLY reason the projection differs from what is
+// stored is marker neutralisation — the same shape as
+// TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue below,
+// but driven through handleListActiveRepos end to end instead of calling
+// clipRepoListField directly, and without TestHandleListActiveRepos_
+// AdversarialBudget's over-cap saturation, which trips every flag through
+// length alone and never exercises the marker-only path this pins. Before
+// [F173-01], toRepoListItem compared its output to wrapUntrustedRepo's
+// already-neutralised copy, so this case fell through — the marker was
+// already gone from the copy this comparison used, so the field's flag
+// stayed false while the caller received a value that was not what raw had
+// stored.
+//
+// Mutation check: reverting toRepoListItem's per-field comparison in
+// tools_context.go from raw's stored value back to r's wrapUntrustedRepo'd
+// copy makes the corresponding case here fail (all seven if the whole
+// wiring is reverted, one if only that field's comparison is).
+func TestHandleListActiveRepos_RepoListFieldMarkerTruncated(t *testing.T) {
+	marker := storedContextMarkerEnd
+	short := "x-" + marker // 28 runes, under repoListShortFieldMaxRunes (120)
+	long := "y-" + marker  // 28 runes, under repoListFieldMaxRunes (500)
+
+	tests := []struct {
+		name      string
+		repo      db.Repo
+		wantField string
+	}{
+		{
+			name:      "name",
+			repo:      db.Repo{ID: uuid.New(), Name: short, Status: "active"},
+			wantField: "name",
+		},
+		{
+			name: "path",
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Path: pgtype.Text{String: short, Valid: true},
+			},
+			wantField: "path",
+		},
+		{
+			name: "description",
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Description: pgtype.Text{String: long, Valid: true},
+			},
+			wantField: "description",
+		},
+		{
+			name: "language",
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Language: pgtype.Text{String: short, Valid: true},
+			},
+			wantField: "language",
+		},
+		{
+			name: "current_branch",
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				CurrentBranch: pgtype.Text{String: short, Valid: true},
+			},
+			wantField: "current_branch",
+		},
+		{
+			name: "known_issues",
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				KnownIssues: []string{short},
+			},
+			wantField: "known_issues",
+		},
+		{
+			name: "next_planned_step",
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				NextPlannedStep: pgtype.Text{String: long, Valid: true},
+			},
+			wantField: "next_planned_step",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := callListActiveRepos(t, []db.Repo{tc.repo}, nil)
+			got := decodeRepoList(t, raw)
+			if len(got.Repos) != 1 {
+				t.Fatalf("len(repos) = %d, want 1", len(got.Repos))
+			}
+			row := got.Repos[0]
+			actual := map[string]bool{
+				"name":              row.NameTruncated,
+				"path":              row.PathTruncated,
+				"description":       row.DescriptionTruncated,
+				"language":          row.LanguageTruncated,
+				"current_branch":    row.CurrentBranchTruncated,
+				"known_issues":      row.KnownIssuesTruncated,
+				"next_planned_step": row.NextPlannedStepTruncated,
+			}
+			for field, isSet := range actual {
+				if want := field == tc.wantField; isSet != want {
+					t.Errorf("%s_truncated = %v, want %v for a marker-only %q field (raw: %.400s)",
+						field, isSet, want, tc.wantField, raw)
+				}
+			}
+		})
+	}
+}
+
+// TestClipRepoListField_OverCapReportsTruncatedTrue is [F0902-53]'s first
+// named case: a field over the cap is clipped and its truncated flag is
+// true. Both the pre-fix rune-count check and the post-fix output-vs-input
+// check agree here — this pins the case that must never regress while the
+// other two below pin the case the pre-fix check got wrong.
+func TestClipRepoListField_OverCapReportsTruncatedTrue(t *testing.T) {
+	s := strings.Repeat("d", repoListShortFieldMaxRunes+1)
+
+	got, truncated := clipRepoListField(s, repoListShortFieldMaxRunes)
+
+	if !truncated {
+		t.Errorf("clipRepoListField(%d-rune string, %d): truncated = false, want true",
+			utf8.RuneCountInString(s), repoListShortFieldMaxRunes)
+	}
+	if want := repoListShortFieldMaxRunes + 1; utf8.RuneCountInString(got) != want { // +1 for clipMarker
+		t.Errorf("clipRepoListField over cap: got %d runes, want %d (cap + clip marker)",
+			utf8.RuneCountInString(got), want)
+	}
+}
+
+// TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue is
+// [F0902-53]'s deliberate high-report case. The field here is 33 runes,
+// far under the 120-rune cap, so
+// the OLD implementation — which compared utf8.RuneCountInString(s) against
+// maxRunes — reported false for it. But clipSafe still rewrites the forged
+// storedContextMarkerEnd substring inside it into boundaryMarkerPlaceholder
+// via neutralizeBoundaryMarkers, so the value the caller receives is not
+// byte-identical to what is stored either way. Under-reporting that as
+// "false" told the caller it held the exact stored value when it did not;
+// [F0902-53] chooses to over-report instead — a caller that sees true and
+// re-fetches via sync_repo only pays one extra round trip, which is cheap
+// next to a caller silently trusting a rewritten value.
+//
+// Mutation check: reverting clipRepoListField's condition from `out != s` to
+// `utf8.RuneCountInString(s) > maxRunes` makes this test fail, because the
+// 33-rune input never exceeds the 120-rune cap.
+func TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue(t *testing.T) {
+	s := "branch-" + storedContextMarkerEnd // 33 runes: far under repoListShortFieldMaxRunes (120)
+	if n := utf8.RuneCountInString(s); n >= repoListShortFieldMaxRunes {
+		t.Fatalf("fixture is %d runes, must stay under the %d-rune cap to exercise the marker-only path",
+			n, repoListShortFieldMaxRunes)
+	}
+
+	got, truncated := clipRepoListField(s, repoListShortFieldMaxRunes)
+
+	if !truncated {
+		t.Errorf("clipRepoListField(%q, %d): truncated = false, want true — the forged marker was "+
+			"neutralised so the output differs from the stored value even though the input never "+
+			"reached the cap (this is the deliberate high-report [F0902-53] chose over the prior "+
+			"low-report)", s, repoListShortFieldMaxRunes)
+	}
+	if strings.Contains(got, storedContextMarkerEnd) {
+		t.Errorf("forged marker survived clipRepoListField: %q", got)
+	}
+	if !strings.Contains(got, boundaryMarkerPlaceholder) {
+		t.Errorf("marker was removed without leaving the placeholder: %q", got)
+	}
+}
+
+// TestClipRepoListField_ShortFieldNoMarkerReportsTruncatedFalse pins the
+// negative case both the old and new implementations agree on: a short
+// field with nothing to clip and nothing to neutralise must report false.
+// Without this case, a fix that flips clipRepoListField to always report
+// true would still pass the two cases above.
+func TestClipRepoListField_ShortFieldNoMarkerReportsTruncatedFalse(t *testing.T) {
+	s := "main"
+
+	got, truncated := clipRepoListField(s, repoListShortFieldMaxRunes)
+
+	if truncated {
+		t.Errorf("clipRepoListField(%q, %d): truncated = true, want false", s, repoListShortFieldMaxRunes)
+	}
+	if got != s {
+		t.Errorf("clipRepoListField(%q, %d) = %q, want unchanged", s, repoListShortFieldMaxRunes, got)
+	}
+}

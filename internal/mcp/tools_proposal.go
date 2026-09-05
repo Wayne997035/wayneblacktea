@@ -165,18 +165,7 @@ func neutralizeCreatedEntity(created any) any {
 		}
 		return out
 	case map[string]any:
-		// materializeTaskPg/Iface's {"task": *db.Task, "warnings": []string}
-		// shape (add_task-style vagueness warnings). "warnings" is
-		// validator-emitted fixed text (validator.CheckTaskInput), not
-		// stored free text — left as-is.
-		out := make(map[string]any, len(v))
-		for k, val := range v {
-			out[k] = val
-		}
-		if t, ok := out["task"].(*db.Task); ok {
-			out["task"] = wrapUntrustedTask(t)
-		}
-		return out
+		return neutralizeTaskWarningsField(v)
 	default:
 		// Every case above is exhaustive over what materializeFromPayload{Pg,
 		// Iface,SQLiteTx} can currently return — a new materialiser branch
@@ -187,6 +176,33 @@ func neutralizeCreatedEntity(created any) any {
 			"go_type", fmt.Sprintf("%T", created))
 		return created
 	}
+}
+
+// neutralizeTaskWarningsField sanitises materializeTaskPg/Iface's
+// {"task": *db.Task, "warnings": []string} shape (add_task-style vagueness
+// warnings). validator.CheckTaskInput's warnings are fixed text, but
+// validator.ResolveTaskKind's warning (internal/validator/task_kind.go:57)
+// interpolates the caller-supplied suggested_kind value via %q — untrusted
+// LLM tool input, the same class of content every other branch in
+// neutralizeCreatedEntity neutralises — so "warnings" is no longer left
+// as-is. [F173-04]
+//
+// Extracted out of neutralizeCreatedEntity's map[string]any case to keep
+// that function's cyclomatic complexity under the gocyclo threshold — this
+// changes only where the two `if` checks live, not what they do or their
+// order.
+func neutralizeTaskWarningsField(v map[string]any) map[string]any {
+	out := make(map[string]any, len(v))
+	for k, val := range v {
+		out[k] = val
+	}
+	if t, ok := out["task"].(*db.Task); ok {
+		out["task"] = wrapUntrustedTask(t)
+	}
+	if w, ok := out["warnings"].([]string); ok {
+		out["warnings"] = clipSafeSlice(w, proposalPayloadFieldMaxRunes)
+	}
+	return out
 }
 
 // neutralizeProposalGoal/neutralizeProposalConcept/
@@ -1310,17 +1326,28 @@ func decodeTaskProposalParams(payload []byte, strict bool) (gtd.CreateTaskParams
 		return gtd.CreateTaskParams{}, nil, "task title exceeds 500 characters"
 	}
 
-	kind := tp.SuggestedKind
-	if kind == "" {
-		kind = validator.KindGeneral
-	}
-	if !validator.IsValidKind(kind) {
-		kind = validator.KindGeneral
-	}
-
+	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
+	// of silently coercing it (GTD f457740e / [F0902-54]) — merged first so
+	// strict mode fails on it like any other vagueness warning. This one
+	// helper backs all three MCP backends (materializeTaskPg,
+	// materializeTaskIface, and materializeTaskSQLite's pre-commit gate).
+	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
 	warnings := validator.CheckTaskInput(tp.Description, kind)
+	if kindWarning != "" {
+		warnings = append([]string{kindWarning}, warnings...)
+	}
 	if len(warnings) > 0 && strict {
-		return gtd.CreateTaskParams{}, warnings, fmt.Sprintf("vagueness check failed: %v", warnings)
+		// [F173-08] Single construction point for all three MCP accept
+		// backends' NewToolResultError(errMsg): materializeTaskPg (Pg),
+		// materializeTaskIface (Iface), and materializeTaskSQLite's
+		// pre-commit gate (SQLiteTx) all just propagate this string
+		// upward unchanged, so neutralising it once here — before the
+		// caller-supplied kind value (validator.ResolveTaskKind,
+		// task_kind.go:57) can reach any of the three — covers all of them.
+		// Same untrusted-content class as the "warnings" field sanitised in
+		// neutralizeCreatedEntity's map[string]any case (F173-04) above.
+		errMsg := fmt.Sprintf("vagueness check failed: %v", warnings)
+		return gtd.CreateTaskParams{}, warnings, neutralizeBoundaryMarkers(errMsg)
 	}
 
 	return gtd.CreateTaskParams{

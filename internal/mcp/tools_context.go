@@ -56,11 +56,15 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 			"limit, offset, returned and has_more so you can tell whether rows remain. "+
 			"This is a LIST VIEW, not the full record: description and next_planned_step are projected "+
 			"to 500 runes, name/path/language/current_branch and each known_issues entry to 120, and "+
-			"known_issues to 5 entries; any field the projection shortened carries its own "+
-			"\"<field>_truncated\": true — absent or false means you have the whole value. "+
-			"The full stored text of one repo comes back from sync_repo called with only that repo's "+
-			"name, but sync_repo is a WRITE that re-stamps the row, so call it only when you also "+
-			"intend to update the repo."),
+			"known_issues to 5 entries; any field the projection changed carries its own "+
+			"\"<field>_truncated\": true, meaning that field differs from the stored value — either "+
+			"it was shortened to fit the cap, or a boundary-marker-like substring inside it was "+
+			"neutralised; false means the field is byte-identical to what is stored. "+
+			"sync_repo returns the same fields at larger caps than this list view — 2,000 runes per "+
+			"short field instead of 120, 20,000 for description/next_planned_step instead of 500 "+
+			"— still truncated and marker-neutralised the same way, so it is not a byte-exact copy "+
+			"of what is stored; sync_repo is also a WRITE that re-stamps the row, so call it only "+
+			"when you also intend to update the repo."),
 		mcp.WithNumber("limit", mcp.Description("Max repos per page (default 20, max 100)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), s.handleListActiveRepos)
@@ -765,15 +769,27 @@ type repoListItem struct {
 }
 
 // clipRepoListField projects one free-text field to maxRunes, reporting
-// whether the projection actually shortened it — [F170-02].
+// whether the projected value differs from the stored value — [F170-02],
+// [F0902-53].
 //
-// "Shortened" is measured on the rune count BEFORE clipSafe, not by
-// comparing input to output: clipSafe also neutralises boundary markers, and
-// a short field carrying a forged marker comes back different without having
-// been truncated at all. Reporting that as truncation would send the caller
-// chasing a full record that it already has.
+// The flag compares OUTPUT to INPUT rather than measuring the input's rune
+// count against maxRunes. That rune-count check under-reported: a short
+// field carrying a forged boundary marker is rewritten by clipSafe (via
+// neutralizeBoundaryMarkers) even though it was never over the cap, so the
+// caller's copy stopped being byte-identical to what is stored while the
+// flag still read false — breaking the "false means you have the whole
+// value" contract this flag exists for. Comparing output to input is a
+// deliberate high-report instead ([F0902-53]): it also flags the marker-
+// neutralisation case. The asymmetry is what justifies it: over-reporting
+// costs the caller a check that turns up unchanged text, while
+// under-reporting is silent and unrecoverable, because the caller never
+// learns anything was touched. sync_repo is not the recovery path either —
+// it returns the record at larger caps (2,000 / 20,000 runes) but still
+// truncated and marker-neutralised, so it is not a byte-exact copy of what
+// is stored.
 func clipRepoListField(s string, maxRunes int) (string, bool) {
-	return clipSafe(s, maxRunes), utf8.RuneCountInString(s) > maxRunes
+	out := clipSafe(s, maxRunes)
+	return out, out != s
 }
 
 // clipRepoListText is clipRepoListField over a nullable column. SQL NULL is
@@ -807,18 +823,62 @@ func clipRepoListIssues(issues []string) ([]string, bool) {
 	return out, truncated
 }
 
-// toRepoListItem projects one already-wrapUntrustedRepo'd row into the list
-// view. It runs AFTER wrapUntrustedRepo, not instead of it, so the boundary-
-// marker neutralisation contract U13 pins for this type still holds for every
-// field regardless of what this projection does. [F170-02]
-func toRepoListItem(r *db.Repo) repoListItem {
-	name, nameTruncated := clipRepoListField(r.Name, repoListShortFieldMaxRunes)
-	path, pathTruncated := clipRepoListText(r.Path, repoListShortFieldMaxRunes)
-	description, descriptionTruncated := clipRepoListText(r.Description, repoListFieldMaxRunes)
-	language, languageTruncated := clipRepoListText(r.Language, repoListShortFieldMaxRunes)
-	branch, branchTruncated := clipRepoListText(r.CurrentBranch, repoListShortFieldMaxRunes)
-	step, stepTruncated := clipRepoListText(r.NextPlannedStep, repoListFieldMaxRunes)
-	issues, issuesTruncated := clipRepoListIssues(r.KnownIssues)
+// repoListIssuesTruncated reports whether the projected known_issues slice
+// differs from raw's stored slice — either count-truncated past
+// repoListMaxKnownIssues, or a kept element's content changed relative to
+// its raw entry. len(projected) <= len(raw) always holds here: projected
+// comes from clipRepoListIssues(r.KnownIssues), and wrapUntrustedRepo never
+// changes KnownIssues' length, only wrapped.KnownIssues[i]'s content — so
+// raw and r start at the same length and projected can only be shorter.
+// [F173-01]
+func repoListIssuesTruncated(projected, raw []string) bool {
+	if len(raw) > repoListMaxKnownIssues {
+		return true
+	}
+	for i, issue := range projected {
+		if issue != raw[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// toRepoListItem projects one repo into the list view. r is raw's
+// wrapUntrustedRepo copy — U13's per-field clipSafe pass still runs first,
+// so the boundary-marker neutralisation contract that function pins for
+// every field holds regardless of what this projection does — but every
+// *_truncated flag below compares the projected value to raw, the row
+// BEFORE wrapUntrustedRepo, not to r. [F173-01]
+//
+// Comparing to r instead of raw is the bug this fixes: wrapUntrustedRepo's
+// clipSafe already neutralises a forged boundary marker before this
+// projection ever runs, so when clipRepoListField/clipRepoListText/
+// clipRepoListIssues clip r's already-neutralised copy again at the list
+// cap, they see no further change and report false — even though the value
+// the caller receives is not what raw has stored. Comparing the final
+// projected value to raw catches that case too, because raw still carries
+// the un-neutralised marker the wrap layer already rewrote. [F170-02]
+func toRepoListItem(raw, r *db.Repo) repoListItem {
+	name, _ := clipRepoListField(r.Name, repoListShortFieldMaxRunes)
+	nameTruncated := name != raw.Name
+
+	path, _ := clipRepoListText(r.Path, repoListShortFieldMaxRunes)
+	pathTruncated := raw.Path.Valid && path.String != raw.Path.String
+
+	description, _ := clipRepoListText(r.Description, repoListFieldMaxRunes)
+	descriptionTruncated := raw.Description.Valid && description.String != raw.Description.String
+
+	language, _ := clipRepoListText(r.Language, repoListShortFieldMaxRunes)
+	languageTruncated := raw.Language.Valid && language.String != raw.Language.String
+
+	branch, _ := clipRepoListText(r.CurrentBranch, repoListShortFieldMaxRunes)
+	branchTruncated := raw.CurrentBranch.Valid && branch.String != raw.CurrentBranch.String
+
+	step, _ := clipRepoListText(r.NextPlannedStep, repoListFieldMaxRunes)
+	stepTruncated := raw.NextPlannedStep.Valid && step.String != raw.NextPlannedStep.String
+
+	issues, _ := clipRepoListIssues(r.KnownIssues)
+	issuesTruncated := repoListIssuesTruncated(issues, raw.KnownIssues)
 
 	return repoListItem{
 		ID:                       r.ID,
@@ -928,7 +988,7 @@ func (s *Server) handleListActiveRepos(ctx context.Context, req mcp.CallToolRequ
 	page, hasMore := sliceRepoPage(repos, limit, offset)
 	out := make([]repoListItem, len(page))
 	for i := range page {
-		out[i] = toRepoListItem(wrapUntrustedRepo(&page[i]))
+		out[i] = toRepoListItem(&page[i], wrapUntrustedRepo(&page[i]))
 	}
 
 	return jsonText(map[string]any{
