@@ -603,6 +603,106 @@ func TestHandleListActiveRepos_NeutralisesBeforeProjecting(t *testing.T) {
 	}
 }
 
+// TestHandleListActiveRepos_RepoListFieldMarkerTruncated is [F173-01]'s
+// integration-layer probe, one case per *_truncated field. Each fixture
+// carries a forged storedContextMarkerEnd (26 runes) well under that field's
+// own list-view cap, so the ONLY reason the projection differs from what is
+// stored is marker neutralisation — the same shape as
+// TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue below,
+// but driven through handleListActiveRepos end to end instead of calling
+// clipRepoListField directly, and without TestHandleListActiveRepos_
+// AdversarialBudget's over-cap saturation, which trips every flag through
+// length alone and never exercises the marker-only path this pins. Before
+// [F173-01], toRepoListItem compared its output to wrapUntrustedRepo's
+// already-neutralised copy, so this case fell through — the marker was
+// already gone from the copy this comparison used, so the field's flag
+// stayed false while the caller received a value that was not what raw had
+// stored.
+//
+// Mutation check: reverting toRepoListItem's per-field comparison in
+// tools_context.go from raw's stored value back to r's wrapUntrustedRepo'd
+// copy makes the corresponding case here fail (all seven if the whole
+// wiring is reverted, one if only that field's comparison is).
+func TestHandleListActiveRepos_RepoListFieldMarkerTruncated(t *testing.T) {
+	marker := storedContextMarkerEnd
+	short := "x-" + marker // 28 runes, under repoListShortFieldMaxRunes (120)
+	long := "y-" + marker  // 28 runes, under repoListFieldMaxRunes (500)
+
+	tests := []struct {
+		name      string
+		repo      db.Repo
+		wantField string
+	}{
+		{
+			name:      "name",
+			repo:      db.Repo{ID: uuid.New(), Name: short, Status: "active"},
+			wantField: "name",
+		},
+		{
+			name: "path",
+			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Path: pgtype.Text{String: short, Valid: true}},
+			wantField: "path",
+		},
+		{
+			name: "description",
+			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Description: pgtype.Text{String: long, Valid: true}},
+			wantField: "description",
+		},
+		{
+			name: "language",
+			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Language: pgtype.Text{String: short, Valid: true}},
+			wantField: "language",
+		},
+		{
+			name: "current_branch",
+			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				CurrentBranch: pgtype.Text{String: short, Valid: true}},
+			wantField: "current_branch",
+		},
+		{
+			name: "known_issues",
+			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				KnownIssues: []string{short}},
+			wantField: "known_issues",
+		},
+		{
+			name: "next_planned_step",
+			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				NextPlannedStep: pgtype.Text{String: long, Valid: true}},
+			wantField: "next_planned_step",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := callListActiveRepos(t, []db.Repo{tc.repo}, nil)
+			got := decodeRepoList(t, raw)
+			if len(got.Repos) != 1 {
+				t.Fatalf("len(repos) = %d, want 1", len(got.Repos))
+			}
+			row := got.Repos[0]
+			actual := map[string]bool{
+				"name":              row.NameTruncated,
+				"path":              row.PathTruncated,
+				"description":       row.DescriptionTruncated,
+				"language":          row.LanguageTruncated,
+				"current_branch":    row.CurrentBranchTruncated,
+				"known_issues":      row.KnownIssuesTruncated,
+				"next_planned_step": row.NextPlannedStepTruncated,
+			}
+			for field, isSet := range actual {
+				if want := field == tc.wantField; isSet != want {
+					t.Errorf("%s_truncated = %v, want %v for a marker-only %q field (raw: %.400s)",
+						field, isSet, want, tc.wantField, raw)
+				}
+			}
+		})
+	}
+}
+
 // TestClipRepoListField_OverCapReportsTruncatedTrue is [F0902-53]'s first
 // named case: a field over the cap is clipped and its truncated flag is
 // true. Both the pre-fix rune-count check and the post-fix output-vs-input
@@ -624,8 +724,8 @@ func TestClipRepoListField_OverCapReportsTruncatedTrue(t *testing.T) {
 }
 
 // TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue is
-// [F0902-53]'s deliberate high-report case (2026-09-02-sprint-dispatch.md
-// decision #3). The field here is 33 runes, far under the 120-rune cap, so
+// [F0902-53]'s deliberate high-report case. The field here is 33 runes,
+// far under the 120-rune cap, so
 // the OLD implementation — which compared utf8.RuneCountInString(s) against
 // maxRunes — reported false for it. But clipSafe still rewrites the forged
 // storedContextMarkerEnd substring inside it into boundaryMarkerPlaceholder
