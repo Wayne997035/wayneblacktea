@@ -165,24 +165,7 @@ func neutralizeCreatedEntity(created any) any {
 		}
 		return out
 	case map[string]any:
-		// materializeTaskPg/Iface's {"task": *db.Task, "warnings": []string}
-		// shape (add_task-style vagueness warnings). validator.CheckTaskInput's
-		// warnings are fixed text, but validator.ResolveTaskKind's warning
-		// (internal/validator/task_kind.go:57) interpolates the caller-
-		// supplied suggested_kind value via %q — untrusted LLM tool input,
-		// the same class of content every other branch in this switch
-		// neutralises — so "warnings" is no longer left as-is. [F173-04]
-		out := make(map[string]any, len(v))
-		for k, val := range v {
-			out[k] = val
-		}
-		if t, ok := out["task"].(*db.Task); ok {
-			out["task"] = wrapUntrustedTask(t)
-		}
-		if w, ok := out["warnings"].([]string); ok {
-			out["warnings"] = clipSafeSlice(w, proposalPayloadFieldMaxRunes)
-		}
-		return out
+		return neutralizeTaskWarningsField(v)
 	default:
 		// Every case above is exhaustive over what materializeFromPayload{Pg,
 		// Iface,SQLiteTx} can currently return — a new materialiser branch
@@ -193,6 +176,33 @@ func neutralizeCreatedEntity(created any) any {
 			"go_type", fmt.Sprintf("%T", created))
 		return created
 	}
+}
+
+// neutralizeTaskWarningsField sanitises materializeTaskPg/Iface's
+// {"task": *db.Task, "warnings": []string} shape (add_task-style vagueness
+// warnings). validator.CheckTaskInput's warnings are fixed text, but
+// validator.ResolveTaskKind's warning (internal/validator/task_kind.go:57)
+// interpolates the caller-supplied suggested_kind value via %q — untrusted
+// LLM tool input, the same class of content every other branch in
+// neutralizeCreatedEntity neutralises — so "warnings" is no longer left
+// as-is. [F173-04]
+//
+// Extracted out of neutralizeCreatedEntity's map[string]any case to keep
+// that function's cyclomatic complexity under the gocyclo threshold — this
+// changes only where the two `if` checks live, not what they do or their
+// order.
+func neutralizeTaskWarningsField(v map[string]any) map[string]any {
+	out := make(map[string]any, len(v))
+	for k, val := range v {
+		out[k] = val
+	}
+	if t, ok := out["task"].(*db.Task); ok {
+		out["task"] = wrapUntrustedTask(t)
+	}
+	if w, ok := out["warnings"].([]string); ok {
+		out["warnings"] = clipSafeSlice(w, proposalPayloadFieldMaxRunes)
+	}
+	return out
 }
 
 // neutralizeProposalGoal/neutralizeProposalConcept/

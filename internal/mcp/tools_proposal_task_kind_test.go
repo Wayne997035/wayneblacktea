@@ -307,7 +307,9 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode_SanitisesBoundaryMa
 		t.Errorf("[F173-04] created.warnings[0] = %q, must not contain the raw boundary marker %q", warning, storedContextMarkerEnd)
 	}
 	if !strings.Contains(warning, boundaryMarkerPlaceholder) {
-		t.Errorf("[F173-04] created.warnings[0] = %q, want it to contain %q (proof the marker was neutralised, not merely absent)", warning, boundaryMarkerPlaceholder)
+		t.Errorf("[F173-04] created.warnings[0] = %q, want it to contain %q "+
+			"(proof the marker was neutralised, not merely absent)",
+			warning, boundaryMarkerPlaceholder)
 	}
 }
 
@@ -334,7 +336,9 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_StrictMode_SanitisesBoundary
 		t.Errorf("[F173-08] error text = %q, must not contain the raw boundary marker %q", body, storedContextMarkerEnd)
 	}
 	if !strings.Contains(body, boundaryMarkerPlaceholder) {
-		t.Errorf("[F173-08] error text = %q, want it to contain %q (proof the marker was neutralised, not merely absent)", body, boundaryMarkerPlaceholder)
+		t.Errorf("[F173-08] error text = %q, want it to contain %q "+
+			"(proof the marker was neutralised, not merely absent)",
+			body, boundaryMarkerPlaceholder)
 	}
 
 	pp, err := s.proposal.Get(ctx, parseTestUUID(t, propID))
