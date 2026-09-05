@@ -268,3 +268,80 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_Pg_WarnMode(t *testing.T) {
 		t.Errorf("created.warnings = %v, want exactly 1 warning mentioning %q", decoded.Created.Warnings, "bogus")
 	}
 }
+
+// markerBearingSuggestedKind is the shared input for the two tests below:
+// a suggested_kind that embeds a boundary marker (storedContextMarkerEnd,
+// boundary_markers.go) while staying well under maxKindWarningRunes (80,
+// task_kind.go:33) so ResolveTaskKind's truncation never fires and the
+// marker survives into the warning text intact. storedContextMarkerEnd is
+// 26 runes and this whole value is 31 — deliberately NOT storedDataNotice
+// (218 runes), which would be truncated away before reaching the warning,
+// making "warnings has no marker text" trivially true even with zero
+// sanitisation (r2 spec-verifier finding).
+const markerBearingSuggestedKind = "bogus" + storedContextMarkerEnd
+
+// TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode_SanitisesBoundaryMarker
+// pins F173-04: neutralizeCreatedEntity's map[string]any branch
+// (tools_proposal.go) must strip a boundary marker embedded in
+// suggested_kind out of the warn-channel response before it reaches
+// created.warnings. Asserts both that the raw marker is gone (negative)
+// AND that boundaryMarkerPlaceholder is present (positive) — the positive
+// assertion is what proves the marker was actually neutralised rather than
+// never having reached the response at all.
+func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode_SanitisesBoundaryMarker(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "")
+	s := newProposalTestServer(t)
+
+	propID := createTaskProposal(t, s, "Marker kind MCP task", invalidKindTestDescription, markerBearingSuggestedKind)
+
+	result := callConfirmProposal(t, s, propID, "accept")
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(result))
+	}
+	decoded := decodeConfirmProposalTaskCreated(t, resultText(result))
+	if len(decoded.Created.Warnings) != 1 {
+		t.Fatalf("created.warnings = %v, want exactly 1 warning", decoded.Created.Warnings)
+	}
+	warning := decoded.Created.Warnings[0]
+	if strings.Contains(warning, storedContextMarkerEnd) {
+		t.Errorf("[F173-04] created.warnings[0] = %q, must not contain the raw boundary marker %q", warning, storedContextMarkerEnd)
+	}
+	if !strings.Contains(warning, boundaryMarkerPlaceholder) {
+		t.Errorf("[F173-04] created.warnings[0] = %q, want it to contain %q (proof the marker was neutralised, not merely absent)", warning, boundaryMarkerPlaceholder)
+	}
+}
+
+// TestHandleConfirmProposal_TypeTask_InvalidKind_StrictMode_SanitisesBoundaryMarker
+// pins F173-08: the same marker-bearing suggested_kind, taken through the
+// strict channel's single construction point (tools_proposal.go:1324),
+// must still reject the proposal (strict semantics unchanged) while the
+// rejection message is sanitised the same way as the warn channel above.
+// This replaces the pre-r2 draft's "StrictMode behaviour unchanged" framing,
+// which would have pinned the hole in place instead of closing it.
+func TestHandleConfirmProposal_TypeTask_InvalidKind_StrictMode_SanitisesBoundaryMarker(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", "true")
+	s := newProposalTestServer(t)
+	ctx := context.Background()
+
+	propID := createTaskProposal(t, s, "Marker kind MCP task", invalidKindTestDescription, markerBearingSuggestedKind)
+
+	result := callConfirmProposal(t, s, propID, "accept")
+	if !result.IsError {
+		t.Fatalf("expected tool error in strict mode, got success: %s", resultText(result))
+	}
+	body := resultText(result)
+	if strings.Contains(body, storedContextMarkerEnd) {
+		t.Errorf("[F173-08] error text = %q, must not contain the raw boundary marker %q", body, storedContextMarkerEnd)
+	}
+	if !strings.Contains(body, boundaryMarkerPlaceholder) {
+		t.Errorf("[F173-08] error text = %q, want it to contain %q (proof the marker was neutralised, not merely absent)", body, boundaryMarkerPlaceholder)
+	}
+
+	pp, err := s.proposal.Get(ctx, parseTestUUID(t, propID))
+	if err != nil {
+		t.Fatalf("proposal.Get: %v", err)
+	}
+	if pp.Status != string(proposal.StatusPending) {
+		t.Errorf("proposal.Status = %q, want still pending after strict-mode rejection", pp.Status)
+	}
+}
