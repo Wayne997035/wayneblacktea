@@ -640,38 +640,50 @@ func TestHandleListActiveRepos_RepoListFieldMarkerTruncated(t *testing.T) {
 		},
 		{
 			name: "path",
-			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
-				Path: pgtype.Text{String: short, Valid: true}},
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Path: pgtype.Text{String: short, Valid: true},
+			},
 			wantField: "path",
 		},
 		{
 			name: "description",
-			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
-				Description: pgtype.Text{String: long, Valid: true}},
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Description: pgtype.Text{String: long, Valid: true},
+			},
 			wantField: "description",
 		},
 		{
 			name: "language",
-			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
-				Language: pgtype.Text{String: short, Valid: true}},
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				Language: pgtype.Text{String: short, Valid: true},
+			},
 			wantField: "language",
 		},
 		{
 			name: "current_branch",
-			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
-				CurrentBranch: pgtype.Text{String: short, Valid: true}},
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				CurrentBranch: pgtype.Text{String: short, Valid: true},
+			},
 			wantField: "current_branch",
 		},
 		{
 			name: "known_issues",
-			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
-				KnownIssues: []string{short}},
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				KnownIssues: []string{short},
+			},
 			wantField: "known_issues",
 		},
 		{
 			name: "next_planned_step",
-			repo: db.Repo{ID: uuid.New(), Name: "wayneblacktea", Status: "active",
-				NextPlannedStep: pgtype.Text{String: long, Valid: true}},
+			repo: db.Repo{
+				ID: uuid.New(), Name: "wayneblacktea", Status: "active",
+				NextPlannedStep: pgtype.Text{String: long, Valid: true},
+			},
 			wantField: "next_planned_step",
 		},
 	}
