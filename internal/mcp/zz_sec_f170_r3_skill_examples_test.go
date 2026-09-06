@@ -108,8 +108,8 @@ func TestF170SECR301_SkillExamplesNeutralisesEveryKeyAndValue(t *testing.T) {
 // of the SourceAtomIDs finding (r1's numbering: SEC171-08); the write half is
 // TestSEC171_08_AllFiveCSVArgumentsScreenControlChars in
 // zz_sec_f170_r3_outcome_id_test.go. It used to be named after SEC171-01,
-// which is a DIFFERENT, still-OPEN finding (the unbounded examples array,
-// deferred to GTD 17f08ba8) — grepping SEC171-01 returned green tests for a
+// which is a DIFFERENT finding (examples' entry count, closed by
+// F0906-11..13) — grepping SEC171-01 returned green tests for a
 // finding this commit does not close. grep '[SEC171-08]' tools_skill.go for
 // the matching anchors (line numbers rot; the tag doesn't).
 //

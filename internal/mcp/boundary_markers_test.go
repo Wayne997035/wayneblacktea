@@ -50,6 +50,11 @@ func TestBoundaryMarkers_RegistryIsWellFormed(t *testing.T) {
 // is 25, so content packed with that marker GROWS when neutralised. A single
 // pre-clip would therefore not bound the field, and the payload budget built
 // on those caps would be exactly the kind of false guarantee this PR is fixing.
+//
+// [F0906-01] [F0906-02] Also guards the internal/safetext extraction: clipSafe
+// calls neutralizeBoundaryMarkers, which now delegates to
+// safetext.NeutralizeBoundaryMarkers — this test goes red if that delegate
+// chain stops neutralising (verified by mutation during the F0906 move).
 func TestClipSafe_StaysWithinCapUnderMarkerStuffing(t *testing.T) {
 	for _, marker := range boundaryMarkers() {
 		t.Run(marker, func(t *testing.T) {
@@ -72,6 +77,11 @@ func TestClipSafe_StaysWithinCapUnderMarkerStuffing(t *testing.T) {
 // TestNeutralizeBoundaryMarkers_CoversEveryRegisteredMarker walks the registry
 // itself rather than a hand-written list, so a marker added to boundaryMarkers()
 // but forgotten in neutralizeBoundaryMarkers cannot pass.
+//
+// [F0906-01] [F0906-02] Also guards the internal/safetext extraction directly:
+// neutralizeBoundaryMarkers (internal/mcp) now delegates to
+// safetext.NeutralizeBoundaryMarkers over safetext.BoundaryMarkers() — this
+// test goes red if either side of that delegate chain drifts.
 func TestNeutralizeBoundaryMarkers_CoversEveryRegisteredMarker(t *testing.T) {
 	for _, marker := range boundaryMarkers() {
 		t.Run(marker, func(t *testing.T) {

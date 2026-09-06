@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -19,6 +20,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
+
+// exampleOutcomeIDs extracts the "outcome_id" field from each examples entry,
+// preserving order. Entries round-trip through JSON as map[string]interface{}.
+func exampleOutcomeIDs(examples []any) []string {
+	ids := make([]string, 0, len(examples))
+	for _, e := range examples {
+		m, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, ok := m["outcome_id"].(string); ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
 
 // skipMigrations lists migration files that contain psql metacommands and
 // cannot be executed directly by pgx.
@@ -337,6 +354,93 @@ func TestStore_UpdateFromOutcome(t *testing.T) {
 			t.Errorf("want ErrNotFound, got %v", err)
 		}
 	})
+}
+
+// TestF0906_PG_UpdateFromOutcome_CapsAt20_SuccessPath is the [F0906-13]
+// path-independent regression test for the Postgres [F0906-12] FIFO cap on
+// the success path: 25 consecutive successful outcomes leave exactly the
+// most recent 20 examples, oldest to newest, with the first 5 outcome_ids
+// dropped.
+func TestF0906_PG_UpdateFromOutcome_CapsAt20_SuccessPath(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := skill.New(pool, &wsID)
+	ctx := context.Background()
+	wsIDStr := wsID.String()
+
+	sk, err := store.Add(ctx, skill.AddParams{Name: "f0906-pg-success-cap"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	var updated *skill.Skill
+	for i := 1; i <= 25; i++ {
+		updated, err = store.UpdateFromOutcome(ctx, skill.UpdateFromOutcomeParams{
+			SkillID:   sk.ID,
+			OutcomeID: fmt.Sprintf("e%02d", i),
+			Success:   true,
+			Notes:     "note",
+		}, &wsIDStr)
+		if err != nil {
+			t.Fatalf("UpdateFromOutcome #%d: %v", i, err)
+		}
+	}
+
+	if updated.SuccessCount != 25 {
+		t.Errorf("SuccessCount: got %d, want 25", updated.SuccessCount)
+	}
+	got := exampleOutcomeIDs(updated.Examples)
+	want := make([]string, 20)
+	for i := range want {
+		want[i] = fmt.Sprintf("e%02d", i+6) // e06..e25, oldest to newest
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Examples outcome_ids: got %v, want %v", got, want)
+	}
+}
+
+// TestF0906_PG_UpdateFromOutcome_CapsAt20_FailurePath is the [F0906-13]
+// path-independent regression test for the Postgres [F0906-12] FIFO cap on
+// the failure path. This group exists specifically to catch "only the
+// success-path SQL was patched" — the two branches in UpdateFromOutcome are
+// separate SQL literals, and this is the test that goes red if the failure
+// branch's LIMIT 20 clause is missing or reverted.
+func TestF0906_PG_UpdateFromOutcome_CapsAt20_FailurePath(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := skill.New(pool, &wsID)
+	ctx := context.Background()
+	wsIDStr := wsID.String()
+
+	sk, err := store.Add(ctx, skill.AddParams{Name: "f0906-pg-failure-cap"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	var updated *skill.Skill
+	for i := 1; i <= 25; i++ {
+		updated, err = store.UpdateFromOutcome(ctx, skill.UpdateFromOutcomeParams{
+			SkillID:   sk.ID,
+			OutcomeID: fmt.Sprintf("e%02d", i),
+			Success:   false,
+			Notes:     "note",
+		}, &wsIDStr)
+		if err != nil {
+			t.Fatalf("UpdateFromOutcome #%d: %v", i, err)
+		}
+	}
+
+	if updated.FailureCount != 25 {
+		t.Errorf("FailureCount: got %d, want 25", updated.FailureCount)
+	}
+	got := exampleOutcomeIDs(updated.Examples)
+	want := make([]string, 20)
+	for i := range want {
+		want[i] = fmt.Sprintf("e%02d", i+6) // e06..e25, oldest to newest
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Examples outcome_ids: got %v, want %v", got, want)
+	}
 }
 
 // TestStore_ListRelevant verifies listing with and without query filter.

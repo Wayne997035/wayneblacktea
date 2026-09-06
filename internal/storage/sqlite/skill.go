@@ -232,6 +232,14 @@ func (s *SkillStore) IncrementSuccess(ctx context.Context, id string, workspaceI
 	return s.getByID(ctx, id)
 }
 
+// skillExamplesMaxEntries aliases skill.SkillExamplesMaxEntries [F0906-32],
+// the single source of truth for this cap. [F0906-11] Without this cap,
+// examples grows unbounded across
+// repeated record_outcome calls (OWASP LLM04 unbounded consumption; 1,000
+// entries measured at 2,257,001 bytes returned to the LLM in one skill — GTD
+// 17f08ba8). FIFO: oldest entries are dropped first.
+const skillExamplesMaxEntries = skill.SkillExamplesMaxEntries
+
 // UpdateFromOutcome increments the success or failure counter and appends an example entry.
 func (s *SkillStore) UpdateFromOutcome(ctx context.Context, p skill.UpdateFromOutcomeParams, workspaceID *string) (*skill.Skill, error) {
 	wsArg := stringToNullableArg(workspaceID)
@@ -248,6 +256,10 @@ func (s *SkillStore) UpdateFromOutcome(ctx context.Context, p skill.UpdateFromOu
 		"at":         time.Now().UTC().Format(time.RFC3339),
 	}
 	existing.Examples = append(existing.Examples, newEntry)
+	// [F0906-11] Keep only the most recent skillExamplesMaxEntries entries (FIFO).
+	if len(existing.Examples) > skillExamplesMaxEntries {
+		existing.Examples = existing.Examples[len(existing.Examples)-skillExamplesMaxEntries:]
+	}
 	newExamplesJSON := encodeAny(existing.Examples)
 
 	var q string

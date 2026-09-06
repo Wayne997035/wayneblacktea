@@ -13,9 +13,10 @@ import (
 
 // [SEC171-08] TestSEC171_08_AllFiveCSVArgumentsScreenControlChars pins the
 // write half of the SourceAtomIDs finding (r1's numbering: SEC171-08). It
-// used to be named after SEC171-01, which is a DIFFERENT, still-OPEN finding
-// (the unbounded examples array, deferred to GTD 17f08ba8 — see
-// skillOutcomeIDMaxRunes' own comment in tools_skill.go) — grepping
+// used to be named after SEC171-01, which is a DIFFERENT finding (examples'
+// entry count, closed by F0906-11..13: both stores now keep only the most
+// recent entries — see skillOutcomeIDMaxRunes' own comment in
+// tools_skill.go) — grepping
 // SEC171-01 returned two green tests for a finding this commit does not
 // close. grep '[SEC171-08]' tools_skill.go for the matching anchors this
 // test's assertions are pinning (line numbers rot; the tag doesn't).
@@ -72,9 +73,8 @@ func TestSEC171_08_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
 //
 // [F171-06] This bounds the PER-VALUE half only, the same distinction
 // skillOutcomeIDMaxRunes' own comment (tools_skill.go) makes in bold: the
-// array half — examples' unbounded entry count — is a SEPARATE, still-OPEN
-// gap tracked under GTD 17f08ba8, not something this test closes. An earlier
-// version of this test's failure message claimed otherwise.
+// array half — examples' entry count — is a SEPARATE concern, closed by
+// F0906-11..13 (FIFO cap in both stores), not something this test closes.
 //
 // The assertion is on what the STORE received, not on the schema: mcp-go does
 // not enforce schema constraints server-side (see hasBoolArg's comment in
