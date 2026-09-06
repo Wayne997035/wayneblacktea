@@ -284,10 +284,15 @@ tasks:
       # and pushes unit tests past the 5-min budget. Use test-race for targeted race checks.
       # ./internal/... is a glob, so internal/evals' deterministic eval graders
       # (Phase 6.1-6.4) already run here on every `task check` with zero extra
-      # wiring. cmd/wbt-eval (Phase 6.5) IS in this list for its unit tests
-      # (validateFlags, a pure allowlist check): `go test ./cmd/wbt-eval/...`
-      # compiles and runs main_test.go only — it never invokes run()/main() and
-      # therefore never touches a provider or the network. What must stay out of
+      # wiring. cmd/wbt-eval (Phase 6.5) IS in this list for its unit tests:
+      # [F0906-24] main_test.go has six top-level tests covering validateFlags'
+      # allowlist, runEval's no-API-key early return, and writeResults' JSON
+      # shape and exit codes. They are
+      # gate-safe for a specific reason: they never execute the built binary,
+      # and the three that call runEval leave ANTHROPIC_API_KEY unset or empty,
+      # so runEval returns at its LookupEnv guard before constructing any
+      # provider client. A future test supplying a real key would break that
+      # invariant. What must stay out of
       # the default gate is *executing the binary* bin/wbt-eval (build-wbt-eval
       # above builds but never runs it); running the package's unit tests is
       # gate-safe and required for new-function test coverage.
