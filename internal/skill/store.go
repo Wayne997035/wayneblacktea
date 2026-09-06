@@ -246,15 +246,15 @@ func (s *Store) IncrementSuccess(ctx context.Context, id string, workspaceID *st
 }
 
 // UpdateFromOutcome increments the success or failure counter, appends an example
-// entry capped to the most recent 20 (FIFO) in the same statement, and refreshes
-// last_used_at / updated_at.
+// entry capped to SkillExamplesMaxEntries (FIFO) in the same statement, and
+// refreshes last_used_at / updated_at.
 //
-// [F0906-12] The FIFO cap mirrors internal/storage/sqlite/skill.go's
-// skillExamplesMaxEntries (OWASP LLM04 unbounded consumption; GTD 17f08ba8),
-// but must stay a single UPDATE ... RETURNING statement here: reading the row,
-// trimming in Go, and writing it back would introduce a lost-update race
-// between concurrent record_outcome calls that the current
-// `examples || $3::jsonb` append does not have.
+// [F0906-12] [F0906-32] Both backends draw this cap from SkillExamplesMaxEntries,
+// the single source of truth (OWASP LLM04 unbounded consumption; GTD 17f08ba8,
+// closed by F0906-11..13), but this store must stay a single UPDATE ...
+// RETURNING statement here: reading the row, trimming in Go, and writing it
+// back would introduce a lost-update race between concurrent record_outcome
+// calls that the current `examples || $3::jsonb` append does not have.
 func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams, workspaceID *string) (*Skill, error) {
 	example := map[string]string{
 		"outcome_id": p.OutcomeID,
@@ -277,7 +277,7 @@ func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams
 			            SELECT e, ord
 			              FROM jsonb_array_elements(examples || $3::jsonb) WITH ORDINALITY AS t(e, ord)
 			             ORDER BY ord DESC
-			             LIMIT 20
+			             LIMIT $4
 			          ) AS keep(e, ord)
 			      ),
 			    last_used_at  = NOW(),
@@ -294,7 +294,7 @@ func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams
 			            SELECT e, ord
 			              FROM jsonb_array_elements(examples || $3::jsonb) WITH ORDINALITY AS t(e, ord)
 			             ORDER BY ord DESC
-			             LIMIT 20
+			             LIMIT $4
 			          ) AS keep(e, ord)
 			      ),
 			    last_used_at  = NOW(),
@@ -304,7 +304,7 @@ func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams
 			RETURNING ` + skillSelectCols
 	}
 
-	rows, err := s.pool.Query(ctx, q, p.SkillID, toNullableUUID(workspaceID), "["+exampleJSON+"]")
+	rows, err := s.pool.Query(ctx, q, p.SkillID, toNullableUUID(workspaceID), "["+exampleJSON+"]", SkillExamplesMaxEntries)
 	if err != nil {
 		return nil, fmt.Errorf("updating skill from outcome: %w", err)
 	}
