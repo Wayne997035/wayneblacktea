@@ -37,16 +37,13 @@ const (
 	// non-UUID input, because outcome_id is documented as a free reference
 	// (task ID, decision ID, no FK) and rejecting would break callers.
 	//
-	// ⚠ This bounds ONE VALUE, not the array. examples is append-only and has
-	// no entry-count limit at any layer, so a caller can still grow a skill
-	// row without bound one entry at a time — measured at 1000 appends =
-	// 2,257,001 bytes in a single tool response, paid by every later session
-	// that reads that skill. An earlier version of this comment claimed this
-	// cap closed that; it does not, and saying so here is the same false
-	// assurance the rest of this file exists to remove. Bounding the entry
-	// count belongs at the write path where the count is known
-	// (UpdateFromOutcome, both stores) and is a data-retention decision, not a
-	// bug fix — tracked as GTD 17f08ba8.
+	// [F0906-31] ⚠ This bounds ONE VALUE, not the array. The array is bounded
+	// separately at the write path: both backends (internal/skill/store.go and
+	// internal/storage/sqlite/skill.go) cap examples to
+	// skill.SkillExamplesMaxEntries entries, oldest first (FIFO) — GTD
+	// 17f08ba8, closed by F0906-11..13. Still unbounded: how many skills a
+	// single response returns (search_skills / list_relevant_skills' limit
+	// argument has no upper bound) — tracked on a separate GTD ticket.
 	skillOutcomeIDMaxRunes = 200
 )
 
@@ -193,11 +190,12 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 		// skill. The ceiling is the TRANSPORT (echolog.BodyLimit("1M"),
 		// cmd/server/main.go:175), not this policy — same distinction
 		// skillOutcomeIDMaxRunes' comment above makes for examples, except
-		// there the array is append-only (unbounded over time) and here it
-		// is one request body (bounded, just large). No entry-count cap
-		// exists in handleExtractSkill or either store; adding one is the
-		// same decision as examples' entry-count cap and shares its ticket
-		// (GTD 17f08ba8), not attempted here.
+		// [F0906-31] examples is now bounded at the write path
+		// (skill.SkillExamplesMaxEntries, FIFO — GTD 17f08ba8, closed by
+		// F0906-11..13) and here it is one request body (bounded, just large).
+		// No entry-count cap exists in handleExtractSkill or either store;
+		// adding one for source_atom_ids is a separate, still-open decision —
+		// not attempted here.
 		mcp.WithString("source_atom_ids",
 			mcp.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
 	), s.handleExtractSkill)
