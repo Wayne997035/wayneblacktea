@@ -246,7 +246,15 @@ func (s *Store) IncrementSuccess(ctx context.Context, id string, workspaceID *st
 }
 
 // UpdateFromOutcome increments the success or failure counter, appends an example
-// entry, and refreshes last_used_at / updated_at.
+// entry capped to the most recent 20 (FIFO) in the same statement, and refreshes
+// last_used_at / updated_at.
+//
+// [F0906-12] The FIFO cap mirrors internal/storage/sqlite/skill.go's
+// skillExamplesMaxEntries (OWASP LLM04 unbounded consumption; GTD 17f08ba8),
+// but must stay a single UPDATE ... RETURNING statement here: reading the row,
+// trimming in Go, and writing it back would introduce a lost-update race
+// between concurrent record_outcome calls that the current
+// `examples || $3::jsonb` append does not have.
 func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams, workspaceID *string) (*Skill, error) {
 	example := map[string]string{
 		"outcome_id": p.OutcomeID,
@@ -255,11 +263,23 @@ func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams
 	}
 	exampleJSON := jsonStr(example)
 
+	// [F0906-12] The two branches below are intentionally NOT merged into a
+	// shared template/fmt.Sprintf: keeping them as independent literals lets a
+	// "only one path patched" regression be reproduced by reverting exactly one
+	// of the two SQL strings (see the mutation self-proof in store_test.go).
 	var q string
 	if p.Success {
 		q = `UPDATE skills
 			SET success_count = success_count + 1,
-			    examples      = examples || $3::jsonb,
+			    examples      = (
+			        SELECT COALESCE(jsonb_agg(e ORDER BY ord), '[]'::jsonb)
+			          FROM (
+			            SELECT e, ord
+			              FROM jsonb_array_elements(examples || $3::jsonb) WITH ORDINALITY AS t(e, ord)
+			             ORDER BY ord DESC
+			             LIMIT 20
+			          ) AS keep(e, ord)
+			      ),
 			    last_used_at  = NOW(),
 			    updated_at    = NOW()
 			WHERE id = $1
@@ -268,7 +288,15 @@ func (s *Store) UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams
 	} else {
 		q = `UPDATE skills
 			SET failure_count = failure_count + 1,
-			    examples      = examples || $3::jsonb,
+			    examples      = (
+			        SELECT COALESCE(jsonb_agg(e ORDER BY ord), '[]'::jsonb)
+			          FROM (
+			            SELECT e, ord
+			              FROM jsonb_array_elements(examples || $3::jsonb) WITH ORDINALITY AS t(e, ord)
+			             ORDER BY ord DESC
+			             LIMIT 20
+			          ) AS keep(e, ord)
+			      ),
 			    last_used_at  = NOW(),
 			    updated_at    = NOW()
 			WHERE id = $1
