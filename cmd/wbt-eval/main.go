@@ -1,12 +1,16 @@
 // Command wbt-eval is the standalone, provider-backed eval CLI (Phase 6.5).
 // It runs the same deterministic graders internal/evals/*_test.go already
 // exercises through `go test` / `task check`, but through
-// internal/evals.ProviderEvalSuite instead — kept as a separate binary and
-// deliberately NOT wired into build/Taskfile.yml's lint/test/test-integration
-// targets, because future categories will call out to a real LLM provider
-// (TODO Phase 6+ in internal/evals/provider_eval.go), and provider-backed
-// evals MUST NOT run on every `task check` invocation: they cost money and
-// depend on network availability.
+// internal/evals.ProviderEvalSuite instead — kept as a separate binary.
+// Its unit tests (this file's _test.go, a pure validateFlags allowlist
+// check) ARE wired into build/Taskfile.yml's lint and test targets: they
+// never invoke run()/main() and therefore never touch a provider or the
+// network. What stays deliberately NOT wired in is test-integration, and —
+// regardless of which target runs — actually executing the built binary
+// bin/wbt-eval, because future categories will call out to a real LLM
+// provider (TODO Phase 6+ in internal/evals/provider_eval.go), and
+// provider-backed evals MUST NOT run on every `task check` invocation: they
+// cost money and depend on network availability.
 //
 // Usage:
 //

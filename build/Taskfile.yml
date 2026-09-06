@@ -246,7 +246,7 @@ tasks:
     dir: ..
 
   build-wbt-eval:
-    desc: "Build the wbt-eval standalone provider-backed eval CLI to bin/ (Phase 6.5 — intentionally NOT in lint/test/test-integration's package lists below: it must never run as part of the default quality gate, see cmd/wbt-eval/main.go's package doc)"
+    desc: "Build the wbt-eval standalone provider-backed eval CLI to bin/ (Phase 6.5 — in lint/test's package lists below for its unit tests only; intentionally NOT in test-integration and this target never executes bin/wbt-eval as part of the default quality gate, see cmd/wbt-eval/main.go's package doc)"
     deps:
       - go-cache
     cmds:
@@ -262,7 +262,7 @@ tasks:
       - |
         # cmd/server embeds web/dist which requires a prior `npm run build`.
         # Exclude it so lint is not blocked by a missing frontend build artifact.
-        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/..."
+        PKGS="./internal/... ./cmd/doctor/... ./cmd/wbt-context/... ./cmd/wbt-hook/... ./cmd/wbt/... ./cmd/seed/... ./cmd/qa-seed/... ./cmd/discordbot/... ./cmd/wbt-guard/... ./cmd/wbt-eval/..."
         if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = "1" ]; then
           GOPROXY=off golangci-lint run --config build/.golangci.yml $PKGS
         else

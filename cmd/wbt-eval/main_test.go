@@ -128,7 +128,7 @@ func TestRunEval_NoAPIKey_UnsetVsEmpty(t *testing.T) {
 		// actually-unset state this subtest exercises, robust against a
 		// developer's shell happening to export a real key.
 		t.Setenv("ANTHROPIC_API_KEY", "placeholder")
-		os.Unsetenv("ANTHROPIC_API_KEY")
+		_ = os.Unsetenv("ANTHROPIC_API_KEY")
 
 		var stdout, stderr bytes.Buffer
 		code := runEval(evals.CategoryAll, &stdout, &stderr)
