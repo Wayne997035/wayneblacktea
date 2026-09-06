@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
@@ -227,9 +228,14 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"update_skill_from_outcome",
 		mcp.WithDescription(
+			// [F0906-33] Retention cap comes from the const, never a literal,
+			// so this sentence can't drift from skill.SkillExamplesMaxEntries.
 			"Records a success or failure outcome for a skill execution. "+
-				"Appends the outcome reference and notes to the skill's examples log "+
-				"and increments the appropriate counter.",
+				"Appends the outcome reference and notes to the skill's examples "+
+				"log, which retains only the most recent "+
+				strconv.Itoa(skill.SkillExamplesMaxEntries)+
+				" entries (oldest dropped first); success_count/failure_count "+
+				"are not truncated and may exceed the examples retained.",
 		),
 		mcp.WithString("skill_id",
 			mcp.Description("UUID of the skill"),
