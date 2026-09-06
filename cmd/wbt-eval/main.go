@@ -2,8 +2,8 @@
 // It runs the same deterministic graders internal/evals/*_test.go already
 // exercises through `go test` / `task check`, but through
 // internal/evals.ProviderEvalSuite instead — kept as a separate binary.
-// Its unit tests (this file's _test.go, a pure validateFlags allowlist
-// check) ARE wired into build/Taskfile.yml's lint and test targets: they
+// [F0906-24] Its unit tests (this file's _test.go, a pure validateFlags
+// allowlist check) ARE wired into build/Taskfile.yml's lint and test targets: they
 // never invoke run()/main() and therefore never touch a provider or the
 // network. What stays deliberately NOT wired in is test-integration, and —
 // regardless of which target runs — actually executing the built binary

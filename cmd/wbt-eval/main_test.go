@@ -128,6 +128,12 @@ func TestRunEval_NoAPIKey_UnsetVsEmpty(t *testing.T) {
 		// actually-unset state this subtest exercises, robust against a
 		// developer's shell happening to export a real key.
 		t.Setenv("ANTHROPIC_API_KEY", "placeholder")
+		// [F0906-23] discard the return value: os.Unsetenv on this
+		// well-formed key name cannot fail in practice here, and this call
+		// exists only to force the actually-unset state this subtest
+		// exercises (t.Setenv above only restores on cleanup, it doesn't
+		// unset now) — checking an error that's realistically unreachable
+		// would satisfy errcheck without adding any real safety.
 		_ = os.Unsetenv("ANTHROPIC_API_KEY")
 
 		var stdout, stderr bytes.Buffer
