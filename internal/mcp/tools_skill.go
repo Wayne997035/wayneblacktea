@@ -194,9 +194,8 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 		// [F0906-31] examples is now bounded at the write path
 		// (skill.SkillExamplesMaxEntries, FIFO — GTD 17f08ba8, closed by
 		// F0906-11..13) and here it is one request body (bounded, just large).
-		// No entry-count cap exists in handleExtractSkill or either store;
-		// adding one for source_atom_ids is a separate, still-open decision —
-		// not attempted here.
+		// source_atom_ids has no entry-count cap in handleExtractSkill or in either store;
+		// adding one is a separate, still-open decision — not attempted here.
 		mcp.WithString("source_atom_ids",
 			mcp.Description("Comma-separated memory atom IDs that inform this skill (no FK)")),
 	), s.handleExtractSkill)
