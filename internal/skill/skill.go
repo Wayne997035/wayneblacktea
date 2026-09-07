@@ -4,6 +4,14 @@ package skill
 
 import "time"
 
+// SkillExamplesMaxEntries bounds skills.examples to the most recently
+// recorded entries, oldest first (FIFO) — OWASP LLM04 unbounded consumption;
+// GTD 17f08ba8, closed by F0906-11..13. It is a retention cap, not a count of
+// outcomes ever recorded: success_count/failure_count are not truncated by
+// it. [F0906-32] Single source of truth for both backends
+// (internal/skill/store.go, internal/storage/sqlite/skill.go).
+const SkillExamplesMaxEntries = 20
+
 // Skill is a reusable skill definition extracted from a Claude Code session.
 type Skill struct {
 	ID                    string     `json:"id"`

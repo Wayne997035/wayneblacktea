@@ -24,7 +24,11 @@ type StoreIface interface {
 
 	// UpdateFromOutcome increments the success or failure counter, appends an
 	// example entry {"outcome_id":"…","notes":"…","at":"…"} to examples, and
-	// sets last_used_at = NOW(). Returns ErrNotFound when no matching row exists.
+	// sets last_used_at = NOW(). [F0906-32] Examples is retained at most
+	// SkillExamplesMaxEntries entries, oldest dropped first (FIFO) —
+	// implementations MUST enforce this; it is an OWASP LLM04 unbounded-
+	// consumption boundary, not a storage detail. Returns ErrNotFound when no
+	// matching row exists.
 	UpdateFromOutcome(ctx context.Context, p UpdateFromOutcomeParams, workspaceID *string) (*Skill, error)
 
 	// ListRelevant returns skills ordered by success_count DESC, last_used_at DESC,
