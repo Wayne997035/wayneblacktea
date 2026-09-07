@@ -11,7 +11,7 @@ import (
 // [F170-SEC-R3-01] neutralizeSkillExamples used to inspect the literal key
 // "notes" and copy every other key and value through byte-for-byte. outcome_id
 // is a plain caller-supplied argument of update_skill_from_outcome, so a
-// forged fence placed there was stored verbatim (examples is append-only) and
+// forged fence placed there was stored verbatim and
 // then rendered into a LATER session's context by search_skills, use_skill and
 // list_relevant_skills — stored, second-order prompt injection.
 //

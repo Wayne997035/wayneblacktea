@@ -66,10 +66,11 @@ func TestSEC171_08_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
 
 // TestF170SECR301_OutcomeIDIsBoundedServerSide pins the storage half of
 // [F170-SEC-R3-01]. The read-time walker (zz_sec_f170_r3_skill_examples_test.go)
-// makes rendering safe; this is about what gets written: examples is
-// append-only (`examples || $3::jsonb` on Postgres), and outcome_id had no cap
-// at any layer, so a single caller could grow a skill row without limit and
-// spend a later session's context window reading it back.
+// makes rendering safe; this is about what gets written: entries are appended
+// to examples verbatim (`examples || $3::jsonb` on Postgres, then trimmed to
+// skill.SkillExamplesMaxEntries), and outcome_id had no cap at any layer, so a
+// single caller could put an unbounded value into a skill row and spend a
+// later session's context window reading it back.
 //
 // [F171-06] This bounds the PER-VALUE half only, the same distinction
 // skillOutcomeIDMaxRunes' own comment (tools_skill.go) makes in bold: the
