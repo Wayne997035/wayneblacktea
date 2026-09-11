@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 )
 
@@ -563,6 +565,32 @@ func TestStoreErrorResult_LogRetainsFullError(t *testing.T) {
 	}
 	if !strings.Contains(logged, "loading projects") {
 		t.Errorf("server log lost the op field, making the entry hard to attribute: %q", logged)
+	}
+}
+
+// TestStoreErrorText_TagNoiseVerbatim pins AC-1 / F0911-01: a chain that
+// errors.Is sanitize.ErrTagNoise must reach the caller as err.Error()
+// verbatim, not the flat "<op> failed" every other store error still gets.
+// The chain already names the tool ("set_session_handoff: intent ..."), so
+// op is not prefixed a second time.
+func TestStoreErrorText_TagNoiseVerbatim(t *testing.T) {
+	err := fmt.Errorf("set_session_handoff: intent %w", sanitize.ValidateNoTagNoise("</intent>"))
+
+	got := storeErrorText("setting handoff", err)
+	want := err.Error()
+	if got != want {
+		t.Errorf("storeErrorText(op, tagNoiseErr) = %q, want %q (verbatim, no op prefix)", got, want)
+	}
+}
+
+// TestStoreErrorText_NonTagNoiseStaysOpaque is AC-1's negative case: a
+// connection-level error (nothing sentinel, nothing tag-noise) must still
+// collapse to the flat "<op> failed" — the narrowing in F0911-01 must not
+// leak driver text for any OTHER error class.
+func TestStoreErrorText_NonTagNoiseStaysOpaque(t *testing.T) {
+	got := storeErrorText("setting handoff", errors.New("connection refused"))
+	if got != "setting handoff failed" {
+		t.Errorf("storeErrorText(op, connErr) = %q, want %q", got, "setting handoff failed")
 	}
 }
 

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -326,5 +327,51 @@ func TestHandleLogDecision_ForgedSourceArgIgnored(t *testing.T) {
 	if dec.lastLogged.Source != decision.SourceManual {
 		t.Errorf("Source = %q, want %q (forged arg must not override the path constant)",
 			dec.lastLogged.Source, decision.SourceManual)
+	}
+}
+
+// TestLogDecision_AlternativesTagNoiseNamesField pins AC-4 / F0911-04:
+// alternatives is not one of CheckDecisionNoise's four gated fields
+// (title/context/decision/rationale — see CheckField's callers in
+// internal/validator/noise.go), so a tag-noisy alternatives value sails
+// past handleLogDecision's front gate and reaches the store. Before
+// F0911-04 the SQLite harness wrote the row silently; now
+// sqlite.DecisionStore.Log rejects it the same way pgx already did, and
+// F0911-01 surfaces the field name and excerpt instead of the flat
+// "logging decision failed".
+func TestLogDecision_AlternativesTagNoiseNamesField(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callLogDecision(t, s, map[string]any{
+		"title":        "ADR: use SQLite for local dev",
+		"context":      "we want zero-dependency local setup",
+		"decision":     "ship SQLite backend",
+		"rationale":    "no Postgres required",
+		"alternatives": "A </invoke> B",
+	})
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "alternatives") {
+		t.Errorf("error should name the field, got: %s", text)
+	}
+	if !strings.Contains(text, `near "`) {
+		t.Errorf("error should include the bounded excerpt, got: %s", text)
+	}
+}
+
+// TestLogDecision_AlternativesTagNoise_CleanNotAnError is AC-4's negative
+// case: ordinary alternatives text must not trip the new check.
+func TestLogDecision_AlternativesTagNoise_CleanNotAnError(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callLogDecision(t, s, map[string]any{
+		"title":        "ADR: use SQLite for local dev",
+		"context":      "we want zero-dependency local setup",
+		"decision":     "ship SQLite backend",
+		"rationale":    "no Postgres required",
+		"alternatives": "A vs B",
+	})
+	if r.IsError {
+		t.Fatalf("clean alternatives must not be rejected, got: %s", resultText(r))
 	}
 }

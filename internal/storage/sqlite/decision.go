@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 )
 
@@ -79,6 +80,28 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 	if !p.Source.Valid() {
 		return nil, decision.ErrInvalidSource
 	}
+	// F0911-04: mirrors the 6 checks in internal/decision/store.go:43-60
+	// (pgx), same order, same wrap text — SQLite previously wrote rows pgx
+	// already rejected. ActorSessionID is deliberately excluded on both
+	// backends — see pgx Store.Log's doc comment.
+	if err := sanitize.ValidateNoTagNoise(p.Title); err != nil {
+		return nil, fmt.Errorf("log_decision: title %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
+		return nil, fmt.Errorf("log_decision: repo_name %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
+		return nil, fmt.Errorf("log_decision: rationale %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Alternatives); err != nil {
+		return nil, fmt.Errorf("log_decision: alternatives %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Context); err != nil {
+		return nil, fmt.Errorf("log_decision: context %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Decision); err != nil {
+		return nil, fmt.Errorf("log_decision: decision %w", err)
+	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions
 		(id, workspace_id, project_id, repo_name, title, context, decision,
@@ -105,6 +128,26 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogParams) (uuid.UUID, error) {
 	if !p.Source.Valid() {
 		return uuid.UUID{}, decision.ErrInvalidSource
+	}
+	// F0911-04: same 6 checks as Log, byte-identical wrap text — see its
+	// doc comment.
+	if err := sanitize.ValidateNoTagNoise(p.Title); err != nil {
+		return uuid.UUID{}, fmt.Errorf("log_decision: title %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
+		return uuid.UUID{}, fmt.Errorf("log_decision: repo_name %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
+		return uuid.UUID{}, fmt.Errorf("log_decision: rationale %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Alternatives); err != nil {
+		return uuid.UUID{}, fmt.Errorf("log_decision: alternatives %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Context); err != nil {
+		return uuid.UUID{}, fmt.Errorf("log_decision: context %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.Decision); err != nil {
+		return uuid.UUID{}, fmt.Errorf("log_decision: decision %w", err)
 	}
 	id := uuid.New()
 	const q = `INSERT INTO decisions

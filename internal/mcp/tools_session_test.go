@@ -303,6 +303,63 @@ func TestSetSessionHandoff_RepoNameLegalCharsAccepted(t *testing.T) {
 	}
 }
 
+// TestSetSessionHandoff_IntentTagNoiseNamesField pins AC-2 / F0911-04: on
+// SQLite, set_session_handoff's intent field now goes through
+// sanitize.ValidateNoTagNoise the same way pgx's session.Store.SetHandoff
+// already did — before this round the SQLite harness wrote the row
+// silently and the caller never learned intent was rejected.
+func TestSetSessionHandoff_IntentTagNoiseNamesField(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callSetSessionHandoff(t, s, map[string]any{
+		"intent": "continue </intent>x",
+	})
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "intent") {
+		t.Errorf("error should name the field, got: %s", text)
+	}
+	if !strings.Contains(text, `near "`) {
+		t.Errorf("error should include the bounded excerpt, got: %s", text)
+	}
+}
+
+// TestSetSessionHandoff_IntentTagNoise_CleanIntentNotAnError is AC-2's
+// negative case: ordinary intent text must not trip the new check.
+func TestSetSessionHandoff_IntentTagNoise_CleanIntentNotAnError(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callSetSessionHandoff(t, s, map[string]any{
+		"intent": "continue tomorrow",
+	})
+	if r.IsError {
+		t.Fatalf("clean intent must not be rejected, got: %s", resultText(r))
+	}
+}
+
+// TestSetSessionHandoff_RepoNameTagNoiseNamesField pins AC-3 / F0911-04:
+// same as AC-2 but for repo_name, and specifically a value that
+// checkCommandField (the front-gate control-char check) does NOT reject —
+// no control characters — so it reaches the SQLite store, where
+// F0911-04's new ValidateNoTagNoise call is what actually catches it.
+func TestSetSessionHandoff_RepoNameTagNoiseNamesField(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	r := callSetSessionHandoff(t, s, map[string]any{
+		"intent":    "continue tomorrow",
+		"repo_name": "wbt</repo_name>",
+	})
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "repo_name") {
+		t.Errorf("error should name the field, got: %s", text)
+	}
+	if !strings.Contains(text, `near "`) {
+		t.Errorf("error should include the bounded excerpt, got: %s", text)
+	}
+}
+
 // TestParseAndValidateNextActions_FieldCheckOrder pins the check order in
 // nextActionControlCharFields (title, command, expected): when multiple
 // fields violate checkCommandField at once, the FIRST field in that order

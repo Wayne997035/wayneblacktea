@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
@@ -292,5 +293,85 @@ func TestDecodeProjectParams_EmptyTitleAndPriorityRange(t *testing.T) {
 				t.Fatalf("decodeProjectParams: unexpected error: %s", errMsg)
 			}
 		})
+	}
+}
+
+// ---- F0911-04: SQLite decision-store tag-noise parity on accept_proposal ----
+
+// TestAcceptProposal_DecisionTagNoiseNamesField pins AC-14: the iface accept
+// path (tools_proposal.go:1048, materializeDecisionIface -> s.decision.Log)
+// used by acceptProposalSequential when neither a Postgres pool nor
+// s.sqliteProposal is wired. Before F0911-01/F0911-04 storeErrorText
+// returned only "creating decision failed" and the SQLite row was already
+// written; after, the field name and excerpt survive and the row is
+// rejected.
+func TestAcceptProposal_DecisionTagNoiseNamesField(t *testing.T) {
+	s := newProposalTestServer(t)
+	s.sqliteProposal = nil // force acceptProposalSequential (the iface path)
+	ctx := context.Background()
+
+	payload := mustMarshal(t, proposal.DecisionProposerPayload{
+		Title:    "iface path decision",
+		Decision: "Use Y</decision>",
+	})
+	row, err := s.proposal.Create(ctx, proposal.CreateParams{Type: proposal.TypeDecision, Payload: payload})
+	if err != nil {
+		t.Fatalf("seeding TypeDecision proposal: %v", err)
+	}
+
+	r := callConfirmProposal(t, s, row.ID.String(), "accept")
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "decision") {
+		t.Errorf("error should name the field, got: %s", text)
+	}
+	if !strings.Contains(text, `near "`) {
+		t.Errorf("error should include the bounded excerpt, got: %s", text)
+	}
+}
+
+// TestAcceptProposal_SQLiteTagNoiseRollsBackWholeAcceptance pins AC-15: the
+// SQLite tx accept path (tools_proposal.go:854 ->
+// storage/sqlite/accept_proposal.go:121, DecisionStore.LogTx) now validates
+// tag-noise like pgx, so a mid-tx failure rolls back the WHOLE acceptance —
+// the proposal stays pending and no decisions row is created — instead of
+// (before F0911-04) silently writing the noisy row and resolving the
+// proposal. On pgx this rollback behaviour already exists today
+// (proposal/accept_pg.go:175); this pins that SQLite now matches.
+func TestAcceptProposal_SQLiteTagNoiseRollsBackWholeAcceptance(t *testing.T) {
+	s, sdb := newTestWorkSessionServerWithDB(t)
+	ctx := context.Background()
+
+	payload := mustMarshal(t, proposal.DecisionProposerPayload{
+		Title:    "sqlite tx decision",
+		Decision: "Use Y</decision>",
+	})
+	row, err := s.proposal.Create(ctx, proposal.CreateParams{Type: proposal.TypeDecision, Payload: payload})
+	if err != nil {
+		t.Fatalf("seeding TypeDecision proposal: %v", err)
+	}
+
+	r := callConfirmProposal(t, s, row.ID.String(), "accept")
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success: %s", resultText(r))
+	}
+
+	prop, err := s.proposal.Get(ctx, row.ID)
+	if err != nil {
+		t.Fatalf("fetching proposal after failed accept: %v", err)
+	}
+	if prop.Status != string(proposal.StatusPending) {
+		t.Errorf("proposal.Status = %q, want %q (whole acceptance must roll back)", prop.Status, proposal.StatusPending)
+	}
+
+	var count int
+	dbRow := sdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM decisions WHERE title = 'sqlite tx decision'`)
+	if err := dbRow.Scan(&count); err != nil {
+		t.Fatalf("querying decisions: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 decisions rows after rollback, got %d", count)
 	}
 }
