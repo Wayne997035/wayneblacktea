@@ -120,7 +120,7 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 		// F0911-02: narrowed, not removed. withTagNoiseDetail (tool_errors.go)
 		// appends the chain's own message when it errors.Is
 		// sanitize.ErrTagNoise — this package's own bounded validation text
-		// (field name + 10-rune excerpt), never driver output — so the caller
+		// (field name + bounded excerpt, clipped in tool_errors.go — [F175-03]), never driver output — so the caller
 		// sees WHICH decision field was rejected instead of guessing;
 		// confirm_plan has zero front-gate calls, so this is the only place
 		// that can tell it. Every other error class passes through unchanged.

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -591,6 +592,55 @@ func TestStoreErrorText_NonTagNoiseStaysOpaque(t *testing.T) {
 	got := storeErrorText("setting handoff", errors.New("connection refused"))
 	if got != "setting handoff failed" {
 		t.Errorf("storeErrorText(op, connErr) = %q, want %q", got, "setting handoff failed")
+	}
+}
+
+// hugeTagNoiseFragment is a paramTagRe match whose length the CALLER
+// controls: `\s+` (tagnoise.go:19) has no upper bound, so this single match
+// is as long as the whitespace run inside it. Shared by the two tests below.
+const hugeTagNoiseFragmentWhitespace = 100000
+
+// TestStoreErrorText_TagNoiseChainIsBounded pins F175-01 / SEC175-01:
+// storeErrorText's ErrTagNoise branch must clip to a hard,
+// caller-input-independent rune bound. sanitize.ValidateNoTagNoise's excerpt
+// is only margin-bounded (excerptWindowRunes caps the runes on EACH SIDE of
+// the matched fragment, not the fragment itself), so before this fix a
+// caller-controlled run of whitespace inside a `<parameter\s+name=`
+// fragment made the whole message as long as the caller's own input
+// (security-engineer's PoC measured 500,015 B in -> 500,099 B out).
+func TestStoreErrorText_TagNoiseChainIsBounded(t *testing.T) {
+	huge := "<parameter" + strings.Repeat(" ", hugeTagNoiseFragmentWhitespace) + "name="
+	err := fmt.Errorf("log_decision: alternatives %w", sanitize.ValidateNoTagNoise(huge))
+
+	got := storeErrorText("logging decision", err)
+
+	if n, want := utf8.RuneCountInString(got), tagNoiseDetailMaxRunes+utf8.RuneCountInString(clipMarker); n > want {
+		t.Errorf("storeErrorText returned %d runes for a caller-controlled huge input, "+
+			"want <= %d (tagNoiseDetailMaxRunes + clipMarker)", n, want)
+	}
+}
+
+// TestWithTagNoiseDetail_ChainIsBounded pins F175-02 / SEC175-01: the same
+// hard bound applies to withTagNoiseDetail's ErrTagNoise branch — the exit
+// confirm_plan uses (tools_plan.go:128) instead of storeErrorText, so
+// F175-01 alone (bounding only storeErrorText) would leave this path open.
+// Only the appended chain text is bounded; the caller's own
+// already-built prefix (its partial-progress listing) passes through
+// untouched.
+func TestWithTagNoiseDetail_ChainIsBounded(t *testing.T) {
+	huge := "<parameter" + strings.Repeat(" ", hugeTagNoiseFragmentWhitespace) + "name="
+	err := fmt.Errorf("log_decision: alternatives %w", sanitize.ValidateNoTagNoise(huge))
+
+	prefix := "2 tasks created, 1 decision logged"
+	got := withTagNoiseDetail(prefix, err)
+
+	if !strings.HasPrefix(got, prefix+"\n") {
+		t.Fatalf("withTagNoiseDetail dropped or altered its caller-supplied prefix: %.80q...", got)
+	}
+	appended := strings.TrimPrefix(got, prefix+"\n")
+	if n, want := utf8.RuneCountInString(appended), tagNoiseDetailMaxRunes+utf8.RuneCountInString(clipMarker); n > want {
+		t.Errorf("withTagNoiseDetail appended %d runes for a caller-controlled huge input, "+
+			"want <= %d (tagNoiseDetailMaxRunes + clipMarker)", n, want)
 	}
 }
 
