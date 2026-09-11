@@ -570,6 +570,23 @@ func TestConfirmPlan_TagNoiseSurvivesLongTitle(t *testing.T) {
 // leave an exactly-cap-length title untouched with no marker. The bound is
 // cap+1, NOT cap: asserting <= cap would make a correct implementation red.
 func TestPlanErrorTitleClip(t *testing.T) {
+	// trc-1: the assertions below derive every expectation from
+	// planErrorTitleMaxRunes itself, so they are structurally blind to the
+	// constant CHANGING — 80 → 40 leaves them all green (measured). AC-13's
+	// "Revert this" column lists a different value as one of its two
+	// mutations, so that half needs an anchor that does not come from the
+	// constant. This is it.
+	//
+	// t.Errorf, NOT t.Fatalf: Fatalf would abort before the clipSafe
+	// assertions run, which would silently destroy the coverage AC-13's
+	// OTHER half depends on (clipSafe → bare truncateRunes must still be
+	// caught here). Recording the failure and continuing keeps both anchors.
+	if planErrorTitleMaxRunes != 80 {
+		t.Errorf("planErrorTitleMaxRunes = %d, want 80 — this value is pinned by "+
+			"AC-13 in .specs/2026-09-11-validation-layer-matrix.md; change the spec first",
+			planErrorTitleMaxRunes)
+	}
+
 	long := strings.Repeat("A", 5000)
 	got := clipSafe(long, planErrorTitleMaxRunes)
 	if want := planErrorTitleMaxRunes + utf8.RuneCountInString(clipMarker); utf8.RuneCountInString(got) != want {
