@@ -11,6 +11,7 @@ import (
 
 	localai "github.com/Wayne997035/wayneblacktea/internal/ai"
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 )
@@ -61,7 +62,20 @@ func scanSessionHandoff(scan func(...any) error) (db.SessionHandoff, error) {
 }
 
 // SetHandoff records a new session handoff for the next session to pick up.
+// F0911-04: mirrors the 3 checks in internal/session/store.go:68-76 (pgx),
+// same order, same wrap text — SQLite previously wrote rows pgx already
+// rejected.
 func (s *SessionStore) SetHandoff(ctx context.Context, p session.HandoffParams) (*db.SessionHandoff, error) {
+	if err := sanitize.ValidateNoTagNoise(p.Intent); err != nil {
+		return nil, fmt.Errorf("set_session_handoff: intent %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.ContextSummary); err != nil {
+		return nil, fmt.Errorf("set_session_handoff: context_summary %w", err)
+	}
+	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
+		return nil, fmt.Errorf("set_session_handoff: repo_name %w", err)
+	}
+
 	id := uuid.New()
 
 	nextActionsJSON := "[]"

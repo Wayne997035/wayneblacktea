@@ -76,7 +76,7 @@ func excerptAround(s string, start, end int) string {
 // ValidateNoTagNoise returns an error wrapping ErrTagNoise (errors.Is-
 // compatible via %w) if s contains tool-call fragments, nil otherwise.
 // Intended for use at store write boundaries. The error message includes a
-// bounded excerpt around the matched fragment (see excerptWindowRunes) so a
+// margin-bounded excerpt around the matched fragment (see excerptWindowRunes; [F175-03]) so a
 // caller-side wrap like fmt.Errorf("log_decision: rationale %w", err) — the
 // pattern every existing caller already uses — produces a message with both
 // the field name and enough context to locate the offending text, instead

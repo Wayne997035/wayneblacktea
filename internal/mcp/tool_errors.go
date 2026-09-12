@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -86,6 +87,34 @@ func storeErrorResult(op string, err error) *mcp.CallToolResult {
 	return mcp.NewToolResultError(storeErrorText(op, err))
 }
 
+// tagNoiseDetailMaxRunes bounds the caller-facing length of the ErrTagNoise
+// chain text storeErrorText and withTagNoiseDetail return ([SEC175-01]).
+// sanitize.ValidateNoTagNoise's excerpt is only margin-bounded —
+// excerptWindowRunes caps the runes on EACH SIDE of the matched fragment,
+// not the fragment itself — and paramTagRe's `\s+` quantifier has no upper
+// bound, so a caller-controlled run of whitespace inside a
+// `<parameter\s+name=` fragment made err.Error() as long as the caller's own
+// input (measured: 500,015 B in -> 500,099 B out before this constant
+// existed).
+//
+// 500, not something closer to excerptWindowRunes, because
+// withTagNoiseDetail's confirm_plan caller wraps the chain behind its own
+// `logging decision %q (transaction rolled back, no changes made): ` prefix
+// (tools_plan.go) plus a clipSafe'd title of up to planErrorTitleMaxRunes+1
+// runes — together ~230 runes before any excerpt content starts. A cap near
+// that boundary would silently reproduce the exact defect
+// planErrorTitleMaxRunes's own doc comment (tools_plan.go) already warns
+// against: "an upper bound on the WHOLE message truncates the field name
+// and excerpt, not the harmless title." 500 leaves room for that worst-case
+// prefix plus a meaningful slice of the excerpt while remaining a hard,
+// caller-input-independent bound — unrelated to planErrorTitleMaxRunes,
+// which caps only a TITLE before it enters that prefix, not the whole
+// caller-facing text.
+//
+// Caller-facing only, same as storeErrorResult's redaction above: err is
+// still unclipped when logToolError writes it to the server log.
+const tagNoiseDetailMaxRunes = 500
+
 // storeErrorText is storeErrorResult's message half — the same policy, minus
 // the mcp.CallToolResult wrapper.
 //
@@ -102,6 +131,15 @@ func storeErrorResult(op string, err error) *mcp.CallToolResult {
 // indirection layer instead of also being a hole.
 func storeErrorText(op string, err error) string {
 	logToolError(op, err)
+	// F0911-01: narrowed U14 exception. A chain that errors.Is
+	// sanitize.ErrTagNoise is this package's own bounded validation text —
+	// a field name plus a bounded excerpt (clipped here to tagNoiseDetailMaxRunes runes — [F175-01][F175-03]) — never pgx
+	// or SQLite driver output, because every ValidateNoTagNoise call runs
+	// BEFORE its store issues SQL. op is not prefixed: the chain already
+	// names the tool ("log_decision: alternatives ...").
+	if errors.Is(err, sanitize.ErrTagNoise) {
+		return clipRunes(err.Error(), tagNoiseDetailMaxRunes)
+	}
 	for _, sentinel := range callerFacingSentinels {
 		if errors.Is(err, sentinel) {
 			// The SENTINEL's own text, not err's. err is the wrapped chain
@@ -113,6 +151,29 @@ func storeErrorText(op string, err error) string {
 		}
 	}
 	return op + " failed"
+}
+
+// withTagNoiseDetail is storeErrorText's shape for a caller that has already
+// built its own success/partial-progress text (confirm_plan's
+// planResultText) instead of taking the flat "<op> failed" form: append the
+// tag-noise chain's own message (field name + bounded excerpt, clipped here — [F175-02][F175-03]) when err
+// errors.Is sanitize.ErrTagNoise, and return text unchanged for every other
+// error class — F0911-02's narrowed U14 exception, same policy as
+// storeErrorText's.
+//
+// [F170-08] Declared here (not in tools_plan.go) on purpose: this file's
+// functions are the provenance gate's sanctioned exit set
+// (tool_errors_ast_test.go's `inHelpers` walk), so a call into this function
+// stops the gate's error-provenance trace the same way a call into
+// storeErrorText does. The inline equivalent — building text by
+// concatenating err.Error() directly inside handleConfirmPlan — traces back
+// to err (an error-shaped identifier) and the gate (correctly) cannot tell
+// that concatenation apart from the F170-07 regression it exists to catch.
+func withTagNoiseDetail(text string, err error) string {
+	if errors.Is(err, sanitize.ErrTagNoise) {
+		return text + "\n" + clipRunes(err.Error(), tagNoiseDetailMaxRunes)
+	}
+	return text
 }
 
 // callerFacingSentinels are domain errors that describe the CALLER's request

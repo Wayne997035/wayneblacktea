@@ -116,8 +116,17 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 		// wire messages naming tables and constraints. The partial-progress
 		// listing below it is the part that mattered to the caller and is
 		// kept; the error itself goes to the log.
+		//
+		// F0911-02: narrowed, not removed. withTagNoiseDetail (tool_errors.go)
+		// appends the chain's own message when it errors.Is
+		// sanitize.ErrTagNoise — this package's own bounded validation text
+		// (field name + bounded excerpt, clipped in tool_errors.go — [F175-03]), never driver output — so the caller
+		// sees WHICH decision field was rejected instead of guessing;
+		// confirm_plan has zero front-gate calls, so this is the only place
+		// that can tell it. Every other error class passes through unchanged.
 		logToolError("confirming plan", err)
-		return mcp.NewToolResultError(planResultText(createdTasks, loggedDecisions, nil, true)), nil
+		text := withTagNoiseDetail(planResultText(createdTasks, loggedDecisions, nil, true), err)
+		return mcp.NewToolResultError(text), nil
 	}
 
 	// Always create an in_progress work session (D2: no bool flag).
@@ -136,6 +145,18 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 // listing that follows this line; the error itself goes to the server log via
 // logToolError.
 const planFailedHeadline = "Plan confirmation failed."
+
+// planErrorTitleMaxRunes caps a caller-supplied decision title at 80 runes
+// wherever it is folded into a "logging decision %q" error wrap
+// (F0911-07) — same value and purpose as truncateForFinishWorkLog
+// (tools_worksession.go:1337-1346). The %w chain that follows the title in
+// each of those wraps is NOT capped by this constant: it is this package's
+// own bounded ErrTagNoise text (sanitize/tagnoise.go), and capping the
+// title is what keeps an oversized title from pushing that diagnostic out
+// of a length-limited response — the defect a prior round of this spec
+// caught (an upper bound on the WHOLE message truncates the field name and
+// excerpt, not the harmless title).
+const planErrorTitleMaxRunes = 80
 
 // planResultText renders confirm_plan's response text for both the success
 // path (failed == false) and the partial-failure path (failed == true).
@@ -258,7 +279,10 @@ func (s *Server) materializePlanPg(
 			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if derr != nil {
-			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
+			return nil, nil, nil, fmt.Errorf(
+				"logging decision %q (transaction rolled back, no changes made): %w",
+				clipSafe(d.Title, planErrorTitleMaxRunes), derr,
+			)
 		}
 		logged = append(logged, dec.Title)
 	}
@@ -330,7 +354,10 @@ func (s *Server) materializePlanSQLite(
 			Source:         decision.SourceManual,
 			ActorSessionID: s.auditSessionID(ctx),
 		}); derr != nil {
-			return nil, nil, nil, fmt.Errorf("logging decision %q (transaction rolled back, no changes made): %w", d.Title, derr)
+			return nil, nil, nil, fmt.Errorf(
+				"logging decision %q (transaction rolled back, no changes made): %w",
+				clipSafe(d.Title, planErrorTitleMaxRunes), derr,
+			)
 		}
 		logged = append(logged, d.Title)
 	}
@@ -417,7 +444,10 @@ func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput
 			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if err != nil {
-			return logged, fmt.Errorf("logging decision %q (%d already logged): %w", d.Title, len(logged), err)
+			return logged, fmt.Errorf(
+				"logging decision %q (%d already logged): %w",
+				clipSafe(d.Title, planErrorTitleMaxRunes), len(logged), err,
+			)
 		}
 		logged = append(logged, dec.Title)
 	}

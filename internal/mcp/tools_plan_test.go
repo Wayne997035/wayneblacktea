@@ -3,8 +3,13 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -443,11 +448,15 @@ func TestHandleConfirmPlan_SQLite_AtomicRollbackOnMidPhaseFailure(t *testing.T) 
 // back when a LATER decision in the same call fails.
 func TestHandleConfirmPlan_SQLite_AtomicRollbackAcrossTaskAndDecision(t *testing.T) {
 	s, sdb := newTestWorkSessionServerWithDB(t)
-	// Source is hardcoded to SourceManual by materializePlanSQLite, so there
-	// is no confirm_plan-reachable input that fails a specific decision
-	// through the real SQLite store. Swap in a decision-failing stub while
-	// keeping the real sqliteGTD wired, so the task loop hits the real store
-	// and the decision loop hits the stub inside the SAME real *sql.Tx.
+	// F0911-08: since F0911-04, sqlite decision.Log/LogTx also validates
+	// tag-noise, so a confirm_plan-reachable input CAN now fail a specific
+	// decision through the real SQLite store — see
+	// TestConfirmPlan_TagNoiseReportsField / TestConfirmPlan_TagNoiseSurvivesLongTitle
+	// below for that path. This test instead exercises a DIFFERENT
+	// cross-loop failure: the "sqlite decision store not wired" case. Swap
+	// in a decision-failing stub while keeping the real sqliteGTD wired, so
+	// the task loop hits the real store and the decision loop hits the stub
+	// inside the SAME real *sql.Tx.
 	s.sqliteDecision = nil // force the "sqlite decision store not wired" error path
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases":    `[{"title":"SQLite Atomic Cross A","description":"A","priority":1}]`,
@@ -470,4 +479,213 @@ func TestHandleConfirmPlan_SQLite_AtomicRollbackAcrossTaskAndDecision(t *testing
 	if count != 0 {
 		t.Errorf("expected task to be rolled back by the decision-loop failure, got %d rows", count)
 	}
+}
+
+// ---- F0911-02 / F0911-07: tag-noise message path (AC-10, AC-11, AC-13) ----
+
+// TestConfirmPlan_TagNoiseReportsField pins AC-10: confirm_plan has zero
+// front-gate calls (no CheckField/checkDecisionNoise anywhere in
+// tools_plan.go), so the errors.Is(err, sanitize.ErrTagNoise) branch added
+// in handleConfirmPlan is the ONLY thing standing between a tag-noise
+// decision field and the r1 defect this round exists to close — a caller
+// told only "Plan confirmation failed." with no way to learn which field.
+func TestConfirmPlan_TagNoiseReportsField(t *testing.T) {
+	s := newMinimalPlanServer(t)
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"T","description":"d","priority":1}]`,
+		"decisions": `[{"title":"T","decision":"Use Y</decision>"}]`,
+	})
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "decision") {
+		t.Errorf("error should name the field, got: %s", text)
+	}
+	if !strings.Contains(text, `near "`) {
+		t.Errorf("error should include the bounded excerpt, got: %s", text)
+	}
+}
+
+// TestConfirmPlan_TagNoise_NonNoiseFailureStaysOpaque is AC-10's negative
+// case: a confirm_plan failure that is NOT tag-noise — forcing
+// s.sqliteDecision = nil reaches the ":314-316" guard, which runs BEFORE the
+// LogTx loop so F0911-04's new SQLite checks cannot pre-empt it — must still
+// produce text with no err content (U14 unchanged for every other failure
+// class). Both createdTasks and loggedDecisions come back empty on this
+// path (materializePlanSQLite returns nil/nil/nil), so planResultText
+// collapses to the bare headline with nothing appended.
+func TestConfirmPlan_TagNoise_NonNoiseFailureStaysOpaque(t *testing.T) {
+	s := newMinimalPlanServer(t)
+	s.sqliteDecision = nil // force "sqlite decision store not wired", not tag-noise
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"T","description":"d","priority":1}]`,
+		"decisions": `[{"title":"T","decision":"Use Y"}]`,
+	})
+	if !r.IsError {
+		t.Fatalf("expected failure from unwired sqliteDecision, got success: %s", resultText(r))
+	}
+	if text := resultText(r); text != planFailedHeadline {
+		t.Errorf("non-tag-noise failure must carry no err content, got: %q, want %q", text, planFailedHeadline)
+	}
+}
+
+// TestConfirmPlan_TagNoiseSurvivesLongTitle pins AC-11: clipSafe at
+// tools_plan.go:333 (materializePlanSQLite's decision-loop wrap) clips ONLY
+// d.Title — the %w chain that follows it is untouched — so a 5000-rune
+// caller-supplied title cannot push the field name + excerpt for a
+// genuinely tag-noisy decision out of the response. An earlier round of
+// this spec applied an upper bound to the WHOLE message instead, which
+// truncated the diagnostic away rather than the harmless title; asserting
+// ONLY the length bound (without also asserting the diagnostic survives)
+// is how that defect would recur unnoticed.
+func TestConfirmPlan_TagNoiseSurvivesLongTitle(t *testing.T) {
+	s := newMinimalPlanServer(t)
+	longTitle := strings.Repeat("A", 5000)
+	decisionsJSON := fmt.Sprintf(`[{"title":%q,"decision":"Use Y</decision>"}]`, longTitle)
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"T","description":"d","priority":1}]`,
+		"decisions": decisionsJSON,
+	})
+	if !r.IsError {
+		t.Fatalf("expected tag-noise rejection, got success (len=%d)", len(resultText(r)))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "decision") {
+		t.Errorf("error should name the field even with a 5000-rune title, got %d runes, prefix: %.200q",
+			utf8.RuneCountInString(text), text)
+	}
+	if !strings.Contains(text, `near "`) {
+		t.Errorf("error should include the bounded excerpt even with a 5000-rune title, got %d runes, prefix: %.200q",
+			utf8.RuneCountInString(text), text)
+	}
+	if n := utf8.RuneCountInString(text); n >= 5000 {
+		t.Errorf("response text is %d runes, want < 5000 — the 5000-rune title must not survive unclipped", n)
+	}
+}
+
+// TestPlanErrorTitleClip pins AC-13: planErrorTitleMaxRunes must actually
+// bound clipSafe's output at cap+1 runes (clipRunes appends the single-rune
+// clipMarker only when it shortens — tools_context.go:171-180), and must
+// leave an exactly-cap-length title untouched with no marker. The bound is
+// cap+1, NOT cap: asserting <= cap would make a correct implementation red.
+func TestPlanErrorTitleClip(t *testing.T) {
+	// trc-1: the assertions below derive every expectation from
+	// planErrorTitleMaxRunes itself, so they are structurally blind to the
+	// constant CHANGING — 80 → 40 leaves them all green (measured). AC-13's
+	// "Revert this" column lists a different value as one of its two
+	// mutations, so that half needs an anchor that does not come from the
+	// constant. This is it.
+	//
+	// t.Errorf, NOT t.Fatalf: Fatalf would abort before the clipSafe
+	// assertions run, which would silently destroy the coverage AC-13's
+	// OTHER half depends on (clipSafe → bare truncateRunes must still be
+	// caught here). Recording the failure and continuing keeps both anchors.
+	if planErrorTitleMaxRunes != 80 {
+		t.Errorf("planErrorTitleMaxRunes = %d, want 80 — this value is pinned by "+
+			"AC-13 in .specs/2026-09-11-validation-layer-matrix.md; change the spec first",
+			planErrorTitleMaxRunes)
+	}
+
+	long := strings.Repeat("A", 5000)
+	got := clipSafe(long, planErrorTitleMaxRunes)
+	if want := planErrorTitleMaxRunes + utf8.RuneCountInString(clipMarker); utf8.RuneCountInString(got) != want {
+		t.Errorf("clipSafe(5000-rune input, %d) = %d runes, want %d (cap + clipMarker)",
+			planErrorTitleMaxRunes, utf8.RuneCountInString(got), want)
+	}
+	if !strings.HasSuffix(got, clipMarker) {
+		t.Errorf("clipped result must end with clipMarker, got: %q", got)
+	}
+
+	exact := strings.Repeat("B", planErrorTitleMaxRunes)
+	gotExact := clipSafe(exact, planErrorTitleMaxRunes)
+	if gotExact != exact {
+		t.Errorf("a title of exactly %d runes must return unchanged, got: %q", planErrorTitleMaxRunes, gotExact)
+	}
+	if strings.HasSuffix(gotExact, clipMarker) {
+		t.Errorf("a title of exactly the cap must not carry clipMarker, got: %q", gotExact)
+	}
+}
+
+// TestPlanDecisionWrapsClipTitle pins AC-12: every fmt.Errorf in
+// tools_plan.go whose format string contains "logging decision %q" must
+// pass clipSafe(<x>.Title, planErrorTitleMaxRunes) as its %q argument, and
+// there must be exactly 3 such wraps (materializePlanPg :261,
+// materializePlanSQLite :333, logPlanDecisions :420).
+//
+// AST-based, not a line scan: the wrap lines are long enough that
+// build/.golangci.yml's lll:140 forces them across multiple lines, and
+// parser.ParseFile is called WITHOUT parser.ParseComments so a
+// `// clipSafe(...)` comment on the wrap line cannot satisfy this check —
+// only a real clipSafe(...) call expression can. This is the only probe for
+// materializePlanPg's own clip site: newPgPlanTestServer
+// (tools_plan_pg_test.go) skips under testing.Short(), and the gate runs
+// `go test -short` (build/Taskfile.yml).
+func TestPlanDecisionWrapsClipTitle(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "tools_plan.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing tools_plan.go: %v", err)
+	}
+
+	const needle = "logging decision %q"
+	total, clipped := 0, 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Errorf" {
+			return true
+		}
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok || pkgIdent.Name != "fmt" {
+			return true
+		}
+		if len(call.Args) < 2 {
+			return true
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		format, unquoteErr := strconv.Unquote(lit.Value)
+		if unquoteErr != nil || !strings.Contains(format, needle) {
+			return true
+		}
+		total++
+		if isClipSafeTitleCall(call.Args[1]) {
+			clipped++
+		}
+		return true
+	})
+
+	if total != 3 {
+		t.Fatalf("found %d fmt.Errorf(%q...) calls in tools_plan.go, want exactly 3", total, needle)
+	}
+	if clipped != total {
+		t.Errorf("clipped=%d, total=%d — every %q wrap must pass clipSafe(<x>.Title, planErrorTitleMaxRunes)"+
+			" as its %%q argument, not the raw field", clipped, total, needle)
+	}
+}
+
+// isClipSafeTitleCall reports whether arg is a call expression shaped
+// clipSafe(<x>.Title, planErrorTitleMaxRunes) — the exact form F0911-07
+// requires, not merely "some call to clipSafe".
+func isClipSafeTitleCall(arg ast.Expr) bool {
+	call, ok := arg.(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 {
+		return false
+	}
+	fn, ok := call.Fun.(*ast.Ident)
+	if !ok || fn.Name != "clipSafe" {
+		return false
+	}
+	sel, ok := call.Args[0].(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Title" {
+		return false
+	}
+	capIdent, ok := call.Args[1].(*ast.Ident)
+	return ok && capIdent.Name == "planErrorTitleMaxRunes"
 }

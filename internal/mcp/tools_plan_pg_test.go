@@ -179,8 +179,13 @@ func TestHandleConfirmPlan_Postgres_AtomicRollbackOnMidPhaseFailure(t *testing.T
 // ValidateNoTagNoise (called by decision.Store.Log — see
 // internal/decision/store.go) rejects tool-call serialization fragments,
 // giving a real, confirm_plan-reachable per-decision failure trigger on the
-// Postgres backend (SQLite's Log doesn't have this — see the SQLite cross
-// -domain test's doc comment for why that one takes a different route).
+// Postgres backend. F0911-08: since F0911-04, sqlite's decision.Log/LogTx
+// validates tag-noise the same way (see
+// TestConfirmPlan_TagNoiseReportsField in tools_plan_test.go) — this
+// Postgres-only test still earns its keep because newPgPlanTestServer
+// (below) skips under testing.Short(), and the gate runs `go test -short`
+// (build/Taskfile.yml), so this is the only coverage that exercises
+// materializePlanPg's own clipSafe wrap site (tools_plan.go:261).
 func TestHandleConfirmPlan_Postgres_AtomicRollbackAcrossTaskAndDecision(t *testing.T) {
 	s, wsID := newPgPlanTestServer(t)
 	ctx := context.Background()
