@@ -115,7 +115,8 @@ func (c *Chain) CompleteJSON(ctx context.Context, req JSONRequest) (string, erro
 		latency := c.now().Sub(start)
 		if err == nil {
 			c.health.recordSuccess(p.Name(), modelOf(p), c.now())
-			slog.Info("llm: provider ok",
+			slog.Info(
+				"llm: provider ok",
 				"task", req.Task,
 				"provider", p.Name(),
 				"latency_ms", latency.Milliseconds(),
@@ -125,7 +126,8 @@ func (c *Chain) CompleteJSON(ctx context.Context, req JSONRequest) (string, erro
 		reason := classifyChainErr(p.Name(), err)
 		c.health.recordFailure(p.Name(), modelOf(p), reason, c.now())
 		attempts = append(attempts, FailedAttempt{Provider: p.Name(), Reason: reason, Err: err})
-		slog.Warn("llm: provider failed, falling through",
+		slog.Warn(
+			"llm: provider failed, falling through",
 			"task", req.Task,
 			"provider", p.Name(),
 			"reason", reason,
@@ -137,7 +139,8 @@ func (c *Chain) CompleteJSON(ctx context.Context, req JSONRequest) (string, erro
 		}
 	}
 	finalErr := &ErrAllProvidersFailed{Attempts: attempts}
-	slog.Error("llm: all providers failed",
+	slog.Error(
+		"llm: all providers failed",
 		"task", req.Task,
 		"attempts", len(attempts),
 		"detail", finalErr.Error(),

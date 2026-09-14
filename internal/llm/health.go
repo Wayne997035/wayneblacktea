@@ -78,6 +78,19 @@ func modelOf(p JSONClient) string {
 // healthTracker holds the per-provider counters behind a mutex. Chain is used
 // concurrently by HTTP handlers and the scheduler, so these counters are
 // genuinely shared state, not per-request state.
+// Neither map here is ever pruned, and that is safe for one reason worth
+// stating rather than leaving to be re-derived: every key comes from
+// p.Name() where p ranges over Chain.providers, a set fixed at construction
+// and bounded by the four provider kinds BuildChainFromEnv can produce. No
+// key is derived from a request, a payload or any other caller-controlled
+// value, so the maps cannot grow with traffic.
+//
+// This is what makes the mechanical cache-invalidation axis flag the file: it
+// sees mutex-guarded maps with inserts and no deletes and cannot tell a
+// fixed startup registry from an unbounded cache. The axis documents that
+// exact false positive. If a future change ever keys these by something a
+// caller supplies — a model id, a request tag — the bound disappears and
+// eviction stops being optional.
 type healthTracker struct {
 	mu sync.Mutex
 	// byProvider is keyed by provider Name(). Two providers with the same
@@ -150,7 +163,8 @@ func (h *healthTracker) recordFailure(name, model, reason string, at time.Time) 
 		return
 	}
 	h.escalated[name] = true
-	slog.Error("llm: provider sustained failure — this is not transient",
+	slog.Error(
+		"llm: provider sustained failure — this is not transient",
 		"provider", name,
 		"model", model,
 		"consecutive_failures", e.ConsecutiveFailures,
@@ -214,18 +228,21 @@ func (c *Chain) Describe() []string {
 func (c *Chain) LogStartup() {
 	switch n := c.Len(); n {
 	case 0:
-		slog.Warn("llm: memory-only mode — no provider configured",
+		slog.Warn(
+			"llm: memory-only mode — no provider configured",
 			"effect", "decision drafting, activity classification and concept review will silently return empty",
 		)
 	case 1:
-		slog.Warn("llm: provider chain has no fallback",
+		slog.Warn(
+			"llm: provider chain has no fallback",
 			"chain", strings.Join(c.Describe(), " -> "),
 			"length", n,
 			"effect", "if this single provider fails, every LLM-backed feature degrades to empty with HTTP 200",
 			"fix", "set AI_FALLBACK_PROVIDERS and a second provider key",
 		)
 	default:
-		slog.Info("llm: provider chain resolved",
+		slog.Info(
+			"llm: provider chain resolved",
 			"chain", strings.Join(c.Describe(), " -> "),
 			"length", n,
 		)
