@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -111,6 +112,21 @@ func parseStringSlice(raw []byte) []string {
 
 // Add inserts a new procedural memory and returns the persisted record.
 func (s *Store) Add(ctx context.Context, p AddParams) (*ProceduralMemory, error) {
+	// [GTD d76ebc56] repo_name reaches three write paths — decision, session
+	// and this one. The first two screened it; procedural did not, so the
+	// column was the one way an agent could put tool-call serialisation
+	// fragments into a repo_name and have every reader of procedural_memories
+	// inherit them.
+	//
+	// Only repo_name is screened here, and deliberately: title / when_to_use /
+	// approach_md / tools_used / files_touched are prose an agent is SUPPOSED
+	// to author freely, and they are handled on the way out by
+	// wrapUntrustedProceduralMemory. repo_name is different in kind — it is an
+	// identifier with a known shape, so rejecting noise in it cannot refuse a
+	// legitimate write.
+	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
+		return nil, fmt.Errorf("record_procedure: repo_name %w", err)
+	}
 	id := uuid.New()
 	tools := jsonArray(p.ToolsUsed)
 	files := jsonArray(p.FilesTouched)
@@ -122,7 +138,8 @@ func (s *Store) Add(ctx context.Context, p AddParams) (*ProceduralMemory, error)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
 		RETURNING ` + selectCols
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		id,
 		s.workspaceID,
 		p.RepoName,

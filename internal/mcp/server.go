@@ -275,8 +275,9 @@ const errMsgInvalidProjectIDUUID = "invalid project_id UUID"
 
 // New creates a Server backed by the given pre-built ServerStores bundle.
 // The bundle is responsible for the workspace-id scoping and the underlying
-// connection lifecycle; cmd/mcp/main.go MUST defer stores.Close() after this
-// call returns.
+// connection lifecycle; the caller MUST defer stores.Close() after this call
+// returns. [GTD 2fdba553] That caller is internal/mcprunner.Run (the `wbt mcp`
+// stdio path) or cmd/server for the in-process MCP.
 func New(stores storage.ServerStores) (*Server, error) {
 	wsID := stores.WorkspaceID()
 

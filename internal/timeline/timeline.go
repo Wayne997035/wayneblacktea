@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -202,7 +203,7 @@ func (a *Aggregator) collectDecisions(ctx context.Context, from, to time.Time) (
 	for _, d := range decisions {
 		if d.CreatedAt.Valid {
 			if e := newEvent(KindDecision, d.CreatedAt.Time, d.ID.String(), d.Title, from, to); e != nil {
-				e.RepoName = d.RepoName.String
+				e.RepoName = repoNameOf(d.RepoName)
 				out = append(out, *e)
 			}
 		}
@@ -306,13 +307,13 @@ func (a *Aggregator) collectHandoffs(ctx context.Context, from, to time.Time) ([
 	for _, h := range handoffs {
 		if h.CreatedAt.Valid {
 			if e := newEvent(KindHandoffCreated, h.CreatedAt.Time, h.ID.String(), h.Intent, from, to); e != nil {
-				e.RepoName = h.RepoName.String
+				e.RepoName = repoNameOf(h.RepoName)
 				out = append(out, *e)
 			}
 		}
 		if h.ResolvedAt.Valid {
 			if e := newEvent(KindHandoffResolved, h.ResolvedAt.Time, h.ID.String(), h.Intent, from, to); e != nil {
-				e.RepoName = h.RepoName.String
+				e.RepoName = repoNameOf(h.RepoName)
 				out = append(out, *e)
 			}
 		}
@@ -348,6 +349,16 @@ func (a *Aggregator) collectVisions(ctx context.Context, from, to time.Time) ([]
 }
 
 // newEvent creates an Event only if ts falls within [from, to]; returns nil otherwise.
+// [GTD 49f2ed81] title is stored free text authored by an agent (task titles,
+// decision titles, handoff intents, knowledge titles …) and GET /api/timeline
+// renders it into a surface an agent reads back. Neutralising HERE rather than
+// in each collector is deliberate: all eight collectX methods funnel through
+// this constructor, so a ninth one added later is covered without its author
+// having to know this rule exists. The mirror of this reasoning on the MCP
+// side is wrapUntrustedContextPack — same guarantee, different output layer.
+//
+// RepoName is the one free-text Event field this constructor does NOT receive;
+// the three sites that assign it neutralise at the assignment.
 func newEvent(kind Kind, ts time.Time, refID, title string, from, to time.Time) *Event {
 	if ts.IsZero() {
 		return nil
@@ -359,8 +370,21 @@ func newEvent(kind Kind, ts time.Time, refID, title string, from, to time.Time) 
 		Kind:       kind,
 		OccurredAt: ts.UTC(),
 		RefID:      refID,
-		Title:      title,
+		Title:      safetext.NeutralizeBoundaryMarkers(title),
 	}
+}
+
+// [GTD 49f2ed81] repoNameOf is the assignment-side twin of newEvent's title
+// neutralisation. repo_name is caller-supplied free text on every write path
+// that has one, so it carries the same forge-a-closing-marker risk as Title.
+// It exists as a function rather than three inline calls so that a fourth
+// collector assigning RepoName has an obvious thing to reach for — an inline
+// `e.RepoName = x.RepoName.String` is the shape this finding was filed about.
+func repoNameOf(t pgtype.Text) string {
+	if !t.Valid {
+		return ""
+	}
+	return safetext.NeutralizeBoundaryMarkers(t.String)
 }
 
 // uuidFromPgtype converts a pgtype.UUID to its string representation.

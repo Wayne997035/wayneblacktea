@@ -62,6 +62,39 @@ type BatchItemResult struct {
 	ErrMsg string `json:"error,omitempty"`
 }
 
+// BatchItemErrMsg is what BatchConfirm must put in BatchItemResult.ErrMsg.
+//
+// [GTD 1134a216] Both backends used to write err.Error() straight into that
+// field, and it reaches the caller through jsonText — not through the MCP
+// error path — so neither the tool-error redaction nor U14's needle ever saw
+// it. The measured SQLite text was "sqlite ResolveProposal: SQL logic error:
+// no such table: pending_proposals (1)"; the Postgres equivalent carries
+// host, port, database, user and SQLSTATE.
+//
+// F170-08 fixed the sibling accept branch by routing it through
+// storeErrorText. That helper lives in internal/mcp and takes an error, while
+// this string is produced down in the store layer where the error identity is
+// still available and the MCP layer only ever sees the flattened text — so
+// the classification has to happen here, and living beside the sentinel it
+// classifies is what keeps the two backends from drifting.
+//
+// ErrNotFound passes through because it is the caller's own answer: the id
+// they supplied is not a pending proposal (Resolve returns it for
+// already-resolved rows too, keeping the operation idempotent). Everything
+// else is an internal failure the caller cannot act on and must not see.
+// Callers that need the detail have the server log.
+//
+// It takes no id on purpose. BatchItemResult.ID already carries it in the same
+// object, so repeating it would spend tokens an agent pays per failed item —
+// and an id parameter is one more thing a caller can pass the wrong value for,
+// in a loop where the right one is not the only one in scope.
+func BatchItemErrMsg(err error) string {
+	if errors.Is(err, ErrNotFound) {
+		return ErrNotFound.Error()
+	}
+	return "resolve failed"
+}
+
 // BatchConfirmResult is the aggregate result returned by BatchConfirm.
 type BatchConfirmResult struct {
 	Results []BatchItemResult `json:"results"`

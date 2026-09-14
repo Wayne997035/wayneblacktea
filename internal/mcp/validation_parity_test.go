@@ -107,8 +107,9 @@ func newParityEnv(t *testing.T) *parityEnv {
 		t.Fatalf("mcp.New: %v", err)
 	}
 	// Registers every tool (including deriving+caching each toolSpec via
-	// addTool/registerToolSpec — toolspec.go) exactly as production init
-	// (cmd/mcp/main.go) does. Required before seam-wrapped tools
+	// addTool/registerToolSpec — toolspec.go) exactly as production init does
+	// ([GTD 2fdba553] internal/mcprunner.Run for stdio, cmd/server for the
+	// in-process MCP). Required before seam-wrapped tools
 	// (update_project, create_goal, add_task) can be invoked in this test.
 	srv.MCPServer()
 

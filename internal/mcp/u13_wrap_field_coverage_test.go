@@ -430,8 +430,14 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 		blank:    func() any { return &db.Decision{} },
 		invoke:   func(in any) any { return wrapUntrustedDecision(in.(*db.Decision)) },
 		exemptions: wrapUntrustedFieldExemptions{
-			"RepoName": "validator.IsValidRepoName-gated at every write path (wrapUntrustedDecision's own doc comment)",
-			"Source":   "always the server literal decision.SourceManual at the one write path (handleLogDecision)",
+			// [GTD f8c2dc75 / 85c5a119] The RepoName exemption that used to sit
+			// here is gone, not relaxed: wrapUntrustedDecision now clipSafe's
+			// the field, so the walker covers it like any other. The exemption
+			// asserted "validator.IsValidRepoName-gated at every write path"
+			// and cited the doc comment that made that claim — while the
+			// regex's only non-test callers were project create/update, never
+			// log_decision.
+			"Source": "always the server literal decision.SourceManual at the one write path (handleLogDecision)",
 			"ActorSessionID": "hidden entirely from JSON by db.Decision's custom MarshalJSON " +
 				"(internal/db/models_custom.go) — never reaches the client regardless of this wrap function",
 			"EmbeddingProvider": "embedding-provenance field set only by the embedding pipeline, never a " +
@@ -521,9 +527,11 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 		typeName: "procedural.ProceduralMemory via wrapUntrustedProceduralMemory",
 		blank:    func() any { return &procedural.ProceduralMemory{} },
 		invoke:   func(in any) any { return wrapUntrustedProceduralMemory(in.(*procedural.ProceduralMemory)) },
-		exemptions: wrapUntrustedFieldExemptions{
-			"RepoName": "validator-gated at every write path (wrapUntrustedProceduralMemory's own doc comment)",
-		},
+		// [GTD f8c2dc75] Exemption list intentionally empty — see the twin note
+		// on the decision case above. record_procedure never called
+		// IsValidRepoName either, so this type's RepoName rested on the same
+		// circular citation and is now clipSafe'd like every other field.
+		exemptions: wrapUntrustedFieldExemptions{},
 	},
 	{
 		typeName: "db.PendingProposal via wrapUntrustedProposal",
@@ -697,13 +705,19 @@ var knownUnprotectedFields = map[string]string{}
 // moved on purpose. The real closure — a validator func(string) bool per
 // exemption — is GTD 3d4f94be, not this PR.
 //
-// 46: db.Task's "Artifact" (SEC171-09), "BranchName" and "PRUrl"
+// 44: db.Task's "Artifact" (SEC171-09), "BranchName" and "PRUrl"
 // (SEC171-19) entries — 3 of the 49 exemptions this file originally
 // carried — were REMOVED as their fixes landed (all three fields are now
-// genuinely clipped, not merely claimed to be shape-constrained elsewhere),
-// so this number already reflects those closures rather than needing a
-// follow-up bump.
-const wrapUntrustedAcceptedGapSurface = 46
+// genuinely clipped, not merely claimed to be shape-constrained elsewhere).
+//
+// [GTD f8c2dc75 / 85c5a119] 46 → 44: the "RepoName" entries on db.Decision
+// and procedural.ProceduralMemory were removed the same way. Both asserted
+// "validator.IsValidRepoName-gated at every write path" and cited the wrap
+// function's own doc comment as the evidence for it; the regex's only
+// non-test callers are project create/update, so neither log_decision nor
+// record_procedure ever went through it. Both fields are now clipSafe'd, so
+// the walker covers them and there is nothing left to exempt.
+const wrapUntrustedAcceptedGapSurface = 44
 
 // TestF171_02_AcceptedGapSurfaceIsTracked prints every entry across the
 // three escape hatches (wrapUntrustedCases' exemptions, its unforgeable, and

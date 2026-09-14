@@ -38,8 +38,10 @@ import (
 )
 
 // FactoryConfig collects the inputs NewServerStores needs at startup. The
-// fields are intentionally small so cmd/server and cmd/mcp can populate it
-// from env (or from flags during tests) without dragging in framework state.
+// fields are intentionally small so every entry point can populate it from env
+// (or from flags during tests) without dragging in framework state.
+// [GTD 2fdba553] Those entry points are cmd/server, cmd/qa-seed and
+// internal/mcprunner (the `wbt mcp` stdio path).
 type FactoryConfig struct {
 	// Backend selects the storage engine. Defaults to BackendPostgres when
 	// the zero value is passed.
@@ -70,8 +72,9 @@ var ErrMissingPostgresDSN = errors.New("postgres backend requires a non-empty DS
 var ErrMissingSQLitePath = errors.New("sqlite backend requires a non-empty file path")
 
 // NewServerStores returns a fully wired ServerStores bundle for the requested
-// backend. It is the single entry point both cmd/server and cmd/mcp call so
-// they stay free of backend-specific imports.
+// backend. It is the single constructor every binary calls so they stay free
+// of backend-specific imports — see FactoryConfig's doc comment for which
+// binaries those are ([GTD 2fdba553]).
 //
 // Caller MUST defer stores.Close() to release the underlying pool / DB.
 func NewServerStores(ctx context.Context, cfg FactoryConfig) (ServerStores, error) {
@@ -402,8 +405,9 @@ func buildPgxPoolConfig(dsn, appEnv, pgsslrootcert string) (*pgxpool.Config, err
 	return pgcfg, nil
 }
 
-// buildPgxPool centralises the pgxpool config we use across cmd/server and
-// cmd/mcp so the TLS / pgvector wiring lives in one place.
+// buildPgxPool centralises the pgxpool config every Postgres-backed entry
+// point uses, so the TLS / pgvector wiring lives in one place — see
+// FactoryConfig for which those are [GTD 2fdba553].
 func buildPgxPool(ctx context.Context, dsn, appEnv, pgsslrootcert string) (*pgxpool.Pool, error) {
 	pgcfg, err := buildPgxPoolConfig(dsn, appEnv, pgsslrootcert)
 	if err != nil {

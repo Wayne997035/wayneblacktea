@@ -36,6 +36,11 @@ const (
 	proceduralWhenToUseMaxRunes = 2000
 	proceduralApproachMaxRunes  = 20000
 	proceduralListItemMaxRunes  = 2000
+	// [GTD f8c2dc75] Matches handoffResourceRepoNameMaxRunes (resources.go),
+	// the bound this codebase already uses for a repo_name projection, so the
+	// two readers of the same column cannot disagree about how much of it
+	// survives.
+	proceduralRepoNameMaxRunes = 200
 )
 
 // wrapUntrustedProceduralMemory returns a copy of m with every free-text
@@ -43,16 +48,28 @@ const (
 // wrapUntrustedTask/wrapUntrustedDecision's copy-not-mutate contract. nil
 // in, nil out.
 //
-// ID, WorkspaceID, RepoName, ProjectID, SuccessCount, LastUsedAt, CreatedAt
-// are left untouched — none is free text a caller authored. RepoName is
-// validator-gated at every write path in this codebase, same as
-// wrapUntrustedDecision's rationale for its own RepoName field
-// (tools_decision.go).
+// ID, WorkspaceID, ProjectID, SuccessCount, LastUsedAt, CreatedAt are left
+// untouched — none is free text a caller authored.
+//
+// [GTD f8c2dc75] RepoName IS clipSafe'd, and this comment used to say the
+// opposite. It claimed repo_name was "validator-gated at every write path",
+// and the exemption recorded against it in u13_wrap_field_coverage_test.go
+// cited this comment as its evidence — a claim and its own citation.
+// validator.IsValidRepoName does forbid marker text ([a-zA-Z0-9_.-]{1,100}),
+// but its only non-test callers are project create/update (gtd_handler.go:214
+// and :498, tools_gtd.go:737). record_procedure never went through it, so a
+// forged marker written to this column read back verbatim.
+//
+// The write path now screens repo_name for tool-call fragments (GTD d76ebc56)
+// — that is a different guarantee and does not cover boundary markers, which
+// is why the read-side clipSafe below is the fix rather than the write-side
+// screen.
 func wrapUntrustedProceduralMemory(m *procedural.ProceduralMemory) *procedural.ProceduralMemory {
 	if m == nil {
 		return nil
 	}
 	out := *m
+	out.RepoName = clipSafe(m.RepoName, proceduralRepoNameMaxRunes)
 	out.Title = clipSafe(m.Title, proceduralTitleMaxRunes)
 	out.WhenToUse = clipSafe(m.WhenToUse, proceduralWhenToUseMaxRunes)
 	out.ApproachMD = clipSafe(m.ApproachMD, proceduralApproachMaxRunes)

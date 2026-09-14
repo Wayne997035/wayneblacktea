@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
@@ -223,11 +224,18 @@ func (s *Store) BatchConfirm(ctx context.Context, ids []uuid.UUID, status Status
 		if err != nil {
 			// Roll back the whole batch on any single failure.
 			_ = tx.Rollback(ctx)
+			// [GTD 1134a216] The full error goes to the log, the classified
+			// message goes to the caller — see BatchItemErrMsg. This field is
+			// JSON-marshalled straight back to the client, so err.Error()
+			// here was shipping the Postgres driver's text: host, port,
+			// database, user and SQLSTATE.
+			slog.Warn("batch confirm: resolve failed, batch rolled back",
+				"proposal_id", id, "status", status, "batch_size", len(ids), "err", err)
 			failed := make([]BatchItemResult, 0, len(ids))
 			for _, fid := range ids {
 				msg := ""
 				if fid == id {
-					msg = err.Error()
+					msg = BatchItemErrMsg(err)
 				} else {
 					msg = "rolled back due to sibling failure"
 				}
