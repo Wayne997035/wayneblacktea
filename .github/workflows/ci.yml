@@ -99,11 +99,20 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Build frontend (required by //go:embed)
+      # [GTD 4330b849] The lint and test lines run here so a broken frontend
+      # fails the PR rather than the deploy. They are NOT the invariant's
+      # enforcement point: this step is skipped on a frontend-dist cache hit,
+      # and Railway never runs this workflow at all (railway.toml pins
+      # builder="dockerfile" / dockerfilePath="build/Dockerfile"). The gate
+      # that actually holds is the identical pair in build/Dockerfile's
+      # frontend stage, which has no cache and sits on the real ship path.
+      - name: Lint, test and build frontend (required by //go:embed)
         if: steps.frontend-cache.outputs.cache-hit != 'true'
         run: |
           cd web
           npm ci --ignore-scripts
+          npm run lint
+          npm run test
           npm run build
           mkdir -p ../cmd/server/web
           cp -r dist ../cmd/server/web/dist
