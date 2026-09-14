@@ -42,6 +42,8 @@ import (
 //	M6 sustainedFailureThreshold -> 1
 //	   red: TestChainHealth_BelowThresholdDoesNotEscalate,
 //	        handler TestGetLLMHealth_TransientFailureStaysOK
+//	M7 OpenRouterClient.Model() -> return c.model (drop the list branch)
+//	   red: TestProviderModelAccessors/openrouter_model_list_reports_every_entry
 //
 // M6 is worth keeping in view: on the FIRST attempt it did not go red,
 // because BelowThresholdDoesNotEscalate sized its loop as
@@ -321,6 +323,59 @@ func TestChainHealth_ConcurrentCallsAreRaceFree(t *testing.T) {
 	if got := len(c.Health()); got != 2 {
 		t.Errorf("Health() = %d providers, want 2", got)
 	}
+}
+
+// TestProviderModelAccessors covers Model() on the REAL provider types rather
+// than on a stub. The Describe tests above prove the chain asks for a model;
+// only this proves each provider answers with its own. OpenRouter is the one
+// that carries actual branching — it holds a fallback LIST, and reporting only
+// the primary would hide exactly the property that makes it resilient, which
+// is the property this whole PR is about.
+func TestProviderModelAccessors(t *testing.T) {
+	claude, err := NewClaudeClient(ClaudeConfig{APIKey: "k", Model: "claude-x"})
+	if err != nil {
+		t.Fatalf("NewClaudeClient: %v", err)
+	}
+	if got := claude.Model(); got != "claude-x" {
+		t.Errorf("ClaudeClient.Model() = %q, want claude-x", got)
+	}
+
+	oai, err := NewOpenAICompatibleClient(OpenAICompatibleConfig{
+		BaseURL: "http://localhost:11434", Model: "llama3.2",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleClient: %v", err)
+	}
+	if got := oai.Model(); got != "llama3.2" {
+		t.Errorf("OpenAICompatibleClient.Model() = %q, want llama3.2", got)
+	}
+
+	t.Run("openrouter single model", func(t *testing.T) {
+		c, err := NewOpenRouterClient(OpenRouterConfig{APIKey: "k", Model: "solo"})
+		if err != nil {
+			t.Fatalf("NewOpenRouterClient: %v", err)
+		}
+		if got := c.Model(); got != "solo" {
+			t.Errorf("Model() = %q, want solo", got)
+		}
+	})
+
+	t.Run("openrouter model list reports every entry", func(t *testing.T) {
+		c, err := NewOpenRouterClient(OpenRouterConfig{
+			APIKey: "k", Model: "primary", Models: []string{"a", "b", "c"},
+		})
+		if err != nil {
+			t.Fatalf("NewOpenRouterClient: %v", err)
+		}
+		got := c.Model()
+		for _, want := range []string{"a", "b", "c"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("Model() = %q, missing %q — a startup log that names only the "+
+					"primary hides the fallback list, which is the whole reason this "+
+					"provider is more resilient than the others", got, want)
+			}
+		}
+	})
 }
 
 // TestNewGroqClient_DefaultModelIsNotTheDecommissionedOne is a regression
