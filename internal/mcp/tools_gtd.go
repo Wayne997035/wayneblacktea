@@ -1026,7 +1026,7 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 	// this branch returns the raw existing row unchanged, which is a stored
 	// (possibly untrusted) read just like get_task's.
 	if cur.Status == rawStatus {
-		return jsonText(wrapUntrustedTask(cur))
+		return jsonText(ackTask(wrapUntrustedTask(cur)))
 	}
 
 	// Guard invalid transitions.
@@ -1044,7 +1044,7 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 	if err != nil {
 		return storeErrorResult("updating task status", err), nil
 	}
-	return jsonText(wrapUntrustedTask(updated)) // U13 Phase B (tools_gtd.go:843)
+	return jsonText(ackTask(wrapUntrustedTask(updated))) // U13 Phase B (tools_gtd.go:843)
 }
 
 // allowedTargets returns a sorted list of allowed target statuses for errMsg.
@@ -1135,9 +1135,9 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	// different session (matches the sync_repo/list_active_repos reasoning
 	// in the U13 inventory) — wire it here for consistency.
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"task": wrapUntrustedTask(task), "warnings": allWarnings})
+		return jsonText(map[string]any{"task": ackTask(wrapUntrustedTask(task)), "warnings": allWarnings})
 	}
-	return jsonText(wrapUntrustedTask(task))
+	return jsonText(ackTask(wrapUntrustedTask(task)))
 }
 
 func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) (*mcp.CallToolResult, error) {
@@ -1166,7 +1166,7 @@ func (s *Server) handleCompleteTask(ctx context.Context, args CompleteTaskArgs) 
 
 	s.seedDraftOutcome(ctx, args.TaskID)
 
-	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:958)
+	return jsonText(ackTask(wrapUntrustedTask(task))) // U13 Phase B (tools_gtd.go:958)
 }
 
 // seedDraftOutcome best-effort records a result:"unknown" outcome for a
@@ -1399,7 +1399,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 		slog.Warn("update_task: UpdateTask failed", "task_id", args.TaskID, "err", err)
 		return storeErrorResult("updating task", err), nil
 	}
-	return jsonText(wrapUntrustedTask(task)) // U13 Phase B (tools_gtd.go:1178)
+	return jsonText(ackTask(wrapUntrustedTask(task))) // U13 Phase B (tools_gtd.go:1178)
 }
 
 func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProjectStatusArgs) (*mcp.CallToolResult, error) {
@@ -2056,7 +2056,7 @@ func (s *Server) handleBeginTask(ctx context.Context, args BeginTaskArgs) (*mcp.
 	// session's own Title/Goal), matching wrapUntrustedTask's
 	// copy-not-mutate contract.
 	resp := map[string]any{
-		"task":                   wrapUntrustedTask(task),
+		"task":                   ackTask(wrapUntrustedTask(task)),
 		"branch_name_suggestion": gtd.TitleToBranchSlug(task.Title),
 	}
 	// work_session_id is a real, persisted worksession.Session row
