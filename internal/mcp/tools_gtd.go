@@ -1670,9 +1670,19 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 		return mcp.NewToolResultError("internal: deletion token state corrupted"), nil
 	}
 	if s.now().After(rec.expiresAt) {
-		// [SEC171-13] CompareAndDelete for the same reason as the
+		// [SEC171-13][SEC171-17] CompareAndDelete for the same reason as the
 		// corrupted-record branch above — see its comment for the full
 		// panic-safety argument, which applies identically here.
+		//
+		// [GTD b1858809] Both numbers, deliberately. SEC171-13 named the
+		// mechanism shared by all four exits (this map is keyed by task id,
+		// so an unconditional Delete can destroy another session's fresh
+		// record); SEC171-17 named this branch's instance of it, and is the
+		// number its regression test carries —
+		// TestSEC171_17_ExpiredRefusalDoesNotDestroyReplacementToken. A
+		// reviewer flagged the single-number form as a possible typo: it was
+		// not, but a reader tracing the guard to its test had no way to tell
+		// that from the comment alone.
 		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
 			slog.Debug("delete_task: expired-token refusal found nothing to clear (already replaced)", "task_id", id)
 		}
