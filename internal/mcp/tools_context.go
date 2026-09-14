@@ -55,6 +55,14 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 		mcp.WithDescription("Returns active repositories in the workspace, most recent activity first. "+
 			"Paginated: pass limit (default 20, max 100) and offset to page; the response reports "+
 			"limit, offset, returned and has_more so you can tell whether rows remain. "+
+			// [GTD 9b47c5a9] has_more being documented was not enough: the caller that
+			// broke (auto-dev-loop's reconcile drain) called once and treated the page
+			// as the workspace. Saying the flag exists describes the response; this
+			// says what the caller must DO, which is the part that was missing.
+			"ONE CALL RETURNS ONE PAGE, NOT THE WORKSPACE: to enumerate every repo — "+
+			"reconciling merged PRs across all of them, for instance — keep calling with a "+
+			"larger offset until has_more is false. Treating the first response as the whole "+
+			"set silently drops every repo past the limit and reports no error. "+
 			"This is a LIST VIEW, not the full record: description and next_planned_step are projected "+
 			"to 500 runes, name/path/language/current_branch and each known_issues entry to 120, and "+
 			"known_issues to 5 entries; any field the projection changed carries its own "+

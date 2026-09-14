@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -202,6 +203,15 @@ var callerFacingSentinels = []error{
 	gtd.ErrInvalidAssignee,
 	gtd.ErrAssigneeRequiredForInProgress,
 	gtd.ErrInvalidRepoName,
+	// [GTD 21aa901d] Size, like assignee and repo_name, is a property of the
+	// request that only the store can answer, so its rejection arrives through
+	// the same channel as a connection failure. Redacted to "creating proposal
+	// failed", the caller — an agent, possibly a prompt-injected one — cannot
+	// tell a too-large payload from a transient outage, so it re-sends the
+	// identical oversized payload and burns rate limit, while the operator sees
+	// rate-limit noise instead of a size error. The text is the fixed string
+	// "proposal: payload too large": no path, host, field value or byte count.
+	proposal.ErrPayloadTooLarge,
 }
 
 // logToolError writes the full error to the server log in the one shape every

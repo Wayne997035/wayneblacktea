@@ -53,9 +53,23 @@ func (s *Server) registerDashboardTools(ms *server.MCPServer) {
 	), s.handleReconcileDashboard)
 }
 
-// dashboardCandidateStore returns the completion candidate store. It may be nil
-// when the completioncandidate domain is not wired. Tools check for nil and
-// return an informative message.
+// [GTD 4d5b3354 #3] candidateStoreUnconfigured is returned through
+// mcp.NewToolResultError — IsError:true — matching how every other optional
+// dependency on this surface answers when it is not wired (behaviorrule,
+// worksession, watchdog, contextpack, the Notion integration and the snapshot
+// generator: 15 call sites, all NewToolResultError).
+//
+// These two tools used to answer with NewToolResultText and IsError:false,
+// detect_completion_candidates returning `{"candidates":[],"message":…}`. That
+// shape is not merely inconsistent, it is wrong in a way the caller cannot
+// detect: an agent reading an empty candidates array concludes there are no
+// candidates. There may be many — the store simply is not wired, and no amount
+// of retrying or rephrasing will surface them. "Feature off" and "nothing
+// found" are different answers and had the same shape.
+const candidateStoreUnconfigured = "completion candidate store not configured"
+
+// dashboardCandidateStore returns the completion candidate store, nil when the
+// completioncandidate domain is not wired.
 func (s *Server) dashboardCandidateStore() completionCandidateStore {
 	return s.completionCandidates
 }
@@ -82,7 +96,7 @@ func (s *Server) handleDetectCompletionCandidates(ctx context.Context, req mcp.C
 
 	store := s.dashboardCandidateStore()
 	if store == nil {
-		return mcp.NewToolResultText(`{"candidates":[],"message":"completion candidate store not configured"}`), nil
+		return mcp.NewToolResultError(candidateStoreUnconfigured), nil
 	}
 
 	candidates, err := store.DetectAndUpsert(ctx, completioncandidate.DetectParams{
@@ -131,7 +145,7 @@ func (s *Server) handleDetectCompletionCandidates(ctx context.Context, req mcp.C
 func (s *Server) handleReconcileDashboard(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	store := s.dashboardCandidateStore()
 	if store == nil {
-		return mcp.NewToolResultText(`{"message":"completion candidate store not configured"}`), nil
+		return mcp.NewToolResultError(candidateStoreUnconfigured), nil
 	}
 
 	// Run detection with defaults.
