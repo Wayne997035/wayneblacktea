@@ -170,5 +170,5 @@ func (s *Server) handleCreateConcept(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return storeErrorResult("creating concept", err), nil
 	}
-	return jsonText(wrapUntrustedConcept(concept))
+	return jsonText(ackConcept(wrapUntrustedConcept(concept)))
 }

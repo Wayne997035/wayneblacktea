@@ -390,7 +390,7 @@ func (s *Server) handleExtractSkill(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	s.launchAtomize("skills", mustParseUUID(sk.ID), name+" "+description)
-	return jsonText(wrapUntrustedSkill(sk))
+	return jsonText(ackSkill(wrapUntrustedSkill(sk)))
 }
 
 // handleSearchSkills implements the search_skills MCP tool.
@@ -446,7 +446,11 @@ func (s *Server) handleUseSkill(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 		return storeErrorResult("using skill", err), nil
 	}
-	return jsonText(wrapUntrustedSkill(sk))
+	// [GTD c46025c1] use_skill's whole job is to move success_count and
+	// last_used_at, and those are what the ack keeps. The body is not echoed:
+	// a caller invoking use_skill has just used the skill, so it already has
+	// the steps it followed.
+	return jsonText(ackSkill(wrapUntrustedSkill(sk)))
 }
 
 // handleUpdateSkillFromOutcome implements the update_skill_from_outcome MCP tool.
@@ -497,6 +501,12 @@ func (s *Server) handleUpdateSkillFromOutcome(ctx context.Context, req mcp.CallT
 	if notes != "" {
 		s.launchAtomize("skills", mustParseUUID(sk.ID), notes)
 	}
+	// [GTD c46025c1] Deliberately NOT slimmed. UpdateFromOutcome has merge
+	// semantics: the caller sends an outcome and the server folds it into the
+	// stored skill, so the body coming back is a computed value, not the text
+	// the caller just sent. This is the same distinction that took
+	// record_outcome out of this ticket's scope — the premise "returning it is
+	// zero information" is false for merge-type writes.
 	return jsonText(wrapUntrustedSkill(sk))
 }
 

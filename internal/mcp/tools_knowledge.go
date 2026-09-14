@@ -268,7 +268,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, req mcp.CallToolRequest
 	if perr != nil {
 		slog.Warn("auto-propose concept failed", "knowledge_id", item.ID, "err", perr)
 	}
-	resp := addKnowledgeResult{Item: wrapUntrustedKnowledgeItem(item)}
+	resp := addKnowledgeResult{Item: ackKnowledge(wrapUntrustedKnowledgeItem(item))}
 	if prop != nil {
 		resp.ConceptProposalID = prop.ID.String()
 	}

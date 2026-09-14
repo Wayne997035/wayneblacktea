@@ -343,6 +343,26 @@ func learningConceptTagCases() []parityCase {
 	}
 }
 
+// storedConceptTags returns the tags actually persisted for id. The learning
+// store has no single-concept getter, so this scans the list; the parity
+// fixtures create a handful of rows, so a scan is cheaper than widening the
+// store interface for a test.
+func storedConceptTags(t *testing.T, env *parityEnv, id uuid.UUID) []string {
+	t.Helper()
+	concepts, err := env.stores.Learning().ListConcepts(env.ctx, 200)
+	if err != nil {
+		t.Fatalf("ListConcepts after MCP create: %v", err)
+	}
+	for i := range concepts {
+		if concepts[i].ID == id {
+			return concepts[i].Tags
+		}
+	}
+	t.Fatalf("concept %s not found among %d stored concepts — the MCP write did not land",
+		id, len(concepts))
+	return nil
+}
+
 func learningConceptTagCase(name string, rawTags []string, wantTagsCSV string) parityCase {
 	return parityCase{
 		gap:  "C",
@@ -359,11 +379,15 @@ func learningConceptTagCase(name string, rawTags []string, wantTagsCSV string) p
 			if r.IsError {
 				return parityOutcome{rejected: true}
 			}
-			var concept db.Concept
-			if uErr := json.Unmarshal([]byte(resultText(r)), &concept); uErr != nil {
-				t.Fatalf("unmarshal concept: %v", uErr)
-			}
-			return parityOutcome{stored: strings.Join(concept.Tags, ",")}
+			// [GTD c46025c1] Read the STORED row, not the response body.
+			// This case sets checkStored/wantStored, i.e. it claims to be
+			// about what sanitisation puts in the database — and the gap-B
+			// knowledge twin above already does it this way. Reading tags out
+			// of the echo only ever worked because add_concept happened to
+			// return the whole row; that made the assertion depend on the
+			// response SHAPE rather than on the behaviour it names.
+			id := idOnly(t, resultText(r))
+			return parityOutcome{stored: strings.Join(storedConceptTags(t, env, id), ",")}
 		},
 		http: func(t *testing.T, env *parityEnv) parityOutcome {
 			t.Helper()

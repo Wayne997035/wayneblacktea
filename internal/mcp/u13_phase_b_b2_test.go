@@ -260,7 +260,34 @@ func seedGoalAndProjectProposals(
 		t.Fatalf("seeding propose_project: err=%v isError=%v text=%s", err, projResult.IsError, resultText(projResult))
 	}
 
-	return resultText(goalResult), resultText(projResult)
+	// [GTD c46025c1] Both tests now assert against list_pending_proposals
+	// rather than the propose_* acknowledgements.
+	//
+	// The write acknowledgement no longer echoes payload — it is exactly what
+	// the caller just marshalled and sent — so there is nothing left to
+	// observe there. Re-pointing rather than relaxing matters here: payload is
+	// []byte, so the reflective string walker in
+	// TestF160_06_WrapUntrustedFunctionsProtectEveryStringField does NOT
+	// cover it. Dropping the assertion would have removed the only coverage
+	// neutralizeJSONBlob has on a real call path.
+	//
+	// The read path is also where the guarantee actually matters: a forged
+	// marker in a stored payload harms a reader, and list_pending_proposals
+	// is how a reader meets it.
+	listReq := mcpmsg.CallToolRequest{}
+	listReq.Params.Arguments = map[string]any{}
+	listResult, err := s.handleListPendingProposals(ctx, listReq)
+	if err != nil || listResult.IsError {
+		t.Fatalf("listing proposals: err=%v isError=%v text=%s",
+			err, listResult.IsError, resultText(listResult))
+	}
+	listed := resultText(listResult)
+	if !strings.Contains(listed, "legit goal title") ||
+		!strings.Contains(listed, "legit project title") {
+		t.Fatalf("both seeded proposals must appear in the listing, otherwise the assertions "+
+			"below measure nothing: %s", listed)
+	}
+	return listed, listed
 }
 
 // TestHandleProposeGoal_NeutralizeForgedMarkerInPayload covers line 158

@@ -4,8 +4,9 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/outcome"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
+	"github.com/Wayne997035/wayneblacktea/internal/skill"
+	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -147,37 +148,240 @@ func ackProcedural(m *procedural.ProceduralMemory) *proceduralWriteAck {
 	}
 }
 
-// outcomeWriteAck is what record_outcome answers with. list_outcomes and
-// get_outcome return the complete record.
+// There is deliberately NO outcome projection here. record_outcome has
+// append/merge semantics: the caller sends a fragment and the server folds it
+// into the existing notes/metrics, so what comes back is a computed value,
+// not an echo — this ticket's premise ("returning it carries zero
+// information") is false for merge-type writes. An outcomeWriteAck was
+// written, proved wrong by tools_outcome_lifecycle_test.go:509, and removed
+// rather than left behind as an unused type that a later reader would wire up
+// without re-deriving why it was abandoned.
+
+// knowledgeWriteAck is what add_knowledge answers with (inside
+// addKnowledgeResult). search_knowledge and recall return the complete
+// record.
 //
-// Dropped: notes and metrics. result is kept because it is the field
-// record_outcome exists to set and the server validates it against a closed
-// set; supersedes_id is kept because the caller cannot know it — the supersede
-// branch decides server-side whether a prior row was replaced.
-type outcomeWriteAck struct {
-	ID            uuid.UUID   `json:"id"`
-	EntityType    string      `json:"entity_type"`
-	EntityID      uuid.UUID   `json:"entity_id"`
-	Result        string      `json:"result"`
-	RelatedRuleID []uuid.UUID `json:"related_rule_ids,omitempty"`
-	WorkSessionID *uuid.UUID  `json:"work_session_id,omitempty"`
-	SupersedesID  *uuid.UUID  `json:"supersedes_id,omitempty"`
-	CreatedAt     time.Time   `json:"created_at"`
+// Dropped: content, tags, url — all supplied on this same call — and the
+// embedding vector, which is 768 float32s the caller can do nothing with.
+// importance is kept because the server assigns it and it drives the decay
+// schedule.
+type knowledgeWriteAck struct {
+	ID            uuid.UUID          `json:"id"`
+	Type          string             `json:"type"`
+	Title         string             `json:"title"`
+	Source        string             `json:"source"`
+	LearningValue pgtype.Int4        `json:"learning_value"`
+	Importance    float64            `json:"importance"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
-// ackOutcome takes and returns values, not pointers, to match
-// wrapUntrustedOutcome's own signature — recordOutcomeResponse embeds the
-// result, so a pointer here would change that response from flattened fields
-// to a nested object.
-func ackOutcome(o outcome.Outcome) outcomeWriteAck {
-	return outcomeWriteAck{
-		ID:            o.ID,
-		EntityType:    o.EntityType,
-		EntityID:      o.EntityID,
-		Result:        o.Result,
-		RelatedRuleID: o.RelatedRuleIDs,
-		WorkSessionID: o.WorkSessionID,
-		SupersedesID:  o.SupersedesID,
-		CreatedAt:     o.CreatedAt,
+func ackKnowledge(k *db.KnowledgeItem) *knowledgeWriteAck {
+	if k == nil {
+		return nil
+	}
+	return &knowledgeWriteAck{
+		ID:            k.ID,
+		Type:          k.Type,
+		Title:         k.Title,
+		Source:        k.Source,
+		LearningValue: k.LearningValue,
+		Importance:    k.Importance,
+		CreatedAt:     k.CreatedAt,
+		UpdatedAt:     k.UpdatedAt,
+	}
+}
+
+// visionWriteAck is what update_vision_item answers with. list_vision_items
+// returns the complete record.
+//
+// Dropped: why_blocked, context_md and depends_on. context_md is markdown
+// notes and is by far the largest of them.
+type visionWriteAck struct {
+	ID              uuid.UUID           `json:"id"`
+	Title           string              `json:"title"`
+	Status          vision.VisionStatus `json:"status"`
+	RepoName        string              `json:"repo_name,omitempty"`
+	ProjectID       *uuid.UUID          `json:"project_id,omitempty"`
+	PromotedTaskID  *uuid.UUID          `json:"promoted_task_id,omitempty"`
+	LastDiscussedAt *time.Time          `json:"last_discussed_at,omitempty"`
+	CreatedAt       time.Time           `json:"created_at"`
+}
+
+func ackVision(v *vision.VisionItem) *visionWriteAck {
+	if v == nil {
+		return nil
+	}
+	return &visionWriteAck{
+		ID:              v.ID,
+		Title:           v.Title,
+		Status:          v.Status,
+		RepoName:        v.RepoName,
+		ProjectID:       v.ProjectID,
+		PromotedTaskID:  v.PromotedTaskID,
+		LastDiscussedAt: v.LastDiscussedAt,
+		CreatedAt:       v.CreatedAt,
+	}
+}
+
+// projectWriteAck is what create_project / update_project /
+// update_project_status answer with. list_projects returns the complete
+// record.
+//
+// Dropped: description only. Everything else on a project is a short
+// identifier, an enum or a timestamp — dropping those would save nothing and
+// cost the caller a round trip to learn a value the server had just coerced.
+type projectWriteAck struct {
+	ID        uuid.UUID          `json:"id"`
+	GoalID    pgtype.UUID        `json:"goal_id"`
+	Name      string             `json:"name"`
+	Title     string             `json:"title"`
+	Status    string             `json:"status"`
+	Area      string             `json:"area"`
+	Priority  int32              `json:"priority"`
+	RepoName  pgtype.Text        `json:"repo_name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func ackProject(p *db.Project) *projectWriteAck {
+	if p == nil {
+		return nil
+	}
+	return &projectWriteAck{
+		ID:        p.ID,
+		GoalID:    p.GoalID,
+		Name:      p.Name,
+		Title:     p.Title,
+		Status:    p.Status,
+		Area:      p.Area,
+		Priority:  p.Priority,
+		RepoName:  p.RepoName,
+		CreatedAt: p.CreatedAt,
+		UpdatedAt: p.UpdatedAt,
+	}
+}
+
+// goalWriteAck is what create_goal answers with. list_goals returns the
+// complete record. Dropped: description, for the same reason as the project
+// twin above.
+type goalWriteAck struct {
+	ID        uuid.UUID          `json:"id"`
+	Title     string             `json:"title"`
+	Status    string             `json:"status"`
+	Area      pgtype.Text        `json:"area"`
+	DueDate   pgtype.Timestamptz `json:"due_date"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func ackGoal(g *db.Goal) *goalWriteAck {
+	if g == nil {
+		return nil
+	}
+	return &goalWriteAck{
+		ID:        g.ID,
+		Title:     g.Title,
+		Status:    g.Status,
+		Area:      g.Area,
+		DueDate:   g.DueDate,
+		CreatedAt: g.CreatedAt,
+		UpdatedAt: g.UpdatedAt,
+	}
+}
+
+// skillWriteAck is what add_skill and use_skill answer with. search_skills /
+// list_relevant_skills return the complete record.
+//
+// Dropped: description, triggers, steps, failure_modes,
+// verification_checklist, source_atom_ids and examples. examples is the one
+// that matters most — it is an unbounded []any of caller-authored material
+// and the largest thing on the row (PR #174 had to give it a FIFO cap for
+// exactly that reason).
+//
+// success_count / failure_count / last_used_at are kept because use_skill
+// exists to move them: they are the entire answer that call has to give.
+type skillWriteAck struct {
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	SuccessCount int        `json:"success_count"`
+	FailureCount int        `json:"failure_count"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func ackSkill(sk *skill.Skill) *skillWriteAck {
+	if sk == nil {
+		return nil
+	}
+	return &skillWriteAck{
+		ID:           sk.ID,
+		Name:         sk.Name,
+		SuccessCount: sk.SuccessCount,
+		FailureCount: sk.FailureCount,
+		LastUsedAt:   sk.LastUsedAt,
+		CreatedAt:    sk.CreatedAt,
+		UpdatedAt:    sk.UpdatedAt,
+	}
+}
+
+// proposalWriteAck is what the propose_* tools answer with.
+// list_pending_proposals returns the complete record.
+//
+// Dropped: payload and reason. payload is the proposal — the caller just
+// marshalled it and sent it — and it carries its own cap because it can be
+// megabytes. status is kept even though it is always "pending" at creation:
+// it is server-assigned, and a caller that assumes the value rather than
+// reading it is the kind of assumption that breaks silently when the server
+// starts auto-resolving anything.
+type proposalWriteAck struct {
+	ID         uuid.UUID          `json:"id"`
+	Type       string             `json:"type"`
+	Status     string             `json:"status"`
+	ProposedBy pgtype.Text        `json:"proposed_by"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+func ackProposal(p *db.PendingProposal) *proposalWriteAck {
+	if p == nil {
+		return nil
+	}
+	return &proposalWriteAck{
+		ID:         p.ID,
+		Type:       p.Type,
+		Status:     p.Status,
+		ProposedBy: p.ProposedBy,
+		CreatedAt:  p.CreatedAt,
+	}
+}
+
+// conceptWriteAck is what add_concept answers with. search_knowledge and the
+// review tools return the complete record.
+//
+// Dropped: content and tags, both supplied on this same call. status,
+// importance and the timestamps are kept because the server assigns them —
+// importance in particular feeds the decay schedule, so it is a value the
+// caller cannot compute and would otherwise have to re-read.
+type conceptWriteAck struct {
+	ID         uuid.UUID          `json:"id"`
+	Title      string             `json:"title"`
+	Status     string             `json:"status"`
+	Importance float64            `json:"importance"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+func ackConcept(c *db.Concept) *conceptWriteAck {
+	if c == nil {
+		return nil
+	}
+	return &conceptWriteAck{
+		ID:         c.ID,
+		Title:      c.Title,
+		Status:     c.Status,
+		Importance: c.Importance,
+		CreatedAt:  c.CreatedAt,
+		UpdatedAt:  c.UpdatedAt,
 	}
 }

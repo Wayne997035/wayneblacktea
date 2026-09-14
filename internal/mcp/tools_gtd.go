@@ -754,7 +754,7 @@ func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs
 	if err != nil {
 		return storeErrorResult("creating project", err), nil
 	}
-	return jsonText(wrapUntrustedProject(project))
+	return jsonText(ackProject(wrapUntrustedProject(project)))
 }
 
 func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs) (*mcp.CallToolResult, error) {
@@ -779,7 +779,11 @@ func (s *Server) handleUpdateProject(ctx context.Context, args UpdateProjectArgs
 	if err != nil {
 		return storeErrorResult("updating project", err), nil
 	}
-	return jsonText(wrapUntrustedProject(project))
+	// [GTD c46025c1] update_project has preserve-on-omit semantics, so an
+	// omitted description keeps its stored value — but that value is not
+	// something this call computed, it is something the caller (or an earlier
+	// one) wrote. get_project returns it when it is actually wanted.
+	return jsonText(ackProject(wrapUntrustedProject(project)))
 }
 
 // buildUpdateProjectParams builds a gtd.UpdateProjectParams from typed
@@ -1268,7 +1272,7 @@ func (s *Server) handleCreateGoal(ctx context.Context, args CreateGoalArgs) (*mc
 	if err != nil {
 		return storeErrorResult("creating goal", err), nil
 	}
-	return jsonText(wrapUntrustedGoal(goal)) // U13 Phase B (tools_gtd.go:1047)
+	return jsonText(ackGoal(wrapUntrustedGoal(goal))) // U13 Phase B (tools_gtd.go:1047)
 }
 
 // parseUpdateTaskArgs translates a validated UpdateTaskArgs into
@@ -1417,7 +1421,7 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProje
 	if err != nil {
 		return storeErrorResult("updating project", err), nil
 	}
-	return jsonText(wrapUntrustedProject(project)) // U13 Phase B (tools_gtd.go:1196)
+	return jsonText(ackProject(wrapUntrustedProject(project))) // U13 Phase B (tools_gtd.go:1196)
 }
 
 type projectWithDecisions struct {
