@@ -1,7 +1,8 @@
 // Package storage's ServerStores bundle is the backend-agnostic surface used
-// by the HTTP server (cmd/server) and the MCP server (cmd/mcp) to obtain a
-// working set of domain stores without compile-time coupling to a specific
-// backend (Postgres pgxpool vs. SQLite database/sql).
+// by every binary that needs domain stores without compile-time coupling to a
+// specific backend (Postgres pgxpool vs. SQLite database/sql): cmd/server
+// (HTTP plus the in-process MCP), internal/mcprunner (the `wbt mcp` stdio
+// server) and cmd/qa-seed [GTD 2fdba553].
 //
 // Adding a new domain store: extend the interface here, then satisfy it in
 // both internal/storage/factory.go bundles (postgresServerStores and
@@ -37,9 +38,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ServerStores is the backend-agnostic store bundle that cmd/server and
-// cmd/mcp consume. It exposes the domain Store interfaces plus a Close
-// hook for the underlying connection (pgx pool or SQLite *sql.DB).
+// ServerStores is the backend-agnostic store bundle those entry points consume
+// (listed in this file's package doc). It exposes the domain Store interfaces
+// plus a Close hook for the underlying connection (pgx pool or SQLite *sql.DB).
 //
 // PgxPool returns the live *pgxpool.Pool when the bundle is Postgres-backed,
 // or nil when the bundle is SQLite-backed. Callers that absolutely require a
