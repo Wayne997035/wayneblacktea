@@ -44,6 +44,17 @@ import (
 //	        handler TestGetLLMHealth_TransientFailureStaysOK
 //	M7 OpenRouterClient.Model() -> return c.model (drop the list branch)
 //	   red: TestProviderModelAccessors/openrouter_model_list_reports_every_entry
+//	M8 classifyLLM: drop the `proven == 0` case (the pre-review behaviour)
+//	   red: handler TestGetLLMHealth_UnknownWhenNoProviderHasEverSucceeded
+//	M9 classifyLLM: `sustained > 0` returns degraded/503 instead of impaired/200
+//	   red: handler TestGetLLMHealth_ImpairedNotDegradedWhenFallbackServes
+//
+// M8 and M9 came out of the r1 security review, which caught that the first
+// version of this endpoint was wrong at BOTH ends: it reported "ok" for a
+// freshly restarted process whose only provider was dead (no evidence is not
+// evidence of health), and it reported 503 when a healthy fallback was
+// serving every request (which would page for a non-outage, and an alert
+// that cries wolf gets turned off).
 //
 // M6 is worth keeping in view: on the FIRST attempt it did not go red,
 // because BelowThresholdDoesNotEscalate sized its loop as

@@ -95,8 +95,11 @@ func TestGroq_RetryableErrors(t *testing.T) {
 	}
 }
 
-// TestGroq_DefaultModel verifies that an empty Model defaults to the legacy
-// llama-3.3-70b-versatile so existing /analyze users see no behaviour change.
+// TestGroq_DefaultModel verifies the WIRE behaviour: an empty GroqConfig.Model
+// must put defaultGroqModel into the outgoing payload. It deliberately does
+// not name a model — see the assertion below for why, and
+// TestNewGroqClient_DefaultModelIsNotTheDecommissionedOne for the guard that
+// does pin a value.
 func TestGroq_DefaultModel(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

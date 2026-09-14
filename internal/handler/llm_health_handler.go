@@ -27,9 +27,69 @@ import (
 // handler that produces it.
 const (
 	llmStatusOK           = "ok"
+	llmStatusImpaired     = "impaired"
 	llmStatusDegraded     = "degraded"
+	llmStatusUnknown      = "unknown"
 	llmStatusUnconfigured = "unconfigured"
 )
+
+// classifyLLM turns the per-provider snapshot into one verdict plus the HTTP
+// status that carries it.
+//
+// The three-way split ok / impaired / degraded exists because the first
+// version of this endpoint had only ok and degraded, and both ends were
+// wrong:
+//
+//   - "ok" was returned whenever no provider was in SUSTAINED failure — which
+//     includes a freshly restarted process whose only provider is 100% dead
+//     and has simply not been called yet. That is precisely the state this
+//     endpoint was built to expose: a decommissioned model id is not rejected
+//     at construction, so the chain looks perfect until the first call fails.
+//     Anyone checking the endpoint right after the deploy that was supposed
+//     to fix the outage would have been told everything was fine.
+//   - "degraded" (503) was returned when ANY provider was sustained, even
+//     when a healthy fallback was serving every request. Following this PR's
+//     own advice — configure a second provider — would then page for a
+//     non-outage, and an alert that cries wolf gets switched off, which puts
+//     you back where the incident started.
+//
+// So: evidence of a working path is what earns 200, and only the loss of
+// every path earns 503.
+//
+// "unknown" is fail-closed on purpose (CLAUDE.md red line #12: unparseable /
+// n/a / skipped are never read as pass). The cost is real and worth stating:
+// after every restart this answers 503 until the first LLM call lands, and
+// calls can be half an hour apart. That window is noise. It is accepted
+// because the alternative — reporting "ok" with no evidence — is the exact
+// failure that let three features stay dead for three days.
+func classifyLLM(providers []llm.ProviderHealth) (string, int) {
+	if len(providers) == 0 {
+		return llmStatusUnknown, http.StatusServiceUnavailable
+	}
+	sustained, proven := 0, 0
+	for _, p := range providers {
+		if p.Sustained {
+			sustained++
+		}
+		if p.LastSuccessAt != nil {
+			proven++
+		}
+	}
+	switch {
+	case sustained == len(providers):
+		// Nothing left that can serve.
+		return llmStatusDegraded, http.StatusServiceUnavailable
+	case proven == 0:
+		// No provider has ever completed a call. Not known-bad, but there is
+		// no evidence of a working path, and saying "ok" here is the defect.
+		return llmStatusUnknown, http.StatusServiceUnavailable
+	case sustained > 0:
+		// A fallback is carrying it. Visible, but not an outage to page on.
+		return llmStatusImpaired, http.StatusOK
+	default:
+		return llmStatusOK, http.StatusOK
+	}
+}
 
 // llmHealthResponse is the JSON shape for GET /api/health/llm.
 type llmHealthResponse struct {
@@ -68,12 +128,11 @@ func NewLLMHealthHandler(chain *llm.Chain) *LLMHealthHandler {
 
 // GetLLMHealth handles GET /api/health/llm.
 //
-// It answers 200 when at least one provider is configured and none is in
-// sustained failure, and 503 otherwise. The status code carries the verdict
-// deliberately: an uptime monitor that only knows how to check status codes
-// is exactly the consumer this endpoint is for, and requiring it to parse
-// JSON to notice an outage would reproduce the original failure — a signal
-// that is present but that nothing reads.
+// The status code carries the verdict deliberately: an uptime monitor that
+// only knows how to check status codes is exactly the consumer this endpoint
+// is for, and requiring it to parse JSON to notice an outage would reproduce
+// the original failure — a signal that is present but that nothing reads.
+// Which state maps to which code, and why, is in classifyLLM.
 func (h *LLMHealthHandler) GetLLMHealth(c echo.Context) error {
 	if h.chain == nil || h.chain.Len() == 0 {
 		return c.JSON(http.StatusServiceUnavailable, llmHealthResponse{
@@ -84,21 +143,12 @@ func (h *LLMHealthHandler) GetLLMHealth(c echo.Context) error {
 	}
 
 	providers := h.chain.Health()
-	resp := llmHealthResponse{
-		Status:      llmStatusOK,
+	status, code := classifyLLM(providers)
+	return c.JSON(code, llmHealthResponse{
+		Status:      status,
 		Chain:       h.chain.Describe(),
 		Length:      h.chain.Len(),
 		HasFallback: h.chain.Len() > 1,
 		Providers:   providers,
-	}
-	for _, p := range providers {
-		if p.Sustained {
-			resp.Status = llmStatusDegraded
-			break
-		}
-	}
-	if resp.Status == llmStatusDegraded {
-		return c.JSON(http.StatusServiceUnavailable, resp)
-	}
-	return c.JSON(http.StatusOK, resp)
+	})
 }

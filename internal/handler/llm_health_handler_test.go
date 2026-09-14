@@ -158,14 +158,15 @@ func TestGetLLMHealth_503WhenUnconfigured(t *testing.T) {
 // TestGetLLMHealth_TransientFailureStaysOK is the reverse frame. An endpoint
 // that reports degraded on the first failed call would flap on every 429
 // burst, and an operator who learns to ignore it is exactly as blind as one
-// who was never told.
+// who was never told. The provider succeeds first, so there IS evidence of a
+// working path — which is what separates this from the unknown case below.
 func TestGetLLMHealth_TransientFailureStaysOK(t *testing.T) {
-	flaky := &healthStubProvider{
-		name:  "groq",
-		model: "groq/compound",
-		err:   &llm.Retryable{Provider: "groq", Reason: "http_429", Err: context.DeadlineExceeded},
-	}
+	flaky := &healthStubProvider{name: "groq", model: "groq/compound"}
 	chain := llm.NewChain(flaky)
+	if _, err := chain.CompleteJSON(context.Background(), llm.JSONRequest{Task: "t"}); err != nil {
+		t.Fatalf("priming call failed: %v", err)
+	}
+	flaky.err = &llm.Retryable{Provider: "groq", Reason: "http_429", Err: context.DeadlineExceeded}
 	_, _ = chain.CompleteJSON(context.Background(), llm.JSONRequest{Task: "t"})
 
 	rec, body := serveLLMHealth(t, chain)
@@ -174,5 +175,97 @@ func TestGetLLMHealth_TransientFailureStaysOK(t *testing.T) {
 	}
 	if body.Status != llmStatusOK {
 		t.Errorf("status field = %q, want %q", body.Status, llmStatusOK)
+	}
+}
+
+// TestGetLLMHealth_UnknownWhenNoProviderHasEverSucceeded is the security
+// review's Major finding, turned into a test.
+//
+// This is the incident state reproduced exactly: the process has just
+// restarted, its only provider points at a decommissioned model, and no call
+// has landed yet. A decommissioned model id is not rejected at construction,
+// so nothing has failed either. The first version of this endpoint answered
+// 200 "ok" here — meaning that anyone who checked it right after the deploy
+// meant to FIX the outage would have been told everything was fine.
+func TestGetLLMHealth_UnknownWhenNoProviderHasEverSucceeded(t *testing.T) {
+	chain := llm.NewChain(&healthStubProvider{name: "groq", model: "llama-dead"})
+
+	rec, body := serveLLMHealth(t, chain)
+	if body.Status == llmStatusOK || rec.Code == http.StatusOK {
+		t.Errorf("status = %q / HTTP %d with zero completed calls — the endpoint must never "+
+			"report a working path it has no evidence for; that is the whole failure it exists "+
+			"to expose", body.Status, rec.Code)
+	}
+	if body.Status != llmStatusUnknown {
+		t.Errorf("status field = %q, want %q", body.Status, llmStatusUnknown)
+	}
+	if len(body.Providers) != 1 || body.Providers[0].Calls != 0 {
+		t.Errorf("providers = %+v, want one entry with calls == 0", body.Providers)
+	}
+}
+
+// TestGetLLMHealth_ImpairedNotDegradedWhenFallbackServes is the security
+// review's third finding. Returning 503 while a fallback answers every
+// request would page for a non-outage — and it would do so precisely to
+// people who followed this PR's own advice to configure a second provider.
+// An alert that cries wolf gets switched off, which puts you back where the
+// incident started.
+func TestGetLLMHealth_ImpairedNotDegradedWhenFallbackServes(t *testing.T) {
+	dead := &healthStubProvider{
+		name:  "groq",
+		model: "llama-dead",
+		err:   &llm.Retryable{Provider: "groq", Reason: "http_404", Err: context.DeadlineExceeded},
+	}
+	alive := &healthStubProvider{name: "openrouter", model: "or/model"}
+	chain := llm.NewChain(dead, alive)
+	driveFailures(chain) // dead fails every time; alive serves every time
+
+	rec, body := serveLLMHealth(t, chain)
+	if rec.Code != http.StatusOK {
+		t.Errorf("HTTP %d while a fallback served every call — 503 here pages for a non-outage",
+			rec.Code)
+	}
+	if body.Status != llmStatusImpaired {
+		t.Errorf("status field = %q, want %q — a dead provider behind a working fallback is "+
+			"worth surfacing but is not an outage", body.Status, llmStatusImpaired)
+	}
+	// Reverse frame: "impaired" must not hide that one provider is dead.
+	var sawSustained bool
+	for _, p := range body.Providers {
+		if p.Sustained {
+			sawSustained = true
+		}
+	}
+	if !sawSustained {
+		t.Error("no provider reported Sustained — impaired must still expose which one is dead")
+	}
+}
+
+// TestGetLLMHealth_FailureRatioIsDerivable is the security review's second
+// finding. ConsecutiveFailures resets on any success, so a provider failing
+// four calls in every five never reaches the sustained threshold. Without a
+// lifetime failure count nothing in the response would reveal it.
+func TestGetLLMHealth_FailureRatioIsDerivable(t *testing.T) {
+	flapping := &healthStubProvider{name: "groq", model: "groq/compound"}
+	chain := llm.NewChain(flapping)
+	fail := &llm.Retryable{Provider: "groq", Reason: "http_500", Err: context.DeadlineExceeded}
+	for range 5 {
+		for range 4 {
+			flapping.err = fail
+			_, _ = chain.CompleteJSON(context.Background(), llm.JSONRequest{Task: "t"})
+		}
+		flapping.err = nil
+		_, _ = chain.CompleteJSON(context.Background(), llm.JSONRequest{Task: "t"})
+	}
+
+	_, body := serveLLMHealth(t, chain)
+	p := body.Providers[0]
+	if p.Sustained {
+		t.Fatal("fixture is wrong: a 4-in-5 failure rate must NOT trip the consecutive threshold, " +
+			"otherwise this test is not exercising the gap it exists for")
+	}
+	if p.Calls != 25 || p.Failures != 20 {
+		t.Errorf("calls = %d, failures = %d; want 25 / 20 so an 80%% failure rate is derivable "+
+			"from the response alone", p.Calls, p.Failures)
 	}
 }

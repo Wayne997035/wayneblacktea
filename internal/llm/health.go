@@ -60,6 +60,12 @@ type ProviderHealth struct {
 	// third state, distinct from healthy and from failing, and the one a
 	// reader would otherwise misread as healthy.
 	Calls int `json:"calls"`
+	// Failures is the lifetime failure count, which ConsecutiveFailures is
+	// NOT: that one resets to 0 on every success. A provider failing four
+	// calls in every five therefore never reaches the sustained threshold,
+	// and without this field nothing in the response would let a reader
+	// derive the failure ratio that makes such a provider visible.
+	Failures int `json:"failures"`
 }
 
 // modelNamer is implemented by providers that can report the model id they
@@ -127,7 +133,14 @@ func (h *healthTracker) entry(name, model string) *ProviderHealth {
 	return e
 }
 
+// The record* methods tolerate a nil receiver so a zero-value Chain (built by
+// struct literal rather than NewChain) degrades to "no health tracking"
+// instead of panicking on the request path. Nothing constructs one that way
+// today; "guarded only by convention" is not a guarantee.
 func (h *healthTracker) recordSuccess(name, model string, at time.Time) {
+	if h == nil {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	e := h.entry(name, model)
@@ -147,10 +160,14 @@ func (h *healthTracker) recordSuccess(name, model string, at time.Time) {
 }
 
 func (h *healthTracker) recordFailure(name, model, reason string, at time.Time) {
+	if h == nil {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	e := h.entry(name, model)
 	e.Calls++
+	e.Failures++
 	e.ConsecutiveFailures++
 	e.LastReason = reason
 	ts := at
@@ -190,6 +207,13 @@ func (h *healthTracker) snapshot() []ProviderHealth {
 // have never been called are included with Calls == 0 so a caller can tell
 // "configured but unexercised" from "configured and working".
 func (c *Chain) Health() []ProviderHealth {
+	// A zero-value Chain (one built by struct literal rather than NewChain)
+	// has no tracker. Nothing constructs one that way today, but "guarded
+	// only by convention" is not a guarantee, and the panic would land on
+	// the HTTP request path.
+	if c.health == nil {
+		return nil
+	}
 	c.health.mu.Lock()
 	for _, p := range c.providers {
 		c.health.entry(p.Name(), modelOf(p))
