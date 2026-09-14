@@ -111,12 +111,20 @@ func TestF170SECR303_DeleteTaskRejectedConfirmDoesNotConsumeToken(t *testing.T) 
 // TestF170SECR303_DeleteTaskWrongTokenStillConsumes pins the asymmetry that
 // the fix above deliberately did NOT flatten.
 //
-// deleteTokens is keyed by TASK ID, not by the token, so a caller holding only
-// a task id can reach the token comparison. If that branch also refused
-// without consuming, the 60s window would become a free guessing gallery for
-// the token. The session branch has no such exposure — reaching it already
-// required presenting the correct token — which is why exactly one of the two
-// is non-consuming.
+// The rule is: a refusal may decline to consume the token only when REACHING
+// that refusal already proves the caller holds the secret. deleteTokens is
+// keyed by TASK ID, not by the token, so a caller who knows only a task id
+// reaches the token comparison holding nothing — that branch must consume. The
+// session branch is reached only after the correct token was presented, so it
+// can refuse for free. That is why exactly one of the two is non-consuming.
+//
+// [GTD e207265c] This used to justify the consuming branch as a guess-limiting
+// measure. tools_gtd.go:1625-1628 withdrew that argument on its own arithmetic
+// — roughly 7,200 attempts fit in the 60s TTL, against a 122-bit UUID — and the
+// withdrawal landed only in tools_gtd.go, leaving the text guarding the same
+// branch still arguing the retracted case. A right rule with a wrong reason is
+// what the next reader inherits, which is the subject of the finding family
+// this test belongs to.
 //
 // Without this test, "make refusals non-consuming" reads like a rule that
 // should apply to both branches, and the next person to tidy this up would
@@ -142,8 +150,9 @@ func TestF170SECR303_DeleteTaskWrongTokenStillConsumes(t *testing.T) {
 		"deletion_token": real,
 	})
 	if !after.IsError {
-		t.Fatal("one wrong guess must burn the pending deletion; the real token still " +
-			"worked afterwards, so the token is now brute-forcible within its TTL")
+		t.Fatal("one wrong token must burn the pending deletion; the real token still " +
+			"worked afterwards, so a caller who knows only the task id — and therefore " +
+			"holds no secret at the point of refusal — got a free retry")
 	}
 	if !strings.Contains(resultText(after), "no pending deletion") {
 		t.Errorf("after a burned token the caller should be told there is nothing pending, got: %s",
