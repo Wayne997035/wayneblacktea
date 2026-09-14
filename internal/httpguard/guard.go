@@ -167,10 +167,17 @@ func SafeDial(ctx context.Context, network, addr string) (net.Conn, error) {
 }
 
 // NewSafeHTTPClient returns an *http.Client whose Transport uses SafeDial,
-// enforcing SSRF protection at the TCP dial layer (DNS rebinding mitigation),
-// with a 10-second connection timeout.
-// Caller MUST set a meaningful Timeout after calling NewSafeHTTPClient (the
-// default 10 s may not suit all providers).
+// enforcing SSRF protection at the TCP dial layer (DNS rebinding mitigation).
+//
+// Caller MUST set the time budget with SetClientBudget, NOT by assigning
+// c.Timeout. [GTD a3fcbeb3] This comment used to say "set a meaningful
+// Timeout", every one of the seven callers did exactly that, and every one of
+// them was silently capped at the 5-second ResponseHeaderTimeout below
+// regardless of what they assigned. Measured in production: a groq call
+// declaring a 30 s budget died at latency_ms=5011 with reason=timeout, and
+// the number matched none of the three timeouts anyone could find in the
+// source. Assigning Timeout looks like it sets the budget; it sets half of it.
+//
 // Caller MUST wrap resp.Body with io.LimitReader before reading.
 func NewSafeHTTPClient() *http.Client {
 	transport := &http.Transport{
@@ -193,6 +200,41 @@ func NewSafeHTTPClient() *http.Client {
 			}
 			return nil
 		},
+	}
+}
+
+// SetClientBudget gives c a single, coherent time budget for one request:
+// both the overall Client.Timeout and the Transport's ResponseHeaderTimeout,
+// which otherwise caps time-to-first-header at the NewSafeHTTPClient default
+// no matter what Timeout says. [GTD a3fcbeb3]
+//
+// Both are set to the same value on purpose. For an upstream that thinks
+// before it answers — any LLM completion, and an agentic model especially —
+// time-to-first-header legitimately IS most of the request, so a separate
+// smaller header budget can only reject work that was going to succeed.
+// Client.Timeout still bounds the whole exchange, so a stalled body cannot
+// hang forever.
+//
+// Callers that want the conservative default (a fetcher pulling arbitrary
+// user-supplied URLs, where a slow header IS the attack) should simply not
+// call this and keep what NewSafeHTTPClient returns.
+//
+// SafeDial's 10-second net.Dialer timeout is deliberately NOT touched: it
+// bounds the TCP/TLS connect, which is a different axis from waiting for a
+// slow upstream to think. Stretching it to the full budget would weaken the
+// SSRF and hung-connect protection and buy nothing — no reachable API takes
+// ten seconds to accept a connection.
+//
+// A nil client or a non-positive budget is a no-op rather than a panic:
+// this is called during construction, and a constructor that panics on a
+// zero-value config turns a misconfiguration into an outage.
+func SetClientBudget(c *http.Client, total time.Duration) {
+	if c == nil || total <= 0 {
+		return
+	}
+	c.Timeout = total
+	if tr, ok := c.Transport.(*http.Transport); ok {
+		tr.ResponseHeaderTimeout = total
 	}
 }
 

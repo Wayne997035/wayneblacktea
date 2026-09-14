@@ -78,7 +78,7 @@ func NewOpenAICompatibleClient(cfg OpenAICompatibleConfig) (*OpenAICompatibleCli
 	}
 
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = openAICompatibleTimeout
+	httpguard.SetClientBudget(safeClient, openAICompatibleTimeout)
 
 	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 	return &OpenAICompatibleClient{

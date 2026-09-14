@@ -34,7 +34,7 @@ func NewClient() *Client {
 		return nil
 	}
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = 10 * time.Second
+	httpguard.SetClientBudget(safeClient, 10*time.Second)
 
 	return &Client{
 		webhookURL: url,

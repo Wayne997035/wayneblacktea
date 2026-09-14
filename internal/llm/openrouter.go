@@ -74,7 +74,7 @@ func NewOpenRouterClient(cfg OpenRouterConfig) (*OpenRouterClient, error) {
 		return nil, errors.New("openrouter: OPENROUTER_MODEL or OPENROUTER_MODELS must be set")
 	}
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = openRouterTimeout
+	httpguard.SetClientBudget(safeClient, openRouterTimeout)
 
 	return &OpenRouterClient{
 		apiKey:   cfg.APIKey,
