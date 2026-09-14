@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
 )
 
@@ -124,6 +125,13 @@ func encodeStrings(ss []string) string {
 
 // Add inserts a new procedural memory and returns the persisted record.
 func (s *ProceduralStore) Add(ctx context.Context, p procedural.AddParams) (*procedural.ProceduralMemory, error) {
+	// [GTD d76ebc56] SQLite twin of the pgx screen — see internal/procedural/
+	// store.go's Add for why repo_name and only repo_name. A guard on one
+	// backend is not a guard: local dev runs SQLite, and a row written there
+	// is a row a later reader trusts identically.
+	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
+		return nil, fmt.Errorf("record_procedure: repo_name %w", err)
+	}
 	id := uuid.New()
 	tools := encodeStrings(p.ToolsUsed)
 	files := encodeStrings(p.FilesTouched)
