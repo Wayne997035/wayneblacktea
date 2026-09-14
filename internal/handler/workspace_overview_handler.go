@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -292,8 +293,12 @@ func toRecentHandoffItems(rows []db.SessionHandoff) []recentHandoffItem {
 			status = "resolved"
 		}
 		out = append(out, recentHandoffItem{
-			ID:         h.ID.String(),
-			Intent:     h.Intent,
+			ID: h.ID.String(),
+			// [GTD 49f2ed81] Intent is agent-authored free text read back out
+			// of session_handoffs. The other fields of this item are a UUID,
+			// a server-derived enum and two formatted timestamps — Intent is
+			// the only forgeable surface here.
+			Intent:     safetext.NeutralizeBoundaryMarkers(h.Intent),
 			Status:     status,
 			CreatedAt:  formatTS(h.CreatedAt),
 			ResolvedAt: formatTS(h.ResolvedAt),

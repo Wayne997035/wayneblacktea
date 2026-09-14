@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/google/uuid"
@@ -65,12 +66,24 @@ func buildPendingHandoffHTTPView(h *db.SessionHandoff) *pendingHandoffHTTPView {
 	if h == nil {
 		return nil
 	}
+	// [GTD 49f2ed81] Every string below is agent-authored free text that came
+	// back out of session_handoffs, and this response is read by agents as
+	// well as by the dashboard (the CLI prints it; people paste it into a
+	// conversation). Without neutralisation a stored payload can forge a
+	// closing boundary marker and place instructions "outside" the fence that
+	// a reader downstream puts around this span.
+	//
+	// The field set mirrors the MCP twin deliberately — internal/mcp/tools_
+	// context.go's disposition comment names repo_name and next_actions.title/
+	// command/expected as the unfenced-but-neutralised set, and the handoff
+	// resource fences intent/context_summary. Leaving the HTTP view raw is how
+	// the two sides drift apart, which is the shape of this finding.
 	v := &pendingHandoffHTTPView{
 		ID:             h.ID,
 		ProjectID:      h.ProjectID,
-		RepoName:       h.RepoName,
-		Intent:         h.Intent,
-		ContextSummary: h.ContextSummary,
+		RepoName:       neutralizeText(h.RepoName),
+		Intent:         safetext.NeutralizeBoundaryMarkers(h.Intent),
+		ContextSummary: neutralizeText(h.ContextSummary),
 		ResolvedAt:     h.ResolvedAt,
 		CreatedAt:      h.CreatedAt,
 		WorkspaceID:    h.WorkspaceID,
@@ -81,10 +94,32 @@ func buildPendingHandoffHTTPView(h *db.SessionHandoff) *pendingHandoffHTTPView {
 		if err := json.Unmarshal(h.NextActions, &actions); err != nil {
 			slog.Warn("buildPendingHandoffHTTPView: corrupt next_actions column", "handoff_id", h.ID, "err", err)
 		} else {
+			for i := range actions {
+				actions[i].Title = safetext.NeutralizeBoundaryMarkers(actions[i].Title)
+				actions[i].Command = safetext.NeutralizeBoundaryMarkers(actions[i].Command)
+				actions[i].Expected = safetext.NeutralizeBoundaryMarkers(actions[i].Expected)
+				if actions[i].RefTaskID != nil {
+					ref := safetext.NeutralizeBoundaryMarkers(*actions[i].RefTaskID)
+					actions[i].RefTaskID = &ref
+				}
+			}
 			v.NextActions = actions
 		}
 	}
 	return v
+}
+
+// neutralizeText applies safetext.NeutralizeBoundaryMarkers to a pgtype.Text
+// without disturbing its NULL-ness: a NULL column must stay NULL in the JSON
+// response, so the Valid flag decides whether there is anything to scan at
+// all. Returning a zero-value pgtype.Text for NULL would silently turn null
+// into "" for every consumer of this view.
+func neutralizeText(t pgtype.Text) pgtype.Text {
+	if !t.Valid {
+		return t
+	}
+	t.String = safetext.NeutralizeBoundaryMarkers(t.String)
+	return t
 }
 
 // dashboardHandoffFreshness bounds how old an unresolved session handoff may be
