@@ -72,7 +72,7 @@ type EmbeddingClient struct {
 // NewEmbeddingClient returns an EmbeddingClient configured from GEMINI_API_KEY env var.
 func NewEmbeddingClient() *EmbeddingClient {
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = 30 * time.Second
+	httpguard.SetClientBudget(safeClient, 30*time.Second)
 
 	return &EmbeddingClient{
 		apiKey: os.Getenv("GEMINI_API_KEY"),
@@ -116,7 +116,8 @@ var credentialRe = regexp.MustCompile(
 		`|postgres://[^:\s]+:[^@\s]+@` +
 		`|mongodb://[^:\s]+:[^@\s]+@` +
 		`|password[=:]\s*['"]?[^\s'"]{3,}` +
-		`|api[_-]?key[=:]\s*['"]?[^\s'"]{8,})`)
+		`|api[_-]?key[=:]\s*['"]?[^\s'"]{8,})`,
+)
 
 // Embed returns a 768-dimension embedding vector for the given text (truncated via outputDimensionality).
 // Returns nil, nil if GEMINI_API_KEY is not set (graceful degradation).

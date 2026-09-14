@@ -74,7 +74,13 @@ func NewGroqClient(cfg GroqConfig) (*GroqClient, error) {
 		model = defaultGroqModel
 	}
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = groqTimeout
+	// [GTD a3fcbeb3] SetClientBudget, not `safeClient.Timeout = …`. The
+	// latter reads as "the budget is groqTimeout" and is not: it leaves the
+	// Transport's ResponseHeaderTimeout at its conservative default, which is
+	// what actually killed decision_draft in production at latency_ms=5011
+	// while this line said 30s. groq/compound is agentic and thinks before it
+	// answers, so time-to-first-header is most of the request.
+	httpguard.SetClientBudget(safeClient, groqTimeout)
 
 	return &GroqClient{
 		apiKey:   cfg.APIKey,

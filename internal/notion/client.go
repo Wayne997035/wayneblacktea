@@ -44,7 +44,7 @@ func NewClient() *Client {
 		return nil
 	}
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = 15 * time.Second
+	httpguard.SetClientBudget(safeClient, 15*time.Second)
 
 	return &Client{
 		token:   token,

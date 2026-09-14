@@ -68,7 +68,7 @@ func NewOpenAICompatibleEmbeddingClient(baseURL, model, apiKey string) (*OpenAIC
 	}
 
 	safeClient := httpguard.NewSafeHTTPClient()
-	safeClient.Timeout = openAIEmbedTimeout
+	httpguard.SetClientBudget(safeClient, openAIEmbedTimeout)
 
 	return &OpenAICompatibleEmbeddingClient{
 		apiKey:   apiKey,
