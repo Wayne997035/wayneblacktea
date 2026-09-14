@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -210,7 +211,12 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 			mcp.Description("Search query (matches name and description)"),
 			mcp.Required()),
 		mcp.WithNumber("limit",
-			mcp.Description("Max results (default 10)")),
+			// [GTD b0c90957] Interpolated, not written out: the same two
+			// numbers in a hand-typed string is how a description ends up
+			// promising a cap the server does not apply.
+			mcp.Description(fmt.Sprintf("Max results (default %d, max %d)",
+				skill.DefaultListLimit, skill.MaxListLimit)),
+			mcp.Min(1), mcp.Max(skill.MaxListLimit)),
 	), s.handleSearchSkills)
 
 	ms.AddTool(mcp.NewTool(
@@ -262,7 +268,9 @@ func (s *Server) registerSkillTools(ms *server.MCPServer) {
 		mcp.WithString("query",
 			mcp.Description("Optional keyword to filter by name or description")),
 		mcp.WithNumber("limit",
-			mcp.Description("Max results (default 10)")),
+			mcp.Description(fmt.Sprintf("Max results (default %d, max %d)",
+				skill.DefaultListLimit, skill.MaxListLimit)),
+			mcp.Min(1), mcp.Max(skill.MaxListLimit)),
 	), s.handleListRelevantSkills)
 }
 
@@ -401,10 +409,10 @@ func (s *Server) handleSearchSkills(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("query is required"), nil
 	}
 
-	limit := int(numberArg(args, "limit"))
-	if limit <= 0 {
-		limit = 10
-	}
+	// [GTD b0c90957] Server-side clamp, not just the schema max: mcp.Max is a
+	// hint a client can ignore, and this handler is the one place the value
+	// reaches SQL.
+	limit := skill.ClampListLimit(int(numberArg(args, "limit")))
 
 	f := skill.SearchFilter{
 		Query: query,
@@ -515,10 +523,7 @@ func (s *Server) handleListRelevantSkills(ctx context.Context, req mcp.CallToolR
 	args := req.GetArguments()
 	query := stringArg(args, "query")
 
-	limit := int(numberArg(args, "limit"))
-	if limit <= 0 {
-		limit = 10
-	}
+	limit := skill.ClampListLimit(int(numberArg(args, "limit"))) // [GTD b0c90957]
 
 	var wsStr *string
 	if wsID := s.workspaceUUID(); wsID != nil {

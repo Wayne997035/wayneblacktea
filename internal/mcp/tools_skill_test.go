@@ -25,6 +25,9 @@ type stubSkillStore struct {
 	lastSearchFilter            skill.SearchFilter
 	lastUpdateFromOutcomeParams skill.UpdateFromOutcomeParams
 	updateFromOutcomeCalled     bool
+	// [GTD b0c90957] ListRelevant used to drop all four arguments, so nothing
+	// could assert what limit reached the store.
+	lastListRelevantLimit int
 }
 
 var _ skill.StoreIface = (*stubSkillStore)(nil)
@@ -62,7 +65,8 @@ func (s *stubSkillStore) UpdateFromOutcome(_ context.Context, p skill.UpdateFrom
 	return s.returnSkill, nil
 }
 
-func (s *stubSkillStore) ListRelevant(_ context.Context, _ *string, _ string, _ int) ([]*skill.Skill, error) {
+func (s *stubSkillStore) ListRelevant(_ context.Context, _ *string, _ string, limit int) ([]*skill.Skill, error) {
+	s.lastListRelevantLimit = limit
 	return s.returnList, s.returnErr
 }
 

@@ -178,10 +178,7 @@ func (s *SkillStore) Add(ctx context.Context, p skill.AddParams) (*skill.Skill, 
 
 // Search returns skills whose name or description match f.Query (LIKE).
 func (s *SkillStore) Search(ctx context.Context, f skill.SearchFilter) ([]*skill.Skill, error) {
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 10
-	}
+	limit := skill.ClampListLimit(f.Limit) // [GTD b0c90957]
 
 	wsArg := stringToNullableArg(f.WorkspaceID)
 	pattern := "%" + likeescape.Escape(f.Query) + "%"
@@ -295,9 +292,7 @@ func (s *SkillStore) UpdateFromOutcome(ctx context.Context, p skill.UpdateFromOu
 
 // ListRelevant returns skills ordered by success_count DESC, last_used_at DESC.
 func (s *SkillStore) ListRelevant(ctx context.Context, workspaceID *string, query string, limit int) ([]*skill.Skill, error) {
-	if limit <= 0 {
-		limit = 10
-	}
+	limit = skill.ClampListLimit(limit) // [GTD b0c90957]
 
 	wsArg := stringToNullableArg(workspaceID)
 

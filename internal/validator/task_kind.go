@@ -94,58 +94,84 @@ func kindForWarning(kind string) string {
 	return display
 }
 
-// CheckKindFields verifies that description contains the per-kind required
-// markers. Returns a slice of warning strings; empty means no issues.
-// All checks use plain strings.Contains — no backtracking regex.
+// kindRequiredSections is the per-kind list of sections a description must
+// declare, in the order the warnings are emitted — task_input_test.go asserts
+// that ValidateTaskInput's output order matches CheckKindFields', so the order
+// here is part of the contract. "general" and "chore" require nothing.
+//
+// A table rather than one switch arm per kind: seven labels checked by seven
+// hand-written ifs is how the same judgement key ended up written seven times,
+// which is what made [GTD 7fc84288] a seven-place fix instead of a one-place
+// one.
+var kindRequiredSections = map[string][]string{
+	"fix-pr":   {"branch", "acceptance"},
+	"feature":  {"acceptance", "risk"},
+	"refactor": {"scope", "non-goals"},
+	"research": {"question", "success-criteria"},
+}
+
+// CheckKindFields verifies that description declares the per-kind required
+// sections. Returns a slice of warning strings; empty means no issues.
+// All checks are plain string work — no backtracking regex.
 func CheckKindFields(kind, description string) []string {
 	lower := strings.ToLower(description)
 
-	switch kind {
-	case "fix-pr":
-		var w []string
-		if !strings.Contains(lower, "branch:") {
-			w = append(w, "fix-pr task: description should contain \"branch:\"")
+	var w []string
+	for _, label := range kindRequiredSections[kind] {
+		if !hasKindSection(lower, label) {
+			w = append(w, fmt.Sprintf(
+				"%s task: description should contain %q or a %q heading",
+				kind, label+":", "## "+label))
 		}
-		if !strings.Contains(lower, "acceptance:") {
-			w = append(w, "fix-pr task: description should contain \"acceptance:\"")
-		}
-		if !hasFileLineRef(description) {
-			w = append(w, "fix-pr task: description should contain at least one file:line reference")
-		}
-		return w
-
-	case "feature":
-		var w []string
-		if !strings.Contains(lower, "acceptance:") {
-			w = append(w, "feature task: description should contain \"acceptance:\"")
-		}
-		if !strings.Contains(lower, "risk:") {
-			w = append(w, "feature task: description should contain \"risk:\"")
-		}
-		return w
-
-	case "refactor":
-		var w []string
-		if !strings.Contains(lower, "scope:") {
-			w = append(w, "refactor task: description should contain \"scope:\"")
-		}
-		if !strings.Contains(lower, "non-goals:") {
-			w = append(w, "refactor task: description should contain \"non-goals:\"")
-		}
-		return w
-
-	case "research":
-		var w []string
-		if !strings.Contains(lower, "question:") {
-			w = append(w, "research task: description should contain \"question:\"")
-		}
-		if !strings.Contains(lower, "success-criteria:") {
-			w = append(w, "research task: description should contain \"success-criteria:\"")
-		}
-		return w
-
-	default:
-		// "general", "chore", and any future unknown kinds: no required fields.
-		return nil
 	}
+	if kind == "fix-pr" && !hasFileLineRef(description) {
+		w = append(w, "fix-pr task: description should contain at least one file:line reference")
+	}
+	return w
+}
+
+// hasKindSection reports whether a lower-cased description declares a section
+// for label, in either form used in practice: the inline "label:" and the
+// Markdown heading "## label" (any heading level, colon optional).
+//
+// [GTD 7fc84288] The judgement key used to be strings.Contains(lower, label+":")
+// alone. Every ticket in this repo writes its sections as Markdown headings
+// without the colon, so a description with a complete, correctly-written
+// acceptance section produced exactly the same warning as one with no
+// acceptance criteria at all — measured on a real ticket whose description
+// listed five acceptance conditions under "## acceptance". A warning that fires
+// on every input stops carrying information, and nothing reports that it has
+// stopped. Widening the key is the ruled-on direction; rewriting every
+// description to satisfy the checker is not.
+//
+// A bare mention must still warn, or the signal dies in the other direction
+// instead: "this acceptance can wait" has neither a colon nor a heading, so it
+// declares nothing. That is the case worth guarding, because it is the one a
+// widened matcher is most likely to swallow.
+func hasKindSection(lowerDescription, label string) bool {
+	if strings.Contains(lowerDescription, label+":") {
+		return true
+	}
+	for _, line := range strings.Split(lowerDescription, "\n") {
+		head := strings.TrimSpace(line)
+		if !strings.HasPrefix(head, "#") {
+			continue
+		}
+		head = strings.TrimSpace(strings.TrimLeft(head, "#"))
+		if head == label {
+			return true
+		}
+		rest, ok := strings.CutPrefix(head, label)
+		if !ok || rest == "" {
+			continue
+		}
+		// "## acceptance criteria" declares the section. "## acceptances" does
+		// not — the label has to end at a boundary, or a longer word that
+		// merely starts with it would count.
+		switch rest[0] {
+		case ' ', '\t', ':', '-', '(', '/':
+			return true
+		}
+	}
+	return false
 }
