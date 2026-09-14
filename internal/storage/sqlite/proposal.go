@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
@@ -245,7 +246,16 @@ func (s *ProposalStore) BatchConfirm(ctx context.Context, ids []uuid.UUID, statu
 	for _, id := range ids {
 		_, err := s.Resolve(ctx, id, status)
 		if err != nil {
-			results = append(results, proposal.BatchItemResult{ID: id.String(), OK: false, ErrMsg: err.Error()})
+			// [GTD 1134a216] The full error goes to the log, the classified
+			// message goes to the caller — see proposal.BatchItemErrMsg. This
+			// field is JSON-marshalled straight back, so err.Error() here was
+			// shipping driver text (measured: "sqlite ResolveProposal: SQL
+			// logic error: no such table: pending_proposals (1)").
+			slog.Warn("batch confirm: resolve failed",
+				"proposal_id", id, "status", status, "err", err)
+			results = append(results, proposal.BatchItemResult{
+				ID: id.String(), OK: false, ErrMsg: proposal.BatchItemErrMsg(id, err),
+			})
 			failed++
 		} else {
 			results = append(results, proposal.BatchItemResult{ID: id.String(), OK: true})
