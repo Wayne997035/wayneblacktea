@@ -5,6 +5,17 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY web/ ./
+# [GTD 4330b849] The frontend quality gate lives here, not only in CI, because
+# Railway never runs CI: railway.toml pins builder="dockerfile" and
+# dockerfilePath="build/Dockerfile", so a merge goes straight from the repo
+# into this file and on into the //go:embed source at stage 2. `npm run build`
+# is `tsc -b && vite build` — it catches type errors and nothing else, so
+# without these two lines frontend code that eslint or vitest rejects ships.
+# Fails the build closed on purpose, for the same reason as the build-identity
+# guard below: a blocked deploy is loud and leaves the current version serving,
+# un-linted shipped code is silent.
+RUN npm run lint
+RUN npm run test
 RUN npm run build
 
 # Stage 2: Build the Go binary (with embedded frontend)

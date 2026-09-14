@@ -255,6 +255,49 @@ class TestRulesDecisionTree(unittest.TestCase):
         ev = rules.classify("t", "someVeryUniqueSymbolName 已被移除", "2026-08-01T00:00:00+00:00", git)
         self.assertEqual(ev.verdict, "SYMBOL_NOT_FOUND_POSSIBLY_RENAMED")
 
+    def test_symbol_only_no_file_anchor_is_not_called_fixed(self):
+        """[GTD 2efe59d4] A symbol that still exists, with nothing else, is
+        NOT evidence of a fix — if anything it points the other way.
+
+        This path had no test, which is how `touched_after or not
+        resolved_files` survived directly under a comment stating the AND of
+        both is what discriminates. Measured on the real backlog: 223 of 409
+        flagged tickets rested on this and nothing else.
+
+        MUTATION (manually verified, not shipped as code): restoring
+        `touched_after or not resolved_files` in rules.py turns exactly this
+        test red and leaves the other 51 green — including
+        test_symbol_plus_recency_still_reports_fixed, so the tightening did
+        not simply blind the rule.
+        """
+        git = FakeGit(grep_results={
+            "someVeryUniqueSymbolName": [("internal/mcp/resources.go", 12)],
+        })
+        ev = rules.classify(
+            "t", "someVeryUniqueSymbolName 還在,沒有 file:line 錨點",
+            "2026-08-01T00:00:00+00:00", git)
+        self.assertNotEqual(
+            ev.verdict, "SUSPECT_ALREADY_FIXED",
+            "a bare symbol hit with no recency corroboration must not be reported as fixed")
+        self.assertEqual(ev.verdict, "UNKNOWN_NEEDS_HUMAN")
+
+    def test_symbol_plus_recency_still_reports_fixed(self):
+        """The reverse frame. Tightening the rule must not blind it: symbol
+        present AND its anchor file touched after the ticket was filed is the
+        conjunction the rule was always documented to require, and it must
+        still fire."""
+        git = FakeGit(
+            files={"internal/mcp/resources.go"},
+            grep_results={
+                "someVeryUniqueSymbolName": [("internal/mcp/resources.go", 12)],
+            },
+            commit_times={"internal/mcp/resources.go": "2026-08-20T00:00:00+00:00"},
+        )
+        ev = rules.classify(
+            "t", "internal/mcp/resources.go:12 someVeryUniqueSymbolName 沒上限",
+            "2026-08-01T00:00:00+00:00", git)
+        self.assertEqual(ev.verdict, "SUSPECT_ALREADY_FIXED")
+
     def test_measurement_citation(self):
         git = FakeGit(grep_results={"80,687": [("internal/mcp/resources.go", 495)]})
         ev = rules.classify("t", "實測 80,687 bytes 沒有上限", "2026-08-01T00:00:00+00:00", git)

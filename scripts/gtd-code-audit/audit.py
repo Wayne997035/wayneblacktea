@@ -121,7 +121,20 @@ def main():
     ap.add_argument("--no-write", action="store_true", help="只印,不落檔到 reports/")
     a = ap.parse_args()
 
-    repo_root = Path(a.repo).resolve() if a.repo else find_repo_root(HERE)
+    # [GTD b4379b4b] Two different roots, deliberately not the same variable.
+    #
+    # script_repo is the checkout this script lives in — it is where
+    # .env.local (the GTD database credentials) lives, and that has nothing
+    # to do with which tree is being audited.
+    #
+    # repo_root is the tree the tickets are compared against, and --repo
+    # moves only that.
+    #
+    # These used to be one variable, so pointing --repo at another checkout
+    # also went looking for .env.local inside it, found none, and exited 2
+    # with a credentials error that named the wrong problem entirely.
+    script_repo = find_repo_root(HERE)
+    repo_root = Path(a.repo).resolve() if a.repo else script_repo
     if not (repo_root / ".git").exists():
         print(f"錯誤: {repo_root} 不是 git repo 根目錄(--repo 指過去)", file=sys.stderr)
         return 2
@@ -129,7 +142,7 @@ def main():
     if a.tasks_json:
         tasks = json.loads(Path(a.tasks_json).read_text(encoding="utf-8"))
     else:
-        env_local = Path(a.env_local) if a.env_local else repo_root / ".env.local"
+        env_local = Path(a.env_local) if a.env_local else script_repo / ".env.local"
         ids = [i.strip() for i in a.ids.split(",")] if a.ids else None
         try:
             tasks = db_mod.fetch_tasks(env_local, status=a.status, ids=ids)
