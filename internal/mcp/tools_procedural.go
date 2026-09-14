@@ -265,7 +265,7 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 		return storeErrorResult("adding procedural memory", err), nil
 	}
 	s.launchAtomize("procedural_memories", mem.ID, mem.Title+" "+mem.WhenToUse+" "+mem.ApproachMD)
-	return jsonText(wrapUntrustedProceduralMemory(mem))
+	return jsonText(ackProcedural(wrapUntrustedProceduralMemory(mem)))
 }
 
 // handleQueryProcedural searches procedural memories.
@@ -318,7 +318,7 @@ func (s *Server) handleMarkProceduralUsed(ctx context.Context, req mcp.CallToolR
 	if err != nil {
 		return storeErrorResult("marking procedural memory used", err), nil
 	}
-	return jsonText(wrapUntrustedProceduralMemory(mem))
+	return jsonText(ackProcedural(wrapUntrustedProceduralMemory(mem)))
 }
 
 // handleRecall performs a unified cross-type memory search.

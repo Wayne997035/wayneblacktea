@@ -1,7 +1,11 @@
 package mcp
 
 import (
+	"time"
+
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/outcome"
+	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -73,5 +77,107 @@ func ackTask(t *db.Task) *taskWriteAck {
 		DueDate:    t.DueDate,
 		CreatedAt:  t.CreatedAt,
 		UpdatedAt:  t.UpdatedAt,
+	}
+}
+
+// decisionWriteAck is what log_decision answers with. list_decisions and
+// get_decision return the complete record.
+//
+// Dropped: context, decision, rationale, alternatives — the four prose fields
+// that ARE the decision, all supplied on this same call — plus the embedding
+// vector, which no caller has ever needed and is the single largest field on
+// the row.
+type decisionWriteAck struct {
+	ID               uuid.UUID          `json:"id"`
+	Title            string             `json:"title"`
+	RepoName         pgtype.Text        `json:"repo_name"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
+	TaskID           pgtype.UUID        `json:"task_id"`
+	Source           string             `json:"source"`
+	ConfirmedByHuman bool               `json:"confirmed_by_human"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+func ackDecision(d *db.Decision) *decisionWriteAck {
+	if d == nil {
+		return nil
+	}
+	return &decisionWriteAck{
+		ID:               d.ID,
+		Title:            d.Title,
+		RepoName:         d.RepoName,
+		ProjectID:        d.ProjectID,
+		TaskID:           d.TaskID,
+		Source:           d.Source,
+		ConfirmedByHuman: d.ConfirmedByHuman,
+		CreatedAt:        d.CreatedAt,
+	}
+}
+
+// proceduralWriteAck is what record_procedure and mark_procedure_used answer
+// with. recall / search_procedures return the complete record.
+//
+// Dropped: when_to_use, approach_md, tools_used, files_touched. approach_md is
+// the procedure itself and is by far the largest of them.
+//
+// success_count and last_used_at are kept precisely because mark_procedure_used
+// exists to change them: they are the whole point of that call's answer.
+type proceduralWriteAck struct {
+	ID           uuid.UUID  `json:"id"`
+	Title        string     `json:"title"`
+	RepoName     string     `json:"repo_name,omitempty"`
+	ProjectID    *uuid.UUID `json:"project_id,omitempty"`
+	SuccessCount int        `json:"success_count"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+func ackProcedural(m *procedural.ProceduralMemory) *proceduralWriteAck {
+	if m == nil {
+		return nil
+	}
+	return &proceduralWriteAck{
+		ID:           m.ID,
+		Title:        m.Title,
+		RepoName:     m.RepoName,
+		ProjectID:    m.ProjectID,
+		SuccessCount: m.SuccessCount,
+		LastUsedAt:   m.LastUsedAt,
+		CreatedAt:    m.CreatedAt,
+	}
+}
+
+// outcomeWriteAck is what record_outcome answers with. list_outcomes and
+// get_outcome return the complete record.
+//
+// Dropped: notes and metrics. result is kept because it is the field
+// record_outcome exists to set and the server validates it against a closed
+// set; supersedes_id is kept because the caller cannot know it — the supersede
+// branch decides server-side whether a prior row was replaced.
+type outcomeWriteAck struct {
+	ID            uuid.UUID   `json:"id"`
+	EntityType    string      `json:"entity_type"`
+	EntityID      uuid.UUID   `json:"entity_id"`
+	Result        string      `json:"result"`
+	RelatedRuleID []uuid.UUID `json:"related_rule_ids,omitempty"`
+	WorkSessionID *uuid.UUID  `json:"work_session_id,omitempty"`
+	SupersedesID  *uuid.UUID  `json:"supersedes_id,omitempty"`
+	CreatedAt     time.Time   `json:"created_at"`
+}
+
+// ackOutcome takes and returns values, not pointers, to match
+// wrapUntrustedOutcome's own signature — recordOutcomeResponse embeds the
+// result, so a pointer here would change that response from flattened fields
+// to a nested object.
+func ackOutcome(o outcome.Outcome) outcomeWriteAck {
+	return outcomeWriteAck{
+		ID:            o.ID,
+		EntityType:    o.EntityType,
+		EntityID:      o.EntityID,
+		Result:        o.Result,
+		RelatedRuleID: o.RelatedRuleIDs,
+		WorkSessionID: o.WorkSessionID,
+		SupersedesID:  o.SupersedesID,
+		CreatedAt:     o.CreatedAt,
 	}
 }

@@ -341,6 +341,12 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 // (the row WAS updated) — only part of its content didn't make it in. See
 // handleRecordOutcome's dispatch note: a partial write is still a write.
 type recordOutcomeResponse struct {
+	// [GTD c46025c1] Deliberately NOT slimmed. record_outcome has append/merge
+	// semantics: the caller supplies a fragment and the server merges it into
+	// the stored notes and metrics, so the returned values are computed, not
+	// echoed. The finding's premise — "the caller just sent this, returning it
+	// carries zero information" — is false for a merging write, and
+	// tools_outcome_lifecycle_test.go:509 is the test that says so.
 	outcome.Outcome
 	// NotesTruncated is true when this call's notes text was NOT fully
 	// appended onto the stored Notes field because the cumulative cap
