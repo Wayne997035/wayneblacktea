@@ -26,6 +26,10 @@ const maxListDecisionsLimit = 100
 const (
 	decisionTitleMaxRunes = 500
 	decisionBodyMaxRunes  = 20000
+	// [GTD f8c2dc75] Matches handoffResourceRepoNameMaxRunes (resources.go)
+	// and proceduralRepoNameMaxRunes — the three projections of repo_name
+	// must not disagree about how much of the column survives.
+	decisionRepoNameMaxRunes = 200
 )
 
 // wrapUntrustedDecision returns a copy of d with every free-text field
@@ -34,16 +38,29 @@ const (
 // caller's row (and any cache holding it) must not end up with
 // fence/neutralisation baked into its stored text. nil in, nil out.
 //
-// ID, ProjectID, RepoName, CreatedAt, WorkspaceID, Embedding, TaskID and the
+// ID, ProjectID, CreatedAt, WorkspaceID, Embedding, TaskID and the
 // embedding-provenance fields are left untouched — none of them is free text
-// an LLM authored, so none carries injection risk. RepoName specifically is
-// validator.IsValidRepoName-gated at every write path in this codebase
-// ([a-zA-Z0-9_.-]{1,100}), which forecloses embedding a marker string in it.
+// an LLM authored, so none carries injection risk.
+//
+// [GTD f8c2dc75 / 85c5a119] RepoName IS clipSafe'd, and this comment used to
+// say it was "validator.IsValidRepoName-gated at every write path in this
+// codebase". That regex would indeed foreclose a marker, but grep for its
+// non-test callers returns only project create/update (gtd_handler.go:214 and
+// :498, tools_gtd.go:737). log_decision never went through it, on either
+// backend, so the sentence was true of a path this field does not take.
+//
+// The same sentence, in wrapUntrustedProceduralMemory, exempted that type's
+// RepoName from the U13 coverage walker on the same false premise; both are
+// fixed together because fixing one would have left the walker's exemption
+// list still asserting it about the other.
 func wrapUntrustedDecision(d *db.Decision) *db.Decision {
 	if d == nil {
 		return nil
 	}
 	out := *d
+	if d.RepoName.Valid {
+		out.RepoName.String = clipSafe(d.RepoName.String, decisionRepoNameMaxRunes)
+	}
 	out.Title = clipSafe(d.Title, decisionTitleMaxRunes)
 	out.Context = clipSafe(d.Context, decisionBodyMaxRunes)
 	out.Decision = clipSafe(d.Decision, decisionBodyMaxRunes)
