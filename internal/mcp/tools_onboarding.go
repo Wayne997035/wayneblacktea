@@ -82,11 +82,10 @@ add_vision_item: "未來想做" "之後再說" "現在還不能" "等 X 完成�
 
 confirm_plan — on this server's two shipped backends (Postgres, SQLite) every
 phase task and every decision commits together or none do, in one transaction.
-Two things are NOT covered by that guarantee: (1) a server run with neither
-backend wired falls back to a non-atomic sequential path (not a real deployment
-configuration); (2) the in_progress work_session linking the phase tasks is
-created separately, best-effort, AFTER the transaction commits — a work-session
-failure never rolls back the already-committed tasks/decisions. ALWAYS read the
+One thing is NOT covered by that guarantee: the in_progress work_session linking
+the phase tasks is created separately,
+best-effort, AFTER the transaction commits — a work-session failure never rolls
+back the already-committed tasks/decisions. ALWAYS read the
 response text / is_error instead of assuming success: a success response lists
 every task and decision actually created, and a failure response states exactly
 what was written. A failure whose message says OUTCOME UNKNOWN means the plan

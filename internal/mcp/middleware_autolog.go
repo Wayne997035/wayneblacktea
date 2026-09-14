@@ -153,9 +153,14 @@ const (
 	maxJSONArgBytes = 512 * 1024 // 512 KB cap before json.Unmarshal to prevent double-parse OOM
 )
 
-// autoLogEntry returns the action string, notes string, and true for the five
-// high-signal tools that should produce an activity_log entry. It returns
+// autoLogEntry returns the action string, notes string, and true for every
+// high-signal tool that should produce an activity_log entry, and
 // ("", "", false) for all other tools.
+//
+// [GTD 4d5b3354] Deliberately no count and no list: the switch below is the
+// only inventory. This said "the five high-signal tools" while the switch
+// carried eleven, and the same stale five had been copied into the repo's
+// CLAUDE.md — written down twice, it drifted in both places at once.
 func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bool) {
 	switch tool {
 	case "begin_task":

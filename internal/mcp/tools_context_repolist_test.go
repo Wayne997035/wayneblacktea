@@ -744,9 +744,15 @@ func TestClipRepoListField_OverCapReportsTruncatedTrue(t *testing.T) {
 // via neutralizeBoundaryMarkers, so the value the caller receives is not
 // byte-identical to what is stored either way. Under-reporting that as
 // "false" told the caller it held the exact stored value when it did not;
-// [F0902-53] chooses to over-report instead — a caller that sees true and
-// re-fetches via sync_repo only pays one extra round trip, which is cheap
-// next to a caller silently trusting a rewritten value.
+// [F0902-53] chooses to over-report instead.
+//
+// [GTD e7d399e0] What over-reporting costs is NOT one extra sync_repo round
+// trip. sync_repo returns the record through the same clipSafe path — larger
+// caps (2,000 / 20,000 runes), still truncated and still marker-neutralised —
+// so no MCP call hands back the byte-exact stored value, and this flag has no
+// recovery path behind it. Over-reporting is still the right trade: a caller
+// that knows the value was rewritten beats one silently trusting it. Do not
+// re-justify the choice with a round trip that does not recover anything.
 //
 // Mutation check: reverting clipRepoListField's condition from `out != s` to
 // `utf8.RuneCountInString(s) > maxRunes` makes this test fail, because the

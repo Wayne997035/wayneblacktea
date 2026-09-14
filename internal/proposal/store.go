@@ -61,9 +61,28 @@ func (s *Store) WithTx(tx pgx.Tx) *Store {
 // runaway/adversarial payloads without clipping content a legitimate
 // caller already validated. The gap it closes is unchanged: nothing
 // checked len(p.Payload) before this guard existed, so an oversized
-// payload from a prompt-injected agent (propose_goal/propose_project MCP
-// tools, the only confirmed callers of Create at time of writing) reached
-// pending_proposals unbounded before any accept-time decoder cap ever ran.
+// payload from a prompt-injected agent reached pending_proposals unbounded
+// before any accept-time decoder cap ever ran.
+//
+// [GTD 25ccb392] Do not re-introduce a hardcoded caller list here. This
+// comment used to call propose_goal/propose_project "the only confirmed
+// callers of Create", and PR1-SEC-01 sized the cap off that claim. Enumerate
+// with
+//
+//	grep -rn '\bCreateParams{' --include='*.go' internal/ | grep -v _test.go
+//
+// and NOT with `proposal.*\.Create(`, which structurally cannot see three of
+// them: a receiver named prop (internal/scheduler/cognitive_jobs.go), an
+// injected createFn (internal/handler/autolog_handler.go), and the
+// in-package unprefixed call in autopropose.go. That is 13 non-test call
+// sites today, spanning the MCP propose_*/atom tools, two MCP middlewares,
+// the autolog handler, six scheduler cron jobs, and
+// AutoProposeConceptFromKnowledge.
+//
+// The binding caller is AutoProposeConceptFromKnowledge: every other one
+// marshals fields the MCP decoders already cap, while that one marshals
+// knowledge content bounded only by knowledgeMaxContentLen (1 MiB). Size
+// this constant against that caller — the rest cannot reach it.
 //
 // Exported (not package-private) so internal/storage/sqlite's ProposalStore
 // — a separate Create implementation for the dual-backend seam — enforces

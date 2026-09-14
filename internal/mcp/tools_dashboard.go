@@ -21,29 +21,34 @@ type completionCandidateStore interface {
 
 // registerDashboardTools registers the dashboard-automation MCP tools.
 func (s *Server) registerDashboardTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("detect_completion_candidates",
+	ms.AddTool(mcp.NewTool(
+		"detect_completion_candidates",
 		mcp.WithDescription(
 			"Scans tasks and activity_log to surface tasks that appear done but GTD status is "+
 				"still pending/in_progress. Read-only for tasks — writes to completion_candidates "+
 				"table only. Returns candidate list.",
 		),
-		mcp.WithNumber("stale_threshold_hours",
+		mcp.WithNumber(
+			"stale_threshold_hours",
 			mcp.Description("Hours of inactivity to mark in_progress task as stale (default 24, range 1-168)"),
 			mcp.Min(1),
 			mcp.Max(168),
 		),
-		mcp.WithNumber("lookback_days",
+		mcp.WithNumber(
+			"lookback_days",
 			mcp.Description("Days of activity_log to scan (default 7, max 30)"),
 			mcp.Min(1),
 			mcp.Max(30),
 		),
 	), s.handleDetectCompletionCandidates)
 
-	ms.AddTool(mcp.NewTool("reconcile_dashboard",
+	ms.AddTool(mcp.NewTool(
+		"reconcile_dashboard",
 		mcp.WithDescription(
 			"Runs all completion-candidate detection rules and returns a full automation-health "+
 				"snapshot including stale tasks, candidates, proposal backlog, and missing-handoff "+
-				"status. Does NOT mutate tasks.",
+				"status. Does NOT mutate tasks — but it is not read-only: detection upserts rows "+
+				"into completion_candidates, the same write detect_completion_candidates performs.",
 		),
 	), s.handleReconcileDashboard)
 }
