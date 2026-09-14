@@ -53,7 +53,8 @@ func ResolveTaskKind(kind string) (resolved string, warning string) {
 		return kind, ""
 	}
 	return KindGeneral, fmt.Sprintf(
-		"kind %q is not a valid task kind; falling back to general", kindForWarning(kind))
+		"kind %q is not a valid task kind; falling back to general", kindForWarning(kind),
+	)
 }
 
 // [GTD a2466b37 / c761ba5c] kindForWarning bounds AND neutralises the caller's

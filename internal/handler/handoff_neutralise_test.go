@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -49,7 +50,10 @@ func pendingViewFields(v *pendingHandoffHTTPView) []struct{ name, val string } {
 	return out
 }
 
-func itoa(i int) string { return string(rune('0' + i)) }
+// strconv.Itoa, not string(rune('0'+i)): the latter is a gosec G115 int→rune
+// conversion and silently produces garbage past index 9, so a fixture with ten
+// next_actions would report field names nobody could match to a real field.
+func itoa(i int) string { return strconv.Itoa(i) }
 
 func handoffWithForgedText(t *testing.T, forged string) *db.SessionHandoff {
 	t.Helper()

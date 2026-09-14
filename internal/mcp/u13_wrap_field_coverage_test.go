@@ -437,7 +437,7 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 			// and cited the doc comment that made that claim — while the
 			// regex's only non-test callers were project create/update, never
 			// log_decision.
-			"Source":   "always the server literal decision.SourceManual at the one write path (handleLogDecision)",
+			"Source": "always the server literal decision.SourceManual at the one write path (handleLogDecision)",
 			"ActorSessionID": "hidden entirely from JSON by db.Decision's custom MarshalJSON " +
 				"(internal/db/models_custom.go) — never reaches the client regardless of this wrap function",
 			"EmbeddingProvider": "embedding-provenance field set only by the embedding pipeline, never a " +

@@ -138,7 +138,8 @@ func (s *Store) Add(ctx context.Context, p AddParams) (*ProceduralMemory, error)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
 		RETURNING ` + selectCols
 
-	rows, err := s.pool.Query(ctx, q,
+	rows, err := s.pool.Query(
+		ctx, q,
 		id,
 		s.workspaceID,
 		p.RepoName,
