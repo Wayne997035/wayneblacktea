@@ -60,6 +60,11 @@ func NewClaudeClientWithSDK(client *anthropic.Client, model string) *ClaudeClien
 // Name implements JSONClient.
 func (c *ClaudeClient) Name() string { return "claude" }
 
+// Model implements modelNamer (health.go) so the startup log and the health
+// surface can report WHICH model this provider talks to, not just that a
+// provider named "claude" exists. [GTD ab472814]
+func (c *ClaudeClient) Model() string { return c.model }
+
 // CompleteJSON sends a single Messages.New call and returns the first text
 // block. Errors are wrapped in *Retryable so the chain falls through.
 func (c *ClaudeClient) CompleteJSON(ctx context.Context, req JSONRequest) (string, error) {

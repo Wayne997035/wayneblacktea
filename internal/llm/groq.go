@@ -20,10 +20,30 @@ const (
 	groqTimeout  = 30 * time.Second
 	groqMaxBody  = 1 << 20
 
-	// defaultGroqModel matches the legacy hard-coded value in
-	// internal/discordbot/analyzer.go so behaviour is unchanged when only
-	// GROQ_API_KEY is set (Phase 0 → Phase 4 migration is transparent).
-	defaultGroqModel = "llama-3.3-70b-versatile"
+	// defaultGroqModel is the model used when GROQ_MODEL is unset.
+	//
+	// [GTD ab472814] This constant took production down for three days and it
+	// is worth being explicit about why, because the next maintainer will be
+	// tempted to treat a bump as the whole fix. It is not: a vendor model id
+	// frozen in Go source is a dependency on someone else's deprecation
+	// schedule, and it rots on THEIR calendar, not on ours.
+	//
+	// The previous value was llama-3.3-70b-versatile, inherited from
+	// internal/discordbot/analyzer.go. Groq decommissioned it; every call
+	// returned http_404 and all three LLM-backed features degraded to empty
+	// while still answering HTTP 200.
+	//
+	// groq/compound is chosen because it is Groq's own first-party model, so
+	// it is the entry on the menu least likely to be removed by a third-party
+	// weights provider withdrawing. Verified against GET /v1/models and
+	// exercised with this client's exact request shape (JSON mode on) before
+	// being written here.
+	//
+	// What actually prevents a recurrence is NOT this line — it is
+	// Chain.LogStartup warning about a chain with no fallback, and the
+	// sustained-failure escalation in health.go. Both exist because this
+	// constant is guaranteed to go stale again.
+	defaultGroqModel = "groq/compound"
 )
 
 // GroqClient is a JSONClient that targets Groq's OpenAI-compatible
@@ -74,6 +94,11 @@ func (c *GroqClient) setEndpoint(u string) {
 
 // Name implements JSONClient.
 func (c *GroqClient) Name() string { return "groq" }
+
+// Model implements modelNamer (health.go). A chain logged as [groq] was
+// healthy as a route and dead as a model for three days; this is the field
+// that makes those two states distinguishable. [GTD ab472814]
+func (c *GroqClient) Model() string { return c.model }
 
 // CompleteJSON sends a chat completion request and returns the choices[0]
 // content. Mirrors OpenRouter's retry classification.

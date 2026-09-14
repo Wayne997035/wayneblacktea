@@ -95,8 +95,11 @@ func TestGroq_RetryableErrors(t *testing.T) {
 	}
 }
 
-// TestGroq_DefaultModel verifies that an empty Model defaults to the legacy
-// llama-3.3-70b-versatile so existing /analyze users see no behaviour change.
+// TestGroq_DefaultModel verifies the WIRE behaviour: an empty GroqConfig.Model
+// must put defaultGroqModel into the outgoing payload. It deliberately does
+// not name a model — see the assertion below for why, and
+// TestNewGroqClient_DefaultModelIsNotTheDecommissionedOne for the guard that
+// does pin a value.
 func TestGroq_DefaultModel(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,8 +112,19 @@ func TestGroq_DefaultModel(t *testing.T) {
 	if _, err := c.CompleteJSON(context.Background(), JSONRequest{Task: "t"}); err != nil {
 		t.Fatalf("CompleteJSON: %v", err)
 	}
-	if got["model"] != "llama-3.3-70b-versatile" {
-		t.Errorf("default model = %v, want llama-3.3-70b-versatile", got["model"])
+	// [GTD ab472814] Asserted against the constant, not against a literal.
+	// What this test is for is the WIRE behaviour — an empty GroqConfig.Model
+	// must put the default in the outgoing payload — and that is still fully
+	// checked here. Pinning the literal instead made the test fail on every
+	// legitimate model bump, which trains the next maintainer to edit the
+	// expectation rather than read it.
+	//
+	// The value itself is guarded separately and for a different reason by
+	// TestNewGroqClient_DefaultModelIsNotTheDecommissionedOne: that one
+	// asserts the default is never again the id that took production down,
+	// which is a claim a literal-pin cannot make.
+	if got["model"] != defaultGroqModel {
+		t.Errorf("default model on the wire = %v, want %v", got["model"], defaultGroqModel)
 	}
 }
 

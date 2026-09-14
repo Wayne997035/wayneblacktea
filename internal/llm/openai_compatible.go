@@ -92,6 +92,10 @@ func NewOpenAICompatibleClient(cfg OpenAICompatibleConfig) (*OpenAICompatibleCli
 // Name implements JSONClient.
 func (c *OpenAICompatibleClient) Name() string { return "openai-compatible" }
 
+// Model implements modelNamer (health.go) so the startup log names the model
+// this provider was pointed at. [GTD ab472814]
+func (c *OpenAICompatibleClient) Model() string { return c.model }
+
 // CompleteJSON sends a chat completion request and returns choices[0] content.
 func (c *OpenAICompatibleClient) CompleteJSON(ctx context.Context, req JSONRequest) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, openAICompatibleTimeout)
