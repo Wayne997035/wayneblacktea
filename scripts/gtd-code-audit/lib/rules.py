@@ -222,21 +222,43 @@ def _classify_inner(created_at: str, git: GitOps, anchors: dict,
                 touched_after = True
                 checked_file = rf["resolved_path"]
                 break
-        if touched_after or not resolved_files:
-            cmd = f"git -C <repo> grep -n -F -e '{sym}'"
-            if _still_open_marked(git, sf, sl):
-                return Evidence(
-                    "CITED_BUT_MARKED_UNFIXED",
-                    [f"符號 `{sym}` 存在於 {sf}:{sl},但周圍文字自陳未修"],
-                    [cmd],
-                )
-            # No file:line anchor to cross-check recency against (symbol-
-            # only ticket) — still report, but the caller can see from the
-            # single reason line that recency wasn't corroborated.
-            reasons = [f"符號 `{sym}` 存在於 {sf}:{sl}"]
-            if checked_file:
-                reasons.append(f"{checked_file} 最後修改晚於單子建立時間")
-            return Evidence("SUSPECT_ALREADY_FIXED", reasons, [cmd])
+        cmd = f"git -C <repo> grep -n -F -e '{sym}'"
+
+        # A self-declared "not fixed" beside the symbol is worth reporting
+        # whether or not recency corroborates it — it is the code saying so,
+        # not an inference.
+        if _still_open_marked(git, sf, sl):
+            return Evidence(
+                "CITED_BUT_MARKED_UNFIXED",
+                [f"符號 `{sym}` 存在於 {sf}:{sl},但周圍文字自陳未修"],
+                [cmd],
+            )
+
+        # [GTD 2efe59d4] AND, not OR. The comment above has always said the
+        # conjunction is what discriminates, and the code said `touched_after
+        # or not resolved_files` — so any ticket with no resolvable file
+        # anchor was called SUSPECT_ALREADY_FIXED on "the symbol still
+        # exists" alone.
+        #
+        # That is not weak evidence of a fix, it is closer to evidence of the
+        # opposite: a symbol the ticket complained about, still present under
+        # the same name, with nothing showing the file moved since. Measured
+        # on the real backlog, 223 of 409 flagged tickets rested on exactly
+        # that and nothing else.
+        #
+        # Symbol-only tickets now fall through to UNKNOWN_NEEDS_HUMAN, which
+        # is the verdict that already means "anchors exist, evidence is not
+        # enough to call it either way". Saying "I don't know" costs a human
+        # one look; saying "probably fixed" wrongly costs a closed ticket.
+        if touched_after:
+            return Evidence(
+                "SUSPECT_ALREADY_FIXED",
+                [
+                    f"符號 `{sym}` 存在於 {sf}:{sl}",
+                    f"{checked_file} 最後修改晚於單子建立時間",
+                ],
+                [cmd],
+            )
 
     # Rule: file:line anchor exists, but referenced line is beyond the
     # file's current length — degraded case ①, line drifted.
