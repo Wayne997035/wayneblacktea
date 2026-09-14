@@ -171,7 +171,7 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 		return storeErrorResult("logging decision", err), nil
 	}
 	s.launchAtomize("decisions", d.ID, d.Decision+" "+d.Rationale)
-	return jsonText(wrapUntrustedDecision(d))
+	return jsonText(ackDecision(wrapUntrustedDecision(d)))
 }
 
 // handleListDecisions implements the P3.0a Stage B truth table:

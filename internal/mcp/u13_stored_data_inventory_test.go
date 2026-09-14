@@ -600,7 +600,15 @@ func TestHandleLogDecision_NeutralizesForgedMarkerAcrossFields(t *testing.T) {
 	if !strings.Contains(got, boundaryMarkerPlaceholder) {
 		t.Errorf("forged marker was removed without leaving the placeholder: %s", got)
 	}
-	if !strings.Contains(got, "legit title") || !strings.Contains(got, "legit rationale") {
+	// [GTD c46025c1] Only title is checked now. log_decision's write
+	// acknowledgement no longer echoes context / decision / rationale — they
+	// are the four prose fields the caller supplied on this same call, and
+	// returning them charged the caller twice for text it had just sent.
+	// They are still neutralised (ackDecision projects FROM the wrapped
+	// value); they are simply not observable from this response. The walker
+	// in TestF160_06_WrapUntrustedFunctionsProtectEveryStringField covers
+	// every string field of wrapUntrustedDecision directly.
+	if !strings.Contains(got, "legit title") {
 		t.Errorf("neutralisation ate legitimate content: %s", got)
 	}
 }

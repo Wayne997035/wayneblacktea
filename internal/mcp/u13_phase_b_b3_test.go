@@ -153,8 +153,12 @@ func TestHandleExtractSkill_NeutralizesForgedMarker(t *testing.T) {
 	// validateSkillCSVField all hard-reject embedded \r\n, so the marker is
 	// joined with a space here (unlike tools_gtd.go/tools_decision.go's
 	// multi-line fields).
+	// [GTD c46025c1] name carries the marker too: it is the free text the
+	// write acknowledgement still returns. The other five fields are still
+	// neutralised (ackSkill projects FROM the wrapped value) and are covered
+	// directly by TestF160_06_WrapUntrustedFunctionsProtectEveryStringField.
 	r := callExtractSkill(t, s, map[string]any{
-		"name":                   "legit skill name",
+		"name":                   "legit skill name " + marker,
 		"description":            "legit desc " + marker,
 		"triggers":               "legit trigger " + marker,
 		"steps":                  "legit step " + marker,
@@ -206,8 +210,15 @@ func TestHandleUseSkill_NeutralizesForgedMarker(t *testing.T) {
 	marker := storedContextMarkerEnd
 	forgedDesc := "use-skill desc " + marker
 
+	// [GTD c46025c1] The marker also goes in name, because name is the free
+	// text use_skill's acknowledgement still returns. description is still
+	// neutralised — ackSkill projects FROM the wrapped value — but use_skill
+	// no longer echoes the body: its job is to move success_count, and a
+	// caller invoking it has just used the skill and already has the steps.
+	// The dropped fields are covered directly by
+	// TestF160_06_WrapUntrustedFunctionsProtectEveryStringField.
 	createRes := callExtractSkill(t, s, map[string]any{
-		"name": "u13-use-skill-marker", "description": forgedDesc,
+		"name": "u13-use-skill-marker " + marker, "description": forgedDesc,
 	})
 	if createRes.IsError {
 		t.Fatalf("extract_skill error: %s", resultText(createRes))
@@ -331,8 +342,12 @@ func TestHandleUpdateVisionItem_NeutralizesForgedMarker(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	marker := storedContextMarkerEnd
 
+	// [GTD c46025c1] The marker is seeded into title, because update_vision_item
+	// takes no title argument and title is the free text its acknowledgement
+	// still returns. context_md below is still neutralised and is covered by
+	// TestF160_06_WrapUntrustedFunctionsProtectEveryStringField.
 	addRes := callAddVision(t, s, map[string]any{
-		"title": "Ship the u13-update-vision marker fixture", "why_blocked": "not yet",
+		"title": "Ship the u13-update-vision marker fixture " + marker, "why_blocked": "not yet",
 	})
 	if addRes.IsError {
 		t.Fatalf("add_vision_item error: %s", resultText(addRes))
@@ -541,8 +556,21 @@ func TestHandleAddProcedural_NeutralizesForgedMarker(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	marker := storedContextMarkerEnd
 
+	// [GTD c46025c1] The forged marker is planted in title because title is
+	// the one free-text field the write acknowledgement still returns.
+	// when_to_use and approach_md are neutralised exactly as before —
+	// ackProcedural projects FROM the already-wrapped value, so dropping a
+	// field is not a way to skip sanitising it — but they are no longer
+	// echoed back to the caller that just supplied them, so an assertion on
+	// this response cannot observe them. Their neutralisation is proven
+	// directly by TestF160_06_WrapUntrustedFunctionsProtectEveryStringField,
+	// which walks every string field of wrapUntrustedProceduralMemory
+	// independently of which tool returns it.
 	r := callAddProcedural(t, s, map[string]any{
-		"title":       "legit title",
+		// Space, not newline: title has a control-character validator, so a
+		// forged marker can only ever reach it inline. That is the shape the
+		// neutralisation has to handle here.
+		"title":       "legit title " + marker,
 		"when_to_use": "legit when\n" + marker,
 		"approach_md": "legit approach\n" + marker,
 	})
@@ -584,8 +612,10 @@ func TestHandleMarkProceduralUsed_NeutralizesForgedMarker(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	marker := storedContextMarkerEnd
 
+	// [GTD c46025c1] Marker in title — see TestHandleAddProcedural_Neutralizes
+	// ForgedMarker for why when_to_use can no longer be observed here.
 	addRes := callAddProcedural(t, s, map[string]any{
-		"title": "u13-mark-used-marker", "when_to_use": "when\n" + marker,
+		"title": "u13-mark-used-marker " + marker, "when_to_use": "when\n" + marker,
 	})
 	if addRes.IsError {
 		t.Fatalf("add_procedural error: %s", resultText(addRes))

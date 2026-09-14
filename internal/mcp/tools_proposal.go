@@ -351,7 +351,7 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return storeErrorResult("creating proposal", err), nil
 	}
-	return jsonText(wrapUntrustedProposal(row))
+	return jsonText(ackProposal(wrapUntrustedProposal(row)))
 }
 
 func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -393,7 +393,7 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return storeErrorResult("creating proposal", err), nil
 	}
-	return jsonText(wrapUntrustedProposal(row))
+	return jsonText(ackProposal(wrapUntrustedProposal(row)))
 }
 
 // handleListPendingProposals returns one page of pending proposals.

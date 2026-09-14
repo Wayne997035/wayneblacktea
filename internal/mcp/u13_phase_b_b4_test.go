@@ -286,7 +286,11 @@ func TestHandleAddKnowledge_NeutralizesForgedMarker(t *testing.T) {
 	if !strings.Contains(got, boundaryMarkerPlaceholder) {
 		t.Errorf("forged marker removed without placeholder: %s", got)
 	}
-	if !strings.Contains(got, "legit title") || !strings.Contains(got, "legit content") {
+	// [GTD c46025c1] content is no longer echoed by add_knowledge — the caller
+	// supplied it on this same call. It is still neutralised, and
+	// TestHandleSearchKnowledge_NeutralizesForgedMarker immediately below
+	// covers it on the path where a reader actually meets it.
+	if !strings.Contains(got, "legit title") {
 		t.Errorf("neutralisation ate legitimate content: %s", got)
 	}
 }

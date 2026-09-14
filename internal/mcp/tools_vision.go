@@ -292,7 +292,7 @@ func (s *Server) handleUpdateVisionItem(ctx context.Context, req mcp.CallToolReq
 	if err != nil {
 		return storeErrorResult("updating vision item", err), nil
 	}
-	return jsonText(wrapUntrustedVisionItem(item))
+	return jsonText(ackVision(wrapUntrustedVisionItem(item)))
 }
 
 func (s *Server) handlePromoteVisionToTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
