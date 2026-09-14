@@ -3,6 +3,8 @@ package validator
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 )
 
 // KindGeneral is the default task kind used when none is supplied; centralised
@@ -50,11 +52,45 @@ func ResolveTaskKind(kind string) (resolved string, warning string) {
 	if IsValidKind(kind) {
 		return kind, ""
 	}
+	return KindGeneral, fmt.Sprintf(
+		"kind %q is not a valid task kind; falling back to general", kindForWarning(kind))
+}
+
+// [GTD a2466b37 / c761ba5c] kindForWarning bounds AND neutralises the caller's
+// kind before it is embedded in warning text. suggested_kind is
+// attacker-influenceable LLM tool input with no length cap upstream, and the
+// warning travels to four different readers — the MCP response, two HTTP
+// responses, and the A1-seam decode error — none of which neutralise it
+// downstream. Doing it at the single producer is what makes all four sites
+// correct at once; the two findings that reported this each proposed fixing
+// their own consumer, which would have left the other three open.
+//
+// Both findings recorded the fix as blocked on an architecture decision,
+// because the neutraliser used to be package-private to internal/mcp and this
+// package cannot import that. #174 moved it to internal/safetext, which
+// imports only "strings" — so the blocker those findings describe no longer
+// exists.
+//
+// clip → neutralise → clip mirrors internal/mcp's clipSafe, and for the same
+// two reasons: the first clip keeps the replacement scan off an unbounded
+// input, and the second is what makes maxKindWarningRunes a hard bound, since
+// a placeholder can be longer than the marker it replaces. The truncation
+// suffix is appended last so it cannot itself be clipped away.
+func kindForWarning(kind string) string {
 	display := kind
+	truncated := false
 	if r := []rune(kind); len(r) > maxKindWarningRunes {
-		display = string(r[:maxKindWarningRunes]) + "…(truncated)"
+		display, truncated = string(r[:maxKindWarningRunes]), true
 	}
-	return KindGeneral, fmt.Sprintf("kind %q is not a valid task kind; falling back to general", display)
+	display = safetext.NeutralizeBoundaryMarkers(display)
+	if r := []rune(display); len(r) > maxKindWarningRunes {
+		display = string(r[:maxKindWarningRunes])
+		truncated = true
+	}
+	if truncated {
+		display += "…(truncated)"
+	}
+	return display
 }
 
 // CheckKindFields verifies that description contains the per-kind required
