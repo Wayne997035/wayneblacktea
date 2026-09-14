@@ -20,6 +20,11 @@ type Chain struct {
 	providers []JSONClient
 	// now is overridable for tests; production uses time.Now.
 	now func() time.Time
+	// health accumulates per-provider liveness across calls. [GTD ab472814]
+	// It is the only state on Chain that outlives a single CompleteJSON, and
+	// it exists because a chain that fails every call and a chain that fails
+	// one call were previously indistinguishable in the log. See health.go.
+	health *healthTracker
 }
 
 // ErrNoProviders is returned by CompleteJSON when the chain has no providers
@@ -64,7 +69,7 @@ func (e *ErrAllProvidersFailed) Error() string {
 //
 // without nil-checking each constructor at the call site.
 func NewChain(providers ...JSONClient) *Chain {
-	c := &Chain{now: time.Now}
+	c := &Chain{now: time.Now, health: newHealthTracker()}
 	for _, p := range providers {
 		if p != nil {
 			c.providers = append(c.providers, p)
@@ -109,6 +114,7 @@ func (c *Chain) CompleteJSON(ctx context.Context, req JSONRequest) (string, erro
 		out, err := p.CompleteJSON(ctx, req)
 		latency := c.now().Sub(start)
 		if err == nil {
+			c.health.recordSuccess(p.Name(), modelOf(p), c.now())
 			slog.Info("llm: provider ok",
 				"task", req.Task,
 				"provider", p.Name(),
@@ -117,6 +123,7 @@ func (c *Chain) CompleteJSON(ctx context.Context, req JSONRequest) (string, erro
 			return out, nil
 		}
 		reason := classifyChainErr(p.Name(), err)
+		c.health.recordFailure(p.Name(), modelOf(p), reason, c.now())
 		attempts = append(attempts, FailedAttempt{Provider: p.Name(), Reason: reason, Err: err})
 		slog.Warn("llm: provider failed, falling through",
 			"task", req.Task,

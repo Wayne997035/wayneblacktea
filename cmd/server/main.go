@@ -142,11 +142,12 @@ func run() error {
 
 	// --- AI collaborators -------------------------------------------------
 	aiw := wireAI(stores)
-	if aiw.chain.Len() == 0 {
-		log.Println("llm: memory-only mode (no provider configured)")
-	} else {
-		log.Printf("llm: provider chain = %v", aiw.chain.Names())
-	}
+	// [GTD ab472814] One shared reporter instead of a copy per entry point.
+	// The two copies this replaced both printed bare provider names, and
+	// neither said anything about a chain of length 1 — which is how
+	// production ran a no-fallback chain pointed at a decommissioned model
+	// for three days without a single line of warning.
+	aiw.chain.LogStartup()
 
 	// --- HTTP handlers ------------------------------------------------
 	handlers := wireHandlers(stores, aiw, apiKey, snapStore, candidateStore, mergedPRsStore, activityStore)
@@ -285,6 +286,11 @@ func run() error {
 	api.GET("/dashboard/automation-feed", handlers.dashboard.GetAutomationFeed, dashboardRL)
 	// ai-cost ledger (1.5-C): per-model token + cost aggregation, last 30d.
 	api.GET("/dashboard/ai-cost", handlers.dashboard.GetAICost, dashboardRL)
+	// [GTD ab472814] LLM chain liveness. Behind the API-key group on purpose:
+	// it names providers and models, and the unauthenticated /health stays a
+	// pure liveness probe so Railway's healthcheck never restarts the
+	// container over a degraded LLM provider it cannot fix by restarting.
+	api.GET("/health/llm", handlers.llmHealth.GetLLMHealth, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", handlers.timeline.GetTimeline, timelineRL)
@@ -595,6 +601,7 @@ type serverHandlers struct {
 	autolog     *handler.AutologHandler
 	postToolUse *handler.PostToolUseHandler
 	reconcile   *handler.ReconcileHandler
+	llmHealth   *handler.LLMHealthHandler
 }
 
 // buildGoalProjectAcceptAdapter returns the factory handler.ProposalHandler
@@ -705,6 +712,12 @@ func wireHandlers(
 	// tolerates nil.
 	reconcileH := handler.NewReconcileHandler(stores.GTD(), candidateStore).
 		WithMergedPRsStore(mergedPRsStore)
+	// [GTD ab472814] Reports the chain wireAI already built — deliberately the
+	// same instance the application calls, not a second one built from env.
+	// A health surface constructed independently would report the config
+	// rather than the thing actually serving traffic, and those two drifting
+	// apart is the class of bug this endpoint exists to catch.
+	llmHealthH := handler.NewLLMHealthHandler(aiw.chain)
 
 	return &serverHandlers{
 		ctx:         ctxH,
@@ -723,6 +736,7 @@ func wireHandlers(
 		autolog:     autologH,
 		postToolUse: postToolUseH,
 		reconcile:   reconcileH,
+		llmHealth:   llmHealthH,
 	}
 }
 

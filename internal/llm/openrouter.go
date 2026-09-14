@@ -97,6 +97,17 @@ func (c *OpenRouterClient) setEndpoint(u string) {
 // Name implements JSONClient.
 func (c *OpenRouterClient) Name() string { return "openrouter" }
 
+// Model implements modelNamer (health.go). OpenRouter is the one provider
+// that can hold a fallback LIST, so report the whole list when it is set —
+// reporting only the primary would hide the very thing that makes this
+// provider resilient. [GTD ab472814]
+func (c *OpenRouterClient) Model() string {
+	if len(c.models) > 0 {
+		return strings.Join(c.models, "|")
+	}
+	return c.model
+}
+
 // CompleteJSON sends a single chat completion to OpenRouter and returns the
 // model's text output (choices[0].message.content). On retryable failure it
 // returns *Retryable so the chain layer falls through.

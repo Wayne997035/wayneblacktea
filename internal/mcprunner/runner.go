@@ -47,11 +47,10 @@ func Run() error {
 	// CLAUDE_API_KEY set, this resolves to a single-Claude chain identical
 	// to the pre-refactor behaviour.
 	llmChain := llm.BuildChainFromEnv()
-	if llmChain.Len() > 0 {
-		log.Printf("llm: provider chain = %v", llmChain.Names())
-	} else {
-		log.Println("llm: memory-only mode (no provider configured)")
-	}
+	// [GTD ab472814] Shared with cmd/server — see Chain.LogStartup. slog's
+	// default handler writes to stderr, which is what keeps this safe on the
+	// stdio transport: stdout carries JSON-RPC frames and must stay clean.
+	llmChain.LogStartup()
 
 	// stdio opens its own dedicated connection (buildStores above), so the
 	// snapshot / completion-candidate / merged-PRs stores below are built
