@@ -274,9 +274,16 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 				"is called with action='accept'. Use this when an agent suggests a goal "+
 				"rather than creating one directly (proposal gate).",
 		),
-		mcp.WithString("title", mcp.Description("Goal title"), mcp.Required()),
-		mcp.WithString("area", mcp.Description("Life area (e.g. career, health, personal)"), mcp.Required()),
-		mcp.WithString("description", mcp.Description("Detailed description")),
+		// [GTD 795efe59] Advisory hints, not the guard — see proposeFieldTooLong.
+		// They are here so a well-behaved client can stop before sending, and so
+		// the declared limit is visible in the schema rather than only in an
+		// error message after the fact.
+		mcp.WithString("title", mcp.Description("Goal title"), mcp.Required(),
+			mcp.MaxLength(proposeShortMaxBytes)),
+		mcp.WithString("area", mcp.Description("Life area (e.g. career, health, personal)"), mcp.Required(),
+			mcp.MaxLength(proposeShortMaxBytes)),
+		mcp.WithString("description", mcp.Description("Detailed description"),
+			mcp.MaxLength(proposeTextMaxBytes)),
 		mcp.WithString("due_date", mcp.Description("Target date in RFC3339 (e.g. 2026-12-31T00:00:00Z)")),
 		mcp.WithString("proposed_by", mcp.Description("Agent identity (e.g. claude-code, discord-bot)")),
 	), s.handleProposeGoal)
@@ -287,10 +294,15 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 			"Propose a new project for user confirmation. Stays pending until confirm_proposal "+
 				"is called with action='accept'.",
 		),
-		mcp.WithString("name", mcp.Description("Short slug identifier"), mcp.Required()),
-		mcp.WithString("title", mcp.Description("Display title"), mcp.Required()),
-		mcp.WithString("area", mcp.Description("Work area (e.g. engineering, personal)"), mcp.Required()),
-		mcp.WithString("description", mcp.Description("Detailed description")),
+		// [GTD 795efe59] Advisory hints, same as propose_goal above.
+		mcp.WithString("name", mcp.Description("Short slug identifier"), mcp.Required(),
+			mcp.MaxLength(proposeShortMaxBytes)),
+		mcp.WithString("title", mcp.Description("Display title"), mcp.Required(),
+			mcp.MaxLength(proposeShortMaxBytes)),
+		mcp.WithString("area", mcp.Description("Work area (e.g. engineering, personal)"), mcp.Required(),
+			mcp.MaxLength(proposeShortMaxBytes)),
+		mcp.WithString("description", mcp.Description("Detailed description"),
+			mcp.MaxLength(proposeTextMaxBytes)),
 		mcp.WithString("goal_id", mcp.Description("Parent goal UUID")),
 		mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
 		mcp.WithString("proposed_by", mcp.Description("Agent identity")),
@@ -319,6 +331,42 @@ func (s *Server) registerProposalTools(ms *server.MCPServer) {
 	), s.handleConfirmProposal)
 }
 
+// [GTD 795efe59] Length guards for the propose_* entry points.
+//
+// Before these, propose_goal / propose_project accepted a description of any
+// size: the handler marshalled it into the payload and the first thing that
+// said no was Store.Create's MaxPayloadBytes backstop, after the whole string
+// had been materialised. The decoders already refuse >65,536 at ACCEPT time
+// (decodeGoalParams / decodeProjectParams below), so an oversized description
+// was stored as a pending proposal that could never be accepted — rejected
+// eventually, by a different error, in a different session.
+//
+// ⚠ The mcp.MaxLength hints added to the schemas are NOT what enforces this.
+// mcp-go's server runtime does not apply them — tools_worksession.go:38 says
+// so and these two tools are registered with raw ms.AddTool rather than the
+// typed s.addTool seam, so nothing between the caller and this function
+// checks. The checks below are the binding ones.
+//
+// Bytes, not runes, because that is what the accept-time decoders count. The
+// schema hint necessarily counts code points instead, so for multibyte text
+// the hint is the looser of the two and the server check is what a caller
+// actually hits. Keeping both at the same number means the hint never rejects
+// something the server would have taken.
+const (
+	proposeTextMaxBytes  = 65536
+	proposeShortMaxBytes = 512
+)
+
+// proposeFieldTooLong returns a caller-facing message naming the field, the
+// limit and what was actually sent, or "" when the value fits. An agent that
+// is told only "too large" has to guess which field and by how much.
+func proposeFieldTooLong(field, value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return ""
+	}
+	return fmt.Sprintf("%s is %d bytes, over the %d-byte limit", field, len(value), maxBytes)
+}
+
 func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	title, area := stringArg(args, "title"), stringArg(args, "area")
@@ -333,10 +381,21 @@ func (s *Server) handleProposeGoal(ctx context.Context, req mcp.CallToolRequest)
 		}
 	}
 
+	description := stringArg(args, "description")
+	for _, msg := range []string{
+		proposeFieldTooLong("title", title, proposeShortMaxBytes),
+		proposeFieldTooLong("area", area, proposeShortMaxBytes),
+		proposeFieldTooLong("description", description, proposeTextMaxBytes),
+	} {
+		if msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
+	}
+
 	payload, err := json.Marshal(goalPayload{
 		Title:       title,
 		Area:        area,
-		Description: stringArg(args, "description"),
+		Description: description,
 		DueDate:     dueDate,
 	})
 	if err != nil {
@@ -373,11 +432,23 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 		}
 	}
 
+	description := stringArg(args, "description")
+	for _, msg := range []string{
+		proposeFieldTooLong("name", name, proposeShortMaxBytes),
+		proposeFieldTooLong("title", title, proposeShortMaxBytes),
+		proposeFieldTooLong("area", area, proposeShortMaxBytes),
+		proposeFieldTooLong("description", description, proposeTextMaxBytes),
+	} {
+		if msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
+	}
+
 	payload, err := json.Marshal(projectPayload{
 		Name:        name,
 		Title:       title,
 		Area:        area,
-		Description: stringArg(args, "description"),
+		Description: description,
 		GoalID:      goalID,
 		Priority:    priority,
 	})

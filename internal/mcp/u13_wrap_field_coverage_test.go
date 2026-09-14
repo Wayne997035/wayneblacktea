@@ -661,7 +661,13 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 //
 // It does NOT prove "every string field a caller can write is neutralised on
 // the way out". wrapUntrustedFieldExemptions (this file's own type, defined
-// above) is a SEPARATE escape hatch with 46 entries as of this writing —
+// above) is a SEPARATE escape hatch whose size is wrapUntrustedAcceptedGapSurface
+// — [GTD c9c2c08d] the constant rather than a number written out here, because
+// this sentence said "46 entries as of this writing" while the asserted total
+// was 44. A prose count drifts silently; the constant cannot, because
+// TestF171_02_AcceptedGapSurfaceIsTracked fails the moment it disagrees. Naming
+// a stale number inside the very comment that exists to stop a false
+// completeness claim is the same defect one level down.
 // TestF171_02_AcceptedGapSurfaceIsTracked counts and prints every one, and
 // TestF160_06_WrapUntrustedFunctionsProtectEveryStringField SKIPS any field
 // that has one, by design. An exemption's reason string asserts something
