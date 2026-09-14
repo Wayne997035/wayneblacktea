@@ -235,7 +235,7 @@ func (s *Store) BatchConfirm(ctx context.Context, ids []uuid.UUID, status Status
 			for _, fid := range ids {
 				msg := ""
 				if fid == id {
-					msg = BatchItemErrMsg(id, err)
+					msg = BatchItemErrMsg(err)
 				} else {
 					msg = "rolled back due to sibling failure"
 				}

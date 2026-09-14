@@ -88,8 +88,14 @@ func TestBatchConfirm_StoreFailureDoesNotShipDriverText(t *testing.T) {
 			t.Errorf("ErrMsg leaks driver text %q: %q", leak, got)
 		}
 	}
-	if !strings.Contains(got, id.String()) {
-		t.Errorf("ErrMsg dropped the proposal id, so the caller cannot tell "+
-			"which batch item failed: %q", got)
+	// Which item failed is answered by Results[i].ID, not by the message — so
+	// assert the id is on the field that owns it and absent from the string
+	// every failed item pays for.
+	if res.Results[0].ID != id.String() {
+		t.Errorf("Results[0].ID = %q, want %q — the caller cannot tell which "+
+			"batch item failed", res.Results[0].ID, id.String())
+	}
+	if strings.Contains(got, id.String()) {
+		t.Errorf("ErrMsg repeats the id that Results[0].ID already carries: %q", got)
 	}
 }

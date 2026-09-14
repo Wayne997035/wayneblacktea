@@ -83,11 +83,16 @@ type BatchItemResult struct {
 // already-resolved rows too, keeping the operation idempotent). Everything
 // else is an internal failure the caller cannot act on and must not see.
 // Callers that need the detail have the server log.
-func BatchItemErrMsg(id uuid.UUID, err error) string {
+//
+// It takes no id on purpose. BatchItemResult.ID already carries it in the same
+// object, so repeating it would spend tokens an agent pays per failed item —
+// and an id parameter is one more thing a caller can pass the wrong value for,
+// in a loop where the right one is not the only one in scope.
+func BatchItemErrMsg(err error) string {
 	if errors.Is(err, ErrNotFound) {
 		return ErrNotFound.Error()
 	}
-	return "resolving proposal " + id.String() + " failed"
+	return "resolve failed"
 }
 
 // BatchConfirmResult is the aggregate result returned by BatchConfirm.

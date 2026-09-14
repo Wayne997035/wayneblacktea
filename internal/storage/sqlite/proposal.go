@@ -254,7 +254,7 @@ func (s *ProposalStore) BatchConfirm(ctx context.Context, ids []uuid.UUID, statu
 			slog.Warn("batch confirm: resolve failed",
 				"proposal_id", id, "status", status, "err", err)
 			results = append(results, proposal.BatchItemResult{
-				ID: id.String(), OK: false, ErrMsg: proposal.BatchItemErrMsg(id, err),
+				ID: id.String(), OK: false, ErrMsg: proposal.BatchItemErrMsg(err),
 			})
 			failed++
 		} else {

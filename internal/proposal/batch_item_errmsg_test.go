@@ -30,7 +30,7 @@ func TestBatchItemErrMsg_ReplacesStoreErrors(t *testing.T) {
 
 	for _, tc := range driverish {
 		t.Run(tc.name, func(t *testing.T) {
-			got := BatchItemErrMsg(id, tc.err)
+			got := BatchItemErrMsg(tc.err)
 
 			// Substring checks on the WHOLE original, and on the individual
 			// tokens that carry the disclosure. Asserting only on the full
@@ -44,9 +44,14 @@ func TestBatchItemErrMsg_ReplacesStoreErrors(t *testing.T) {
 					t.Errorf("message leaks %q: %q", leak, got)
 				}
 			}
-			if !strings.Contains(got, id.String()) {
-				t.Errorf("message dropped the proposal id, leaving the caller "+
-					"unable to tell which item of the batch failed: %q", got)
+			// The id belongs in BatchItemResult.ID, not in this string. An
+			// agent pays for the message once per failed item, so repeating a
+			// 36-character uuid that is already a sibling field is waste — and
+			// an id parameter would be one more thing a caller in a loop can
+			// pass the wrong value for.
+			if strings.Contains(got, id.String()) {
+				t.Errorf("message repeats the proposal id that BatchItemResult.ID "+
+					"already carries: %q", got)
 			}
 		})
 	}
@@ -56,10 +61,8 @@ func TestBatchItemErrMsg_ReplacesStoreErrors(t *testing.T) {
 // an implementation that replaced EVERY error with the generic text would pass
 // the test above while destroying the one answer the caller can act on.
 func TestBatchItemErrMsg_NotFoundPassesThrough(t *testing.T) {
-	id := uuid.New()
-
 	t.Run("bare", func(t *testing.T) {
-		if got := BatchItemErrMsg(id, ErrNotFound); got != ErrNotFound.Error() {
+		if got := BatchItemErrMsg(ErrNotFound); got != ErrNotFound.Error() {
 			t.Errorf("BatchItemErrMsg(ErrNotFound) = %q, want %q", got, ErrNotFound.Error())
 		}
 	})
@@ -68,7 +71,7 @@ func TestBatchItemErrMsg_NotFoundPassesThrough(t *testing.T) {
 	// == comparison would silently stop recognising the sentinel.
 	t.Run("wrapped", func(t *testing.T) {
 		wrapped := fmt.Errorf("sqlite ResolveProposal: %w", ErrNotFound)
-		got := BatchItemErrMsg(id, wrapped)
+		got := BatchItemErrMsg(wrapped)
 		if got != ErrNotFound.Error() {
 			t.Errorf("BatchItemErrMsg(wrapped ErrNotFound) = %q, want %q", got, ErrNotFound.Error())
 		}
