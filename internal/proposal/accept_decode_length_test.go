@@ -284,8 +284,10 @@ func TestDecodeKnowledgePayload_LengthCaps(t *testing.T) {
 		wantSubstr string
 	}{
 		{
-			name:    "within limits → ok",
-			payload: map[string]any{"title": "Ebbinghaus forgetting curve", "content": "Memory decays without review.", "tags": []string{"learning"}},
+			name: "within limits → ok",
+			payload: map[string]any{
+				"title": "Ebbinghaus forgetting curve", "content": "Memory decays without review.", "tags": []string{"learning"},
+			},
 			wantErr: false,
 		},
 		{
