@@ -209,8 +209,42 @@ type Event struct {
 	WorkspaceID      *uuid.UUID `json:"workspace_id,omitempty"`
 }
 
+// ErrorClass classifies why a discipline_events row has ok=false.
+//
+// [F184-05] This ticket implements only a 2-way ok/not-ok split (decision
+// D-05, docs/p1p2-sweep/decisions.md): disciplineMiddleware always sets
+// ErrorClassInternal for any failure (Go-level err != nil, or
+// res.IsError == true). ErrorClassValidation / ErrorClassStore are
+// forward-declared for a follow-up ticket that would need to thread a
+// classification signal from the point of failure — see
+// internal/mcp/tool_errors.go:1-72's package doc for why the middleware
+// alone cannot distinguish them today (three failure paths — 114
+// storeErrorResult call sites, 26 inputErrorResult call sites, 271 raw
+// mcp.NewToolResultError call sites across 26 files — share no post-hoc
+// signal). The empty string ("") means NULL / unset and is never persisted
+// for an ok=true row.
+type ErrorClass string
+
+const (
+	// ErrorClassValidation is reserved for a follow-up ticket's 3-way
+	// split. disciplineMiddleware does not produce this value yet.
+	ErrorClassValidation ErrorClass = "validation"
+	// ErrorClassStore is reserved for a follow-up ticket's 3-way split.
+	// disciplineMiddleware does not produce this value yet.
+	ErrorClassStore ErrorClass = "store"
+	// ErrorClassInternal is the only value disciplineMiddleware currently
+	// produces for ok=false, per decision D-05.
+	ErrorClassInternal ErrorClass = "internal"
+)
+
 // InsertParams holds the fields needed to record a new discipline_events row.
 // session_id is required; the others are optional (NULL when zero-valued).
+//
+// [F184-05] Ok / ErrorClass / ResponseBytes / DurationMs are computed
+// synchronously by disciplineMiddleware for every call, success or failure
+// (see internal/mcp/middleware_discipline.go). ErrorClass follows the same
+// empty-string-means-NULL convention as RepoName; ResponseBytes is nil only
+// when the handler returned res == nil (genuinely unmeasured, not zero).
 type InsertParams struct {
 	SessionID        string
 	RepoName         string
@@ -218,6 +252,10 @@ type InsertParams struct {
 	IsMutating       bool
 	LinkedDecisionID *uuid.UUID
 	WorkspaceID      *uuid.UUID
+	Ok               bool
+	ErrorClass       ErrorClass
+	ResponseBytes    *int
+	DurationMs       int
 }
 
 // Store is the backend-agnostic contract for the discipline events bounded

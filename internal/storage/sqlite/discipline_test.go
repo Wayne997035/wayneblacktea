@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -31,10 +32,46 @@ func openDisciplineDBWS(t *testing.T, workspaceID string) *wbtsqlite.DB {
 	return db
 }
 
+// disciplineOutcomeRow is the raw ok/error_class/response_bytes/duration_ms
+// projection queried directly from discipline_events, bypassing the Store
+// interface (which does not surface these four columns on Event — see
+// spec 1f4c7b7f's Out-of-scope note). Used to prove the columns landed
+// exactly as passed to Insert.
+type disciplineOutcomeRow struct {
+	Ok            bool
+	ErrorClass    sql.NullString
+	ResponseBytes sql.NullInt64
+	DurationMs    sql.NullInt64
+}
+
+// queryDisciplineOutcome reads back the four F184-04 columns for the most
+// recently inserted row matching (sessionID, toolName). Reverting
+// DisciplineStore.Insert's column list back to the pre-ticket 7 columns
+// (internal/storage/sqlite/discipline.go) makes this Scan fail outright
+// (column count / unknown column), which is why every caller below treats a
+// Scan error as fatal rather than tolerating it.
+func queryDisciplineOutcome(t *testing.T, db *wbtsqlite.DB, sessionID, toolName string) disciplineOutcomeRow {
+	t.Helper()
+	row := db.QueryRowContext(context.Background(),
+		`SELECT ok, error_class, response_bytes, duration_ms FROM discipline_events
+		 WHERE session_id = ? AND tool_name = ? ORDER BY id DESC LIMIT 1`,
+		sessionID, toolName)
+	var (
+		okInt int64
+		out   disciplineOutcomeRow
+	)
+	if err := row.Scan(&okInt, &out.ErrorClass, &out.ResponseBytes, &out.DurationMs); err != nil {
+		t.Fatalf("query discipline outcome columns for %s/%s: %v", sessionID, toolName, err)
+	}
+	out.Ok = okInt != 0
+	return out
+}
+
 func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 	ctx := context.Background()
 	wsID := uuid.New()
 	linkedID := uuid.New()
+	someBytes := 256
 
 	tests := []struct {
 		name        string
@@ -51,6 +88,9 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 				IsMutating:       true,
 				LinkedDecisionID: &linkedID,
 				WorkspaceID:      &wsID,
+				Ok:               true,
+				ResponseBytes:    &someBytes,
+				DurationMs:       42,
 			},
 		},
 		{
@@ -59,6 +99,7 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 				SessionID:  "mcp-9999-0",
 				ToolName:   "list_tasks",
 				IsMutating: false,
+				Ok:         true,
 			},
 		},
 		{
@@ -67,6 +108,23 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 				SessionID:  "mcp-1234-5678",
 				ToolName:   "add_task",
 				IsMutating: true,
+				Ok:         true,
+			},
+		},
+		{
+			// [F184-05] failed call: ok=false, error_class="internal".
+			// response_bytes/duration_ms are still measured — mirrors
+			// disciplineMiddleware's tool-level-failure path (res != nil,
+			// res.IsError == true).
+			name: "failed call records ok=false and error_class",
+			params: discipline.InsertParams{
+				SessionID:     "mcp-fail-0001",
+				ToolName:      "create_project",
+				IsMutating:    true,
+				Ok:            false,
+				ErrorClass:    discipline.ErrorClassInternal,
+				ResponseBytes: &someBytes,
+				DurationMs:    7,
 			},
 		},
 	}
@@ -80,33 +138,81 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 				t.Fatalf("Insert: %v", err)
 			}
 
-			// Read back via RecentMutating / store query: only mutating
-			// events appear there, so this also exercises the filter.
-			events, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
-			if err != nil {
-				t.Fatalf("RecentMutating: %v", err)
-			}
-			if tc.params.IsMutating {
-				if len(events) != 1 {
-					t.Fatalf("expected 1 mutating event, got %d", len(events))
-				}
-				ev := events[0]
-				if ev.SessionID != tc.params.SessionID {
-					t.Errorf("session_id: want %q, got %q", tc.params.SessionID, ev.SessionID)
-				}
-				if ev.ToolName != tc.params.ToolName {
-					t.Errorf("tool_name: want %q, got %q", tc.params.ToolName, ev.ToolName)
-				}
-				if !ev.IsMutating {
-					t.Errorf("is_mutating: want true, got false")
-				}
-				if ev.RepoName != tc.params.RepoName {
-					t.Errorf("repo_name: want %q, got %q", tc.params.RepoName, ev.RepoName)
-				}
-			} else if len(events) != 0 {
-				t.Fatalf("expected 0 mutating events for read-only insert, got %d", len(events))
-			}
+			// [F184-04] Verify the four new columns landed exactly as
+			// passed. See queryDisciplineOutcome's doc for the mutation
+			// this guards against.
+			assertDisciplineOutcomeColumns(t, db, tc.params)
+
+			// Read back via RecentMutating / store query: only mutating AND
+			// ok events appear there, so this also exercises both filters.
+			assertRecentMutatingReflectsInsert(t, ctx, store, tc.params)
 		})
+	}
+}
+
+// assertDisciplineOutcomeColumns verifies the four F184-04 columns
+// (ok/error_class/response_bytes/duration_ms) landed exactly as passed to
+// Insert. Extracted out of TestSQLiteDisciplineStore_Insert to keep that
+// test's cyclomatic complexity under golangci-lint's gocyclo threshold —
+// behavior is unchanged, only the code shape.
+func assertDisciplineOutcomeColumns(t *testing.T, db *wbtsqlite.DB, params discipline.InsertParams) {
+	t.Helper()
+	got := queryDisciplineOutcome(t, db, params.SessionID, params.ToolName)
+	if got.Ok != params.Ok {
+		t.Errorf("ok: want %v, got %v", params.Ok, got.Ok)
+	}
+	wantErrClass := string(params.ErrorClass)
+	gotErrClass := ""
+	if got.ErrorClass.Valid {
+		gotErrClass = got.ErrorClass.String
+	}
+	if gotErrClass != wantErrClass {
+		t.Errorf("error_class: want %q, got %q", wantErrClass, gotErrClass)
+	}
+	if params.ResponseBytes == nil {
+		if got.ResponseBytes.Valid {
+			t.Errorf("response_bytes: want NULL, got %d", got.ResponseBytes.Int64)
+		}
+	} else if !got.ResponseBytes.Valid || got.ResponseBytes.Int64 != int64(*params.ResponseBytes) {
+		t.Errorf("response_bytes: want %d, got %+v", *params.ResponseBytes, got.ResponseBytes)
+	}
+	if !got.DurationMs.Valid || got.DurationMs.Int64 != int64(params.DurationMs) {
+		t.Errorf("duration_ms: want %d, got %+v", params.DurationMs, got.DurationMs)
+	}
+}
+
+// assertRecentMutatingReflectsInsert verifies RecentMutating includes the
+// just-inserted row iff it was both mutating and ok, and that its fields
+// match when it does (or that it's excluded entirely otherwise). Extracted
+// out of TestSQLiteDisciplineStore_Insert for the same gocyclo reason as
+// assertDisciplineOutcomeColumns.
+func assertRecentMutatingReflectsInsert(
+	t *testing.T, ctx context.Context, store *wbtsqlite.DisciplineStore, params discipline.InsertParams,
+) {
+	t.Helper()
+	events, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
+	if err != nil {
+		t.Fatalf("RecentMutating: %v", err)
+	}
+	if params.IsMutating && params.Ok {
+		if len(events) != 1 {
+			t.Fatalf("expected 1 mutating+ok event, got %d", len(events))
+		}
+		ev := events[0]
+		if ev.SessionID != params.SessionID {
+			t.Errorf("session_id: want %q, got %q", params.SessionID, ev.SessionID)
+		}
+		if ev.ToolName != params.ToolName {
+			t.Errorf("tool_name: want %q, got %q", params.ToolName, ev.ToolName)
+		}
+		if !ev.IsMutating {
+			t.Errorf("is_mutating: want true, got false")
+		}
+		if ev.RepoName != params.RepoName {
+			t.Errorf("repo_name: want %q, got %q", params.RepoName, ev.RepoName)
+		}
+	} else if len(events) != 0 {
+		t.Fatalf("expected 0 mutating+ok events (IsMutating=%v Ok=%v), got %d", params.IsMutating, params.Ok, len(events))
 	}
 }
 
@@ -115,11 +221,19 @@ func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
 	db := openDisciplineDB(t)
 	store := wbtsqlite.NewDisciplineStore(db)
 
-	// Seed mix of mutating/read-only events.
+	// Seed mix of mutating/read-only/failed events.
 	for _, p := range []discipline.InsertParams{
-		{SessionID: "s1", ToolName: "add_task", IsMutating: true},
-		{SessionID: "s1", ToolName: "list_tasks", IsMutating: false},
-		{SessionID: "s2", ToolName: "complete_task", IsMutating: true},
+		{SessionID: "s1", ToolName: "add_task", IsMutating: true, Ok: true},
+		{SessionID: "s1", ToolName: "list_tasks", IsMutating: false, Ok: true},
+		{SessionID: "s2", ToolName: "complete_task", IsMutating: true, Ok: true},
+		// [F184-05] a failed mutating call must NOT count as drift — see
+		// decisions.md D-05, Acceptance criteria row 5. Verified: dropping
+		// `AND ok = 1` from RecentMutating's WHERE clause
+		// (internal/storage/sqlite/discipline.go) makes both subtests
+		// below fail (3 events instead of 2, and s3 leaking through) — see
+		// the "突變證明" section of the implement record for the actual
+		// FAIL output from running that mutation.
+		{SessionID: "s3", ToolName: "delete_task", IsMutating: true, Ok: false, ErrorClass: discipline.ErrorClassInternal},
 	} {
 		if err := store.Insert(ctx, p); err != nil {
 			t.Fatalf("seed insert: %v", err)
@@ -137,6 +251,18 @@ func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
 		for _, ev := range got {
 			if !ev.IsMutating {
 				t.Errorf("non-mutating event leaked: %+v", ev)
+			}
+		}
+	})
+
+	t.Run("excludes failed mutating events", func(t *testing.T) {
+		got, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
+		if err != nil {
+			t.Fatalf("RecentMutating: %v", err)
+		}
+		for _, ev := range got {
+			if ev.SessionID == "s3" {
+				t.Errorf("failed mutating event leaked into RecentMutating: %+v", ev)
 			}
 		}
 	})
@@ -169,10 +295,17 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 	store := wbtsqlite.NewDisciplineStore(db)
 
 	for _, p := range []discipline.InsertParams{
-		{SessionID: "s1", ToolName: "log_decision", IsMutating: true},
-		{SessionID: "s1", ToolName: "confirm_plan", IsMutating: true},
-		{SessionID: "s1", ToolName: "add_task", IsMutating: true}, // not a decision tool
-		{SessionID: "s2", ToolName: "log_decision", IsMutating: true},
+		{SessionID: "s1", ToolName: "log_decision", IsMutating: true, Ok: true},
+		{SessionID: "s1", ToolName: "confirm_plan", IsMutating: true, Ok: true},
+		{SessionID: "s1", ToolName: "add_task", IsMutating: true, Ok: true}, // not a decision tool
+		{SessionID: "s2", ToolName: "log_decision", IsMutating: true, Ok: true},
+		// [F184-05] a failed log_decision must not suppress a real drift
+		// signal — see decisions.md D-05, Acceptance criteria row 6.
+		// Verified: dropping `AND ok = 1` from RecentDecisionTimes' WHERE
+		// clause makes both subtests below fail (3 events instead of 2 for
+		// s1) — see the implement record's "突變證明" section for the
+		// actual FAIL output from running that mutation.
+		{SessionID: "s1", ToolName: "log_decision", IsMutating: true, Ok: false, ErrorClass: discipline.ErrorClassInternal},
 	} {
 		if err := store.Insert(ctx, p); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -184,10 +317,21 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RecentDecisionTimes: %v", err)
 		}
-		// Only log_decision + confirm_plan rows under s1: 2 expected
-		// (add_task is mutating but NOT a decision tool, so excluded).
+		// Only log_decision + confirm_plan rows under s1 with ok=true: 2
+		// expected (add_task is mutating but NOT a decision tool; the
+		// failed log_decision under s1 is excluded by the ok filter).
 		if len(got) != 2 {
 			t.Errorf("expected 2 decisions, got %d", len(got))
+		}
+	})
+
+	t.Run("excludes failed decision calls", func(t *testing.T) {
+		got, err := store.RecentDecisionTimes(ctx, "s1", time.Now().Add(-time.Minute))
+		if err != nil {
+			t.Fatalf("RecentDecisionTimes: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("failed log_decision leaked into RecentDecisionTimes: expected 2, got %d", len(got))
 		}
 	})
 
@@ -232,6 +376,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *test
 		SessionID:  "sA",
 		ToolName:   "add_task",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert A: %v", err)
 	}
@@ -240,6 +385,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *test
 		SessionID:   "sB",
 		ToolName:    "complete_task",
 		IsMutating:  true,
+		Ok:          true,
 		WorkspaceID: &wsB,
 	}); err != nil {
 		t.Fatalf("insert B: %v", err)
@@ -272,6 +418,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL(t *testing.T) 
 		SessionID:  "sA",
 		ToolName:   "add_task",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert A: %v", err)
 	}
@@ -313,6 +460,7 @@ func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) 
 		SessionID:   "sA",
 		ToolName:    "add_task",
 		IsMutating:  true,
+		Ok:          true,
 		WorkspaceID: &wsA,
 	}); err != nil {
 		t.Fatalf("insert A: %v", err)
@@ -321,6 +469,7 @@ func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) 
 		SessionID:   "sB",
 		ToolName:    "complete_task",
 		IsMutating:  true,
+		Ok:          true,
 		WorkspaceID: &wsB,
 	}); err != nil {
 		t.Fatalf("insert B: %v", err)
@@ -329,6 +478,7 @@ func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) 
 		SessionID:  "sNULL",
 		ToolName:   "log_decision",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert NULL: %v", err)
 	}
@@ -362,6 +512,7 @@ func TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes(t *testing.T) {
 		SessionID:  "shared",
 		ToolName:   "log_decision",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert A decision: %v", err)
 	}
@@ -369,6 +520,7 @@ func TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes(t *testing.T) {
 		SessionID:   "shared",
 		ToolName:    "confirm_plan",
 		IsMutating:  true,
+		Ok:          true,
 		WorkspaceID: &wsB,
 	}); err != nil {
 		t.Fatalf("insert B decision: %v", err)

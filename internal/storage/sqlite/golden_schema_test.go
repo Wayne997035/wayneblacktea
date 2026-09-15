@@ -398,6 +398,21 @@ var expectedNewEntries = map[string]bool{
 // asserts the columns exist via PRAGMA table_info against the resulting DB,
 // so it cannot be fooled by a wrong hand-edit here.
 
+// migrations/sqlite/000078_discipline_events_outcome.up.sql [F184-04] adds
+// four new columns — ok, error_class, response_bytes, duration_ms — to the
+// discipline_events table. Same shape as 000076's decisions.actor_session_id/
+// confirmed_by_human handling above: table|discipline_events already exists
+// in the golden baseline (from migration 000035), so the four new columns
+// are hand-added directly to testdata/schema_golden.sql's existing
+// table|discipline_events line rather than routed through expectedNewEntries
+// (which is reserved for net-new schema objects, not new columns on an
+// existing one). Same KNOWN LIMITATION as the 000074/000076 precedents: this
+// hand-edit is not itself derived from a replay or generator. The
+// independent check against that is TestSQLiteDisciplineStore_Insert
+// (discipline_test.go) — it inserts a real row through DisciplineStore.Insert
+// and reads all four columns back via a direct SQL query
+// (queryDisciplineOutcome), so it cannot be fooled by a wrong hand-edit here.
+
 // acceptedDifferences lists schema objects present in BOTH golden and the
 // migration-runner-built schema, but whose content is known to differ in a
 // way that has been explicitly reviewed and accepted as functionally inert —

@@ -20,7 +20,8 @@ import (
 // Update this constant whenever a new migrations/sqlite/NNNNNN_*.up.sql
 // file is added.
 // [F170-21] 76 -> 77 for migrations/sqlite/000077_normalize_due_date_layout.
-const latestSQLiteSchemaVersion = 77
+// [F184-04] 77 -> 78 for migrations/sqlite/000078_discipline_events_outcome.
+const latestSQLiteSchemaVersion = 78
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

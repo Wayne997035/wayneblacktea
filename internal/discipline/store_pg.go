@@ -3,6 +3,7 @@ package discipline
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,10 @@ func toPgUUID(id *uuid.UUID) pgtype.UUID {
 // Insert records a single discipline event. WorkspaceID falls back to the
 // store's configured workspace when the param value is nil — matching the
 // scoping pattern other domain stores use.
+//
+// [F184-05] ok / error_class / response_bytes / duration_ms are written on
+// every call — disciplineMiddleware computes them synchronously for both
+// successful and failed tool calls.
 func (s *PgStore) Insert(ctx context.Context, p InsertParams) error {
 	wsID := toPgUUID(p.WorkspaceID)
 	if !wsID.Valid {
@@ -47,21 +52,52 @@ func (s *PgStore) Insert(ctx context.Context, p InsertParams) error {
 	}
 	linked := toPgUUID(p.LinkedDecisionID)
 
+	errClassArg := pgtype.Text{}
+	if p.ErrorClass != "" {
+		errClassArg = pgtype.Text{String: string(p.ErrorClass), Valid: true}
+	}
+	responseBytesArg := pgtype.Int4{}
+	if p.ResponseBytes != nil {
+		responseBytesArg = pgtype.Int4{Int32: clampToInt32(*p.ResponseBytes), Valid: true}
+	}
+
 	const q = `
 		INSERT INTO discipline_events
-			(session_id, repo_name, tool_name, is_mutating, linked_decision_id, workspace_id)
-		VALUES ($1, $2, $3, $4, $5, $6)`
-	if _, err := s.pool.Exec(ctx, q,
+			(session_id, repo_name, tool_name, is_mutating, linked_decision_id, workspace_id,
+			 ok, error_class, response_bytes, duration_ms)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+	if _, err := s.pool.Exec(
+		ctx, q,
 		p.SessionID,
 		repoArg,
 		p.ToolName,
 		p.IsMutating,
 		linked,
 		wsID,
+		p.Ok,
+		errClassArg,
+		responseBytesArg,
+		clampToInt32(p.DurationMs),
 	); err != nil {
 		return fmt.Errorf("inserting discipline event: %w", err)
 	}
 	return nil
+}
+
+// clampToInt32 avoids a silent overflow wraparound when narrowing a Go int
+// into discipline_events' response_bytes / duration_ms columns (both PG
+// INTEGER, 4 bytes — see migrations/000078_discipline_events_outcome.up.sql).
+// A single MCP tool call's response size or wall-clock duration realistically
+// never approaches 2^31, but this clamps explicitly rather than trusting
+// that assumption blindly (gosec G115).
+func clampToInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < 0 {
+		return 0
+	}
+	return int32(n)
 }
 
 const eventSelectCols = `id, session_id, repo_name, tool_name, is_mutating, observed_at, linked_decision_id, workspace_id`
@@ -79,8 +115,13 @@ func (s *PgStore) RecentMutating(ctx context.Context, since time.Time, limit int
 	if limit <= 0 {
 		limit = 100
 	}
+	// [F184-05] AND ok = TRUE — a failed mutating call did not actually
+	// mutate anything; counting it here would inflate system_health's
+	// DriftCount24h with calls that never happened. See decisions.md D-05
+	// and migrations/000078_discipline_events_outcome.up.sql.
 	const q = `SELECT ` + eventSelectCols + ` FROM discipline_events
 		WHERE is_mutating = TRUE
+		  AND ok = TRUE
 		  AND observed_at >= $1
 		  AND (workspace_id = $2 OR ($2::uuid IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
@@ -114,9 +155,13 @@ func (s *PgStore) RecentMutating(ctx context.Context, since time.Time, limit int
 // workspace_id; unscoped store sees only NULL workspace_id rows. The two
 // are disjoint to prevent cross-workspace leak.
 func (s *PgStore) RecentDecisionTimes(ctx context.Context, sessionID string, since time.Time) ([]time.Time, error) {
+	// [F184-05] AND ok = TRUE — a failed log_decision/confirm_plan call must
+	// not suppress a real drift signal: the caller's actual, successful
+	// decision-log still hasn't happened. See decisions.md D-05.
 	const q = `SELECT observed_at FROM discipline_events
 		WHERE session_id = $1
 		  AND tool_name IN ('log_decision', 'confirm_plan')
+		  AND ok = TRUE
 		  AND observed_at >= $2
 		  AND (workspace_id = $3 OR ($3::uuid IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC

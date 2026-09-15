@@ -4,6 +4,7 @@ package discipline_test
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"log"
 	"os"
@@ -37,7 +38,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -105,11 +107,42 @@ func openTestPgPool(t *testing.T) *pgxpool.Pool {
 	return testPgPool
 }
 
+// disciplineOutcomeRow is the raw ok/error_class/response_bytes/duration_ms
+// projection queried directly from discipline_events, bypassing the Store
+// interface (which does not surface these four columns on Event — see
+// spec 1f4c7b7f's Out-of-scope note). Used to prove the columns landed
+// exactly as passed to Insert.
+type disciplineOutcomeRow struct {
+	Ok            bool
+	ErrorClass    sql.NullString
+	ResponseBytes sql.NullInt64
+	DurationMs    sql.NullInt64
+}
+
+// queryDisciplineOutcome reads back the four F184-04 columns for the most
+// recently inserted row matching (sessionID, toolName). Reverting
+// PgStore.Insert's column list back to the pre-ticket 6 columns
+// (internal/discipline/store_pg.go) makes this Scan fail outright (column
+// count / unknown column).
+func queryDisciplineOutcome(t *testing.T, pool *pgxpool.Pool, sessionID, toolName string) disciplineOutcomeRow {
+	t.Helper()
+	row := pool.QueryRow(context.Background(),
+		`SELECT ok, error_class, response_bytes, duration_ms FROM discipline_events
+		 WHERE session_id = $1 AND tool_name = $2 ORDER BY id DESC LIMIT 1`,
+		sessionID, toolName)
+	var out disciplineOutcomeRow
+	if err := row.Scan(&out.Ok, &out.ErrorClass, &out.ResponseBytes, &out.DurationMs); err != nil {
+		t.Fatalf("query discipline outcome columns for %s/%s: %v", sessionID, toolName, err)
+	}
+	return out
+}
+
 func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
 	store := discipline.NewPgStore(pool, &wsID)
 	ctx := context.Background()
+	someBytes := 512
 
 	tests := []struct {
 		name   string
@@ -118,10 +151,13 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 		{
 			name: "mutating with all fields",
 			params: discipline.InsertParams{
-				SessionID:  "mcp-1-1000",
-				RepoName:   "wayneblacktea",
-				ToolName:   "log_decision",
-				IsMutating: true,
+				SessionID:     "mcp-1-1000",
+				RepoName:      "wayneblacktea",
+				ToolName:      "log_decision",
+				IsMutating:    true,
+				Ok:            true,
+				ResponseBytes: &someBytes,
+				DurationMs:    17,
 			},
 		},
 		{
@@ -130,6 +166,7 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 				SessionID:  "mcp-1-1001",
 				ToolName:   "list_tasks",
 				IsMutating: false,
+				Ok:         true,
 			},
 		},
 		{
@@ -138,7 +175,21 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 				SessionID:        "mcp-1-1002",
 				ToolName:         "complete_task",
 				IsMutating:       true,
+				Ok:               true,
 				LinkedDecisionID: ptrUUID(uuid.New()),
+			},
+		},
+		{
+			// [F184-05] failed call: ok=false, error_class="internal".
+			name: "failed mutating call records ok=false",
+			params: discipline.InsertParams{
+				SessionID:     "mcp-1-1003",
+				ToolName:      "create_project",
+				IsMutating:    true,
+				Ok:            false,
+				ErrorClass:    discipline.ErrorClassInternal,
+				ResponseBytes: &someBytes,
+				DurationMs:    9,
 			},
 		},
 	}
@@ -148,11 +199,38 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 			if err := store.Insert(ctx, tc.params); err != nil {
 				t.Fatalf("Insert: %v", err)
 			}
+
+			// [F184-04] Verify the four new columns landed exactly as
+			// passed. See queryDisciplineOutcome's doc for the mutation
+			// this guards against.
+			got := queryDisciplineOutcome(t, pool, tc.params.SessionID, tc.params.ToolName)
+			if got.Ok != tc.params.Ok {
+				t.Errorf("ok: want %v, got %v", tc.params.Ok, got.Ok)
+			}
+			wantErrClass := string(tc.params.ErrorClass)
+			gotErrClass := ""
+			if got.ErrorClass.Valid {
+				gotErrClass = got.ErrorClass.String
+			}
+			if gotErrClass != wantErrClass {
+				t.Errorf("error_class: want %q, got %q", wantErrClass, gotErrClass)
+			}
+			if tc.params.ResponseBytes == nil {
+				if got.ResponseBytes.Valid {
+					t.Errorf("response_bytes: want NULL, got %d", got.ResponseBytes.Int64)
+				}
+			} else if !got.ResponseBytes.Valid || got.ResponseBytes.Int64 != int64(*tc.params.ResponseBytes) {
+				t.Errorf("response_bytes: want %d, got %+v", *tc.params.ResponseBytes, got.ResponseBytes)
+			}
+			if !got.DurationMs.Valid || got.DurationMs.Int64 != int64(tc.params.DurationMs) {
+				t.Errorf("duration_ms: want %d, got %+v", tc.params.DurationMs, got.DurationMs)
+			}
 		})
 	}
 
-	// All three rows persisted; mutating filter pulls only the two
-	// mutating ones, scoped to the test workspace.
+	// Four rows persisted; mutating+ok filter pulls only the two
+	// successful mutating ones, scoped to the test workspace (the failed
+	// mutating call is excluded — see decisions.md D-05).
 	got, err := store.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
 	if err != nil {
 		t.Fatalf("RecentMutating: %v", err)
@@ -167,6 +245,9 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 		if ev.WorkspaceID == nil || *ev.WorkspaceID != wsID {
 			t.Errorf("workspace_id mismatch: got %v want %v", ev.WorkspaceID, wsID)
 		}
+		if ev.SessionID == "mcp-1-1003" {
+			t.Errorf("failed mutating call leaked into RecentMutating: %+v", ev)
+		}
 	}
 }
 
@@ -177,10 +258,17 @@ func TestPgStore_RecentDecisionTimes(t *testing.T) {
 	ctx := context.Background()
 
 	for _, p := range []discipline.InsertParams{
-		{SessionID: "alpha", ToolName: "log_decision", IsMutating: true},
-		{SessionID: "alpha", ToolName: "confirm_plan", IsMutating: true},
-		{SessionID: "alpha", ToolName: "add_task", IsMutating: true},
-		{SessionID: "beta", ToolName: "log_decision", IsMutating: true},
+		{SessionID: "alpha", ToolName: "log_decision", IsMutating: true, Ok: true},
+		{SessionID: "alpha", ToolName: "confirm_plan", IsMutating: true, Ok: true},
+		{SessionID: "alpha", ToolName: "add_task", IsMutating: true, Ok: true},
+		{SessionID: "beta", ToolName: "log_decision", IsMutating: true, Ok: true},
+		// [F184-05] a failed log_decision must not suppress a real drift
+		// signal — see decisions.md D-05, Acceptance criteria row 6.
+		// Verified: dropping `AND ok = TRUE` from RecentDecisionTimes'
+		// WHERE clause (internal/discipline/store_pg.go) makes both
+		// subtests below fail (3 events instead of 2) — see the implement
+		// record's "突變證明" section for the actual FAIL output.
+		{SessionID: "alpha", ToolName: "log_decision", IsMutating: true, Ok: false, ErrorClass: discipline.ErrorClassInternal},
 	} {
 		if err := store.Insert(ctx, p); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -194,6 +282,16 @@ func TestPgStore_RecentDecisionTimes(t *testing.T) {
 		}
 		if len(got) != 2 {
 			t.Errorf("alpha decisions: want 2, got %d", len(got))
+		}
+	})
+
+	t.Run("alpha excludes failed decision calls", func(t *testing.T) {
+		got, err := store.RecentDecisionTimes(ctx, "alpha", time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatalf("RecentDecisionTimes: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("failed log_decision leaked into RecentDecisionTimes: want 2, got %d", len(got))
 		}
 	})
 
@@ -231,6 +329,7 @@ func TestPgStore_WorkspaceScoping(t *testing.T) {
 		SessionID:  "sA",
 		ToolName:   "add_task",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert A: %v", err)
 	}
@@ -238,6 +337,7 @@ func TestPgStore_WorkspaceScoping(t *testing.T) {
 		SessionID:  "sB",
 		ToolName:   "add_task",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert B: %v", err)
 	}
@@ -286,6 +386,7 @@ func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
 		SessionID:  "ws-scope-A",
 		ToolName:   "add_task",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert A: %v", err)
 	}
@@ -293,6 +394,7 @@ func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
 		SessionID:  "ws-scope-B",
 		ToolName:   "complete_task",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert B: %v", err)
 	}
@@ -300,6 +402,7 @@ func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
 		SessionID:  "ws-scope-NULL",
 		ToolName:   "log_decision",
 		IsMutating: true,
+		Ok:         true,
 	}); err != nil {
 		t.Fatalf("insert NULL: %v", err)
 	}
@@ -358,6 +461,7 @@ func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
 			SessionID:  "shared-decisions",
 			ToolName:   "log_decision",
 			IsMutating: true,
+			Ok:         true,
 		}); err != nil {
 			t.Fatalf("insert decision A: %v", err)
 		}
@@ -365,6 +469,7 @@ func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
 			SessionID:  "shared-decisions",
 			ToolName:   "confirm_plan",
 			IsMutating: true,
+			Ok:         true,
 		}); err != nil {
 			t.Fatalf("insert decision B: %v", err)
 		}

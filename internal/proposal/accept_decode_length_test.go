@@ -268,6 +268,88 @@ func TestDecodeDecisionParams_LengthCaps(t *testing.T) {
 	}
 }
 
+// TestDecodeKnowledgePayload_LengthCaps guards against unbounded
+// Title/Content/Tags bytes reaching knowledge.AddItemParams via the A1-seam
+// TypeKnowledge accept path — proposal_handler.go's acceptGoalOrProject
+// calls validateGoalProjectPayload → DecodeKnowledgePayload before opening a
+// tx (mirrors TestDecodeGoalParams_LengthCaps's threat model,
+// backend-security-design.md §2.1: a prompt-injected agent controls
+// pending_proposals.payload via propose_knowledge, reachable from POST
+// /api/proposals/:id/confirm). [F184-01][F184-02][F184-03]
+func TestDecodeKnowledgePayload_LengthCaps(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    map[string]any
+		wantErr    bool
+		wantSubstr string
+	}{
+		{
+			name: "within limits → ok",
+			payload: map[string]any{
+				"title": "Ebbinghaus forgetting curve", "content": "Memory decays without review.", "tags": []string{"learning"},
+			},
+			wantErr: false,
+		},
+		{
+			name:       "empty title → rejected",
+			payload:    map[string]any{"title": "", "content": "some content"},
+			wantErr:    true,
+			wantSubstr: "knowledge payload missing title",
+		},
+		{
+			name:       "title exceeds 512 bytes → rejected",
+			payload:    map[string]any{"title": strings.Repeat("a", 513)},
+			wantErr:    true,
+			wantSubstr: "knowledge title exceeds 512 bytes",
+		},
+		{
+			name:    "title exactly 512 bytes → ok (boundary)",
+			payload: map[string]any{"title": strings.Repeat("a", 512)},
+			wantErr: false,
+		},
+		{
+			name:       "content exceeds 64 KB → rejected",
+			payload:    map[string]any{"title": "ok", "content": strings.Repeat("b", 65537)},
+			wantErr:    true,
+			wantSubstr: "knowledge content exceeds 64 KB",
+		},
+		{
+			name:       "too many tags → rejected",
+			payload:    map[string]any{"title": "ok", "tags": makeStrings(51, "x")},
+			wantErr:    true,
+			wantSubstr: "too many tags (max 50)",
+		},
+		{
+			name:       "single tag exceeds 100 bytes → rejected",
+			payload:    map[string]any{"title": "ok", "tags": []string{strings.Repeat("d", 101)}},
+			wantErr:    true,
+			wantSubstr: "individual tag exceeds 100 bytes",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatalf("marshal fixture: %v", err)
+			}
+			_, err = DecodeKnowledgePayload(raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("DecodeKnowledgePayload: want error, got nil")
+				}
+				if !strings.Contains(err.Error(), tc.wantSubstr) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tc.wantSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DecodeKnowledgePayload: unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // makeStrings returns n copies of val — used to build an oversized
 // Alternatives slice fixture without a literal 51-element list.
 func makeStrings(n int, val string) []string {

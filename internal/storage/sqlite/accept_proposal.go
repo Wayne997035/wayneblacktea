@@ -90,10 +90,12 @@ func (a *sqliteAcceptAdapter) BeginTx(ctx context.Context) error {
 // Materialize ports the 4 already-tx-correct SQLite cases verbatim (same
 // decode + store calls) from internal/mcp/tools_proposal.go's
 // materializeFromPayloadSQLiteTx: TypeDecision, TypeGoal, TypeProject,
-// TypeConcept. TypeKnowledge, TypeTask and TypePlaybook are not yet tx-wired
-// on SQLite (the mcp-package original defers them to a post-commit,
-// non-atomic step) — wiring them is the A1-seam task's job, not this one's.
-func (a *sqliteAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, _ any) (any, error) {
+// TypeConcept. TypeKnowledge is wired via materializeKnowledge below
+// [F184-02], consuming the knowledge.PreparedItem PrepareOutOfBand computed
+// before BeginTx. TypeTask and TypePlaybook are not yet tx-wired on SQLite
+// (the mcp-package original defers them to a post-commit, non-atomic step)
+// — wiring them is a future A1-seam task's job, not this one's.
+func (a *sqliteAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, prepared any) (any, error) {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeDecision:
 		return a.materializeDecision(ctx, prop)
@@ -103,7 +105,9 @@ func (a *sqliteAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingP
 		return a.materializeProject(ctx, prop)
 	case proposal.TypeConcept:
 		return a.materializeConcept(ctx, prop)
-	case proposal.TypeKnowledge, proposal.TypeTask, proposal.TypePlaybook:
+	case proposal.TypeKnowledge:
+		return a.materializeKnowledge(ctx, prepared)
+	case proposal.TypeTask, proposal.TypePlaybook:
 		return nil, fmt.Errorf("A1-seam TODO: %s materialize not yet tx-wired on sqlite", prop.Type)
 	default:
 		return nil, fmt.Errorf("unknown proposal type %q", prop.Type)
@@ -168,6 +172,28 @@ func (a *sqliteAcceptAdapter) materializeConcept(ctx context.Context, prop *db.P
 		return nil, fmt.Errorf("creating concept: %w", err)
 	}
 	return map[string]string{"id": conceptID.String(), "title": cp.Title}, nil
+}
+
+// materializeKnowledge inserts the TypeKnowledge row inside the open tx via
+// KnowledgeStore.WriteItemTx, consuming the knowledge.PreparedItem
+// PrepareOutOfBand computed strictly before BeginTx (ADR 0003 G1
+// "先算後寫"). [F184-02] Replaces the former non-tx h.knowledge.AddItem call
+// the HTTP handler used to make outside any transaction. prep.Vec is always
+// nil on SQLite (no embed client wired — see knowledge.PreparedItem.Vec's
+// doc comment); WriteItemTx already honours that.
+func (a *sqliteAcceptAdapter) materializeKnowledge(ctx context.Context, prepared any) (any, error) {
+	prep, ok := prepared.(knowledge.PreparedItem)
+	if !ok {
+		return nil, fmt.Errorf("materializeKnowledge: prepared value has unexpected type %T", prepared)
+	}
+	if a.deps.Knowledge == nil {
+		return nil, fmt.Errorf("knowledge proposal materialisation requires SQLite knowledge store")
+	}
+	item, err := a.deps.Knowledge.WriteItemTx(ctx, a.tx, prep)
+	if err != nil {
+		return nil, fmt.Errorf("creating knowledge item: %w", err)
+	}
+	return item, nil
 }
 
 func (a *sqliteAcceptAdapter) ResolveAccepted(ctx context.Context) (*db.PendingProposal, error) {

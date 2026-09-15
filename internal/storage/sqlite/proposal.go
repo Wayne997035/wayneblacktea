@@ -300,8 +300,12 @@ func (s *ProposalStore) AutoProposeConceptFromKnowledge(
 // (2) delete resolved (accepted/rejected) rows older than resolvedRetention
 // and pending type='decision' rows older than decisionRetention. Other
 // pending types (goal/project/concept/knowledge/playbook) are NEVER touched
-// by either step — same "unresolved user intent" boundary the Postgres job
-// documents.
+// by either step of THIS method — same "unresolved user intent" boundary
+// the Postgres job's mark+delete steps document. As of F184-06/F184-07,
+// those 5 types are no longer permanently exempt from every retention
+// mechanism in the system: see the separate MarkStaleGoalFamilyProposals
+// method below, which the scheduler calls independently (dry-run gated) —
+// this method's own behaviour is unchanged by that addition.
 //
 // SQLite has no `NOW() - INTERVAL` syntax (GTD decision G4, 6ea0b014 — same
 // rationale as every other SQLite cognitive-job adapter in this package), so
@@ -356,4 +360,56 @@ func (s *ProposalStore) MarkAndDeleteStaleProposals(
 	}
 	deletedRows = n
 	return markedRows, deletedRows, markErr
+}
+
+// MarkStaleGoalFamilyProposals is the SQLite-native counterpart to
+// scheduler.go's markStaleGoalFamilyProposalsPG (F184-06: the 90-day
+// goal/project/concept/knowledge/playbook TTL; F184-07: its dry-run gate).
+// Satisfies scheduler.PendingProposalsGoalFamilyTTLStore — see that
+// interface's doc comment for why this is a separate method/interface
+// rather than a new parameter on MarkAndDeleteStaleProposals.
+//
+// When dryRun is true, this performs ZERO writes: it only counts rows
+// matching `status='pending' AND type IN (goal,project,concept,knowledge,
+// playbook) AND created_at < now-retention` and returns that count. When
+// dryRun is false, it additionally executes the UPDATE marking those rows
+// status='rejected', resolved_at=now, reason=markReason — mirroring
+// MarkAndDeleteStaleProposals's existing TypeTask mark step's two-hop
+// pattern (marked rows age out via the resolved retention on a later run,
+// not deleted here). dryRun is a caller-supplied parameter (unlike the PG
+// side's package-level pendingProposalsGoalFamilyTTLDryRun var) because
+// this package can't see that unexported scheduler-package var; the
+// scheduler is the single source of truth for the default and passes it in
+// explicitly on every call — see markStaleGoalFamilyProposalsSQLite.
+func (s *ProposalStore) MarkStaleGoalFamilyProposals(
+	ctx context.Context, retention time.Duration, markReason string, dryRun bool,
+) (rows int64, err error) {
+	cutoff := time.Now().UTC().Add(-retention).Format(sqliteMillisLayout)
+
+	if dryRun {
+		const countQ = `SELECT COUNT(*) FROM pending_proposals
+			WHERE status = 'pending'
+			  AND type IN ('goal', 'project', 'concept', 'knowledge', 'playbook')
+			  AND created_at < ?1`
+		if scanErr := s.db.conn.QueryRowContext(ctx, countQ, cutoff).Scan(&rows); scanErr != nil {
+			return 0, errWrap("MarkStaleGoalFamilyProposals dry-run count", scanErr)
+		}
+		return rows, nil
+	}
+
+	markedAt := sqliteNowMillis()
+	const markQ = `UPDATE pending_proposals
+		SET status = 'rejected', resolved_at = ?1, reason = ?2
+		WHERE status = 'pending'
+		  AND type IN ('goal', 'project', 'concept', 'knowledge', 'playbook')
+		  AND created_at < ?3`
+	res, execErr := s.db.conn.ExecContext(ctx, markQ, markedAt, markReason, cutoff)
+	if execErr != nil {
+		return 0, errWrap("MarkStaleGoalFamilyProposals mark", execErr)
+	}
+	n, raErr := res.RowsAffected()
+	if raErr != nil {
+		return 0, errWrap("MarkStaleGoalFamilyProposals mark rows affected", raErr)
+	}
+	return n, nil
 }
