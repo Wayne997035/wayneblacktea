@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -55,10 +56,17 @@ func sanitizeAuditText(s string, maxRunes int) string {
 	return cleaned
 }
 
-// disciplineMiddleware wraps every tool handler and, after a successful tool
-// dispatch, records a discipline_events row. The write happens in a
-// background goroutine using context.Background() so a request-context
-// cancellation cannot drop the audit row mid-flight.
+// disciplineMiddleware wraps every tool handler and records a
+// discipline_events row for every call — success or failure. The write
+// happens in a background goroutine using context.Background() so a
+// request-context cancellation cannot drop the audit row mid-flight.
+//
+// [F184-05] Prior to this ticket, a failed call (err != nil, or
+// res.IsError == true) was never recorded at all — genuinely absent from
+// the table, not "recorded with a failure flag". That early return is
+// removed: every call now yields one row carrying ok/error_class/
+// response_bytes/duration_ms, so discipline_events can answer "which tool,
+// how often does it fail, how large is each response" (spec 1f4c7b7f).
 //
 // Errors writing the event MUST NOT fail the tool call — they are logged via
 // slog.Warn and we move on (per backend-security-design.md §5.1: hook
@@ -66,16 +74,56 @@ func sanitizeAuditText(s string, maxRunes int) string {
 func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+			start := time.Now()
 			res, err := next(ctx, req)
-			// Only record successful (non-error) results. Failed calls
-			// shouldn't count as drift signals — they didn't actually mutate.
-			if err != nil || res == nil || res.IsError {
-				return res, err
-			}
 
 			if s.discipline == nil {
 				return res, err
 			}
+
+			// [F184-05] ok / error_class / response_bytes / duration_ms are
+			// computed synchronously HERE — before the goroutine launch
+			// below, and before `res` is returned to the caller — matching
+			// the existing pattern (toolName/repoName/sessionID are also
+			// captured before the ctx switch) and avoiding a data race
+			// reading res concurrently with whatever mcp-go does with the
+			// same *CallToolResult after this middleware returns it. None of
+			// this reads or mutates res/err; only the return statement at
+			// the bottom of this closure does, unchanged.
+			ok := err == nil && res != nil && !res.IsError
+
+			// [F184-05] error_class: 2-way split only this ticket (decision
+			// D-05, docs/p1p2-sweep/decisions.md). Every failure — Go-level
+			// err != nil or res.IsError — classifies "internal"; empty
+			// string (NULL) when ok. See discipline.ErrorClass's doc for why
+			// a finer split isn't implemented here.
+			var errClass discipline.ErrorClass
+			if !ok {
+				errClass = discipline.ErrorClassInternal
+			}
+
+			// [F184-05] response_bytes: nil when res == nil (nothing to
+			// measure — genuinely unmeasured, not zero). Otherwise
+			// len(json.Marshal(res)), a well-defined proxy for wire size
+			// (the CallToolResult struct's own JSON encoding; not
+			// byte-identical to the outer JSON-RPC envelope, which this
+			// middleware has no access to).
+			var responseBytes *int
+			if res != nil {
+				if b, marshalErr := json.Marshal(res); marshalErr == nil {
+					n := len(b)
+					responseBytes = &n
+				} else {
+					slog.Warn("disciplineMiddleware: failed to measure response size", "error", marshalErr)
+				}
+			}
+
+			// [F184-05] duration_ms: real wall-clock only (time.Since),
+			// never s.now()/s.nowFn — that seam is overridden elsewhere in
+			// this package (zz_sec_171_02_atomic_spend_test.go) to jump or
+			// interleave time, which would corrupt a genuine latency
+			// measurement.
+			durationMs := int(time.Since(start).Milliseconds())
 
 			// LLM-supplied tool name + repo_name arg flow into the DB
 			// audit row; sanitise both BEFORE persist (see CWE-117 +
@@ -93,11 +141,15 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			sessionID := s.auditSessionID(ctx)
 
 			params := discipline.InsertParams{
-				SessionID:   sessionID,
-				RepoName:    repoName,
-				ToolName:    toolName,
-				IsMutating:  discipline.IsMutating(rawTool),
-				WorkspaceID: s.workspaceID,
+				SessionID:     sessionID,
+				RepoName:      repoName,
+				ToolName:      toolName,
+				IsMutating:    discipline.IsMutating(rawTool),
+				WorkspaceID:   s.workspaceID,
+				Ok:            ok,
+				ErrorClass:    errClass,
+				ResponseBytes: responseBytes,
+				DurationMs:    durationMs,
 			}
 
 			// Background goroutine so the audit write cannot block / fail the
@@ -122,6 +174,7 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 						"tool", toolName,
 						"session_id", sessionID,
 						"is_mutating", params.IsMutating,
+						"ok", params.Ok,
 						"error", insertErr,
 					)
 				}

@@ -25,10 +25,15 @@ var _ discipline.Store = (*DisciplineStore)(nil)
 
 // Insert records a single discipline event. WorkspaceID falls back to the
 // DB's configured workspace when the param value is nil.
+//
+// [F184-05] ok / error_class / response_bytes / duration_ms are written on
+// every call — disciplineMiddleware computes them synchronously for both
+// successful and failed tool calls.
 func (s *DisciplineStore) Insert(ctx context.Context, p discipline.InsertParams) error {
 	const q = `INSERT INTO discipline_events
-		(session_id, repo_name, tool_name, is_mutating, observed_at, linked_decision_id, workspace_id)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+		(session_id, repo_name, tool_name, is_mutating, observed_at, linked_decision_id, workspace_id,
+		 ok, error_class, response_bytes, duration_ms)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
 
 	wsArg := nullStringFromUUID(p.WorkspaceID)
 	if wsArg == nil {
@@ -40,8 +45,18 @@ func (s *DisciplineStore) Insert(ctx context.Context, p discipline.InsertParams)
 	if p.IsMutating {
 		mutating = 1
 	}
+	ok := 0
+	if p.Ok {
+		ok = 1
+	}
+	errClassArg := nullStringFromText(string(p.ErrorClass))
+	var responseBytesArg any
+	if p.ResponseBytes != nil {
+		responseBytesArg = *p.ResponseBytes
+	}
 
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		p.SessionID,
 		repoArg,
 		p.ToolName,
@@ -49,6 +64,10 @@ func (s *DisciplineStore) Insert(ctx context.Context, p discipline.InsertParams)
 		nowRFC3339(),
 		nullStringFromUUID(p.LinkedDecisionID),
 		wsArg,
+		ok,
+		errClassArg,
+		responseBytesArg,
+		p.DurationMs,
 	)
 	if err != nil {
 		return errWrap("DisciplineStore.Insert", err)
@@ -79,14 +98,20 @@ func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, l
 	if limit <= 0 {
 		limit = 100
 	}
+	// [F184-05] AND ok = 1 — a failed mutating call did not actually mutate
+	// anything; counting it here would inflate system_health's
+	// DriftCount24h with calls that never happened. See decisions.md D-05
+	// and migrations/sqlite/000078_discipline_events_outcome.up.sql.
 	const q = `SELECT ` + disciplineSelectCols + ` FROM discipline_events
 		WHERE is_mutating = 1
+		  AND ok = 1
 		  AND observed_at >= ?1
 		  AND (workspace_id = ?2 OR (?2 IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
 		LIMIT ?3`
 
-	rows, err := s.db.conn.QueryContext(ctx, q,
+	rows, err := s.db.conn.QueryContext(
+		ctx, q,
 		since.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		s.db.workspaceArg(),
 		limit,
@@ -113,15 +138,20 @@ func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, l
 // Scoping mirrors RecentMutating: scoped DB sees only its own workspace_id;
 // unscoped DB sees only NULL workspace_id rows. The two are disjoint.
 func (s *DisciplineStore) RecentDecisionTimes(ctx context.Context, sessionID string, since time.Time) ([]time.Time, error) {
+	// [F184-05] AND ok = 1 — a failed log_decision/confirm_plan call must
+	// not suppress a real drift signal: the caller's actual, successful
+	// decision-log still hasn't happened. See decisions.md D-05.
 	const q = `SELECT observed_at FROM discipline_events
 		WHERE session_id = ?1
 		  AND tool_name IN ('log_decision', 'confirm_plan')
+		  AND ok = 1
 		  AND observed_at >= ?2
 		  AND (workspace_id = ?3 OR (?3 IS NULL AND workspace_id IS NULL))
 		ORDER BY observed_at DESC
 		LIMIT 200`
 
-	rows, err := s.db.conn.QueryContext(ctx, q,
+	rows, err := s.db.conn.QueryContext(
+		ctx, q,
 		sessionID,
 		since.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		s.db.workspaceArg(),
