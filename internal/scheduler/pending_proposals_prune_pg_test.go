@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	migrationfs "github.com/Wayne997035/wayneblacktea/migrations"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -110,8 +113,17 @@ func openSchedulerTestPgPool(t *testing.T) *pgxpool.Pool {
 // runs the prune. Asserts:
 //   - resolved (accepted/rejected) rows older than 90 days are deleted
 //   - pending decision rows older than 180 days are deleted
-//   - other pending types older than 180 days are KEPT (user intent)
-//   - in-window rows are KEPT
+//   - pending goal/concept rows older than 180d (and thus also >90d, F184-06's
+//     own window) are KEPT — status is asserted, not just row existence, so
+//     this test actually proves pendingProposalsGoalFamilyTTLDryRun's
+//     checked-in default (true) performs zero writes against them, not
+//     merely that the row survives (which a status-blind existence check
+//     would pass even if the row had been silently marked rejected — see
+//     F184-06/F184-07's own dispatch note on this exact test). Before
+//     F184-06 these types had NO code path touching them at all; now they
+//     are counted-but-not-written by design, and this assertion is what
+//     pins "not written" specifically, not merely "not deleted".
+//   - in-window rows are KEPT (status untouched)
 func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.T) {
 	pool := openSchedulerTestPgPool(t)
 	ctx := context.Background()
@@ -125,6 +137,7 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 		createdAt  time.Time
 		resolvedAt *time.Time
 		shouldKeep bool
+		wantStatus string // asserted only when shouldKeep is true
 		label      string
 	}
 	now := time.Now().UTC()
@@ -138,13 +151,13 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 	rt10 := resolved10Days
 
 	seeds := []seed{
-		{uuid.New(), "decision", "accepted", resolved100Days, &rt100, false, "accepted decision >90d"},
-		{uuid.New(), "concept", rejectedStatus, resolved100Days, &rt100, false, "rejected concept >90d"},
-		{uuid.New(), "decision", "accepted", resolved10Days, &rt10, true, "accepted decision <90d"},
-		{uuid.New(), "decision", pendingStatus, pendingDecision200, nil, false, "pending decision >180d"},
-		{uuid.New(), "decision", pendingStatus, pendingDecision30, nil, true, "pending decision <180d"},
-		{uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, "pending goal >180d (user intent)"},
-		{uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, "pending concept >180d (user intent)"},
+		{uuid.New(), "decision", "accepted", resolved100Days, &rt100, false, "", "accepted decision >90d"},
+		{uuid.New(), "concept", rejectedStatus, resolved100Days, &rt100, false, "", "rejected concept >90d"},
+		{uuid.New(), "decision", "accepted", resolved10Days, &rt10, true, "accepted", "accepted decision <90d"},
+		{uuid.New(), "decision", pendingStatus, pendingDecision200, nil, false, "", "pending decision >180d"},
+		{uuid.New(), "decision", pendingStatus, pendingDecision30, nil, true, pendingStatus, "pending decision <180d"},
+		{uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, pendingStatus, "pending goal >180d (F184-06 dry-run default: counted, not written)"},
+		{uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, pendingStatus, "pending concept >180d (F184-06 dry-run default: counted, not written)"},
 	}
 
 	for _, s := range seeds {
@@ -167,7 +180,8 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 	sc := &Scheduler{disciplinePool: pool}
 	sc.runDailyPendingProposalsPrune()
 
-	// Assert each seed: kept rows still exist, dropped rows are gone.
+	// Assert each seed: kept rows still exist (with the expected status),
+	// dropped rows are gone.
 	for _, s := range seeds {
 		var count int
 		err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM pending_proposals WHERE id = $1", s.id).Scan(&count)
@@ -179,6 +193,15 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 		}
 		if !s.shouldKeep && count != 0 {
 			t.Errorf("%s: count = %d, want 0 (should be deleted)", s.label, count)
+		}
+		if s.shouldKeep && count == 1 {
+			var gotStatus string
+			if err := pool.QueryRow(ctx, "SELECT status FROM pending_proposals WHERE id = $1", s.id).Scan(&gotStatus); err != nil {
+				t.Fatalf("status %s: %v", s.label, err)
+			}
+			if gotStatus != s.wantStatus {
+				t.Errorf("%s: status = %q, want %q (must not be silently written)", s.label, gotStatus, s.wantStatus)
+			}
 		}
 	}
 }
@@ -289,6 +312,305 @@ func TestScheduler_PendingProposalsPrune_EmptyTableNoPanic(t *testing.T) {
 	sc := &Scheduler{disciplinePool: pool}
 	// Must not panic on zero-row delete.
 	sc.runDailyPendingProposalsPrune()
+}
+
+// ---------------------------------------------------------------------------
+// F184-06 / F184-07 — goal-family (goal/project/concept/knowledge/playbook)
+// 90-day TTL and its dry-run gate.
+// ---------------------------------------------------------------------------
+
+// seedPendingProposalAt inserts a pending_proposals row of any type with an
+// explicit created_at, so tests can seed deterministic ages. Not scoped to
+// goal-family types — also used to seed task/decision rows for the
+// cross-contamination test below.
+func seedPendingProposalAt(t *testing.T, pool *pgxpool.Pool, typ string, createdAt time.Time) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals
+		(id, type, payload, status, created_at, resolved_at)
+		VALUES ($1, $2, '{}'::jsonb, 'pending', $3, NULL)`,
+		id, typ, createdAt); err != nil {
+		t.Fatalf("seed %s proposal: %v", typ, err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", id) })
+	return id
+}
+
+// queryProposalStatusReason reads back status/reason/resolved_at for id.
+func queryProposalStatusReason(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) (status string, reason *string, resolvedAt *time.Time) {
+	t.Helper()
+	if err := pool.QueryRow(
+		context.Background(),
+		"SELECT status, reason, resolved_at FROM pending_proposals WHERE id = $1", id,
+	).Scan(&status, &reason, &resolvedAt); err != nil {
+		t.Fatalf("query %s: %v", id, err)
+	}
+	return status, reason, resolvedAt
+}
+
+// TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites is F184-07's primary
+// acceptance test: with pendingProposalsGoalFamilyTTLDryRun left completely
+// untouched (its checked-in default, true — no test setup manipulates it),
+// running the daily prune against a mix of stale (>90d) and fresh (<90d)
+// goal-family rows MUST perform zero UPDATEs and zero DELETEs against any of
+// them. This is the "completely unconfigured" case, not "explicitly turned
+// off" — see TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows for
+// the explicit-on direction.
+func TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	now := time.Now().UTC()
+	stale := now.AddDate(0, 0, -95)
+	fresh := now.AddDate(0, 0, -10)
+
+	type row struct {
+		id  uuid.UUID
+		typ string
+	}
+	var rows []row
+	for _, typ := range []string{"goal", "project", "concept", "knowledge", "playbook"} {
+		rows = append(
+			rows,
+			row{seedPendingProposalAt(t, pool, typ, stale), typ},
+			row{seedPendingProposalAt(t, pool, typ, fresh), typ},
+		)
+	}
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	for _, r := range rows {
+		status, reason, resolvedAt := queryProposalStatusReason(t, pool, r.id)
+		if status != pendingStatus {
+			t.Errorf("type=%s id=%s: status = %q, want %q (dry-run default must not write)", r.typ, r.id, status, pendingStatus)
+		}
+		if reason != nil {
+			t.Errorf("type=%s id=%s: reason = %q, want nil", r.typ, r.id, *reason)
+		}
+		if resolvedAt != nil {
+			t.Errorf("type=%s id=%s: resolved_at = %v, want nil", r.typ, r.id, *resolvedAt)
+		}
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows is F184-06's
+// primary acceptance test: the explicit-on direction. With
+// pendingProposalsGoalFamilyTTLDryRun explicitly set to false, stale (>90d)
+// goal-family rows MUST be marked status='rejected',
+// reason='ttl-expired-90d', resolved_at set; fresh (<90d) rows MUST stay
+// pending.
+func TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = false
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+
+	now := time.Now().UTC()
+	stale := now.AddDate(0, 0, -95)
+	fresh := now.AddDate(0, 0, -10)
+
+	type row struct {
+		id        uuid.UUID
+		typ       string
+		wantStale bool
+	}
+	var rows []row
+	for _, typ := range []string{"goal", "project", "concept", "knowledge", "playbook"} {
+		rows = append(
+			rows,
+			row{seedPendingProposalAt(t, pool, typ, stale), typ, true},
+			row{seedPendingProposalAt(t, pool, typ, fresh), typ, false},
+		)
+	}
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	for _, r := range rows {
+		status, reason, resolvedAt := queryProposalStatusReason(t, pool, r.id)
+		if r.wantStale {
+			if status != rejectedStatus {
+				t.Errorf("type=%s id=%s (stale): status = %q, want %q", r.typ, r.id, status, rejectedStatus)
+			}
+			if reason == nil || *reason != pendingProposalsGoalFamilyTTLReason {
+				t.Errorf("type=%s id=%s (stale): reason = %v, want %q", r.typ, r.id, reason, pendingProposalsGoalFamilyTTLReason)
+			}
+			if resolvedAt == nil {
+				t.Errorf("type=%s id=%s (stale): resolved_at = nil, want NOW()-ish", r.typ, r.id)
+			}
+			continue
+		}
+		if status != pendingStatus {
+			t.Errorf("type=%s id=%s (fresh): status = %q, want %q (must not be touched)", r.typ, r.id, status, pendingStatus)
+		}
+		if reason != nil {
+			t.Errorf("type=%s id=%s (fresh): reason = %q, want nil", r.typ, r.id, *reason)
+		}
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows is F184-07's
+// count-accuracy test: seeds 3 rows that match the TTL predicate + 2 that
+// don't (1 fresh goal-family row, 1 stale but excluded type='task' row),
+// calls markStaleGoalFamilyProposalsPG directly first in dry-run mode
+// (asserting the reported count is exactly 3, with zero writes), then again
+// with dry-run disabled (asserting the actually-marked count is also
+// exactly 3). Without this test, F184-07's own claim ("only counts and
+// prints a number") has nothing pinning the number itself to be correct —
+// printing a constant 0 would pass every other acceptance criterion.
+func TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	stale := now.AddDate(0, 0, -95)
+	fresh := now.AddDate(0, 0, -10)
+
+	// 3 matching: distinct goal-family types, all stale.
+	matching := []uuid.UUID{
+		seedPendingProposalAt(t, pool, "goal", stale),
+		seedPendingProposalAt(t, pool, "concept", stale),
+		seedPendingProposalAt(t, pool, "playbook", stale),
+	}
+	// 2 non-matching: 1 fresh goal-family row, 1 stale but excluded type.
+	nonMatching := []uuid.UUID{
+		seedPendingProposalAt(t, pool, "project", fresh),
+		seedPendingProposalAt(t, pool, "task", stale),
+	}
+
+	sc := &Scheduler{disciplinePool: pool}
+
+	// Dry-run (default true): count only, must equal 3, zero writes.
+	gotRows, err := sc.markStaleGoalFamilyProposalsPG(ctx)
+	if err != nil {
+		t.Fatalf("markStaleGoalFamilyProposalsPG (dry-run): %v", err)
+	}
+	if gotRows != 3 {
+		t.Errorf("dry-run rows = %d, want 3", gotRows)
+	}
+	for _, id := range matching {
+		status, _, _ := queryProposalStatusReason(t, pool, id)
+		if status != pendingStatus {
+			t.Errorf("matching id=%s: status = %q after dry-run, want %q (dry-run must not write)", id, status, pendingStatus)
+		}
+	}
+	for _, id := range nonMatching {
+		status, _, _ := queryProposalStatusReason(t, pool, id)
+		if status != pendingStatus {
+			t.Errorf("non-matching id=%s: status = %q after dry-run, want %q", id, status, pendingStatus)
+		}
+	}
+
+	// Explicit off: the same 3 rows must actually get marked; the 2
+	// non-matching rows must still be untouched.
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = false
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+	gotRows, err = sc.markStaleGoalFamilyProposalsPG(ctx)
+	if err != nil {
+		t.Fatalf("markStaleGoalFamilyProposalsPG (real): %v", err)
+	}
+	if gotRows != 3 {
+		t.Errorf("real-mark rows = %d, want 3", gotRows)
+	}
+	for _, id := range matching {
+		status, _, _ := queryProposalStatusReason(t, pool, id)
+		if status != rejectedStatus {
+			t.Errorf("matching id=%s: status = %q after real mark, want %q", id, status, rejectedStatus)
+		}
+	}
+	for _, id := range nonMatching {
+		status, _, _ := queryProposalStatusReason(t, pool, id)
+		if status != pendingStatus {
+			t.Errorf("non-matching id=%s: status = %q after real mark, want %q (must never match)", id, status, pendingStatus)
+		}
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_DoesNotTouchTaskOrDecision proves the new
+// `type IN (goal,project,concept,knowledge,playbook)` predicate does not
+// also match type='task' or type='decision' rows — both already have their
+// own narrower TTL (30d, 180d respectively) and must behave identically to
+// before this ticket at the 95-day mark (95d > task's 30d cutoff, so task
+// is independently marked by the pre-existing branch; 95d < decision's
+// 180d cutoff, so decision stays untouched by any branch).
+func TestScheduler_GoalFamilyTTL_DoesNotTouchTaskOrDecision(t *testing.T) {
+	pool := openSchedulerTestPgPool(t)
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = false
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+
+	now := time.Now().UTC()
+	at95Days := now.AddDate(0, 0, -95)
+	taskID := seedPendingProposalAt(t, pool, "task", at95Days)
+	decisionID := seedPendingProposalAt(t, pool, "decision", at95Days)
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	taskStatus, taskReason, _ := queryProposalStatusReason(t, pool, taskID)
+	if taskStatus != rejectedStatus {
+		t.Errorf("task@95d: status = %q, want %q (existing 30d branch)", taskStatus, rejectedStatus)
+	}
+	if taskReason == nil || *taskReason != pendingProposalsTaskTTLReason {
+		t.Errorf("task@95d: reason = %v, want %q (must be the 30d branch's reason, not the new 90d one)", taskReason, pendingProposalsTaskTTLReason)
+	}
+
+	decisionStatus, decisionReason, _ := queryProposalStatusReason(t, pool, decisionID)
+	if decisionStatus != pendingStatus {
+		t.Errorf("decision@95d: status = %q, want %q (95d < 180d decision cutoff)", decisionStatus, pendingStatus)
+	}
+	if decisionReason != nil {
+		t.Errorf("decision@95d: reason = %q, want nil", *decisionReason)
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_SQLite_DryRunDefault_NoWrites is F184-07's
+// SQLite-backend "completely unconfigured" test — the SQLite twin of
+// TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites. It lives in this file
+// (despite the _pg_test.go name) rather than
+// internal/storage/sqlite/proposal_prune_test.go because
+// pendingProposalsGoalFamilyTTLDryRun is unexported to that package —
+// MarkStaleGoalFamilyProposals's dryRun parameter is always explicitly
+// supplied by the caller (see that method's own doc comment), so the only
+// way to test "no configuration at all" is through this package's real
+// default, dispatched via runDailyPendingProposalsPrune against a real (not
+// stubbed) *sqlite.ProposalStore — mirrors the construction pattern in
+// cognitive_jobs_sqlite_test.go's openCrossBackendSQLiteDB /
+// internal/storage/sqlite/proposal_test.go's openProposalStore.
+func TestScheduler_GoalFamilyTTL_SQLite_DryRunDefault_NoWrites(t *testing.T) {
+	ctx := context.Background()
+	d, err := sqlite.Open(ctx, ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := sqlite.NewProposalStore(d)
+
+	now := time.Now().UTC()
+	staleID := uuid.New()
+	if err := store.ImportProposal(ctx, db.PendingProposal{
+		ID:        staleID,
+		Type:      "goal",
+		Payload:   []byte(`{}`),
+		Status:    pendingStatus,
+		CreatedAt: pgtype.Timestamptz{Time: now.AddDate(0, 0, -95), Valid: true},
+	}); err != nil {
+		t.Fatalf("seed SQLite goal-family proposal: %v", err)
+	}
+
+	sc := &Scheduler{pendingProposalsPruneSQLite: store}
+	sc.runDailyPendingProposalsPrune()
+
+	got, err := store.Get(ctx, staleID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != pendingStatus {
+		t.Errorf("status = %q, want %q (dry-run default must not write)", got.Status, pendingStatus)
+	}
+	if got.Reason.Valid {
+		t.Errorf("reason = %q, want invalid/nil", got.Reason.String)
+	}
 }
 
 func TestScheduler_DailyGuardPrune_DeletesExpiredRows(t *testing.T) {
