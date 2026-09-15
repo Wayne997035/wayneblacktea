@@ -186,7 +186,9 @@ func assertDisciplineOutcomeColumns(t *testing.T, db *wbtsqlite.DB, params disci
 // match when it does (or that it's excluded entirely otherwise). Extracted
 // out of TestSQLiteDisciplineStore_Insert for the same gocyclo reason as
 // assertDisciplineOutcomeColumns.
-func assertRecentMutatingReflectsInsert(t *testing.T, ctx context.Context, store *wbtsqlite.DisciplineStore, params discipline.InsertParams) {
+func assertRecentMutatingReflectsInsert(
+	t *testing.T, ctx context.Context, store *wbtsqlite.DisciplineStore, params discipline.InsertParams,
+) {
 	t.Helper()
 	events, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
 	if err != nil {

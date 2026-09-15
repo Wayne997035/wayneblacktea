@@ -197,10 +197,11 @@ func textResult(text string, isError bool) *mcpmsg.CallToolResult {
 // fireDiscipline invokes disciplineMiddleware once with `next`, then waits up
 // to 1s for the background Insert to land (mirrors fireProposer's poll
 // pattern in middleware_decision_proposer_test.go). Returns the middleware's
-// own (res, err) plus the eventually-captured InsertParams.
+// own res plus the eventually-captured InsertParams, with error last per
+// Go convention (staticcheck ST1008).
 func fireDiscipline(
 	t *testing.T, srv *Server, tool string, next server.ToolHandlerFunc,
-) (*mcpmsg.CallToolResult, error, []discipline.InsertParams) {
+) (*mcpmsg.CallToolResult, []discipline.InsertParams, error) {
 	t.Helper()
 	mw := srv.disciplineMiddleware()
 	handler := mw(next)
@@ -213,11 +214,11 @@ func fireDiscipline(
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := store.snapshot(); len(got) > 0 {
-			return res, err, got
+			return res, got, err
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return res, err, store.snapshot()
+	return res, store.snapshot(), err
 }
 
 // TestDisciplineMiddleware_RecordsOkAndSize covers the happy-path user
@@ -231,7 +232,7 @@ func TestDisciplineMiddleware_RecordsOkAndSize(t *testing.T) {
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
-	_, err, got := fireDiscipline(t, srv, testTool, func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+	_, got, err := fireDiscipline(t, srv, testTool, func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 		return textResult("ok", false), nil
 	})
 	if err != nil {
@@ -266,7 +267,7 @@ func TestDisciplineMiddleware_RecordsFailedCalls(t *testing.T) {
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
-	_, err, got := fireDiscipline(t, srv, "create_project", func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+	_, got, err := fireDiscipline(t, srv, "create_project", func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 		return textResult("project not found", true), nil
 	})
 	if err != nil {
@@ -297,7 +298,7 @@ func TestDisciplineMiddleware_RecordsGoLevelError(t *testing.T) {
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
 	handlerErr := errors.New("boom")
-	_, err, got := fireDiscipline(t, srv, "record_outcome", func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+	_, got, err := fireDiscipline(t, srv, "record_outcome", func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 		return nil, handlerErr
 	})
 	if !errors.Is(err, handlerErr) {
@@ -335,7 +336,7 @@ func TestDisciplineMiddleware_DurationUsesWallClockNotNowFn(t *testing.T) {
 		},
 	}
 
-	_, err, got := fireDiscipline(t, srv, testTool, func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+	_, got, err := fireDiscipline(t, srv, testTool, func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 		return textResult("ok", false), nil
 	})
 	if err != nil {
