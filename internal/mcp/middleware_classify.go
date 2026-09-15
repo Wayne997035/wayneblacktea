@@ -22,6 +22,13 @@ import (
 // middleware to prevent goroutine accumulation during tool call bursts.
 var mcpClassifySem = make(chan struct{}, 20)
 
+// [F184-08] complete_task is the one tool name this file compares against
+// twice (significantTools registration + the guard). goconst's
+// min-occurrences is 3; naming it here keeps the package under that bound
+// without reaching for the test-only toolCompleteTask, which production
+// code cannot see.
+const toolNameCompleteTask = "complete_task"
+
 // significantTools is the set of MCP tool names whose invocations are worth
 // classifying for implicit decisions and follow-up tasks.
 var significantTools = map[string]bool{
@@ -232,7 +239,7 @@ func (s *Server) autoCaptureMCPTask(
 	// correct, and this must be provable by a deterministic test, not by
 	// trusting LLM prompt-following. Placed before dedup / auto-accept /
 	// proposal-queue so it blocks BOTH materialisation paths.
-	if toolName == "complete_task" {
+	if toolName == toolNameCompleteTask {
 		slog.Info("autoCaptureMCPTask: complete_task guard blocked capture",
 			"tool", toolName, "confidence", confidence)
 		return nil
