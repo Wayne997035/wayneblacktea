@@ -156,8 +156,14 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 		{uuid.New(), "decision", "accepted", resolved10Days, &rt10, true, "accepted", "accepted decision <90d"},
 		{uuid.New(), "decision", pendingStatus, pendingDecision200, nil, false, "", "pending decision >180d"},
 		{uuid.New(), "decision", pendingStatus, pendingDecision30, nil, true, pendingStatus, "pending decision <180d"},
-		{uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, pendingStatus, "pending goal >180d (F184-06 dry-run default: counted, not written)"},
-		{uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, pendingStatus, "pending concept >180d (F184-06 dry-run default: counted, not written)"},
+		{
+			uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, pendingStatus,
+			"pending goal >180d (F184-06 dry-run default: counted, not written)",
+		},
+		{
+			uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, pendingStatus,
+			"pending concept >180d (F184-06 dry-run default: counted, not written)",
+		},
 	}
 
 	for _, s := range seeds {
@@ -480,10 +486,7 @@ func TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows(t *testing.T) {
 	sc := &Scheduler{disciplinePool: pool}
 
 	// Dry-run (default true): count only, must equal 3, zero writes.
-	gotRows, err := sc.markStaleGoalFamilyProposalsPG(ctx)
-	if err != nil {
-		t.Fatalf("markStaleGoalFamilyProposalsPG (dry-run): %v", err)
-	}
+	gotRows := sc.markStaleGoalFamilyProposalsPG(ctx)
 	if gotRows != 3 {
 		t.Errorf("dry-run rows = %d, want 3", gotRows)
 	}
@@ -505,10 +508,7 @@ func TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows(t *testing.T) {
 	prev := pendingProposalsGoalFamilyTTLDryRun
 	pendingProposalsGoalFamilyTTLDryRun = false
 	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
-	gotRows, err = sc.markStaleGoalFamilyProposalsPG(ctx)
-	if err != nil {
-		t.Fatalf("markStaleGoalFamilyProposalsPG (real): %v", err)
-	}
+	gotRows = sc.markStaleGoalFamilyProposalsPG(ctx)
 	if gotRows != 3 {
 		t.Errorf("real-mark rows = %d, want 3", gotRows)
 	}
@@ -552,7 +552,8 @@ func TestScheduler_GoalFamilyTTL_DoesNotTouchTaskOrDecision(t *testing.T) {
 		t.Errorf("task@95d: status = %q, want %q (existing 30d branch)", taskStatus, rejectedStatus)
 	}
 	if taskReason == nil || *taskReason != pendingProposalsTaskTTLReason {
-		t.Errorf("task@95d: reason = %v, want %q (must be the 30d branch's reason, not the new 90d one)", taskReason, pendingProposalsTaskTTLReason)
+		t.Errorf("task@95d: reason = %v, want %q (must be the 30d branch's reason, not the new 90d one)",
+			taskReason, pendingProposalsTaskTTLReason)
 	}
 
 	decisionStatus, decisionReason, _ := queryProposalStatusReason(t, pool, decisionID)

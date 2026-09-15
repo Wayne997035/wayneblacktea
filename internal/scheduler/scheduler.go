@@ -1208,20 +1208,24 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 // predicate — when pendingProposalsGoalFamilyTTLDryRun is true (the
 // checked-in default), that count reflects rows COUNTED only (zero writes
 // performed); when false, it reflects rows actually UPDATEd to
-// status='rejected'. err is non-nil only on a query/exec failure (the
-// caller logs and swallows it, matching every other step in
-// runDailyPendingProposalsPrunePG — a single failed step must not take down
-// the rest of the nightly prune job); it is exposed on this unexported
-// helper (rather than swallowed here) purely so tests can assert on it
-// directly instead of scraping slog output.
-func (s *Scheduler) markStaleGoalFamilyProposalsPG(ctx context.Context) (rows int64, err error) {
+// status='rejected'. A query/exec failure is logged at warn level and
+// swallowed HERE (returns 0), matching every other step in
+// runDailyPendingProposalsPrunePG (the TypeTask mark step and the DELETE
+// step both consume their own errors locally the same way) and its own
+// SQLite dispatch counterpart markStaleGoalFamilyProposalsSQLite, which is
+// void for the same reason — a single failed step must not take down the
+// rest of the nightly prune job, and the caller (the daily scheduler job)
+// has no different action available on error than this function already
+// takes. rows is still returned (not swallowed) so tests can assert the
+// exact count directly instead of scraping slog output.
+func (s *Scheduler) markStaleGoalFamilyProposalsPG(ctx context.Context) (rows int64) {
 	if pendingProposalsGoalFamilyTTLDryRun {
 		const countQ = `SELECT COUNT(*) FROM pending_proposals
 WHERE status = 'pending' AND type IN ('goal', 'project', 'concept', 'knowledge', 'playbook')
   AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingGoalFamilyTTLRetention + `'`
 		if err := s.disciplinePool.QueryRow(ctx, countQ).Scan(&rows); err != nil {
 			slog.Warn("daily pending_proposals prune: goal-family TTL dry-run count failed", "err", err)
-			return 0, err
+			return 0
 		}
 		slog.Info(
 			"daily pending_proposals prune: goal-family TTL dry-run (F184-07, no write performed)",
@@ -1229,7 +1233,7 @@ WHERE status = 'pending' AND type IN ('goal', 'project', 'concept', 'knowledge',
 			"goal_family_retention", pendingProposalsPendingGoalFamilyTTLRetention,
 			"dry_run", true,
 		)
-		return rows, nil
+		return rows
 	}
 
 	const markQ = `UPDATE pending_proposals
@@ -1239,7 +1243,7 @@ WHERE status = 'pending' AND type IN ('goal', 'project', 'concept', 'knowledge',
 	tag, err := s.disciplinePool.Exec(ctx, markQ)
 	if err != nil {
 		slog.Warn("daily pending_proposals prune: goal-family TTL mark failed", "err", err)
-		return 0, err
+		return 0
 	}
 	rows = tag.RowsAffected()
 	slog.Info(
@@ -1247,7 +1251,7 @@ WHERE status = 'pending' AND type IN ('goal', 'project', 'concept', 'knowledge',
 		"rows_updated", rows,
 		"goal_family_retention", pendingProposalsPendingGoalFamilyTTLRetention,
 	)
-	return rows, nil
+	return rows
 }
 
 // runDailyPendingProposalsPruneSQLite is the SQLite-native counterpart to

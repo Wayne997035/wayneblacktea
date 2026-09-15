@@ -124,10 +124,16 @@ func TestProposalStore_MarkAndDeleteStaleProposals_DeletesOnlyExpiredRows(t *tes
 	seeds = append(seeds, seed{id, true, taskStatusPending, "pending decision <180d"})
 
 	id = importPruneSeed(t, s, "goal", taskStatusPending, pendingGoal400, nil)
-	seeds = append(seeds, seed{id, true, taskStatusPending, "pending goal >180d (MarkAndDeleteStaleProposals never touches it — F184-06 lives in a separate method)"})
+	seeds = append(seeds, seed{
+		id, true, taskStatusPending,
+		"pending goal >180d (MarkAndDeleteStaleProposals never touches it — F184-06 lives in a separate method)",
+	})
 
 	id = importPruneSeed(t, s, "concept", taskStatusPending, pendingGoal400, nil)
-	seeds = append(seeds, seed{id, true, taskStatusPending, "pending concept >180d (MarkAndDeleteStaleProposals never touches it — F184-06 lives in a separate method)"})
+	seeds = append(seeds, seed{
+		id, true, taskStatusPending,
+		"pending concept >180d (MarkAndDeleteStaleProposals never touches it — F184-06 lives in a separate method)",
+	})
 
 	marked, deleted, err := s.MarkAndDeleteStaleProposals(
 		context.Background(), 30*24*time.Hour, 180*24*time.Hour, 90*24*time.Hour, markReasonTTLExpired,
