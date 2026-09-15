@@ -231,7 +231,7 @@ func TestDisciplineMiddleware_RecordsOkAndSize(t *testing.T) {
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
-	_, err, got := fireDiscipline(t, srv, "add_task", func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+	_, err, got := fireDiscipline(t, srv, testTool, func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 		return textResult("ok", false), nil
 	})
 	if err != nil {
@@ -335,7 +335,7 @@ func TestDisciplineMiddleware_DurationUsesWallClockNotNowFn(t *testing.T) {
 		},
 	}
 
-	_, err, got := fireDiscipline(t, srv, "add_task", func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+	_, err, got := fireDiscipline(t, srv, testTool, func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 		return textResult("ok", false), nil
 	})
 	if err != nil {
@@ -380,7 +380,7 @@ func TestDisciplineMiddleware_DoesNotMutateResult(t *testing.T) {
 		return want, nil
 	})
 	req := mcpmsg.CallToolRequest{}
-	req.Params.Name = "add_task"
+	req.Params.Name = testTool
 	got, err := handler(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handler: %v", err)
