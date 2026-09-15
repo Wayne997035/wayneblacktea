@@ -96,11 +96,13 @@ func (a *pgAcceptAdapter) BeginTx(ctx context.Context) error {
 // Materialize ports the 5 already-tx-correct Postgres cases verbatim (same
 // decode + store calls, same error strings) from
 // internal/mcp/tools_proposal.go's materializeFromPayloadPg: TypeGoal,
-// TypeProject, TypeConcept, TypeDecision, TypeTask. TypeKnowledge and
-// TypePlaybook are not yet tx-wired on Postgres (see materializeKnowledgePg
-// / playbook.Store.Create's non-tx Create in the mcp-package original) —
-// wiring them is the A1-seam task's job, not this one's.
-func (a *pgAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, _ any) (any, error) {
+// TypeProject, TypeConcept, TypeDecision, TypeTask. TypeKnowledge is wired
+// via materializeKnowledge below [F184-01], consuming the
+// knowledge.PreparedItem PrepareOutOfBand computed before BeginTx.
+// TypePlaybook is not yet tx-wired on Postgres (see
+// playbook.Store.Create's non-tx Create in the mcp-package original) —
+// wiring it is a future A1-seam task's job, not this one's.
+func (a *pgAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, prepared any) (any, error) {
 	switch Type(prop.Type) {
 	case TypeGoal:
 		return a.materializeGoal(ctx, prop)
@@ -112,7 +114,9 @@ func (a *pgAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingPropo
 		return a.materializeDecision(ctx, prop)
 	case TypeTask:
 		return a.materializeTask(ctx, prop)
-	case TypeKnowledge, TypePlaybook:
+	case TypeKnowledge:
+		return a.materializeKnowledge(ctx, prepared)
+	case TypePlaybook:
 		return nil, fmt.Errorf("A1-seam TODO: %s materialize not yet tx-wired on postgres", prop.Type)
 	default:
 		return nil, fmt.Errorf("unknown proposal type %q", prop.Type)
@@ -195,6 +199,27 @@ func (a *pgAcceptAdapter) materializeTask(ctx context.Context, prop *db.PendingP
 		return map[string]any{"task": task, "warnings": warnings}, nil
 	}
 	return task, nil
+}
+
+// materializeKnowledge inserts the TypeKnowledge row inside the open tx via
+// knowledge.Store.WriteItemTx, consuming the knowledge.PreparedItem
+// PrepareOutOfBand computed strictly before BeginTx (ADR 0003 G1
+// "先算後寫" — the embedding call already ran out-of-band, this only writes).
+// [F184-01] Replaces the former non-tx h.knowledge.AddItem call the HTTP
+// handler used to make outside any transaction.
+func (a *pgAcceptAdapter) materializeKnowledge(ctx context.Context, prepared any) (any, error) {
+	prep, ok := prepared.(knowledge.PreparedItem)
+	if !ok {
+		return nil, fmt.Errorf("materializeKnowledge: prepared value has unexpected type %T", prepared)
+	}
+	if a.deps.Knowledge == nil {
+		return nil, fmt.Errorf("knowledge proposal materialisation requires PG knowledge store")
+	}
+	item, err := a.deps.Knowledge.WriteItemTx(ctx, a.tx, prep)
+	if err != nil {
+		return nil, fmt.Errorf("creating knowledge item: %w", err)
+	}
+	return item, nil
 }
 
 func (a *pgAcceptAdapter) ResolveAccepted(ctx context.Context) (*db.PendingProposal, error) {
