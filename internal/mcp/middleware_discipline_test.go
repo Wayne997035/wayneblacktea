@@ -198,7 +198,9 @@ func textResult(text string, isError bool) *mcpmsg.CallToolResult {
 // to 1s for the background Insert to land (mirrors fireProposer's poll
 // pattern in middleware_decision_proposer_test.go). Returns the middleware's
 // own (res, err) plus the eventually-captured InsertParams.
-func fireDiscipline(t *testing.T, srv *Server, tool string, next server.ToolHandlerFunc) (*mcpmsg.CallToolResult, error, []discipline.InsertParams) {
+func fireDiscipline(
+	t *testing.T, srv *Server, tool string, next server.ToolHandlerFunc,
+) (*mcpmsg.CallToolResult, error, []discipline.InsertParams) {
 	t.Helper()
 	mw := srv.disciplineMiddleware()
 	handler := mw(next)

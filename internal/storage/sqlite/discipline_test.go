@@ -141,56 +141,76 @@ func TestSQLiteDisciplineStore_Insert(t *testing.T) {
 			// [F184-04] Verify the four new columns landed exactly as
 			// passed. See queryDisciplineOutcome's doc for the mutation
 			// this guards against.
-			got := queryDisciplineOutcome(t, db, tc.params.SessionID, tc.params.ToolName)
-			if got.Ok != tc.params.Ok {
-				t.Errorf("ok: want %v, got %v", tc.params.Ok, got.Ok)
-			}
-			wantErrClass := string(tc.params.ErrorClass)
-			gotErrClass := ""
-			if got.ErrorClass.Valid {
-				gotErrClass = got.ErrorClass.String
-			}
-			if gotErrClass != wantErrClass {
-				t.Errorf("error_class: want %q, got %q", wantErrClass, gotErrClass)
-			}
-			if tc.params.ResponseBytes == nil {
-				if got.ResponseBytes.Valid {
-					t.Errorf("response_bytes: want NULL, got %d", got.ResponseBytes.Int64)
-				}
-			} else if !got.ResponseBytes.Valid || got.ResponseBytes.Int64 != int64(*tc.params.ResponseBytes) {
-				t.Errorf("response_bytes: want %d, got %+v", *tc.params.ResponseBytes, got.ResponseBytes)
-			}
-			if !got.DurationMs.Valid || got.DurationMs.Int64 != int64(tc.params.DurationMs) {
-				t.Errorf("duration_ms: want %d, got %+v", tc.params.DurationMs, got.DurationMs)
-			}
+			assertDisciplineOutcomeColumns(t, db, tc.params)
 
 			// Read back via RecentMutating / store query: only mutating AND
 			// ok events appear there, so this also exercises both filters.
-			events, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
-			if err != nil {
-				t.Fatalf("RecentMutating: %v", err)
-			}
-			if tc.params.IsMutating && tc.params.Ok {
-				if len(events) != 1 {
-					t.Fatalf("expected 1 mutating+ok event, got %d", len(events))
-				}
-				ev := events[0]
-				if ev.SessionID != tc.params.SessionID {
-					t.Errorf("session_id: want %q, got %q", tc.params.SessionID, ev.SessionID)
-				}
-				if ev.ToolName != tc.params.ToolName {
-					t.Errorf("tool_name: want %q, got %q", tc.params.ToolName, ev.ToolName)
-				}
-				if !ev.IsMutating {
-					t.Errorf("is_mutating: want true, got false")
-				}
-				if ev.RepoName != tc.params.RepoName {
-					t.Errorf("repo_name: want %q, got %q", tc.params.RepoName, ev.RepoName)
-				}
-			} else if len(events) != 0 {
-				t.Fatalf("expected 0 mutating+ok events (IsMutating=%v Ok=%v), got %d", tc.params.IsMutating, tc.params.Ok, len(events))
-			}
+			assertRecentMutatingReflectsInsert(t, ctx, store, tc.params)
 		})
+	}
+}
+
+// assertDisciplineOutcomeColumns verifies the four F184-04 columns
+// (ok/error_class/response_bytes/duration_ms) landed exactly as passed to
+// Insert. Extracted out of TestSQLiteDisciplineStore_Insert to keep that
+// test's cyclomatic complexity under golangci-lint's gocyclo threshold —
+// behavior is unchanged, only the code shape.
+func assertDisciplineOutcomeColumns(t *testing.T, db *wbtsqlite.DB, params discipline.InsertParams) {
+	t.Helper()
+	got := queryDisciplineOutcome(t, db, params.SessionID, params.ToolName)
+	if got.Ok != params.Ok {
+		t.Errorf("ok: want %v, got %v", params.Ok, got.Ok)
+	}
+	wantErrClass := string(params.ErrorClass)
+	gotErrClass := ""
+	if got.ErrorClass.Valid {
+		gotErrClass = got.ErrorClass.String
+	}
+	if gotErrClass != wantErrClass {
+		t.Errorf("error_class: want %q, got %q", wantErrClass, gotErrClass)
+	}
+	if params.ResponseBytes == nil {
+		if got.ResponseBytes.Valid {
+			t.Errorf("response_bytes: want NULL, got %d", got.ResponseBytes.Int64)
+		}
+	} else if !got.ResponseBytes.Valid || got.ResponseBytes.Int64 != int64(*params.ResponseBytes) {
+		t.Errorf("response_bytes: want %d, got %+v", *params.ResponseBytes, got.ResponseBytes)
+	}
+	if !got.DurationMs.Valid || got.DurationMs.Int64 != int64(params.DurationMs) {
+		t.Errorf("duration_ms: want %d, got %+v", params.DurationMs, got.DurationMs)
+	}
+}
+
+// assertRecentMutatingReflectsInsert verifies RecentMutating includes the
+// just-inserted row iff it was both mutating and ok, and that its fields
+// match when it does (or that it's excluded entirely otherwise). Extracted
+// out of TestSQLiteDisciplineStore_Insert for the same gocyclo reason as
+// assertDisciplineOutcomeColumns.
+func assertRecentMutatingReflectsInsert(t *testing.T, ctx context.Context, store *wbtsqlite.DisciplineStore, params discipline.InsertParams) {
+	t.Helper()
+	events, err := store.RecentMutating(ctx, time.Now().Add(-time.Minute), 100)
+	if err != nil {
+		t.Fatalf("RecentMutating: %v", err)
+	}
+	if params.IsMutating && params.Ok {
+		if len(events) != 1 {
+			t.Fatalf("expected 1 mutating+ok event, got %d", len(events))
+		}
+		ev := events[0]
+		if ev.SessionID != params.SessionID {
+			t.Errorf("session_id: want %q, got %q", params.SessionID, ev.SessionID)
+		}
+		if ev.ToolName != params.ToolName {
+			t.Errorf("tool_name: want %q, got %q", params.ToolName, ev.ToolName)
+		}
+		if !ev.IsMutating {
+			t.Errorf("is_mutating: want true, got false")
+		}
+		if ev.RepoName != params.RepoName {
+			t.Errorf("repo_name: want %q, got %q", params.RepoName, ev.RepoName)
+		}
+	} else if len(events) != 0 {
+		t.Fatalf("expected 0 mutating+ok events (IsMutating=%v Ok=%v), got %d", params.IsMutating, params.Ok, len(events))
 	}
 }
 
