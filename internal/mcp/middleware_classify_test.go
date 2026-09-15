@@ -497,10 +497,12 @@ func TestAutoCaptureMCPTask_Dedup(t *testing.T) {
 	}
 	s := &Server{proposal: p}
 
-	// Case-insensitive title match must dedup. Confidence=0 keeps the test
-	// on the proposal-queue path (auto-accept threshold is 0.85), so this
-	// case still exercises the dedup branch as before.
-	if err := s.autoCaptureMCPTask(context.Background(), "write integration tests", "complete_task", "", "", "", 0); err != nil {
+	// Case-insensitive title match must dedup. toolName is an arbitrary
+	// significantTools member (not "complete_task" — that now short-circuits
+	// before this branch under the F184-08 guard). Confidence=0 keeps the
+	// test on the proposal-queue path (auto-accept threshold is 0.85), so
+	// this case still exercises the dedup branch as before.
+	if err := s.autoCaptureMCPTask(context.Background(), "write integration tests", "resolve_handoff", "", "", "", 0); err != nil {
 		t.Fatalf("autoCaptureMCPTask: %v", err)
 	}
 	if len(p.recordedCreates()) != 0 {
@@ -599,12 +601,14 @@ func TestAutoCaptureMCPTask_NilProposalStore(t *testing.T) {
 }
 
 // TestAutoCaptureMCPTask_EmptyTitleSkips verifies blank/whitespace title is
-// skipped before any DB call.
+// skipped before any DB call. toolName is an arbitrary significantTools
+// member (not "complete_task" — that now short-circuits before the
+// title-blank check under the F184-08 guard).
 func TestAutoCaptureMCPTask_EmptyTitleSkips(t *testing.T) {
 	p := &mockProposalStore{}
 	s := &Server{proposal: p}
 	for _, title := range []string{"", "   ", "\t\n"} {
-		if err := s.autoCaptureMCPTask(context.Background(), title, "complete_task", "", "", "", 0); err != nil {
+		if err := s.autoCaptureMCPTask(context.Background(), title, "resolve_handoff", "", "", "", 0); err != nil {
 			t.Errorf("autoCaptureMCPTask(%q): %v", title, err)
 		}
 	}
@@ -699,7 +703,7 @@ func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
 	if err := s.autoCaptureMCPTask(
 		context.Background(),
 		"Rotate leaked GitHub PAT (MCP path)",
-		"complete_task",
+		"resolve_handoff", // arbitrary significantTools member, not testing complete_task
 		argSummaryWithToken,
 		"status=ok",
 		rationaleWithToken,
@@ -742,7 +746,7 @@ func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
 	if err := s2.autoCaptureMCPTask(
 		context.Background(),
 		"Rotate leaked GitHub PAT (MCP path) idempotency",
-		"complete_task",
+		"resolve_handoff",  // arbitrary significantTools member, not testing complete_task
 		payload.ArgSummary, // already redacted
 		"status=ok",
 		payload.ClassifierRationale, // already redacted
@@ -949,7 +953,7 @@ func TestAutoCaptureMCPTask_AutoAccept_HighConfidence(t *testing.T) {
 	if err := s.autoCaptureMCPTask(
 		context.Background(),
 		"Drop expired session rows post-completion",
-		"complete_task",
+		"resolve_handoff", // arbitrary significantTools member — this tests the 0.85 threshold, not complete_task (F184-08 guard)
 		richArg,
 		"status=ok",
 		richRationale,
@@ -1008,7 +1012,7 @@ func TestAutoCaptureMCPTask_AutoAccept_RedactsTitleCredentials(t *testing.T) {
 	if err := s.autoCaptureMCPTask(
 		context.Background(),
 		titleWithToken,
-		"complete_task",
+		"resolve_handoff", // arbitrary significantTools member — this tests auto-accept title redaction, not complete_task (F184-08 guard)
 		richArg,
 		"status=ok",
 		richRationale,
@@ -1050,7 +1054,7 @@ func TestAutoCaptureMCPTask_AutoAccept_LowConfidence(t *testing.T) {
 	if err := s.autoCaptureMCPTask(
 		context.Background(),
 		"Drop expired session rows post-completion",
-		"complete_task",
+		"resolve_handoff", // arbitrary significantTools member — this tests the low-confidence route, not complete_task (F184-08 guard)
 		richArg,
 		"status=ok",
 		richRationale,
@@ -1084,8 +1088,8 @@ func TestAutoCaptureMCPTask_AutoAccept_VagueDescription(t *testing.T) {
 	if err := s.autoCaptureMCPTask(
 		context.Background(),
 		"Fix the bug",
-		"complete_task",
-		"TBD", // canonical vague marker
+		"resolve_handoff", // arbitrary significantTools member — this tests validator.CheckVagueness, not complete_task (F184-08 guard)
+		"TBD",             // canonical vague marker
 		"status=ok",
 		"",   // empty rationale — synthesised description = "TBD"
 		0.95, // well above threshold; vagueness is the blocker
@@ -1100,5 +1104,49 @@ func TestAutoCaptureMCPTask_AutoAccept_VagueDescription(t *testing.T) {
 	// 1 proposal queued.
 	if creates := p.recordedCreates(); len(creates) != 1 {
 		t.Fatalf("expected 1 proposal create (vagueness blocks auto-accept), got %d", len(creates))
+	}
+}
+
+// TestAutoCaptureMCPTask_CompleteTask_NeverCreatesTask is the F184-08
+// regression test: a `complete_task` tool call must never spawn a new task,
+// at any confidence level — neither via the auto-accept direct-create path
+// nor via the proposal queue. Root cause: internal/ai/activity_classifier.go's
+// is_task prompt branch has no guard excluding "this activity is itself
+// reporting a task's completion" (28 ghost pending tasks over 3 months, all
+// titled "Complete task <uuid>"). Covers both materialisation paths the
+// guard must short-circuit before reaching.
+func TestAutoCaptureMCPTask_CompleteTask_NeverCreatesTask(t *testing.T) {
+	cases := []struct {
+		name       string
+		confidence float64
+	}{
+		{"high confidence would hit auto-accept", 0.95},
+		{"low confidence would hit proposal queue", 0.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &mockProposalStore{}
+			g := &mockClassifyGTDStore{}
+			s := &Server{proposal: p, gtd: g}
+
+			if err := s.autoCaptureMCPTask(
+				context.Background(),
+				"Complete task abc-123",
+				"complete_task",
+				`{"artifact":"https://github.com/foo/bar/pull/1","task_id":"abc-123"}`,
+				"status=ok",
+				"activity reports its own completion",
+				tc.confidence,
+			); err != nil {
+				t.Fatalf("autoCaptureMCPTask: %v", err)
+			}
+
+			if created := g.recordedCreates(); len(created) != 0 {
+				t.Errorf("expected 0 direct task creates, got %d", len(created))
+			}
+			if creates := p.recordedCreates(); len(creates) != 0 {
+				t.Errorf("expected 0 proposal creates, got %d", len(creates))
+			}
+		})
 	}
 }

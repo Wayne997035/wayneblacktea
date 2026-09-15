@@ -225,6 +225,19 @@ func (s *Server) autoCaptureMCPTask(
 		return nil
 	}
 
+	// [F184-08] complete_task activities describe a task that JUST
+	// finished — they can never legitimately BE a new task. Guarded here
+	// (Go-level), not in the classifier prompt: a completion event has no
+	// case where synthesising a follow-up from the SAME tool call is
+	// correct, and this must be provable by a deterministic test, not by
+	// trusting LLM prompt-following. Placed before dedup / auto-accept /
+	// proposal-queue so it blocks BOTH materialisation paths.
+	if toolName == "complete_task" {
+		slog.Info("autoCaptureMCPTask: complete_task guard blocked capture",
+			"tool", toolName, "confidence", confidence)
+		return nil
+	}
+
 	title = truncateAndTrimTitleMCP(title, mcpTaskMaxTitle)
 	// Redact credential-shape patterns from `title` before any persistence.
 	// The classifier may echo a prompt-injected token from argSummary into
