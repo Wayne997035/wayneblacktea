@@ -205,10 +205,12 @@ func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
 		{SessionID: "s1", ToolName: "list_tasks", IsMutating: false, Ok: true},
 		{SessionID: "s2", ToolName: "complete_task", IsMutating: true, Ok: true},
 		// [F184-05] a failed mutating call must NOT count as drift — see
-		// decisions.md D-05, Acceptance criteria row 5. Mutation-proof:
-		// dropping `AND ok = 1` from RecentMutating's WHERE clause
+		// decisions.md D-05, Acceptance criteria row 5. Verified: dropping
+		// `AND ok = 1` from RecentMutating's WHERE clause
 		// (internal/storage/sqlite/discipline.go) makes both subtests
-		// below fail (3 events instead of 2, and s3 leaking through).
+		// below fail (3 events instead of 2, and s3 leaking through) — see
+		// the "突變證明" section of the implement record for the actual
+		// FAIL output from running that mutation.
 		{SessionID: "s3", ToolName: "delete_task", IsMutating: true, Ok: false, ErrorClass: discipline.ErrorClassInternal},
 	} {
 		if err := store.Insert(ctx, p); err != nil {
@@ -277,9 +279,10 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 		{SessionID: "s2", ToolName: "log_decision", IsMutating: true, Ok: true},
 		// [F184-05] a failed log_decision must not suppress a real drift
 		// signal — see decisions.md D-05, Acceptance criteria row 6.
-		// Mutation-proof: dropping `AND ok = 1` from RecentDecisionTimes'
-		// WHERE clause makes "excludes failed decision calls" below fail
-		// (3 events instead of 2 for s1).
+		// Verified: dropping `AND ok = 1` from RecentDecisionTimes' WHERE
+		// clause makes both subtests below fail (3 events instead of 2 for
+		// s1) — see the implement record's "突變證明" section for the
+		// actual FAIL output from running that mutation.
 		{SessionID: "s1", ToolName: "log_decision", IsMutating: true, Ok: false, ErrorClass: discipline.ErrorClassInternal},
 	} {
 		if err := store.Insert(ctx, p); err != nil {

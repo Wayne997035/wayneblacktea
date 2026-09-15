@@ -264,10 +264,10 @@ func TestPgStore_RecentDecisionTimes(t *testing.T) {
 		{SessionID: "beta", ToolName: "log_decision", IsMutating: true, Ok: true},
 		// [F184-05] a failed log_decision must not suppress a real drift
 		// signal — see decisions.md D-05, Acceptance criteria row 6.
-		// Mutation-proof: dropping `AND ok = TRUE` from
-		// RecentDecisionTimes' WHERE clause (internal/discipline/
-		// store_pg.go) makes "alpha excludes failed decision calls" below
-		// fail (3 events instead of 2).
+		// Verified: dropping `AND ok = TRUE` from RecentDecisionTimes'
+		// WHERE clause (internal/discipline/store_pg.go) makes both
+		// subtests below fail (3 events instead of 2) — see the implement
+		// record's "突變證明" section for the actual FAIL output.
 		{SessionID: "alpha", ToolName: "log_decision", IsMutating: true, Ok: false, ErrorClass: discipline.ErrorClassInternal},
 	} {
 		if err := store.Insert(ctx, p); err != nil {
