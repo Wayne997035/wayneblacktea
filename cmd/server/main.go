@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // embed IANA timezone DB so Asia/Taipei works on any base image
@@ -291,6 +295,13 @@ func run() error {
 	// pure liveness probe so Railway's healthcheck never restarts the
 	// container over a degraded LLM provider it cannot fix by restarting.
 	api.GET("/health/llm", handlers.llmHealth.GetLLMHealth, dashboardRL)
+	// [F185-06] Discord bot startup health — same "behind the API-key group,
+	// never on bare /health" reasoning as /health/llm above: this names
+	// bot startup detail, and /health must stay a pure liveness probe so
+	// Railway's healthcheck never restarts the container over a Discord
+	// outage the process cannot fix by restarting (see D2 in the
+	// discord-nonfatal dispatch).
+	api.GET("/health/discord", handlers.discordHealth.GetDiscordHealth, dashboardRL)
 
 	timelineRL := echolog.RateLimiter(echolog.NewRateLimiterMemoryStore(10))
 	api.GET("/timeline", handlers.timeline.GetTimeline, timelineRL)
@@ -363,7 +374,11 @@ func run() error {
 	sched.Start()
 	defer sched.Stop()
 
-	stopBot, err := startDiscordBotIfConfigured(port, apiKey, aiw.chain)
+	// [F185-05] startDiscordBotIfConfigured no longer returns a fatal error
+	// for a bot.Start() failure — only discordbot.New() construction
+	// failures (a fixable env mistake) still propagate here. handlers is
+	// already in scope (built at wireHandlers above, well before this call).
+	stopBot, err := startDiscordBotIfConfigured(port, apiKey, aiw.chain, handlers.discordHealth)
 	if err != nil {
 		return err
 	}
@@ -486,15 +501,161 @@ func buildSPAHandler(distFS fs.FS) http.Handler {
 	})
 }
 
-func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) (func(), error) {
+// discordStarter is the subset of *discordbot.Bot that startBotAndHealth
+// needs. Defined here (not depended on as *discordbot.Bot directly) so tests
+// can substitute a fake whose Start() fails, panics, or blocks forever
+// without opening a real WebSocket connection to Discord's gateway.
+// [F185-05]
+type discordStarter interface {
+	Start() error
+	Stop()
+}
+
+var _ discordStarter = (*discordbot.Bot)(nil) // compile-time seam check
+
+// discordStartTimeout caps how long startBotAndHealth's background goroutine
+// may run bot.Start() before the health state is degraded on its own account,
+// independent of whether Start() ever returns.
+//
+// This is a deliberately accepted trade-off, not a proven-safe bound: 45s is
+// gorilla/websocket's DefaultDialer.HandshakeTimeout (go.mod-pinned
+// v1.4.2), but discordgo.Session.Open() also makes a REST call to resolve
+// the gateway URL and can retry across 429 responses, sleeping for
+// Retry-After — which can legitimately exceed 60s during the exact
+// rate-limit condition this whole task exists to survive. The trade-off is
+// accepted because a false "degraded" only costs an early status flip (D5
+// makes the shutdown path safe regardless of how long Start() actually
+// takes), while leaving the state "starting" forever makes a genuinely stuck
+// bot indistinguishable from one still connecting.
+const discordStartTimeout = 60 * time.Second
+
+// startBotAndHealth runs bot.Start() in its own goroutine so a Start()
+// failure, panic, or indefinite block can never delay or prevent the
+// HTTP/MCP server from booting. It returns immediately; the eventual outcome
+// is written to health asynchronously via Set(). [F185-05]
+//
+// The returned stop func is safe to call from a shutdown defer at any time.
+// It keys off whether bot.Start() has actually returned (startReturned),
+// NEVER off health's status — after discordStartTimeout elapses, health can
+// already read "degraded" while bot.Start() is still blocked inside
+// discordgo holding its session lock (discordgo Session.Open() holds
+// s.Lock() across an un-deadlined ReadMessage()). Calling bot.Stop() in that
+// window would block on the same lock inside CloseWithCode and deadlock
+// server shutdown — the exact failure this whole design exists to close.
+func startBotAndHealth(bot discordStarter, health *handler.DiscordHealthHandler, timeout time.Duration) func() {
+	health.Set(handler.DiscordHealthState{Status: handler.DiscordStatusStarting})
+
+	startReturned := make(chan struct{})
+	var writeOnce sync.Once // guarantees only one of {Start's own result, the timeout watcher} writes the final health state.
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Known-risk #3 (dispatch): recover() swallows the stack
+				// trace unless captured explicitly.
+				slog.Error("discord bot: Start panicked, degrading (server continues)",
+					"recover", r, "stack", string(debug.Stack()))
+				writeOnce.Do(func() {
+					health.Set(handler.DiscordHealthState{
+						Status: handler.DiscordStatusDegraded,
+						Detail: fmt.Sprintf("start panicked: %v", r),
+					})
+				})
+				close(startReturned)
+				// A panic inside Start() can only originate after
+				// session.Open() has already returned (Open() itself
+				// returns errors, it does not panic), so the session lock
+				// is free here — safe to close proactively rather than
+				// leaving a live half-registered connection to Discord's
+				// gateway sitting open.
+				bot.Stop()
+				return
+			}
+		}()
+
+		err := bot.Start()
+		close(startReturned)
+
+		if err != nil {
+			log.Printf("discord bot: Start failed, degrading (server continues): %v", err)
+			// SECURITY: Detail below is err.Error() verbatim — surfaced to any
+			// caller with a valid API key. Verified this never embeds the raw
+			// bot token: discordgo's Session.Open() has 8 error-return points
+			// (bwmarrin/discordgo@v0.29.0's wsapi.go), none of which format the
+			// token; the only place discordgo ever prints request headers
+			// (restapi.go:229-233) is gated behind Session.Debug, which this
+			// package never sets. A real fake-token run against Discord's
+			// gateway produced "websocket: close 4004: Authentication failed."
+			// with the token absent, matching that analysis.
+			writeOnce.Do(func() {
+				health.Set(handler.DiscordHealthState{Status: handler.DiscordStatusDegraded, Detail: err.Error()})
+			})
+			if errors.Is(err, discordbot.ErrSessionStateUnavailable) {
+				// [F185-05] Open() succeeded before this sentinel fired
+				// (bot.go's nil guard runs after Open() returns) — there is
+				// a live half-open session to close, unlike the "Open()
+				// itself failed" branch above, which never opened one.
+				bot.Stop()
+			}
+			return
+		}
+
+		log.Println("discord bot started")
+		writeOnce.Do(func() {
+			health.Set(handler.DiscordHealthState{Status: handler.DiscordStatusOK})
+		})
+	}()
+
+	go func() {
+		select {
+		case <-startReturned:
+			return
+		case <-time.After(timeout):
+			// Start() has not returned yet. Do NOT touch bot here — see the
+			// startBotAndHealth doc comment on why calling Stop() in this
+			// window can deadlock. Only the health state changes; the
+			// goroutine above is left to leak for the remaining process
+			// lifetime (accepted risk — at most one per process start).
+			writeOnce.Do(func() {
+				health.Set(handler.DiscordHealthState{
+					Status: handler.DiscordStatusDegraded,
+					Detail: fmt.Sprintf("start timed out after %s, later result discarded", timeout),
+				})
+			})
+		}
+	}()
+
+	return func() {
+		select {
+		case <-startReturned:
+			bot.Stop()
+		default:
+			slog.Warn("discord bot: stop called before Start() returned — skipping Stop() to avoid blocking shutdown")
+		}
+	}
+}
+
+// startDiscordBotIfConfigured starts the Discord bot if configured, and
+// wires its health into health. It only returns a non-nil error for
+// discordbot.New() construction failures — a fixable env mistake (fail-closed
+// authz misconfiguration or discordgo construction failure) that should stay
+// fatal. A bot.Start() failure is an external-service fault (bad token,
+// rate-limit, network) that this process cannot fix by restarting, so it is
+// never fatal — see startBotAndHealth. [F185-05]
+func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient, health *handler.DiscordHealthHandler) (func(), error) {
 	if strings.EqualFold(os.Getenv("DISCORD_ENV"), "local") {
 		log.Println("discord bot: DISCORD_ENV=local — skipping bot startup (local dev mode)")
+		health.Set(handler.DiscordHealthState{Status: handler.DiscordStatusUnconfigured, Detail: "DISCORD_ENV=local"})
 		return func() {}, nil
 	}
 	botToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if botToken == "" {
+		health.Set(handler.DiscordHealthState{Status: handler.DiscordStatusUnconfigured, Detail: "DISCORD_BOT_TOKEN not set"})
 		return func() {}, nil
 	}
+	// D1 (locked, NEVER reopen): New() failure stays fatal — pure struct
+	// construction that never touches the network, so it is the one branch
+	// the operator can actually fix by correcting env and restarting.
 	bot, err := discordbot.New(
 		botToken,
 		"http://localhost:"+port,
@@ -506,11 +667,8 @@ func startDiscordBotIfConfigured(port, apiKey string, llmClient llm.JSONClient) 
 	if err != nil {
 		return nil, fmt.Errorf("creating discord bot: %w", err)
 	}
-	if err := bot.Start(); err != nil {
-		return nil, fmt.Errorf("starting discord bot: %w", err)
-	}
-	log.Println("discord bot started")
-	return bot.Stop, nil
+	stop := startBotAndHealth(bot, health, discordStartTimeout)
+	return stop, nil
 }
 
 func buildStores(backend storage.Backend) (storage.ServerStores, error) {
@@ -602,6 +760,10 @@ type serverHandlers struct {
 	postToolUse *handler.PostToolUseHandler
 	reconcile   *handler.ReconcileHandler
 	llmHealth   *handler.LLMHealthHandler
+	// discordHealth [F185-06] is constructed here (before startDiscordBotIfConfigured
+	// runs) so routes can bind to it immediately; its state is populated later,
+	// asynchronously, by startBotAndHealth via Set().
+	discordHealth *handler.DiscordHealthHandler
 }
 
 // buildGoalProjectAcceptAdapter returns the factory handler.ProposalHandler
@@ -718,25 +880,30 @@ func wireHandlers(
 	// rather than the thing actually serving traffic, and those two drifting
 	// apart is the class of bug this endpoint exists to catch.
 	llmHealthH := handler.NewLLMHealthHandler(aiw.chain)
+	// [F185-06] Constructed here, before startDiscordBotIfConfigured (which
+	// runs later in run()) exists to populate it — see the struct field
+	// comment on serverHandlers.discordHealth.
+	discordHealthH := handler.NewDiscordHealthHandler()
 
 	return &serverHandlers{
-		ctx:         ctxH,
-		gtd:         gtdH,
-		workspace:   wsH,
-		workspaceOv: wsOverviewH,
-		decision:    decH,
-		knowledge:   knowledgeH,
-		proposal:    proposalH,
-		search:      searchH,
-		learning:    learningH,
-		dashboard:   dashH,
-		vision:      visionH,
-		authSession: authSessH,
-		timeline:    timelineH,
-		autolog:     autologH,
-		postToolUse: postToolUseH,
-		reconcile:   reconcileH,
-		llmHealth:   llmHealthH,
+		ctx:           ctxH,
+		gtd:           gtdH,
+		workspace:     wsH,
+		workspaceOv:   wsOverviewH,
+		decision:      decH,
+		knowledge:     knowledgeH,
+		proposal:      proposalH,
+		search:        searchH,
+		learning:      learningH,
+		dashboard:     dashH,
+		vision:        visionH,
+		authSession:   authSessH,
+		timeline:      timelineH,
+		autolog:       autologH,
+		postToolUse:   postToolUseH,
+		reconcile:     reconcileH,
+		llmHealth:     llmHealthH,
+		discordHealth: discordHealthH,
 	}
 }
 
