@@ -141,10 +141,25 @@ func newBotHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
+// ErrSessionStateUnavailable is returned by Start when session.Open()
+// succeeds but session.State.User is still nil. [F185-05]
+//
+// Discord can send op 9 (Invalid Session) while the bot is being
+// rate-limited; discordgo resends identify and Open() returns (nil, nil)
+// without necessarily having received a full READY payload — non-READY/
+// non-RESUMED frames are only logged as warnings inside discordgo, not
+// treated as an Open() failure. Without this guard, the next line would
+// dereference session.State.User while it is still nil.
+var ErrSessionStateUnavailable = errors.New("session state unavailable")
+
 // Start opens the WebSocket connection and registers slash commands.
 func (b *Bot) Start() error {
 	if err := b.session.Open(); err != nil {
 		return fmt.Errorf("open discord session: %w", err)
+	}
+	if b.session.State == nil || b.session.State.User == nil {
+		slog.Warn("discord bot: session opened but State.User unavailable, skipping slash command registration")
+		return ErrSessionStateUnavailable
 	}
 	scope := "global"
 	if b.guildID != "" {
