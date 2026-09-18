@@ -60,9 +60,11 @@ func TestRecoverHandler_PassesThroughNormalCalls(t *testing.T) {
 // completely silent at runtime.
 func TestRecoverHandler_PreservesConcreteSignature(t *testing.T) {
 	var _ func(*discordgo.Session, *discordgo.MessageCreate) = recoverHandler(
-		"msg", func(*discordgo.Session, *discordgo.MessageCreate) {})
+		"msg", func(*discordgo.Session, *discordgo.MessageCreate) {},
+	)
 	var _ func(*discordgo.Session, *discordgo.InteractionCreate) = recoverHandler(
-		"interaction", func(*discordgo.Session, *discordgo.InteractionCreate) {})
+		"interaction", func(*discordgo.Session, *discordgo.InteractionCreate) {},
+	)
 }
 
 // --- the nil chain onMessage dereferences first ---
