@@ -21,7 +21,8 @@ import (
 // file is added.
 // [F170-21] 76 -> 77 for migrations/sqlite/000077_normalize_due_date_layout.
 // [F184-04] 77 -> 78 for migrations/sqlite/000078_discipline_events_outcome.
-const latestSQLiteSchemaVersion = 78
+// [F186-01] 78 -> 79 for migrations/sqlite/000079_task_area.
+const latestSQLiteSchemaVersion = 79
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

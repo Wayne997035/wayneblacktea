@@ -528,6 +528,14 @@ func branchNameMCPCall(branchName string) func(t *testing.T, env *parityEnv) par
 			// which would otherwise wrap the result as {"task":...,
 			// "warnings":...} instead of the bare task JSON idOnly expects.
 			"kind": "chore",
+			// area is schema-required on the MCP surface only (F186-01); the
+			// HTTP twin has no such requirement, by design — MCP callers can
+			// supply a classification, the web UI's cannot be made to. This
+			// matrix is about branch_name LENGTH parity, so the area has to be
+			// supplied here or the MCP side rejects for an unrelated reason:
+			// that would turn the 256-rune case green for the wrong cause
+			// while hiding whether the length rule agrees at all.
+			"area": "unsorted",
 		}
 		r := callTool(t, "add_task", args, env.srv.handleAddTask)
 		if r.IsError {

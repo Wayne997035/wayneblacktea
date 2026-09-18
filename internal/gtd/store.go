@@ -388,6 +388,15 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 	if f.UpdatedSince != nil {
 		updatedSinceArg = *f.UpdatedSince
 	}
+	// The area predicate is appended as the LAST positional parameter of each
+	// branch rather than renumbering the existing ones — renumbering three
+	// near-identical queries by hand is exactly the edit that silently swaps
+	// two placeholders. Empty string means "every area", so existing callers
+	// are unaffected without needing a nil-able type.
+	//
+	// area is deliberately NOT added to selectCols: when a caller filters by
+	// one area, echoing that same area back on every row is pure payload —
+	// and payload is the cost this whole feature exists to cut.
 	switch f.Status {
 	case "", "active":
 		q := `SELECT ` + selectCols + `
@@ -396,18 +405,20 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($1::uuid IS NULL OR project_id = $1)
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
+			  AND ($6::text = '' OR area = $6)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
 	case "all":
 		q := `SELECT ` + selectCols + `
 			FROM tasks
 			WHERE ($1::uuid IS NULL OR project_id = $1)
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
+			  AND ($6::text = '' OR area = $6)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -415,9 +426,10 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR project_id = $2)
 			  AND ($3::uuid IS NULL OR workspace_id = $3)
 			  AND ($6::timestamptz IS NULL OR updated_at >= $6)
+			  AND ($7::text = '' OR area = $7)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $4 OFFSET $5`
-		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg)
+		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing filtered tasks: %w", err)
@@ -439,6 +451,59 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 		return nil, fmt.Errorf("iterating filtered tasks: %w", err)
 	}
 	return out, nil
+}
+
+// TaskAreaCounts implements StoreIface.
+//
+// LEFT JOIN from task_areas (not an aggregate over tasks) so an area with no
+// open tasks still comes back as a zero row. The status and workspace
+// predicates sit in the JOIN condition, not in WHERE — moving either one to
+// WHERE turns the outer join back into an inner join and makes empty areas
+// vanish, which is the one behaviour this method is built to prevent.
+func (s *Store) TaskAreaCounts(ctx context.Context) ([]AreaCount, error) {
+	const q = `
+		SELECT a.area, a.label,
+		       COALESCE(SUM(CASE WHEN t.status = 'pending'     THEN 1 ELSE 0 END), 0) AS pending,
+		       COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress
+		  FROM task_areas a
+		  LEFT JOIN tasks t
+		         ON t.area = a.area
+		        AND t.status IN ('pending','in_progress')
+		        AND ($1::uuid IS NULL OR t.workspace_id = $1)
+		 WHERE a.archived = FALSE
+		 GROUP BY a.area, a.label, a.sort_order
+		 ORDER BY a.sort_order ASC, a.area ASC`
+	rows, err := s.dbtx.Query(ctx, q, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("counting task areas: %w", err)
+	}
+	defer rows.Close()
+	var out []AreaCount
+	for rows.Next() {
+		var c AreaCount
+		if err := rows.Scan(&c.Area, &c.Label, &c.Pending, &c.InProgress); err != nil {
+			return nil, fmt.Errorf("scanning task area count: %w", err)
+		}
+		c.Open = c.Pending + c.InProgress
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task area counts: %w", err)
+	}
+	return out, nil
+}
+
+// TaskAreaExists implements StoreIface.
+func (s *Store) TaskAreaExists(ctx context.Context, area string) (bool, error) {
+	var exists bool
+	if err := s.dbtx.QueryRow(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM task_areas WHERE area = $1 AND archived = FALSE)`,
+		area,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("checking task area: %w", err)
+	}
+	return exists, nil
 }
 
 // TasksForTimeline returns all tasks (any status) where created_at OR
@@ -617,10 +682,14 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		assignee = normalized
 	}
 
+	area := p.Area
+	if area == "" {
+		area = "unsorted"
+	}
 	const q = `INSERT INTO tasks
 		(project_id, title, description, status, priority, assignee, due_date, importance, context, kind,
-		 branch_name, pr_url, commit_shas, workspace_id, vision_item_id)
-		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, '{}', $12, $13)
+		 branch_name, pr_url, commit_shas, workspace_id, vision_item_id, area)
+		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, '{}', $12, $13, $14)
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
 		          branch_name, pr_url, commit_shas, vision_item_id`
@@ -629,7 +698,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		pgconv.ToUUID(p.ProjectID), p.Title, pgconv.ToText(p.Description), priority, pgconv.ToText(assignee),
 		pgconv.ToTimestamptz(p.DueDate), toInt2(p.Importance), pgconv.ToText(p.Context), kind,
 		pgconv.ToText(coalesceStringPtr(p.BranchName)), pgconv.ToText(coalesceStringPtr(p.PRUrl)),
-		s.workspaceID, pgconv.ToUUID(p.VisionItemID),
+		s.workspaceID, pgconv.ToUUID(p.VisionItemID), area,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating task %q: %w", p.Title, err)

@@ -325,6 +325,15 @@ var expectedNewEntries = map[string]bool{
 	// schema.sql never carried this index. Net-new versus the golden baseline.
 	"index|idx_tasks_due_date": true,
 
+	// migrations/sqlite/000079_task_area.up.sql (F186-01): the task_areas
+	// lookup table and the (area, status) index it exists to serve. Both are
+	// net-new versus the frozen golden baseline. The tasks.area column that
+	// goes with them is NOT listed here — it belongs to a table the golden
+	// file already carries, so it is hand-added to testdata/schema_golden.sql
+	// directly, the same way 000073's decisions columns were.
+	"table|task_areas":            true,
+	"index|idx_tasks_area_status": true,
+
 	// migrations/sqlite/000074_outcomes_supersession.up.sql (arch-r2 A13,
 	// decision 80c1e8ae, outcome lifecycle convergence): one brand-new
 	// index on the outcomes table, added after the legacy schema.sql

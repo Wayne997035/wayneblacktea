@@ -95,6 +95,14 @@ func (noopGTDStore) TasksFiltered(context.Context, gtd.TaskFilter) ([]db.Task, e
 	return nil, nil
 }
 
+func (noopGTDStore) TaskAreaCounts(context.Context) ([]gtd.AreaCount, error) {
+	return nil, nil
+}
+
+func (noopGTDStore) TaskAreaExists(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (noopGTDStore) TasksByProjectAllStatuses(context.Context, uuid.UUID) ([]db.Task, error) {
 	return nil, nil
 }

@@ -13,6 +13,19 @@ import (
 // callAddTask invokes add_task (seam + handleAddTask) with the given args.
 func callAddTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
+	// area became schema-required in F186-01. Callers that are not testing
+	// area itself get "unsorted" injected here rather than each of them
+	// growing an unrelated field — a test about due_date parsing should stay
+	// about due_date parsing.
+	//
+	// This default does NOT weaken the requirement: it is enforced by the
+	// seam before the handler runs, and TestAddTaskSchema_AreaRequired
+	// asserts the schema directly (it goes red if mcp.Required() is removed,
+	// verified by mutation). A test that wants the missing-area behaviour
+	// calls the handler without this helper.
+	if _, ok := args["area"]; !ok {
+		args["area"] = "unsorted"
+	}
 	return callTool(t, "add_task", args, s.handleAddTask)
 }
 

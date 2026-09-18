@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
@@ -469,6 +472,15 @@ type todayContext struct {
 	// decision: automatic, data-only, no manual pull tool). Always a non-nil
 	// slice — empty array, never null, so clients don't need a presence check.
 	PulledForward []pulledForwardTask `json:"pulled_forward"`
+	// AreasSummary is one line like "wbt 166 / ai-arch 113 / unsorted 103".
+	// It lives here, rather than only in the gtd/areas resource, because the
+	// protocol makes get_today_context the one call every session actually
+	// starts with — a resource nobody remembers to read answers nothing, and
+	// the caller falls back to eyeballing list_tasks, which is the behaviour
+	// the area column was added to stop. A flat string, not nested objects:
+	// the full breakdown is one resource read away, and this line is paid by
+	// every session whether it needs it or not.
+	AreasSummary string `json:"areas_summary"`
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +505,8 @@ type todayContextRaw struct {
 	pulled      []db.Task
 	pulledErr   error
 	latestSnap  *latestStatusSnapshot
+	areas       []gtd.AreaCount
+	areasErr    error
 }
 
 // fetchTodayContext runs the six independent store lookups behind
@@ -514,7 +528,18 @@ func (s *Server) fetchTodayContext(ctx context.Context) *todayContextRaw {
 	raw := &todayContextRaw{}
 
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(7)
+
+	// The area breakdown is the seventh lookup. Its error is deliberately
+	// NOT added to the positional error contract below: a failure here must
+	// degrade the summary line, never fail the whole session-start call that
+	// goals, projects and the handoff depend on. toContext turns areasErr
+	// into a visible "unavailable" marker rather than an empty string, so a
+	// broken lookup cannot be mistaken for "no areas".
+	go func() {
+		defer wg.Done()
+		raw.areas, raw.areasErr = s.gtd.TaskAreaCounts(ctx)
+	}()
 
 	go func() {
 		defer wg.Done()
@@ -613,7 +638,33 @@ func (r *todayContextRaw) toContext() todayContext {
 		PendingHandoff:       buildPendingHandoffSummary(r.handoff),
 		LatestStatusSnapshot: r.latestSnap,
 		PulledForward:        slimPulledForward(r.pulled),
+		AreasSummary:         areasSummaryLine(r.areas, r.areasErr),
 	}
+}
+
+// areasSummaryLine renders the one-line area breakdown, e.g.
+// "wbt 166 / ai-arch 113 / unsorted 103".
+//
+// Areas with zero open tasks are omitted from the LINE (not from the
+// gtd/areas resource, which always lists them): this string is paid by every
+// session, and a run of "… / foo 0 / bar 0" costs bytes to say nothing. An
+// error becomes "unavailable" rather than "" so that a failed lookup and a
+// genuinely empty board stay distinguishable.
+func areasSummaryLine(areas []gtd.AreaCount, err error) string {
+	if err != nil {
+		return "unavailable"
+	}
+	parts := make([]string, 0, len(areas))
+	for _, a := range areas {
+		if a.Open == 0 {
+			continue
+		}
+		parts = append(parts, a.Area+" "+strconv.Itoa(a.Open))
+	}
+	if len(parts) == 0 {
+		return "none open"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
