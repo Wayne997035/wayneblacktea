@@ -1900,6 +1900,165 @@ func (a *sqliteDeleteTaskAdapter) Rollback(context.Context) {
 	_ = a.tx.Rollback()
 }
 
+// DeleteProject deletes a project together with every task under it and
+// returns how many tasks were removed. SQLite twin of gtd.Store.DeleteProject;
+// both drive the same gtd.DeleteProjectOrchestration, so the two backends
+// cannot clean different sets of references.
+func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID) (int, error) {
+	n, err := gtd.DeleteProjectOrchestration(ctx, id, &sqliteDeleteProjectAdapter{s: s, id: id})
+	if err != nil {
+		return 0, fmt.Errorf("%w", err) // context already added by DeleteProjectOrchestration
+	}
+	return n, nil
+}
+
+type sqliteDeleteProjectAdapter struct {
+	s  *GTDStore
+	id uuid.UUID
+	tx *sql.Tx
+}
+
+// sqliteProjectTaskIDs is the SQLite twin of the Postgres projectTaskIDs
+// subquery. Both name the set of tasks about to be deleted, and every
+// task-level cleanup filters on it so the cleanups and the DELETE can never
+// select different sets.
+const sqliteProjectTaskIDs = `SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`
+
+func (a *sqliteDeleteProjectAdapter) run(ctx context.Context, q string, args ...any) error {
+	if _, err := a.tx.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
+}
+
+// execWorkspaceScoped runs a statement taking ?1 = project id, ?2 = workspace.
+func (a *sqliteDeleteProjectAdapter) execWorkspaceScoped(ctx context.Context, q string) error {
+	return a.run(ctx, q, a.id.String(), a.s.db.workspaceArg())
+}
+
+// execByProject runs a statement taking ?1 = project id alone. The project_id
+// back-references are cleaned without a workspace predicate for the same
+// reason as the Postgres adapter: the pre-check already established the
+// project's workspace, and filtering on the referencing row's workspace would
+// skip exactly the rows that would be left dangling.
+func (a *sqliteDeleteProjectAdapter) execByProject(ctx context.Context, q string) error {
+	return a.run(ctx, q, a.id.String())
+}
+
+func (a *sqliteDeleteProjectAdapter) BeginTx(ctx context.Context) error {
+	tx, err := a.s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	a.tx = tx
+	return nil
+}
+
+func (a *sqliteDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, error) {
+	var exists int
+	row := a.tx.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(
+		    SELECT 1 FROM projects
+		     WHERE id = ?1
+		       AND (?2 IS NULL OR workspace_id = ?2)
+		 )`,
+		a.id.String(), a.s.db.workspaceArg(),
+	)
+	if err := row.Scan(&exists); err != nil {
+		return false, fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return exists != 0, nil
+}
+
+func (a *sqliteDeleteProjectAdapter) CountTasks(ctx context.Context) (int, error) {
+	var n int
+	row := a.tx.QueryRowContext(
+		ctx,
+		`SELECT count(*) FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`,
+		a.id.String(), a.s.db.workspaceArg(),
+	)
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return n, nil
+}
+
+func (a *sqliteDeleteProjectAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx, `DELETE FROM work_session_tasks WHERE task_id IN (`+sqliteProjectTaskIDs+`)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyWorkSessionsCurrentTask(ctx context.Context) error {
+	return a.run(ctx,
+		`UPDATE work_sessions
+		    SET current_task_id = NULL,
+		        updated_at      = ?3
+		  WHERE current_task_id IN (`+sqliteProjectTaskIDs+`)`,
+		a.id.String(), a.s.db.workspaceArg(), nowRFC3339())
+}
+
+func (a *sqliteDeleteProjectAdapter) CleanupCompletionCandidates(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx, `DELETE FROM completion_candidates WHERE task_id IN (`+sqliteProjectTaskIDs+`)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) ResetPromotedVisionItems(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx, `UPDATE vision_items
+		    SET promoted_task_id = NULL,
+		        status           = 'open'
+		  WHERE promoted_task_id IN (`+sqliteProjectTaskIDs+`)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyDecisionTaskRefs(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx, `UPDATE decisions SET task_id = NULL WHERE task_id IN (`+sqliteProjectTaskIDs+`)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyKnowledgeItemTaskRefs(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx, `UPDATE knowledge_items SET task_id = NULL WHERE task_id IN (`+sqliteProjectTaskIDs+`)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyActivityLogProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE activity_log SET project_id = NULL WHERE project_id = ?1`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyDecisionProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE decisions SET project_id = NULL WHERE project_id = ?1`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyKnowledgeItemProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE knowledge_items SET project_id = NULL WHERE project_id = ?1`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifySessionHandoffProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE session_handoffs SET project_id = NULL WHERE project_id = ?1`)
+}
+
+func (a *sqliteDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = ?1`)
+}
+
+func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx,
+		`DELETE FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {
+	return a.execWorkspaceScoped(ctx,
+		`DELETE FROM projects WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`)
+}
+
+func (a *sqliteDeleteProjectAdapter) Commit(context.Context) error {
+	if err := a.tx.Commit(); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
+}
+
+func (a *sqliteDeleteProjectAdapter) Rollback(context.Context) {
+	if a.tx != nil {
+		_ = a.tx.Rollback()
+	}
+}
+
 // TopPendingTask returns the single highest-priority pending task in the
 // configured workspace, ordered by priority ASC NULLS LAST, importance ASC
 // NULLS LAST, created_at ASC. Returns nil, nil when no pending task exists.

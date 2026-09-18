@@ -1456,8 +1456,27 @@ type pgDeleteProjectAdapter struct {
 // clearing another's references.
 const projectTaskIDs = `SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`
 
-func (a *pgDeleteProjectAdapter) exec(ctx context.Context, q string) error {
-	if _, err := a.tx.Exec(ctx, q, a.id, a.s.workspaceID); err != nil {
+// execWorkspaceScoped runs a statement taking $1 = project id and $2 =
+// workspace. Used by everything that reads or deletes task rows, so the
+// cleanups and the DELETE select exactly the same set: a cleanup matching a
+// wider set than the DELETE would clear a reference to a task that survives.
+func (a *pgDeleteProjectAdapter) execWorkspaceScoped(ctx context.Context, q string) error {
+	return a.run(ctx, q, a.id, a.s.workspaceID)
+}
+
+// execByProject runs a statement taking $1 = project id alone. The five
+// project_id back-references are cleaned without a workspace predicate on
+// purpose: WorkspacePrecheck has already established the project belongs to
+// this workspace, and filtering on the *referencing* row's workspace would
+// skip precisely the rows whose workspace disagrees — leaving a dangling
+// project_id, which is the failure this whole interface exists to prevent.
+// pgDeleteTaskAdapter cleans its task_id back-references the same way.
+func (a *pgDeleteProjectAdapter) execByProject(ctx context.Context, q string) error {
+	return a.run(ctx, q, a.id)
+}
+
+func (a *pgDeleteProjectAdapter) run(ctx context.Context, q string, args ...any) error {
+	if _, err := a.tx.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
 	}
 	return nil
@@ -1480,7 +1499,11 @@ func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, e
 	var exists bool
 	if err := a.tx.QueryRow(
 		ctx,
-		`SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)`, a.id,
+		`SELECT EXISTS(
+		    SELECT 1 FROM projects
+		     WHERE id = $1
+		       AND ($2::uuid IS NULL OR workspace_id = $2)
+		 )`, a.id, a.s.workspaceID,
 	).Scan(&exists); err != nil {
 		return false, fmt.Errorf("%w", err)
 	}
@@ -1500,57 +1523,57 @@ func (a *pgDeleteProjectAdapter) CountTasks(ctx context.Context) (int, error) {
 }
 
 func (a *pgDeleteProjectAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
-	return a.exec(ctx, `DELETE FROM work_session_tasks WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execWorkspaceScoped(ctx, `DELETE FROM work_session_tasks WHERE task_id IN (`+projectTaskIDs+`)`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyWorkSessionsCurrentTask(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE work_sessions SET current_task_id = NULL, updated_at = NOW()
+	return a.execWorkspaceScoped(ctx, `UPDATE work_sessions SET current_task_id = NULL, updated_at = NOW()
 		WHERE current_task_id IN (`+projectTaskIDs+`)`)
 }
 
 func (a *pgDeleteProjectAdapter) CleanupCompletionCandidates(ctx context.Context) error {
-	return a.exec(ctx, `DELETE FROM completion_candidates WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execWorkspaceScoped(ctx, `DELETE FROM completion_candidates WHERE task_id IN (`+projectTaskIDs+`)`)
 }
 
 func (a *pgDeleteProjectAdapter) ResetPromotedVisionItems(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE vision_items SET promoted_task_id = NULL, status = 'open'
+	return a.execWorkspaceScoped(ctx, `UPDATE vision_items SET promoted_task_id = NULL, status = 'open'
 		WHERE promoted_task_id IN (`+projectTaskIDs+`)`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyDecisionTaskRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE decisions SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execWorkspaceScoped(ctx, `UPDATE decisions SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyKnowledgeItemTaskRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE knowledge_items SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execWorkspaceScoped(ctx, `UPDATE knowledge_items SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyActivityLogProjectRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE activity_log SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+	return a.execByProject(ctx, `UPDATE activity_log SET project_id = NULL WHERE project_id = $1`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyDecisionProjectRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE decisions SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+	return a.execByProject(ctx, `UPDATE decisions SET project_id = NULL WHERE project_id = $1`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyKnowledgeItemProjectRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE knowledge_items SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+	return a.execByProject(ctx, `UPDATE knowledge_items SET project_id = NULL WHERE project_id = $1`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifySessionHandoffProjectRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE session_handoffs SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+	return a.execByProject(ctx, `UPDATE session_handoffs SET project_id = NULL WHERE project_id = $1`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Context) error {
-	return a.exec(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+	return a.execByProject(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = $1`)
 }
 
 func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
-	return a.exec(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
+	return a.execWorkspaceScoped(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
 }
 
 func (a *pgDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {
-	return a.exec(ctx, `DELETE FROM projects WHERE id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+	return a.execWorkspaceScoped(ctx, `DELETE FROM projects WHERE id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
 }
 
 func (a *pgDeleteProjectAdapter) Commit(ctx context.Context) error {

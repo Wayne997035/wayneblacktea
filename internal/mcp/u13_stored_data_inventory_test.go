@@ -113,6 +113,11 @@ var storedDataReaders = []storedDataReader{
 	{file: "tools_gtd.go", tool: "checklist_toggle", status: readerPass},
 	{file: "tools_gtd.go", tool: "checklist_complete", status: readerPass},
 	{file: "tools_gtd.go", tool: "begin_task", status: readerPass},
+	// delete_project's confirmation_required branch, unlike delete_task's
+	// (a computed exclusion below), echoes the project's stored name and
+	// title so the caller can see what it is about to destroy — caller-
+	// authored free text, so it is clipSafe'd and belongs in this table.
+	{file: "tools_gtd.go", tool: "delete_project", status: readerPass},
 	// tools_health.go
 	{file: "tools_health.go", tool: "system_health", status: readerPass},
 	// tools_knowledge.go
@@ -317,7 +322,12 @@ var storedDataSelfDefinitionExclusions = map[string]int{
 // defence-in-depth fix (PRHeadRef neutralisation) rather than a bare
 // exclusion — see that row's own comment above for why one of its three
 // call sites is not pure same-turn echo.
-const wantStoredDataReaderTotal = 93
+//
+// delete_project's step-1 preview adds the 94th: it is the first delete tool
+// to echo stored text back (the project's name and title, so a caller can see
+// what it is about to destroy), which is why it is a table row and not a
+// computed exclusion like delete_task's token-only twin.
+const wantStoredDataReaderTotal = 94
 
 // TestStoredDataReaderInventory_TotalMatchesDocumentedCount pins
 // storedDataReaders' length against the inventory doc. If someone edits the
@@ -409,7 +419,10 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 	// 111 -> 112: handleResourceGTDAreas' marshalResource call (gtd/areas,
 	// F186-01). Accounted for as an exclusion, not a reader — its payload
 	// carries only task_areas lookup values and integers.
-	const wantTotal = 112
+	// 112 -> 113: handleDeleteProject's confirmation_required preview.
+	// Accounted for as a storedDataReaders row — it echoes the project's
+	// stored name and title, clipSafe'd.
+	const wantTotal = 113
 	if total != wantTotal {
 		t.Errorf("jsonText(/marshalResource( call-site count in internal/mcp/*.go (excluding _test.go) "+
 			"= %d, want %d — storedDataReaders above needs updating to match the current code before "+

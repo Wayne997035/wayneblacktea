@@ -130,6 +130,10 @@ func (m *mockGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.Updat
 
 func (m *mockGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return errMockNotImpl }
 
+func (m *mockGTDStore) DeleteProject(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, errMockNotImpl
+}
+
 func (m *mockGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {
 	return 0, 0, errMockNotImpl
 }
