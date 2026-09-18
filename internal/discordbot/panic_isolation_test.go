@@ -58,13 +58,28 @@ func TestRecoverHandler_PassesThroughNormalCalls(t *testing.T) {
 // so a wrapper that widened the event to `any` would compile, register
 // without error, and then never be invoked for anything — a failure that is
 // completely silent at runtime.
+// The assertion lives in these two parameter types: the calls below only
+// compile if recoverHandler returns exactly the signature discordgo expects.
+// Expressing it as `var _ func(...) = recoverHandler(...)` says the same
+// thing, but staticcheck reads that as a redundant type declaration (QF1011)
+// — and the "redundant" type is the entire point of the test.
+func wantsMessageHandler(t *testing.T, h func(*discordgo.Session, *discordgo.MessageCreate)) {
+	t.Helper()
+	if h == nil {
+		t.Fatal("recoverHandler returned nil for the MessageCreate handler")
+	}
+}
+
+func wantsInteractionHandler(t *testing.T, h func(*discordgo.Session, *discordgo.InteractionCreate)) {
+	t.Helper()
+	if h == nil {
+		t.Fatal("recoverHandler returned nil for the InteractionCreate handler")
+	}
+}
+
 func TestRecoverHandler_PreservesConcreteSignature(t *testing.T) {
-	var _ func(*discordgo.Session, *discordgo.MessageCreate) = recoverHandler(
-		"msg", func(*discordgo.Session, *discordgo.MessageCreate) {},
-	)
-	var _ func(*discordgo.Session, *discordgo.InteractionCreate) = recoverHandler(
-		"interaction", func(*discordgo.Session, *discordgo.InteractionCreate) {},
-	)
+	wantsMessageHandler(t, recoverHandler("msg", func(*discordgo.Session, *discordgo.MessageCreate) {}))
+	wantsInteractionHandler(t, recoverHandler("interaction", func(*discordgo.Session, *discordgo.InteractionCreate) {}))
 }
 
 // --- the nil chain onMessage dereferences first ---
