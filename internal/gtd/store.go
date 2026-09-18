@@ -1438,6 +1438,134 @@ type txBeginner interface {
 // work_sessions; the parent DELETE's workspace filter is now redundant
 // defence-in-depth. See DeleteTaskOrchestration (deletetask_orchestration.go)
 // for the shared control flow this delegates to.
+// DeleteProject deletes a project and every task under it, returning how many
+// tasks were removed.
+func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID) (int, error) {
+	return DeleteProjectOrchestration(ctx, id, &pgDeleteProjectAdapter{s: s, id: id})
+}
+
+type pgDeleteProjectAdapter struct {
+	s  *Store
+	id uuid.UUID
+	tx pgx.Tx
+}
+
+// projectTaskIDs is the subquery every task-level cleanup filters on. Kept in
+// one place so a workspace scope can never be present on some cleanups and
+// missing on others — that asymmetry would delete one workspace's tasks while
+// clearing another's references.
+const projectTaskIDs = `SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`
+
+func (a *pgDeleteProjectAdapter) exec(ctx context.Context, q string) error {
+	if _, err := a.tx.Exec(ctx, q, a.id, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
+}
+
+func (a *pgDeleteProjectAdapter) BeginTx(ctx context.Context) error {
+	beginner, ok := a.s.dbtx.(txBeginner)
+	if !ok {
+		return errors.New("dbtx does not support Begin (cannot run cascade cleanup atomically)")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	a.tx = tx
+	return nil
+}
+
+func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, error) {
+	var exists bool
+	if err := a.tx.QueryRow(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)`, a.id,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("%w", err)
+	}
+	return exists, nil
+}
+
+func (a *pgDeleteProjectAdapter) CountTasks(ctx context.Context) (int, error) {
+	var n int
+	if err := a.tx.QueryRow(
+		ctx,
+		`SELECT count(*) FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`,
+		a.id, a.s.workspaceID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("%w", err)
+	}
+	return n, nil
+}
+
+func (a *pgDeleteProjectAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
+	return a.exec(ctx, `DELETE FROM work_session_tasks WHERE task_id IN (`+projectTaskIDs+`)`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyWorkSessionsCurrentTask(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE work_sessions SET current_task_id = NULL, updated_at = NOW()
+		WHERE current_task_id IN (`+projectTaskIDs+`)`)
+}
+
+func (a *pgDeleteProjectAdapter) CleanupCompletionCandidates(ctx context.Context) error {
+	return a.exec(ctx, `DELETE FROM completion_candidates WHERE task_id IN (`+projectTaskIDs+`)`)
+}
+
+func (a *pgDeleteProjectAdapter) ResetPromotedVisionItems(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE vision_items SET promoted_task_id = NULL, status = 'open'
+		WHERE promoted_task_id IN (`+projectTaskIDs+`)`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyDecisionTaskRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE decisions SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyKnowledgeItemTaskRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE knowledge_items SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyActivityLogProjectRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE activity_log SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyDecisionProjectRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE decisions SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyKnowledgeItemProjectRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE knowledge_items SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifySessionHandoffProjectRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE session_handoffs SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+}
+
+func (a *pgDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Context) error {
+	return a.exec(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+}
+
+func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
+	return a.exec(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
+}
+
+func (a *pgDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {
+	return a.exec(ctx, `DELETE FROM projects WHERE id = $1 AND $2::uuid IS NOT DISTINCT FROM $2::uuid`)
+}
+
+func (a *pgDeleteProjectAdapter) Commit(ctx context.Context) error {
+	if err := a.tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	return nil
+}
+
+func (a *pgDeleteProjectAdapter) Rollback(ctx context.Context) {
+	if a.tx != nil {
+		_ = a.tx.Rollback(ctx)
+	}
+}
+
 func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	return DeleteTaskOrchestration(ctx, id, &pgDeleteTaskAdapter{s: s, id: id})
 }
