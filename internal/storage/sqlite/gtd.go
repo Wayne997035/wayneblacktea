@@ -1834,6 +1834,33 @@ func (a *sqliteDeleteTaskAdapter) CleanupCompletionCandidates(ctx context.Contex
 
 // ResetPromotedVisionItems resets vision_items that were promoted from this
 // task.
+// NullifyDecisionTaskRefs is the SQLite twin of the Postgres adapter's method
+// (migration 000048). Both backends must clean the same set of references —
+// a cleanup that exists on only one of them is a dual-backend divergence that
+// no test would catch unless it runs against both.
+func (a *sqliteDeleteTaskAdapter) NullifyDecisionTaskRefs(ctx context.Context) error {
+	if _, err := a.tx.ExecContext(
+		ctx,
+		`UPDATE decisions SET task_id = NULL WHERE task_id = ?1`,
+		a.id.String(),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
+// NullifyKnowledgeItemTaskRefs is the SQLite twin (migration 000049).
+func (a *sqliteDeleteTaskAdapter) NullifyKnowledgeItemTaskRefs(ctx context.Context) error {
+	if _, err := a.tx.ExecContext(
+		ctx,
+		`UPDATE knowledge_items SET task_id = NULL WHERE task_id = ?1`,
+		a.id.String(),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
 func (a *sqliteDeleteTaskAdapter) ResetPromotedVisionItems(ctx context.Context) error {
 	if _, err := a.tx.ExecContext(
 		ctx,

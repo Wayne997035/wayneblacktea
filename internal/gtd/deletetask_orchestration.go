@@ -47,6 +47,23 @@ type DeleteTaskAdapter interface {
 	// from the task back to an un-promoted, open state.
 	ResetPromotedVisionItems(ctx context.Context) error
 
+	// NullifyDecisionTaskRefs NULLs decisions.task_id on rows pointing at the
+	// task (migration 000048). The decision itself is kept: it records a
+	// choice that stays true after the task it was attached to is gone.
+	NullifyDecisionTaskRefs(ctx context.Context) error
+
+	// NullifyKnowledgeItemTaskRefs NULLs knowledge_items.task_id on rows
+	// pointing at the task (migration 000049). Same reasoning as decisions —
+	// the knowledge outlives the task that produced it.
+	//
+	// These two joined the interface later than the four above, and the gap
+	// is the whole reason they exist: both columns are indexed and neither
+	// was ever cleaned, so every delete_task left up to one dangling
+	// reference per row. Red line #9 forbids foreign keys, which means the
+	// database cannot notice — referential integrity here is exactly and
+	// only what this interface remembers to do.
+	NullifyKnowledgeItemTaskRefs(ctx context.Context) error
+
 	// DeleteTaskRow deletes the task row itself, scoped to the adapter's
 	// configured workspace.
 	DeleteTaskRow(ctx context.Context) error
@@ -102,6 +119,12 @@ func DeleteTaskOrchestration(ctx context.Context, id uuid.UUID, adapter DeleteTa
 	}
 	if err := adapter.ResetPromotedVisionItems(ctx); err != nil {
 		return fmt.Errorf("delete task %s: reset vision_items.promoted_task_id: %w", id, err)
+	}
+	if err := adapter.NullifyDecisionTaskRefs(ctx); err != nil {
+		return fmt.Errorf("delete task %s: nullify decisions.task_id: %w", id, err)
+	}
+	if err := adapter.NullifyKnowledgeItemTaskRefs(ctx); err != nil {
+		return fmt.Errorf("delete task %s: nullify knowledge_items.task_id: %w", id, err)
 	}
 
 	if err := adapter.DeleteTaskRow(ctx); err != nil {
