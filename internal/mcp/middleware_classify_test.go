@@ -342,6 +342,14 @@ func (m *mockClassifyGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter
 	return nil, errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) TaskAreaCounts(_ context.Context) ([]gtd.AreaCount, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) TaskAreaExists(_ context.Context, _ string) (bool, error) {
+	return false, errMockNotImpl
+}
+
 // TestMaybeClassifyToolCall_NilClassifier verifies that a nil classifier results in no-op.
 func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
 	g := &mockClassifyGTDStore{}

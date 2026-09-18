@@ -614,6 +614,10 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 		err  error
 	)
 	updatedSinceArg := nullTimeArg(f.UpdatedSince)
+	// Area is appended as the last positional parameter in every branch, and
+	// empty string means "every area" — kept identical to the Postgres twin
+	// (internal/gtd/store.go queryFilteredTasks) so the two backends cannot
+	// drift on which rows a filter returns.
 	switch f.Status {
 	case "", "active":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
@@ -621,34 +625,98 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 			  AND (?1 IS NULL OR project_id = ?1)
 			  AND (?2 IS NULL OR workspace_id = ?2)
 			  AND (?5 IS NULL OR updated_at >= ?5)
+			  AND (?6 = '' OR area = ?6)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
 	case "all":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE (?1 IS NULL OR project_id = ?1)
 			  AND (?2 IS NULL OR workspace_id = ?2)
 			  AND (?5 IS NULL OR updated_at >= ?5)
+			  AND (?6 = '' OR area = ?6)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
 	default:
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE status = ?1
 			  AND (?2 IS NULL OR project_id = ?2)
 			  AND (?3 IS NULL OR workspace_id = ?3)
 			  AND (?6 IS NULL OR updated_at >= ?6)
+			  AND (?7 = '' OR area = ?7)
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?4 OFFSET ?5`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg)
+			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
 	}
 	if err != nil {
 		return nil, errWrap("TasksFiltered", err)
 	}
 	return s.scanTaskRows(rows, "TasksFiltered")
+}
+
+// TaskAreaCounts implements gtd.StoreIface. SQLite twin of
+// internal/gtd/store.go's TaskAreaCounts — same LEFT JOIN shape, same reason:
+// the status and workspace predicates live in the ON clause so that an area
+// with zero open tasks still returns a zero row instead of disappearing.
+func (s *GTDStore) TaskAreaCounts(ctx context.Context) ([]gtd.AreaCount, error) {
+	const q = `
+		SELECT a.area, a.label,
+		       COALESCE(SUM(CASE WHEN t.status = 'pending'     THEN 1 ELSE 0 END), 0) AS pending,
+		       COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress
+		  FROM task_areas a
+		  LEFT JOIN tasks t
+		         ON t.area = a.area
+		        AND t.status IN ('pending','in_progress')
+		        AND (?1 IS NULL OR t.workspace_id = ?1)
+		 WHERE a.archived = 0
+		 GROUP BY a.area, a.label, a.sort_order
+		 ORDER BY a.sort_order ASC, a.area ASC`
+	rows, err := s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("TaskAreaCounts", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []gtd.AreaCount
+	for rows.Next() {
+		var c gtd.AreaCount
+		if err := rows.Scan(&c.Area, &c.Label, &c.Pending, &c.InProgress); err != nil {
+			return nil, errWrap("TaskAreaCounts scan", err)
+		}
+		c.Open = c.Pending + c.InProgress
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errWrap("TaskAreaCounts iterate", err)
+	}
+	return out, nil
+}
+
+// areaOrUnsorted mirrors the Postgres twin's fallback in internal/gtd/store.go
+// CreateTask: an empty Area becomes "unsorted" rather than an error, so HTTP
+// callers and older code paths keep working and the row lands in a bucket that
+// is visible rather than in a NULL nobody counts. Shared by CreateTask and
+// CreateTaskTx so the two cannot drift.
+func areaOrUnsorted(a string) string {
+	if a == "" {
+		return "unsorted"
+	}
+	return a
+}
+
+// TaskAreaExists implements gtd.StoreIface.
+func (s *GTDStore) TaskAreaExists(ctx context.Context, area string) (bool, error) {
+	var n int
+	if err := s.db.conn.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM task_areas WHERE area = ?1 AND archived = 0`, area,
+	).Scan(&n); err != nil {
+		return false, errWrap("TaskAreaExists", err)
+	}
+	return n > 0, nil
 }
 
 // TasksByDueDateRange returns pending / in_progress tasks whose due_date
@@ -875,8 +943,8 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, priority,
 		 importance, context, assignee, due_date, kind,
-		 branch_name, pr_url, commit_shas, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)`
+		 branch_name, pr_url, commit_shas, created_at, updated_at, area)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16)`
 	now := nowRFC3339()
 	var branchVal any
 	if p.BranchName != nil && *p.BranchName != "" {
@@ -890,7 +958,7 @@ func (s *GTDStore) CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
 		nullStringIfEmpty(p.Context), nullStringIfEmpty(assignee), dueVal, kind,
-		branchVal, prURLVal, commitSHAsJSON, now)
+		branchVal, prURLVal, commitSHAsJSON, now, areaOrUnsorted(p.Area))
 	if err != nil {
 		return nil, errWrap("CreateTask", err)
 	}
@@ -937,8 +1005,8 @@ func (s *GTDStore) CreateTaskTx(ctx context.Context, tx *sql.Tx, p gtd.CreateTas
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, priority,
 		 importance, context, assignee, due_date, kind,
-		 branch_name, pr_url, commit_shas, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)`
+		 branch_name, pr_url, commit_shas, created_at, updated_at, area)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16)`
 	now := nowRFC3339()
 	var branchVal any
 	if p.BranchName != nil && *p.BranchName != "" {
@@ -952,7 +1020,7 @@ func (s *GTDStore) CreateTaskTx(ctx context.Context, tx *sql.Tx, p gtd.CreateTas
 		id.String(), s.db.workspaceArg(), nullStringFromUUID(p.ProjectID),
 		p.Title, nullStringIfEmpty(p.Description), priority, importance,
 		nullStringIfEmpty(p.Context), nullStringIfEmpty(assignee), dueVal, kind,
-		branchVal, prURLVal, commitSHAsJSON, now)
+		branchVal, prURLVal, commitSHAsJSON, now, areaOrUnsorted(p.Area))
 	if err != nil {
 		return uuid.UUID{}, errWrap("CreateTaskTx", err)
 	}

@@ -56,6 +56,18 @@ type StoreIface interface {
 	// any other value → exact match. Callers pass Limit+1 to detect has_more
 	// without a COUNT query.
 	TasksFiltered(ctx context.Context, f TaskFilter) ([]db.Task, error)
+	// TaskAreaCounts returns one AreaCount per non-archived task_areas row,
+	// ordered by sort_order. Areas holding zero open tasks are still
+	// returned with zeros — a bucket that silently disappears when it empties
+	// is indistinguishable from one that was never there, and 'unsorted'
+	// reaching zero is exactly the signal worth seeing.
+	// This is the query behind the gtd/areas resource.
+	TaskAreaCounts(ctx context.Context) ([]AreaCount, error)
+	// TaskAreaExists reports whether area names a non-archived task_areas
+	// row. add_task calls it to reject an unknown area at the write boundary
+	// — there is no foreign key to do it (red line #9), so this is the only
+	// thing standing between a typo and a bucket nobody ever looks in.
+	TaskAreaExists(ctx context.Context, area string) (bool, error)
 	// TasksByProjectAllStatuses returns ALL tasks for the project regardless
 	// of status (pending / in_progress / completed / cancelled), ordered by
 	// COALESCE(updated_at, created_at) DESC. Used by the project-detail UI

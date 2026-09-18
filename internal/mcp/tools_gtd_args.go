@@ -70,6 +70,12 @@ type ListTasksArgs struct {
 	Status    string     `mcp:"status"`
 	Limit     int32      `mcp:"limit"`
 	Offset    int32      `mcp:"offset"`
+	// Area filters to a single task_areas row. Plain string, not an enum in
+	// the schema: the vocabulary lives in the task_areas table precisely so
+	// that adding one does not need a deploy (migration 000079), and a
+	// baked-in enum would reintroduce the redeploy it was built to avoid.
+	// An unknown value is rejected at the handler, not silently ignored.
+	Area string `mcp:"area"`
 }
 
 // AddTaskArgs — add_task. Kind, BranchName and PRUrl stay plain strings: kind
@@ -89,6 +95,12 @@ type AddTaskArgs struct {
 	BranchName  string     `mcp:"branch_name"`
 	PRUrl       string     `mcp:"pr_url"`
 	DueDate     string     `mcp:"due_date"`
+	// Area is mechanically required at the schema (mcp.Required() at
+	// registration), unlike DueDate whose "Required." lives only in its
+	// description — 14% of open rows have DueDate empty as a result, and
+	// nothing ever complained. A classification that is 14% empty cannot
+	// answer "how many are left", which is the whole point of the column.
+	Area string `mcp:"area"`
 }
 
 // CompleteTaskArgs — complete_task.

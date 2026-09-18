@@ -261,11 +261,14 @@ var storedDataComputedExclusions = []storedDataComputedExclusion{
 		"and its batchAccept twin: both return proposal.BatchConfirmResult, whose only fields are a UUID " +
 		"string, a bool, two ints and ErrMsg — ErrMsg carries a store error string, U14's (error-message " +
 		"hygiene) jurisdiction, not U13's (see wantStoredDataReaderTotal's doc comment below)"},
-	{file: "resources.go", count: 3, reason: "system/health (lightHealthResource: counts and a []string " +
+	{file: "resources.go", count: 4, reason: "system/health (lightHealthResource: counts and a []string " +
 		"of server-COMPOSED sentences, no field copies stored free text verbatim), session/handoff/" +
 		"latest's handoff_present=false branch (every field is a Go zero-value, nothing read from a " +
-		"store), and system/build-info (version/commit/build-date/protocol-version/backend, all " +
-		"build-time or process metadata) — see resources.go's own inline comments at each site"},
+		"store), system/build-info (version/commit/build-date/protocol-version/backend, all " +
+		"build-time or process metadata), and gtd/areas (area/label come from the task_areas lookup " +
+		"table, which only this repo's migrations write to — no caller-authored free text reaches the " +
+		"payload; the counts beside them are integers) — see resources.go's own inline comments at " +
+		"each site"},
 	{file: "tools_worksession.go", count: 1, reason: "checkpoint_work's response: session_id/status/" +
 		"checkpoint_at are a UUID, a closed-enum status, and a timestamp — no caller-authored free text"},
 	{file: "tools_reflection.go", count: 1, reason: "get_latest_reflection's ErrNotFound branch returns " +
@@ -403,7 +406,10 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 		}
 		_ = f.Close()
 	}
-	const wantTotal = 111
+	// 111 -> 112: handleResourceGTDAreas' marshalResource call (gtd/areas,
+	// F186-01). Accounted for as an exclusion, not a reader — its payload
+	// carries only task_areas lookup values and integers.
+	const wantTotal = 112
 	if total != wantTotal {
 		t.Errorf("jsonText(/marshalResource( call-site count in internal/mcp/*.go (excluding _test.go) "+
 			"= %d, want %d — storedDataReaders above needs updating to match the current code before "+

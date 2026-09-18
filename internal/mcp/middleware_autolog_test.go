@@ -206,6 +206,14 @@ func (m *mockGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter) ([]db.
 	return nil, errMockNotImpl
 }
 
+func (m *mockGTDStore) TaskAreaCounts(_ context.Context) ([]gtd.AreaCount, error) {
+	return nil, errMockNotImpl
+}
+
+func (m *mockGTDStore) TaskAreaExists(_ context.Context, _ string) (bool, error) {
+	return false, errMockNotImpl
+}
+
 // successHandler returns a fixed success result — simulates a tool that completed OK.
 func successHandler(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
 	return mcpmsg.NewToolResultText("ok"), nil

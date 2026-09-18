@@ -197,6 +197,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				mcp.Enum("active", "all", "pending", "in_progress", "completed", "cancelled")),
 			mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 			mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
+			// No mcp.Enum here: the vocabulary lives in the task_areas table
+			// so that adding one costs an INSERT rather than a redeploy
+			// (migration 000079). An enum baked into the schema would put the
+			// redeploy straight back.
+			mcp.WithString("area", mcp.Description("Filter by area slug; read wayneblacktea://gtd/areas for the list and counts")),
 		), seam("list_tasks", s.handleListTasks),
 		uuidArgs("project_id"),
 	)
@@ -239,6 +244,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("branch_name", mcp.Description("Git branch name")),
 			mcp.WithString("pr_url", mcp.Description("GitHub PR URL")),
 			mcp.WithString("due_date", mcp.Description("Required. RFC3339, e.g. 2026-12-31T00:00:00Z")),
+			// mcp.Required() and not just the word "Required" in the text —
+			// due_date one line above says "Required." with no such marker,
+			// and 14% of open rows have it empty. A classification that empty
+			// cannot answer "how many are left", which is the only reason this
+			// column exists.
+			mcp.WithString("area", mcp.Description("Area slug; read wayneblacktea://gtd/areas for the list"), mcp.Required()),
 		), seam("add_task", s.handleAddTask),
 		uuidArgs("project_id"),
 		noMaxLength("assignee"),
@@ -937,11 +948,32 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 
 	// Fetch limit+1 rows to detect has_more without a COUNT query.
 	effLimit := limit + 1
+	// An unknown area is rejected rather than passed through. Passing it
+	// through returns an empty list, and an empty list from a typo is
+	// indistinguishable from an area that is genuinely finished — which is
+	// the exact class of silent wrong answer this column was added to end.
+	if args.Area != "" {
+		ok, err := s.gtd.TaskAreaExists(ctx, args.Area)
+		if err != nil {
+			return storeErrorResult("checking area", err), nil
+		}
+		if !ok {
+			// The rejected value is deliberately not echoed back: it is
+			// caller-supplied text, and the caller already knows what it
+			// sent. Echoing it would put untrusted input in the response
+			// for no informational gain.
+			return mcp.NewToolResultError(
+				"unknown area; read wayneblacktea://gtd/areas for the current list",
+			), nil
+		}
+	}
+
 	f := gtd.TaskFilter{
 		ProjectID: args.ProjectID,
 		Status:    rawStatus,
 		Limit:     effLimit,
 		Offset:    offset,
+		Area:      args.Area,
 	}
 	rows, err := s.gtd.TasksFiltered(ctx, f)
 	if err != nil {
@@ -1085,6 +1117,19 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		return mcp.NewToolResultError("kind must be one of: general, fix-pr, feature, refactor, research, chore"), nil
 	}
 
+	// area is schema-required, so an absent one cannot reach here through a
+	// conforming client — but the value itself still has to be checked
+	// against task_areas. There is no foreign key to do it (red line #9), so
+	// this call is the only thing between a typo and a row parked in a
+	// bucket that no counts query will ever surface.
+	if ok, err := s.gtd.TaskAreaExists(ctx, args.Area); err != nil {
+		return storeErrorResult("checking area", err), nil
+	} else if !ok {
+		return mcp.NewToolResultError(
+			"unknown area; read wayneblacktea://gtd/areas for the current list",
+		), nil
+	}
+
 	// Vagueness and kind-field checks. For MCP, warnings are embedded in the
 	// result JSON body (no HTTP headers available). Strict mode → tool error.
 	allWarnings := validator.CheckTaskInput(args.Description, kind)
@@ -1123,6 +1168,7 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 		return dueErr, nil
 	}
 	p.DueDate = dueTime
+	p.Area = args.Area
 
 	task, err := s.gtd.CreateTask(ctx, p)
 	if err != nil {

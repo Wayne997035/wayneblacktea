@@ -163,6 +163,14 @@ func (s *stubGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter) ([]db.
 	return nil, nil
 }
 
+func (s *stubGTDStore) TaskAreaCounts(_ context.Context) ([]gtd.AreaCount, error) {
+	return nil, nil
+}
+
+func (s *stubGTDStore) TaskAreaExists(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+
 // stubDecisionStore implements the subset of decision.StoreIface used by reflection.
 type stubDecisionStore struct {
 	decisions []db.Decision

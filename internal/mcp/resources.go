@@ -74,6 +74,20 @@ func (s *Server) registerResources(ms *server.MCPServer) {
 
 	ms.AddResource(
 		mcp.NewResource(
+			"wayneblacktea://gtd/areas",
+			"GTD Area Breakdown",
+			mcp.WithResourceDescription(
+				"Open task counts per area — the answer to \"how many tickets are "+
+					"left in <project>\". Read this instead of paging list_tasks: the "+
+					"whole breakdown is a few hundred bytes against ~21KB for one "+
+					"60-row page. Areas with zero open tasks are still listed.",
+			),
+		),
+		s.handleResourceGTDAreas,
+	)
+
+	ms.AddResource(
+		mcp.NewResource(
 			"wayneblacktea://session/handoff/latest",
 			"Latest Session Handoff",
 			mcp.WithResourceDescription(handoffLatestResourceDescription),
@@ -430,6 +444,47 @@ type topTask struct {
 	Title    string  `json:"title"`
 	Priority int32   `json:"priority"`
 	DueDate  *string `json:"due_date,omitempty"`
+}
+
+// ─── wayneblacktea://gtd/areas ────────────────────────────────────────────
+
+// gtdAreasResource is the JSON shape for the gtd/areas resource.
+//
+// Nothing here is caller-supplied free text: area and label come from the
+// task_areas lookup table, which only this repo's migrations write to. That
+// is why the labels are emitted raw while gtd/current's task titles go
+// through clipSafe.
+type gtdAreasResource struct {
+	GeneratedAt string          `json:"generated_at"`
+	WorkspaceID string          `json:"workspace_id"`
+	TotalOpen   int             `json:"total_open"`
+	Areas       []gtd.AreaCount `json:"areas"`
+}
+
+func (s *Server) handleResourceGTDAreas(
+	ctx context.Context,
+	_ mcp.ReadResourceRequest,
+) ([]mcp.ResourceContents, error) {
+	const uri = "wayneblacktea://gtd/areas"
+
+	counts, err := s.gtd.TaskAreaCounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", uri, err)
+	}
+	out := gtdAreasResource{
+		GeneratedAt: s.now().UTC().Format(time.RFC3339),
+		WorkspaceID: s.workspaceIDForResource(),
+		Areas:       counts,
+	}
+	for _, c := range counts {
+		out.TotalOpen += c.Open
+	}
+	// TotalOpen is the sum of the per-area numbers rather than a separate
+	// COUNT(*): a standalone count could disagree with the rows printed
+	// beside it (a task carrying an archived or unknown area would be in one
+	// and not the other), and "the parts don't add up to the whole" is the
+	// precise symptom this resource exists to eliminate.
+	return marshalResource(uri, out)
 }
 
 func (s *Server) handleResourceGTDCurrent(

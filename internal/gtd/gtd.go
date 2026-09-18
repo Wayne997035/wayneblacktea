@@ -103,6 +103,13 @@ type CreateTaskParams struct {
 	BranchName   *string    // nil → NULL; git branch name (migration 000047)
 	PRUrl        *string    // nil → NULL; GitHub PR URL (migration 000047)
 	VisionItemID *uuid.UUID // nil → NULL; vision item this task was promoted from (migration 000050)
+	// Area is the single-valued classification (migration 000079). Empty
+	// falls back to "unsorted" rather than erroring: HTTP callers and older
+	// code paths must keep working, and a row parked in a visible 'unsorted'
+	// bucket is recoverable in a way a rejected write is not. The MCP
+	// add_task surface requires it at the schema instead — that is where the
+	// callers who can supply it actually live.
+	Area string
 }
 
 // UpdateGoalParams holds parameters for a full update of a goal.
@@ -186,6 +193,27 @@ type TaskFilter struct {
 	// clause makes the LIMIT apply to the already-filtered set, so rows
 	// inside the recency window are never dropped by row count alone.
 	UpdatedSince *time.Time
+
+	// Area, when non-empty, restricts results to that single task_areas row
+	// (migration 000079). Empty means "every area" and preserves the prior
+	// behaviour for existing callers. Applied in the WHERE clause, not
+	// filtered in Go after the LIMIT — same reasoning as UpdatedSince above:
+	// post-LIMIT filtering silently drops matching rows once one area grows
+	// past the page size.
+	Area string
+}
+
+// AreaCount is one row of the area breakdown: how many tasks sit in a single
+// task_areas bucket, split by the two open statuses. It exists so the
+// gtd/areas resource can answer "how many are left" without any caller
+// paging through task rows — a limit=60 page of list_tasks measured 21,580
+// bytes, against 529 bytes for the whole breakdown.
+type AreaCount struct {
+	Area       string `json:"area"`
+	Label      string `json:"label"`
+	Pending    int    `json:"pending"`
+	InProgress int    `json:"in_progress"`
+	Open       int    `json:"open"`
 }
 
 // UpdateChecklistItemParams holds the optional fields for patching a checklist item.
