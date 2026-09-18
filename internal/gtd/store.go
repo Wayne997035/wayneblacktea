@@ -1534,6 +1534,31 @@ func (a *pgDeleteTaskAdapter) ResetPromotedVisionItems(ctx context.Context) erro
 }
 
 // DeleteTaskRow deletes the task itself, scoped to the configured workspace.
+// NullifyDecisionTaskRefs NULLs decisions.task_id (migration 000048). No FK
+// exists to do this (red line #9), so before this method every delete_task
+// left the column pointing at a row that was gone.
+func (a *pgDeleteTaskAdapter) NullifyDecisionTaskRefs(ctx context.Context) error {
+	if _, err := a.tx.Exec(
+		ctx,
+		`UPDATE decisions SET task_id = NULL WHERE task_id = $1`, a.id,
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
+// NullifyKnowledgeItemTaskRefs NULLs knowledge_items.task_id (migration
+// 000049). Same gap, same reason.
+func (a *pgDeleteTaskAdapter) NullifyKnowledgeItemTaskRefs(ctx context.Context) error {
+	if _, err := a.tx.Exec(
+		ctx,
+		`UPDATE knowledge_items SET task_id = NULL WHERE task_id = $1`, a.id,
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
 func (a *pgDeleteTaskAdapter) DeleteTaskRow(ctx context.Context) error {
 	if err := a.s.q.WithTx(a.tx).DeleteTask(ctx, db.DeleteTaskParams{
 		ID:          a.id,

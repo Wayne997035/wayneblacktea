@@ -28,6 +28,8 @@ type fakeDeleteTaskAdapter struct {
 	nullifyWorkSessionsErr         error
 	cleanupCompletionCandidatesErr error
 	resetPromotedVisionItemsErr    error
+	nullifyDecisionRefsErr         error
+	nullifyKnowledgeRefsErr        error
 
 	deleteRowErr error
 	commitErr    error
@@ -68,6 +70,16 @@ func (f *fakeDeleteTaskAdapter) ResetPromotedVisionItems(context.Context) error 
 	return f.resetPromotedVisionItemsErr
 }
 
+func (f *fakeDeleteTaskAdapter) NullifyDecisionTaskRefs(context.Context) error {
+	f.calls = append(f.calls, "NullifyDecisionTaskRefs")
+	return f.nullifyDecisionRefsErr
+}
+
+func (f *fakeDeleteTaskAdapter) NullifyKnowledgeItemTaskRefs(context.Context) error {
+	f.calls = append(f.calls, "NullifyKnowledgeItemTaskRefs")
+	return f.nullifyKnowledgeRefsErr
+}
+
 func (f *fakeDeleteTaskAdapter) DeleteTaskRow(context.Context) error {
 	f.calls = append(f.calls, "DeleteTaskRow")
 	return f.deleteRowErr
@@ -100,10 +112,15 @@ func TestDeleteTaskOrchestration_NormalCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteTaskOrchestration: %v", err)
 	}
+	// Every reference-clearing step MUST appear before DeleteTaskRow. The
+	// order is the assertion: red line #9 forbids foreign keys, so nothing
+	// in the database will notice a cleanup that was skipped or that ran
+	// after the row it was supposed to protect had already gone.
 	wantCalls := []string{
 		"BeginTx", "WorkspacePrecheck",
 		"CleanupWorkSessionTasks", "NullifyWorkSessionsCurrentTask",
 		"CleanupCompletionCandidates", "ResetPromotedVisionItems",
+		"NullifyDecisionTaskRefs", "NullifyKnowledgeItemTaskRefs",
 		"DeleteTaskRow", "Commit", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
@@ -243,12 +260,52 @@ func TestDeleteTaskOrchestration_DeleteTaskRowError(t *testing.T) {
 	wantCalls := []string{
 		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "CleanupCompletionCandidates",
-		"ResetPromotedVisionItems", "DeleteTaskRow", "Rollback",
+		"ResetPromotedVisionItems", "NullifyDecisionTaskRefs",
+		"NullifyKnowledgeItemTaskRefs", "DeleteTaskRow", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
 		t.Errorf("expected Commit to be skipped after a delete-row failure, got %v", f.calls)
 	}
 	wantStepPrefix(t, err, id, "delete row")
+}
+
+// The two reference-clearing steps must abort the delete like every other
+// cleanup does. Letting either one fail quietly and carrying on would delete
+// the task while leaving the reference it was supposed to clear — the exact
+// dangling row these steps were added to prevent, now created by the code
+// that exists to prevent it.
+func TestDeleteTaskOrchestration_NullifyDecisionRefsError(t *testing.T) {
+	id := uuid.New()
+	wantErr := errors.New("decisions update failed")
+	f := &fakeDeleteTaskAdapter{exists: true, nullifyDecisionRefsErr: wantErr}
+
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the decisions error to propagate, got %v", err)
+	}
+	for _, c := range f.calls {
+		if c == "DeleteTaskRow" || c == "Commit" {
+			t.Fatalf("%s ran after the cleanup failed: %v", c, f.calls)
+		}
+	}
+	wantStepPrefix(t, err, id, "nullify decisions.task_id")
+}
+
+func TestDeleteTaskOrchestration_NullifyKnowledgeRefsError(t *testing.T) {
+	id := uuid.New()
+	wantErr := errors.New("knowledge_items update failed")
+	f := &fakeDeleteTaskAdapter{exists: true, nullifyKnowledgeRefsErr: wantErr}
+
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the knowledge_items error to propagate, got %v", err)
+	}
+	for _, c := range f.calls {
+		if c == "DeleteTaskRow" || c == "Commit" {
+			t.Fatalf("%s ran after the cleanup failed: %v", c, f.calls)
+		}
+	}
+	wantStepPrefix(t, err, id, "nullify knowledge_items.task_id")
 }
 
 func TestDeleteTaskOrchestration_CommitError(t *testing.T) {
@@ -263,7 +320,8 @@ func TestDeleteTaskOrchestration_CommitError(t *testing.T) {
 	wantCalls := []string{
 		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "CleanupCompletionCandidates",
-		"ResetPromotedVisionItems", "DeleteTaskRow", "Commit", "Rollback",
+		"ResetPromotedVisionItems", "NullifyDecisionTaskRefs",
+		"NullifyKnowledgeItemTaskRefs", "DeleteTaskRow", "Commit", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
 		t.Errorf("unexpected call sequence: %v", f.calls)

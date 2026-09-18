@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -129,10 +130,42 @@ func New(botToken, apiURL, apiKey, guildID, allowedUserIDs string, llmClient llm
 		httpClient:   newBotHTTPClient(),
 		allowedUsers: allow,
 	}
-	s.AddHandler(b.onMessage)
-	s.AddHandler(b.onInteraction)
+	s.AddHandler(recoverHandler("onMessage", b.onMessage))
+	s.AddHandler(recoverHandler("onInteraction", b.onInteraction))
 	s.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentMessageContent
 	return b, nil
+}
+
+// recoverHandler wraps a discordgo event handler so a panic inside it cannot
+// take the process down.
+//
+// discordgo dispatches every registered handler on its own goroutine — its
+// event.go does `go eh.eventHandler.Handle(s, i)` whenever Session.SyncEvents
+// is false, which is the default and which this bot never changes. A panic on
+// a goroutine that nobody recovers is fatal to the entire program, so a single
+// malformed event could kill the HTTP server, the MCP endpoint and the
+// scheduler along with the bot. The library itself recovers nothing: `recover(`
+// appears zero times in the whole discordgo tree.
+//
+// This is deliberately separate from the recover() inside startBotAndHealth
+// (cmd/server/main.go): that one only covers the startup call, and is on a
+// different goroutine from the ones created here. It cannot see these panics —
+// a recover only catches panics from its own goroutine's stack.
+//
+// Generic over the event type so the returned function keeps the exact
+// concrete signature discordgo reflects on when deciding which events to
+// route here. A non-generic wrapper taking `any` would silently never be
+// called.
+func recoverHandler[T any](name string, h func(*discordgo.Session, T)) func(*discordgo.Session, T) {
+	return func(s *discordgo.Session, e T) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("discord bot: handler panicked, event dropped",
+					"handler", name, "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		h(s, e)
+	}
 }
 
 func newBotHTTPClient() *http.Client {
@@ -235,6 +268,23 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 }
 
 func (b *Bot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+	// Guard every hop before dereferencing. The self-message check is the
+	// first thing every incoming message runs through, so a nil anywhere on
+	// this chain panics on discordgo's handler goroutine — which, before
+	// recoverHandler existed, killed the whole process.
+	//
+	// None of these three are hypothetical: Session.State is nil whenever
+	// state tracking is disabled, State.User stays nil until READY lands
+	// (the same window bot.go:160 already guards for slash-command
+	// registration), and MessageCreate.Author is nil on message types that
+	// carry no author.
+	//
+	// Bailing out on an unknown self-identity is the safe direction: the
+	// worst case is that the bot ignores its own message, versus looping on
+	// its own output if it guessed the other way.
+	if m.Author == nil || s.State == nil || s.State.User == nil {
+		return
+	}
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
