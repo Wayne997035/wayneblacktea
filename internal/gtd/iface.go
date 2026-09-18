@@ -166,6 +166,10 @@ type StoreIface interface {
 	// UpdateProject performs a full update of a project, replacing all mutable fields.
 	UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error)
 	DeleteTask(ctx context.Context, id uuid.UUID) error
+	// DeleteProject deletes a project together with every task under it and
+	// returns how many tasks were removed. A project that does not exist in
+	// the configured workspace is a no-op returning 0, not an error.
+	DeleteProject(ctx context.Context, id uuid.UUID) (int, error)
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
 	// AddChecklistItem appends a new ChecklistItem to the task's checklist and
 	// returns the full updated slice. The item's ID is generated server-side.

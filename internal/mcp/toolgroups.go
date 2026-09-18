@@ -89,7 +89,7 @@ var toolGroups = []toolGroup{
 	{Name: "context", Tools: []string{"get_today_context", "list_active_repos", "sync_repo"}},
 	{Name: "gtd", Tools: []string{
 		"add_task", "begin_task", "complete_task", "create_goal", "create_project",
-		"delete_task", "get_project", "get_task", "get_upcoming_work", "list_goals",
+		"delete_project", "delete_task", "get_project", "get_task", "get_upcoming_work", "list_goals",
 		"list_projects", "list_tasks", "log_activity", "set_task_status",
 		"task_checklist_add_item", "task_checklist_complete", "task_checklist_toggle",
 		"update_project", "update_project_status", "update_task",

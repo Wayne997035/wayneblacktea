@@ -183,6 +183,14 @@ type DeleteTaskArgs struct {
 	DeletionToken string    `mcp:"deletion_token"`
 }
 
+// DeleteProjectArgs — delete_project (two-step confirmation flow, same shape
+// as DeleteTaskArgs because it is the same flow; see deletion_confirm.go).
+type DeleteProjectArgs struct {
+	ProjectID     uuid.UUID `mcp:"project_id"`
+	Confirm       bool      `mcp:"confirm"`
+	DeletionToken string    `mcp:"deletion_token"`
+}
+
 // ChecklistAddItemArgs — task_checklist_add_item. Title/FileRef/Notes are
 // plain strings: their maxLength enforcement runs on the seam's raw value
 // (Pass B), but the handler still applies gtd.SanitiseChecklistText to the

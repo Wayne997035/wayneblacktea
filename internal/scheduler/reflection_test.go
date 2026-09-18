@@ -96,7 +96,10 @@ func (s *stubGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGo
 func (s *stubGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
 	return nil, nil
 }
-func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error        { return nil }
+func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return nil }
+func (s *stubGTDStore) DeleteProject(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, nil
+}
 func (s *stubGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) { return 0, 0, nil }
 func (s *stubGTDStore) TopPendingTask(_ context.Context) (*db.Task, error)     { return nil, nil }
 func (s *stubGTDStore) WorkspaceID() pgtype.UUID                               { return pgtype.UUID{} }

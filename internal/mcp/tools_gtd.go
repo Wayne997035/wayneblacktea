@@ -390,6 +390,26 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 
 	s.addTool(
 		ms, mcp.NewTool(
+			"delete_project",
+			mcp.WithDescription(
+				"Permanently deletes a project AND every task under it. TWO-STEP: first "+
+					"call with only project_id returns {deletion_token, expires_at, "+
+					"tasks_to_delete} — check that count before confirming; second call "+
+					"MUST include confirm=true and deletion_token to perform the delete. "+
+					"Tokens expire after 60s and MUST be confirmed from the same MCP "+
+					"session that issued them. References to the project from activity "+
+					"log, decisions, knowledge items, session handoffs and work sessions "+
+					"are cleared rather than deleted — those outlive the project.",
+			),
+			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
+			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
+			mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
+		), seam("delete_project", s.handleDeleteProject),
+		uuidArgs("project_id"),
+	)
+
+	s.addTool(
+		ms, mcp.NewTool(
 			"task_checklist_add_item",
 			mcp.WithDescription(
 				"Appends a new checklist item to a task. Returns the full updated checklist. "+
@@ -1620,31 +1640,14 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	confirm := args.Confirm
 	suppliedToken := args.DeletionToken
 
+	key := taskDeletionKey(id.String())
+
 	if !confirm {
 		// Step 1 — issue token, do NOT delete.
-
-		// Prune expired tokens and cap concurrent pending deletions.
-		var count int
-		s.deleteTokens.Range(func(k, v any) bool {
-			rec := v.(deletionToken)
-			if s.now().After(rec.expiresAt) {
-				s.deleteTokens.Delete(k)
-			} else {
-				count++
-			}
-			return true
-		})
-		if count >= maxPendingDeletions {
-			return mcp.NewToolResultError("too many pending deletions in flight; retry later"), nil
+		token, expires, refusal := s.issuePendingDeletion(ctx, key)
+		if refusal != nil {
+			return refusal, nil
 		}
-
-		token := issueDeletionToken()
-		expires := s.now().Add(deleteTokenTTL)
-		s.deleteTokens.Store(id.String(), deletionToken{
-			token:           token,
-			expiresAt:       expires,
-			issuedBySession: currentSessionID(ctx),
-		})
 		return jsonText(map[string]any{
 			"status":         "confirmation_required",
 			"task_id":        id.String(),
@@ -1654,143 +1657,12 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 		})
 	}
 
-	// Step 2 — confirm=true. Token must be present, match, and not expired.
-	if suppliedToken == "" {
-		return mcp.NewToolResultError("deletion_token is required when confirm=true"), nil
-	}
-	// [F170-SEC-R3-03] Load, not LoadAndDelete — same property as
-	// tools_reconcile.go's confirm path, and documented as one property, so
-	// the two must not drift. Validating after deleting meant a refusal
-	// destroyed the pending deletion, and the rightful caller's retry got
-	// "no pending deletion" instead of the real reason.
-	//
-	// ⚠ The two refusal branches below are deliberately NOT symmetric, and
-	// the asymmetry is the point. A refusal may decline to consume the token
-	// only when REACHING that refusal already proves the caller holds the
-	// secret. This map is keyed by TASK ID, not by the token, so a caller who
-	// knows only a task id reaches the token comparison without holding
-	// anything — that branch must consume. The session branch is reached only
-	// after the correct token was presented, so it can refuse for free.
-	//
-	// (An earlier version justified this as anti-brute-force. That argument
-	// does not survive its own arithmetic — roughly 7,200 guesses fit in the
-	// 60s TTL, against a 122-bit UUID — and a wrong reason for a right rule
-	// is what the next reader inherits.)
-	stored, ok := s.deleteTokens.Load(id.String())
-	if !ok {
-		return mcp.NewToolResultError("no pending deletion for this task_id; call without confirm first to obtain a token"), nil
-	}
-	rec, ok := stored.(deletionToken)
-	if !ok {
-		// [SEC171-13] Unusable either way — drop it rather than answering
-		// "corrupted" until the TTL expires. CompareAndDelete, not
-		// unconditional Delete: this map is keyed by TASK ID, so an
-		// unconditional Delete here could destroy a fresh, valid record
-		// another session obtained for the same task id between our Load
-		// above and this line — the exact cross-session DoS SEC171-13 named.
-		//
-		// No panic risk from using CompareAndDelete on this specific branch,
-		// where the type assertion into rec already failed: `stored` is the
-		// exact `any` Load returned, and sync.Map.CompareAndDelete only
-		// requires `old` (here, `stored`) to be of a comparable type — not
-		// that a later assertion into some other type succeeds. The sole
-		// non-test write path to this map (this file's step-1 issuance,
-		// verified by grep: `s.deleteTokens.Store(` has exactly one non-test
-		// call site) only ever stores a deletionToken{string, time.Time,
-		// string}, and all three of those are comparable, so `stored`'s
-		// dynamic type is always deletionToken in practice — this branch is
-		// defensive against a shape this codebase never actually produces.
-		// Contrast tools_reconcile.go's reconcileConfirmation, which holds
-		// []gtd.Match/[]gtd.Ambiguous and DOES panic under CompareAndDelete —
-		// that comparability difference is why reconcile keeps LoadAndDelete
-		// and this map does not.
-		//
-		// slog.Debug, not silence and not Warn: a false return means another
-		// session's fresh record already replaced this one before we could
-		// refuse — an expected outcome of the fix this branch exists for,
-		// not an anomaly, but still worth an operator-visible trail on a
-		// security-relevant path. Never logs the token itself.
-		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
-			slog.Debug("delete_task: corrupted-record refusal found nothing to clear (already replaced)", "task_id", id)
-		}
-		return mcp.NewToolResultError("internal: deletion token state corrupted"), nil
-	}
-	if s.now().After(rec.expiresAt) {
-		// [SEC171-13][SEC171-17] CompareAndDelete for the same reason as the
-		// corrupted-record branch above — see its comment for the full
-		// panic-safety argument, which applies identically here.
-		//
-		// [GTD b1858809] Both numbers, deliberately. SEC171-13 named the
-		// mechanism shared by all four exits (this map is keyed by task id,
-		// so an unconditional Delete can destroy another session's fresh
-		// record); SEC171-17 named this branch's instance of it, and is the
-		// number its regression test carries —
-		// TestSEC171_17_ExpiredRefusalDoesNotDestroyReplacementToken. A
-		// reviewer flagged the single-number form as a possible typo: it was
-		// not, but a reader tracing the guard to its test had no way to tell
-		// that from the comment alone.
-		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
-			slog.Debug("delete_task: expired-token refusal found nothing to clear (already replaced)", "task_id", id)
-		}
-		return mcp.NewToolResultError("deletion_token expired; call without confirm to obtain a new token"), nil
-	}
-	// Constant-time string compare on equal-length inputs would be ideal, but
-	// these tokens are generated server-side UUIDs and never exposed to
-	// untrusted parties in the comparison window — plain equality is fine.
-	//
-	// [SEC171-11] Consuming on mismatch follows the asymmetry rule stated
-	// above (⚠, this map is keyed by TASK ID): reaching this comparison only
-	// requires knowing the task id, not holding the token, so this branch
-	// must consume — it is not, and was never, an anti-guessing measure; the
-	// anti-brute-force framing that phrase pointed at is the one this
-	// function's own comment above already retracts by its own arithmetic.
-	// [SEC171-13] CompareAndDelete, not unconditional Delete — see the
-	// corrupted-record branch above for the full panic-safety argument; it
-	// applies identically here.
-	if suppliedToken != rec.token {
-		if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
-			slog.Debug("delete_task: token-mismatch refusal found nothing to clear (already replaced)", "task_id", id)
-		}
-		return mcp.NewToolResultError("deletion_token mismatch"), nil
-	}
-	// U9 partial mitigation (Category S): the confirming call must present
-	// the same session id the issuing call carried, when one was tracked.
-	// [F170-20]: that is a knowledge check, not an identity check — see
-	// issueDeletionToken/deletionTokenMatchesSession's doc comments.
-	//
-	// [F170-SEC-R3-03] Non-consuming: the token stays live for its remaining
-	// TTL so the session it was issued to can still spend it.
-	if !deletionTokenMatchesSession(ctx, rec) {
-		return mcp.NewToolResultError(
-			"deletion_token was issued to a different session; call delete_task without confirm " +
-				"from that same session to obtain a new token",
-		), nil
-	}
-	// [SEC171-02] Spend atomically, and spend THIS record specifically.
-	//
-	// Load-then-Delete was check-then-act: two concurrent confirms both passed
-	// validation before either deleted. It had a second failure mode this map
-	// has and reconcile's does not — keyed by task id, an unconditional Delete
-	// removes whatever occupies that key now, which may be a token another
-	// session obtained after we loaded ours.
-	//
-	// [SEC171-13] CompareAndDelete closes both failure modes here, and — as
-	// of this fix — at every exit from this function, not only here: the
-	// three refusal branches above (corrupted record, expired, token
-	// mismatch) use the identical primitive for the identical reason; see
-	// the first of them for the full panic-safety argument. An earlier
-	// version of this comment claimed CompareAndDelete "closes both" while
-	// those three branches still called the unconditional Delete they were
-	// supposed to replace — true only at this one line, not at the three
-	// that mattered for the cross-session case. deletionToken's fields are
-	// all comparable (string, time.Time, string), which is what makes
-	// CompareAndDelete legal at every one of these four sites — reconcile's
-	// record is not, and uses LoadAndDelete for that reason plus its key
-	// being the token itself.
-	if !s.deleteTokens.CompareAndDelete(id.String(), stored) {
-		return mcp.NewToolResultError(
-			"no pending deletion for this task_id; call without confirm first to obtain a token",
-		), nil
+	// Step 2 — confirm=true. The token must be present, match, be unexpired,
+	// and come from the issuing session. spendPendingDeletion consumes it and
+	// returns nil only when the delete may proceed; every refusal branch and
+	// the reason it does or does not consume the token live there.
+	if refusal := s.spendPendingDeletion(ctx, "delete_task", "task_id", key, suppliedToken); refusal != nil {
+		return refusal, nil
 	}
 
 	if err := s.gtd.DeleteTask(ctx, id); err != nil {
@@ -1798,6 +1670,76 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 		return storeErrorResult("deleting task", err), nil
 	}
 	return mcp.NewToolResultText("task deleted"), nil
+}
+
+// handleDeleteProject implements the same 2-step confirmation flow as
+// handleDeleteTask (see deletion_confirm.go, which both share), over a
+// blast radius that is larger by construction: confirming removes every task
+// under the project, not one row.
+//
+// That size is exactly why step 1 reports tasks_to_delete. The count is read
+// before the token is issued so the caller sees the real scale of what it is
+// about to confirm; the number the delete itself returns is re-counted inside
+// the deleting transaction (DeleteProjectOrchestration), so a task created
+// between the two calls is still deleted and still counted — the step-1
+// number is a preview, and is documented as one rather than reused.
+func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs) (*mcp.CallToolResult, error) {
+	id := args.ProjectID
+	key := projectDeletionKey(id.String())
+
+	if !args.Confirm {
+		// Step 1 — issue token, do NOT delete.
+		//
+		// The existence check runs first so a mistyped id fails with "project
+		// not found" instead of handing back a token that can only ever
+		// confirm a no-op.
+		project, err := s.gtd.GetProjectByID(ctx, id)
+		if errors.Is(err, gtd.ErrNotFound) {
+			return mcp.NewToolResultError("project not found"), nil
+		}
+		if err != nil {
+			return storeErrorResult("loading project", err), nil
+		}
+		tasks, err := s.gtd.TasksByProjectAllStatuses(ctx, id)
+		if err != nil {
+			return storeErrorResult("counting tasks under project", err), nil
+		}
+
+		token, expires, refusal := s.issuePendingDeletion(ctx, key)
+		if refusal != nil {
+			return refusal, nil
+		}
+		return jsonText(map[string]any{
+			"status":     "confirmation_required",
+			"project_id": id.String(),
+			// clipSafe: the name and title are stored text a caller wrote, so
+			// they are bounded and boundary-marker-neutralised before being
+			// read back to an LLM (U13), exactly as wrapUntrustedProject does.
+			"project_name":    clipSafe(project.Name, gtdTitleMaxRunes),
+			"project_title":   clipSafe(project.Title, gtdTitleMaxRunes),
+			"tasks_to_delete": len(tasks),
+			"deletion_token":  token,
+			"expires_at":      expires.UTC().Format(time.RFC3339),
+			"message": fmt.Sprintf(
+				"Call delete_project again with confirm=true and the deletion_token to "+
+					"permanently delete this project and its %d task(s). Token expires in 60s.",
+				len(tasks),
+			),
+		})
+	}
+
+	// Step 2 — confirm=true. Same validation and single-use consumption as
+	// delete_task; every refusal branch lives in spendPendingDeletion.
+	if refusal := s.spendPendingDeletion(ctx, "delete_project", "project_id", key, args.DeletionToken); refusal != nil {
+		return refusal, nil
+	}
+
+	deleted, err := s.gtd.DeleteProject(ctx, id)
+	if err != nil {
+		slog.Warn("delete_project: DeleteProject failed", "project_id", id, "err", err)
+		return storeErrorResult("deleting project", err), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("project deleted (%d task(s) removed)", deleted)), nil
 }
 
 func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWorkArgs) (*mcp.CallToolResult, error) {

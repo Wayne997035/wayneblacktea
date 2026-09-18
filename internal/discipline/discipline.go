@@ -32,6 +32,7 @@ var MutatingTools = map[string]bool{
 	"update_task":     true,
 	"complete_task":   true,
 	"delete_task":     true,
+	"delete_project":  true, // tools_gtd.go — DeleteProject: deletes the project AND every task under it
 	"set_task_status": true,
 	"update_project":  true, // internal/mcp/tools_gtd.go:130/395/420 — UpdateProject
 	"log_activity":    true, // tools_gtd.go:238/1074/1091 — LogActivity
