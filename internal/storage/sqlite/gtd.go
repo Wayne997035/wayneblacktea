@@ -1597,15 +1597,22 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		    branch_name = ?11,
 		    pr_url      = ?12,
 		    commit_shas = CASE WHEN ?13 IS NOT NULL THEN json_insert(COALESCE(commit_shas, '[]'), '$[#]', ?13) ELSE commit_shas END,
+		    area        = COALESCE(?16, area),
 		    updated_at  = ?14
 		WHERE id = ?1
 		  AND (?15 IS NULL OR workspace_id = ?15)`
+	// ?16 is SQL NULL unless this call sets area, so COALESCE keeps the stored
+	// value — see gtd.UpdateTaskParams.Area for why this is done in SQL.
+	var areaArg any
+	if p.Area != nil {
+		areaArg = *p.Area
+	}
 	now := nowRFC3339()
 	res, err := s.db.conn.ExecContext(
 		ctx, q,
 		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status, m.kind,
 		m.branchName, m.prURL, m.appendCommitSHA,
-		now, s.db.workspaceArg(),
+		now, s.db.workspaceArg(), areaArg,
 	)
 	if err != nil {
 		return nil, errWrap("UpdateTask", err)

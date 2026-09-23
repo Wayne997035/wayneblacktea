@@ -147,6 +147,7 @@ type UpdateTaskArgs struct {
 	Kind        string    `mcp:"kind"`
 	BranchName  *string   `mcp:"branch_name"`
 	PRUrl       *string   `mcp:"pr_url"`
+	Area        string    `mcp:"area"`
 }
 
 // UpdateProjectStatusArgs — update_project_status. Status is required at the

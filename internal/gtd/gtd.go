@@ -147,6 +147,13 @@ type UpdateTaskParams struct {
 	Kind        *string // nil → preserve existing; set to one of validator.ValidTaskKinds (GTD-c282cc04)
 	BranchName  *string // nil → preserve existing; set to update (migration 000047)
 	PRUrl       *string // nil → preserve existing; set to update (migration 000047)
+	// Area: nil → preserve existing. Applied as COALESCE(new, area) inside the
+	// UPDATE itself rather than through the Go-side merge, so omission cannot
+	// wash a task back into 'unsorted' — the column is NOT NULL DEFAULT
+	// 'unsorted', and any path that wrote the default instead of the stored
+	// value would reclassify every task it touched without a trace.
+	// Callers MUST validate against task_areas first (TaskAreaExists).
+	Area *string
 	// AppendCommitSHA: nil → no-op, commit_shas is left untouched. Non-nil →
 	// the store atomically appends this single SHA to commit_shas at the SQL
 	// layer (array_append in Postgres, json_insert in SQLite) — never a
