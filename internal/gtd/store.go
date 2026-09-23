@@ -1258,6 +1258,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		    branch_name = $10,
 		    pr_url      = $11,
 		    commit_shas = CASE WHEN $12::text IS NOT NULL THEN array_append(commit_shas, $12::text) ELSE commit_shas END,
+		    area        = COALESCE($15::text, area),
 		    updated_at  = NOW()
 		WHERE id = $13
 		  AND ($14::uuid IS NULL OR workspace_id = $14)
@@ -1269,7 +1270,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		merged.title, merged.description, merged.priority, merged.importance, assignee,
 		merged.dueDate, merged.taskContext, merged.status, merged.kind,
 		merged.branchName, merged.prURL, p.AppendCommitSHA,
-		id, s.workspaceID,
+		id, s.workspaceID, p.Area,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("updating task %s: %w", id, err)

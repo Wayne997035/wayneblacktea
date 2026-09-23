@@ -322,6 +322,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				mcp.Enum("general", "fix-pr", "feature", "refactor", "research", "chore")),
 			mcp.WithString("branch_name", mcp.Description("Git branch name, empty clears")),
 			mcp.WithString("pr_url", mcp.Description("GitHub PR URL, empty clears")),
+			mcp.WithString("area", mcp.Description(
+				"Reclassify the task. Must name an area from wayneblacktea://gtd/areas; omit to keep it.",
+			)),
 		), seam("update_task", s.handleUpdateTask),
 		uuidArgs("task_id"),
 		// assignee's MaxLength(200) is advisory-only (see add_task's
@@ -1396,19 +1399,32 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 		taskCtx := args.Context
 		p.Context = &taskCtx
 	}
-	if args.Kind != "" {
-		if !validator.IsValidKind(args.Kind) {
-			return p, "kind must be one of: general, fix-pr, feature, refactor, research, chore"
-		}
-		k := args.Kind
-		p.Kind = &k
+	if msg := applyClassificationUpdate(args, &p); msg != "" {
+		return p, msg
 	}
-
 	if msg := applyBranchAndPRUpdate(args.BranchName, args.PRUrl, &p); msg != "" {
 		return p, msg
 	}
 
 	return p, ""
+}
+
+// applyClassificationUpdate sets the two fields that say what KIND of work a
+// task is and WHERE it is counted (kind, area). Area membership in task_areas
+// is not checked here — that needs the store, so handleUpdateTask does it.
+func applyClassificationUpdate(args UpdateTaskArgs, p *gtd.UpdateTaskParams) string {
+	if args.Kind != "" {
+		if !validator.IsValidKind(args.Kind) {
+			return "kind must be one of: general, fix-pr, feature, refactor, research, chore"
+		}
+		k := args.Kind
+		p.Kind = &k
+	}
+	if args.Area != "" {
+		area := args.Area
+		p.Area = &area
+	}
+	return ""
 }
 
 // updateTaskParamsIsEmpty returns true when no field is set in p — the caller
@@ -1417,7 +1433,8 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 	return p.Status == nil && p.Title == nil && p.Description == nil &&
 		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
 		p.DueDate == nil && p.Context == nil && p.Kind == nil &&
-		p.BranchName == nil && p.PRUrl == nil && p.AppendCommitSHA == nil
+		p.BranchName == nil && p.PRUrl == nil && p.AppendCommitSHA == nil &&
+		p.Area == nil
 }
 
 // requireAssigneeForInProgress enforces that a task cannot transition to
@@ -1459,6 +1476,18 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	}
 	if errResult := s.requireAssigneeForInProgress(ctx, args.TaskID, p); errResult != nil {
 		return errResult, nil
+	}
+	// Same gate add_task applies, for the same reason: no foreign key backs
+	// tasks.area (red line #9), so this lookup is the only thing between a
+	// typo and a task moved into a bucket no counts query will ever surface.
+	if p.Area != nil {
+		if ok, err := s.gtd.TaskAreaExists(ctx, *p.Area); err != nil {
+			return storeErrorResult("checking area", err), nil
+		} else if !ok {
+			return mcp.NewToolResultError(
+				"unknown area; read wayneblacktea://gtd/areas for the current list",
+			), nil
+		}
 	}
 
 	task, err := s.gtd.UpdateTask(ctx, args.TaskID, p)
