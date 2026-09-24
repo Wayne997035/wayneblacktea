@@ -1388,8 +1388,14 @@ func (s *GTDStore) PruneDeletionTombstones(ctx context.Context, cutoff time.Time
 	return n, nil
 }
 
-// LogActivity records an activity log entry. project may be nil.
+// LogActivity records an activity log entry. project may be nil. Rejects
+// action names reserved for the delete/restore transactions' own in-tx
+// audit writes (SEC-PR191-02) — see gtd.IsReservedAuditAction's doc comment
+// for why.
 func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
+	if gtd.IsReservedAuditAction(action) {
+		return gtd.ErrReservedAction
+	}
 	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
 	_, err := s.db.conn.ExecContext(ctx, q,

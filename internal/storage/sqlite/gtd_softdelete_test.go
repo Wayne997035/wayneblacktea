@@ -306,6 +306,45 @@ func TestSoftDelete_ActivityLogWrittenInSameTx(t *testing.T) {
 	})
 }
 
+// TestLogActivity_RejectsReservedAuditActions is SEC-PR191-02: LogActivity —
+// the sole entry point every external caller (MCP log_activity, POST
+// /api/activity, PostToolUse, autolog middleware, scheduler, closeout)
+// funnels through — must refuse to write a row whose action names one of
+// the three values only the delete/restore transactions' own in-tx audit
+// writes (this file's TestSoftDelete_ActivityLogWrittenInSameTx, above) may
+// produce, including case/whitespace variants, and must not write any row
+// when it refuses.
+func TestLogActivity_RejectsReservedAuditActions(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	countActivityLog := func() int {
+		var n int
+		if err := d.QueryRowContext(ctx, `SELECT count(*) FROM activity_log`).Scan(&n); err != nil {
+			t.Fatalf("count activity_log: %v", err)
+		}
+		return n
+	}
+
+	cases := []string{
+		"project_deleted", "task_deleted", "project_restored",
+		"Project_Deleted", " project_deleted ", "TASK_DELETED",
+	}
+	before := countActivityLog()
+	for _, action := range cases {
+		t.Run(action, func(t *testing.T) {
+			err := store.LogActivity(ctx, testerActor, action, nil, "forged audit row")
+			if !errors.Is(err, gtd.ErrReservedAction) {
+				t.Fatalf("LogActivity(%q) error = %v, want gtd.ErrReservedAction", action, err)
+			}
+		})
+	}
+	if got := countActivityLog(); got != before {
+		t.Errorf("activity_log grew by %d row(s) after %d rejected LogActivity calls, want 0", got-before, len(cases))
+	}
+}
+
 // jsonObjectKeyRe extracts a json_object() call's column-name keys from its
 // literal SQL text. Every value in sqliteTaskSnapshotJSON / sqliteProject
 // SnapshotJSON is a bare column reference or a json(...) wrapper — never a

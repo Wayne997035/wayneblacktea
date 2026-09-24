@@ -955,8 +955,13 @@ func (a *pgBeginTaskAdapter) Rollback(ctx context.Context) {
 	_ = a.tx.Rollback(ctx)
 }
 
-// LogActivity records an activity entry.
+// LogActivity records an activity entry. Rejects action names reserved for
+// the delete/restore transactions' own in-tx audit writes (SEC-PR191-02) —
+// see IsReservedAuditAction's doc comment for why.
 func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
+	if IsReservedAuditAction(action) {
+		return ErrReservedAction
+	}
 	_, err := s.q.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       actor,
 		ProjectID:   pgconv.ToUUID(projectID),

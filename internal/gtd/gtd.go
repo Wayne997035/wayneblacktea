@@ -76,6 +76,13 @@ var (
 	// code path returns it. Mirrors sqlite.ErrNotImplemented's role in the
 	// other backend.
 	ErrNotImplemented = errors.New("gtd: not yet implemented")
+	// ErrReservedAction is returned by LogActivity (both backends) when
+	// action names one of reservedAuditActions (SEC-PR191-02). Fixed
+	// string, never echoes the caller's own action value — safe to surface
+	// verbatim to an MCP or HTTP caller (internal/mcp/tool_errors.go's
+	// callerFacingSentinels, internal/handler/autolog_handler.go's 400
+	// branch).
+	ErrReservedAction = errors.New("gtd: action name is reserved for audit rows written by delete/restore")
 )
 
 // DeletionTombstoneRetention is the single source of truth for the 30-day
@@ -88,6 +95,32 @@ var (
 // bound, the snapshot-time prune, and the scheduled prune can never drift
 // out of sync with each other (SEC-PR191-01).
 const DeletionTombstoneRetention = 30 * 24 * time.Hour
+
+// reservedAuditActions is the closed set of activity_log action values that
+// only the delete/restore transactions themselves may write (SEC-PR191-02):
+// a row with one of these actions can be trusted to mean a real delete/restore
+// happened, which breaks the moment any LogActivity caller — MCP
+// log_activity, POST /api/activity, or a direct Store caller — can write an
+// indistinguishable-looking row without actually deleting or restoring
+// anything. The six in-tx audit writes that legitimately use these values
+// (PG: store.go's pgDeleteProjectAdapter/pgDeleteTaskAdapter.
+// WriteDeletionAuditLog and RestoreProject; SQLite: gtd.go's twins) call
+// CreateActivityLog / INSERT INTO activity_log directly and never go
+// through LogActivity, so they are unaffected by this check.
+var reservedAuditActions = map[string]bool{
+	"project_deleted":  true,
+	"task_deleted":     true,
+	"project_restored": true,
+}
+
+// IsReservedAuditAction reports whether action, after trimming surrounding
+// whitespace and folding to lowercase, names one of reservedAuditActions —
+// so "Project_Deleted" or " project_deleted " are rejected exactly like the
+// bare literal (P3's "variant bypass" note). Both backends' LogActivity call
+// this before writing any row.
+func IsReservedAuditAction(action string) bool {
+	return reservedAuditActions[strings.ToLower(strings.TrimSpace(action))]
+}
 
 // ProjectIDCleanupExemptions is the sole, machine-checked exception list to
 // "every table with a project_id column must be cleaned by delete_project"

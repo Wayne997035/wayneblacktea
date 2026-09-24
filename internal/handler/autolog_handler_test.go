@@ -201,6 +201,28 @@ func TestAutologHandler_LogActivity(t *testing.T) {
 	}
 }
 
+// TestAutologHandler_ReservedActionReturns400 is SEC-PR191-02's HTTP-surface
+// half: when the store rejects a reserved action name (gtd.ErrReservedAction
+// — a caller-facing request-validation error, not a server internal), the
+// handler must translate it into 400, distinct from the generic 500 the
+// "store error" case above still gets for every other store failure.
+func TestAutologHandler_ReservedActionReturns400(t *testing.T) {
+	e := newEcho()
+	gtdStore := &fakeAutologGTDStore{logErr: gtd.ErrReservedAction}
+	h := handler.NewAutologHandler(gtdStore, &fakeAutologSessionStore{}, &fakeAutologDecisionStore{}, nil)
+	e.POST("/api/activity", h.LogActivity)
+
+	rec := performRequest(e, http.MethodPost, "/api/activity",
+		`{"actor":"bash-hook","action":"project_deleted","notes":"forged audit row"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reserved") {
+		t.Errorf("body = %q, want it to contain %q", rec.Body.String(), "reserved")
+	}
+}
+
 func TestAutologHandler_LogActivity_AutoDecision(t *testing.T) {
 	clf := &stubClassifier{result: ai.ClassifyResult{IsDecision: true, Title: "Use Haiku for classification"}}
 	dec := &fakeAutologDecisionStore{}
