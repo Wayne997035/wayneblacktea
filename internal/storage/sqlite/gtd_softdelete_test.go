@@ -20,8 +20,8 @@ import (
 // [F191-04/05/06/09] the write side of the soft-delete contract
 // (PR #191): delete_project / delete_task now snapshot every row they are
 // about to remove into deletion_tombstones and write one activity_log audit
-// row, both inside the SAME transaction as the delete itself (design 1-3 of
-// the soft-delete dispatch). package sqlite (white-box, not sqlite_test) on
+// row, both inside the SAME transaction as the delete itself. package sqlite
+// (white-box, not sqlite_test) on
 // purpose: TestSnapshotColumnList_MatchesPragmaTableInfo reads the actual
 // production json_object() expressions (sqliteTaskSnapshotJSON /
 // sqliteProjectSnapshotJSON), not a hand-copied duplicate of their column
