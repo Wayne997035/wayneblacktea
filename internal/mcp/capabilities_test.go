@@ -2,7 +2,6 @@ package mcp_test
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -26,6 +25,7 @@ import (
 // rather than a hand-maintained list checked by inspection — it catches
 // method-set changes, not just call-site changes.
 func TestServerCapabilityRegistry_MatchesKnownSet(t *testing.T) {
+	t.Parallel()
 	st := reflect.TypeOf(&mcpsrv.Server{})
 	var found []string
 	for i := 0; i < st.NumMethod(); i++ {
@@ -59,7 +59,7 @@ func TestServerCapabilityRegistry_MatchesKnownSet(t *testing.T) {
 // matching the pattern used by TestNew_AcceptsSQLiteBundle in server_test.go.
 func sqliteFixture(t *testing.T) storage.ServerStores {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "capabilities.db")
+	dbPath := mcpsrv.NewMigratedSQLitePath(t, "capabilities.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,
@@ -95,6 +95,7 @@ var allLLMEnvKeys = []string{
 // backend never provides. That is a documented capability gap, not a bug —
 // asserted explicitly below via SnapshotSkipReason.
 func TestWireOptionalCapabilities_SQLiteBackendWithClaudeKey(t *testing.T) {
+	// Not parallel: uses t.Setenv on LLM API key variables, which panics in parallel tests.
 	for _, k := range allLLMEnvKeys {
 		t.Setenv(k, "")
 	}
@@ -146,6 +147,7 @@ func TestWireOptionalCapabilities_SQLiteBackendWithClaudeKey(t *testing.T) {
 // MergedPRsStore each setting their respective SkipReason field. Each case
 // builds a fresh *Server so wiring in one case can't leak into another.
 func TestWireOptionalCapabilities_SkipPaths(t *testing.T) {
+	// Not parallel: uses t.Setenv on LLM API key variables, which panics in parallel tests.
 	stores := sqliteFixture(t)
 	candidateStore := mcpsrv.ResolveCandidateStore(stores)
 	mergedPRsStore := mcpsrv.ResolveMergedPRsStore(stores)
@@ -255,6 +257,7 @@ func TestWireOptionalCapabilities_SkipPaths(t *testing.T) {
 // connection (internal/mcprunner.buildStores) must be able to resolve both
 // stores stdio previously lacked entirely.
 func TestResolveCandidateAndMergedPRsStore_SQLiteBackend(t *testing.T) {
+	t.Parallel()
 	stores := sqliteFixture(t)
 
 	if got := mcpsrv.ResolveCandidateStore(stores); got == nil {

@@ -55,6 +55,7 @@ func rpcServerInfo(t *testing.T, ms *server.MCPServer) mcpmsg.Implementation {
 // this a proof rather than a claim: only a live read of the variable can
 // reproduce that exact string in the response.
 func TestMCPServer_VersionComesFromBuildinfo(t *testing.T) {
+	// Not parallel: overwrites package-level buildinfo.Version/Commit/Date; parallel readers would observe the temporary values.
 	const canary = "test-canary-9f3a1c2e-not-a-real-version"
 	orig := buildinfo.Version
 	buildinfo.Version = canary
@@ -80,6 +81,7 @@ func TestMCPServer_VersionComesFromBuildinfo(t *testing.T) {
 // indistinguishable from a tagged one (that indistinguishability was the
 // original bug: "0.1.0" looked real and never changed).
 func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
+	t.Parallel()
 	if buildinfo.Version != sentinelVersion {
 		t.Errorf("buildinfo.Version = %q in an ldflags-less test build, want sentinel %q",
 			buildinfo.Version, sentinelVersion)
@@ -107,6 +109,7 @@ func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
 // README's new "Checking what's running" section), serverInfo.version must
 // report the synthetic build ID instead of the bare "dev" sentinel.
 func TestMCPServer_VersionFallsBackToBuildIDWhenSentinel(t *testing.T) {
+	// Not parallel: overwrites package-level buildinfo.Version/Commit/Date; parallel readers would observe the temporary values.
 	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
 	buildinfo.Version = sentinelVersion
 	buildinfo.Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
@@ -138,6 +141,7 @@ func TestMCPServer_VersionFallsBackToBuildIDWhenSentinel(t *testing.T) {
 // Version is at its sentinel and both are falling back to a synthetic
 // BuildID() value rather than echoing buildinfo.Version directly.
 func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
+	// Not parallel: overwrites package-level buildinfo.Version/Commit/Date; parallel readers would observe the temporary values.
 	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
 	buildinfo.Version = sentinelVersion
 	buildinfo.Commit = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
@@ -208,6 +212,7 @@ func TestResourceBuildInfo_BuildIDMatchesServerInfo(t *testing.T) {
 // them exactly — the same technique
 // TestMCPServer_VersionComesFromBuildinfo uses for serverInfo.
 func TestResourceBuildInfo_MatchesServerInfo(t *testing.T) {
+	// Not parallel: overwrites package-level buildinfo.Version/Commit/Date; parallel readers would observe the temporary values.
 	origV, origC, origD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
 	buildinfo.Version = "canary-version-7a1b"
 	buildinfo.Commit = "canary-commit-2e9f"
@@ -260,6 +265,7 @@ func TestResourceBuildInfo_MatchesServerInfo(t *testing.T) {
 // test server was actually constructed with (SQLite, per
 // newTestResourceServer).
 func TestResourceBuildInfo_ProtocolVersionAndBackend(t *testing.T) {
+	t.Parallel()
 	s := newTestResourceServer(t)
 
 	contents, err := s.handleResourceBuildInfo(context.Background(), mcpmsg.ReadResourceRequest{})
@@ -287,6 +293,7 @@ func TestResourceBuildInfo_ProtocolVersionAndBackend(t *testing.T) {
 // s.pool and s.now (both safe on a bare &Server{}), so no store bundle is
 // needed.
 func TestResourceBuildInfo_PostgresBackend(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("postgres testcontainer is not started under -short (tools_plan_pg_test.go TestMain)")
 	}
@@ -315,6 +322,7 @@ func TestResourceBuildInfo_PostgresBackend(t *testing.T) {
 // field to buildInfoResource without updating this allowlist fails loudly
 // here instead of silently shipping whatever they added.
 func TestResourceBuildInfo_NoUnexpectedFields(t *testing.T) {
+	t.Parallel()
 	s := newTestResourceServer(t)
 
 	contents, err := s.handleResourceBuildInfo(context.Background(), mcpmsg.ReadResourceRequest{})
@@ -371,6 +379,7 @@ func TestResourceBuildInfo_NoUnexpectedFields(t *testing.T) {
 // wayneblacktea://session/handoff/latest (which is deliberate, existing,
 // pre-dates this PR, and is intentionally excluded from the check below).
 func TestToolsList_BuildInfoResourceNotAdvertisedInToolDescriptions(t *testing.T) {
+	t.Parallel()
 	s := newTestResourceServer(t)
 	ms := s.MCPServer()
 

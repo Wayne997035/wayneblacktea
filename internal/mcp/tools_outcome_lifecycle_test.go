@@ -59,6 +59,7 @@ func callRecordOutcomeFor(t *testing.T, s *Server, entityID uuid.UUID, result, n
 // 'unknown' draft; record_outcome must finalize that SAME row instead of
 // creating an unrelated second one.
 func TestOutcomeLifecycle_CompleteTaskThenRecordOutcome_FinalizesDraftInPlace(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTaskWithDueDate(t, s, "")
 
@@ -99,6 +100,7 @@ func TestOutcomeLifecycle_CompleteTaskThenRecordOutcome_FinalizesDraftInPlace(t 
 // production duplication pattern found in the audit (2 entities with both
 // an 'unknown' draft and a terminal outcome coexisting).
 func TestOutcomeLifecycle_CompleteTaskThenFinishWorkFailure_FinalizesDraftInPlace(t *testing.T) {
+	t.Parallel()
 	s, db := newTestWorkSessionServerWithDB(t)
 	taskID := uuid.New().String()
 	insertMCPTestTask(t, db, "", taskID)
@@ -152,6 +154,7 @@ func TestOutcomeLifecycle_CompleteTaskThenFinishWorkFailure_FinalizesDraftInPlac
 // creates a new row with SupersedesID pointing back at the first, which
 // stays unmodified (audit trail preserved).
 func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_DifferentResult_Supersedes(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
@@ -199,6 +202,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_DifferentResult_Superse
 // a second row, and not a second background atomization of the same notes
 // text.
 func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_IdenticalReplay_NoSecondRow(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
@@ -236,6 +240,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenRecordOutcome_IdenticalReplay_NoSecon
 // failed. The two are genuinely different executions' results, so this must
 // supersede (new row), not silently overwrite the earlier "success".
 func TestOutcomeLifecycle_RecordOutcomeThenFinishWorkFailure_Supersedes(t *testing.T) {
+	t.Parallel()
 	s, db := newTestWorkSessionServerWithDB(t)
 	taskID := uuid.New().String()
 	insertMCPTestTask(t, db, "", taskID)
@@ -300,6 +305,7 @@ func TestOutcomeLifecycle_RecordOutcomeThenFinishWorkFailure_Supersedes(t *testi
 // distinct execution's result, so the second must supersede the first
 // rather than being silently treated as a duplicate.
 func TestOutcomeLifecycle_FinishWorkFailureTwice_Supersedes(t *testing.T) {
+	t.Parallel()
 	s, db := newTestWorkSessionServerWithDB(t)
 	taskID := uuid.New().String()
 	insertMCPTestTask(t, db, "", taskID)
@@ -381,6 +387,7 @@ func TestOutcomeLifecycle_FinishWorkFailureTwice_Supersedes(t *testing.T) {
 // survive completely unchanged, in the SAME row (no new row, no audit
 // trail loss either way).
 func TestOutcomeLifecycle_RecordOutcomeUnknownAgainstExistingDraft_PreservesContent(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 	sessionID := uuid.New()
@@ -463,6 +470,7 @@ func TestOutcomeLifecycle_RecordOutcomeUnknownAgainstExistingDraft_PreservesCont
 // content lands and pre-existing fields the second call didn't touch
 // survive (merge, not overwrite).
 func TestOutcomeLifecycle_RecordOutcomeUnknownWithContent_EnrichesExistingDraft(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 	relatedRuleID := uuid.New()
@@ -594,6 +602,7 @@ func newAtomizeSpyServerWithText(t *testing.T) (*Server, chan atomizeCall) {
 // handleRecordOutcome's atomize gate and silently skipped atomize for
 // content that had never been atomized under the NEW row's outcome_id.
 func TestHandleRecordOutcome_Supersede_SameNotesDifferentResult_TriggersAtomize(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServer(t)
 	entityID := uuid.New()
 	sameNotes := "looked fine at review time"
@@ -649,6 +658,7 @@ func TestHandleRecordOutcome_Supersede_SameNotesDifferentResult_TriggersAtomize(
 // trigger atomize — there is nothing to atomize (o.Notes == ""), and this
 // must hold regardless of whether the row it supersedes had real notes.
 func TestHandleRecordOutcome_Supersede_EmptyNotes_SkipsAtomize(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServer(t)
 	entityID := uuid.New()
 
@@ -708,6 +718,7 @@ func TestHandleRecordOutcome_Supersede_EmptyNotes_SkipsAtomize(t *testing.T) {
 // and asserts atomizeFn received EXACTLY that call's own segment each time —
 // never the growing accumulated prefix.
 func TestHandleRecordOutcome_EnrichThreeTimes_AtomizeOnlyGetsNewSegmentEachTime(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServerWithText(t)
 	entityID := uuid.New()
 
@@ -788,6 +799,7 @@ func TestHandleRecordOutcome_EnrichThreeTimes_AtomizeOnlyGetsNewSegmentEachTime(
 // TestHasNewContent (lifecycle_test.go) is the test that pins down this
 // WorkSessionID-forces-Enriched invariant.
 func TestHandleRecordOutcome_DraftPreserved_SkipsAtomize(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServer(t)
 	entityID := uuid.New()
 
@@ -833,6 +845,7 @@ func TestHandleRecordOutcome_DraftPreserved_SkipsAtomize(t *testing.T) {
 // SetOutcomeLink and atomize exactly like ActionFinalizedDraft/ActionCreated
 // would.
 func TestHandleRecordOutcome_DraftEnriched_TriggersSetOutcomeLinkAndAtomize(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServer(t)
 	entityID := uuid.New()
 
@@ -893,6 +906,7 @@ func TestHandleRecordOutcome_DraftEnriched_TriggersSetOutcomeLinkAndAtomize(t *t
 // tools_outcome.go's idempotent-skip list, so atomize fired twice for the
 // same notes text.
 func TestHandleRecordOutcome_DraftEnrichRetry_ByteIdenticalSkipsSecondAtomize(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServer(t)
 	entityID := uuid.New()
 
@@ -968,6 +982,7 @@ func TestHandleRecordOutcome_DraftEnrichRetry_ByteIdenticalSkipsSecondAtomize(t 
 // fresh related_rule_ids against a draft with real notes -> atomizeFn fired
 // 5 extra times over identical text, none of it deduped by AddAtom.
 func TestHandleRecordOutcome_DraftEnriched_RelatedRuleIDsOnly_SkipsAtomize(t *testing.T) {
+	t.Parallel()
 	s, atomizeCalls := newAtomizeSpyServer(t)
 	entityID := uuid.New()
 

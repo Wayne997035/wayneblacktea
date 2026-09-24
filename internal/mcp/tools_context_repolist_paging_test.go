@@ -25,6 +25,7 @@ import (
 // has_more being false — not the wording around them, so ordinary edits to the
 // rest of the description do not trip it.
 func TestB9B47C5A9_ListActiveReposDescriptionSaysPageUntilHasMoreIsFalse(t *testing.T) {
+	t.Parallel()
 	ms := server.NewMCPServer("test", "0.0.0")
 	(&Server{}).registerContextTools(ms)
 

@@ -123,6 +123,7 @@ func callUpdateSkillFromOutcome(t *testing.T, s *Server, args map[string]any) *m
 // --- handleExtractSkill tests ---
 
 func TestHandleExtractSkill_HappyPath(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{
 		returnSkill: &skill.Skill{
 			ID:          "test-skill-id",
@@ -149,6 +150,7 @@ func TestHandleExtractSkill_HappyPath(t *testing.T) {
 }
 
 func TestHandleExtractSkill_InvalidName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		value string
@@ -173,6 +175,7 @@ func TestHandleExtractSkill_InvalidName(t *testing.T) {
 }
 
 func TestHandleExtractSkill_InvalidDescription(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		value string
@@ -195,6 +198,7 @@ func TestHandleExtractSkill_InvalidDescription(t *testing.T) {
 }
 
 func TestHandleExtractSkill_NameTooLong(t *testing.T) {
+	t.Parallel()
 	s := newSkillServer(&stubSkillStore{})
 	longName := strings.Repeat("a", 201) // 201 runes > 200 limit
 
@@ -209,6 +213,7 @@ func TestHandleExtractSkill_NameTooLong(t *testing.T) {
 }
 
 func TestHandleExtractSkill_ExactlyAtNameLimit(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{
 		returnSkill: &skill.Skill{
 			ID:   "skill-id",
@@ -229,6 +234,7 @@ func TestHandleExtractSkill_ExactlyAtNameLimit(t *testing.T) {
 }
 
 func TestHandleExtractSkill_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnErr: errors.New("db down")}
 	s := newSkillServer(store)
 
@@ -245,6 +251,7 @@ func TestHandleExtractSkill_StoreError(t *testing.T) {
 // --- handleSearchSkills tests ---
 
 func TestHandleSearchSkills_HappyPath(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{
 		returnList: []*skill.Skill{
 			{ID: "id-1", Name: "testing-pattern", Description: "test desc"},
@@ -270,6 +277,7 @@ func TestHandleSearchSkills_HappyPath(t *testing.T) {
 }
 
 func TestHandleSearchSkills_EmptyQuery(t *testing.T) {
+	t.Parallel()
 	s := newSkillServer(&stubSkillStore{})
 
 	r := callSearchSkills(t, s, map[string]any{
@@ -282,6 +290,7 @@ func TestHandleSearchSkills_EmptyQuery(t *testing.T) {
 }
 
 func TestHandleSearchSkills_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnErr: errors.New("search failed")}
 	s := newSkillServer(store)
 
@@ -295,6 +304,7 @@ func TestHandleSearchSkills_StoreError(t *testing.T) {
 }
 
 func TestHandleSearchSkills_EmptyResultNilSafe(t *testing.T) {
+	t.Parallel()
 	// Store returns nil slice — handler must return [] not null.
 	store := &stubSkillStore{returnList: nil}
 	s := newSkillServer(store)
@@ -315,6 +325,7 @@ func TestHandleSearchSkills_EmptyResultNilSafe(t *testing.T) {
 // --- handleUseSkill tests ---
 
 func TestHandleUseSkill_HappyPath(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{
 		returnSkill: &skill.Skill{
 			ID:           "skill-abc",
@@ -337,6 +348,7 @@ func TestHandleUseSkill_HappyPath(t *testing.T) {
 }
 
 func TestHandleUseSkill_NotFound(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnErr: skill.ErrNotFound}
 	s := newSkillServer(store)
 
@@ -350,6 +362,7 @@ func TestHandleUseSkill_NotFound(t *testing.T) {
 }
 
 func TestHandleUseSkill_EmptySkillID(t *testing.T) {
+	t.Parallel()
 	s := newSkillServer(&stubSkillStore{})
 
 	r := callUseSkill(t, s, map[string]any{
@@ -362,6 +375,7 @@ func TestHandleUseSkill_EmptySkillID(t *testing.T) {
 }
 
 func TestHandleUseSkill_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnErr: errors.New("db unavailable")}
 	s := newSkillServer(store)
 
@@ -381,6 +395,7 @@ func TestHandleUseSkill_StoreError(t *testing.T) {
 // failure outcome (the pre-fix behavior — boolArg's missing-key default of
 // false). The store must never be called.
 func TestHandleUpdateSkillFromOutcome_MissingSuccess_Rejected(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnSkill: &skill.Skill{ID: "skill-1"}}
 	s := newSkillServer(store)
 
@@ -405,6 +420,7 @@ func TestHandleUpdateSkillFromOutcome_MissingSuccess_Rejected(t *testing.T) {
 // store as Success=false — proves the fix rejects OMISSION, not the
 // legitimate value false itself.
 func TestHandleUpdateSkillFromOutcome_ExplicitFalse_RecordsFailure(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnSkill: &skill.Skill{ID: "skill-1"}}
 	s := newSkillServer(store)
 
@@ -428,6 +444,7 @@ func TestHandleUpdateSkillFromOutcome_ExplicitFalse_RecordsFailure(t *testing.T)
 // positive control: success=true explicitly must reach the store as
 // Success=true.
 func TestHandleUpdateSkillFromOutcome_ExplicitTrue_RecordsSuccess(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{returnSkill: &skill.Skill{ID: "skill-1"}}
 	s := newSkillServer(store)
 
@@ -445,6 +462,7 @@ func TestHandleUpdateSkillFromOutcome_ExplicitTrue_RecordsSuccess(t *testing.T) 
 }
 
 func TestHandleUpdateSkillFromOutcome_EmptySkillID(t *testing.T) {
+	t.Parallel()
 	s := newSkillServer(&stubSkillStore{})
 
 	r := callUpdateSkillFromOutcome(t, s, map[string]any{

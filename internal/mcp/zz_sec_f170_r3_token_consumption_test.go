@@ -26,6 +26,7 @@ import (
 // handleReconcileMergedPRsConfirm and the second confirm below fails with
 // "no pending reconciliation".
 func TestF170SECR303_ReconcileRejectedConfirmDoesNotConsumeToken(t *testing.T) {
+	t.Parallel()
 	s := withReconcileCandidates(t, newTestWorkSessionServer(t))
 	branch := "feature/f170-r3-03-nonconsuming"
 	task := seedBranchedTask(t, s, "non-consuming refusal", branch)
@@ -70,6 +71,7 @@ func TestF170SECR303_ReconcileRejectedConfirmDoesNotConsumeToken(t *testing.T) {
 // TestF170SECR303_DeleteTaskRejectedConfirmDoesNotConsumeToken is the same
 // property on delete_task's session branch.
 func TestF170SECR303_DeleteTaskRejectedConfirmDoesNotConsumeToken(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -130,6 +132,7 @@ func TestF170SECR303_DeleteTaskRejectedConfirmDoesNotConsumeToken(t *testing.T) 
 // should apply to both branches, and the next person to tidy this up would
 // remove the guess-limiting behaviour believing they were finishing the job.
 func TestF170SECR303_DeleteTaskWrongTokenStillConsumes(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 

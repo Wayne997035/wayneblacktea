@@ -60,6 +60,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestClipSafe_MarkerCrossesTruncationBoundary(t *testing.T) {
+	t.Parallel()
 	const maxRunes = 20
 	marker := storedContextMarkerEnd // "=== END STORED CONTEXT ==="
 	prefix := strings.Repeat("a", maxRunes-5)
@@ -148,6 +149,7 @@ func assertRepoMarkerNeutralized(t *testing.T, marker, got string) {
 }
 
 func TestHandleListActiveRepos_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingWorkspaceStore{activeRepos: []db.Repo{forgedRepo(marker)}}
 	s := &Server{workspace: store}
@@ -163,6 +165,7 @@ func TestHandleListActiveRepos_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleSyncRepo_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	forged := forgedRepo(marker)
 	store := &forgingWorkspaceStore{upsertReturn: &forged}
@@ -258,6 +261,7 @@ func (forgingProposalStore) AutoProposeConceptFromKnowledge(
 }
 
 func TestHandleAddKnowledge_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	forged := &db.KnowledgeItem{
 		ID:      uuid.New(),
@@ -296,6 +300,7 @@ func TestHandleAddKnowledge_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleSearchKnowledge_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingKnowledgeStore{searchReturn: []db.KnowledgeItem{{
 		ID:      uuid.New(),
@@ -337,6 +342,7 @@ func (f *forgingAtomStore) Search(context.Context, *uuid.UUID, string, int) ([]a
 }
 
 func TestHandleSearchKnowledge_IncludeAtoms_NeutralizesForgedMarkerInBothArrays(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	knowledgeStore := &forgingKnowledgeStore{searchReturn: []db.KnowledgeItem{{
 		ID:      uuid.New(),
@@ -371,6 +377,7 @@ func TestHandleSearchKnowledge_IncludeAtoms_NeutralizesForgedMarkerInBothArrays(
 }
 
 func TestHandleListKnowledge_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingKnowledgeStore{listReturn: []db.KnowledgeItem{{
 		ID:      uuid.New(),
@@ -402,6 +409,7 @@ func TestHandleListKnowledge_NeutralizesForgedMarker(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleNavigateKnowledge_Root_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	rootStore := &forgingKnowledgeNavStore{
 		roots: []*db.KnowledgeItem{{
@@ -431,6 +439,7 @@ func TestHandleNavigateKnowledge_Root_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleNavigateKnowledge_Children_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	parentID := uuid.New()
 	childStore := &forgingKnowledgeNavStore{
@@ -458,6 +467,7 @@ func TestHandleNavigateKnowledge_Children_NeutralizesForgedMarker(t *testing.T) 
 }
 
 func TestHandleOutlineKnowledge_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	itemID := uuid.New()
 	childStore := &forgingKnowledgeNavStore{
@@ -554,6 +564,7 @@ func (f *forgingKnowledgeNavStore) ListByTaskID(context.Context, uuid.UUID, int)
 // ---------------------------------------------------------------------------
 
 func TestHandleProposeBehaviorRule_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &stubBehaviorRuleStore{proposeReturn: &behaviorrule.BehaviorRule{
 		ID:         uuid.New(),
@@ -582,6 +593,7 @@ func TestHandleProposeBehaviorRule_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleListBehaviorRules_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &stubBehaviorRuleStore{listReturn: []*behaviorrule.BehaviorRule{{
 		ID:        uuid.New(),
@@ -600,6 +612,7 @@ func TestHandleListBehaviorRules_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleApplyBehaviorRules_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &stubBehaviorRuleStore{applyReturn: &behaviorrule.BehaviorRule{
 		ID:        uuid.New(),
@@ -618,6 +631,7 @@ func TestHandleApplyBehaviorRules_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleDeprecateBehaviorRule_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &stubBehaviorRuleStore{deprecateReturn: &behaviorrule.BehaviorRule{
 		ID:        uuid.New(),
@@ -654,6 +668,7 @@ func (f *forgingLearningStore) CreateConcept(context.Context, string, string, []
 }
 
 func TestHandleGetDueReviews_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingLearningStore{dueReturn: []learning.DueReview{{
 		ConceptID: uuid.New(),
@@ -679,6 +694,7 @@ func TestHandleGetDueReviews_NeutralizesForgedMarker(t *testing.T) {
 }
 
 func TestHandleCreateConcept_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingLearningStore{conceptReturn: &db.Concept{
 		ID:      uuid.New(),
@@ -713,6 +729,7 @@ func TestHandleCreateConcept_NeutralizesForgedMarker(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloseoutSessionCheck_StuckTaskTitleNeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	stuckTask := makeTask("stuck task\n"+marker, taskStatusInProgress, time.Now().Add(-8*24*time.Hour))
 	gtdStub := &stubCloseoutGTD{tasks: []db.Task{stuckTask}}
@@ -773,6 +790,7 @@ func (f *forgingPlaybookStore) List(context.Context, playbook.ListParams) ([]*pl
 }
 
 func TestHandleListPlaybooks_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingPlaybookStore{listReturn: []*playbook.Playbook{{
 		ID:             uuid.New(),
@@ -829,6 +847,7 @@ func (statusTestGenerator) Generate(context.Context, string, decision.StoreIface
 }
 
 func TestHandleGenerateProjectStatus_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	store := &forgingSnapshotStore{fresh: &snapshot.Snapshot{
 		Slug:           "wayneblacktea",
@@ -872,6 +891,7 @@ func TestHandleGenerateProjectStatus_NeutralizesForgedMarker(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDetectCompletionDrift_NeutralizesForgedMarker(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	root := t.TempDir()
 	rel := filepath.Join("internal", "handler", "marker_test.go")

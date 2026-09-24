@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -92,7 +91,7 @@ type parityEnv struct {
 
 func newParityEnv(t *testing.T) *parityEnv {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "validation-parity.db")
+	dbPath := newMigratedSQLitePath(t, "validation-parity.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,
@@ -163,6 +162,7 @@ func idOnly(t *testing.T, raw string) uuid.UUID {
 }
 
 func TestValidationParity_MCPvsHTTP(t *testing.T) {
+	t.Parallel()
 	for _, tc := range validationParityCases() {
 		t.Run(tc.gap+"_"+tc.name, func(t *testing.T) {
 			env := newParityEnv(t)

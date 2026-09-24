@@ -242,6 +242,7 @@ func (s *stubHealthDisciplineStore) RecentDecisionTimes(_ context.Context, _ str
 // placeholder literal) plus one healthy task should yield count=2 with the
 // two vague IDs in the sample.
 func TestSystemHealth_CountsVagueTasks(t *testing.T) {
+	t.Parallel()
 	vagueA := makeVagueTask("pending", "TBD", "feature")
 	vagueB := makeVagueTask("pending", "auto-captured from MCP: complete_task", "fix-pr")
 	healthy := makeVagueTask(

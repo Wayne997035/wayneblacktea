@@ -38,6 +38,7 @@ func callConfirmPlan(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallT
 // ---- input validation ----
 
 func TestHandleConfirmPlan_MissingPhases(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{})
 	if !r.IsError {
@@ -49,6 +50,7 @@ func TestHandleConfirmPlan_MissingPhases(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_InvalidPhasesJSON(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases": "{not-valid-json}",
@@ -59,6 +61,7 @@ func TestHandleConfirmPlan_InvalidPhasesJSON(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_EmptyPhasesArray(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases": "[]",
@@ -69,6 +72,7 @@ func TestHandleConfirmPlan_EmptyPhasesArray(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_InvalidProjectIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases":     `[{"title":"T","description":"D","priority":2}]`,
@@ -80,6 +84,7 @@ func TestHandleConfirmPlan_InvalidProjectIDUUID(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_InvalidDecisionsJSON(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases":    `[{"title":"T","description":"D","priority":2}]`,
@@ -93,6 +98,7 @@ func TestHandleConfirmPlan_InvalidDecisionsJSON(t *testing.T) {
 // ---- happy path: task creation ----
 
 func TestHandleConfirmPlan_SinglePhase(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases": `[{"title":"Implement auth","description":"JWT auth","priority":1}]`,
@@ -113,6 +119,7 @@ func TestHandleConfirmPlan_SinglePhase(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_MultiplePhases(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases": `[
@@ -138,6 +145,7 @@ func TestHandleConfirmPlan_MultiplePhases(t *testing.T) {
 // ---- decisions logging ----
 
 func TestHandleConfirmPlan_WithDecisions(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	decisions := `[{"title":"Use Echo","context":"HTTP framework","decision":"Echo","rationale":"Fast"}]`
 	r := callConfirmPlan(t, s, map[string]any{
@@ -157,6 +165,7 @@ func TestHandleConfirmPlan_WithDecisions(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_DecisionMissingTitle_Skipped(t *testing.T) {
+	t.Parallel()
 	// A decision with empty title should be skipped (not logged).
 	s := newMinimalPlanServer(t)
 	decisions := `[{"title":"","context":"x","decision":"y","rationale":"z"}]`
@@ -177,6 +186,7 @@ func TestHandleConfirmPlan_DecisionMissingTitle_Skipped(t *testing.T) {
 // ---- no-work-session guard: confirm_plan works without workSession store ----
 
 func TestHandleConfirmPlan_NoWorkSessionStore(t *testing.T) {
+	t.Parallel()
 	// Explicitly create a server without workSession set — confirm_plan must
 	// still succeed (best-effort: missing work session store is not fatal).
 	s := newTestWorkSessionServer(t)
@@ -202,6 +212,7 @@ func TestHandleConfirmPlan_NoWorkSessionStore(t *testing.T) {
 // ---- no repo_name: no session created ----
 
 func TestHandleConfirmPlan_NoRepoName_NoSession(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases": `[{"title":"Anon phase","description":"x","priority":2}]`,
@@ -220,6 +231,7 @@ func TestHandleConfirmPlan_NoRepoName_NoSession(t *testing.T) {
 // ---- phase title with empty string is skipped ----
 
 func TestHandleConfirmPlan_EmptyPhaseTitleSkipped(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	// 3 phases but one has an empty title — should produce 2 tasks.
 	r := callConfirmPlan(t, s, map[string]any{
@@ -244,6 +256,7 @@ func TestHandleConfirmPlan_EmptyPhaseTitleSkipped(t *testing.T) {
 // assignee argument is validated through gtd.NormalizeActor's whitelist
 // before it can reach worksession.CreateParams.Assignee.
 func TestHandleConfirmPlan_RejectsInvalidAssignee(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases":    `[{"title":"Do A","description":"A","priority":1}]`,
@@ -265,6 +278,7 @@ func TestHandleConfirmPlan_RejectsInvalidAssignee(t *testing.T) {
 // it must be stamped with confirm_plan's assignee argument when the session
 // flips it to in_progress.
 func TestHandleConfirmPlan_StampsAssigneeOntoPhaseTask(t *testing.T) {
+	t.Parallel()
 	s, db := newTestWorkSessionServerWithDB(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases":    `[{"title":"Do A","description":"A","priority":1}]`,
@@ -332,6 +346,7 @@ func (f *failingDecisionStore) Log(_ context.Context, p decision.LogParams) (*db
 }
 
 func TestHandleConfirmPlan_SequentialFallback_PartialTaskFailure_CreatedTasksSurfaced(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	s.sqliteGTD = nil // force materializePlanSequential (see block comment above)
 	// priority=99 violates the `priority BETWEEN 1 AND 5` CHECK constraint
@@ -365,6 +380,7 @@ func TestHandleConfirmPlan_SequentialFallback_PartialTaskFailure_CreatedTasksSur
 }
 
 func TestLogPlanDecisions_PartialFailure_ReturnsAlreadyLogged(t *testing.T) {
+	t.Parallel()
 	s := &Server{decision: &failingDecisionStore{failAfter: 1}}
 	decisions := []decisionInput{
 		{Title: "Decision 1", Decision: "Use X"},
@@ -383,6 +399,7 @@ func TestLogPlanDecisions_PartialFailure_ReturnsAlreadyLogged(t *testing.T) {
 }
 
 func TestHandleConfirmPlan_SequentialFallback_PartialDecisionFailure_TasksAndPriorDecisionsSurfaced(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	s.sqliteGTD = nil // force materializePlanSequential (see block comment above)
 	s.decision = &failingDecisionStore{failAfter: 1}
@@ -417,6 +434,7 @@ func TestHandleConfirmPlan_SequentialFallback_PartialDecisionFailure_TasksAndPri
 // Mutation-tested: see the engineer report for the before/after output of
 // temporarily disabling the rollback.
 func TestHandleConfirmPlan_SQLite_AtomicRollbackOnMidPhaseFailure(t *testing.T) {
+	t.Parallel()
 	s, sdb := newTestWorkSessionServerWithDB(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases": `[
@@ -447,6 +465,7 @@ func TestHandleConfirmPlan_SQLite_AtomicRollbackOnMidPhaseFailure(t *testing.T) 
 // SQLite transaction spans BOTH loops: a task that succeeds is still rolled
 // back when a LATER decision in the same call fails.
 func TestHandleConfirmPlan_SQLite_AtomicRollbackAcrossTaskAndDecision(t *testing.T) {
+	t.Parallel()
 	s, sdb := newTestWorkSessionServerWithDB(t)
 	// F0911-08: since F0911-04, sqlite decision.Log/LogTx also validates
 	// tag-noise, so a confirm_plan-reachable input CAN now fail a specific
@@ -490,6 +509,7 @@ func TestHandleConfirmPlan_SQLite_AtomicRollbackAcrossTaskAndDecision(t *testing
 // decision field and the r1 defect this round exists to close — a caller
 // told only "Plan confirmation failed." with no way to learn which field.
 func TestConfirmPlan_TagNoiseReportsField(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	r := callConfirmPlan(t, s, map[string]any{
 		"phases":    `[{"title":"T","description":"d","priority":1}]`,
@@ -516,6 +536,7 @@ func TestConfirmPlan_TagNoiseReportsField(t *testing.T) {
 // path (materializePlanSQLite returns nil/nil/nil), so planResultText
 // collapses to the bare headline with nothing appended.
 func TestConfirmPlan_TagNoise_NonNoiseFailureStaysOpaque(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	s.sqliteDecision = nil // force "sqlite decision store not wired", not tag-noise
 	r := callConfirmPlan(t, s, map[string]any{
@@ -540,6 +561,7 @@ func TestConfirmPlan_TagNoise_NonNoiseFailureStaysOpaque(t *testing.T) {
 // ONLY the length bound (without also asserting the diagnostic survives)
 // is how that defect would recur unnoticed.
 func TestConfirmPlan_TagNoiseSurvivesLongTitle(t *testing.T) {
+	t.Parallel()
 	s := newMinimalPlanServer(t)
 	longTitle := strings.Repeat("A", 5000)
 	decisionsJSON := fmt.Sprintf(`[{"title":%q,"decision":"Use Y</decision>"}]`, longTitle)
@@ -570,6 +592,7 @@ func TestConfirmPlan_TagNoiseSurvivesLongTitle(t *testing.T) {
 // leave an exactly-cap-length title untouched with no marker. The bound is
 // cap+1, NOT cap: asserting <= cap would make a correct implementation red.
 func TestPlanErrorTitleClip(t *testing.T) {
+	t.Parallel()
 	// trc-1: the assertions below derive every expectation from
 	// planErrorTitleMaxRunes itself, so they are structurally blind to the
 	// constant CHANGING — 80 → 40 leaves them all green (measured). AC-13's
@@ -622,6 +645,7 @@ func TestPlanErrorTitleClip(t *testing.T) {
 // (tools_plan_pg_test.go) skips under testing.Short(), and the gate runs
 // `go test -short` (build/Taskfile.yml).
 func TestPlanDecisionWrapsClipTitle(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "tools_plan.go", nil, 0)
 	if err != nil {

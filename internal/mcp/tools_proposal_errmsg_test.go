@@ -96,6 +96,7 @@ func assertNoDriverDetail(t *testing.T, where, text string) {
 // that also blinded the operator would trade an information leak for an
 // undiagnosable incident, which is a worse bug than the one being fixed.
 func TestSEC_F170_07_AcceptProposalDoesNotLeakDBTopology(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	buf := bufferLogger(t)
 	s, id := newPendingGoalServer(t)
 
@@ -135,6 +136,7 @@ func TestSEC_F170_07_AcceptProposalDoesNotLeakDBTopology(t *testing.T) {
 // covered it and the raw driver text shipped through the batch path even for
 // callers who never touched the singular one.
 func TestSEC_F170_07_BatchAcceptErrMsgDoesNotLeakDBTopology(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	_ = bufferLogger(t)
 	s, id := newPendingGoalServer(t)
 
@@ -164,6 +166,7 @@ func TestSEC_F170_07_BatchAcceptErrMsgDoesNotLeakDBTopology(t *testing.T) {
 // once (TestMCPBeginTask_RequiresAssignee), which is why it has its own test
 // rather than a comment.
 func TestSEC_F170_07_CallerFacingSentinelSurvivesRedaction(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	_ = bufferLogger(t)
 
 	got := storeErrorText("creating task", gtd.ErrInvalidAssignee)
@@ -181,6 +184,7 @@ func TestSEC_F170_07_CallerFacingSentinelSurvivesRedaction(t *testing.T) {
 // wrapper, and a future edit that gives one a redaction rule the other lacks
 // would reopen the split this dispatch closed.
 func TestSEC_F170_07_StoreErrorTextAndResultAgree(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	_ = bufferLogger(t)
 	err := errors.New(proposalDriverError)
 
@@ -198,6 +202,7 @@ func TestSEC_F170_07_StoreErrorTextAndResultAgree(t *testing.T) {
 // starts decorating the text, every site annotated with it silently changes
 // its client-visible output.
 func TestSEC_F170_07_InputErrorTextIsByteIdenticalToBareErrorText(t *testing.T) {
+	t.Parallel()
 	err := errors.New("assignee must be one of: wayne, claude-code")
 
 	if got := inputErrorText("", err); got != err.Error() {

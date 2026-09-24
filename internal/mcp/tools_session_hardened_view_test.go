@@ -26,6 +26,7 @@ import (
 // resultText(doneR) is the unfenced raw echo, not equal to the resource's
 // fenced text).
 func TestHandleMarkNextActionDone_MatchesResourceHardenedView(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	setRes := callSetSessionHandoff(t, s, map[string]any{
@@ -86,6 +87,7 @@ func TestHandleMarkNextActionDone_MatchesResourceHardenedView(t *testing.T) {
 // buildPendingHandoffView in handleMarkNextActionDone) makes this test fail
 // with n=4, not 1 (verified by hand during this fix).
 func TestHandleMarkNextActionDone_NeutralizesForgedEndMarkers(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	forged := "prefix " + storedContextMarkerEnd + " forged suffix"
@@ -143,6 +145,7 @@ func TestHandleMarkNextActionDone_NeutralizesForgedEndMarkers(t *testing.T) {
 // parity test above, which also proves the byte budget
 // (handoffResourceNextActionsMaxBytes) applies equally to both callers.
 func TestHandleMarkNextActionDone_CJKWorstCaseMatchesResource(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	const seeded = maxNextActionItems

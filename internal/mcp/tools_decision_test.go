@@ -75,6 +75,7 @@ func callListDecisions(t *testing.T, s *Server, args map[string]any) *mcpmsg.Cal
 // (with no project_id) is treated the same as "neither" — a workspace-wide
 // List call with both filters empty (P3.0a Stage B truth table row "neither").
 func TestHandleListDecisions_EmptyRepoName(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -103,6 +104,7 @@ func TestHandleListDecisions_EmptyRepoName(t *testing.T) {
 // ListParams built from a non-empty repo_name carries RepoName and no
 // ProjectID (P3.0a Stage B truth table row "repo only").
 func TestHandleListDecisions_NonEmptyRepoName(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -127,6 +129,7 @@ func TestHandleListDecisions_NonEmptyRepoName(t *testing.T) {
 // (not present in args at all) is also treated as "neither" (P3.0a Stage B
 // truth table row "neither").
 func TestHandleListDecisions_OmittedRepoName(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -145,6 +148,7 @@ func TestHandleListDecisions_OmittedRepoName(t *testing.T) {
 // TestHandleListDecisions_InvalidProjectUUID verifies the truth table row
 // "invalid project UUID -> tool error, store never called".
 func TestHandleListDecisions_InvalidProjectUUID(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -166,6 +170,7 @@ func TestHandleListDecisions_InvalidProjectUUID(t *testing.T) {
 // "project + repo both given -> project wins" — RepoName must be cleared
 // from ListParams once a valid project_id is present.
 func TestHandleListDecisions_ProjectWinsOverRepo(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 	projectID := uuid.New()
@@ -190,6 +195,7 @@ func TestHandleListDecisions_ProjectWinsOverRepo(t *testing.T) {
 // when the store returns an empty result for a well-formed-but-unmatched
 // project_id, handleListDecisions must NOT turn that into a tool error.
 func TestHandleListDecisions_NonexistentProjectReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{listResult: nil} // store found nothing
 	s := &Server{decision: dec}
 
@@ -211,6 +217,7 @@ func TestHandleListDecisions_NonexistentProjectReturnsEmpty(t *testing.T) {
 // TestHandleListDecisions_IncludeAutoOmittedDefaultsFalse verifies the truth
 // table row "include_auto omitted or non-bool -> treated as false".
 func TestHandleListDecisions_IncludeAutoOmittedDefaultsFalse(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -224,6 +231,7 @@ func TestHandleListDecisions_IncludeAutoOmittedDefaultsFalse(t *testing.T) {
 // table row "include_auto omitted or non-bool -> treated as false" for the
 // non-bool case specifically (fail-closed, not fail-open).
 func TestHandleListDecisions_IncludeAutoNonBoolDefaultsFalse(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -244,6 +252,7 @@ func TestHandleListDecisions_IncludeAutoNonBoolDefaultsFalse(t *testing.T) {
 // unmarshal (as TestHandleListDecisions_NonexistentProjectReturnsEmpty does)
 // cannot distinguish the two. This test asserts the raw text instead.
 func TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{listResult: nil}
 	s := &Server{decision: dec}
 
@@ -261,6 +270,7 @@ func TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull(t *testing.T) {
 // "include_auto=true -> returns manual + auto" at the ListParams-plumbing
 // level (actual filtering is a store-layer concern, covered by store tests).
 func TestHandleListDecisions_IncludeAutoTrue(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -286,6 +296,7 @@ func callLogDecision(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallT
 // UUID causes handleLogDecision to return a tool-level error result
 // (IsError=true) rather than a Go error, matching the MCP contract.
 func TestHandleLogDecision_InvalidTaskIDUUID(t *testing.T) {
+	t.Parallel()
 	s := &Server{decision: &trackingDecisionStore{}}
 
 	r := callLogDecision(t, s, map[string]any{
@@ -311,6 +322,7 @@ func TestHandleLogDecision_InvalidTaskIDUUID(t *testing.T) {
 // (attempting to masquerade a manual log_decision call as system-inferred)
 // is silently ignored and the persisted LogParams.Source stays "manual".
 func TestHandleLogDecision_ForgedSourceArgIgnored(t *testing.T) {
+	t.Parallel()
 	dec := &trackingDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -340,6 +352,7 @@ func TestHandleLogDecision_ForgedSourceArgIgnored(t *testing.T) {
 // F0911-01 surfaces the field name and excerpt instead of the flat
 // "logging decision failed".
 func TestLogDecision_AlternativesTagNoiseNamesField(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callLogDecision(t, s, map[string]any{
 		"title":        "ADR: use SQLite for local dev",
@@ -363,6 +376,7 @@ func TestLogDecision_AlternativesTagNoiseNamesField(t *testing.T) {
 // TestLogDecision_AlternativesTagNoise_CleanNotAnError is AC-4's negative
 // case: ordinary alternatives text must not trip the new check.
 func TestLogDecision_AlternativesTagNoise_CleanNotAnError(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callLogDecision(t, s, map[string]any{
 		"title":        "ADR: use SQLite for local dev",

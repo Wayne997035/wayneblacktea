@@ -21,6 +21,7 @@ import (
 // Reuses mcpPlanTestPgPool (tools_plan_pg_test.go's TestMain) rather than
 // starting a second Postgres container.
 func TestHandleListPendingProposals_Postgres_EmptyReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}

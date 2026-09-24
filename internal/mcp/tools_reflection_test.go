@@ -104,6 +104,7 @@ func callGetLatestReflection(t *testing.T, s *Server, args map[string]any) *mcpm
 // --- handleGenerateReflection tests ---
 
 func TestHandleGenerateReflection_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubReflectionStore{
 		returnReflection: &reflection.Reflection{
@@ -135,6 +136,7 @@ func TestHandleGenerateReflection_HappyPath(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_InvalidType(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGenerateReflection(t, s, map[string]any{
@@ -148,6 +150,7 @@ func TestHandleGenerateReflection_InvalidType(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_UnknownType(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGenerateReflection(t, s, map[string]any{
@@ -161,6 +164,7 @@ func TestHandleGenerateReflection_UnknownType(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_NullByteSummary(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGenerateReflection(t, s, map[string]any{
@@ -174,6 +178,7 @@ func TestHandleGenerateReflection_NullByteSummary(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_CRLFSummary(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGenerateReflection(t, s, map[string]any{
@@ -187,6 +192,7 @@ func TestHandleGenerateReflection_CRLFSummary(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_AllValidTypes(t *testing.T) {
+	t.Parallel()
 	for reflType := range reflection.AllowedTypes {
 		t.Run(reflType, func(t *testing.T) {
 			store := &stubReflectionStore{
@@ -208,6 +214,7 @@ func TestHandleGenerateReflection_AllValidTypes(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubReflectionStore{returnErr: errors.New("db down")}
 	s := newReflectionServer(store)
 
@@ -222,6 +229,7 @@ func TestHandleGenerateReflection_StoreError(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_ConfidenceOutOfRange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		confidence float64
@@ -245,6 +253,7 @@ func TestHandleGenerateReflection_ConfidenceOutOfRange(t *testing.T) {
 }
 
 func TestHandleGenerateReflection_InvalidRelatedEntityID(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGenerateReflection(t, s, map[string]any{
@@ -261,6 +270,7 @@ func TestHandleGenerateReflection_InvalidRelatedEntityID(t *testing.T) {
 // --- handleListReflections tests ---
 
 func TestHandleListReflections_HappyPath(t *testing.T) {
+	t.Parallel()
 	id1 := uuid.New()
 	id2 := uuid.New()
 	store := &stubReflectionStore{
@@ -283,6 +293,7 @@ func TestHandleListReflections_HappyPath(t *testing.T) {
 }
 
 func TestHandleListReflections_FilterByType(t *testing.T) {
+	t.Parallel()
 	store := &stubReflectionStore{
 		returnList: []*reflection.Reflection{
 			{ID: uuid.New(), Type: "decision"},
@@ -300,6 +311,7 @@ func TestHandleListReflections_FilterByType(t *testing.T) {
 }
 
 func TestHandleListReflections_InvalidTypeFilter(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callListReflections(t, s, map[string]any{
@@ -312,6 +324,7 @@ func TestHandleListReflections_InvalidTypeFilter(t *testing.T) {
 }
 
 func TestHandleListReflections_EmptyResultNilSafe(t *testing.T) {
+	t.Parallel()
 	// Store returns nil slice — handler must return [] not null.
 	store := &stubReflectionStore{returnList: nil}
 	s := newReflectionServer(store)
@@ -330,6 +343,7 @@ func TestHandleListReflections_EmptyResultNilSafe(t *testing.T) {
 // --- handleGetLatestReflection tests ---
 
 func TestHandleGetLatestReflection_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubReflectionStore{
 		returnReflection: &reflection.Reflection{
@@ -352,6 +366,7 @@ func TestHandleGetLatestReflection_HappyPath(t *testing.T) {
 }
 
 func TestHandleGetLatestReflection_NotFound(t *testing.T) {
+	t.Parallel()
 	store := &stubReflectionStore{returnErr: reflection.ErrNotFound}
 	s := newReflectionServer(store)
 
@@ -368,6 +383,7 @@ func TestHandleGetLatestReflection_NotFound(t *testing.T) {
 }
 
 func TestHandleGetLatestReflection_EmptyType(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGetLatestReflection(t, s, map[string]any{
@@ -380,6 +396,7 @@ func TestHandleGetLatestReflection_EmptyType(t *testing.T) {
 }
 
 func TestHandleGetLatestReflection_InvalidType(t *testing.T) {
+	t.Parallel()
 	s := newReflectionServer(&stubReflectionStore{})
 
 	r := callGetLatestReflection(t, s, map[string]any{
@@ -392,6 +409,7 @@ func TestHandleGetLatestReflection_InvalidType(t *testing.T) {
 }
 
 func TestHandleGetLatestReflection_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubReflectionStore{returnErr: errors.New("db unavailable")}
 	s := newReflectionServer(store)
 

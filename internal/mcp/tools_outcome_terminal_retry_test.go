@@ -44,6 +44,7 @@ func mustUnmarshalOutcomeResult(t *testing.T, r *mcpmsg.CallToolResult) outcome.
 // SQLite-backed server: record a terminal outcome with NO session linked,
 // then retry with the SAME result/notes/metrics but a NEW session_id.
 func TestHandleRecordOutcome_TerminalRetry_NewSessionID_SupersedesAndLinksSession(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 

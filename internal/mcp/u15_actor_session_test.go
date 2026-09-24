@@ -41,6 +41,7 @@ func logDecisionArgs(title string) map[string]any {
 // conflating every client); after, each row's actor_session_id matches ITS
 // OWN calling session and the two are unequal.
 func TestHandleLogDecision_ActorSessionID_DiffersAcrossSessions(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	ctxA := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "decision-session-A"})
@@ -89,6 +90,7 @@ func TestHandleLogDecision_ActorSessionID_DiffersAcrossSessions(t *testing.T) {
 // "the write path failed to record who did this" rather than "this call had
 // no per-client session to report".
 func TestHandleLogDecision_ActorSessionID_NoSessionFallsBackToProcessID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	r := callLogDecisionCtx(t, context.Background(), s, logDecisionArgs("U15 probe decision no-session"))
@@ -135,6 +137,7 @@ func TestHandleLogDecision_ActorSessionID_NoSessionFallsBackToProcessID(t *testi
 // values on a validation failure path (guarded by a returned errMsg) and are
 // never persisted.
 func TestDecisionLogParamsLiteralsSetActorSessionID(t *testing.T) {
+	t.Parallel()
 	files := goSourceFilesInPackageDir(t)
 	const marker = "decision.LogParams{"
 	var violations []string

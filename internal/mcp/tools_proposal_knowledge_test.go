@@ -65,6 +65,7 @@ func createKnowledgeProposal(t *testing.T, s *Server, title, content string, tag
 // TypeKnowledge proposal via the MCP tool creates a knowledge_items row of
 // type "til" and marks the proposal accepted (AC1).
 func TestConfirmProposal_TypeKnowledge_Materialises(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 
@@ -98,6 +99,7 @@ func TestConfirmProposal_TypeKnowledge_Materialises(t *testing.T) {
 // TestConfirmProposal_TypeKnowledge_BadPayload verifies a malformed knowledge
 // payload returns a tool error and leaves the proposal in pending state.
 func TestConfirmProposal_TypeKnowledge_BadPayload(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 
@@ -128,6 +130,7 @@ func TestConfirmProposal_TypeKnowledge_BadPayload(t *testing.T) {
 // TestConfirmProposal_TypeKnowledge_MissingTitle verifies a knowledge payload
 // with empty title returns a tool error.
 func TestConfirmProposal_TypeKnowledge_MissingTitle(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 
@@ -157,6 +160,7 @@ func TestConfirmProposal_TypeKnowledge_MissingTitle(t *testing.T) {
 // TestConfirmProposals_TypeKnowledge_BatchAccept verifies that batch accepting
 // a TypeKnowledge proposal marks it accepted.
 func TestConfirmProposals_TypeKnowledge_BatchAccept(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 

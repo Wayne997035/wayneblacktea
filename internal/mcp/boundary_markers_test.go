@@ -16,6 +16,7 @@ import (
 // is never neutralised, a duplicate means the set drifted, and an empty entry
 // would match everywhere.
 func TestBoundaryMarkers_RegistryIsWellFormed(t *testing.T) {
+	t.Parallel()
 	markers := boundaryMarkers()
 
 	// Five pairs (evidence, verification, session summary, stored context,
@@ -56,6 +57,7 @@ func TestBoundaryMarkers_RegistryIsWellFormed(t *testing.T) {
 // safetext.NeutralizeBoundaryMarkers — this test goes red if that delegate
 // chain stops neutralising (verified by mutation during the F0906 move).
 func TestClipSafe_StaysWithinCapUnderMarkerStuffing(t *testing.T) {
+	t.Parallel()
 	for _, marker := range boundaryMarkers() {
 		t.Run(marker, func(t *testing.T) {
 			for _, maxRunes := range []int{10, 150, 350} {
@@ -83,6 +85,7 @@ func TestClipSafe_StaysWithinCapUnderMarkerStuffing(t *testing.T) {
 // safetext.NeutralizeBoundaryMarkers over safetext.BoundaryMarkers() — this
 // test goes red if either side of that delegate chain drifts.
 func TestNeutralizeBoundaryMarkers_CoversEveryRegisteredMarker(t *testing.T) {
+	t.Parallel()
 	for _, marker := range boundaryMarkers() {
 		t.Run(marker, func(t *testing.T) {
 			// 措辭避開 SQL 關鍵字:unqueryvet 會把含 DELETE 的字串拼接判成注入。
@@ -103,6 +106,7 @@ func TestNeutralizeBoundaryMarkers_CoversEveryRegisteredMarker(t *testing.T) {
 }
 
 func TestNeutralizeBoundaryMarkers_EdgeCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -136,6 +140,7 @@ func TestNeutralizeBoundaryMarkers_EdgeCases(t *testing.T) {
 }
 
 func TestClipAndFenceStoredContext(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		input     string
@@ -279,6 +284,7 @@ func getProjectArchTextArgs(t *testing.T, s *Server, args map[string]any) string
 // so a payload planted in any of those files reaches this response. Before
 // this, the handler returned the stored text with no boundary at all.
 func TestHandleGetProjectArch_FencesUntrustedSummary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		summary string
@@ -369,6 +375,7 @@ const testFileMapPurpose = "entry point"
 // snapshot (and any cache holding it) must not end up with fence markers baked
 // into its stored text.
 func TestWrapUntrustedArchSnapshot_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
 	original := &arch.Snapshot{
 		Slug:    "wayneblacktea",
 		Summary: "plain summary",
@@ -395,6 +402,7 @@ func TestWrapUntrustedArchSnapshot_DoesNotMutateInput(t *testing.T) {
 // includeFileMap=false must drop FileMap entirely (nil, not an empty map),
 // and includeFileMap=true must populate it exactly as before the gate existed.
 func TestWrapUntrustedArchSnapshot_IncludeFileMapGate(t *testing.T) {
+	t.Parallel()
 	original := &arch.Snapshot{
 		Slug:    "wayneblacktea",
 		Summary: "plain summary",

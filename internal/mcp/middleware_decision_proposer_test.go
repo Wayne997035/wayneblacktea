@@ -188,6 +188,7 @@ func resetDecisionProposerBudgetForTest(t *testing.T, now time.Time) {
 }
 
 func TestDecisionProposer_HappyPath_InsertsProposal(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{} // no recent decisions in window
 	prop := &stubProposalStore{}
 	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
@@ -212,6 +213,7 @@ func TestDecisionProposer_HappyPath_InsertsProposal(t *testing.T) {
 }
 
 func TestDecisionProposer_RecentDecisionInWindow_NoInsert(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{
 		// User logged a decision 5 minutes ago — middleware MUST skip.
 		times: []time.Time{time.Now().Add(-5 * time.Minute)},
@@ -230,6 +232,7 @@ func TestDecisionProposer_RecentDecisionInWindow_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_DrafterReturnsEmptyTitle_NoInsert(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
 	// Drafter declines (routine activity).
@@ -246,6 +249,7 @@ func TestDecisionProposer_DrafterReturnsEmptyTitle_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_NonMutatingTool_NoInsert(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
 	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
@@ -261,6 +265,7 @@ func TestDecisionProposer_NonMutatingTool_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_LogDecisionTrigger_NoInsert(t *testing.T) {
+	t.Parallel()
 	// log_decision is in MutatingTools but MUST be skipped: emitting a
 	// decision proposal in response to a log_decision is silly recursion.
 	disc := &stubProposerDisciplineStore{}
@@ -278,6 +283,7 @@ func TestDecisionProposer_LogDecisionTrigger_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_ConfirmProposalsTrigger_NoInsert(t *testing.T) {
+	t.Parallel()
 	// confirm_proposals (plural, bulk accept/reject) is in MutatingTools but
 	// MUST be skipped for the same reason as its singular counterpart
 	// confirm_proposal: emitting a decision proposal in response to a
@@ -297,6 +303,7 @@ func TestDecisionProposer_ConfirmProposalsTrigger_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_ConfirmProposalTrigger_NoInsert(t *testing.T) {
+	t.Parallel()
 	// confirm_proposal (singular) MUST also be skipped — pre-existing
 	// behavior, tested here alongside its plural counterpart above so the
 	// full skip-list condition has direct coverage for every listed tool.
@@ -315,6 +322,7 @@ func TestDecisionProposer_ConfirmProposalTrigger_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_DisciplineError_NoInsert_NoCrash(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{err: errors.New("db down")}
 	prop := &stubProposalStore{}
 	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
@@ -330,6 +338,7 @@ func TestDecisionProposer_DisciplineError_NoInsert_NoCrash(t *testing.T) {
 }
 
 func TestDecisionProposer_OptOutEnvDisables(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_DISABLE_AUTO_DECISIONS), which panics in parallel tests.
 	t.Setenv(disableAutoDecisionsEnvVar, "1")
 
 	disc := &stubProposerDisciplineStore{}
@@ -347,6 +356,7 @@ func TestDecisionProposer_OptOutEnvDisables(t *testing.T) {
 }
 
 func TestDecisionProposer_EnabledByDefault(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_DISABLE_AUTO_DECISIONS), which panics in parallel tests.
 	// No env set → enabled.
 	t.Setenv(disableAutoDecisionsEnvVar, "")
 	if !decisionProposerEnabled() {
@@ -355,6 +365,7 @@ func TestDecisionProposer_EnabledByDefault(t *testing.T) {
 }
 
 func TestDecisionProposer_OptOutValueMatrix(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_DISABLE_AUTO_DECISIONS), which panics in parallel tests.
 	// M-3 fix: opt-OUT is now strict — only the explicit truthy set
 	// {1,true,yes,on} (case-insensitive) disables the proposer. Empty value
 	// and any unrecognised string leave it enabled. This eliminates the
@@ -393,6 +404,7 @@ func TestDecisionProposer_OptOutValueMatrix(t *testing.T) {
 }
 
 func TestDecisionProposer_NilDeps_NoCrash(t *testing.T) {
+	t.Parallel()
 	// drafter / discipline / proposal all nil → middleware MUST be a no-op.
 	srv := &Server{sessionID: "test"}
 	mw := srv.decisionProposerMiddleware()
@@ -410,6 +422,7 @@ func TestDecisionProposer_NilDeps_NoCrash(t *testing.T) {
 // returns IsError=true, the middleware does not record a proposal — only
 // successful mutations should propose decisions.
 func TestDecisionProposer_ToolErrorResult_NoInsert(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
 	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
@@ -435,6 +448,7 @@ func TestDecisionProposer_ToolErrorResult_NoInsert(t *testing.T) {
 }
 
 func TestDecisionProposer_RateLimitDropsExcess(t *testing.T) {
+	// Not parallel: resets the global mcpDecisionProposerBudget token bucket; parallel consumers would skew the token count.
 	resetDecisionProposerBudgetForTest(t, time.Now())
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
@@ -473,6 +487,7 @@ func waitForCreatedCount(t *testing.T, prop *stubProposalStore, want int) {
 }
 
 func TestDecisionProposer_RateLimitWindowRollover(t *testing.T) {
+	// Not parallel: resets the global mcpDecisionProposerBudget token bucket; parallel consumers would skew the token count.
 	now := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 	resetDecisionProposerBudgetForTest(t, now)
 	for i := 0; i < mcpDecisionProposerMaxPerWindow; i++ {
@@ -489,6 +504,7 @@ func TestDecisionProposer_RateLimitWindowRollover(t *testing.T) {
 }
 
 func TestDecisionProposer_SemaphoreFullDropsSilently(t *testing.T) {
+	// Not parallel: fills the global mcpDecisionProposerSem; other proposer tests would fail to acquire a slot.
 	for i := 0; i < cap(mcpDecisionProposerSem); i++ {
 		mcpDecisionProposerSem <- struct{}{}
 	}
@@ -509,6 +525,7 @@ func TestDecisionProposer_SemaphoreFullDropsSilently(t *testing.T) {
 }
 
 func TestDecisionProposer_DrafterPanicRecoveredViaSlogWarn(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
 	drafter := ai.NewDecisionDrafter(&stubDrafterClient{panicNow: true})
@@ -521,6 +538,7 @@ func TestDecisionProposer_DrafterPanicRecoveredViaSlogWarn(t *testing.T) {
 }
 
 func TestDecisionProposer_RedactsCredentialsBeforeLLM(t *testing.T) {
+	t.Parallel()
 	client := &stubDrafterClient{out: `{"title":"redacted","decision":"d","rationale":"r"}`}
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
@@ -546,6 +564,7 @@ func TestDecisionProposer_RedactsCredentialsBeforeLLM(t *testing.T) {
 }
 
 func TestDecisionProposer_AdversarialToolInputNoCrash(t *testing.T) {
+	t.Parallel()
 	disc := &stubProposerDisciplineStore{}
 	prop := &stubProposalStore{}
 	drafter := ai.NewDecisionDrafter(&stubDrafterClient{
@@ -573,6 +592,7 @@ var (
 // deterministic helper sorts keys via encoding/json so any downstream prompt
 // or test snapshot is reproducible.
 func TestMarshalArgsDeterministic_StableKeyOrder(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"zulu":  "z",
 		"alpha": 1,
@@ -602,6 +622,7 @@ func TestMarshalArgsDeterministic_StableKeyOrder(t *testing.T) {
 // TestMarshalArgsDeterministic_EmptyAndError verifies the edge cases:
 // empty map returns "{}" and unmarshalable input falls back to %v form.
 func TestMarshalArgsDeterministic_EmptyAndError(t *testing.T) {
+	t.Parallel()
 	if got := marshalArgsDeterministic(map[string]any{}); got != "{}" {
 		t.Errorf("empty map: got %q, want {}", got)
 	}

@@ -130,6 +130,7 @@ func callDeprecateBehaviorRule(t *testing.T, s *Server, args map[string]any) *mc
 // ---------------------------------------------------------------------------
 
 func TestHandleProposeBehaviorRule_NilStore(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(nil)
 	r := callProposeBehaviorRule(t, s, map[string]any{
 		"condition":   "when task is stuck",
@@ -142,6 +143,7 @@ func TestHandleProposeBehaviorRule_NilStore(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubBehaviorRuleStore{
 		proposeReturn: &behaviorrule.BehaviorRule{
@@ -171,6 +173,7 @@ func TestHandleProposeBehaviorRule_HappyPath(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_ConditionNullByte(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{}
 	s := newBehaviorRuleServer(store)
 	r := callProposeBehaviorRule(t, s, map[string]any{
@@ -184,6 +187,7 @@ func TestHandleProposeBehaviorRule_ConditionNullByte(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_ActionTooLong(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{}
 	s := newBehaviorRuleServer(store)
 	longAction := strings.Repeat("x", 2001)
@@ -198,6 +202,7 @@ func TestHandleProposeBehaviorRule_ActionTooLong(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_ConfidenceNaN(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{}
 	s := newBehaviorRuleServer(store)
 	r := callProposeBehaviorRule(t, s, map[string]any{
@@ -212,6 +217,7 @@ func TestHandleProposeBehaviorRule_ConfidenceNaN(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_ConfidenceInf(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{}
 	s := newBehaviorRuleServer(store)
 	r := callProposeBehaviorRule(t, s, map[string]any{
@@ -226,6 +232,7 @@ func TestHandleProposeBehaviorRule_ConfidenceInf(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_ConfidenceValidPropagated(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubBehaviorRuleStore{
 		proposeReturn: &behaviorrule.BehaviorRule{
@@ -253,6 +260,7 @@ func TestHandleProposeBehaviorRule_ConfidenceValidPropagated(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_InvalidSourceType(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(&stubBehaviorRuleStore{})
 	r := callProposeBehaviorRule(t, s, map[string]any{
 		"condition":   "valid condition",
@@ -265,6 +273,7 @@ func TestHandleProposeBehaviorRule_InvalidSourceType(t *testing.T) {
 }
 
 func TestHandleProposeBehaviorRule_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{returnErr: errors.New("db down")}
 	s := newBehaviorRuleServer(store)
 	r := callProposeBehaviorRule(t, s, map[string]any{
@@ -282,6 +291,7 @@ func TestHandleProposeBehaviorRule_StoreError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleListBehaviorRules_NilStore(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(nil)
 	r := callListBehaviorRules(t, s, map[string]any{})
 	if !r.IsError {
@@ -290,6 +300,7 @@ func TestHandleListBehaviorRules_NilStore(t *testing.T) {
 }
 
 func TestHandleListBehaviorRules_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubBehaviorRuleStore{
 		listReturn: []*behaviorrule.BehaviorRule{
@@ -307,6 +318,7 @@ func TestHandleListBehaviorRules_HappyPath(t *testing.T) {
 }
 
 func TestHandleListBehaviorRules_StatusFilter(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{listReturn: []*behaviorrule.BehaviorRule{}}
 	s := newBehaviorRuleServer(store)
 	r := callListBehaviorRules(t, s, map[string]any{"status": ruleStatusActive})
@@ -319,6 +331,7 @@ func TestHandleListBehaviorRules_StatusFilter(t *testing.T) {
 }
 
 func TestHandleListBehaviorRules_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(&stubBehaviorRuleStore{})
 	r := callListBehaviorRules(t, s, map[string]any{"status": "unknown_status"})
 	if !r.IsError {
@@ -331,6 +344,7 @@ func TestHandleListBehaviorRules_InvalidStatus(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleApplyBehaviorRules_NilStore(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(nil)
 	r := callApplyBehaviorRules(t, s, map[string]any{
 		"rule_id": uuid.New().String(),
@@ -342,6 +356,7 @@ func TestHandleApplyBehaviorRules_NilStore(t *testing.T) {
 }
 
 func TestHandleApplyBehaviorRules_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(&stubBehaviorRuleStore{})
 	r := callApplyBehaviorRules(t, s, map[string]any{
 		"rule_id": "not-a-uuid",
@@ -353,6 +368,7 @@ func TestHandleApplyBehaviorRules_InvalidUUID(t *testing.T) {
 }
 
 func TestHandleApplyBehaviorRules_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubBehaviorRuleStore{
 		applyReturn: &behaviorrule.BehaviorRule{
@@ -378,6 +394,7 @@ func TestHandleApplyBehaviorRules_HappyPath(t *testing.T) {
 }
 
 func TestHandleApplyBehaviorRules_InvalidOutcome(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(&stubBehaviorRuleStore{})
 	r := callApplyBehaviorRules(t, s, map[string]any{
 		"rule_id": uuid.New().String(),
@@ -393,6 +410,7 @@ func TestHandleApplyBehaviorRules_InvalidOutcome(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleDeprecateBehaviorRule_NilStore(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(nil)
 	r := callDeprecateBehaviorRule(t, s, map[string]any{
 		"rule_id": uuid.New().String(),
@@ -403,6 +421,7 @@ func TestHandleDeprecateBehaviorRule_NilStore(t *testing.T) {
 }
 
 func TestHandleDeprecateBehaviorRule_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newBehaviorRuleServer(&stubBehaviorRuleStore{})
 	r := callDeprecateBehaviorRule(t, s, map[string]any{
 		"rule_id": "bad-uuid",
@@ -413,6 +432,7 @@ func TestHandleDeprecateBehaviorRule_InvalidUUID(t *testing.T) {
 }
 
 func TestHandleDeprecateBehaviorRule_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	store := &stubBehaviorRuleStore{
 		deprecateReturn: &behaviorrule.BehaviorRule{
@@ -433,6 +453,7 @@ func TestHandleDeprecateBehaviorRule_HappyPath(t *testing.T) {
 }
 
 func TestHandleDeprecateBehaviorRule_NotFound(t *testing.T) {
+	t.Parallel()
 	store := &stubBehaviorRuleStore{returnErr: behaviorrule.ErrNotFound}
 	s := newBehaviorRuleServer(store)
 	r := callDeprecateBehaviorRule(t, s, map[string]any{

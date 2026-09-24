@@ -33,6 +33,7 @@ func newProposalTestServer(t *testing.T) *Server {
 // ---- input validation tests ----
 
 func TestHandleConfirmProposals_InvalidAction(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	r := callConfirmProposals(t, s, map[string]any{
 		"ids":    []any{uuid.New().String()},
@@ -47,6 +48,7 @@ func TestHandleConfirmProposals_InvalidAction(t *testing.T) {
 }
 
 func TestHandleConfirmProposals_EmptyIDs(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	r := callConfirmProposals(t, s, map[string]any{
 		"ids":    []any{},
@@ -58,6 +60,7 @@ func TestHandleConfirmProposals_EmptyIDs(t *testing.T) {
 }
 
 func TestHandleConfirmProposals_TooManyIDs(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ids := make([]any, 101)
 	for i := range ids {
@@ -73,6 +76,7 @@ func TestHandleConfirmProposals_TooManyIDs(t *testing.T) {
 }
 
 func TestHandleConfirmProposals_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	r := callConfirmProposals(t, s, map[string]any{
 		"ids":    []any{"not-a-uuid"},
@@ -84,6 +88,7 @@ func TestHandleConfirmProposals_InvalidUUID(t *testing.T) {
 }
 
 func TestHandleConfirmProposals_NonStringIDElement(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	r := callConfirmProposals(t, s, map[string]any{
 		"ids":    []any{42}, // integer, not string
@@ -97,6 +102,7 @@ func TestHandleConfirmProposals_NonStringIDElement(t *testing.T) {
 // ---- happy path: proposal created then confirmed ----
 
 func TestHandleConfirmProposals_RejectPending(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 
@@ -152,6 +158,7 @@ func TestHandleConfirmProposals_RejectPending(t *testing.T) {
 }
 
 func TestHandleConfirmProposals_ExactlyMaxIDs_NoProposals(t *testing.T) {
+	t.Parallel()
 	// Exactly 100 random UUIDs — none are in the store so all will fail,
 	// but validation must pass (not a 400-equivalent tool error on count).
 	s := newProposalTestServer(t)
@@ -186,6 +193,7 @@ func TestHandleConfirmProposals_ExactlyMaxIDs_NoProposals(t *testing.T) {
 // propose_project).
 
 func TestDecodeGoalParams_EmptyTitle(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		payload    map[string]any
@@ -228,6 +236,7 @@ func TestDecodeGoalParams_EmptyTitle(t *testing.T) {
 }
 
 func TestDecodeProjectParams_EmptyTitleAndPriorityRange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		payload    map[string]any
@@ -306,6 +315,7 @@ func TestDecodeProjectParams_EmptyTitleAndPriorityRange(t *testing.T) {
 // written; after, the field name and excerpt survive and the row is
 // rejected.
 func TestAcceptProposal_DecisionTagNoiseNamesField(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	s.sqliteProposal = nil // force acceptProposalSequential (the iface path)
 	ctx := context.Background()
@@ -341,6 +351,7 @@ func TestAcceptProposal_DecisionTagNoiseNamesField(t *testing.T) {
 // proposal. On pgx this rollback behaviour already exists today
 // (proposal/accept_pg.go:175); this pins that SQLite now matches.
 func TestAcceptProposal_SQLiteTagNoiseRollsBackWholeAcceptance(t *testing.T) {
+	t.Parallel()
 	s, sdb := newTestWorkSessionServerWithDB(t)
 	ctx := context.Background()
 

@@ -61,6 +61,7 @@ func extractToken(t *testing.T, r *mcpmsg.CallToolResult) string {
 }
 
 func TestDeleteTask_FirstCallIssuesToken(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -88,6 +89,7 @@ func TestDeleteTask_FirstCallIssuesToken(t *testing.T) {
 }
 
 func TestDeleteTask_SecondCallWithValidTokenSucceeds(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -119,6 +121,7 @@ func TestDeleteTask_SecondCallWithValidTokenSucceeds(t *testing.T) {
 }
 
 func TestDeleteTask_MissingConfirmReturnsTokenInstead(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -137,6 +140,7 @@ func TestDeleteTask_MissingConfirmReturnsTokenInstead(t *testing.T) {
 }
 
 func TestDeleteTask_ConfirmWithoutTokenFails(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -155,6 +159,7 @@ func TestDeleteTask_ConfirmWithoutTokenFails(t *testing.T) {
 }
 
 func TestDeleteTask_ConfirmWithoutFirstCallFails(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -174,6 +179,7 @@ func TestDeleteTask_ConfirmWithoutFirstCallFails(t *testing.T) {
 }
 
 func TestDeleteTask_WrongTokenFails(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -207,6 +213,7 @@ func TestDeleteTask_WrongTokenFails(t *testing.T) {
 }
 
 func TestDeleteTask_ExpiredTokenFails(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	// Freeze nowFn to a known instant; jump it forward past the TTL between
 	// step 1 and step 2 to simulate expiry deterministically.
@@ -235,6 +242,7 @@ func TestDeleteTask_ExpiredTokenFails(t *testing.T) {
 }
 
 func TestDeleteTask_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callDeleteTask(t, s, map[string]any{"task_id": "not-a-uuid"})
 	if !r.IsError {
@@ -243,6 +251,7 @@ func TestDeleteTask_InvalidUUID(t *testing.T) {
 }
 
 func TestDeleteTask_MissingTaskID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callDeleteTask(t, s, map[string]any{})
 	if !r.IsError {
@@ -254,6 +263,7 @@ func TestDeleteTask_MissingTaskID(t *testing.T) {
 // tokens are already stored, a further step-1 call is rejected with the
 // "too many pending deletions" error rather than growing the map without bound.
 func TestDeleteTask_TokenMapBounded(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	// Freeze time so all tokens we insert stay valid (non-expired) throughout.
@@ -287,6 +297,7 @@ func TestDeleteTask_TokenMapBounded(t *testing.T) {
 // from the map during a step-1 call so that the map does not grow indefinitely
 // through accumulated dead entries.
 func TestDeleteTask_PruneExpiredOnWrite(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	// Start at a base time and issue 256 step-1 tokens via the real handler so
@@ -360,6 +371,7 @@ func callDeleteTaskCtx(t *testing.T, ctx context.Context, s *Server, args map[st
 // authenticated-actor-identity fix (blocked on F16/U15, not yet landed) —
 // see issueDeletionToken's doc comment for the distinction.
 func TestDeleteTask_CrossSessionConfirmRejected(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -388,6 +400,7 @@ func TestDeleteTask_CrossSessionConfirmRejected(t *testing.T) {
 // same identity (session) completes both steps — unchanged behaviour, task
 // deleted.
 func TestDeleteTask_SameSessionConfirmSucceeds(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -415,6 +428,7 @@ func TestDeleteTask_SameSessionConfirmSucceeds(t *testing.T) {
 // covers end-to-end; this test exists to name the fallback explicitly so a
 // future change can't silently start requiring a session everywhere.
 func TestDeleteTask_NoTrackedSessionUnchangedBehaviour(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -437,6 +451,7 @@ func TestDeleteTask_NoTrackedSessionUnchangedBehaviour(t *testing.T) {
 // — the value returned to the caller MUST be an opaque random UUID with no
 // structural relationship to the issuing session's ID.
 func TestDeleteTask_TokenDoesNotLeakSessionID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 

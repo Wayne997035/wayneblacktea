@@ -301,6 +301,7 @@ func oneLine(s string) string {
 // genuinely needs to echo an error is describing the CALLER's input, and
 // inputErrorResult already covers that case by construction.
 func TestNoRawErrorReachesToolResult(t *testing.T) {
+	t.Parallel()
 	files := goSourceFilesInPackageDir(t)
 	var violations []string
 	for name, body := range files {
@@ -340,6 +341,7 @@ func TestNoRawErrorReachesToolResult(t *testing.T) {
 // before `err` was ever reached; the new one must find the call AND still
 // flag it as carrying a raw error identifier.
 func TestScanNewToolResultErrorCalls_ParenInMessageCaught(t *testing.T) {
+	t.Parallel()
 	src := `func h() {
 	return mcp.NewToolResultError(fmt.Sprintf("loading task (detail): %v", err)), nil
 }
@@ -361,6 +363,7 @@ func TestScanNewToolResultErrorCalls_ParenInMessageCaught(t *testing.T) {
 // source lines. A line-scoped scan (the pre-fix regex ran per-line) cannot
 // see across the newline at all; the bracket-matching scan must.
 func TestScanNewToolResultErrorCalls_CrossLineCallCaught(t *testing.T) {
+	t.Parallel()
 	src := `func h() {
 	return mcp.NewToolResultError(
 		fmt.Sprintf("beginning task: %v",
@@ -390,6 +393,7 @@ func TestScanNewToolResultErrorCalls_CrossLineCallCaught(t *testing.T) {
 // case instead covers a call with NO error-shaped identifier anywhere in its
 // arguments).
 func TestScanNewToolResultErrorCalls_LegitCallsDoNotFalsePositive(t *testing.T) {
+	t.Parallel()
 	src := `func h() {
 	x := inputErrorResult("field", err)
 	return mcp.NewToolResultError("repo_name must match [a-zA-Z0-9_.-]{1,100}"), nil
@@ -410,6 +414,7 @@ func TestScanNewToolResultErrorCalls_LegitCallsDoNotFalsePositive(t *testing.T) 
 // living inside a string literal must not be mistaken for the call's own
 // closing paren, even independent of the error-identifier check above.
 func TestMatchClosingParen_StringLiteralParenDoesNotMiscountDepth(t *testing.T) {
+	t.Parallel()
 	body := `foo("a) b") + bar()`
 	// from points just past `foo(` — depth 1 begins here.
 	end, ok := matchClosingParen(body, len(`foo(`))
@@ -433,6 +438,7 @@ func TestMatchClosingParen_StringLiteralParenDoesNotMiscountDepth(t *testing.T) 
 // prose between the two parens) and counts it as a call site even though no
 // code calls anything on this line.
 func TestF160_04_CommentNeedleWithBalancedParensNotCountedAsCallSite(t *testing.T) {
+	t.Parallel()
 	src := `package mcp
 
 // mcp.NewToolResultError(...) call anywhere in this package (outside this
@@ -463,6 +469,7 @@ func h() {
 // exactly the tool_errors.go bug: real call sites physically AFTER the
 // unparseable one went unscanned and unchecked, silently.
 func TestF160_05_UnparseableCallDoesNotAbortRestOfFile(t *testing.T) {
+	t.Parallel()
 	src := `package mcp
 
 func broken() {
@@ -501,6 +508,7 @@ func legit() {
 // found (no [F160-05] fail-open gap) and nothing else is counted (no
 // [F160-04] false positive).
 func TestF160_05_MaskedNeedleCountMatchesScanCountAcrossPackage(t *testing.T) {
+	t.Parallel()
 	const needle = "NewToolResultError("
 	files := goSourceFilesInPackageDir(t)
 	for name, body := range files {
@@ -546,6 +554,7 @@ func bufferLogger(t *testing.T) *bytes.Buffer {
 // they are two directions of the same property and splitting them invites
 // one to be deleted alone.
 func TestStoreErrorResult_LogRetainsFullError(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	buf := bufferLogger(t)
 	err := errors.New(sentinelDriverError)
 
@@ -575,6 +584,7 @@ func TestStoreErrorResult_LogRetainsFullError(t *testing.T) {
 // The chain already names the tool ("set_session_handoff: intent ..."), so
 // op is not prefixed a second time.
 func TestStoreErrorText_TagNoiseVerbatim(t *testing.T) {
+	t.Parallel()
 	err := fmt.Errorf("set_session_handoff: intent %w", sanitize.ValidateNoTagNoise("</intent>"))
 
 	got := storeErrorText("setting handoff", err)
@@ -589,6 +599,7 @@ func TestStoreErrorText_TagNoiseVerbatim(t *testing.T) {
 // collapse to the flat "<op> failed" — the narrowing in F0911-01 must not
 // leak driver text for any OTHER error class.
 func TestStoreErrorText_NonTagNoiseStaysOpaque(t *testing.T) {
+	t.Parallel()
 	got := storeErrorText("setting handoff", errors.New("connection refused"))
 	if got != "setting handoff failed" {
 		t.Errorf("storeErrorText(op, connErr) = %q, want %q", got, "setting handoff failed")
@@ -609,6 +620,7 @@ const hugeTagNoiseFragmentWhitespace = 100000
 // fragment made the whole message as long as the caller's own input
 // (security-engineer's PoC measured 500,015 B in -> 500,099 B out).
 func TestStoreErrorText_TagNoiseChainIsBounded(t *testing.T) {
+	t.Parallel()
 	huge := "<parameter" + strings.Repeat(" ", hugeTagNoiseFragmentWhitespace) + "name="
 	err := fmt.Errorf("log_decision: alternatives %w", sanitize.ValidateNoTagNoise(huge))
 
@@ -628,6 +640,7 @@ func TestStoreErrorText_TagNoiseChainIsBounded(t *testing.T) {
 // already-built prefix (its partial-progress listing) passes through
 // untouched.
 func TestWithTagNoiseDetail_ChainIsBounded(t *testing.T) {
+	t.Parallel()
 	huge := "<parameter" + strings.Repeat(" ", hugeTagNoiseFragmentWhitespace) + "name="
 	err := fmt.Errorf("log_decision: alternatives %w", sanitize.ValidateNoTagNoise(huge))
 
@@ -652,6 +665,7 @@ func TestWithTagNoiseDetail_ChainIsBounded(t *testing.T) {
 // malformed metrics_json needs to be told what was malformed, and that text
 // describes its own argument, not the server.
 func TestInputErrorResult_EchoesValidationDetail(t *testing.T) {
+	t.Parallel()
 	err := errors.New("invalid character 'x' looking for beginning of value")
 
 	withField := resultText(inputErrorResult("metrics_json", err))
@@ -703,6 +717,7 @@ func (failingGTDStore) GetTaskByID(context.Context, uuid.UUID) (*db.Task, error)
 // call to response: one GetTaskByID, one errors.Is branch for the sentinel
 // not-found case, and the generic failure below it.
 func TestHandler_StoreFailureDoesNotLeakDriverError(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	buf := bufferLogger(t)
 	s := &Server{gtd: failingGTDStore{}}
 

@@ -162,6 +162,7 @@ func saturatedRepo(name string, issueCount int) db.Repo {
 // back as one bounded page under listActiveReposProductionBudgetBytes, with
 // has_more telling the caller the other 30 rows exist.
 func TestHandleListActiveRepos_RowCapBoundsPayload(t *testing.T) {
+	t.Parallel()
 	repos := make([]db.Repo, 50)
 	for i := range repos {
 		repos[i] = repoWithDescription(fmt.Sprintf("repo-%02d", i), 20_000)
@@ -194,6 +195,7 @@ func TestHandleListActiveRepos_RowCapBoundsPayload(t *testing.T) {
 // with known_issues carrying 200x the element cap. Fails if any single field
 // or list reaches the wire unbounded.
 func TestHandleListActiveRepos_AdversarialBudget(t *testing.T) {
+	t.Parallel()
 	repos := make([]db.Repo, 50)
 	for i := range repos {
 		repos[i] = saturatedRepo(fmt.Sprintf("repo-%02d", i), 1_000)
@@ -267,6 +269,7 @@ func derefOrEmpty(s *string) string {
 // negative limit, a limit past the clamp, a negative offset, and an offset
 // past the end of the list.
 func TestHandleListActiveRepos_PagingContract(t *testing.T) {
+	t.Parallel()
 	repos := make([]db.Repo, 150)
 	for i := range repos {
 		repos[i] = repoWithDescription(fmt.Sprintf("repo-%03d", i), 10)
@@ -386,6 +389,7 @@ func TestHandleListActiveRepos_PagingContract(t *testing.T) {
 // slice marshals to null, which a caller has to special-case separately from
 // [] — the same contract handleListTasks (tools_gtd.go) spells out. [F170-01]
 func TestHandleListActiveRepos_EmptyStore(t *testing.T) {
+	t.Parallel()
 	raw := callListActiveRepos(t, nil, nil)
 
 	if !strings.Contains(raw, `"repos":[]`) {
@@ -406,6 +410,7 @@ func TestHandleListActiveRepos_EmptyStore(t *testing.T) {
 // rejected outright rather than silently truncated toward zero (which would
 // turn limit=0.5 into "use the default" with no way for the caller to know).
 func TestHandleListActiveRepos_RejectsMalformedPagingArgs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		args    map[string]any
@@ -441,6 +446,7 @@ func TestHandleListActiveRepos_RejectsMalformedPagingArgs(t *testing.T) {
 // error path to tool_errors.go's shared helper rather than any new
 // fmt.Sprintf of the raw store error into the client response.
 func TestHandleListActiveRepos_StoreErrorGoesThroughStoreErrorResult(t *testing.T) {
+	t.Parallel()
 	const secret = "pq: password authentication failed for user \"wbt\""
 	s := &Server{workspace: &stubWorkspaceStore{err: errors.New(secret)}}
 
@@ -461,6 +467,7 @@ func TestHandleListActiveRepos_StoreErrorGoesThroughStoreErrorResult(t *testing.
 // The boundary cases matter most — a row exactly at the cap must NOT be
 // flagged, or every caller learns to ignore the flag.
 func TestHandleListActiveRepos_TruncationFlags(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		repo          db.Repo
@@ -581,6 +588,7 @@ func TestHandleListActiveRepos_TruncationFlags(t *testing.T) {
 // a forged boundary marker is still neutralised in a field the projection
 // then shortens. Projecting first would hand the shorter cap a raw marker.
 func TestHandleListActiveRepos_NeutralisesBeforeProjecting(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	repo := db.Repo{
 		ID:          uuid.New(),
@@ -624,6 +632,7 @@ func TestHandleListActiveRepos_NeutralisesBeforeProjecting(t *testing.T) {
 // copy makes the corresponding case here fail (all seven if the whole
 // wiring is reverted, one if only that field's comparison is).
 func TestHandleListActiveRepos_RepoListFieldMarkerTruncated(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	short := "x-" + marker // 28 runes, under repoListShortFieldMaxRunes (120)
 	long := "y-" + marker  // 28 runes, under repoListFieldMaxRunes (500)
@@ -721,6 +730,7 @@ func TestHandleListActiveRepos_RepoListFieldMarkerTruncated(t *testing.T) {
 // check agree here — this pins the case that must never regress while the
 // other two below pin the case the pre-fix check got wrong.
 func TestClipRepoListField_OverCapReportsTruncatedTrue(t *testing.T) {
+	t.Parallel()
 	s := strings.Repeat("d", repoListShortFieldMaxRunes+1)
 
 	got, truncated := clipRepoListField(s, repoListShortFieldMaxRunes)
@@ -758,6 +768,7 @@ func TestClipRepoListField_OverCapReportsTruncatedTrue(t *testing.T) {
 // `utf8.RuneCountInString(s) > maxRunes` makes this test fail, because the
 // 33-rune input never exceeds the 120-rune cap.
 func TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue(t *testing.T) {
+	t.Parallel()
 	s := "branch-" + storedContextMarkerEnd // 33 runes: far under repoListShortFieldMaxRunes (120)
 	if n := utf8.RuneCountInString(s); n >= repoListShortFieldMaxRunes {
 		t.Fatalf("fixture is %d runes, must stay under the %d-rune cap to exercise the marker-only path",
@@ -786,6 +797,7 @@ func TestClipRepoListField_ShortFieldWithForgedMarkerReportsTruncatedTrue(t *tes
 // Without this case, a fix that flips clipRepoListField to always report
 // true would still pass the two cases above.
 func TestClipRepoListField_ShortFieldNoMarkerReportsTruncatedFalse(t *testing.T) {
+	t.Parallel()
 	s := "main"
 
 	got, truncated := clipRepoListField(s, repoListShortFieldMaxRunes)

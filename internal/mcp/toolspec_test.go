@@ -2,12 +2,23 @@ package mcp
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// [F0925-02] [F0925-03] Package-wide test parallelization: every top-level
+// `func TestXxx(t *testing.T)` in this package starts with either
+// `t.Parallel()` or a `// Not parallel: <reason>` comment naming the shared
+// state it touches (t.Setenv, slog.Default(), package-level semaphores and
+// token buckets, buildinfo vars, an unpinned :memory: SQLite pool). Only
+// top-level tests are parallel; t.Run subtests are left sequential because a
+// parent's deferred cleanup would run before parallel subtests finish. The
+// parallel seam readers depend on registerToolSpec publishing a fully-built
+// spec ([F0925-01], TestRegisterToolSpec_ConcurrentSeamSeesCompleteSpec).
+//
 // wantTitleRequired is a shared test-assertion constant (goconst): several
 // toolspec_test.go/tools_gtd_*_test.go cases assert the exact seam default
 // message for a required "title" field. (The analogous "invalid project_id
@@ -17,6 +28,7 @@ const wantTitleRequired = "title is required"
 // ---- registerToolSpec derivation tests ----
 
 func TestRegisterToolSpec_DerivesRequiredEnumMaxLength(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool(
 		"spec_derive_tool",
 		mcp.WithString("name", mcp.Required()),
@@ -51,6 +63,7 @@ func TestRegisterToolSpec_DerivesRequiredEnumMaxLength(t *testing.T) {
 }
 
 func TestRegisterToolSpec_RequiredOrderMatchesRegistration(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool(
 		"spec_order_tool",
 		mcp.WithString("first", mcp.Required()),
@@ -69,9 +82,49 @@ func TestRegisterToolSpec_RequiredOrderMatchesRegistration(t *testing.T) {
 	}
 }
 
+// TestRegisterToolSpec_ConcurrentSeamSeesCompleteSpec is [F0925-01]'s
+// acceptance test. registerToolSpec must apply opts to ts BEFORE publishing
+// it into toolSpecRegistry: a concurrent reader reaching the same *toolSpec
+// via specFor()/seam() before opts finish running would observe an
+// incomplete spec (e.g. isUUID not yet set on task_id), silently skipping
+// the UUID-format check for that read. This hammers registerToolSpec (with
+// a uuidArgs opt) against concurrent seam-validate reads of the same tool
+// name and asserts every read enforces the UUID format — never the
+// half-built spec.
+func TestRegisterToolSpec_ConcurrentSeamSeesCompleteSpec(t *testing.T) {
+	t.Parallel()
+	const toolName = "spec_concurrent_seam_tool"
+	tool := mcp.NewTool(toolName, mcp.WithString("task_id", mcp.Required()))
+	registerToolSpec(tool, uuidArgs("task_id")) // seed once so specFor never panics below
+
+	const iterations = 500
+	var wg sync.WaitGroup
+	failures := make(chan string, iterations)
+	for i := 0; i < iterations; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			registerToolSpec(tool, uuidArgs("task_id"))
+		}()
+		go func() {
+			defer wg.Done()
+			ts := specFor(toolName)
+			if r := ts.validate(map[string]any{"task_id": "not-a-uuid"}); r == nil || !r.IsError {
+				failures <- "malformed task_id UUID was accepted — opts had not been applied when seam read the spec"
+			}
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	for msg := range failures {
+		t.Error(msg)
+	}
+}
+
 // ---- validate() tests ----
 
 func TestValidate_RequiredMissing_DefaultMessage(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_required", mcp.WithString("title", mcp.Required()))
 	ts := registerToolSpec(tool)
 
@@ -85,6 +138,7 @@ func TestValidate_RequiredMissing_DefaultMessage(t *testing.T) {
 }
 
 func TestValidate_RequiredEmptyString_TreatedAsMissing(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_required_empty", mcp.WithString("title", mcp.Required()))
 	ts := registerToolSpec(tool)
 
@@ -98,6 +152,7 @@ func TestValidate_RequiredEmptyString_TreatedAsMissing(t *testing.T) {
 }
 
 func TestValidate_RequiredWrongType_TypeMismatchError(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_wrong_type", mcp.WithString("title", mcp.Required()))
 	ts := registerToolSpec(tool)
 
@@ -111,6 +166,7 @@ func TestValidate_RequiredWrongType_TypeMismatchError(t *testing.T) {
 }
 
 func TestValidate_RequiredMessageOverride(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool(
 		"spec_val_override",
 		mcp.WithString("name", mcp.Required()),
@@ -131,6 +187,7 @@ func TestValidate_RequiredMessageOverride(t *testing.T) {
 }
 
 func TestValidate_RequiredUUID_DelegatesToRequireUUIDArg(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_req_uuid", mcp.WithString("task_id", mcp.Required()))
 	ts := registerToolSpec(tool)
 	uuidArgs("task_id")(ts)
@@ -154,6 +211,7 @@ func TestValidate_RequiredUUID_DelegatesToRequireUUIDArg(t *testing.T) {
 }
 
 func TestValidate_RequiredUUID_CustomInvalidMessage(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_req_uuid_custom", mcp.WithString("project_id", mcp.Required()))
 	ts := registerToolSpec(tool)
 	uuidArgs("project_id")(ts)
@@ -166,6 +224,7 @@ func TestValidate_RequiredUUID_CustomInvalidMessage(t *testing.T) {
 }
 
 func TestValidate_OptionalUUID_EmptySkipsFormatCheck(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_opt_uuid", mcp.WithString("project_id"))
 	ts := registerToolSpec(tool)
 	uuidArgs("project_id")(ts)
@@ -179,6 +238,7 @@ func TestValidate_OptionalUUID_EmptySkipsFormatCheck(t *testing.T) {
 }
 
 func TestValidate_OptionalUUID_MalformedErrors(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_opt_uuid_bad", mcp.WithString("project_id"))
 	ts := registerToolSpec(tool)
 	uuidArgs("project_id")(ts)
@@ -190,6 +250,7 @@ func TestValidate_OptionalUUID_MalformedErrors(t *testing.T) {
 }
 
 func TestValidate_Enum_ValidAndInvalid(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_enum", mcp.WithString("status", mcp.Enum("active", "done")))
 	ts := registerToolSpec(tool)
 
@@ -204,6 +265,7 @@ func TestValidate_Enum_ValidAndInvalid(t *testing.T) {
 }
 
 func TestValidate_Enum_MessageOverride(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_enum_override", mcp.WithString("status", mcp.Enum("active", "done")))
 	ts := registerToolSpec(tool)
 	ts.args["status"].enumMsg = "custom enum message"
@@ -215,6 +277,7 @@ func TestValidate_Enum_MessageOverride(t *testing.T) {
 }
 
 func TestValidate_MaxLength_WithinAndExceeding(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_maxlen", mcp.WithString("title", mcp.MaxLength(5)))
 	ts := registerToolSpec(tool)
 
@@ -229,6 +292,7 @@ func TestValidate_MaxLength_WithinAndExceeding(t *testing.T) {
 }
 
 func TestValidate_NoMaxLength_SuppressesEnforcement(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool("spec_val_maxlen_suppress", mcp.WithString("assignee", mcp.MaxLength(5)))
 	ts := registerToolSpec(tool)
 	noMaxLength("assignee")(ts)
@@ -239,6 +303,7 @@ func TestValidate_NoMaxLength_SuppressesEnforcement(t *testing.T) {
 }
 
 func TestValidate_OptionalFieldAbsent_NoError(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool(
 		"spec_val_optional_absent",
 		mcp.WithString("title", mcp.Required()),
@@ -264,6 +329,7 @@ type decodeTestArgs struct {
 }
 
 func TestDecodeToolArgs_AllKinds(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	optID := uuid.New()
 	args := map[string]any{
@@ -311,6 +377,7 @@ func TestDecodeToolArgs_AllKinds(t *testing.T) {
 // matching the spec's "every registered numeric field" framing for this
 // decode path.
 func TestDecodeToolArgs_RejectsFractionalIntFields(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		args map[string]any
@@ -339,6 +406,7 @@ func TestDecodeToolArgs_RejectsFractionalIntFields(t *testing.T) {
 // (however it arrives — JSON numbers always decode to float64) must still
 // decode successfully, unaffected by the new guard.
 func TestDecodeToolArgs_WholeNumberIntFields_Accepted(t *testing.T) {
+	t.Parallel()
 	var out decodeTestArgs
 	r := decodeToolArgs(map[string]any{"count": 3.0, "importance": -1.0}, &out)
 	if r != nil {
@@ -356,6 +424,7 @@ func TestDecodeToolArgs_WholeNumberIntFields_Accepted(t *testing.T) {
 // sharing isWholeNumber with decodeIntField above. ----
 
 func TestRequireIntArg_RejectsFractional(t *testing.T) {
+	t.Parallel()
 	_, r := requireIntArg(map[string]any{"step": 2.5}, "step")
 	if r == nil || !r.IsError {
 		t.Fatal("expected a whole-number error for step=2.5")
@@ -366,6 +435,7 @@ func TestRequireIntArg_RejectsFractional(t *testing.T) {
 }
 
 func TestRequireIntArg_Missing(t *testing.T) {
+	t.Parallel()
 	_, r := requireIntArg(map[string]any{}, "step")
 	if r == nil || !r.IsError {
 		t.Fatal("expected a required error for missing step")
@@ -376,6 +446,7 @@ func TestRequireIntArg_Missing(t *testing.T) {
 }
 
 func TestRequireIntArg_WrongType(t *testing.T) {
+	t.Parallel()
 	_, r := requireIntArg(map[string]any{"step": "one"}, "step")
 	if r == nil || !r.IsError {
 		t.Fatal("expected a type error for a string step")
@@ -388,6 +459,7 @@ func TestRequireIntArg_WrongType(t *testing.T) {
 // TestRequireIntArg_WholeNumberAccepted is the positive control: a present,
 // whole-number, correctly-typed value decodes cleanly with no error result.
 func TestRequireIntArg_WholeNumberAccepted(t *testing.T) {
+	t.Parallel()
 	v, r := requireIntArg(map[string]any{"step": 3.0}, "step")
 	if r != nil {
 		t.Fatalf("expected no error, got: %s", resultText(r))
@@ -398,6 +470,7 @@ func TestRequireIntArg_WholeNumberAccepted(t *testing.T) {
 }
 
 func TestDecodeToolArgs_AbsentOptionalFieldsStayNil(t *testing.T) {
+	t.Parallel()
 	var out decodeTestArgs
 	if r := decodeToolArgs(map[string]any{}, &out); r != nil {
 		t.Fatalf("decode of empty args should succeed, got: %s", resultText(r))
@@ -419,6 +492,7 @@ func TestDecodeToolArgs_AbsentOptionalFieldsStayNil(t *testing.T) {
 // populate the pointer (to a pointed-at empty string), distinct from the key
 // being entirely absent (nil pointer).
 func TestDecodeToolArgs_PresentEmptyString_DistinguishedFromAbsent(t *testing.T) {
+	t.Parallel()
 	var out decodeTestArgs
 	if r := decodeToolArgs(map[string]any{"opt_name": ""}, &out); r != nil {
 		t.Fatalf("decode should succeed, got: %s", resultText(r))
@@ -432,6 +506,7 @@ func TestDecodeToolArgs_PresentEmptyString_DistinguishedFromAbsent(t *testing.T)
 }
 
 func TestDecodeToolArgs_TypeMismatch_ReturnsClearError(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		args map[string]any
@@ -457,6 +532,7 @@ func TestDecodeToolArgs_TypeMismatch_ReturnsClearError(t *testing.T) {
 }
 
 func TestDecodeToolArgs_InvalidUUIDString(t *testing.T) {
+	t.Parallel()
 	var out decodeTestArgs
 	r := decodeToolArgs(map[string]any{"id": "not-a-uuid"}, &out)
 	if r == nil || resultText(r) != "invalid id UUID" {
@@ -465,6 +541,7 @@ func TestDecodeToolArgs_InvalidUUIDString(t *testing.T) {
 }
 
 func TestDecodeToolArgs_UntaggedFieldIgnored(t *testing.T) {
+	t.Parallel()
 	var out decodeTestArgs
 	if r := decodeToolArgs(map[string]any{"Untagged": "should not decode"}, &out); r != nil {
 		t.Fatalf("unexpected error: %s", resultText(r))
@@ -482,6 +559,7 @@ type seamTestArgs struct {
 }
 
 func TestSeam_ValidationFailureShortCircuitsHandler(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool(
 		"spec_seam_valfail",
 		mcp.WithString("task_id", mcp.Required()),
@@ -511,6 +589,7 @@ func TestSeam_ValidationFailureShortCircuitsHandler(t *testing.T) {
 }
 
 func TestSeam_ValidAndDecodedArgsReachHandler(t *testing.T) {
+	t.Parallel()
 	tool := mcp.NewTool(
 		"spec_seam_ok",
 		mcp.WithString("task_id", mcp.Required()),

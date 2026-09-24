@@ -171,6 +171,7 @@ func newOutcomeServer(store outcome.StoreIface) *Server {
 // --- handleRecordOutcome tests ---
 
 func TestHandleRecordOutcome_HappyPath(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	entityID := uuid.New()
 	store := &stubOutcomeStore{
@@ -202,6 +203,7 @@ func TestHandleRecordOutcome_HappyPath(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_InvalidEntityType(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callRecordOutcome(t, s, map[string]any{
 		"entity_type": "unknown_type",
@@ -214,6 +216,7 @@ func TestHandleRecordOutcome_InvalidEntityType(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_InvalidEntityIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callRecordOutcome(t, s, map[string]any{
 		"entity_type": entityTypeTask,
@@ -226,6 +229,7 @@ func TestHandleRecordOutcome_InvalidEntityIDUUID(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_InvalidResult(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callRecordOutcome(t, s, map[string]any{
 		"entity_type": entityTypeTask,
@@ -246,6 +250,7 @@ func TestHandleRecordOutcome_InvalidResult(t *testing.T) {
 // first, per backend-security-design.md's no-FK design note: a stale-but-
 // well-formed UUID is tolerated, a malformed string is not).
 func TestHandleRecordOutcome_InvalidSessionIDUUID(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{}
 	s := newOutcomeServer(store)
 	r := callRecordOutcome(t, s, map[string]any{
@@ -266,6 +271,7 @@ func TestHandleRecordOutcome_InvalidSessionIDUUID(t *testing.T) {
 // session_id remain fully regression-safe (WorkSessionID stays nil, no
 // SetOutcomeLink attempted, no workSession store dependency required).
 func TestHandleRecordOutcome_NoSessionID_Regression(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{returnOutcome: outcome.Outcome{ID: uuid.New(), Result: "success"}}
 	s := newOutcomeServer(store) // no workSession wired at all
 	r := callRecordOutcome(t, s, map[string]any{
@@ -286,6 +292,7 @@ func TestHandleRecordOutcome_NoSessionID_Regression(t *testing.T) {
 // a best-effort SetOutcomeLink call that persists outcome_id back onto the
 // work_sessions row — the bidirectional link.
 func TestHandleRecordOutcome_WithSessionID_LinksBothDirections(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	startR := callStartWork(t, s, map[string]any{"repo_name": "record-outcome-link-repo", "title": "t", "goal": "g"})
 	sessID := startSessionID(t, startR)
@@ -323,6 +330,7 @@ func TestHandleRecordOutcome_WithSessionID_LinksBothDirections(t *testing.T) {
 // but unknown session_id still creates the outcome (non-fatal) — SetOutcomeLink
 // silently tolerates worksession.ErrNotFound per the no-FK design.
 func TestHandleRecordOutcome_UnknownSessionID_NonFatal(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callRecordOutcome(t, s, map[string]any{
 		"entity_type": entityTypeTask,
@@ -336,6 +344,7 @@ func TestHandleRecordOutcome_UnknownSessionID_NonFatal(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_InvalidMetricsJSON(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callRecordOutcome(t, s, map[string]any{
 		"entity_type":  "decision",
@@ -358,6 +367,7 @@ func TestHandleRecordOutcome_InvalidMetricsJSON(t *testing.T) {
 // grow the column without bound while re-firing draft_enriched side effects
 // on every retry.
 func TestHandleRecordOutcome_MetricsJSON_MustBeObject(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		metricsJSON string
@@ -392,6 +402,7 @@ func TestHandleRecordOutcome_MetricsJSON_MustBeObject(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_StoreError(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{returnErr: errors.New("db down")}
 	s := newOutcomeServer(store)
 	r := callRecordOutcome(t, s, map[string]any{
@@ -413,6 +424,7 @@ func TestHandleRecordOutcome_StoreError(t *testing.T) {
 // handleRecordOutcome store-error branch, mirroring tools_arch.go's
 // sanitize-then-log pattern).
 func TestHandleRecordOutcome_StoreError_SanitizesInternalDetails(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	rawErr := errors.New(
 		`superseding: sqlite OutcomeStore.CreateOutcome: constraint failed: ` +
 			`UNIQUE constraint failed: index 'idx_outcomes_one_open_draft' (2067)`,
@@ -449,6 +461,7 @@ func TestHandleRecordOutcome_StoreError_SanitizesInternalDetails(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_AllEntityTypes(t *testing.T) {
+	t.Parallel()
 	for _, et := range []string{entityTypeTask, "decision", "sprint", "project"} {
 		t.Run(et, func(t *testing.T) {
 			store := &stubOutcomeStore{returnOutcome: outcome.Outcome{EntityType: et, Result: "success"}}
@@ -468,6 +481,7 @@ func TestHandleRecordOutcome_AllEntityTypes(t *testing.T) {
 // --- handleEvaluateOutcome tests ---
 
 func TestHandleEvaluateOutcome_HappyPath(t *testing.T) {
+	t.Parallel()
 	outcomeID := uuid.New()
 	store := &stubOutcomeStore{
 		returnOutcome: outcome.Outcome{ID: outcomeID},
@@ -491,6 +505,7 @@ func TestHandleEvaluateOutcome_HappyPath(t *testing.T) {
 }
 
 func TestHandleEvaluateOutcome_InvalidOutcomeIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callEvaluateOutcome(t, s, map[string]any{
 		"outcome_id": "bad-uuid",
@@ -502,6 +517,7 @@ func TestHandleEvaluateOutcome_InvalidOutcomeIDUUID(t *testing.T) {
 }
 
 func TestHandleEvaluateOutcome_EmptyAnalysis(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callEvaluateOutcome(t, s, map[string]any{
 		"outcome_id": uuid.New().String(),
@@ -513,6 +529,7 @@ func TestHandleEvaluateOutcome_EmptyAnalysis(t *testing.T) {
 }
 
 func TestHandleEvaluateOutcome_OutcomeNotFound(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{returnErr: outcome.ErrNotFound}
 	s := newOutcomeServer(store)
 	r := callEvaluateOutcome(t, s, map[string]any{
@@ -525,6 +542,7 @@ func TestHandleEvaluateOutcome_OutcomeNotFound(t *testing.T) {
 }
 
 func TestHandleEvaluateOutcome_InvalidLessonsJSON(t *testing.T) {
+	t.Parallel()
 	// GetOutcomeByID must succeed first (no error), then lessons_json is validated.
 	store := &stubOutcomeStore{returnOutcome: outcome.Outcome{ID: uuid.New()}}
 	s := newOutcomeServer(store)
@@ -539,6 +557,7 @@ func TestHandleEvaluateOutcome_InvalidLessonsJSON(t *testing.T) {
 }
 
 func TestHandleEvaluateOutcome_InvalidSuggestionsJSON(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{returnOutcome: outcome.Outcome{ID: uuid.New()}}
 	s := newOutcomeServer(store)
 	r := callEvaluateOutcome(t, s, map[string]any{
@@ -554,6 +573,7 @@ func TestHandleEvaluateOutcome_InvalidSuggestionsJSON(t *testing.T) {
 // --- handleListRecentOutcomes tests ---
 
 func TestHandleListRecentOutcomes_HappyPath(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{returnList: []outcome.Outcome{{Result: "success"}, {Result: "failure"}}}
 	s := newOutcomeServer(store)
 
@@ -574,6 +594,7 @@ func TestHandleListRecentOutcomes_HappyPath(t *testing.T) {
 }
 
 func TestHandleListRecentOutcomes_DefaultLimit(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{}
 	s := newOutcomeServer(store)
 
@@ -588,6 +609,7 @@ func TestHandleListRecentOutcomes_DefaultLimit(t *testing.T) {
 }
 
 func TestHandleListRecentOutcomes_LimitCapped(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{}
 	s := newOutcomeServer(store)
 
@@ -603,6 +625,7 @@ func TestHandleListRecentOutcomes_LimitCapped(t *testing.T) {
 }
 
 func TestHandleListRecentOutcomes_InvalidEntityType(t *testing.T) {
+	t.Parallel()
 	s := newOutcomeServer(&stubOutcomeStore{})
 	r := callListRecentOutcomes(t, s, map[string]any{
 		"entity_type": "bogus",
@@ -613,6 +636,7 @@ func TestHandleListRecentOutcomes_InvalidEntityType(t *testing.T) {
 }
 
 func TestHandleListRecentOutcomes_EmptyResultNilSafe(t *testing.T) {
+	t.Parallel()
 	// Store returns nil slice — handler must return [] not null.
 	store := &stubOutcomeStore{returnList: nil}
 	s := newOutcomeServer(store)
@@ -630,6 +654,7 @@ func TestHandleListRecentOutcomes_EmptyResultNilSafe(t *testing.T) {
 // --- handleFindFailedPatterns tests ---
 
 func TestHandleFindFailedPatterns_HappyPath(t *testing.T) {
+	t.Parallel()
 	failed := []outcome.Outcome{
 		{ID: uuid.New(), Result: "failure"},
 		{ID: uuid.New(), Result: "regressed"},
@@ -650,6 +675,7 @@ func TestHandleFindFailedPatterns_HappyPath(t *testing.T) {
 }
 
 func TestHandleFindFailedPatterns_DefaultLimit(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{}
 	s := newOutcomeServer(store)
 	r := callFindFailedPatterns(t, s, map[string]any{})
@@ -663,6 +689,7 @@ func TestHandleFindFailedPatterns_DefaultLimit(t *testing.T) {
 }
 
 func TestHandleFindFailedPatterns_LimitCapped(t *testing.T) {
+	t.Parallel()
 	store := &stubOutcomeStore{}
 	s := newOutcomeServer(store)
 	r := callFindFailedPatterns(t, s, map[string]any{"limit": float64(500)})
@@ -675,6 +702,7 @@ func TestHandleFindFailedPatterns_LimitCapped(t *testing.T) {
 }
 
 func TestHandleFindFailedPatterns_EvalFetchErrorDegradeGracefully(t *testing.T) {
+	t.Parallel()
 	// ListFailedOutcomes succeeds but ListEvaluationsByOutcomeID returns error.
 	// The handler must degrade gracefully: return outcomes with empty evals, not abort.
 	failed := []outcome.Outcome{{ID: uuid.New(), Result: "failure"}}
@@ -748,6 +776,7 @@ func (e *evalFailingStore) SeedDraft(_ context.Context, _ *uuid.UUID, _ string, 
 // --- isJSONArray / validateJSONArrayArg unit tests ---
 
 func TestIsJSONArray(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input string
 		want  bool
@@ -769,6 +798,7 @@ func TestIsJSONArray(t *testing.T) {
 }
 
 func TestValidateJSONArrayArg_EmptyAllowed(t *testing.T) {
+	t.Parallel()
 	b, err := validateJSONArrayArg(map[string]any{}, "lessons_json")
 	if err != nil {
 		t.Fatalf("unexpected error for empty arg: %v", err)
@@ -779,6 +809,7 @@ func TestValidateJSONArrayArg_EmptyAllowed(t *testing.T) {
 }
 
 func TestValidateJSONArrayArg_ValidArray(t *testing.T) {
+	t.Parallel()
 	b, err := validateJSONArrayArg(map[string]any{"k": `["x","y"]`}, "k")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -789,6 +820,7 @@ func TestValidateJSONArrayArg_ValidArray(t *testing.T) {
 }
 
 func TestValidateJSONArrayArg_ObjectRejected(t *testing.T) {
+	t.Parallel()
 	_, err := validateJSONArrayArg(map[string]any{"k": `{"a":1}`}, "k")
 	if err == nil {
 		t.Fatal("expected error for JSON object, got nil")
@@ -798,6 +830,7 @@ func TestValidateJSONArrayArg_ObjectRejected(t *testing.T) {
 // --- parseRelatedRuleIDs unit tests (MAJOR-2: upper bound guard) ---
 
 func TestParseRelatedRuleIDs_Empty(t *testing.T) {
+	t.Parallel()
 	ids, err := parseRelatedRuleIDs("")
 	if err != nil {
 		t.Fatalf("unexpected error for empty input: %v", err)
@@ -808,6 +841,7 @@ func TestParseRelatedRuleIDs_Empty(t *testing.T) {
 }
 
 func TestParseRelatedRuleIDs_EmptyArray(t *testing.T) {
+	t.Parallel()
 	ids, err := parseRelatedRuleIDs("[]")
 	if err != nil {
 		t.Fatalf("unexpected error for empty array: %v", err)
@@ -818,6 +852,7 @@ func TestParseRelatedRuleIDs_EmptyArray(t *testing.T) {
 }
 
 func TestParseRelatedRuleIDs_ValidUUIDs(t *testing.T) {
+	t.Parallel()
 	id1, id2 := uuid.New(), uuid.New()
 	raw := `["` + id1.String() + `","` + id2.String() + `"]`
 	ids, err := parseRelatedRuleIDs(raw)
@@ -834,6 +869,7 @@ func TestParseRelatedRuleIDs_ValidUUIDs(t *testing.T) {
 // before it ever reaches CreateOutcome's fresh-row path (which — unlike
 // FinalizeDraft — never applies outcome.DedupeUUIDsPreserveOrder itself).
 func TestParseRelatedRuleIDs_DedupesDuplicates(t *testing.T) {
+	t.Parallel()
 	id1, id2 := uuid.New(), uuid.New()
 	raw := `["` + id1.String() + `","` + id2.String() + `","` + id1.String() + `"]`
 	ids, err := parseRelatedRuleIDs(raw)
@@ -851,6 +887,7 @@ func TestParseRelatedRuleIDs_DedupesDuplicates(t *testing.T) {
 // cap by padding the array with a repeated ID (which would deduplicate down
 // under the limit) if the check ran after dedup instead of before.
 func TestParseRelatedRuleIDs_MaxCheckAgainstRawCountNotDeduped(t *testing.T) {
+	t.Parallel()
 	repeated := uuid.New()
 	strs := make([]string, maxRelatedRuleIDs+1)
 	for i := range strs {
@@ -865,6 +902,7 @@ func TestParseRelatedRuleIDs_MaxCheckAgainstRawCountNotDeduped(t *testing.T) {
 }
 
 func TestParseRelatedRuleIDs_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	_, err := parseRelatedRuleIDs(`["not-a-uuid"]`)
 	if err == nil {
 		t.Fatal("expected error for invalid UUID, got nil")
@@ -872,6 +910,7 @@ func TestParseRelatedRuleIDs_InvalidUUID(t *testing.T) {
 }
 
 func TestParseRelatedRuleIDs_ExceedsMax(t *testing.T) {
+	t.Parallel()
 	// Build an array with maxRelatedRuleIDs+1 UUIDs.
 	ids := make([]string, maxRelatedRuleIDs+1)
 	for i := range ids {
@@ -888,6 +927,7 @@ func TestParseRelatedRuleIDs_ExceedsMax(t *testing.T) {
 }
 
 func TestParseRelatedRuleIDs_ExactlyMax(t *testing.T) {
+	t.Parallel()
 	// Exactly maxRelatedRuleIDs should be accepted.
 	ids := make([]string, maxRelatedRuleIDs)
 	for i := range ids {
@@ -904,6 +944,7 @@ func TestParseRelatedRuleIDs_ExactlyMax(t *testing.T) {
 }
 
 func TestHandleRecordOutcome_RelatedRuleIDsExceedsMax(t *testing.T) {
+	t.Parallel()
 	// Ensure the MCP handler rejects related_rule_ids arrays > maxRelatedRuleIDs.
 	s := newOutcomeServer(&stubOutcomeStore{})
 	ids := make([]string, maxRelatedRuleIDs+1)
@@ -930,6 +971,7 @@ func TestHandleRecordOutcome_RelatedRuleIDsExceedsMax(t *testing.T) {
 // algorithm itself in isolation, complementing the slower end-to-end
 // atomize-spy tests in tools_outcome_lifecycle_test.go.
 func TestNotesDelta(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		oNotes        string
@@ -1000,6 +1042,7 @@ func notesFillChunk(marker string) string {
 // enforced inside FinalizeDraft's store-layer merge, not at the MCP
 // argument-parsing layer.
 func TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
@@ -1061,6 +1104,7 @@ func TestHandleRecordOutcome_NotesTruncated_SignalsWhenCumulativeCapReached(t *t
 // IDs per call, then verify one more distinct ID against the full draft
 // signals related_rule_ids_truncated=true instead of silently vanishing.
 func TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapReached(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
@@ -1119,6 +1163,7 @@ func TestHandleRecordOutcome_RelatedRuleIDsTruncated_SignalsWhenCumulativeCapRea
 // for BOTH fields in one call — neither can land, so both flags must be
 // true and the note must mention both fields and both caps.
 func TestHandleRecordOutcome_BothNotesAndRelatedRuleIDsTruncated_SignalsWhenBothCumulativeCapsReached(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	entityID := uuid.New()
 
@@ -1196,6 +1241,7 @@ func TestHandleRecordOutcome_BothNotesAndRelatedRuleIDsTruncated_SignalsWhenBoth
 // / truncation_note keys present at all (not merely false/empty), so
 // existing callers that don't know about these new fields see no change.
 func TestHandleRecordOutcome_TruncationSignals_AbsentWhenNothingTruncated(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callRecordOutcome(t, s, map[string]any{
 		"entity_type":      entityTypeTask,

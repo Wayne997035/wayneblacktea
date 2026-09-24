@@ -2,7 +2,6 @@ package mcp_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
@@ -14,7 +13,8 @@ import (
 // panicking. This is the regression guard for the SQLite v2 cmd dispatch:
 // if the constructor regresses to requiring *pgxpool.Pool, this fails fast.
 func TestNew_AcceptsSQLiteBundle(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "mcp-bundle.db")
+	t.Parallel()
+	dbPath := mcpsrv.NewMigratedSQLitePath(t, "mcp-bundle.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

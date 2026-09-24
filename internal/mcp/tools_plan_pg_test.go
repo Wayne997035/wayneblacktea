@@ -142,6 +142,7 @@ func newPgPlanTestServer(t *testing.T) (*Server, uuid.UUID) {
 // runs, so Postgres never sees an error and never auto-aborts the tx — only
 // the Go-level rollback call determines the outcome there.
 func TestHandleConfirmPlan_Postgres_AtomicRollbackOnMidPhaseFailure(t *testing.T) {
+	t.Parallel()
 	s, wsID := newPgPlanTestServer(t)
 	ctx := context.Background()
 
@@ -187,6 +188,7 @@ func TestHandleConfirmPlan_Postgres_AtomicRollbackOnMidPhaseFailure(t *testing.T
 // (build/Taskfile.yml), so this is the only coverage that exercises
 // materializePlanPg's own clipSafe wrap site (tools_plan.go:261).
 func TestHandleConfirmPlan_Postgres_AtomicRollbackAcrossTaskAndDecision(t *testing.T) {
+	t.Parallel()
 	s, wsID := newPgPlanTestServer(t)
 	ctx := context.Background()
 

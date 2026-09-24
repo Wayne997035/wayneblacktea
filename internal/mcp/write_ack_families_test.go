@@ -27,6 +27,7 @@ func bigBody(tag string) string {
 }
 
 func TestWriteAcks_DropTheBodyTheCallerJustSent(t *testing.T) {
+	t.Parallel()
 	body := bigBody("payload")
 	now := time.Now()
 	pgNow := pgtype.Timestamptz{Time: now, Valid: true}
@@ -149,6 +150,7 @@ func TestWriteAcks_DropTheBodyTheCallerJustSent(t *testing.T) {
 // TestWriteAcks_NilIn pins the boundary every wrap function honours, so an ack
 // can be chained after one that returned nil for a missing row.
 func TestWriteAcks_NilIn(t *testing.T) {
+	t.Parallel()
 	if ackSkill(nil) != nil || ackProposal(nil) != nil || ackConcept(nil) != nil ||
 		ackProject(nil) != nil || ackGoal(nil) != nil || ackKnowledge(nil) != nil ||
 		ackVision(nil) != nil {

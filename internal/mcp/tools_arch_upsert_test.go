@@ -71,6 +71,7 @@ func callUpsertProjectArch(t *testing.T, srv *Server, args map[string]any) *mcpm
 // state (JSON-null, which the store-layer type can't even express) too.
 
 func TestHandleUpsertProjectArch_FileMap_Absent(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -87,6 +88,7 @@ func TestHandleUpsertProjectArch_FileMap_Absent(t *testing.T) {
 }
 
 func TestHandleUpsertProjectArch_FileMap_JSONNull(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -100,6 +102,7 @@ func TestHandleUpsertProjectArch_FileMap_JSONNull(t *testing.T) {
 }
 
 func TestHandleUpsertProjectArch_FileMap_EmptyString(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -116,6 +119,7 @@ func TestHandleUpsertProjectArch_FileMap_EmptyString(t *testing.T) {
 }
 
 func TestHandleUpsertProjectArch_FileMap_Content(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -142,6 +146,7 @@ func TestHandleUpsertProjectArch_FileMap_Content(t *testing.T) {
 // on, mirroring the file_map coverage above.
 
 func TestHandleUpsertProjectArch_Summary_AbsentTranslatesToNil(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -155,6 +160,7 @@ func TestHandleUpsertProjectArch_Summary_AbsentTranslatesToNil(t *testing.T) {
 }
 
 func TestHandleUpsertProjectArch_Summary_EmptyStringIsExplicit(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -168,6 +174,7 @@ func TestHandleUpsertProjectArch_Summary_EmptyStringIsExplicit(t *testing.T) {
 }
 
 func TestHandleUpsertProjectArch_Summary_TooLongStillRejected(t *testing.T) {
+	t.Parallel()
 	// Regression guard: moving summary from a plain-string required check to
 	// pointer-based presence extraction must not accidentally drop the
 	// maxSummaryLen bound.
@@ -187,6 +194,7 @@ func TestHandleUpsertProjectArch_Summary_TooLongStillRejected(t *testing.T) {
 }
 
 func TestHandleUpsertProjectArch_LastCommitSHA_AbsentTranslatesToNil(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -200,6 +208,7 @@ func TestHandleUpsertProjectArch_LastCommitSHA_AbsentTranslatesToNil(t *testing.
 }
 
 func TestHandleUpsertProjectArch_LastCommitSHA_EmptyStringIsExplicit(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -213,6 +222,7 @@ func TestHandleUpsertProjectArch_LastCommitSHA_EmptyStringIsExplicit(t *testing.
 }
 
 func TestHandleUpsertProjectArch_LastCommitSHA_JSONNullRejected(t *testing.T) {
+	t.Parallel()
 	store := &recordingArchStore{}
 	srv := &Server{arch: store}
 
@@ -228,6 +238,7 @@ func TestHandleUpsertProjectArch_LastCommitSHA_JSONNullRejected(t *testing.T) {
 // --- optionalStringArg direct unit coverage -------------------------------
 
 func TestOptionalStringArg(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		args      map[string]any
@@ -276,6 +287,7 @@ func TestOptionalStringArg(t *testing.T) {
 // Round 3 unifies patch semantics across all three fields, so all three
 // descriptions must now spell out all three states.
 func TestUpsertProjectArchToolDescriptions_ThreeStates(t *testing.T) {
+	t.Parallel()
 	ms := server.NewMCPServer("test", "0.0.0")
 	srv := &Server{}
 	srv.registerArchTools(ms)

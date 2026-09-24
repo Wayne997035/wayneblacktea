@@ -47,6 +47,7 @@ func updateTaskText(t *testing.T, s *Server, args map[string]any) string {
 // TestUpdateTask_AreaReclassifies is the feature itself: before it, area was
 // write-once, and a mis-classified task could only be fixed in the database.
 func TestUpdateTask_AreaReclassifies(t *testing.T) {
+	t.Parallel()
 	s, d := newTestWorkSessionServerWithDB(t)
 	id := seedTaskInArea(t, s, "coverones")
 
@@ -64,6 +65,7 @@ func TestUpdateTask_AreaReclassifies(t *testing.T) {
 // would move every task it touched into 'unsorted', and nothing would report
 // it — the task is still there, just silently reclassified.
 func TestUpdateTask_OmittingAreaPreservesIt(t *testing.T) {
+	t.Parallel()
 	s, d := newTestWorkSessionServerWithDB(t)
 	id := seedTaskInArea(t, s, "ai-arch")
 
@@ -79,6 +81,7 @@ func TestUpdateTask_OmittingAreaPreservesIt(t *testing.T) {
 // tasks.area (red line #9), so the handler's lookup is the only thing between
 // a typo and a task parked in a bucket no counts query surfaces.
 func TestUpdateTask_UnknownAreaIsRejectedAndNothingChanges(t *testing.T) {
+	t.Parallel()
 	s, d := newTestWorkSessionServerWithDB(t)
 	id := seedTaskInArea(t, s, "wbt")
 

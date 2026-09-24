@@ -22,6 +22,7 @@ import (
 // test permanently red regardless of whether tools_plan_test.go /
 // tools_plan_pg_test.go were actually fixed.
 func TestPlanTestCommentsAreNotStale(t *testing.T) {
+	t.Parallel()
 	checks := []struct {
 		file   string
 		needle string

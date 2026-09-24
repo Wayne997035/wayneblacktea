@@ -13,6 +13,7 @@ import (
 // ---- extractKeywords ----
 
 func TestExtractKeywords(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		desc  string
@@ -102,6 +103,7 @@ func TestExtractKeywords(t *testing.T) {
 // ---- detectCompletionDrift ----
 
 func TestDetectCompletionDrift(t *testing.T) {
+	t.Parallel()
 	// helper: create a db.Task with the given status, title, description.
 	makeTask := func(status, title, desc string) db.Task {
 		return db.Task{
@@ -219,6 +221,7 @@ func TestDetectCompletionDrift(t *testing.T) {
 }
 
 func TestDetectCompletionDrift_StatusFiltering(t *testing.T) {
+	t.Parallel()
 	makeTaskWithDesc := func(status, title, desc string) db.Task {
 		return db.Task{
 			ID:     uuid.New(),
@@ -288,6 +291,7 @@ func TestDetectCompletionDrift_StatusFiltering(t *testing.T) {
 // ---- keywordExistsOnDisk: adversarial inputs ----
 
 func TestKeywordExistsOnDisk_PathTraversal(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	// Sanity: create a real nested file inside repoRoot that the positive
@@ -373,6 +377,7 @@ func TestKeywordExistsOnDisk_PathTraversal(t *testing.T) {
 // to an outside dir whose contents match the glob must NOT count as an
 // in-boundary hit.
 func TestKeywordExistsOnDisk_MigrationSymlinkEscape(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	outside := t.TempDir()
 
@@ -395,6 +400,7 @@ func TestKeywordExistsOnDisk_MigrationSymlinkEscape(t *testing.T) {
 // ---- detectCompletionDrift: cap, in_progress, title sanitisation ----
 
 func TestDetectCompletionDrift_InProgressIncluded(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	full := filepath.Join(root, "internal", "handler", "wip.go")
 	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
@@ -426,6 +432,7 @@ func TestDetectCompletionDrift_InProgressIncluded(t *testing.T) {
 }
 
 func TestDetectCompletionDrift_CapAt50(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	// Create 100 distinct files and 100 pending tasks each referencing one.
@@ -461,6 +468,7 @@ func TestDetectCompletionDrift_CapAt50(t *testing.T) {
 }
 
 func TestDetectCompletionDrift_TitleSanitization(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	full := filepath.Join(root, "internal", "handler", "evil.go")
 	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {

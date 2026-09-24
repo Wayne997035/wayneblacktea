@@ -43,6 +43,7 @@ func (f *fakeRestoreProjectStore) RestoreProject(_ context.Context, id uuid.UUID
 // restore_project must not be advertised in tools/list by default, only
 // reachable via expand_tools(group="gtd").
 func TestRestoreProjectTool_IsInHiddenGTDGroup(t *testing.T) {
+	t.Parallel()
 	if coreToolSet["restore_project"] {
 		t.Error("restore_project must not be in coreToolNames — it belongs in the hidden \"gtd\" group only")
 	}
@@ -62,6 +63,7 @@ func TestRestoreProjectTool_IsInHiddenGTDGroup(t *testing.T) {
 // project/task rows back from deletion_tombstones and must trip drift
 // detection like every other write tool.
 func TestRestoreProjectTool_IsMutating(t *testing.T) {
+	t.Parallel()
 	if !discipline.MutatingTools["restore_project"] {
 		t.Error("restore_project must be registered in discipline.MutatingTools")
 	}
@@ -72,6 +74,7 @@ func TestRestoreProjectTool_IsMutating(t *testing.T) {
 // renderer handleDeleteProject's preview uses (U13) — not the fake store's
 // raw, unbounded value.
 func TestRestoreProjectTool_ClipsProjectName(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("x", gtdTitleMaxRunes+500)
 	id := uuid.New()
 	fake := &fakeRestoreProjectStore{project: &db.Project{ID: id, Name: long}, tasksRestored: 2}
@@ -113,6 +116,7 @@ func TestRestoreProjectTool_ClipsProjectName(t *testing.T) {
 // gtd.ErrNotFound — the message must not echo any caller- or store-supplied
 // text.
 func TestRestoreProjectTool_NotFoundMessage(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	fake := &fakeRestoreProjectStore{err: gtd.ErrNotFound}
 	s := &Server{gtd: fake, sessionID: "test-session"}
@@ -136,6 +140,7 @@ func TestRestoreProjectTool_NotFoundMessage(t *testing.T) {
 // branch so it falls through to the generic storeErrorResult path — turns
 // this test red).
 func TestRestoreProjectTool_ConflictMessage(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	wrapped := fmt.Errorf("duplicate key value violates unique constraint %q: %w", "projects_name_key", gtd.ErrConflict)
 	fake := &fakeRestoreProjectStore{err: wrapped}
@@ -164,6 +169,7 @@ func TestRestoreProjectTool_ConflictMessage(t *testing.T) {
 // use to model exactly such an uncategorised error) does not satisfy
 // errors.Is(err, ErrNotFound), so it exercises that fallback path here.
 func TestRestoreProjectTool_NotImplementedIsAnError(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	fake := &fakeRestoreProjectStore{err: gtd.ErrNotImplemented}
 	s := &Server{gtd: fake, sessionID: "test-session"}
@@ -186,6 +192,7 @@ func TestRestoreProjectTool_NotImplementedIsAnError(t *testing.T) {
 // place it could still leak in: the handler reading something other than
 // auditSessionID's return value.
 func TestRestoreProjectTool_ActorComesFromSession(t *testing.T) {
+	t.Parallel()
 	id := uuid.New()
 	fake := &fakeRestoreProjectStore{project: &db.Project{ID: id, Name: "p"}, tasksRestored: 0}
 	s := &Server{gtd: fake, sessionID: "session-identity-not-a-tool-arg"}

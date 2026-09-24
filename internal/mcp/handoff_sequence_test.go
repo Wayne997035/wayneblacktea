@@ -53,6 +53,7 @@ func handoffIDFromSetResponse(t *testing.T, r *mcpmsg.CallToolResult) string {
 // doc comment) but is included for fidelity to the real-world call order and
 // to confirm it introduces no side effect that would mask the bug.
 func TestHandoffFullSequence_BodySurvivesResolve_SQLite(t *testing.T) {
+	t.Parallel()
 	s := newTestResourceServer(t)
 
 	setR := callSetSessionHandoff(t, s, map[string]any{
@@ -109,6 +110,7 @@ func TestHandoffFullSequence_BodySurvivesResolve_SQLite(t *testing.T) {
 // this variant exercises the minimal essential sequence: set -> resolve ->
 // resource-read.
 func TestHandoffFullSequence_BodySurvivesResolve_Postgres(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}

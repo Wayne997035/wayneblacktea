@@ -256,6 +256,7 @@ var sessionHandoffValueFields = map[string]bool{
 //     added to the map; see sessionHandoffValueFields' own doc comment
 //     (round-5 二軍 finding C-5-1, reproduced as that finding's q12b probe).
 func TestSessionHandoffTypeConfinedToWhitelist(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("reading internal/mcp: %v", err)
