@@ -3,6 +3,7 @@ package gtd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -21,8 +22,14 @@ import (
 // The reference list comes from the FK constraint names migration 000026
 // dropped (`<table>_project_id_fkey`), plus knowledge_items.project_id which
 // arrived later in 000049: activity_log, decisions, knowledge_items,
-// session_handoffs, tasks, work_sessions. Adding a new project_id column
-// means adding a method here.
+// session_handoffs, tasks, work_sessions. vision_items.project_id (000029)
+// and procedural_memories.project_id (000032) were missed by this same
+// interface until a full-repo security review (DBI-FULL0923-01) caught them
+// and F191-01 fixed them — hand-written lists drift, which is exactly why
+// F191-02's machine-derived-from-schema test now exists, so the NEXT missed
+// column is caught mechanically instead of by the next review round. Adding
+// a new project_id column means adding a method here AND registering it (or
+// its documented exemption) in gtd.ProjectIDCleanupExemptions.
 //
 // Every cleanup is set-based over the whole project rather than a loop over
 // tasks: one statement per table instead of one per task, inside a single
@@ -58,6 +65,15 @@ type DeleteProjectAdapter interface {
 	NullifyKnowledgeItemProjectRefs(ctx context.Context) error
 	NullifySessionHandoffProjectRefs(ctx context.Context) error
 	NullifyWorkSessionProjectRefs(ctx context.Context) error
+	// NullifyVisionItemProjectRefs NULLs vision_items.project_id (migration
+	// 000029). [F191-01] — missed by this interface from the start; caught
+	// by a full-repo security review (DBI-FULL0923-01), not by re-reading
+	// the method list above. F191-02's machine-derived table list exists so
+	// the next such gap is caught mechanically instead.
+	NullifyVisionItemProjectRefs(ctx context.Context) error
+	// NullifyProceduralMemoryProjectRefs NULLs procedural_memories.project_id
+	// (migration 000032). [F191-01] Same gap, same discovery path.
+	NullifyProceduralMemoryProjectRefs(ctx context.Context) error
 
 	// --- the rows themselves ---
 
@@ -76,6 +92,26 @@ type DeleteProjectAdapter interface {
 	// database/sql.Tx treat a redundant Rollback as a no-op), so the
 	// orchestration defers it unconditionally.
 	Rollback(ctx context.Context)
+
+	// --- soft-delete contract stage (PR #191 fan-out, design 1-3): declared
+	// now so StoreIface's final shape is fixed, but NEITHER method is called
+	// by DeleteProjectOrchestration below yet. Wiring them in (snapshot
+	// first, right after CountTasks, before any cleanup — design 1) is
+	// F191-04/F191-06's job. Every production implementation MUST return
+	// ErrNotImplemented (or sqlite.ErrNotImplemented) — NEVER nil — so a
+	// caller cannot mistake "stubbed" for "nothing to snapshot". ---
+
+	// SnapshotProjectAndTasks copies the project row and every task row
+	// under it into deletion_tombstones (design 1/2), tagged with the given
+	// deletionID/deletedAt/deletedBy — all three generated ONCE by the
+	// orchestration layer (design 1) so every row in the group shares them.
+	SnapshotProjectAndTasks(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error
+
+	// WriteDeletionAuditLog writes one activity_log row (action
+	// "project_deleted") inside the same tx as the delete (design 3, P2(a)).
+	// notes MUST carry only the deletion id and task count — never a name or
+	// other stored text (design 3's redaction rule).
+	WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int) error
 }
 
 // DeleteProjectOrchestration deletes a project and all of its tasks, running
@@ -120,6 +156,8 @@ func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter Delet
 		{"nullify knowledge_items.project_id", adapter.NullifyKnowledgeItemProjectRefs},
 		{"nullify session_handoffs.project_id", adapter.NullifySessionHandoffProjectRefs},
 		{"nullify work_sessions.project_id", adapter.NullifyWorkSessionProjectRefs},
+		{"nullify vision_items.project_id", adapter.NullifyVisionItemProjectRefs},
+		{"nullify procedural_memories.project_id", adapter.NullifyProceduralMemoryProjectRefs},
 		{"delete task rows", adapter.DeleteTaskRows},
 		{"delete project row", adapter.DeleteProjectRow},
 	}

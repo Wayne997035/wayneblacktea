@@ -1440,8 +1440,10 @@ type txBeginner interface {
 // defence-in-depth. See DeleteTaskOrchestration (deletetask_orchestration.go)
 // for the shared control flow this delegates to.
 // DeleteProject deletes a project and every task under it, returning how many
-// tasks were removed.
-func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID) (int, error) {
+// tasks were removed. actor identifies who requested the delete — see
+// StoreIface.DeleteProject's doc comment for the contract-stage caveat
+// (accepted now, not yet consumed).
+func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
 	return DeleteProjectOrchestration(ctx, id, &pgDeleteProjectAdapter{s: s, id: id})
 }
 
@@ -1569,6 +1571,32 @@ func (a *pgDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Conte
 	return a.execByProject(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = $1`)
 }
 
+// NullifyVisionItemProjectRefs NULLs vision_items.project_id (migration
+// 000029). [F191-01]
+func (a *pgDeleteProjectAdapter) NullifyVisionItemProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE vision_items SET project_id = NULL WHERE project_id = $1`)
+}
+
+// NullifyProceduralMemoryProjectRefs NULLs procedural_memories.project_id
+// (migration 000032). [F191-01]
+func (a *pgDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = $1`)
+}
+
+// SnapshotProjectAndTasks is a soft-delete contract-stage stub (PR #191 fan-
+// out) — see DeleteProjectAdapter's doc comment. F191-04 implements the real
+// to_jsonb() snapshot INSERT.
+func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(context.Context, uuid.UUID, time.Time, string) error {
+	return fmt.Errorf("pg delete project adapter: SnapshotProjectAndTasks: %w", ErrNotImplemented)
+}
+
+// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
+// out) — see DeleteProjectAdapter's doc comment. F191-06 implements the real
+// activity_log insert.
+func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string, int) error {
+	return fmt.Errorf("pg delete project adapter: WriteDeletionAuditLog: %w", ErrNotImplemented)
+}
+
 func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
 	return a.execWorkspaceScoped(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
 }
@@ -1590,7 +1618,10 @@ func (a *pgDeleteProjectAdapter) Rollback(ctx context.Context) {
 	}
 }
 
-func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
+// DeleteTask permanently removes a task by ID. actor identifies who
+// requested the delete — see StoreIface.DeleteTask's doc comment for the
+// contract-stage caveat (accepted now, not yet consumed).
+func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
 	return DeleteTaskOrchestration(ctx, id, &pgDeleteTaskAdapter{s: s, id: id})
 }
 
@@ -1730,6 +1761,20 @@ func (a *pgDeleteTaskAdapter) Commit(ctx context.Context) error {
 
 func (a *pgDeleteTaskAdapter) Rollback(ctx context.Context) {
 	_ = a.tx.Rollback(ctx)
+}
+
+// SnapshotTask is a soft-delete contract-stage stub (PR #191 fan-out) — see
+// DeleteTaskAdapter's doc comment. F191-05 implements the real to_jsonb()
+// snapshot INSERT.
+func (a *pgDeleteTaskAdapter) SnapshotTask(context.Context, uuid.UUID, time.Time, string) error {
+	return fmt.Errorf("pg delete task adapter: SnapshotTask: %w", ErrNotImplemented)
+}
+
+// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
+// out) — see DeleteTaskAdapter's doc comment. F191-06 implements the real
+// activity_log insert.
+func (a *pgDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string) error {
+	return fmt.Errorf("pg delete task adapter: WriteDeletionAuditLog: %w", ErrNotImplemented)
 }
 
 // LatestActivityAt returns the created_at of the most-recent activity_log row,
@@ -1873,6 +1918,20 @@ func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, er
 		return 0, fmt.Errorf("pruning activity_log: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// RestoreProject is a soft-delete contract-stage stub (PR #191 fan-out) —
+// see StoreIface.RestoreProject's doc comment. F191-07 implements the real
+// tombstone-backed restore (design 4).
+func (s *Store) RestoreProject(context.Context, uuid.UUID, string) (*db.Project, int, error) {
+	return nil, 0, fmt.Errorf("pg store: RestoreProject: %w", ErrNotImplemented)
+}
+
+// PruneDeletionTombstones is a soft-delete contract-stage stub (PR #191
+// fan-out) — see StoreIface.PruneDeletionTombstones's doc comment. F191-08
+// implements the real 30-day retention sweep.
+func (s *Store) PruneDeletionTombstones(context.Context, time.Time) (int64, error) {
+	return 0, fmt.Errorf("pg store: PruneDeletionTombstones: %w", ErrNotImplemented)
 }
 
 // TopPendingTask returns the single highest-priority pending task in the

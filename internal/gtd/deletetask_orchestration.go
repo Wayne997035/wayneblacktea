@@ -3,6 +3,7 @@ package gtd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -80,6 +81,24 @@ type DeleteTaskAdapter interface {
 	// from that rollback is swallowed, mirroring BeginTaskOrchestration's
 	// unconditional-defer shape.
 	Rollback(ctx context.Context)
+
+	// --- soft-delete contract stage (PR #191 fan-out, design 1-3): declared
+	// now so StoreIface's final shape is fixed, but NEITHER method is called
+	// by DeleteTaskOrchestration below yet — see DeleteProjectAdapter's
+	// twin methods for the full rationale. Wiring them in is F191-05/
+	// F191-06's job. Every production implementation MUST return
+	// ErrNotImplemented (or sqlite.ErrNotImplemented) — NEVER nil. ---
+
+	// SnapshotTask copies the task row into deletion_tombstones (design
+	// 1/2), tagged with the given deletionID/deletedAt/deletedBy — all three
+	// generated ONCE by the orchestration layer (design 1).
+	SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error
+
+	// WriteDeletionAuditLog writes one activity_log row (action
+	// "task_deleted") inside the same tx as the delete (design 3, P2(a)).
+	// notes MUST carry only the deletion id — never a title or other stored
+	// text (design 3's redaction rule).
+	WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string) error
 }
 
 // DeleteTaskOrchestration runs the dialect-agnostic DeleteTask control flow

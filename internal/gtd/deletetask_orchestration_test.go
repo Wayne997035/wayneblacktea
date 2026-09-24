@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -92,6 +93,21 @@ func (f *fakeDeleteTaskAdapter) Commit(context.Context) error {
 
 func (f *fakeDeleteTaskAdapter) Rollback(context.Context) {
 	f.calls = append(f.calls, "Rollback")
+}
+
+// SnapshotTask / WriteDeletionAuditLog are the soft-delete contract-stage
+// additions (PR #191 fan-out) — declared on the interface but NOT called by
+// DeleteTaskOrchestration yet, so these never appear in f.calls. They exist
+// only so this fake keeps satisfying gtd.DeleteTaskAdapter once F191-05/
+// F191-06 wire the real methods in.
+func (f *fakeDeleteTaskAdapter) SnapshotTask(context.Context, uuid.UUID, time.Time, string) error {
+	f.calls = append(f.calls, "SnapshotTask")
+	return nil
+}
+
+func (f *fakeDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string) error {
+	f.calls = append(f.calls, "WriteDeletionAuditLog")
+	return nil
 }
 
 // wantStepPrefix asserts err carries the uniform "delete task <id>: <step>: "

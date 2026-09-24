@@ -334,6 +334,15 @@ var expectedNewEntries = map[string]bool{
 	"table|task_areas":            true,
 	"index|idx_tasks_area_status": true,
 
+	// migrations/sqlite/000080_deletion_tombstones.up.sql (F191-03): the
+	// soft-delete contract's snapshot table and its three indexes. Net-new
+	// versus the frozen golden baseline — nothing writes to this table yet
+	// in this PR (see the migration file's own header comment).
+	"table|deletion_tombstones":                        true,
+	"index|idx_deletion_tombstones_project_deleted_at": true,
+	"index|idx_deletion_tombstones_deleted_at":         true,
+	"index|idx_deletion_tombstones_deletion_id":        true,
+
 	// migrations/sqlite/000074_outcomes_supersession.up.sql (arch-r2 A13,
 	// decision 80c1e8ae, outcome lifecycle convergence): one brand-new
 	// index on the outcomes table, added after the legacy schema.sql

@@ -165,11 +165,40 @@ type StoreIface interface {
 	UpdateGoal(ctx context.Context, id uuid.UUID, p UpdateGoalParams) (*db.Goal, error)
 	// UpdateProject performs a full update of a project, replacing all mutable fields.
 	UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error)
-	DeleteTask(ctx context.Context, id uuid.UUID) error
+	// DeleteTask deletes a task by id. actor identifies who requested the
+	// delete (the MCP handler's auditSessionID — see backend-security-
+	// design.md §2.1: never a caller-supplied tool argument). Contract stage
+	// (PR #191 fan-out): actor is accepted now so the interface's final
+	// shape is fixed, but is not yet consumed — the delete transaction does
+	// not write a tombstone snapshot or an activity_log audit row until
+	// F191-05/F191-06 wire DeleteTaskAdapter's new Snapshot/
+	// WriteDeletionAuditLog methods into DeleteTaskOrchestration's step
+	// list.
+	DeleteTask(ctx context.Context, id uuid.UUID, actor string) error
 	// DeleteProject deletes a project together with every task under it and
 	// returns how many tasks were removed. A project that does not exist in
-	// the configured workspace is a no-op returning 0, not an error.
-	DeleteProject(ctx context.Context, id uuid.UUID) (int, error)
+	// the configured workspace is a no-op returning 0, not an error. actor
+	// has the same contract-stage caveat as DeleteTask's.
+	DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error)
+	// RestoreProject reverses the most recent delete_project for id within
+	// the 30-day retention window (design 4), returning the restored
+	// project and how many tasks were written back. actor identifies who
+	// requested the restore, same provenance contract as DeleteTask's.
+	//
+	// Contract stage (PR #191 fan-out): every implementation returns
+	// ErrNotImplemented — NEVER nil — until F191-07 lands the real
+	// tombstone-backed restore. Callers MUST use errors.Is(err,
+	// ErrNotImplemented) rather than assuming a nil error means "restored".
+	RestoreProject(ctx context.Context, id uuid.UUID, actor string) (project *db.Project, tasksRestored int, err error)
+	// PruneDeletionTombstones hard-deletes deletion_tombstones rows (and
+	// every row sharing their deletion_id) older than cutoff. Global cleanup
+	// (no workspace filter), mirroring PruneOlderThan's activity_log
+	// contract — called daily by the scheduler to enforce the 30-day
+	// retention window (design 6, decision 17a1086b).
+	//
+	// Contract stage: every implementation returns ErrNotImplemented until
+	// F191-08 wires the real pruner.
+	PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error)
 	WeeklyProgress(ctx context.Context) (completed, total int64, err error)
 	// AddChecklistItem appends a new ChecklistItem to the task's checklist and
 	// returns the full updated slice. The item's ID is generated server-side.

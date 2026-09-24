@@ -260,12 +260,20 @@ func (m *mockClassifyGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ g
 	return nil, errMockNotImpl
 }
 
-func (m *mockClassifyGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error {
+func (m *mockClassifyGTDStore) DeleteTask(_ context.Context, _ uuid.UUID, _ string) error {
 	return errMockNotImpl
 }
 
-func (m *mockClassifyGTDStore) DeleteProject(_ context.Context, _ uuid.UUID) (int, error) {
+func (m *mockClassifyGTDStore) DeleteProject(_ context.Context, _ uuid.UUID, _ string) (int, error) {
 	return 0, errMockNotImpl
+}
+
+func (m *mockClassifyGTDStore) RestoreProject(_ context.Context, _ uuid.UUID, _ string) (*db.Project, int, error) {
+	return nil, 0, gtd.ErrNotImplemented
+}
+
+func (m *mockClassifyGTDStore) PruneDeletionTombstones(_ context.Context, _ time.Time) (int64, error) {
+	return 0, gtd.ErrNotImplemented
 }
 
 func (m *mockClassifyGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) {

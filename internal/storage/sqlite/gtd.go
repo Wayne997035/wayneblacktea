@@ -1207,6 +1207,20 @@ func (s *GTDStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64,
 	return n, nil
 }
 
+// RestoreProject is a soft-delete contract-stage stub (PR #191 fan-out) —
+// see gtd.StoreIface.RestoreProject's doc comment. F191-07 implements the
+// real tombstone-backed restore (design 4).
+func (s *GTDStore) RestoreProject(context.Context, uuid.UUID, string) (*db.Project, int, error) {
+	return nil, 0, errWrap("RestoreProject", ErrNotImplemented)
+}
+
+// PruneDeletionTombstones is a soft-delete contract-stage stub (PR #191
+// fan-out) — see gtd.StoreIface.PruneDeletionTombstones's doc comment.
+// F191-08 implements the real 30-day retention sweep.
+func (s *GTDStore) PruneDeletionTombstones(context.Context, time.Time) (int64, error) {
+	return 0, errWrap("PruneDeletionTombstones", ErrNotImplemented)
+}
+
 // LogActivity records an activity log entry. project may be nil.
 func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
 	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
@@ -1757,7 +1771,9 @@ func (s *GTDStore) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status
 // workspace filter is now redundant defence-in-depth. See
 // gtd.DeleteTaskOrchestration (internal/gtd/deletetask_orchestration.go) for
 // the shared control flow this delegates to.
-func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
+// actor identifies who requested the delete — see gtd.StoreIface.DeleteTask's
+// doc comment for the contract-stage caveat (accepted now, not yet consumed).
+func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
 	if err := gtd.DeleteTaskOrchestration(ctx, id, &sqliteDeleteTaskAdapter{s: s, id: id}); err != nil {
 		return fmt.Errorf("%w", err) // context already added by DeleteTaskOrchestration
 	}
@@ -1907,11 +1923,26 @@ func (a *sqliteDeleteTaskAdapter) Rollback(context.Context) {
 	_ = a.tx.Rollback()
 }
 
+// SnapshotTask is a soft-delete contract-stage stub (PR #191 fan-out) — see
+// gtd.DeleteTaskAdapter's doc comment. F191-05 implements the real
+// json_object() snapshot INSERT.
+func (a *sqliteDeleteTaskAdapter) SnapshotTask(context.Context, uuid.UUID, time.Time, string) error {
+	return errWrap("SnapshotTask", ErrNotImplemented)
+}
+
+// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
+// out) — see gtd.DeleteTaskAdapter's doc comment. F191-06 implements the
+// real activity_log insert.
+func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string) error {
+	return errWrap("WriteDeletionAuditLog", ErrNotImplemented)
+}
+
 // DeleteProject deletes a project together with every task under it and
 // returns how many tasks were removed. SQLite twin of gtd.Store.DeleteProject;
 // both drive the same gtd.DeleteProjectOrchestration, so the two backends
-// cannot clean different sets of references.
-func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID) (int, error) {
+// cannot clean different sets of references. actor has the same
+// contract-stage caveat as DeleteTask's.
+func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
 	n, err := gtd.DeleteProjectOrchestration(ctx, id, &sqliteDeleteProjectAdapter{s: s, id: id})
 	if err != nil {
 		return 0, fmt.Errorf("%w", err) // context already added by DeleteProjectOrchestration
@@ -2041,6 +2072,32 @@ func (a *sqliteDeleteProjectAdapter) NullifySessionHandoffProjectRefs(ctx contex
 
 func (a *sqliteDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Context) error {
 	return a.execByProject(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = ?1`)
+}
+
+// NullifyVisionItemProjectRefs NULLs vision_items.project_id (migration
+// 000029, SQLite twin). [F191-01]
+func (a *sqliteDeleteProjectAdapter) NullifyVisionItemProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE vision_items SET project_id = NULL WHERE project_id = ?1`)
+}
+
+// NullifyProceduralMemoryProjectRefs NULLs procedural_memories.project_id
+// (migration 000032, SQLite twin). [F191-01]
+func (a *sqliteDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = ?1`)
+}
+
+// SnapshotProjectAndTasks is a soft-delete contract-stage stub (PR #191 fan-
+// out) — see gtd.DeleteProjectAdapter's doc comment. F191-04 implements the
+// real json_object() snapshot INSERT.
+func (a *sqliteDeleteProjectAdapter) SnapshotProjectAndTasks(context.Context, uuid.UUID, time.Time, string) error {
+	return errWrap("SnapshotProjectAndTasks", ErrNotImplemented)
+}
+
+// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
+// out) — see gtd.DeleteProjectAdapter's doc comment. F191-06 implements the
+// real activity_log insert.
+func (a *sqliteDeleteProjectAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string, int) error {
+	return errWrap("WriteDeletionAuditLog", ErrNotImplemented)
 }
 
 func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {

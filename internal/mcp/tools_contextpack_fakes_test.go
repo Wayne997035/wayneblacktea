@@ -174,9 +174,17 @@ func (noopGTDStore) UpdateGoal(context.Context, uuid.UUID, gtd.UpdateGoalParams)
 func (noopGTDStore) UpdateProject(context.Context, uuid.UUID, gtd.UpdateProjectParams) (*db.Project, error) {
 	return nil, nil
 }
-func (noopGTDStore) DeleteTask(context.Context, uuid.UUID) error { return nil }
-func (noopGTDStore) DeleteProject(context.Context, uuid.UUID) (int, error) {
+func (noopGTDStore) DeleteTask(context.Context, uuid.UUID, string) error { return nil }
+func (noopGTDStore) DeleteProject(context.Context, uuid.UUID, string) (int, error) {
 	return 0, nil
+}
+
+func (noopGTDStore) RestoreProject(context.Context, uuid.UUID, string) (*db.Project, int, error) {
+	return nil, 0, gtd.ErrNotImplemented
+}
+
+func (noopGTDStore) PruneDeletionTombstones(context.Context, time.Time) (int64, error) {
+	return 0, gtd.ErrNotImplemented
 }
 func (noopGTDStore) WeeklyProgress(context.Context) (int64, int64, error) { return 0, 0, nil }
 func (noopGTDStore) PruneOlderThan(context.Context, time.Time) (int64, error) {

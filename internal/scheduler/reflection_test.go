@@ -96,9 +96,17 @@ func (s *stubGTDStore) UpdateGoal(_ context.Context, _ uuid.UUID, _ gtd.UpdateGo
 func (s *stubGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.UpdateProjectParams) (*db.Project, error) {
 	return nil, nil
 }
-func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID) error { return nil }
-func (s *stubGTDStore) DeleteProject(_ context.Context, _ uuid.UUID) (int, error) {
+func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID, _ string) error { return nil }
+func (s *stubGTDStore) DeleteProject(_ context.Context, _ uuid.UUID, _ string) (int, error) {
 	return 0, nil
+}
+
+func (s *stubGTDStore) RestoreProject(_ context.Context, _ uuid.UUID, _ string) (*db.Project, int, error) {
+	return nil, 0, gtd.ErrNotImplemented
+}
+
+func (s *stubGTDStore) PruneDeletionTombstones(_ context.Context, _ time.Time) (int64, error) {
+	return 0, gtd.ErrNotImplemented
 }
 func (s *stubGTDStore) WeeklyProgress(_ context.Context) (int64, int64, error) { return 0, 0, nil }
 func (s *stubGTDStore) TopPendingTask(_ context.Context) (*db.Task, error)     { return nil, nil }

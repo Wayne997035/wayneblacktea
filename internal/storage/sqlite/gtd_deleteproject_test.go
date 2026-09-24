@@ -2,7 +2,9 @@ package sqlite_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -45,12 +47,22 @@ var (
 		"knowledge_items":  `SELECT count(*) FROM knowledge_items WHERE project_id = ?1`,
 		"session_handoffs": `SELECT count(*) FROM session_handoffs WHERE project_id = ?1`,
 		"work_sessions":    `SELECT count(*) FROM work_sessions WHERE project_id = ?1`,
+		// [F191-01] vision_items.project_id and procedural_memories.project_id
+		// were missed by DeleteProjectAdapter from the start — caught by a
+		// full-repo security review (DBI-FULL0923-01), not by re-reading the
+		// hand-written reference list above these two entries were added to.
+		// F191-02's machine-derived table list exists so the next such gap
+		// is caught mechanically instead.
+		"vision_items":        `SELECT count(*) FROM vision_items WHERE project_id = ?1`,
+		"procedural_memories": `SELECT count(*) FROM procedural_memories WHERE project_id = ?1`,
 	}
 	rowCountQueries = map[string]string{
-		"decisions":        `SELECT count(*) FROM decisions`,
-		"activity_log":     `SELECT count(*) FROM activity_log`,
-		"session_handoffs": `SELECT count(*) FROM session_handoffs`,
-		"work_sessions":    `SELECT count(*) FROM work_sessions`,
+		"decisions":           `SELECT count(*) FROM decisions`,
+		"activity_log":        `SELECT count(*) FROM activity_log`,
+		"session_handoffs":    `SELECT count(*) FROM session_handoffs`,
+		"work_sessions":       `SELECT count(*) FROM work_sessions`,
+		"vision_items":        `SELECT count(*) FROM vision_items`,
+		"procedural_memories": `SELECT count(*) FROM procedural_memories`,
 	}
 )
 
@@ -103,6 +115,21 @@ func seedProjectReferences(t *testing.T, d *sqlite.DB, projectID uuid.UUID, task
 		`INSERT INTO session_handoffs (id, workspace_id, repo_name, project_id, intent, created_at)
 		 VALUES (?1,?2,'demo-repo',?3,'wrap up',?4)`,
 		uuid.New().String(), uuid.New().String(), projectID.String(), dpTS)
+
+	// [F191-01] vision_items.project_id and procedural_memories.project_id:
+	// the two references delete_project silently left dangling until this
+	// fix. why_blocked is vision_items' own NOT NULL column, unrelated to
+	// promoted_task_id (a separate reference, already cleaned by the
+	// pre-existing ResetPromotedVisionItems and not exercised here).
+	mustExec(t, d, "vision_item",
+		`INSERT INTO vision_items (id, workspace_id, project_id, title, why_blocked, created_at)
+		 VALUES (?1,?2,?3,'v','blocked on x',?4)`,
+		uuid.New().String(), uuid.New().String(), projectID.String(), dpTS)
+
+	mustExec(t, d, "procedural_memory",
+		`INSERT INTO procedural_memories (id, workspace_id, project_id, title, created_at)
+		 VALUES (?1,?2,?3,'pm',?4)`,
+		uuid.New().String(), uuid.New().String(), projectID.String(), dpTS)
 }
 
 // TestGTDStore_DeleteProject_RemovesTasksAndClearsEveryReference is the
@@ -151,7 +178,7 @@ func TestGTDStore_DeleteProject_RemovesTasksAndClearsEveryReference(t *testing.T
 
 	seedProjectReferences(t, d, doomed.ID, doomedTasks)
 
-	deleted, err := store.DeleteProject(ctx, doomed.ID)
+	deleted, err := store.DeleteProject(ctx, doomed.ID, "tester")
 	if err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
@@ -234,7 +261,7 @@ func TestGTDStore_DeleteProject_UnknownProjectIsNoOp(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	n, err := store.DeleteProject(ctx, uuid.New())
+	n, err := store.DeleteProject(ctx, uuid.New(), "tester")
 	if err != nil {
 		t.Fatalf("deleting an unknown project must not error, got %v", err)
 	}
@@ -297,7 +324,7 @@ func TestGTDStore_DeleteProject_OtherWorkspaceIsNoOp(t *testing.T) {
 	// A store scoped to a different workspace, over the same database file.
 	storeB := sqlite.NewGTDStore(dB)
 
-	n, err := storeB.DeleteProject(ctx, p.ID)
+	n, err := storeB.DeleteProject(ctx, p.ID, "tester")
 	if err != nil {
 		t.Fatalf("cross-workspace delete must be a quiet no-op, got error %v", err)
 	}
@@ -320,7 +347,7 @@ func TestGTDStore_DeleteProject_OtherWorkspaceIsNoOp(t *testing.T) {
 	// Positive control: the same call from the OWNING workspace must work,
 	// or the assertions above would also pass with a DeleteProject that
 	// never deletes anything at all.
-	n, err = storeA.DeleteProject(ctx, p.ID)
+	n, err = storeA.DeleteProject(ctx, p.ID, "tester")
 	if err != nil {
 		t.Fatalf("owning workspace DeleteProject: %v", err)
 	}
@@ -330,4 +357,224 @@ func TestGTDStore_DeleteProject_OtherWorkspaceIsNoOp(t *testing.T) {
 	if got := countRows(t, dA, `SELECT count(*) FROM projects WHERE id = ?1`, p.ID.String()); got != 0 {
 		t.Error("the owning workspace could not delete its own project — the probe above proves nothing")
 	}
+}
+
+// projectIDCheckQueries [F191-02] extends projectRefQueries (above, used by
+// the F191-01 test) with the one project_id-bearing table it doesn't cover:
+// tasks itself. tasks.project_id is never NULLed — the whole row is removed
+// by DeleteTaskRows — but "count of rows with project_id = the deleted id"
+// is 0 either way, so the same check applies uniformly. Built from
+// projectRefQueries rather than duplicating its literals, so this list is
+// stored once.
+var projectIDCheckQueries = func() map[string]string {
+	m := map[string]string{"tasks": `SELECT count(*) FROM tasks WHERE project_id = ?1`}
+	for table, q := range projectRefQueries {
+		m[table] = q
+	}
+	return m
+}()
+
+// projectIDSeedStatements [F191-02] inserts one row into the given table
+// with project_id = the doomed project's id. tasks is deliberately absent —
+// it needs store.CreateTask's defaults (status, priority) rather than a bare
+// INSERT, so the test loop special-cases it instead of duplicating that
+// machinery here. Every statement below shares the same 4-argument shape
+// (id, workspace_id, project_id, created_at) so the test loop can call them
+// uniformly; written out per table (not built by concatenation) for the same
+// unqueryvet reason projectRefQueries is.
+var projectIDSeedStatements = map[string]string{
+	"activity_log": `INSERT INTO activity_log (id, workspace_id, actor, action, project_id, notes, created_at)
+		VALUES (?1,?2,'tester','deleted',?3,'note',?4)`,
+	"decisions": `INSERT INTO decisions (id, workspace_id, title, context, decision, rationale, project_id, created_at)
+		VALUES (?1,?2,'d','ctx','chose X','because',?3,?4)`,
+	"knowledge_items": `INSERT INTO knowledge_items (id, workspace_id, type, title, content, project_id, created_at, updated_at)
+		VALUES (?1,?2,'til','k','body',?3,?4,?4)`,
+	"procedural_memories": `INSERT INTO procedural_memories (id, workspace_id, project_id, title, created_at)
+		VALUES (?1,?2,?3,'pm',?4)`,
+	"session_handoffs": `INSERT INTO session_handoffs (id, workspace_id, repo_name, project_id, intent, created_at)
+		VALUES (?1,?2,'demo-repo',?3,'wrap up',?4)`,
+	"vision_items": `INSERT INTO vision_items (id, workspace_id, project_id, title, why_blocked, created_at)
+		VALUES (?1,?2,?3,'v','blocked',?4)`,
+	"work_sessions": `INSERT INTO work_sessions
+		(id, workspace_id, repo_name, project_id, title, goal, status, source,
+		 confirmed_plan_id, current_task_id, started_at, created_at, updated_at)
+		VALUES (?1,?2,'demo-repo',?3,'s','g','in_progress','manual',NULL,NULL,?4,?4,?4)`,
+}
+
+// deriveProjectIDTables [F191-02] mechanically walks the migrated schema —
+// sqlite_master for the table list, pragma_table_info(?1) (a table-valued
+// function; accepts a bound parameter, so no SQL is ever built by string
+// concatenation) for each table's columns — and returns every table with a
+// project_id column, minus gtd.ProjectIDCleanupExemptions (design 8), sorted.
+// This is deliberately NOT read from golden_schema_test.go's frozen snapshot
+// or schema.sql: both are stale by construction (see the dispatch ticket's
+// own note that schema.sql lists three tables that don't actually have a
+// project_id column in the real migrated schema).
+func deriveProjectIDTables(t *testing.T, d *sqlite.DB) []string {
+	t.Helper()
+	ctx := context.Background()
+	conn := d.SqlConn()
+
+	rows, err := conn.QueryContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'`)
+	if err != nil {
+		t.Fatalf("list tables from sqlite_master: %v", err)
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate sqlite_master rows: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close sqlite_master rows: %v", err)
+	}
+
+	var out []string
+	for _, tbl := range tables {
+		if gtd.ProjectIDCleanupExemptions[tbl] {
+			continue
+		}
+		var n int
+		if err := conn.QueryRowContext(
+			ctx,
+			`SELECT count(*) FROM pragma_table_info(?1) WHERE name = 'project_id'`, tbl,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info(%s): %v", tbl, err)
+		}
+		if n > 0 {
+			out = append(out, tbl)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedKeys returns the sorted keys of a map[string]string.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// tableListDiff compares two SORTED string slices and returns a human-
+// readable description of any difference, or "" if they match exactly.
+// Symmetric: reports entries in derived-but-not-registered AND registered-
+// but-not-derived, since both are bugs — a table gone unchecked, or a check
+// for a table that no longer has a project_id column.
+func tableListDiff(derived, registered []string) string {
+	derivedSet := make(map[string]bool, len(derived))
+	for _, d := range derived {
+		derivedSet[d] = true
+	}
+	registeredSet := make(map[string]bool, len(registered))
+	for _, r := range registered {
+		registeredSet[r] = true
+	}
+
+	var missing, extra []string
+	for _, d := range derived {
+		if !registeredSet[d] {
+			missing = append(missing, d)
+		}
+	}
+	for _, r := range registered {
+		if !derivedSet[r] {
+			extra = append(extra, r)
+		}
+	}
+	if len(missing) == 0 && len(extra) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("missing from registered=%v extra in registered=%v", missing, extra)
+}
+
+// TestDeleteProject_ClearsEveryProjectIDTableFromMigratedSchema is F191-02's
+// SQLite half. Unlike TestGTDStore_DeleteProject_RemovesTasksAndClearsEvery
+// Reference above (which seeds a hand-picked list of tables), the table list
+// this test checks comes from the migrated schema itself. The same gap class
+// that let vision_items/procedural_memories go uncleaned until F191-01 (and
+// task_id before that, #188) cannot recur here without this test itself
+// going red, because the list it checks IS the schema — see the
+// reverse_control subtest for proof that claim actually holds.
+func TestDeleteProject_ClearsEveryProjectIDTableFromMigratedSchema(t *testing.T) {
+	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := sqlite.NewGTDStore(d)
+	ctx := context.Background()
+
+	derived := deriveProjectIDTables(t, d)
+
+	// Completeness check: every derived table must have a literal check
+	// query AND seed statement registered, or a table with a project_id
+	// column could go entirely unchecked by this test without anyone
+	// noticing — this is the property the reverse-control subtest exercises.
+	if diff := tableListDiff(derived, sortedKeys(projectIDCheckQueries)); diff != "" {
+		t.Fatalf("projectIDCheckQueries is out of sync with the migrated schema "+
+			"(mechanically derived, minus gtd.ProjectIDCleanupExemptions): %s — register a literal "+
+			"query for the missing table, or add it to gtd.ProjectIDCleanupExemptions with a reason", diff)
+	}
+	seedRegistered := append(sortedKeys(projectIDSeedStatements), "tasks") // tasks is special-cased below
+	sort.Strings(seedRegistered)
+	if diff := tableListDiff(derived, seedRegistered); diff != "" {
+		t.Fatalf("projectIDSeedStatements is out of sync with the migrated schema: %s", diff)
+	}
+
+	doomed, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-02-doomed", Title: "Doomed"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	for _, tbl := range derived {
+		if tbl == "tasks" {
+			if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &doomed.ID, Title: "t"}); err != nil {
+				t.Fatalf("CreateTask (seeding tasks.project_id): %v", err)
+			}
+			continue
+		}
+		q, ok := projectIDSeedStatements[tbl]
+		if !ok {
+			t.Fatalf("no seed statement registered for table %q — the completeness check above should "+
+				"have already caught this", tbl)
+		}
+		mustExec(t, d, tbl, q, uuid.New().String(), uuid.New().String(), doomed.ID.String(), dpTS)
+	}
+
+	if _, err := store.DeleteProject(ctx, doomed.ID, "tester"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	for _, tbl := range derived {
+		if n := countRows(t, d, projectIDCheckQueries[tbl], doomed.ID.String()); n != 0 {
+			t.Errorf("%s.project_id: %d dangling reference(s) to the deleted project", tbl, n)
+		}
+	}
+
+	// reverse_control_skipped_table_turns_red proves the completeness check
+	// above actually has teeth: simulate a registered-table list that is one
+	// entry short of the real, schema-derived list (the exact failure mode
+	// #188 and #189/F191-01 both were — a hand-maintained list silently
+	// missing a table) and confirm tableListDiff reports it rather than
+	// passing.
+	t.Run("reverse_control_skipped_table_turns_red", func(t *testing.T) {
+		if len(derived) == 0 {
+			t.Fatal("derived list is empty — nothing to drop, probe is meaningless")
+		}
+		short := append([]string(nil), derived[1:]...)
+		if diff := tableListDiff(derived, short); diff == "" {
+			t.Fatal("dropping a table from the registered list produced no diff — " +
+				"the completeness check cannot catch a table that a real implementation forgot to register")
+		}
+	})
 }

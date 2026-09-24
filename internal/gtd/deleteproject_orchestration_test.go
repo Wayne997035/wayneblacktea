@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -105,6 +106,27 @@ func (f *fakeDeleteProjectAdapter) NullifyWorkSessionProjectRefs(context.Context
 	return f.record("NullifyWorkSessionProjectRefs")
 }
 
+func (f *fakeDeleteProjectAdapter) NullifyVisionItemProjectRefs(context.Context) error {
+	return f.record("NullifyVisionItemProjectRefs")
+}
+
+func (f *fakeDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(context.Context) error {
+	return f.record("NullifyProceduralMemoryProjectRefs")
+}
+
+// SnapshotProjectAndTasks / WriteDeletionAuditLog are the soft-delete
+// contract-stage additions (PR #191 fan-out) — declared on the interface but
+// NOT called by DeleteProjectOrchestration yet, so these never appear in
+// f.calls. They exist only so this fake keeps satisfying
+// gtd.DeleteProjectAdapter once F191-04/F191-06 wire the real methods in.
+func (f *fakeDeleteProjectAdapter) SnapshotProjectAndTasks(context.Context, uuid.UUID, time.Time, string) error {
+	return f.record("SnapshotProjectAndTasks")
+}
+
+func (f *fakeDeleteProjectAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string, int) error {
+	return f.record("WriteDeletionAuditLog")
+}
+
 func (f *fakeDeleteProjectAdapter) DeleteTaskRows(context.Context) error {
 	return f.record("DeleteTaskRows")
 }
@@ -145,6 +167,8 @@ var happyPathCalls = []string{
 	"NullifyKnowledgeItemProjectRefs",
 	"NullifySessionHandoffProjectRefs",
 	"NullifyWorkSessionProjectRefs",
+	"NullifyVisionItemProjectRefs",
+	"NullifyProceduralMemoryProjectRefs",
 	"DeleteTaskRows",
 	"DeleteProjectRow",
 	callCommit,
@@ -278,6 +302,8 @@ func TestDeleteProjectOrchestration_StepFailureStopsAndRollsBack(t *testing.T) {
 		"NullifyKnowledgeItemProjectRefs",
 		"NullifySessionHandoffProjectRefs",
 		"NullifyWorkSessionProjectRefs",
+		"NullifyVisionItemProjectRefs",
+		"NullifyProceduralMemoryProjectRefs",
 		"DeleteTaskRows",
 		"DeleteProjectRow",
 	}

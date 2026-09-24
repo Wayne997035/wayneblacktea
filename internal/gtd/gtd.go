@@ -68,7 +68,33 @@ var (
 	// caller (CLI, reconcile, future integrations) that writes projects
 	// directly through the store.
 	ErrInvalidRepoName = errors.New("gtd: repo_name must match [a-zA-Z0-9_.-]{1,100}")
+	// ErrNotImplemented is returned by soft-delete contract-stage stubs
+	// (PR #191: RestoreProject, PruneDeletionTombstones, and the
+	// DeleteProjectAdapter/DeleteTaskAdapter snapshot + audit methods) whose
+	// real implementation lands in later commits in this same PR. Test for
+	// it with errors.Is. Mirrors sqlite.ErrNotImplemented's contract in the
+	// other backend.
+	ErrNotImplemented = errors.New("gtd: not yet implemented")
 )
+
+// ProjectIDCleanupExemptions is the sole, machine-checked exception list to
+// "every table with a project_id column must be cleaned by delete_project"
+// (F191-02). A table belongs here only when its project_id records the
+// deletion mechanism's OWN history — "which project got deleted" — rather
+// than "which project this row belongs to". Everything else is a real
+// reference and delete_project MUST clean it; two of those (vision_items,
+// procedural_memories) were missed for that reason before F191-01.
+//
+// This is the ONLY place this list may be edited from. Both backends'
+// F191-02 tests read it — never hand-copy it into a test file — so an
+// omission here fails loudly instead of silently passing a narrower check.
+var ProjectIDCleanupExemptions = map[string]bool{
+	// deletion_tombstones.project_id (migration 000080) records which
+	// project a snapshot row belonged to at delete time. Clearing it on
+	// delete_project would erase the very value restore_project's lookup
+	// needs (design 4) — the opposite of what this table exists to do.
+	"deletion_tombstones": true,
+}
 
 // CreateProjectParams holds parameters for creating a new project.
 type CreateProjectParams struct {
