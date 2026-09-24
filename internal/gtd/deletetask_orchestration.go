@@ -82,12 +82,13 @@ type DeleteTaskAdapter interface {
 	// unconditional-defer shape.
 	Rollback(ctx context.Context)
 
-	// --- soft-delete contract stage (PR #191 fan-out, design 1-3): declared
-	// now so StoreIface's final shape is fixed, but NEITHER method is called
-	// by DeleteTaskOrchestration below yet — see DeleteProjectAdapter's
-	// twin methods for the full rationale. Wiring them in is F191-05/
-	// F191-06's job. Every production implementation MUST return
-	// ErrNotImplemented (or sqlite.ErrNotImplemented) — NEVER nil. ---
+	// --- soft-delete snapshot + audit (design 1-3): SnapshotTask is called
+	// first, right after the workspace pre-check and before any cleanup
+	// step below — see DeleteProjectAdapter's twin methods for the full
+	// rationale. WriteDeletionAuditLog is called last, immediately before
+	// Commit, so a failed audit write rolls back the whole delete rather
+	// than leaving one with no record of who did it. See
+	// DeleteTaskOrchestration below for the call sites. ---
 
 	// SnapshotTask copies the task row into deletion_tombstones (design
 	// 1/2), tagged with the given deletionID/deletedAt/deletedBy — all three

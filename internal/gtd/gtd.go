@@ -68,11 +68,12 @@ var (
 	// caller (CLI, reconcile, future integrations) that writes projects
 	// directly through the store.
 	ErrInvalidRepoName = errors.New("gtd: repo_name must match [a-zA-Z0-9_.-]{1,100}")
-	// ErrNotImplemented is returned by soft-delete contract-stage stubs
-	// (PR #191: RestoreProject, PruneDeletionTombstones, and the
-	// DeleteProjectAdapter/DeleteTaskAdapter snapshot + audit methods) whose
-	// real implementation lands in later commits in this same PR. Test for
-	// it with errors.Is. Mirrors sqlite.ErrNotImplemented's contract in the
+	// ErrNotImplemented is a sentinel used by test fakes to simulate a
+	// storage-layer error that is neither ErrNotFound nor ErrConflict — see
+	// TestRestoreProjectTool_NotImplementedIsAnError, which uses it to prove
+	// an uncategorised store error is reported as an error, never silently
+	// translated into success or into the not-found response. No production
+	// code path returns it. Mirrors sqlite.ErrNotImplemented's role in the
 	// other backend.
 	ErrNotImplemented = errors.New("gtd: not yet implemented")
 )

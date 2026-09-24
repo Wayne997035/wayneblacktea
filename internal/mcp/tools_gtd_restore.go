@@ -26,12 +26,10 @@ import (
 // that could carry one.
 //
 // Error translation: gtd.ErrNotFound and gtd.ErrConflict get caller-facing,
-// non-echoing messages; every other error — including the contract-stage
-// gtd.ErrNotImplemented stub (see RestoreProject's doc comment in
-// internal/gtd/iface.go, cleared once the storage-layer PR in this same
-// fan-out lands) — falls through to storeErrorResult, which is still an
-// error result, never translated into success or into the not-found
-// message above it.
+// non-echoing messages; every other error — including the test-only
+// gtd.ErrNotImplemented sentinel (see its doc comment in internal/gtd/gtd.go)
+// — falls through to storeErrorResult, which is still an error result,
+// never translated into success or into the not-found message above it.
 func (s *Server) handleRestoreProject(ctx context.Context, args RestoreProjectArgs) (*mcp.CallToolResult, error) {
 	id := args.ProjectID
 	actor := s.auditSessionID(ctx)

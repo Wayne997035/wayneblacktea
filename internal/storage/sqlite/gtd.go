@@ -1932,8 +1932,8 @@ func (s *GTDStore) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status
 // workspace filter is now redundant defence-in-depth. See
 // gtd.DeleteTaskOrchestration (internal/gtd/deletetask_orchestration.go) for
 // the shared control flow this delegates to.
-// actor identifies who requested the delete — see gtd.StoreIface.DeleteTask's
-// doc comment for the contract-stage caveat (accepted now, not yet consumed).
+// actor identifies who requested the delete and is written into the
+// activity_log audit row this call produces (see gtd.DeleteTaskOrchestration).
 func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
 	if err := gtd.DeleteTaskOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteTaskAdapter{s: s, id: id}); err != nil {
 		return fmt.Errorf("%w", err) // context already added by DeleteTaskOrchestration
@@ -2127,8 +2127,8 @@ func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, del
 // DeleteProject deletes a project together with every task under it and
 // returns how many tasks were removed. SQLite twin of gtd.Store.DeleteProject;
 // both drive the same gtd.DeleteProjectOrchestration, so the two backends
-// cannot clean different sets of references. actor has the same
-// contract-stage caveat as DeleteTask's.
+// cannot clean different sets of references. actor is written into the
+// activity_log audit row this call produces, same as DeleteTask's.
 func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
 	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteProjectAdapter{s: s, id: id})
 	if err != nil {

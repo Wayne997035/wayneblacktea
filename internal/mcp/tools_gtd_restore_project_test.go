@@ -18,9 +18,9 @@ import (
 // for every gtd.StoreIface method restore_project's handler never calls, and
 // overrides RestoreProject so each test controls what it returns and
 // captures the id/actor the handler actually passed through — [F191-07]
-// tests use a fake store and never depend on the real restore logic, since
-// the real stores are still contract-stage stubs at this point in the
-// fan-out.
+// tests exercise only the MCP handler's own logic (routing, error
+// translation, actor provenance) against a scripted result, leaving the
+// real tombstone-backed restore logic to the store-layer tests instead.
 type fakeRestoreProjectStore struct {
 	noopGTDStore
 	project       *db.Project
@@ -157,12 +157,12 @@ func TestRestoreProjectTool_ConflictMessage(t *testing.T) {
 	}
 }
 
-// TestRestoreProjectTool_NotImplementedIsAnError guards the contract-stage
-// seam (internal/gtd/iface.go's RestoreProject doc comment): every real
-// implementation returns gtd.ErrNotImplemented until the storage-layer PR
-// in this fan-out lands, and the handler MUST report that as a plain error,
-// never as success and never mistranslated into the not-found message
-// above (ErrNotImplemented does not satisfy errors.Is(err, ErrNotFound)).
+// TestRestoreProjectTool_NotImplementedIsAnError guards the fallback error
+// path: any store error that is neither ErrNotFound nor ErrConflict MUST be
+// reported as a plain error, never as success and never mistranslated into
+// the not-found message above. gtd.ErrNotImplemented (a sentinel test fakes
+// use to model exactly such an uncategorised error) does not satisfy
+// errors.Is(err, ErrNotFound), so it exercises that fallback path here.
 func TestRestoreProjectTool_NotImplementedIsAnError(t *testing.T) {
 	id := uuid.New()
 	fake := &fakeRestoreProjectStore{err: gtd.ErrNotImplemented}

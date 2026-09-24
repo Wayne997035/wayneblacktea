@@ -93,13 +93,13 @@ type DeleteProjectAdapter interface {
 	// orchestration defers it unconditionally.
 	Rollback(ctx context.Context)
 
-	// --- soft-delete contract stage (PR #191 fan-out, design 1-3): declared
-	// now so StoreIface's final shape is fixed, but NEITHER method is called
-	// by DeleteProjectOrchestration below yet. Wiring them in (snapshot
-	// first, right after CountTasks, before any cleanup — design 1) is
-	// F191-04/F191-06's job. Every production implementation MUST return
-	// ErrNotImplemented (or sqlite.ErrNotImplemented) — NEVER nil — so a
-	// caller cannot mistake "stubbed" for "nothing to snapshot". ---
+	// --- soft-delete snapshot + audit (design 1-3): SnapshotProjectAndTasks
+	// is called first, right after CountTasks and before any cleanup step
+	// below, so it captures the project and its tasks before this call
+	// touches anything. WriteDeletionAuditLog is called last, immediately
+	// before Commit, so a failed audit write rolls back the whole delete
+	// rather than leaving one with no record of who did it. See
+	// DeleteProjectOrchestration below for the call sites. ---
 
 	// SnapshotProjectAndTasks copies the project row and every task row
 	// under it into deletion_tombstones (design 1/2), tagged with the given

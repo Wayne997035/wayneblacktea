@@ -1440,9 +1440,9 @@ type txBeginner interface {
 // defence-in-depth. See DeleteTaskOrchestration (deletetask_orchestration.go)
 // for the shared control flow this delegates to.
 // DeleteProject deletes a project and every task under it, returning how many
-// tasks were removed. actor identifies who requested the delete — see
-// StoreIface.DeleteProject's doc comment for the contract-stage caveat
-// (accepted now, not yet consumed).
+// tasks were removed. actor identifies who requested the delete and is
+// written into the activity_log audit row this call produces (see
+// DeleteProjectOrchestration).
 func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
 	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteProjectAdapter{s: s, id: id})
 }
@@ -1671,8 +1671,8 @@ func (a *pgDeleteProjectAdapter) Rollback(ctx context.Context) {
 }
 
 // DeleteTask permanently removes a task by ID. actor identifies who
-// requested the delete — see StoreIface.DeleteTask's doc comment for the
-// contract-stage caveat (accepted now, not yet consumed).
+// requested the delete and is written into the activity_log audit row this
+// call produces (see DeleteTaskOrchestration).
 func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
 	return DeleteTaskOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteTaskAdapter{s: s, id: id})
 }
