@@ -933,22 +933,13 @@ func TestPruneDeletionTombstones_DropsOlderThanRetention(t *testing.T) {
 		t.Fatalf("DeleteProject (old): %v", err)
 	}
 
-	// cutoff is captured BEFORE the "new" group is created/deleted — not
-	// after both groups exist — so the new group's real deleted_at (written
-	// by DeleteProject below, using the wall clock at call time) is
-	// guaranteed later than cutoff by ordinary happens-before, rather than
-	// relying on two time.Now() calls landing on different sides of a value
-	// captured after both already happened.
-	cutoff := time.Now().UTC()
-	oldDeletedAt := cutoff.Add(-31 * 24 * time.Hour).Format(sqliteTimestampLayout)
-	if _, err := d.SqlConn().ExecContext(
-		ctx,
-		`UPDATE deletion_tombstones SET deleted_at = ?1 WHERE project_id = ?2`,
-		oldDeletedAt, oldProj.ID.String(),
-	); err != nil {
-		t.Fatalf("backdate old group: %v", err)
-	}
-
+	// The "new" group is created/deleted here — BEFORE backdating "old" —
+	// so no store.DeleteProject/DeleteTask call happens after the backdate
+	// below. SEC-PR191-01's write-path prune (every snapshot method sweeps
+	// expired tombstone rows before writing its own) would otherwise treat
+	// the backdated "old" group as expired the moment any later delete ran,
+	// removing it before this test's own seed-count and explicit-prune
+	// assertions get a chance to run.
 	newProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-13-new-" + uuid.New().String(), Title: "New"})
 	if err != nil {
 		t.Fatalf("CreateProject (new): %v", err)
@@ -958,6 +949,19 @@ func TestPruneDeletionTombstones_DropsOlderThanRetention(t *testing.T) {
 	}
 	if _, err := store.DeleteProject(ctx, newProj.ID, testerActor); err != nil {
 		t.Fatalf("DeleteProject (new): %v", err)
+	}
+
+	// cutoff sits strictly between the backdated "old" group and the real,
+	// just-written "new" group. Backdating "old" is the LAST write this
+	// test performs before the explicit PruneDeletionTombstones call.
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	oldDeletedAt := cutoff.Add(-24 * time.Hour).Format(sqliteTimestampLayout) // 31 days ago
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = ?1 WHERE project_id = ?2`,
+		oldDeletedAt, oldProj.ID.String(),
+	); err != nil {
+		t.Fatalf("backdate old group: %v", err)
 	}
 
 	oldRows := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, oldProj.ID.String())
@@ -1030,4 +1034,133 @@ func TestRestoreColumnList_MatchesPragmaTableInfo(t *testing.T) {
 			}
 		})
 	})
+}
+
+// ----- SEC-PR191-01: 30-day retention bound on restore lookup + write-path prune -----
+
+// TestRestoreProject_RefusesOutsideRetention: a tombstone group whose
+// deleted_at is older than gtd.DeletionTombstoneRetention (30 days) must
+// not be found by restore_project's lookup — same ErrNotFound response as
+// "never deleted" — and nothing gets written or consumed.
+func TestRestoreProject_RefusesOutsideRetention(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "sec01-outside-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	backdated := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = ?1 WHERE project_id = ?2`,
+		backdated, proj.ID.String(),
+	); err != nil {
+		t.Fatalf("backdate group: %v", err)
+	}
+
+	beforeTombstones := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, proj.ID.String())
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrNotFound) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrNotFound (group is 31 days old, outside the 30-day retention window)", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, proj.ID.String()); got != beforeTombstones {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — "+
+			"a rejected-as-expired restore must not consume the group", beforeTombstones, got)
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM projects WHERE id = ?1`, proj.ID.String()); got != 0 {
+		t.Errorf("project row was written even though the group is outside the retention window (found %d)", got)
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM tasks WHERE id = ?1`, tk.ID.String()); got != 0 {
+		t.Errorf("task row was written even though the group is outside the retention window (found %d)", got)
+	}
+}
+
+// TestRestoreProject_AllowsInsideRetention is SEC-PR191-01's positive
+// control: a group 29 days old (inside the 30-day window) restores
+// normally, proving the boundary isn't rejecting everything.
+func TestRestoreProject_AllowsInsideRetention(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "sec01-inside-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	backdated := time.Now().UTC().Add(-29 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = ?1 WHERE project_id = ?2`,
+		backdated, proj.ID.String(),
+	); err != nil {
+		t.Fatalf("backdate group: %v", err)
+	}
+
+	restored, _, err := store.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("RestoreProject: %v, want success (group is 29 days old, inside the 30-day retention window)", err)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+}
+
+// TestSoftDelete_DeletePrunesExpiredTombstones: a delete's snapshot method
+// removes tombstone rows that already fell out of the retention window
+// before writing its own snapshot, so deletion_tombstones stays bounded
+// even when the scheduled pruner hasn't run yet (e.g. the stdio transport,
+// which has no pruner wired at all).
+func TestSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	oldDeletionID := uuid.New().String()
+	oldDeletedAt := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES (?1, NULL, ?2, 'task', ?3, NULL, '{}', 'tester', ?4)`,
+		uuid.New().String(), oldDeletionID, uuid.New().String(), oldDeletedAt,
+	); err != nil {
+		t.Fatalf("seed 31-day-old tombstone: %v", err)
+	}
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "sec01-prune-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := store.DeleteTask(ctx, tk.ID, testerActor); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = ?1`, oldDeletionID); got != 0 {
+		t.Errorf("31-day-old tombstone group still has %d row(s) after a later delete, want 0 (write-path prune should have removed it)", got)
+	}
+	if got := countRows(
+		t, d,
+		`SELECT count(*) FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = ?1`, tk.ID.String(),
+	); got != 1 {
+		t.Errorf("the just-written tombstone for the deleted task is missing, want 1 row")
+	}
 }

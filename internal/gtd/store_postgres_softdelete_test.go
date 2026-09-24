@@ -815,21 +815,13 @@ func TestPGSoftDelete_PruneDropsOlderThanRetention(t *testing.T) {
 		t.Fatalf("DeleteProject (old): %v", err)
 	}
 
-	// cutoff is captured BEFORE the "new" group is created/deleted — not
-	// after both groups exist — so the new group's real deleted_at (written
-	// by DeleteProject below, using the wall clock at call time) is
-	// guaranteed later than cutoff by ordinary happens-before, rather than
-	// relying on two time.Now() calls landing on different sides of a
-	// value captured after both already happened.
-	cutoff := time.Now().UTC()
-	if _, err := pool.Exec(
-		ctx,
-		`UPDATE deletion_tombstones SET deleted_at = $1 WHERE project_id = $2`,
-		cutoff.Add(-31*24*time.Hour), oldProj.ID,
-	); err != nil {
-		t.Fatalf("backdate old group: %v", err)
-	}
-
+	// The "new" group is created/deleted here — BEFORE backdating "old" —
+	// so no store.DeleteProject/DeleteTask call happens after the backdate
+	// below. SEC-PR191-01's write-path prune (every snapshot method sweeps
+	// expired tombstone rows before writing its own) would otherwise treat
+	// the backdated "old" group as expired the moment any later delete ran,
+	// removing it before this test's own seed-count and explicit-prune
+	// assertions get a chance to run.
 	newProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: fmt.Sprintf("f191-13-pg-new-%s", uuid.New()), Title: "New"})
 	if err != nil {
 		t.Fatalf("CreateProject (new): %v", err)
@@ -839,6 +831,18 @@ func TestPGSoftDelete_PruneDropsOlderThanRetention(t *testing.T) {
 	}
 	if _, err := store.DeleteProject(ctx, newProj.ID, testerActor); err != nil {
 		t.Fatalf("DeleteProject (new): %v", err)
+	}
+
+	// cutoff sits strictly between the backdated "old" group and the real,
+	// just-written "new" group. Backdating "old" is the LAST write this
+	// test performs before the explicit PruneDeletionTombstones call.
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	if _, err := pool.Exec(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = $1 WHERE project_id = $2`,
+		cutoff.Add(-24*time.Hour), oldProj.ID, // 31 days ago
+	); err != nil {
+		t.Fatalf("backdate old group: %v", err)
 	}
 
 	oldRows := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, oldProj.ID)
@@ -922,5 +926,186 @@ func TestPGSoftDelete_RestoreWritesAuditRow(t *testing.T) {
 	}
 	if strings.Contains(notes, secretTitle) {
 		t.Errorf("audit notes leaked the project's stored title: %q", notes)
+	}
+}
+
+// ----- SEC-PR191-01: 30-day retention bound on restore lookup + write-path prune, Postgres half -----
+
+// TestPGSoftDelete_RestoreRefusesOutsideRetention is SEC-PR191-01's
+// Postgres half — mirrors the SQLite twin
+// (TestRestoreProject_RefusesOutsideRetention): a tombstone group whose
+// deleted_at is older than gtd.DeletionTombstoneRetention (30 days) must
+// not be found by the restore lookup — same ErrNotFound response as "never
+// deleted" — and nothing gets written or consumed.
+func TestPGSoftDelete_RestoreRefusesOutsideRetention(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("sec01-pg-outside-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	if _, err := pool.Exec(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = $1 WHERE project_id = $2`,
+		time.Now().UTC().Add(-31*24*time.Hour), proj.ID,
+	); err != nil {
+		t.Fatalf("backdate group: %v", err)
+	}
+
+	beforeTombstones := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, proj.ID)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrNotFound) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrNotFound (group is 31 days old, outside the 30-day retention window)", err)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, proj.ID); got != beforeTombstones {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — "+
+			"a rejected-as-expired restore must not consume the group", beforeTombstones, got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM projects WHERE id = $1`, proj.ID); got != 0 {
+		t.Errorf("project row was written even though the group is outside the retention window (found %d)", got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM tasks WHERE id = $1`, tk.ID); got != 0 {
+		t.Errorf("task row was written even though the group is outside the retention window (found %d)", got)
+	}
+}
+
+// TestPGSoftDelete_RestoreAllowsInsideRetention is SEC-PR191-01's positive
+// control, Postgres half: a group 29 days old (inside the 30-day window)
+// restores normally.
+func TestPGSoftDelete_RestoreAllowsInsideRetention(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("sec01-pg-inside-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	if _, err := pool.Exec(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = $1 WHERE project_id = $2`,
+		time.Now().UTC().Add(-29*24*time.Hour), proj.ID,
+	); err != nil {
+		t.Fatalf("backdate group: %v", err)
+	}
+
+	restored, _, err := store.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("RestoreProject: %v, want success (group is 29 days old, inside the 30-day retention window)", err)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+}
+
+// TestPGSoftDelete_DeletePrunesExpiredTombstones is SEC-PR191-01's
+// write-path prune, Postgres half: a delete's snapshot method removes
+// tombstone rows that already fell out of the retention window before
+// writing its own snapshot.
+func TestPGSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	oldDeletionID := uuid.New()
+	if _, err := pool.Exec(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES ($1, $2, $3, 'task', $4, NULL, '{}'::jsonb, 'tester', $5)`,
+		uuid.New(), wsID, oldDeletionID, uuid.New(), time.Now().UTC().Add(-31*24*time.Hour),
+	); err != nil {
+		t.Fatalf("seed 31-day-old tombstone: %v", err)
+	}
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("sec01-pg-prune-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := store.DeleteTask(ctx, tk.ID, testerActor); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, oldDeletionID); got != 0 {
+		t.Errorf("31-day-old tombstone group still has %d row(s) after a later delete, want 0 (write-path prune should have removed it)", got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = $1`, tk.ID); got != 1 {
+		t.Errorf("the just-written tombstone for the deleted task is missing, want 1 row")
+	}
+}
+
+// ----- SEC-PR191-03: cross-workspace restore isolation, Postgres half -----
+
+// TestPGSoftDelete_RestoreOtherWorkspaceIsInvisible: a store scoped to
+// workspace B must not be able to find (let alone restore) a deletion made
+// under workspace A. Positive control at the end proves the tombstone
+// really exists and is restorable by its owning workspace, so the
+// ErrNotFound above is workspace-scoping and not some other bug hiding the
+// tombstone from everyone.
+func TestPGSoftDelete_RestoreOtherWorkspaceIsInvisible(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsA := uuid.New()
+	wsB := uuid.New()
+	storeA := newPgGTDStore(pool, &wsA)
+	storeB := newPgGTDStore(pool, &wsB)
+	ctx := context.Background()
+
+	proj, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("sec03-pg-wsA-%s", uuid.New()), Title: "A",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := storeA.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	beforeTombstones := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, proj.ID)
+
+	if _, _, err := storeB.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrNotFound) {
+		t.Fatalf("RestoreProject from another workspace error = %v, want gtd.ErrNotFound", err)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, proj.ID); got != beforeTombstones {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — "+
+			"a cross-workspace restore must not consume the group", beforeTombstones, got)
+	}
+
+	restored, tasksRestored, err := storeA.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("owning-workspace RestoreProject: %v", err)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+	if tasksRestored != 0 {
+		t.Errorf("tasksRestored = %d, want 0", tasksRestored)
 	}
 }

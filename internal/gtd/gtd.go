@@ -78,6 +78,17 @@ var (
 	ErrNotImplemented = errors.New("gtd: not yet implemented")
 )
 
+// DeletionTombstoneRetention is the single source of truth for the 30-day
+// soft-delete retention window (decision 17a1086b): RestoreProject's group
+// lookup on both backends rejects anything older than this, the four
+// snapshot methods (pgDeleteProjectAdapter/pgDeleteTaskAdapter/
+// sqliteDeleteProjectAdapter/sqliteDeleteTaskAdapter) prune expired rows on
+// their way in, and cmd/server/main.go's tombstone PrunerSpec uses the same
+// constant for its daily sweep — one number, one place, so the lookup
+// bound, the snapshot-time prune, and the scheduled prune can never drift
+// out of sync with each other (SEC-PR191-01).
+const DeletionTombstoneRetention = 30 * 24 * time.Hour
+
 // ProjectIDCleanupExemptions is the sole, machine-checked exception list to
 // "every table with a project_id column must be cleaned by delete_project"
 // (F191-02). A table belongs here only when its project_id records the
