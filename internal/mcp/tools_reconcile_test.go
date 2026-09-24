@@ -202,7 +202,7 @@ func seedBranchedTask(t *testing.T, s *Server, title, branch string) *db.Task {
 // path end-to-end across the two-step confirm flow: preview must NOT
 // complete the task; confirm (with the token from preview) must.
 func TestMCPReconcileMergedPRs_ExactMatch_AutoApplies(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := withReconcileCandidates(t, newTestWorkSessionServer(t))
 	ctx := context.Background()
 
@@ -271,7 +271,7 @@ func TestMCPReconcileMergedPRs_ExactMatch_AutoApplies(t *testing.T) {
 
 // TestMCPReconcileMergedPRs_InvalidPayloads covers MCP-side validation paths.
 func TestMCPReconcileMergedPRs_InvalidPayloads(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	cases := []struct {
@@ -305,7 +305,7 @@ func TestMCPReconcileMergedPRs_InvalidPayloads(t *testing.T) {
 // `gh -R <slug>` so any whitespace / shell meta / path-traversal MUST be
 // rejected at this boundary.
 func TestMCPReconcileMergedPRs_RepoValidation(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	cases := []struct {
@@ -373,7 +373,7 @@ func TestMCPReconcileMergedPRs_RepoValidation(t *testing.T) {
 
 // TestMCPReconcileMergedPRs_TooManyEntries — cap enforcement.
 func TestMCPReconcileMergedPRs_TooManyEntries(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	prs := make([]map[string]any, 201)
@@ -399,7 +399,7 @@ func TestMCPReconcileMergedPRs_TooManyEntries(t *testing.T) {
 // required to prove idempotency — the second preview's no_match=1 already
 // demonstrates the already-applied batch is not re-matched.
 func TestMCPReconcileMergedPRs_Idempotent(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -467,7 +467,7 @@ func TestMCPReconcileMergedPRs_Idempotent(t *testing.T) {
 //     proving Clarification 3's exact-match exclusion does not accidentally
 //     exclude OTHER unrelated fuzzy-eligible tasks in the same batch.
 func TestMCPReconcileMergedPRs_Preview_DoesNotComplete(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := withReconcileCandidates(t, newTestWorkSessionServer(t))
 	ctx := context.Background()
 
@@ -524,7 +524,7 @@ func TestMCPReconcileMergedPRs_Preview_DoesNotComplete(t *testing.T) {
 // no reconcile_token at all — must be rejected (otherwise the gate is
 // useless).
 func TestMCPReconcileMergedPRs_ConfirmWithoutTokenFails(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	r := callReconcileWithArgs(t, s, nil, map[string]any{"confirm": true})
@@ -540,7 +540,7 @@ func TestMCPReconcileMergedPRs_ConfirmWithoutTokenFails(t *testing.T) {
 // with a fabricated token and no prior preview call — the in-memory map has
 // no entry, so it must be rejected.
 func TestMCPReconcileMergedPRs_ConfirmWithoutFirstCallFails(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	r := callReconcileWithArgs(t, s, nil, map[string]any{
@@ -560,7 +560,7 @@ func TestMCPReconcileMergedPRs_ConfirmWithoutFirstCallFails(t *testing.T) {
 // reconcileTokenTTL before confirming — the confirm call must reject the
 // expired token.
 func TestMCPReconcileMergedPRs_ExpiredTokenFails(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	current := base
@@ -594,7 +594,7 @@ func TestMCPReconcileMergedPRs_ExpiredTokenFails(t *testing.T) {
 // TestMCPReconcileMergedPRs_TokenReplayFails verifies a reconcile_token is
 // single-use: the 1st confirm succeeds, the 2nd (same token) must error.
 func TestMCPReconcileMergedPRs_TokenReplayFails(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	branch := "feature/replay"
@@ -633,7 +633,7 @@ func TestMCPReconcileMergedPRs_TokenReplayFails(t *testing.T) {
 // taskB) resent alongside confirm=true. Only taskA gets completed; taskB is
 // untouched; payload B is fully ignored.
 func TestMCPReconcileMergedPRs_ConfirmIgnoresDifferentPayload(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -694,7 +694,7 @@ func TestMCPReconcileMergedPRs_ConfirmIgnoresDifferentPayload(t *testing.T) {
 // call is rejected with the "too many pending reconciliations" error rather
 // than growing the map without bound. Mirrors TestDeleteTask_TokenMapBounded.
 func TestMCPReconcileMergedPRs_TokenMapBounded(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	// Freeze time so all tokens we insert stay valid (non-expired) throughout.
@@ -736,7 +736,7 @@ func TestMCPReconcileMergedPRs_TokenMapBounded(t *testing.T) {
 // does not grow indefinitely through accumulated dead entries. Mirrors
 // TestDeleteTask_PruneExpiredOnWrite.
 func TestMCPReconcileMergedPRs_PruneExpiredOnWrite(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	base := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
@@ -796,7 +796,7 @@ func TestMCPReconcileMergedPRs_PruneExpiredOnWrite(t *testing.T) {
 // calls consumed zero cap budget. This also serves as the reviewer's
 // suggested dedicated empty-payload test (Finding 4).
 func TestMCPReconcileMergedPRs_EmptyPayloadNeverConsumesTokenCap(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	const emptyCallCount = maxPendingReconciles + 1 // 257
@@ -847,7 +847,7 @@ func TestMCPReconcileMergedPRs_EmptyPayloadNeverConsumesTokenCap(t *testing.T) {
 // task whose status drifted to 'cancelled' in the confirm window, and
 // `applied` reflects that the stale match was skipped rather than applied.
 func TestMCPReconcileMergedPRs_ConfirmDoesNotOverwriteCancelledTask(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -927,7 +927,7 @@ func TestMCPReconcileMergedPRs_ConfirmDoesNotOverwriteCancelledTask(t *testing.T
 // legitimate (real-match) preview call still succeeds afterward — together
 // demonstrating the 257 non-matching calls consumed zero cap budget.
 func TestMCPReconcileMergedPRs_NonMatchingPayloadNeverConsumesTokenCap(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s := newTestWorkSessionServer(t)
 
 	const nonMatchingCallCount = maxPendingReconciles + 1 // 257
@@ -1006,7 +1006,7 @@ func TestMCPReconcileMergedPRs_NonMatchingPayloadNeverConsumesTokenCap(t *testin
 // just the tool's response JSON, which could under-report drift) to prove no
 // false row is written for the cancelled task.
 func TestMCPReconcileMergedPRs_ConfirmDoesNotWriteFalseAutoAppliedCandidate(t *testing.T) {
-	// Not parallel: the :memory: SQLite handle opened by this file's helper has no SetMaxOpenConns(1); under parallel load a second pooled connection would see an empty database.
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
 	s, candDB := withReconcileCandidatesDB(t, newTestWorkSessionServer(t))
 	ctx := context.Background()
 
