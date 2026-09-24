@@ -2,8 +2,10 @@ package gtd_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,7 +186,7 @@ func TestPGDeleteProject_ClearsEveryProjectIDTableFromMigratedSchema(t *testing.
 		}
 	}
 
-	if _, err := store.DeleteProject(ctx, doomed.ID, "tester"); err != nil {
+	if _, err := store.DeleteProject(ctx, doomed.ID, testerActor); err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
 
@@ -209,6 +211,279 @@ func TestPGDeleteProject_ClearsEveryProjectIDTableFromMigratedSchema(t *testing.
 		if diff := tableListDiff(derived, short); diff == "" {
 			t.Fatal("dropping a table from the registered list produced no diff — " +
 				"the completeness check cannot catch a table that a real implementation forgot to register")
+		}
+	})
+}
+
+// scanPGTombstonePayload reads one deletion_tombstones.payload (JSONB) as a
+// generic map, casting to text in SQL so the driver never has to guess a Go
+// destination type for a jsonb column.
+func scanPGTombstonePayload(t *testing.T, payloadText string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(payloadText), &m); err != nil {
+		t.Fatalf("unmarshal tombstone payload %q: %v", payloadText, err)
+	}
+	return m
+}
+
+// TestPGSoftDelete_DeleteProjectSnapshotsWithArea is F191-04's Postgres half
+// — the gap the dispatch ticket calls out explicitly: db.Task never carries
+// `area`, `checklist`, or `commit_shas` faithfully enough to prove a Go-
+// struct-based snapshot would be correct, so this reads to_jsonb()'s actual
+// output straight from the table, the same way restore_project eventually
+// will.
+// createPGTaskWithChecklistAndSHA creates one task under projectID with a
+// non-default area, one checklist item, and one commit sha — the three
+// columns TestPGSoftDelete_DeleteProjectSnapshotsWithArea/DeleteTaskSnapshots
+// WithArea need present in the snapshot payload to prove it is built from
+// to_jsonb(), not from db.Task (which carries none of the three faithfully).
+// Factored out to keep those tests' cyclomatic complexity under the
+// project's gocyclo threshold.
+func createPGTaskWithChecklistAndSHA(t *testing.T, store *gtd.Store, ctx context.Context, wsID, projectID uuid.UUID) uuid.UUID {
+	t.Helper()
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &projectID, Title: "t", Area: "wbt"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.AddChecklistItem(ctx, tk.ID, wsID, gtd.ChecklistItem{
+		ID: uuid.New(), Title: "verify it works", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("AddChecklistItem: %v", err)
+	}
+	sha := "deadbeef" + uuid.New().String()[:8]
+	if _, err := store.UpdateTask(ctx, tk.ID, gtd.UpdateTaskParams{AppendCommitSHA: &sha}); err != nil {
+		t.Fatalf("UpdateTask (AppendCommitSHA): %v", err)
+	}
+	return tk.ID
+}
+
+// assertPGTaskTombstones is the Postgres twin of the SQLite package's
+// assertTaskTombstones (internal/storage/sqlite/gtd_softdelete_test.go):
+// reads every task tombstone row in deletionID and checks it against
+// taskIDs/projectID/wantDeletedAt, plus that payload carries a non-empty
+// area/checklist/commit_shas (design 2's to_jsonb() promise). Returns how
+// many rows it saw.
+func assertPGTaskTombstones(
+	t *testing.T, pool *pgxpool.Pool, deletionID string, taskIDs map[string]bool, projectID uuid.UUID, wantDeletedAt string,
+) int {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT entity_id, project_id, payload::text, deleted_at::text
+		   FROM deletion_tombstones WHERE deletion_id = $1 AND entity_kind = 'task'`,
+		deletionID)
+	if err != nil {
+		t.Fatalf("query task tombstones: %v", err)
+	}
+	defer rows.Close()
+
+	seen := 0
+	for rows.Next() {
+		var entityID, tsProjID, payloadText, taskDeletedAt string
+		if err := rows.Scan(&entityID, &tsProjID, &payloadText, &taskDeletedAt); err != nil {
+			t.Fatalf("scan task tombstone: %v", err)
+		}
+		seen++
+		if !taskIDs[entityID] {
+			t.Errorf("tombstone for unexpected task id %s", entityID)
+		}
+		if tsProjID != projectID.String() {
+			t.Errorf("task tombstone %s project_id = %s, want %s", entityID, tsProjID, projectID)
+		}
+		if taskDeletedAt != wantDeletedAt {
+			t.Errorf("task tombstone %s deleted_at = %q, want the SAME value as the project tombstone %q",
+				entityID, taskDeletedAt, wantDeletedAt)
+		}
+		assertPGTaskPayload(t, entityID, scanPGTombstonePayload(t, payloadText))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate task tombstones: %v", err)
+	}
+	return seen
+}
+
+// assertPGTaskPayload checks the three columns db.Task never carries
+// faithfully: area, checklist, commit_shas.
+func assertPGTaskPayload(t *testing.T, entityID string, p map[string]any) {
+	t.Helper()
+	if p["area"] != "wbt" {
+		t.Errorf("task tombstone %s payload[\"area\"] = %v, want \"wbt\"", entityID, p["area"])
+	}
+	if checklist, ok := p["checklist"].([]any); !ok || len(checklist) != 1 {
+		t.Errorf("task tombstone %s payload[\"checklist\"] = %v, want a 1-item array", entityID, p["checklist"])
+	}
+	if shas, ok := p["commit_shas"].([]any); !ok || len(shas) != 1 {
+		t.Errorf("task tombstone %s payload[\"commit_shas\"] = %v, want a 1-item array", entityID, p["commit_shas"])
+	}
+}
+
+func TestPGSoftDelete_DeleteProjectSnapshotsWithArea(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-04-pg-doomed-%s", uuid.New()), Title: "Doomed",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	const wantTasks = 2
+	taskIDs := make(map[string]bool, wantTasks)
+	for i := 0; i < wantTasks; i++ {
+		taskIDs[createPGTaskWithChecklistAndSHA(t, store, ctx, wsID, proj.ID).String()] = true
+	}
+
+	deleted, err := store.DeleteProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if deleted != wantTasks {
+		t.Fatalf("DeleteProject reported %d tasks removed, want %d", deleted, wantTasks)
+	}
+
+	var deletionID, tsProjectID, projectPayloadText, deletedBy, projectDeletedAt string
+	if err := pool.QueryRow(ctx,
+		`SELECT deletion_id, project_id, payload::text, deleted_by, deleted_at::text
+		   FROM deletion_tombstones WHERE entity_kind = 'project' AND entity_id = $1`,
+		proj.ID,
+	).Scan(&deletionID, &tsProjectID, &projectPayloadText, &deletedBy, &projectDeletedAt); err != nil {
+		t.Fatalf("read project tombstone: %v", err)
+	}
+	if tsProjectID != proj.ID.String() {
+		t.Errorf("project tombstone's project_id = %s, want %s (design 8 exemption)", tsProjectID, proj.ID)
+	}
+	if deletedBy != testerActor {
+		t.Errorf("deleted_by = %q, want %q", deletedBy, testerActor)
+	}
+
+	seen := assertPGTaskTombstones(t, pool, deletionID, taskIDs, proj.ID, projectDeletedAt)
+	if seen != wantTasks {
+		t.Errorf("got %d task tombstone rows, want %d", seen, wantTasks)
+	}
+}
+
+// TestPGSoftDelete_DeleteTaskSnapshotsWithArea is F191-05's Postgres half:
+// a single task tombstone whose project_id is the task's own original
+// project, payload carrying area/checklist/commit_shas.
+func TestPGSoftDelete_DeleteTaskSnapshotsWithArea(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-05-pg-proj-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	taskID := createPGTaskWithChecklistAndSHA(t, store, ctx, wsID, proj.ID)
+
+	if err := store.DeleteTask(ctx, taskID, testerActor); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	var tsProjectID, payloadText, deletedBy string
+	if err := pool.QueryRow(ctx,
+		`SELECT project_id, payload::text, deleted_by
+		   FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = $1`,
+		taskID,
+	).Scan(&tsProjectID, &payloadText, &deletedBy); err != nil {
+		t.Fatalf("read task tombstone: %v", err)
+	}
+	if tsProjectID != proj.ID.String() {
+		t.Errorf("tombstone project_id = %s, want the task's original project %s", tsProjectID, proj.ID)
+	}
+	if deletedBy != testerActor {
+		t.Errorf("deleted_by = %q, want %q", deletedBy, testerActor)
+	}
+	assertPGTaskPayload(t, taskID.String(), scanPGTombstonePayload(t, payloadText))
+}
+
+// TestPGSoftDelete_AuditRowWritten is F191-06's Postgres half: both delete
+// paths leave exactly one new activity_log row, notes never carrying the
+// deleted entity's stored name/title text.
+func TestPGSoftDelete_AuditRowWritten(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	countActivityLog := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_log WHERE workspace_id = $1`, wsID).Scan(&n); err != nil {
+			t.Fatalf("count activity_log: %v", err)
+		}
+		return n
+	}
+
+	t.Run("project_deleted", func(t *testing.T) {
+		secretName := "Secret PG Project " + uuid.New().String()[:8]
+		proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: fmt.Sprintf("f191-06-pg-proj-%s", uuid.New()), Title: secretName,
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+		before := countActivityLog()
+
+		if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+			t.Fatalf("DeleteProject: %v", err)
+		}
+		if got := countActivityLog(); got != before+1 {
+			t.Fatalf("activity_log grew by %d, want exactly 1", got-before)
+		}
+
+		var action, notes string
+		if err := pool.QueryRow(ctx,
+			`SELECT action, notes FROM activity_log
+			  WHERE workspace_id = $1 AND action = 'project_deleted' ORDER BY created_at DESC LIMIT 1`,
+			wsID,
+		).Scan(&action, &notes); err != nil {
+			t.Fatalf("read audit row: %v", err)
+		}
+		if action != "project_deleted" {
+			t.Errorf("action = %q, want %q", action, "project_deleted")
+		}
+		if strings.Contains(notes, secretName) {
+			t.Errorf("audit notes leaked the project's stored title: %q", notes)
+		}
+	})
+
+	t.Run("task_deleted", func(t *testing.T) {
+		proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+			Name: fmt.Sprintf("f191-06-pg-proj2-%s", uuid.New()), Title: "P2",
+		})
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+		secretTitle := "Secret PG Task " + uuid.New().String()[:8]
+		tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: secretTitle})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		before := countActivityLog()
+
+		if err := store.DeleteTask(ctx, tk.ID, testerActor); err != nil {
+			t.Fatalf("DeleteTask: %v", err)
+		}
+		if got := countActivityLog(); got != before+1 {
+			t.Fatalf("activity_log grew by %d, want exactly 1", got-before)
+		}
+
+		var notes string
+		if err := pool.QueryRow(ctx,
+			`SELECT notes FROM activity_log
+			  WHERE workspace_id = $1 AND action = 'task_deleted' ORDER BY created_at DESC LIMIT 1`,
+			wsID,
+		).Scan(&notes); err != nil {
+			t.Fatalf("read audit row: %v", err)
+		}
+		if strings.Contains(notes, secretTitle) {
+			t.Errorf("audit notes leaked the task's stored title: %q", notes)
 		}
 	})
 }

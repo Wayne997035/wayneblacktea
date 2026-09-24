@@ -230,12 +230,22 @@ func assertNoDanglingRefs(t *testing.T, d *sqlite.DB, doomedID uuid.UUID, taskID
 // assertReferencingRowsSurvive pins the other half of the contract: those rows
 // are CLEARED, not deleted. A decision or a log entry outlives the project it
 // was filed under.
+//
+// activity_log wants 2, not 1: [F191-06] DeleteProject now writes its own
+// deletion-audit row in the same tx as the delete (design 3), in addition to
+// the pre-seeded row this test planted (whose project_id got NULLed, not
+// removed) — so a correct delete leaves both behind.
 func assertReferencingRowsSurvive(t *testing.T, d *sqlite.DB) {
 	t.Helper()
+	want := map[string]int{"activity_log": 2}
 	for table, q := range rowCountQueries {
-		if n := countRows(t, d, q); n != 1 {
-			t.Errorf("%s row count = %d, want 1 — the row was deleted instead of having its refs cleared",
-				table, n)
+		w := want[table]
+		if w == 0 {
+			w = 1
+		}
+		if n := countRows(t, d, q); n != w {
+			t.Errorf("%s row count = %d, want %d — the row was deleted instead of having its refs cleared (or, "+
+				"for activity_log, the delete's own audit row is missing)", table, n, w)
 		}
 	}
 }

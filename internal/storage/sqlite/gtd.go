@@ -1774,7 +1774,7 @@ func (s *GTDStore) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status
 // actor identifies who requested the delete — see gtd.StoreIface.DeleteTask's
 // doc comment for the contract-stage caveat (accepted now, not yet consumed).
 func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
-	if err := gtd.DeleteTaskOrchestration(ctx, id, &sqliteDeleteTaskAdapter{s: s, id: id}); err != nil {
+	if err := gtd.DeleteTaskOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteTaskAdapter{s: s, id: id}); err != nil {
 		return fmt.Errorf("%w", err) // context already added by DeleteTaskOrchestration
 	}
 	return nil
@@ -1923,18 +1923,44 @@ func (a *sqliteDeleteTaskAdapter) Rollback(context.Context) {
 	_ = a.tx.Rollback()
 }
 
-// SnapshotTask is a soft-delete contract-stage stub (PR #191 fan-out) — see
-// gtd.DeleteTaskAdapter's doc comment. F191-05 implements the real
-// json_object() snapshot INSERT.
-func (a *sqliteDeleteTaskAdapter) SnapshotTask(context.Context, uuid.UUID, time.Time, string) error {
-	return errWrap("SnapshotTask", ErrNotImplemented)
+// SnapshotTask copies the task row into deletion_tombstones (design 1/2) via
+// json_object() naming every column explicitly — SQLite has no to_jsonb()
+// equivalent, so unlike the Postgres twin this list must be kept in sync by
+// hand with the tasks schema; sqliteSnapshotColumnListTest (F191-09) asserts
+// it against pragma_table_info('tasks') so a column added there without a
+// matching entry here fails loudly instead of silently dropping from every
+// future restore. checklist/commit_shas are wrapped in json(...): both
+// columns already hold a JSON string (default '[]'), and json_object()
+// without that wrapper would double-encode them as an escaped string value
+// instead of a nested JSON array.
+func (a *sqliteDeleteTaskAdapter) SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
+	q := `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT ` + sqliteRandomUUIDExpr + `, t.workspace_id, ?2, 'task', t.id, t.project_id, ` + sqliteTaskSnapshotJSON + `, ?3, ?4
+		  FROM tasks t
+		 WHERE t.id = ?1
+		   AND (?5 IS NULL OR t.workspace_id = ?5)`
+	if _, err := a.tx.ExecContext(
+		ctx, q,
+		a.id.String(), deletionID.String(), deletedBy, deletedAt.UTC().Format(sqliteTimestampLayout), a.s.db.workspaceArg(),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
 }
 
-// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
-// out) — see gtd.DeleteTaskAdapter's doc comment. F191-06 implements the
-// real activity_log insert.
-func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string) error {
-	return errWrap("WriteDeletionAuditLog", ErrNotImplemented)
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)) — SQLite twin of pgDeleteTaskAdapter's
+// method. project_id is NULL per design 3 (uniform across both entity
+// kinds).
+func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s task_id=%s", deletionID, a.id))
+	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		VALUES (?1, ?2, ?3, NULL, 'task_deleted', ?4)`
+	if _, err := a.tx.ExecContext(ctx, q, uuid.New().String(), a.s.db.workspaceArg(), deletedBy, notes); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
 }
 
 // DeleteProject deletes a project together with every task under it and
@@ -1943,7 +1969,7 @@ func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UU
 // cannot clean different sets of references. actor has the same
 // contract-stage caveat as DeleteTask's.
 func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
-	n, err := gtd.DeleteProjectOrchestration(ctx, id, &sqliteDeleteProjectAdapter{s: s, id: id})
+	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteProjectAdapter{s: s, id: id})
 	if err != nil {
 		return 0, fmt.Errorf("%w", err) // context already added by DeleteProjectOrchestration
 	}
@@ -1961,6 +1987,44 @@ type sqliteDeleteProjectAdapter struct {
 // task-level cleanup filters on it so the cleanups and the DELETE can never
 // select different sets.
 const sqliteProjectTaskIDs = `SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`
+
+// sqliteRandomUUIDExpr fabricates a random v4 UUID string, evaluated once per
+// output row — so an INSERT...SELECT snapshotting many task rows gives each
+// tombstone row its own id, the same way a Go-side uuid.New() per row would,
+// without the round trip. Same expression this backend already uses as a
+// column DEFAULT (migrations/sqlite/000032_procedural_memories.up.sql);
+// deletion_tombstones.id has no DEFAULT (design 1: a design consequence, not
+// a limitation — the Go orchestration layer generates every id that matters
+// to transactional consistency across this schema), so it is inlined here as
+// a value expression instead.
+const sqliteRandomUUIDExpr = `(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+	substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab', abs(random() % 4) + 1, 1) ||
+	substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))`
+
+// sqliteProjectSnapshotJSON and sqliteTaskSnapshotJSON are SQLite's stand-in
+// for Postgres's to_jsonb(p)/to_jsonb(t) (design 2): SQLite has no equivalent
+// function, so every column of `projects` / `tasks` is named explicitly.
+// TestSnapshotColumnList_MatchesPragmaTableInfo (F191-09) asserts this exact
+// column list against pragma_table_info so a column added to either table
+// without a matching entry here fails a test instead of silently vanishing
+// from every future restore. checklist/commit_shas are wrapped in json(...):
+// both already hold a JSON string (column default '[]'), and json_object()
+// without that wrapper would store them as a double-encoded, escaped string
+// instead of a nested JSON value.
+const sqliteProjectSnapshotJSON = `json_object(
+	'id', p.id, 'workspace_id', p.workspace_id, 'goal_id', p.goal_id, 'name', p.name,
+	'title', p.title, 'description', p.description, 'status', p.status, 'area', p.area,
+	'priority', p.priority, 'repo_name', p.repo_name, 'created_at', p.created_at, 'updated_at', p.updated_at
+)`
+
+const sqliteTaskSnapshotJSON = `json_object(
+	'id', t.id, 'workspace_id', t.workspace_id, 'project_id', t.project_id, 'title', t.title,
+	'description', t.description, 'status', t.status, 'priority', t.priority, 'importance', t.importance,
+	'context', t.context, 'assignee', t.assignee, 'due_date', t.due_date, 'artifact', t.artifact,
+	'checklist', json(t.checklist), 'kind', t.kind, 'branch_name', t.branch_name, 'pr_url', t.pr_url,
+	'commit_shas', json(t.commit_shas), 'vision_item_id', t.vision_item_id, 'created_at', t.created_at,
+	'updated_at', t.updated_at, 'area', t.area
+)`
 
 func (a *sqliteDeleteProjectAdapter) run(ctx context.Context, q string, args ...any) error {
 	if _, err := a.tx.ExecContext(ctx, q, args...); err != nil {
@@ -2086,18 +2150,48 @@ func (a *sqliteDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx cont
 	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = ?1`)
 }
 
-// SnapshotProjectAndTasks is a soft-delete contract-stage stub (PR #191 fan-
-// out) — see gtd.DeleteProjectAdapter's doc comment. F191-04 implements the
-// real json_object() snapshot INSERT.
-func (a *sqliteDeleteProjectAdapter) SnapshotProjectAndTasks(context.Context, uuid.UUID, time.Time, string) error {
-	return errWrap("SnapshotProjectAndTasks", ErrNotImplemented)
+// SnapshotProjectAndTasks copies the project row and every task row under it
+// into deletion_tombstones (design 1/2) — SQLite twin of
+// pgDeleteProjectAdapter's method; see sqliteDeleteTaskAdapter.SnapshotTask
+// for why json_object()'s column list is hand-maintained and how
+// checklist/commit_shas avoid double-encoding.
+func (a *sqliteDeleteProjectAdapter) SnapshotProjectAndTasks(
+	ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
+) error {
+	deletedAtStr := deletedAt.UTC().Format(sqliteTimestampLayout)
+
+	projectQ := `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT ` + sqliteRandomUUIDExpr + `, p.workspace_id, ?2, 'project', p.id, p.id, ` + sqliteProjectSnapshotJSON + `, ?3, ?4
+		  FROM projects p
+		 WHERE p.id = ?1
+		   AND (?5 IS NULL OR p.workspace_id = ?5)`
+	if err := a.run(ctx, projectQ, a.id.String(), deletionID.String(), deletedBy, deletedAtStr, a.s.db.workspaceArg()); err != nil {
+		return err
+	}
+
+	taskQ := `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT ` + sqliteRandomUUIDExpr + `, t.workspace_id, ?2, 'task', t.id, t.project_id, ` + sqliteTaskSnapshotJSON + `, ?3, ?4
+		  FROM tasks t
+		 WHERE t.project_id = ?1
+		   AND (?5 IS NULL OR t.workspace_id = ?5)`
+	if err := a.run(ctx, taskQ, a.id.String(), deletionID.String(), deletedBy, deletedAtStr, a.s.db.workspaceArg()); err != nil {
+		return err
+	}
+	return nil
 }
 
-// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
-// out) — see gtd.DeleteProjectAdapter's doc comment. F191-06 implements the
-// real activity_log insert.
-func (a *sqliteDeleteProjectAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string, int) error {
-	return errWrap("WriteDeletionAuditLog", ErrNotImplemented)
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)) — SQLite twin of pgDeleteProjectAdapter's
+// method.
+func (a *sqliteDeleteProjectAdapter) WriteDeletionAuditLog(
+	ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int,
+) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s project_id=%s tasks=%d", deletionID, a.id, taskCount))
+	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		VALUES (?1, ?2, ?3, NULL, 'project_deleted', ?4)`
+	return a.run(ctx, q, uuid.New().String(), a.s.db.workspaceArg(), deletedBy, notes)
 }
 
 func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {

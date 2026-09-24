@@ -1444,7 +1444,7 @@ type txBeginner interface {
 // StoreIface.DeleteProject's doc comment for the contract-stage caveat
 // (accepted now, not yet consumed).
 func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
-	return DeleteProjectOrchestration(ctx, id, &pgDeleteProjectAdapter{s: s, id: id})
+	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteProjectAdapter{s: s, id: id})
 }
 
 type pgDeleteProjectAdapter struct {
@@ -1583,18 +1583,70 @@ func (a *pgDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.
 	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = $1`)
 }
 
-// SnapshotProjectAndTasks is a soft-delete contract-stage stub (PR #191 fan-
-// out) — see DeleteProjectAdapter's doc comment. F191-04 implements the real
-// to_jsonb() snapshot INSERT.
-func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(context.Context, uuid.UUID, time.Time, string) error {
-	return fmt.Errorf("pg delete project adapter: SnapshotProjectAndTasks: %w", ErrNotImplemented)
+// SnapshotProjectAndTasks copies the project row and every task row under it
+// into deletion_tombstones (design 1/2) via to_jsonb() in SQL — never
+// assembled from db.Task/db.Project, which deliberately omit columns (e.g.
+// area, added in 000079) that a struct-based snapshot would silently drop on
+// restore. Two statements, not a UNION: a project row and a task row have
+// different entity_kind/project_id semantics (a project's own project_id
+// column is itself, design 8's exemption; a task's project_id is the
+// project it belonged to), and to_jsonb(p) vs to_jsonb(t) each need their own
+// FROM clause.
+//
+// Both statements share the exact workspace predicate CountTasks/DeleteTask
+// Rows use (projectTaskIDs / the projects lookup in WorkspacePrecheck): if
+// this predicate were ever wrong, the snapshot would silently capture 0 rows
+// while the delete that follows still succeeds — F191-04 asserts the task
+// snapshot's row count equals CountTasks' answer specifically to catch that.
+//
+// deletion_tombstones.workspace_id is set from the SOURCE row's own
+// workspace_id (p.workspace_id / t.workspace_id), not a.s.workspaceID: the
+// tombstone must record what the deleted row's workspace actually was, which
+// a store running unscoped (workspaceID NULL = "no filter") would otherwise
+// lose.
+func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(
+	ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
+) error {
+	const projectQ = `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT gen_random_uuid(), p.workspace_id, $2, 'project', p.id, p.id, to_jsonb(p), $3, $4
+		  FROM projects p
+		 WHERE p.id = $1
+		   AND ($5::uuid IS NULL OR p.workspace_id = $5)`
+	if _, err := a.tx.Exec(ctx, projectQ, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+
+	const taskQ = `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT gen_random_uuid(), t.workspace_id, $2, 'task', t.id, t.project_id, to_jsonb(t), $3, $4
+		  FROM tasks t
+		 WHERE t.project_id = $1
+		   AND ($5::uuid IS NULL OR t.workspace_id = $5)`
+	if _, err := a.tx.Exec(ctx, taskQ, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
 }
 
-// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
-// out) — see DeleteProjectAdapter's doc comment. F191-06 implements the real
-// activity_log insert.
-func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string, int) error {
-	return fmt.Errorf("pg delete project adapter: WriteDeletionAuditLog: %w", ErrNotImplemented)
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)): if this insert fails, the whole delete rolls
+// back rather than leaving a delete with no record of who did it. notes
+// carries only the deletion id, the deleted project's id, and the task
+// count — never a name or other stored text (design 3's redaction rule,
+// backend-security-design.md §3.1/§3.2). project_id is NULL: the project row
+// this audit entry is about no longer exists by the time Commit runs.
+func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s project_id=%s tasks=%d", deletionID, a.id, taskCount))
+	if _, err := a.s.q.WithTx(a.tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       deletedBy,
+		Action:      "project_deleted",
+		Notes:       pgconv.ToText(notes),
+		WorkspaceID: a.s.workspaceID,
+	}); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
 }
 
 func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
@@ -1622,7 +1674,7 @@ func (a *pgDeleteProjectAdapter) Rollback(ctx context.Context) {
 // requested the delete — see StoreIface.DeleteTask's doc comment for the
 // contract-stage caveat (accepted now, not yet consumed).
 func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
-	return DeleteTaskOrchestration(ctx, id, &pgDeleteTaskAdapter{s: s, id: id})
+	return DeleteTaskOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteTaskAdapter{s: s, id: id})
 }
 
 // pgDeleteTaskAdapter is the Postgres-backed DeleteTaskAdapter used by
@@ -1763,18 +1815,38 @@ func (a *pgDeleteTaskAdapter) Rollback(ctx context.Context) {
 	_ = a.tx.Rollback(ctx)
 }
 
-// SnapshotTask is a soft-delete contract-stage stub (PR #191 fan-out) — see
-// DeleteTaskAdapter's doc comment. F191-05 implements the real to_jsonb()
-// snapshot INSERT.
-func (a *pgDeleteTaskAdapter) SnapshotTask(context.Context, uuid.UUID, time.Time, string) error {
-	return fmt.Errorf("pg delete task adapter: SnapshotTask: %w", ErrNotImplemented)
+// SnapshotTask copies the task row into deletion_tombstones (design 1/2) via
+// to_jsonb() in SQL — see pgDeleteProjectAdapter.SnapshotProjectAndTasks for
+// the full rationale (never assembled from db.Task, same workspace predicate
+// as WorkspacePrecheck, tombstone.workspace_id from the source row).
+func (a *pgDeleteTaskAdapter) SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
+	const q = `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT gen_random_uuid(), t.workspace_id, $2, 'task', t.id, t.project_id, to_jsonb(t), $3, $4
+		  FROM tasks t
+		 WHERE t.id = $1
+		   AND ($5::uuid IS NULL OR t.workspace_id = $5)`
+	if _, err := a.tx.Exec(ctx, q, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
 }
 
-// WriteDeletionAuditLog is a soft-delete contract-stage stub (PR #191 fan-
-// out) — see DeleteTaskAdapter's doc comment. F191-06 implements the real
-// activity_log insert.
-func (a *pgDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string) error {
-	return fmt.Errorf("pg delete task adapter: WriteDeletionAuditLog: %w", ErrNotImplemented)
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)) — see pgDeleteProjectAdapter's twin for the
+// redaction rationale. project_id is NULL per design 3 (uniform across both
+// entity kinds, not just "project no longer exists").
+func (a *pgDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s task_id=%s", deletionID, a.id))
+	if _, err := a.s.q.WithTx(a.tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       deletedBy,
+		Action:      "task_deleted",
+		Notes:       pgconv.ToText(notes),
+		WorkspaceID: a.s.workspaceID,
+	}); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
 }
 
 // LatestActivityAt returns the created_at of the most-recent activity_log row,

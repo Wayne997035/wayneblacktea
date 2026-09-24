@@ -36,6 +36,15 @@ type fakeDeleteTaskAdapter struct {
 	commitErr    error
 
 	calls []string
+
+	// Recorded arguments from the two soft-delete calls (F191-05/F191-06),
+	// so tests can assert the values DeleteTaskOrchestration generated/
+	// threaded through are the same on both.
+	snapshotDeletionID uuid.UUID
+	snapshotDeletedAt  time.Time
+	snapshotDeletedBy  string
+	auditDeletionID    uuid.UUID
+	auditDeletedBy     string
 }
 
 func (f *fakeDeleteTaskAdapter) BeginTx(context.Context) error {
@@ -95,18 +104,20 @@ func (f *fakeDeleteTaskAdapter) Rollback(context.Context) {
 	f.calls = append(f.calls, "Rollback")
 }
 
-// SnapshotTask / WriteDeletionAuditLog are the soft-delete contract-stage
-// additions (PR #191 fan-out) — declared on the interface but NOT called by
-// DeleteTaskOrchestration yet, so these never appear in f.calls. They exist
-// only so this fake keeps satisfying gtd.DeleteTaskAdapter once F191-05/
-// F191-06 wire the real methods in.
-func (f *fakeDeleteTaskAdapter) SnapshotTask(context.Context, uuid.UUID, time.Time, string) error {
+// SnapshotTask / WriteDeletionAuditLog are now wired into
+// DeleteTaskOrchestration (F191-05/F191-06): SnapshotTask runs right after
+// the workspace pre-check succeeds (before any cleanup), WriteDeletionAudit
+// Log right before Commit. The fake records what it was called with so tests
+// can assert both calls share the same deletionID/deletedBy/deletedAt.
+func (f *fakeDeleteTaskAdapter) SnapshotTask(_ context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
 	f.calls = append(f.calls, "SnapshotTask")
+	f.snapshotDeletionID, f.snapshotDeletedAt, f.snapshotDeletedBy = deletionID, deletedAt, deletedBy
 	return nil
 }
 
-func (f *fakeDeleteTaskAdapter) WriteDeletionAuditLog(context.Context, uuid.UUID, string) error {
+func (f *fakeDeleteTaskAdapter) WriteDeletionAuditLog(_ context.Context, deletionID uuid.UUID, deletedBy string) error {
 	f.calls = append(f.calls, "WriteDeletionAuditLog")
+	f.auditDeletionID, f.auditDeletedBy = deletionID, deletedBy
 	return nil
 }
 
@@ -123,8 +134,9 @@ func wantStepPrefix(t *testing.T, err error, id uuid.UUID, step string) {
 func TestDeleteTaskOrchestration_NormalCommit(t *testing.T) {
 	id := uuid.New()
 	f := &fakeDeleteTaskAdapter{exists: true}
+	deletedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, deletedAt, f)
 	if err != nil {
 		t.Fatalf("DeleteTaskOrchestration: %v", err)
 	}
@@ -133,14 +145,27 @@ func TestDeleteTaskOrchestration_NormalCommit(t *testing.T) {
 	// in the database will notice a cleanup that was skipped or that ran
 	// after the row it was supposed to protect had already gone.
 	wantCalls := []string{
-		"BeginTx", "WorkspacePrecheck",
+		"BeginTx", "WorkspacePrecheck", "SnapshotTask",
 		"CleanupWorkSessionTasks", "NullifyWorkSessionsCurrentTask",
 		"CleanupCompletionCandidates", "ResetPromotedVisionItems",
 		"NullifyDecisionTaskRefs", "NullifyKnowledgeItemTaskRefs",
-		"DeleteTaskRow", "Commit", "Rollback",
+		"DeleteTaskRow", "WriteDeletionAuditLog", "Commit", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
 		t.Errorf("unexpected call sequence: %v", f.calls)
+	}
+
+	// [F191-05/F191-06, design 1] deletionID/deletedAt/deletedBy must be
+	// generated/read ONCE and carried unchanged into both the snapshot and
+	// the audit write.
+	if f.snapshotDeletionID != f.auditDeletionID {
+		t.Errorf("snapshot deletionID %s != audit deletionID %s — not the same delete", f.snapshotDeletionID, f.auditDeletionID)
+	}
+	if !f.snapshotDeletedAt.Equal(deletedAt) {
+		t.Errorf("snapshot deletedAt = %v, want the value the caller passed in (%v)", f.snapshotDeletedAt, deletedAt)
+	}
+	if f.snapshotDeletedBy != testerActor || f.auditDeletedBy != testerActor {
+		t.Errorf("deletedBy not threaded through: snapshot=%q audit=%q", f.snapshotDeletedBy, f.auditDeletedBy)
 	}
 }
 
@@ -148,7 +173,7 @@ func TestDeleteTaskOrchestration_WorkspaceMiss_NoOp(t *testing.T) {
 	id := uuid.New()
 	f := &fakeDeleteTaskAdapter{exists: false}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if err != nil {
 		t.Fatalf("DeleteTaskOrchestration: %v", err)
 	}
@@ -163,7 +188,7 @@ func TestDeleteTaskOrchestration_BeginTxError(t *testing.T) {
 	wantErr := errors.New("conn refused")
 	f := &fakeDeleteTaskAdapter{beginTxErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the begin-tx error to propagate, got %v", err)
 	}
@@ -179,7 +204,7 @@ func TestDeleteTaskOrchestration_WorkspacePrecheckError(t *testing.T) {
 	wantErr := errors.New("connection reset")
 	f := &fakeDeleteTaskAdapter{precheckErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the workspace pre-check error to propagate, got %v", err)
 	}
@@ -195,11 +220,11 @@ func TestDeleteTaskOrchestration_CleanupWorkSessionTasksError(t *testing.T) {
 	wantErr := errors.New("disk full")
 	f := &fakeDeleteTaskAdapter{exists: true, cleanupWorkSessionTasksErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the cleanup error to propagate, got %v", err)
 	}
-	wantCalls := []string{"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks", "Rollback"}
+	wantCalls := []string{"BeginTx", "WorkspacePrecheck", "SnapshotTask", "CleanupWorkSessionTasks", "Rollback"}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
 		t.Errorf("expected later cleanups + delete + commit to be skipped, got %v", f.calls)
 	}
@@ -211,12 +236,12 @@ func TestDeleteTaskOrchestration_NullifyWorkSessionsCurrentTaskError(t *testing.
 	wantErr := errors.New("deadlock detected")
 	f := &fakeDeleteTaskAdapter{exists: true, nullifyWorkSessionsErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the nullify error to propagate, got %v", err)
 	}
 	wantCalls := []string{
-		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
+		"BeginTx", "WorkspacePrecheck", "SnapshotTask", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
@@ -230,12 +255,12 @@ func TestDeleteTaskOrchestration_CleanupCompletionCandidatesError(t *testing.T) 
 	wantErr := errors.New("connection reset")
 	f := &fakeDeleteTaskAdapter{exists: true, cleanupCompletionCandidatesErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the cleanup error to propagate, got %v", err)
 	}
 	wantCalls := []string{
-		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
+		"BeginTx", "WorkspacePrecheck", "SnapshotTask", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "CleanupCompletionCandidates", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
@@ -249,12 +274,12 @@ func TestDeleteTaskOrchestration_ResetPromotedVisionItemsError(t *testing.T) {
 	wantErr := errors.New("boom")
 	f := &fakeDeleteTaskAdapter{exists: true, resetPromotedVisionItemsErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the reset error to propagate, got %v", err)
 	}
 	wantCalls := []string{
-		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
+		"BeginTx", "WorkspacePrecheck", "SnapshotTask", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "CleanupCompletionCandidates",
 		"ResetPromotedVisionItems", "Rollback",
 	}
@@ -269,12 +294,12 @@ func TestDeleteTaskOrchestration_DeleteTaskRowError(t *testing.T) {
 	wantErr := errors.New("unique violation")
 	f := &fakeDeleteTaskAdapter{exists: true, deleteRowErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the delete-row error to propagate, got %v", err)
 	}
 	wantCalls := []string{
-		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
+		"BeginTx", "WorkspacePrecheck", "SnapshotTask", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "CleanupCompletionCandidates",
 		"ResetPromotedVisionItems", "NullifyDecisionTaskRefs",
 		"NullifyKnowledgeItemTaskRefs", "DeleteTaskRow", "Rollback",
@@ -295,7 +320,7 @@ func TestDeleteTaskOrchestration_NullifyDecisionRefsError(t *testing.T) {
 	wantErr := errors.New("decisions update failed")
 	f := &fakeDeleteTaskAdapter{exists: true, nullifyDecisionRefsErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the decisions error to propagate, got %v", err)
 	}
@@ -312,7 +337,7 @@ func TestDeleteTaskOrchestration_NullifyKnowledgeRefsError(t *testing.T) {
 	wantErr := errors.New("knowledge_items update failed")
 	f := &fakeDeleteTaskAdapter{exists: true, nullifyKnowledgeRefsErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the knowledge_items error to propagate, got %v", err)
 	}
@@ -329,15 +354,15 @@ func TestDeleteTaskOrchestration_CommitError(t *testing.T) {
 	wantErr := errors.New("connection reset")
 	f := &fakeDeleteTaskAdapter{exists: true, commitErr: wantErr}
 
-	err := gtd.DeleteTaskOrchestration(context.Background(), id, f)
+	err := gtd.DeleteTaskOrchestration(context.Background(), id, testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the commit error to propagate, got %v", err)
 	}
 	wantCalls := []string{
-		"BeginTx", "WorkspacePrecheck", "CleanupWorkSessionTasks",
+		"BeginTx", "WorkspacePrecheck", "SnapshotTask", "CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask", "CleanupCompletionCandidates",
 		"ResetPromotedVisionItems", "NullifyDecisionTaskRefs",
-		"NullifyKnowledgeItemTaskRefs", "DeleteTaskRow", "Commit", "Rollback",
+		"NullifyKnowledgeItemTaskRefs", "DeleteTaskRow", "WriteDeletionAuditLog", "Commit", "Rollback",
 	}
 	if !reflect.DeepEqual(f.calls, wantCalls) {
 		t.Errorf("unexpected call sequence: %v", f.calls)

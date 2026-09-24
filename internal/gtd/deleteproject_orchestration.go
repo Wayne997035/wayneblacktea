@@ -120,7 +120,19 @@ type DeleteProjectAdapter interface {
 // A missing or workspace-mismatched project is a no-op returning 0, not an
 // error — same shape as DeleteTaskOrchestration, so a caller that deletes the
 // same project twice gets a quiet second answer rather than a failure.
-func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter DeleteProjectAdapter) (int, error) {
+//
+// deletedBy/deletedAt are read ONCE by the caller (Store.DeleteProject) and
+// carried through unchanged (design 1): deletedAt in particular must be a
+// single value shared by the project's tombstone row and every task
+// tombstone row it produces, because the pruner's retention cutoff landing
+// between two slightly different per-row timestamps would delete one half of
+// a group and leave the other — restore_project would then "succeed" while
+// writing back a project missing some of its tasks. deletionID is generated
+// here, once, for the same reason: it is the unit restore_project and the
+// pruner both operate on.
+func DeleteProjectOrchestration(
+	ctx context.Context, id uuid.UUID, deletedBy string, deletedAt time.Time, adapter DeleteProjectAdapter,
+) (int, error) {
 	if err := adapter.BeginTx(ctx); err != nil {
 		return 0, fmt.Errorf("delete project %s: begin tx: %w", id, err)
 	}
@@ -137,6 +149,14 @@ func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter Delet
 	taskCount, err := adapter.CountTasks(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("delete project %s: count tasks: %w", id, err)
+	}
+
+	// Snapshot BEFORE any cleanup runs (design 1): this is the first write of
+	// the delete, so the rows it copies are exactly what existed before this
+	// call touched anything.
+	deletionID := uuid.New()
+	if err := adapter.SnapshotProjectAndTasks(ctx, deletionID, deletedAt, deletedBy); err != nil {
+		return 0, fmt.Errorf("delete project %s: snapshot project and tasks: %w", id, err)
 	}
 
 	// Order matters twice over: every reference cleanup before the rows they
@@ -165,6 +185,13 @@ func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter Delet
 		if err := s.fn(ctx); err != nil {
 			return 0, fmt.Errorf("delete project %s: %s: %w", id, s.name, err)
 		}
+	}
+
+	// Audit last, immediately before Commit (design 3, P2(a)): if this write
+	// fails the whole delete rolls back rather than leaving a delete with no
+	// record of who did it.
+	if err := adapter.WriteDeletionAuditLog(ctx, deletionID, deletedBy, taskCount); err != nil {
+		return 0, fmt.Errorf("delete project %s: write deletion audit log: %w", id, err)
 	}
 
 	if err := adapter.Commit(ctx); err != nil {
