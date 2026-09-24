@@ -1337,8 +1337,9 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 		return nil, 0, errWrap("RestoreProject consume tombstones", err)
 	}
 
-	// notes carries only the deletion id and the write-back count — never
-	// the restored project's name (backend-security-design.md §3.1/§3.2).
+	// [F191-12] notes carries only the deletion id and the write-back
+	// count — never the restored project's name (backend-security-
+	// design.md §3.1/§3.2).
 	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
 	if _, err := tx.ExecContext(
 		ctx,
