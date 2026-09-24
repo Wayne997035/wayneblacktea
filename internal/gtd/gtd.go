@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
 )
 
 // ProjectStatus represents the lifecycle of a project.
@@ -113,13 +116,93 @@ var reservedAuditActions = map[string]bool{
 	"project_restored": true,
 }
 
-// IsReservedAuditAction reports whether action, after trimming surrounding
-// whitespace and folding to lowercase, names one of reservedAuditActions —
-// so "Project_Deleted" or " project_deleted " are rejected exactly like the
-// bare literal (P3's "variant bypass" note). Both backends' LogActivity call
-// this before writing any row.
+// canonicalAuditAction reduces action to a lowercase, whitespace/format-free
+// form for IsReservedAuditAction to compare against reservedAuditActions
+// (F191-14):
+//  1. sanitize.Notes strips control characters and ANSI escape sequences —
+//     an attacker wrapping a reserved name in ESC[31m...ESC[0m or padding it
+//     with a raw C1 byte must not slip past the literal-string comparison
+//     the old implementation did.
+//  2. Unicode NFKD compatibility decomposition splits combining marks off
+//     their base letter and folds compatibility variants (fullwidth ASCII,
+//     etc.) onto their canonical form.
+//  3. A whitelist keeps only runes classified Letter/Number/Punct/Symbol,
+//     then additionally drops Other_Default_Ignorable_Code_Point runes and
+//     U+2800 (braille blank, which renders invisible but isn't flagged
+//     Cf/Mn/ODI) — this is a whitelist of visible-character categories, not
+//     an enumerated denylist, because every prior version of this function
+//     was bypassed by a category the denylist hadn't enumerated yet.
+//  4. The result is folded to lowercase.
+func canonicalAuditAction(action string) string {
+	s := norm.NFKD.String(sanitize.Notes(action))
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsPunct(r) && !unicode.IsSymbol(r) {
+			continue
+		}
+		if unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || r == 0x2800 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.ToLower(b.String())
+}
+
+// isHomoglyphOf reports whether canon (already canonicalised) is a
+// same-length visual homoglyph of name (an ASCII reservedAuditActions key):
+// every rune must either equal name's rune at that position, or be a
+// non-ASCII rune belonging to Latin, Cyrillic, Greek, or Common (which
+// covers most digit/symbol/emoji code points too) — scripts outside that
+// set, e.g. CJK, are never treated as a wildcard match.
+func isHomoglyphOf(canon, name []rune) bool {
+	if len(canon) != len(name) {
+		return false
+	}
+	for i, r := range canon {
+		if r == name[i] {
+			continue
+		}
+		if r < 0x80 {
+			return false
+		}
+		if !unicode.Is(unicode.Latin, r) && !unicode.Is(unicode.Cyrillic, r) && !unicode.Is(unicode.Greek, r) && !unicode.Is(unicode.Common, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsReservedAuditAction reports whether action, after canonicalisation
+// (canonicalAuditAction), names one of reservedAuditActions exactly or is a
+// same-length visual homoglyph of one (isHomoglyphOf) — so "Project_Deleted"
+// or " project_deleted " are rejected like the bare literal, and so is a
+// same-length string built out of Cyrillic/Greek/fullwidth lookalikes for
+// one of the three names (F191-14, P3's "variant bypass" note). Both
+// backends' LogActivity call this before writing any row.
+//
+// Known residual gaps, accepted per SEC-PR191-R2-01's P3: homoglyphs outside
+// the four scripts above (e.g. some Armenian letters) are not caught, and
+// glyphs that render blank without carrying Other_Default_Ignorable_Code_Point
+// are not caught beyond the single U+2800 exclusion in canonicalAuditAction.
+// An accented spelling of a reserved name (e.g. "prôject_dèleted") is also
+// rejected, even though the accent is visually distinguishable and not a
+// homoglyph: NFKD decomposition splits the accent into a combining mark,
+// which step 3 of canonicalAuditAction drops, so the canonical form matches
+// the plain name exactly. This is treated as an acceptable false-positive
+// rejection for a snake_case identifier action name, not a bypass to fix.
 func IsReservedAuditAction(action string) bool {
-	return reservedAuditActions[strings.ToLower(strings.TrimSpace(action))]
+	canon := canonicalAuditAction(action)
+	if reservedAuditActions[canon] {
+		return true
+	}
+	canonRunes := []rune(canon)
+	for name := range reservedAuditActions {
+		if isHomoglyphOf(canonRunes, []rune(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProjectIDCleanupExemptions is the sole, machine-checked exception list to

@@ -1,8 +1,10 @@
 package sanitize
 
-// Notes strips control characters (except horizontal tab) and ANSI escape
-// sequences from text before it is stored in activity_log.notes. Capped at
-// 500 runes per §5.4 of backend-security-design.md.
+// Notes strips control characters (except horizontal tab) — both the C0 set
+// (U+0000-U+001F) plus DEL (U+007F) and the C1 set (U+0080-U+009F, [F191-17])
+// — and ANSI escape sequences from text before it is stored in
+// activity_log.notes. Capped at 500 runes per §5.4 of
+// backend-security-design.md.
 func Notes(s string) string {
 	var b []rune
 	runes := []rune(s)
@@ -13,7 +15,13 @@ func Notes(s string) string {
 			i = skipAnsi(runes, i+1)
 			continue
 		}
-		if r == '\t' || (r >= 0x20 && r != 0x7f) {
+		// [F191-17] r < 0x80 || r > 0x9f excludes the C1 control range
+		// (U+0080-U+009F) in addition to the pre-existing C0/DEL check —
+		// this doc comment used to claim "strips control characters"
+		// without that carve-out, so a raw C1 byte (e.g. U+009B, the C1
+		// form of CSI) survived unstripped and could still open an ANSI
+		// sequence in a terminal that renders activity_log.notes.
+		if r == '\t' || (r >= 0x20 && r != 0x7f && (r < 0x80 || r > 0x9f)) {
 			b = append(b, r)
 		}
 		i++

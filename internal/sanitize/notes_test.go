@@ -23,6 +23,13 @@ func TestNotes(t *testing.T) {
 		{name: "CR only stripped", in: "foo\rbar", want: "foobar"},
 		{name: "DEL stripped", in: "foo\x7fbar", want: "foobar"},
 		{name: "unicode passthrough", in: "task: emoji \U0001F600", want: "task: emoji \U0001F600"},
+		// [F191-17] C1 control characters (U+0080-U+009F) are stripped, not
+		// just the C0/DEL range — sanitize.Notes's own doc comment claims
+		// "strips control characters" without carving out C1, so leaving them
+		// in was the function failing its own stated contract.
+		{name: "F191-17 C1 NEL (U+0085) stripped", in: "foo" + string(rune(0x85)) + "bar", want: "foobar"},
+		{name: "F191-17 C1 CSI (U+009B) stripped, not treated as ANSI intro", in: string(rune(0x9B)) + "31mfoo", want: "31mfoo"},
+		{name: "F191-17 C1 range boundaries (U+0080, U+009F) stripped", in: "a" + string(rune(0x80)) + string(rune(0x9F)) + "b", want: "ab"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

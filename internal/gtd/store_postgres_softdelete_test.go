@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -512,6 +513,12 @@ func TestPGLogActivity_RejectsReservedAuditActions(t *testing.T) {
 	cases := []string{
 		"project_deleted", "task_deleted", "project_restored",
 		"Project_Deleted", " project_deleted ", "TASK_DELETED",
+		// [F191-14] three of TestIsReservedAuditAction_Variants' disguised
+		// spellings, proving the canonicalisation fix is actually wired up
+		// against the real Postgres backend and not just the pure-unit test.
+		"project_deleted" + string(rune(0x200B)),     // zero width space suffix
+		"proj" + string(rune(0x0435)) + "ct_deleted", // Cyrillic е homoglyph
+		"\x1b[31mproject_deleted\x1b[0m",             // wrapped in SGR red/reset
 	}
 	before := countActivityLog()
 	for _, action := range cases {
@@ -524,6 +531,66 @@ func TestPGLogActivity_RejectsReservedAuditActions(t *testing.T) {
 	}
 	if got := countActivityLog(); got != before {
 		t.Errorf("activity_log grew by %d row(s) after %d rejected LogActivity calls, want 0", got-before, len(cases))
+	}
+}
+
+// TestPGLogActivity_StripsControlCharsFromAction is F191-15's Postgres
+// half: Store.LogActivity's first line runs action through sanitize.Notes
+// before anything else, so a caller cannot store an action containing
+// control characters or an ANSI escape sequence — this reads the row back
+// from activity_log to prove the stripped value is what actually landed in
+// the database, not just what LogActivity returned.
+func TestPGLogActivity_StripsControlCharsFromAction(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	readBackLatestAction := func(t *testing.T) string {
+		t.Helper()
+		var action string
+		if err := pool.QueryRow(
+			ctx,
+			`SELECT action FROM activity_log
+			  WHERE workspace_id = $1 AND actor = $2 ORDER BY created_at DESC LIMIT 1`,
+			wsID, testerActor,
+		).Scan(&action); err != nil {
+			t.Fatalf("read back action: %v", err)
+		}
+		return action
+	}
+
+	cases := []struct {
+		name       string
+		rawAction  string
+		wantStored string
+	}{
+		{
+			name:       "ESC CSI sequence and BEL stripped",
+			rawAction:  "deploy" + string(rune(0x1B)) + "[31m done" + string(rune(0x07)),
+			wantStored: "deploy done",
+		},
+		{
+			name:       "C1 CSI and C1 NEL stripped",
+			rawAction:  "status" + string(rune(0x9B)) + "_update" + string(rune(0x85)),
+			wantStored: "status_update",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.LogActivity(ctx, testerActor, tc.rawAction, nil, "n"); err != nil {
+				t.Fatalf("LogActivity(%q): %v", tc.rawAction, err)
+			}
+			got := readBackLatestAction(t)
+			if got != tc.wantStored {
+				t.Errorf("stored action = %q, want %q", got, tc.wantStored)
+			}
+			for _, r := range got {
+				if unicode.Is(unicode.Cc, r) {
+					t.Errorf("stored action %q contains a Cc control rune %U, want none", got, r)
+				}
+			}
+		})
 	}
 }
 
@@ -1055,7 +1122,10 @@ func TestPGSoftDelete_RestoreAllowsInsideRetention(t *testing.T) {
 // TestPGSoftDelete_DeletePrunesExpiredTombstones is SEC-PR191-01's
 // write-path prune, Postgres half: a delete's snapshot method removes
 // tombstone rows that already fell out of the retention window before
-// writing its own snapshot.
+// writing its own snapshot. [F191-16] also asserts the inverse: a group
+// still inside the 30-day retention window — seeded under a DIFFERENT
+// workspace, since the prune query has no workspace predicate by design
+// (SEC-PR191-R2-02 P3) — must survive the same delete untouched.
 func TestPGSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()
@@ -1071,6 +1141,22 @@ func TestPGSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 		uuid.New(), wsID, oldDeletionID, uuid.New(), time.Now().UTC().Add(-31*24*time.Hour),
 	); err != nil {
 		t.Fatalf("seed 31-day-old tombstone: %v", err)
+	}
+
+	// [F191-16] a group 29 days old, under another workspace, must survive:
+	// it is inside the 30-day retention window, and the prune query is
+	// intentionally global (no workspace_id filter — the retention window
+	// is a system-wide rule, not per-workspace).
+	otherWsID := uuid.New()
+	recentDeletionID := uuid.New()
+	if _, err := pool.Exec(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES ($1, $2, $3, 'task', $4, NULL, '{}'::jsonb, 'tester', $5)`,
+		uuid.New(), otherWsID, recentDeletionID, uuid.New(), time.Now().UTC().Add(-29*24*time.Hour),
+	); err != nil {
+		t.Fatalf("seed 29-day-old tombstone (other workspace): %v", err)
 	}
 
 	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
@@ -1090,8 +1176,72 @@ func TestPGSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, oldDeletionID); got != 0 {
 		t.Errorf("31-day-old tombstone group still has %d row(s) after a later delete, want 0 (write-path prune should have removed it)", got)
 	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, recentDeletionID); got != 1 {
+		t.Errorf("29-day-old tombstone group (inside retention, another workspace) has %d row(s) after a later delete, want 1 — "+
+			"it must survive since it is not yet expired", got)
+	}
 	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = $1`, tk.ID); got != 1 {
 		t.Errorf("the just-written tombstone for the deleted task is missing, want 1 row")
+	}
+}
+
+// TestPGSoftDelete_DeleteProjectPrunesExpiredTombstones is F191-16's sister
+// to TestPGSoftDelete_DeletePrunesExpiredTombstones, going through
+// DeleteProject instead of DeleteTask: pgDeleteProjectAdapter.
+// SnapshotProjectAndTasks has its own copy of the same expired-tombstone
+// DELETE (store.go's pgDeleteProjectAdapter, a different call site from
+// pgDeleteTaskAdapter's), so the task-path test above cannot catch a
+// regression in this one — SEC-PR191-R2-02 P2.
+func TestPGSoftDelete_DeleteProjectPrunesExpiredTombstones(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	oldDeletionID := uuid.New()
+	if _, err := pool.Exec(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES ($1, $2, $3, 'task', $4, NULL, '{}'::jsonb, 'tester', $5)`,
+		uuid.New(), wsID, oldDeletionID, uuid.New(), time.Now().UTC().Add(-31*24*time.Hour),
+	); err != nil {
+		t.Fatalf("seed 31-day-old tombstone: %v", err)
+	}
+
+	otherWsID := uuid.New()
+	recentDeletionID := uuid.New()
+	if _, err := pool.Exec(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES ($1, $2, $3, 'task', $4, NULL, '{}'::jsonb, 'tester', $5)`,
+		uuid.New(), otherWsID, recentDeletionID, uuid.New(), time.Now().UTC().Add(-29*24*time.Hour),
+	); err != nil {
+		t.Fatalf("seed 29-day-old tombstone (other workspace): %v", err)
+	}
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("sec01-pg-prune-project-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, oldDeletionID); got != 0 {
+		t.Errorf("31-day-old tombstone group still has %d row(s) after a later delete_project, want 0 "+
+			"(write-path prune should have removed it)", got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, recentDeletionID); got != 1 {
+		t.Errorf("29-day-old tombstone group (inside retention, another workspace) has %d row(s) after a later delete_project, want 1 — "+
+			"it must survive since it is not yet expired", got)
+	}
+	projectTombstoneQ := `SELECT count(*) FROM deletion_tombstones WHERE entity_kind = 'project' AND entity_id = $1`
+	if got := countPGRows(t, pool, projectTombstoneQ, proj.ID); got != 1 {
+		t.Errorf("the just-written tombstone for the deleted project is missing, want 1 row")
 	}
 }
 
