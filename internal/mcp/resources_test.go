@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,7 @@ import (
 // SQLite DB for resource handler tests. No mocks — real store implementation.
 func newTestResourceServer(t *testing.T) *Server {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "resource-test.db")
+	dbPath := newMigratedSQLitePath(t, "resource-test.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

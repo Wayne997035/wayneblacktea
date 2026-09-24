@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,7 +41,7 @@ func newTestWorkSessionServer(t *testing.T) *Server {
 // work_session_tasks.task_id). Both handles share the same WAL journal.
 func newTestWorkSessionServerWithDB(t *testing.T) (*Server, *wbtsqlite.DB) {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "ws-test.db")
+	dbPath := newMigratedSQLitePath(t, "ws-test.db")
 
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
@@ -765,7 +764,7 @@ func TestStartWork_CrossWorkspaceIsolation(t *testing.T) {
 
 	// storeA and storeB share the same in-memory DB intentionally so we can
 	// test workspace scoping within the same SQLite instance.
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", wsA.String())
+	db, err := wbtsqlite.Open(context.Background(), newMigratedSQLitePath(t, "cross-workspace-isolation.db"), wsA.String())
 	if err != nil {
 		t.Fatalf("Open sqlite: %v", err)
 	}
@@ -1082,7 +1081,7 @@ func TestHandleStartWork_ReturnsContextPack(t *testing.T) {
 func TestHandleStartWork_NilContextAssembler_NonFatal(t *testing.T) {
 	t.Parallel()
 	wsID := uuid.New()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", wsID.String())
+	db, err := wbtsqlite.Open(context.Background(), newMigratedSQLitePath(t, "nil-context-assembler.db"), wsID.String())
 	if err != nil {
 		t.Fatalf("Open sqlite: %v", err)
 	}
@@ -1374,7 +1373,7 @@ func TestHandleFinishWork_AutoOutcome_NoTaskID_NonFatal(t *testing.T) {
 func TestHandleFinishWork_AutoOutcome_NilOutcomeStore_NonFatal(t *testing.T) {
 	t.Parallel()
 	wsID := uuid.New()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", wsID.String())
+	db, err := wbtsqlite.Open(context.Background(), newMigratedSQLitePath(t, "nil-outcome-store.db"), wsID.String())
 	if err != nil {
 		t.Fatalf("Open sqlite: %v", err)
 	}

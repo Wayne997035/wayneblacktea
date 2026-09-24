@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -77,7 +76,7 @@ func newCloseoutTestServer(
 	sessStub session.StoreIface,
 ) *Server {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "closeout-test.db")
+	dbPath := newMigratedSQLitePath(t, "closeout-test.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

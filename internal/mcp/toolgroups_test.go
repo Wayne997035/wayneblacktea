@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -43,7 +42,7 @@ const coreToolSerializedMaxBytes = 19294
 // its wired *server.MCPServer — the same object cmd/server and mcprunner use.
 func newTestMCPServer(t *testing.T) (*Server, *server.MCPServer) {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "toolgroups.db")
+	dbPath := newMigratedSQLitePath(t, "toolgroups.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

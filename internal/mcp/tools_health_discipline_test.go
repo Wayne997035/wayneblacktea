@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -370,7 +369,7 @@ func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
 // drift detection like the 15 tools this remediation round just fixed.
 func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
 	t.Parallel()
-	dbPath := filepath.Join(t.TempDir(), "mcp-parity.db")
+	dbPath := newMigratedSQLitePath(t, "mcp-parity.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -37,7 +36,7 @@ var _ completionCandidateStore = (*fakeDashCandidateStore)(nil)
 // newTestServerWithCandidates constructs a minimal Server for dashboard tests.
 func newTestServerWithCandidates(t *testing.T, store completionCandidateStore) *Server {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "dashboard-test.db")
+	dbPath := newMigratedSQLitePath(t, "dashboard-test.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

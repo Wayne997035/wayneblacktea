@@ -2,7 +2,6 @@ package mcp_test
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -60,7 +59,7 @@ func TestServerCapabilityRegistry_MatchesKnownSet(t *testing.T) {
 // matching the pattern used by TestNew_AcceptsSQLiteBundle in server_test.go.
 func sqliteFixture(t *testing.T) storage.ServerStores {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "capabilities.db")
+	dbPath := mcpsrv.NewMigratedSQLitePath(t, "capabilities.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,

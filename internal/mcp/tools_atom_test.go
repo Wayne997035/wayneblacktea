@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,7 +23,7 @@ import (
 // with a test fake.
 func newAtomizeServer(t *testing.T) *Server {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "atomize-test.db")
+	dbPath := newMigratedSQLitePath(t, "atomize-test.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,
 		SQLitePath: dbPath,
@@ -219,7 +218,7 @@ func TestLaunchAtomize_SemDrop(t *testing.T) {
 // is nil (not needed for promote path).
 func newPromoteServer(t *testing.T) (*Server, *wbtsqlite.DB) {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.Open(context.Background(), newMigratedSQLitePath(t, "promote-atom.db"), "")
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
