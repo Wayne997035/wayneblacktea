@@ -1388,11 +1388,17 @@ func (s *GTDStore) PruneDeletionTombstones(ctx context.Context, cutoff time.Time
 	return n, nil
 }
 
-// LogActivity records an activity log entry. project may be nil. Rejects
-// action names reserved for the delete/restore transactions' own in-tx
-// audit writes (SEC-PR191-02) — see gtd.IsReservedAuditAction's doc comment
-// for why.
+// LogActivity records an activity log entry. project may be nil. action is
+// sanitised with sanitize.Notes the same way notes already was — control
+// characters and ANSI escape sequences are stripped before the
+// reserved-name check runs, so a caller cannot dodge IsReservedAuditAction
+// by wrapping a reserved name in an escape sequence (F191-15, SQLite half;
+// see SEC-PR191-R2-01). Postgres's twin (internal/gtd/store.go's
+// Store.LogActivity) does the same. Rejects action names reserved for the
+// delete/restore transactions' own in-tx audit writes (SEC-PR191-02) — see
+// gtd.IsReservedAuditAction's doc comment for why.
 func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
+	action = sanitize.Notes(action) // [F191-15]
 	if gtd.IsReservedAuditAction(action) {
 		return gtd.ErrReservedAction
 	}

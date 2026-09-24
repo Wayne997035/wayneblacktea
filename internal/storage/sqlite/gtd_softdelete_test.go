@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -330,6 +331,12 @@ func TestLogActivity_RejectsReservedAuditActions(t *testing.T) {
 	cases := []string{
 		"project_deleted", "task_deleted", "project_restored",
 		"Project_Deleted", " project_deleted ", "TASK_DELETED",
+		// [F191-14] three of TestIsReservedAuditAction_Variants' disguised
+		// spellings, proving the canonicalisation fix is actually wired up
+		// against the SQLite backend and not just the pure-unit test.
+		"project_deleted" + string(rune(0x200B)),     // zero width space suffix
+		"proj" + string(rune(0x0435)) + "ct_deleted", // Cyrillic е homoglyph
+		"\x1b[31mproject_deleted\x1b[0m",             // wrapped in SGR red/reset
 	}
 	before := countActivityLog()
 	for _, action := range cases {
@@ -342,6 +349,73 @@ func TestLogActivity_RejectsReservedAuditActions(t *testing.T) {
 	}
 	if got := countActivityLog(); got != before {
 		t.Errorf("activity_log grew by %d row(s) after %d rejected LogActivity calls, want 0", got-before, len(cases))
+	}
+}
+
+// TestLogActivity_StripsControlCharsFromAction is F191-15's SQLite half:
+// GTDStore.LogActivity's first line runs action through sanitize.Notes
+// before anything else, so a caller cannot store an action containing
+// control characters or an ANSI escape sequence — this reads the row back
+// from activity_log to prove the stripped value is what actually landed in
+// the database, not just what LogActivity returned. Postgres twin:
+// TestPGLogActivity_StripsControlCharsFromAction
+// (internal/gtd/store_postgres_softdelete_test.go).
+func TestLogActivity_StripsControlCharsFromAction(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	// ORDER BY rowid, not created_at: activity_log.created_at is
+	// millisecond-resolution (strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+	// migrations/sqlite/000026_drop_fk_constraints.up.sql) and this test's
+	// two sub-tests can insert within the same millisecond, tying on
+	// created_at — activity_log has no WITHOUT ROWID clause, so its
+	// implicit rowid is monotonically increasing with insertion order and
+	// never ties.
+	readBackLatestAction := func(t *testing.T) string {
+		t.Helper()
+		var action string
+		if err := d.QueryRowContext(
+			ctx,
+			`SELECT action FROM activity_log WHERE actor = ?1 ORDER BY rowid DESC LIMIT 1`,
+			testerActor,
+		).Scan(&action); err != nil {
+			t.Fatalf("read back action: %v", err)
+		}
+		return action
+	}
+
+	cases := []struct {
+		name       string
+		rawAction  string
+		wantStored string
+	}{
+		{
+			name:       "ESC CSI sequence and BEL stripped",
+			rawAction:  "deploy" + string(rune(0x1B)) + "[31m done" + string(rune(0x07)),
+			wantStored: "deploy done",
+		},
+		{
+			name:       "C1 CSI and C1 NEL stripped",
+			rawAction:  "status" + string(rune(0x9B)) + "_update" + string(rune(0x85)),
+			wantStored: "status_update",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.LogActivity(ctx, testerActor, tc.rawAction, nil, "n"); err != nil {
+				t.Fatalf("LogActivity(%q): %v", tc.rawAction, err)
+			}
+			got := readBackLatestAction(t)
+			if got != tc.wantStored {
+				t.Errorf("stored action = %q, want %q", got, tc.wantStored)
+			}
+			for _, r := range got {
+				if unicode.Is(unicode.Cc, r) {
+					t.Errorf("stored action %q contains a Cc control rune %U, want none", got, r)
+				}
+			}
+		})
 	}
 }
 
@@ -1163,7 +1237,12 @@ func TestRestoreProject_AllowsInsideRetention(t *testing.T) {
 // removes tombstone rows that already fell out of the retention window
 // before writing its own snapshot, so deletion_tombstones stays bounded
 // even when the scheduled pruner hasn't run yet (e.g. the stdio transport,
-// which has no pruner wired at all).
+// which has no pruner wired at all). [F191-16] It also proves the opposite
+// direction: a group still inside the 30-day retention window — belonging
+// to a different workspace, so the write-path prune's lack of a workspace
+// filter can't be mistaken for scoping it away — must survive the same
+// delete untouched, so a still-restorable group in another workspace is
+// never collateral damage of a later, unrelated delete.
 func TestSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
@@ -1179,6 +1258,23 @@ func TestSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 		uuid.New().String(), oldDeletionID, uuid.New().String(), oldDeletedAt,
 	); err != nil {
 		t.Fatalf("seed 31-day-old tombstone: %v", err)
+	}
+
+	// [F191-16] a group inside the retention window, belonging to a
+	// different workspace (a real uuid string, not NULL — the write-path
+	// prune's DELETE has no workspace_id filter, so this is the case that
+	// actually exercises the retention cutoff instead of a scoping guard).
+	survivingDeletionID := uuid.New().String()
+	otherWorkspaceID := uuid.New().String()
+	survivingDeletedAt := time.Now().UTC().Add(-29 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES (?1, ?2, ?3, 'task', ?4, NULL, '{}', 'tester', ?5)`,
+		uuid.New().String(), otherWorkspaceID, survivingDeletionID, uuid.New().String(), survivingDeletedAt,
+	); err != nil {
+		t.Fatalf("seed 29-day-old other-workspace tombstone: %v", err)
 	}
 
 	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "sec01-prune-" + uuid.New().String(), Title: "P"})
@@ -1198,8 +1294,77 @@ func TestSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 	}
 	if got := countRows(
 		t, d,
+		`SELECT count(*) FROM deletion_tombstones WHERE deletion_id = ?1`, survivingDeletionID,
+	); got != 1 {
+		t.Errorf("29-day-old other-workspace tombstone group has %d row(s) after a later delete, want 1 "+
+			"(still inside the 30-day retention window, must survive)", got)
+	}
+	if got := countRows(
+		t, d,
 		`SELECT count(*) FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = ?1`, tk.ID.String(),
 	); got != 1 {
 		t.Errorf("the just-written tombstone for the deleted task is missing, want 1 row")
+	}
+}
+
+// TestSoftDelete_DeleteProjectPrunesExpiredTombstones is
+// TestSoftDelete_DeletePrunesExpiredTombstones's DeleteProject sibling
+// (F191-16): the task-path assertions above don't exercise
+// sqliteDeleteProjectAdapter.SnapshotProjectAndTasks's own cutoffStr
+// (internal/storage/sqlite/gtd.go), which is a separate expression that
+// could be broken independently of the task path's.
+func TestSoftDelete_DeleteProjectPrunesExpiredTombstones(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	expiredDeletionID := uuid.New().String()
+	expiredDeletedAt := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES (?1, NULL, ?2, 'task', ?3, NULL, '{}', 'tester', ?4)`,
+		uuid.New().String(), expiredDeletionID, uuid.New().String(), expiredDeletedAt,
+	); err != nil {
+		t.Fatalf("seed 31-day-old tombstone: %v", err)
+	}
+
+	survivingDeletionID := uuid.New().String()
+	otherWorkspaceID := uuid.New().String()
+	survivingDeletedAt := time.Now().UTC().Add(-29 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`INSERT INTO deletion_tombstones
+		   (id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		 VALUES (?1, ?2, ?3, 'task', ?4, NULL, '{}', 'tester', ?5)`,
+		uuid.New().String(), otherWorkspaceID, survivingDeletionID, uuid.New().String(), survivingDeletedAt,
+	); err != nil {
+		t.Fatalf("seed 29-day-old other-workspace tombstone: %v", err)
+	}
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-16-deleteproject-prune-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = ?1`, expiredDeletionID); got != 0 {
+		t.Errorf("31-day-old tombstone group still has %d row(s) after DeleteProject, want 0 (write-path prune should have removed it)", got)
+	}
+	if got := countRows(
+		t, d,
+		`SELECT count(*) FROM deletion_tombstones WHERE deletion_id = ?1`, survivingDeletionID,
+	); got != 1 {
+		t.Errorf("29-day-old other-workspace tombstone group has %d row(s) after DeleteProject, want 1 "+
+			"(still inside the 30-day retention window, must survive)", got)
+	}
+	if got := countRows(
+		t, d,
+		`SELECT count(*) FROM deletion_tombstones WHERE entity_kind = 'project' AND entity_id = ?1`, proj.ID.String(),
+	); got != 1 {
+		t.Errorf("the just-deleted project's own tombstone is missing, want 1 row")
 	}
 }
