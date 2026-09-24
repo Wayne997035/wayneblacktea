@@ -1207,8 +1207,201 @@ func (s *GTDStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64,
 	return n, nil
 }
 
-// LogActivity records an activity log entry. project may be nil.
+// sqliteProjectRestoreColumns / sqliteTaskRestoreColumns name every column
+// RestoreProject writes back via json_extract(payload, '$.<col>') — SQLite
+// has no jsonb_populate_record equivalent (see the Postgres twin,
+// gtd.Store.RestoreProject in internal/gtd/store.go), so every column is
+// named explicitly, the same way sqliteProjectSnapshotJSON/
+// sqliteTaskSnapshotJSON name every column on the way IN.
+// TestRestoreColumnList_MatchesPragmaTableInfo (F191-10) asserts both lists
+// against pragma_table_info so a column added to either table without a
+// matching entry here fails a test instead of silently vanishing from every
+// future restore.
+var sqliteProjectRestoreColumns = []string{
+	"id", "workspace_id", "goal_id", "name", "title", "description",
+	"status", "area", "priority", "repo_name", "created_at", "updated_at",
+}
+
+var sqliteTaskRestoreColumns = []string{
+	"id", "workspace_id", "project_id", "title", "description", "status",
+	"priority", "importance", "context", "assignee", "due_date", "artifact",
+	"checklist", "kind", "branch_name", "pr_url", "commit_shas",
+	"vision_item_id", "created_at", "updated_at", "area",
+}
+
+// sqliteRestoreInsertSQL builds "INSERT INTO <table> (<cols…>) SELECT
+// json_extract(payload,'$.<col>'), … FROM deletion_tombstones WHERE
+// deletion_id = ?1 AND entity_kind = '<entityKind>'" from cols — the exact
+// same Go slice TestRestoreColumnList_MatchesPragmaTableInfo checks against
+// pragma_table_info, so the query actually executed and the query the test
+// verifies can never drift apart the way two independently hand-copied SQL
+// strings could.
+func sqliteRestoreInsertSQL(table, entityKind string, cols []string) string {
+	exprs := make([]string, len(cols))
+	for i, c := range cols {
+		exprs[i] = fmt.Sprintf("json_extract(payload,'$.%s')", c)
+	}
+	return fmt.Sprintf(
+		`INSERT INTO %s (%s) SELECT %s FROM deletion_tombstones WHERE deletion_id = ?1 AND entity_kind = '%s'`,
+		table, strings.Join(cols, ", "), strings.Join(exprs, ", "), entityKind,
+	)
+}
+
+var (
+	sqliteProjectRestoreInsertQ = sqliteRestoreInsertSQL("projects", "project", sqliteProjectRestoreColumns)
+	sqliteTaskRestoreInsertQ    = sqliteRestoreInsertSQL("tasks", "task", sqliteTaskRestoreColumns)
+)
+
+// RestoreProject is the SQLite twin of gtd.Store.RestoreProject — see that
+// method's doc comment for the full design rationale (design 4, decisions
+// 3cc5350f/17a1086b, F191-11). The tombstone group is found by its most
+// recent entity_kind='project' row for this project_id, then everything
+// after — conflict check, write-back, consume, audit — operates on that
+// group's deletion_id alone, NEVER on project_id (an earlier, unrelated
+// delete_task group under the same project may still be inside the
+// retention window). Every step runs inside one *sql.Tx: any failure,
+// including a unique-constraint hit on either INSERT, rolls the whole
+// restore back via the deferred Rollback (P2(a)).
+func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor string) (*db.Project, int, error) {
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, errWrap("RestoreProject begin", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// [SEC-PR191-01] deleted_at >= retentionCutoff enforces the 30-day
+	// restore window at the lookup itself, not just via the scheduled
+	// pruner (which doesn't run on every process — stdio transport wires
+	// none at all).
+	retentionCutoff := time.Now().UTC().Add(-gtd.DeletionTombstoneRetention).Format(sqliteTimestampLayout)
+	var deletionID, payloadName string
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT deletion_id, json_extract(payload,'$.name')
+		   FROM deletion_tombstones
+		  WHERE entity_kind = 'project' AND project_id = ?1
+		    AND (?2 IS NULL OR workspace_id = ?2)
+		    AND deleted_at >= ?3
+		  ORDER BY deleted_at DESC
+		  LIMIT 1`,
+		id.String(), s.db.workspaceArg(), retentionCutoff,
+	)
+	if err := row.Scan(&deletionID, &payloadName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, gtd.ErrNotFound
+		}
+		return nil, 0, errWrap("RestoreProject find group", err)
+	}
+
+	// Precheck: an id or name collision is rejected before anything is
+	// written, distinct from the write-time unique-violation catches below
+	// which handle a task id collision the precheck cannot see (it only
+	// looks at projects).
+	var conflict int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 OR name = ?2)`,
+		id.String(), payloadName,
+	).Scan(&conflict); err != nil {
+		return nil, 0, errWrap("RestoreProject conflict check", err)
+	}
+	if conflict != 0 {
+		return nil, 0, gtd.ErrConflict
+	}
+
+	//nolint:unqueryvet // sqliteProjectRestoreInsertQ is built once at package
+	// init from sqliteProjectRestoreColumns (a hardcoded Go string slice,
+	// gtd.go above) — never from a request/tool argument; the only bound
+	// value here is deletionID via ?1.
+	if _, err := tx.ExecContext(ctx, sqliteProjectRestoreInsertQ, deletionID); err != nil {
+		if isUniqueViolationSQLite(err) {
+			return nil, 0, gtd.ErrConflict
+		}
+		return nil, 0, errWrap("RestoreProject insert project", err)
+	}
+
+	//nolint:unqueryvet // sqliteTaskRestoreInsertQ: same rationale as
+	// sqliteProjectRestoreInsertQ above (built once from
+	// sqliteTaskRestoreColumns, a hardcoded Go string slice).
+	res, err := tx.ExecContext(ctx, sqliteTaskRestoreInsertQ, deletionID)
+	if err != nil {
+		if isUniqueViolationSQLite(err) {
+			return nil, 0, gtd.ErrConflict
+		}
+		return nil, 0, errWrap("RestoreProject insert tasks", err)
+	}
+	tasksRestoredI64, err := res.RowsAffected()
+	if err != nil {
+		return nil, 0, errWrap("RestoreProject tasks rows affected", err)
+	}
+	tasksRestored := int(tasksRestoredI64)
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deletion_id = ?1`, deletionID,
+	); err != nil {
+		return nil, 0, errWrap("RestoreProject consume tombstones", err)
+	}
+
+	// [F191-12] notes carries only the deletion id and the write-back
+	// count — never the restored project's name, so the audit trail cannot
+	// leak stored user content back out through a log line.
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		 VALUES (?1, ?2, ?3, ?4, 'project_restored', ?5)`,
+		uuid.New().String(), s.db.workspaceArg(), actor, id.String(), notes,
+	); err != nil {
+		return nil, 0, errWrap("RestoreProject audit log", err)
+	}
+
+	restoreRow := tx.QueryRowContext(ctx, `SELECT `+projectsSelectCols+` FROM projects WHERE id = ?1`, id.String())
+	restored, err := scanProject(restoreRow.Scan)
+	if err != nil {
+		return nil, 0, errWrap("RestoreProject read back", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, 0, errWrap("RestoreProject commit", err)
+	}
+	return &restored, tasksRestored, nil
+}
+
+// PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
+// cutoff (design 6, decision 17a1086b, F191-13). No per-group logic is
+// needed: every row a single delete_project/delete_task call wrote shares
+// the exact same deleted_at value (design 1), so a plain range DELETE can
+// never remove half of a group. Global cleanup (no workspace filter),
+// matching the Postgres twin and PruneOlderThan's activity_log contract.
+func (s *GTDStore) PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM deletion_tombstones WHERE deleted_at < ?1`
+	cutoffStr := cutoff.UTC().Format(sqliteTimestampLayout)
+	res, err := s.db.conn.ExecContext(ctx, q, cutoffStr)
+	if err != nil {
+		return 0, errWrap("PruneDeletionTombstones", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, errWrap("PruneDeletionTombstones rows affected", err)
+	}
+	return n, nil
+}
+
+// LogActivity records an activity log entry. project may be nil. action is
+// sanitised with sanitize.Notes the same way notes already was — control
+// characters and ANSI escape sequences are stripped before the
+// reserved-name check runs, so a caller cannot dodge IsReservedAuditAction
+// by wrapping a reserved name in an escape sequence (F191-15, SQLite half;
+// see SEC-PR191-R2-01). Postgres's twin (internal/gtd/store.go's
+// Store.LogActivity) does the same. Rejects action names reserved for the
+// delete/restore transactions' own in-tx audit writes (SEC-PR191-02) — see
+// gtd.IsReservedAuditAction's doc comment for why.
 func (s *GTDStore) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
+	action = sanitize.Notes(action) // [F191-15]
+	if gtd.IsReservedAuditAction(action) {
+		return gtd.ErrReservedAction
+	}
 	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
 	_, err := s.db.conn.ExecContext(ctx, q,
@@ -1757,8 +1950,10 @@ func (s *GTDStore) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status
 // workspace filter is now redundant defence-in-depth. See
 // gtd.DeleteTaskOrchestration (internal/gtd/deletetask_orchestration.go) for
 // the shared control flow this delegates to.
-func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	if err := gtd.DeleteTaskOrchestration(ctx, id, &sqliteDeleteTaskAdapter{s: s, id: id}); err != nil {
+// actor identifies who requested the delete and is written into the
+// activity_log audit row this call produces (see gtd.DeleteTaskOrchestration).
+func (s *GTDStore) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
+	if err := gtd.DeleteTaskOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteTaskAdapter{s: s, id: id}); err != nil {
 		return fmt.Errorf("%w", err) // context already added by DeleteTaskOrchestration
 	}
 	return nil
@@ -1907,12 +2102,67 @@ func (a *sqliteDeleteTaskAdapter) Rollback(context.Context) {
 	_ = a.tx.Rollback()
 }
 
+// SnapshotTask copies the task row into deletion_tombstones (design 1/2) via
+// json_object() naming every column explicitly — SQLite has no to_jsonb()
+// equivalent, so unlike the Postgres twin this list must be kept in sync by
+// hand with the tasks schema; sqliteSnapshotColumnListTest (F191-09) asserts
+// it against pragma_table_info('tasks') so a column added there without a
+// matching entry here fails loudly instead of silently dropping from every
+// future restore. checklist/commit_shas are wrapped in json(...): both
+// columns already hold a JSON string (default '[]'), and json_object()
+// without that wrapper would double-encode them as an escaped string value
+// instead of a nested JSON array.
+func (a *sqliteDeleteTaskAdapter) SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
+	// [SEC-PR191-01] Prune tombstone rows that already fell out of the
+	// retention window before writing this delete's own snapshot — see
+	// gtd.DeletionTombstoneRetention's doc comment for why this runs here
+	// instead of relying solely on the scheduled pruner. cutoff is derived
+	// from deletedAt (the single clock read this whole deletion already
+	// took), not a fresh time.Now().
+	if _, err := a.tx.ExecContext(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deleted_at < ?1`,
+		deletedAt.Add(-gtd.DeletionTombstoneRetention).UTC().Format(sqliteTimestampLayout),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+
+	q := `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT ` + sqliteRandomUUIDExpr + `, t.workspace_id, ?2, 'task', t.id, t.project_id, ` + sqliteTaskSnapshotJSON + `, ?3, ?4
+		  FROM tasks t
+		 WHERE t.id = ?1
+		   AND (?5 IS NULL OR t.workspace_id = ?5)`
+	if _, err := a.tx.ExecContext(
+		ctx, q,
+		a.id.String(), deletionID.String(), deletedBy, deletedAt.UTC().Format(sqliteTimestampLayout), a.s.db.workspaceArg(),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)) — SQLite twin of pgDeleteTaskAdapter's
+// method. project_id is NULL per design 3 (uniform across both entity
+// kinds).
+func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s task_id=%s", deletionID, a.id))
+	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		VALUES (?1, ?2, ?3, NULL, 'task_deleted', ?4)`
+	if _, err := a.tx.ExecContext(ctx, q, uuid.New().String(), a.s.db.workspaceArg(), deletedBy, notes); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
 // DeleteProject deletes a project together with every task under it and
 // returns how many tasks were removed. SQLite twin of gtd.Store.DeleteProject;
 // both drive the same gtd.DeleteProjectOrchestration, so the two backends
-// cannot clean different sets of references.
-func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID) (int, error) {
-	n, err := gtd.DeleteProjectOrchestration(ctx, id, &sqliteDeleteProjectAdapter{s: s, id: id})
+// cannot clean different sets of references. actor is written into the
+// activity_log audit row this call produces, same as DeleteTask's.
+func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
+	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteProjectAdapter{s: s, id: id})
 	if err != nil {
 		return 0, fmt.Errorf("%w", err) // context already added by DeleteProjectOrchestration
 	}
@@ -1930,6 +2180,44 @@ type sqliteDeleteProjectAdapter struct {
 // task-level cleanup filters on it so the cleanups and the DELETE can never
 // select different sets.
 const sqliteProjectTaskIDs = `SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`
+
+// sqliteRandomUUIDExpr fabricates a random v4 UUID string, evaluated once per
+// output row — so an INSERT...SELECT snapshotting many task rows gives each
+// tombstone row its own id, the same way a Go-side uuid.New() per row would,
+// without the round trip. Same expression this backend already uses as a
+// column DEFAULT (migrations/sqlite/000032_procedural_memories.up.sql);
+// deletion_tombstones.id has no DEFAULT (design 1: a design consequence, not
+// a limitation — the Go orchestration layer generates every id that matters
+// to transactional consistency across this schema), so it is inlined here as
+// a value expression instead.
+const sqliteRandomUUIDExpr = `(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+	substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab', abs(random() % 4) + 1, 1) ||
+	substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))`
+
+// sqliteProjectSnapshotJSON and sqliteTaskSnapshotJSON are SQLite's stand-in
+// for Postgres's to_jsonb(p)/to_jsonb(t) (design 2): SQLite has no equivalent
+// function, so every column of `projects` / `tasks` is named explicitly.
+// TestSnapshotColumnList_MatchesPragmaTableInfo (F191-09) asserts this exact
+// column list against pragma_table_info so a column added to either table
+// without a matching entry here fails a test instead of silently vanishing
+// from every future restore. checklist/commit_shas are wrapped in json(...):
+// both already hold a JSON string (column default '[]'), and json_object()
+// without that wrapper would store them as a double-encoded, escaped string
+// instead of a nested JSON value.
+const sqliteProjectSnapshotJSON = `json_object(
+	'id', p.id, 'workspace_id', p.workspace_id, 'goal_id', p.goal_id, 'name', p.name,
+	'title', p.title, 'description', p.description, 'status', p.status, 'area', p.area,
+	'priority', p.priority, 'repo_name', p.repo_name, 'created_at', p.created_at, 'updated_at', p.updated_at
+)`
+
+const sqliteTaskSnapshotJSON = `json_object(
+	'id', t.id, 'workspace_id', t.workspace_id, 'project_id', t.project_id, 'title', t.title,
+	'description', t.description, 'status', t.status, 'priority', t.priority, 'importance', t.importance,
+	'context', t.context, 'assignee', t.assignee, 'due_date', t.due_date, 'artifact', t.artifact,
+	'checklist', json(t.checklist), 'kind', t.kind, 'branch_name', t.branch_name, 'pr_url', t.pr_url,
+	'commit_shas', json(t.commit_shas), 'vision_item_id', t.vision_item_id, 'created_at', t.created_at,
+	'updated_at', t.updated_at, 'area', t.area
+)`
 
 func (a *sqliteDeleteProjectAdapter) run(ctx context.Context, q string, args ...any) error {
 	if _, err := a.tx.ExecContext(ctx, q, args...); err != nil {
@@ -2041,6 +2329,70 @@ func (a *sqliteDeleteProjectAdapter) NullifySessionHandoffProjectRefs(ctx contex
 
 func (a *sqliteDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Context) error {
 	return a.execByProject(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = ?1`)
+}
+
+// NullifyVisionItemProjectRefs NULLs vision_items.project_id (migration
+// 000029, SQLite twin). [F191-01]
+func (a *sqliteDeleteProjectAdapter) NullifyVisionItemProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE vision_items SET project_id = NULL WHERE project_id = ?1`)
+}
+
+// NullifyProceduralMemoryProjectRefs NULLs procedural_memories.project_id
+// (migration 000032, SQLite twin). [F191-01]
+func (a *sqliteDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = ?1`)
+}
+
+// SnapshotProjectAndTasks copies the project row and every task row under it
+// into deletion_tombstones (design 1/2) — SQLite twin of
+// pgDeleteProjectAdapter's method; see sqliteDeleteTaskAdapter.SnapshotTask
+// for why json_object()'s column list is hand-maintained and how
+// checklist/commit_shas avoid double-encoding.
+func (a *sqliteDeleteProjectAdapter) SnapshotProjectAndTasks(
+	ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
+) error {
+	deletedAtStr := deletedAt.UTC().Format(sqliteTimestampLayout)
+
+	// [SEC-PR191-01] Prune tombstone rows that already fell out of the
+	// retention window before writing this delete's own snapshot — see
+	// sqliteDeleteTaskAdapter.SnapshotTask's twin for the full rationale.
+	cutoffStr := deletedAt.Add(-gtd.DeletionTombstoneRetention).UTC().Format(sqliteTimestampLayout)
+	if err := a.run(ctx, `DELETE FROM deletion_tombstones WHERE deleted_at < ?1`, cutoffStr); err != nil {
+		return err
+	}
+
+	projectQ := `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT ` + sqliteRandomUUIDExpr + `, p.workspace_id, ?2, 'project', p.id, p.id, ` + sqliteProjectSnapshotJSON + `, ?3, ?4
+		  FROM projects p
+		 WHERE p.id = ?1
+		   AND (?5 IS NULL OR p.workspace_id = ?5)`
+	if err := a.run(ctx, projectQ, a.id.String(), deletionID.String(), deletedBy, deletedAtStr, a.s.db.workspaceArg()); err != nil {
+		return err
+	}
+
+	taskQ := `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT ` + sqliteRandomUUIDExpr + `, t.workspace_id, ?2, 'task', t.id, t.project_id, ` + sqliteTaskSnapshotJSON + `, ?3, ?4
+		  FROM tasks t
+		 WHERE t.project_id = ?1
+		   AND (?5 IS NULL OR t.workspace_id = ?5)`
+	if err := a.run(ctx, taskQ, a.id.String(), deletionID.String(), deletedBy, deletedAtStr, a.s.db.workspaceArg()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)) — SQLite twin of pgDeleteProjectAdapter's
+// method.
+func (a *sqliteDeleteProjectAdapter) WriteDeletionAuditLog(
+	ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int,
+) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s project_id=%s tasks=%d", deletionID, a.id, taskCount))
+	const q = `INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		VALUES (?1, ?2, ?3, NULL, 'project_deleted', ?4)`
+	return a.run(ctx, q, uuid.New().String(), a.s.db.workspaceArg(), deletedBy, notes)
 }
 
 func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {

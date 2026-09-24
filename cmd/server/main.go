@@ -28,6 +28,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/discord"
 	"github.com/Wayne997035/wayneblacktea/internal/discordbot"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	mcpsrv "github.com/Wayne997035/wayneblacktea/internal/mcp"
@@ -1063,6 +1064,20 @@ func wireScheduler(
 			Minute:    45,
 		}); err != nil {
 			return nil, fmt.Errorf("wiring session_handoffs pruner: %w", err)
+		}
+	}
+	// [F191-08] Wire deletion_tombstones pruner (both backends; 30-day TTL,
+	// decision 17a1086b). 04:50 avoids the 03:00-04:45 prune cluster
+	// documented on the pruners above.
+	if gtdStore := stores.GTD(); gtdStore != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "deletion_tombstones",
+			Store:     scheduler.NewDeletionTombstonePrunerAdapter(gtdStore),
+			Retention: gtd.DeletionTombstoneRetention,
+			Hour:      4,
+			Minute:    50,
+		}); err != nil {
+			return nil, fmt.Errorf("wiring deletion_tombstones pruner: %w", err)
 		}
 	}
 	// Wire behavior governance weekly job (Wednesday 04:15 Asia/Taipei). Applies

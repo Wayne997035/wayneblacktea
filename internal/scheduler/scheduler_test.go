@@ -3,6 +3,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -626,5 +627,64 @@ func TestMergedPRsPrunerAdapter_DelegatesToPruneOlderThanWithDuration(t *testing
 	}
 	if diff := pruner.gotDuration - retention; diff < -time.Second || diff > time.Second {
 		t.Errorf("PruneOlderThan got duration %v, want ~%v", pruner.gotDuration, retention)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deletionTombstonePrunerAdapter tests (F191-08) — unlike the two adapters
+// above, PruneDeletionTombstones already takes a cutoff time.Time, so no
+// duration<->cutoff conversion is needed — only the method name differs
+// from PrunerStore's PruneOlderThan.
+// ---------------------------------------------------------------------------
+
+type stubDeletionTombstonePruner struct {
+	called    bool
+	gotCutoff time.Time
+	n         int64
+	err       error
+}
+
+func (s *stubDeletionTombstonePruner) PruneDeletionTombstones(_ context.Context, cutoff time.Time) (int64, error) {
+	s.called = true
+	s.gotCutoff = cutoff
+	return s.n, s.err
+}
+
+// TestDeletionTombstonePrunerAdapter_PassesCutoffAndResultThrough verifies
+// NewDeletionTombstonePrunerAdapter forwards cutoff unchanged (no duration
+// derivation) to PruneDeletionTombstones and returns its result verbatim.
+func TestDeletionTombstonePrunerAdapter_PassesCutoffAndResultThrough(t *testing.T) {
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	pruner := &stubDeletionTombstonePruner{n: 7}
+	adapter := NewDeletionTombstonePrunerAdapter(pruner)
+
+	n, err := adapter.PruneOlderThan(context.Background(), cutoff)
+	if err != nil {
+		t.Fatalf("PruneOlderThan() error: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("PruneOlderThan() n = %d, want 7", n)
+	}
+	if !pruner.called {
+		t.Fatal("PruneDeletionTombstones was not called")
+	}
+	if !pruner.gotCutoff.Equal(cutoff) {
+		t.Errorf("PruneDeletionTombstones got cutoff %v, want the exact unchanged value %v", pruner.gotCutoff, cutoff)
+	}
+}
+
+// TestDeletionTombstonePrunerAdapter_PropagatesError verifies a store-level
+// failure is wrapped and surfaced, not swallowed.
+func TestDeletionTombstonePrunerAdapter_PropagatesError(t *testing.T) {
+	wantErr := errors.New("boom")
+	pruner := &stubDeletionTombstonePruner{err: wantErr}
+	adapter := NewDeletionTombstonePrunerAdapter(pruner)
+
+	_, err := adapter.PruneOlderThan(context.Background(), time.Now())
+	if err == nil {
+		t.Fatal("PruneOlderThan() error = nil, want non-nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("PruneOlderThan() error = %v, want wrapping %v", err, wantErr)
 	}
 }

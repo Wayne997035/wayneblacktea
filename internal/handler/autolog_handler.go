@@ -157,6 +157,9 @@ func (h *AutologHandler) LogActivity(c echo.Context) error {
 	}
 
 	if err := h.gtd.LogActivity(c.Request().Context(), req.Actor, req.Action, req.ProjectID, req.Notes); err != nil {
+		if errors.Is(err, gtd.ErrReservedAction) {
+			return c.JSON(http.StatusBadRequest, errResp(err.Error()))
+		}
 		c.Logger().Errorf("LogActivity: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}

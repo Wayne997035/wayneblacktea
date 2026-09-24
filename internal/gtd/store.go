@@ -955,8 +955,20 @@ func (a *pgBeginTaskAdapter) Rollback(ctx context.Context) {
 	_ = a.tx.Rollback(ctx)
 }
 
-// LogActivity records an activity entry.
+// LogActivity records an activity entry. action is sanitised with
+// sanitize.Notes the same way notes already was — control characters and
+// ANSI escape sequences are stripped before the reserved-name check runs,
+// so a caller cannot dodge IsReservedAuditAction by wrapping a reserved name
+// in an escape sequence (F191-15, PG half; see SEC-PR191-R2-01). SQLite's
+// twin (internal/storage/sqlite/gtd.go's GTDStore.LogActivity) does the
+// same. Rejects action names reserved for the delete/restore transactions'
+// own in-tx audit writes (SEC-PR191-02) — see IsReservedAuditAction's doc
+// comment for why.
 func (s *Store) LogActivity(ctx context.Context, actor, action string, projectID *uuid.UUID, notes string) error {
+	action = sanitize.Notes(action) // [F191-15]
+	if IsReservedAuditAction(action) {
+		return ErrReservedAction
+	}
 	_, err := s.q.CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       actor,
 		ProjectID:   pgconv.ToUUID(projectID),
@@ -1440,9 +1452,11 @@ type txBeginner interface {
 // defence-in-depth. See DeleteTaskOrchestration (deletetask_orchestration.go)
 // for the shared control flow this delegates to.
 // DeleteProject deletes a project and every task under it, returning how many
-// tasks were removed.
-func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID) (int, error) {
-	return DeleteProjectOrchestration(ctx, id, &pgDeleteProjectAdapter{s: s, id: id})
+// tasks were removed. actor identifies who requested the delete and is
+// written into the activity_log audit row this call produces (see
+// DeleteProjectOrchestration).
+func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
+	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteProjectAdapter{s: s, id: id})
 }
 
 type pgDeleteProjectAdapter struct {
@@ -1569,6 +1583,100 @@ func (a *pgDeleteProjectAdapter) NullifyWorkSessionProjectRefs(ctx context.Conte
 	return a.execByProject(ctx, `UPDATE work_sessions SET project_id = NULL WHERE project_id = $1`)
 }
 
+// NullifyVisionItemProjectRefs NULLs vision_items.project_id (migration
+// 000029). [F191-01]
+func (a *pgDeleteProjectAdapter) NullifyVisionItemProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE vision_items SET project_id = NULL WHERE project_id = $1`)
+}
+
+// NullifyProceduralMemoryProjectRefs NULLs procedural_memories.project_id
+// (migration 000032). [F191-01]
+func (a *pgDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.Context) error {
+	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = $1`)
+}
+
+// SnapshotProjectAndTasks copies the project row and every task row under it
+// into deletion_tombstones (design 1/2) via to_jsonb() in SQL — never
+// assembled from db.Task/db.Project, which deliberately omit columns (e.g.
+// area, added in 000079) that a struct-based snapshot would silently drop on
+// restore. Two statements, not a UNION: a project row and a task row have
+// different entity_kind/project_id semantics (a project's own project_id
+// column is itself, design 8's exemption; a task's project_id is the
+// project it belonged to), and to_jsonb(p) vs to_jsonb(t) each need their own
+// FROM clause.
+//
+// Both statements share the exact workspace predicate CountTasks/DeleteTask
+// Rows use (projectTaskIDs / the projects lookup in WorkspacePrecheck): if
+// this predicate were ever wrong, the snapshot would silently capture 0 rows
+// while the delete that follows still succeeds — F191-04 asserts the task
+// snapshot's row count equals CountTasks' answer specifically to catch that.
+//
+// deletion_tombstones.workspace_id is set from the SOURCE row's own
+// workspace_id (p.workspace_id / t.workspace_id), not a.s.workspaceID: the
+// tombstone must record what the deleted row's workspace actually was, which
+// a store running unscoped (workspaceID NULL = "no filter") would otherwise
+// lose.
+func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(
+	ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
+) error {
+	// [SEC-PR191-01] Prune tombstone rows that already fell out of the
+	// retention window before writing this delete's own snapshot — every
+	// delete is a write path, so this keeps deletion_tombstones bounded
+	// even when the scheduled pruner hasn't run yet (e.g. a fresh stdio
+	// process, which has no pruner wired at all). cutoff is derived from
+	// deletedAt — the single clock read this whole deletion already took —
+	// not a fresh time.Now(), so it can't disagree with the deleted_at this
+	// same call is about to write.
+	if _, err := a.tx.Exec(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deleted_at < $1`,
+		deletedAt.Add(-DeletionTombstoneRetention),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+
+	const projectQ = `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT gen_random_uuid(), p.workspace_id, $2, 'project', p.id, p.id, to_jsonb(p), $3, $4
+		  FROM projects p
+		 WHERE p.id = $1
+		   AND ($5::uuid IS NULL OR p.workspace_id = $5)`
+	if _, err := a.tx.Exec(ctx, projectQ, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+
+	const taskQ = `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT gen_random_uuid(), t.workspace_id, $2, 'task', t.id, t.project_id, to_jsonb(t), $3, $4
+		  FROM tasks t
+		 WHERE t.project_id = $1
+		   AND ($5::uuid IS NULL OR t.workspace_id = $5)`
+	if _, err := a.tx.Exec(ctx, taskQ, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
+}
+
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete: if this insert fails, the whole delete rolls back rather than
+// leaving a delete with no record of who did it. notes carries only the
+// deletion id, the deleted project's id, and the task count — never a name
+// or other stored text, so the audit trail cannot leak stored user content
+// back out through a log line. project_id is NULL: the project row this
+// audit entry is about no longer exists by the time Commit runs.
+func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s project_id=%s tasks=%d", deletionID, a.id, taskCount))
+	if _, err := a.s.q.WithTx(a.tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       deletedBy,
+		Action:      "project_deleted",
+		Notes:       pgconv.ToText(notes),
+		WorkspaceID: a.s.workspaceID,
+	}); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+	return nil
+}
+
 func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
 	return a.execWorkspaceScoped(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
 }
@@ -1590,8 +1698,11 @@ func (a *pgDeleteProjectAdapter) Rollback(ctx context.Context) {
 	}
 }
 
-func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID) error {
-	return DeleteTaskOrchestration(ctx, id, &pgDeleteTaskAdapter{s: s, id: id})
+// DeleteTask permanently removes a task by ID. actor identifies who
+// requested the delete and is written into the activity_log audit row this
+// call produces (see DeleteTaskOrchestration).
+func (s *Store) DeleteTask(ctx context.Context, id uuid.UUID, actor string) error {
+	return DeleteTaskOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteTaskAdapter{s: s, id: id})
 }
 
 // pgDeleteTaskAdapter is the Postgres-backed DeleteTaskAdapter used by
@@ -1730,6 +1841,51 @@ func (a *pgDeleteTaskAdapter) Commit(ctx context.Context) error {
 
 func (a *pgDeleteTaskAdapter) Rollback(ctx context.Context) {
 	_ = a.tx.Rollback(ctx)
+}
+
+// SnapshotTask copies the task row into deletion_tombstones (design 1/2) via
+// to_jsonb() in SQL — see pgDeleteProjectAdapter.SnapshotProjectAndTasks for
+// the full rationale (never assembled from db.Task, same workspace predicate
+// as WorkspacePrecheck, tombstone.workspace_id from the source row).
+func (a *pgDeleteTaskAdapter) SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
+	// [SEC-PR191-01] Same expired-tombstone prune as
+	// pgDeleteProjectAdapter.SnapshotProjectAndTasks — see that method's
+	// comment for the full rationale.
+	if _, err := a.tx.Exec(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deleted_at < $1`,
+		deletedAt.Add(-DeletionTombstoneRetention),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+
+	const q = `INSERT INTO deletion_tombstones
+		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
+		SELECT gen_random_uuid(), t.workspace_id, $2, 'task', t.id, t.project_id, to_jsonb(t), $3, $4
+		  FROM tasks t
+		 WHERE t.id = $1
+		   AND ($5::uuid IS NULL OR t.workspace_id = $5)`
+	if _, err := a.tx.Exec(ctx, q, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
+}
+
+// WriteDeletionAuditLog writes one activity_log row inside the same tx as
+// the delete (design 3, P2(a)) — see pgDeleteProjectAdapter's twin for the
+// redaction rationale. project_id is NULL per design 3 (uniform across both
+// entity kinds, not just "project no longer exists").
+func (a *pgDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string) error {
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s task_id=%s", deletionID, a.id))
+	if _, err := a.s.q.WithTx(a.tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       deletedBy,
+		Action:      "task_deleted",
+		Notes:       pgconv.ToText(notes),
+		WorkspaceID: a.s.workspaceID,
+	}); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+	return nil
 }
 
 // LatestActivityAt returns the created_at of the most-recent activity_log row,
@@ -1871,6 +2027,210 @@ func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, er
 	tag, err := s.dbtx.Exec(ctx, q, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("pruning activity_log: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// isUniqueViolationPG reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505) — RestoreProject's write-back uses this to
+// detect "this group's payload carries an id that already exists" (the
+// RefusesWhenTaskIDTaken path: a task id collision only a live INSERT can
+// catch, not the id/name precheck above it) — same check CreateProject uses
+// two methods up (pgErr.Code == "23505").
+func isUniqueViolationPG(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// findAndLockRestorableGroup is RestoreProject's find-and-lock step, split
+// out to keep RestoreProject's cyclomatic complexity under the project's
+// gocyclo threshold (SEC-PR191-01 added the retention bound and the two
+// FOR UPDATE locks, pushing the combined function over it). Returns the
+// group's deletion_id and the project payload's stored name (used by the
+// caller's id/name precheck), or ErrNotFound when no group is found within
+// the retention window and workspace scope.
+//
+// [SEC-PR191-01] deleted_at >= retentionCutoff enforces the 30-day restore
+// window at the lookup itself, not just via the scheduled pruner (which
+// doesn't run on every process — stdio transport wires none at all). The
+// first FOR UPDATE locks the row this SELECT actually returns; the second
+// lock extends that to every row in the group (the SELECT only locked the
+// single project row it returned) before any write — a concurrent prune or
+// a second restore racing on the same deletion_id now blocks here instead
+// of interleaving with the writes RestoreProject performs afterward.
+func (s *Store) findAndLockRestorableGroup(ctx context.Context, tx pgx.Tx, id uuid.UUID) (uuid.UUID, string, error) {
+	retentionCutoff := time.Now().UTC().Add(-DeletionTombstoneRetention)
+	var deletionID uuid.UUID
+	var payloadName string
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT deletion_id, payload->>'name'
+		   FROM deletion_tombstones
+		  WHERE entity_kind = 'project' AND project_id = $1
+		    AND ($2::uuid IS NULL OR workspace_id = $2)
+		    AND deleted_at >= $3
+		  ORDER BY deleted_at DESC
+		  LIMIT 1
+		    FOR UPDATE`,
+		id, s.workspaceID, retentionCutoff,
+	).Scan(&deletionID, &payloadName); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, "", ErrNotFound
+		}
+		return uuid.Nil, "", fmt.Errorf("finding deletion group for project %s: %w", id, err)
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`SELECT 1 FROM deletion_tombstones WHERE deletion_id = $1 FOR UPDATE`,
+		deletionID,
+	); err != nil {
+		return uuid.Nil, "", fmt.Errorf("locking deletion group for project %s: %w", id, err)
+	}
+	return deletionID, payloadName, nil
+}
+
+// RestoreProject reverses the most recent delete_project for id within the
+// 30-day retention window (design 4, decisions 3cc5350f/17a1086b, F191-11).
+//
+// The tombstone group is found by its most recent entity_kind='project' row
+// for this project_id, then everything after — conflict check, write-back,
+// consume, audit — operates on that group's deletion_id alone, NEVER on
+// project_id: a project can have an earlier, unrelated delete_task group
+// still inside the retention window (assertTaskTombstones's sibling test,
+// RestoreLeavesEarlierDeleteTaskTombstoneIntact), and project_id would reach
+// both.
+//
+// Write-back uses jsonb_populate_record(NULL::<table>, payload).* rather
+// than a hand-maintained column list: the composite type IS the projects/
+// tasks row type, so Postgres maps JSON keys to columns by name, and a
+// column added to either table later needs no matching update here (unlike
+// the SQLite twin, which has no equivalent and must name every column by
+// hand — see gtd_softdelete_test.go's round-trip test for why this was
+// verified rather than assumed).
+//
+// Every step — the two INSERTs, the DELETE that consumes the group, and the
+// activity_log audit row — runs inside one tx: any failure (including a
+// unique-constraint hit on either INSERT) rolls the whole restore back, so a
+// partially-written project/task set or a consumed-but-failed-to-write group
+// can never happen (P2(a)).
+func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) (*db.Project, int, error) {
+	beginner, ok := s.dbtx.(txBeginner)
+	if !ok {
+		return nil, 0, errors.New("dbtx does not support Begin (cannot run restore atomically)")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("restoring project %s: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	deletionID, payloadName, err := s.findAndLockRestorableGroup(ctx, tx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Precheck (design "已定案" 2): an id or name collision is rejected
+	// before anything is written, distinct from the write-time unique-
+	// violation catches below which handle a task id collision the
+	// precheck cannot see (it only looks at projects).
+	var conflict bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 OR name = $2)`,
+		id, payloadName,
+	).Scan(&conflict); err != nil {
+		return nil, 0, fmt.Errorf("checking restore conflict for project %s: %w", id, err)
+	}
+	if conflict {
+		return nil, 0, ErrConflict
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`INSERT INTO projects
+		 SELECT (jsonb_populate_record(NULL::projects, payload)).*
+		   FROM deletion_tombstones
+		  WHERE deletion_id = $1 AND entity_kind = 'project'`,
+		deletionID,
+	); err != nil {
+		if isUniqueViolationPG(err) {
+			return nil, 0, ErrConflict
+		}
+		return nil, 0, fmt.Errorf("restoring project row %s: %w", id, err)
+	}
+
+	taskTag, err := tx.Exec(
+		ctx,
+		`INSERT INTO tasks
+		 SELECT (jsonb_populate_record(NULL::tasks, payload)).*
+		   FROM deletion_tombstones
+		  WHERE deletion_id = $1 AND entity_kind = 'task'`,
+		deletionID,
+	)
+	if err != nil {
+		if isUniqueViolationPG(err) {
+			return nil, 0, ErrConflict
+		}
+		return nil, 0, fmt.Errorf("restoring tasks for project %s: %w", id, err)
+	}
+	tasksRestored := int(taskTag.RowsAffected())
+
+	if _, err := tx.Exec(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deletion_id = $1`, deletionID,
+	); err != nil {
+		return nil, 0, fmt.Errorf("consuming tombstone group for project %s: %w", id, err)
+	}
+
+	// [F191-12] notes carries only the deletion id and the write-back
+	// count — never the restored project's name, so the audit trail cannot
+	// leak stored user content back out through a log line. project_id
+	// (unlike the delete side's audit row) is populated: the restored
+	// project exists again by the time this insert runs.
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
+	if _, err := s.q.WithTx(tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       actor,
+		Action:      "project_restored",
+		ProjectID:   pgconv.ToUUID(&id),
+		Notes:       pgconv.ToText(notes),
+		WorkspaceID: s.workspaceID,
+	}); err != nil {
+		return nil, 0, fmt.Errorf("writing restore audit log for project %s: %w", id, err)
+	}
+
+	var restored db.Project
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT id, goal_id, name, title, description, status, area, priority,
+		        created_at, updated_at, workspace_id, repo_name
+		   FROM projects WHERE id = $1`, id,
+	).Scan(
+		&restored.ID, &restored.GoalID, &restored.Name, &restored.Title, &restored.Description,
+		&restored.Status, &restored.Area, &restored.Priority, &restored.CreatedAt, &restored.UpdatedAt,
+		&restored.WorkspaceID, &restored.RepoName,
+	); err != nil {
+		return nil, 0, fmt.Errorf("reading back restored project %s: %w", id, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, 0, fmt.Errorf("committing restore of project %s: %w", id, err)
+	}
+	return &restored, tasksRestored, nil
+}
+
+// PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
+// cutoff (design 6, decision 17a1086b, F191-13). No per-group logic is
+// needed here: every row a single delete_project/delete_task call wrote
+// shares the exact same deleted_at value (design 1, asserted by
+// TestDeleteProject_SnapshotsProjectAndTasksWithArea), so a plain range
+// DELETE can never remove half of a group. Global cleanup (no workspace
+// filter), mirroring PruneOlderThan's activity_log contract.
+func (s *Store) PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM deletion_tombstones WHERE deleted_at < $1`
+	tag, err := s.dbtx.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning deletion_tombstones: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }

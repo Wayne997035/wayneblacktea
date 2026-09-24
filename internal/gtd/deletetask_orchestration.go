@@ -3,6 +3,7 @@ package gtd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -80,13 +81,36 @@ type DeleteTaskAdapter interface {
 	// from that rollback is swallowed, mirroring BeginTaskOrchestration's
 	// unconditional-defer shape.
 	Rollback(ctx context.Context)
+
+	// --- soft-delete snapshot + audit (design 1-3): SnapshotTask is called
+	// first, right after the workspace pre-check and before any cleanup
+	// step below — see DeleteProjectAdapter's twin methods for the full
+	// rationale. WriteDeletionAuditLog is called last, immediately before
+	// Commit, so a failed audit write rolls back the whole delete rather
+	// than leaving one with no record of who did it. See
+	// DeleteTaskOrchestration below for the call sites. ---
+
+	// SnapshotTask copies the task row into deletion_tombstones (design
+	// 1/2), tagged with the given deletionID/deletedAt/deletedBy — all three
+	// generated ONCE by the orchestration layer (design 1).
+	SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error
+
+	// WriteDeletionAuditLog writes one activity_log row (action
+	// "task_deleted") inside the same tx as the delete (design 3, P2(a)).
+	// notes MUST carry only the deletion id — never a title or other stored
+	// text (design 3's redaction rule).
+	WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string) error
 }
 
 // DeleteTaskOrchestration runs the dialect-agnostic DeleteTask control flow
 // against adapter, and is called by both Store.DeleteTask (Postgres) and
 // GTDStore.DeleteTask (SQLite). id is used only for error-message context —
 // the adapter itself already knows which task it was constructed for.
-func DeleteTaskOrchestration(ctx context.Context, id uuid.UUID, adapter DeleteTaskAdapter) error {
+//
+// deletedBy/deletedAt have the same contract as DeleteProjectOrchestration's:
+// a single deletedAt value and a deletionID generated once here, shared by
+// this task's tombstone row and its audit row.
+func DeleteTaskOrchestration(ctx context.Context, id uuid.UUID, deletedBy string, deletedAt time.Time, adapter DeleteTaskAdapter) error {
 	if err := adapter.BeginTx(ctx); err != nil {
 		return fmt.Errorf("delete task %s: begin tx: %w", id, err)
 	}
@@ -106,6 +130,14 @@ func DeleteTaskOrchestration(ctx context.Context, id uuid.UUID, adapter DeleteTa
 		// workspace-mismatched task is a silent no-op, matching the pre-fix
 		// behaviour where such a DELETE simply affected 0 rows.
 		return nil
+	}
+
+	// Snapshot BEFORE any cleanup runs (design 1/2, same placement rule as
+	// DeleteProjectOrchestration): the row this copies must be exactly what
+	// existed before this call touched anything.
+	deletionID := uuid.New()
+	if err := adapter.SnapshotTask(ctx, deletionID, deletedAt, deletedBy); err != nil {
+		return fmt.Errorf("delete task %s: snapshot task: %w", id, err)
 	}
 
 	if err := adapter.CleanupWorkSessionTasks(ctx); err != nil {
@@ -129,6 +161,11 @@ func DeleteTaskOrchestration(ctx context.Context, id uuid.UUID, adapter DeleteTa
 
 	if err := adapter.DeleteTaskRow(ctx); err != nil {
 		return fmt.Errorf("delete task %s: delete row: %w", id, err)
+	}
+
+	// Audit last, immediately before Commit (design 3, P2(a)).
+	if err := adapter.WriteDeletionAuditLog(ctx, deletionID, deletedBy); err != nil {
+		return fmt.Errorf("delete task %s: write deletion audit log: %w", id, err)
 	}
 
 	if err := adapter.Commit(ctx); err != nil {

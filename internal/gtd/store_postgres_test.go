@@ -51,7 +51,7 @@ func TestStore_DeleteTask(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if err := store.DeleteTask(ctx, task.ID); err != nil {
+	if err := store.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 	}
 
 	// Delete — should cascade into work_session_tasks and NULL current_task_id.
-	if err := store.DeleteTask(ctx, task.ID); err != nil {
+	if err := store.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestStore_DeleteTask_NoLinkedRows(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if err := store.DeleteTask(ctx, task.ID); err != nil {
+	if err := store.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask without linked rows: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 
 	// Cross-workspace delete must be a silent no-op (matching the pre-fix
 	// "0 rows affected" behaviour).
-	if err := storeB.DeleteTask(ctx, task.ID); err != nil {
+	if err := storeB.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask cross-workspace must be silent no-op, got: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestStore_DeleteTask_NonExistentID(t *testing.T) {
 	wsID := uuid.New()
 	store := newPgGTDStore(pool, &wsID)
 
-	err := store.DeleteTask(context.Background(), uuid.New())
+	err := store.DeleteTask(context.Background(), uuid.New(), "tester")
 	if err != nil && !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected nil or ErrNotFound for unknown task, got: %v", err)
 	}

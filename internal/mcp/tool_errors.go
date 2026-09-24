@@ -203,6 +203,12 @@ var callerFacingSentinels = []error{
 	gtd.ErrInvalidAssignee,
 	gtd.ErrAssigneeRequiredForInProgress,
 	gtd.ErrInvalidRepoName,
+	// [SEC-PR191-02] log_activity's action is a caller-supplied string
+	// rejected against a fixed reserved-name set (gtd.IsReservedAuditAction)
+	// — same "property of the request, not a server internal" shape as the
+	// three entries above, so the caller sees why rather than a generic
+	// "logging activity failed".
+	gtd.ErrReservedAction,
 	// [GTD 21aa901d] Size, like assignee and repo_name, is a property of the
 	// request that only the store can answer, so its rejection arrives through
 	// the same channel as a connection failure. Redacted to "creating proposal

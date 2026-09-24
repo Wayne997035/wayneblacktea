@@ -3,6 +3,7 @@ package gtd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -21,8 +22,14 @@ import (
 // The reference list comes from the FK constraint names migration 000026
 // dropped (`<table>_project_id_fkey`), plus knowledge_items.project_id which
 // arrived later in 000049: activity_log, decisions, knowledge_items,
-// session_handoffs, tasks, work_sessions. Adding a new project_id column
-// means adding a method here.
+// session_handoffs, tasks, work_sessions. vision_items.project_id (000029)
+// and procedural_memories.project_id (000032) were missed by this same
+// interface until a full-repo security review (DBI-FULL0923-01) caught them
+// and F191-01 fixed them — hand-written lists drift, which is exactly why
+// F191-02's machine-derived-from-schema test now exists, so the NEXT missed
+// column is caught mechanically instead of by the next review round. Adding
+// a new project_id column means adding a method here AND registering it (or
+// its documented exemption) in gtd.ProjectIDCleanupExemptions.
 //
 // Every cleanup is set-based over the whole project rather than a loop over
 // tasks: one statement per table instead of one per task, inside a single
@@ -58,6 +65,15 @@ type DeleteProjectAdapter interface {
 	NullifyKnowledgeItemProjectRefs(ctx context.Context) error
 	NullifySessionHandoffProjectRefs(ctx context.Context) error
 	NullifyWorkSessionProjectRefs(ctx context.Context) error
+	// NullifyVisionItemProjectRefs NULLs vision_items.project_id (migration
+	// 000029). [F191-01] — missed by this interface from the start; caught
+	// by a full-repo security review (DBI-FULL0923-01), not by re-reading
+	// the method list above. F191-02's machine-derived table list exists so
+	// the next such gap is caught mechanically instead.
+	NullifyVisionItemProjectRefs(ctx context.Context) error
+	// NullifyProceduralMemoryProjectRefs NULLs procedural_memories.project_id
+	// (migration 000032). [F191-01] Same gap, same discovery path.
+	NullifyProceduralMemoryProjectRefs(ctx context.Context) error
 
 	// --- the rows themselves ---
 
@@ -76,6 +92,26 @@ type DeleteProjectAdapter interface {
 	// database/sql.Tx treat a redundant Rollback as a no-op), so the
 	// orchestration defers it unconditionally.
 	Rollback(ctx context.Context)
+
+	// --- soft-delete snapshot + audit (design 1-3): SnapshotProjectAndTasks
+	// is called first, right after CountTasks and before any cleanup step
+	// below, so it captures the project and its tasks before this call
+	// touches anything. WriteDeletionAuditLog is called last, immediately
+	// before Commit, so a failed audit write rolls back the whole delete
+	// rather than leaving one with no record of who did it. See
+	// DeleteProjectOrchestration below for the call sites. ---
+
+	// SnapshotProjectAndTasks copies the project row and every task row
+	// under it into deletion_tombstones (design 1/2), tagged with the given
+	// deletionID/deletedAt/deletedBy — all three generated ONCE by the
+	// orchestration layer (design 1) so every row in the group shares them.
+	SnapshotProjectAndTasks(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error
+
+	// WriteDeletionAuditLog writes one activity_log row (action
+	// "project_deleted") inside the same tx as the delete (design 3, P2(a)).
+	// notes MUST carry only the deletion id and task count — never a name or
+	// other stored text (design 3's redaction rule).
+	WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int) error
 }
 
 // DeleteProjectOrchestration deletes a project and all of its tasks, running
@@ -84,7 +120,19 @@ type DeleteProjectAdapter interface {
 // A missing or workspace-mismatched project is a no-op returning 0, not an
 // error — same shape as DeleteTaskOrchestration, so a caller that deletes the
 // same project twice gets a quiet second answer rather than a failure.
-func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter DeleteProjectAdapter) (int, error) {
+//
+// deletedBy/deletedAt are read ONCE by the caller (Store.DeleteProject) and
+// carried through unchanged (design 1): deletedAt in particular must be a
+// single value shared by the project's tombstone row and every task
+// tombstone row it produces, because the pruner's retention cutoff landing
+// between two slightly different per-row timestamps would delete one half of
+// a group and leave the other — restore_project would then "succeed" while
+// writing back a project missing some of its tasks. deletionID is generated
+// here, once, for the same reason: it is the unit restore_project and the
+// pruner both operate on.
+func DeleteProjectOrchestration(
+	ctx context.Context, id uuid.UUID, deletedBy string, deletedAt time.Time, adapter DeleteProjectAdapter,
+) (int, error) {
 	if err := adapter.BeginTx(ctx); err != nil {
 		return 0, fmt.Errorf("delete project %s: begin tx: %w", id, err)
 	}
@@ -101,6 +149,14 @@ func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter Delet
 	taskCount, err := adapter.CountTasks(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("delete project %s: count tasks: %w", id, err)
+	}
+
+	// Snapshot BEFORE any cleanup runs (design 1): this is the first write of
+	// the delete, so the rows it copies are exactly what existed before this
+	// call touched anything.
+	deletionID := uuid.New()
+	if err := adapter.SnapshotProjectAndTasks(ctx, deletionID, deletedAt, deletedBy); err != nil {
+		return 0, fmt.Errorf("delete project %s: snapshot project and tasks: %w", id, err)
 	}
 
 	// Order matters twice over: every reference cleanup before the rows they
@@ -120,6 +176,8 @@ func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter Delet
 		{"nullify knowledge_items.project_id", adapter.NullifyKnowledgeItemProjectRefs},
 		{"nullify session_handoffs.project_id", adapter.NullifySessionHandoffProjectRefs},
 		{"nullify work_sessions.project_id", adapter.NullifyWorkSessionProjectRefs},
+		{"nullify vision_items.project_id", adapter.NullifyVisionItemProjectRefs},
+		{"nullify procedural_memories.project_id", adapter.NullifyProceduralMemoryProjectRefs},
 		{"delete task rows", adapter.DeleteTaskRows},
 		{"delete project row", adapter.DeleteProjectRow},
 	}
@@ -127,6 +185,13 @@ func DeleteProjectOrchestration(ctx context.Context, id uuid.UUID, adapter Delet
 		if err := s.fn(ctx); err != nil {
 			return 0, fmt.Errorf("delete project %s: %s: %w", id, s.name, err)
 		}
+	}
+
+	// Audit last, immediately before Commit (design 3, P2(a)): if this write
+	// fails the whole delete rolls back rather than leaving a delete with no
+	// record of who did it.
+	if err := adapter.WriteDeletionAuditLog(ctx, deletionID, deletedBy, taskCount); err != nil {
+		return 0, fmt.Errorf("delete project %s: write deletion audit log: %w", id, err)
 	}
 
 	if err := adapter.Commit(ctx); err != nil {

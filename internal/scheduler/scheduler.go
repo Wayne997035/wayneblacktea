@@ -446,6 +446,38 @@ func NewMergedPRsPrunerAdapter(store mergedPRsRetentionStore) PrunerStore {
 	return mergedPRsPrunerAdapter{store: store}
 }
 
+// deletionTombstoneRetentionStore is the narrow prune interface used by the
+// daily deletion_tombstones cleanup job [F191-08] (decision 17a1086b —
+// 30-day retention). gtd.StoreIface satisfies it.
+type deletionTombstoneRetentionStore interface {
+	PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// deletionTombstonePrunerAdapter adapts deletionTombstoneRetentionStore's
+// PruneDeletionTombstones to the PrunerStore contract's PruneOlderThan
+// method name. Unlike candidatePrunerAdapter/mergedPRsPrunerAdapter above,
+// no duration<->cutoff conversion is needed here — PruneDeletionTombstones
+// already takes a cutoff time.Time, the same signature PrunerStore expects;
+// only the method name differs, so cutoff is forwarded unchanged.
+type deletionTombstonePrunerAdapter struct {
+	store deletionTombstoneRetentionStore
+}
+
+func (a deletionTombstonePrunerAdapter) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	n, err := a.store.PruneDeletionTombstones(ctx, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("deletion_tombstones PruneDeletionTombstones: %w", err)
+	}
+	return n, nil
+}
+
+// NewDeletionTombstonePrunerAdapter wraps a gtd store (whose method is named
+// PruneDeletionTombstones, not PruneOlderThan) so it satisfies PrunerStore
+// for use in a PrunerSpec.
+func NewDeletionTombstonePrunerAdapter(store deletionTombstoneRetentionStore) PrunerStore {
+	return deletionTombstonePrunerAdapter{store: store}
+}
+
 // aiCostLedgerPrunerAdapter adapts a raw *pgxpool.Pool to the PrunerStore
 // contract for ai_cost_ledger, which has no dedicated Store type. Uses a
 // parameterized cutoff instead of the pre-refactor `NOW() - INTERVAL '30

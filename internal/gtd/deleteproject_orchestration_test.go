@@ -7,10 +7,18 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 )
+
+// testerActor is the deletedBy/actor value every gtd_test package test uses
+// (goconst: this literal recurs across delete/restore test files in this
+// package — store_postgres_test.go, store_postgres_softdelete_test.go, and
+// both orchestration test files — so it is named once here rather than
+// repeated as a bare string in each).
+const testerActor = "tester"
 
 // fakeDeleteProjectAdapter is a scripted gtd.DeleteProjectAdapter. Unlike the
 // delete-task fake it records the call order AND is driven by a name->error
@@ -33,6 +41,17 @@ type fakeDeleteProjectAdapter struct {
 
 	calls        []string
 	rollbackDone bool
+
+	// Recorded arguments from the two soft-delete calls (F191-04/F191-06),
+	// so tests can assert the deletionID/deletedAt/deletedBy DeleteProject
+	// Orchestration generated/threaded through are the SAME values on both,
+	// and that the audit's taskCount matches CountTasks' answer.
+	snapshotDeletionID uuid.UUID
+	snapshotDeletedAt  time.Time
+	snapshotDeletedBy  string
+	auditDeletionID    uuid.UUID
+	auditDeletedBy     string
+	auditTaskCount     int
 }
 
 func (f *fakeDeleteProjectAdapter) record(name string) error {
@@ -105,6 +124,33 @@ func (f *fakeDeleteProjectAdapter) NullifyWorkSessionProjectRefs(context.Context
 	return f.record("NullifyWorkSessionProjectRefs")
 }
 
+func (f *fakeDeleteProjectAdapter) NullifyVisionItemProjectRefs(context.Context) error {
+	return f.record("NullifyVisionItemProjectRefs")
+}
+
+func (f *fakeDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(context.Context) error {
+	return f.record("NullifyProceduralMemoryProjectRefs")
+}
+
+// SnapshotProjectAndTasks / WriteDeletionAuditLog are now wired into
+// DeleteProjectOrchestration (F191-04/F191-06): SnapshotProjectAndTasks runs
+// right after CountTasks (before any cleanup), WriteDeletionAuditLog right
+// before Commit. The fake also records the deletionID/deletedBy/deletedAt it
+// was called with so tests can assert they are the SAME values passed to
+// both methods, and that WriteDeletionAuditLog's taskCount matches CountTasks'
+// answer.
+func (f *fakeDeleteProjectAdapter) SnapshotProjectAndTasks(
+	_ context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
+) error {
+	f.snapshotDeletionID, f.snapshotDeletedAt, f.snapshotDeletedBy = deletionID, deletedAt, deletedBy
+	return f.record("SnapshotProjectAndTasks")
+}
+
+func (f *fakeDeleteProjectAdapter) WriteDeletionAuditLog(_ context.Context, deletionID uuid.UUID, deletedBy string, taskCount int) error {
+	f.auditDeletionID, f.auditDeletedBy, f.auditTaskCount = deletionID, deletedBy, taskCount
+	return f.record("WriteDeletionAuditLog")
+}
+
 func (f *fakeDeleteProjectAdapter) DeleteTaskRows(context.Context) error {
 	return f.record("DeleteTaskRows")
 }
@@ -134,6 +180,7 @@ var happyPathCalls = []string{
 	"BeginTx",
 	"WorkspacePrecheck",
 	"CountTasks",
+	"SnapshotProjectAndTasks",
 	"CleanupWorkSessionTasks",
 	"NullifyWorkSessionsCurrentTask",
 	"CleanupCompletionCandidates",
@@ -145,8 +192,11 @@ var happyPathCalls = []string{
 	"NullifyKnowledgeItemProjectRefs",
 	"NullifySessionHandoffProjectRefs",
 	"NullifyWorkSessionProjectRefs",
+	"NullifyVisionItemProjectRefs",
+	"NullifyProceduralMemoryProjectRefs",
 	"DeleteTaskRows",
 	"DeleteProjectRow",
+	"WriteDeletionAuditLog",
 	callCommit,
 	"Rollback",
 }
@@ -159,8 +209,9 @@ var happyPathCalls = []string{
 // only as a column pointing at a task that no longer exists.
 func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 7}
+	deletedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
-	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f)
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, deletedAt, f)
 	if err != nil {
 		t.Fatalf("happy path must not error, got %v", err)
 	}
@@ -170,6 +221,24 @@ func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
 	if !reflect.DeepEqual(f.calls, happyPathCalls) {
 		t.Errorf("call sequence mismatch\n got: %v\nwant: %v", f.calls, happyPathCalls)
 	}
+
+	// [F191-04/F191-06, design 1] deletionID/deletedAt/deletedBy must be
+	// generated/read ONCE and carried unchanged into both the snapshot and
+	// the audit write — a pruner cutoff landing between two different
+	// deletedAt values on the same logical group would delete half of it.
+	if f.snapshotDeletionID != f.auditDeletionID {
+		t.Errorf("snapshot deletionID %s != audit deletionID %s — not the same delete group",
+			f.snapshotDeletionID, f.auditDeletionID)
+	}
+	if !f.snapshotDeletedAt.Equal(deletedAt) {
+		t.Errorf("snapshot deletedAt = %v, want the value the caller passed in (%v)", f.snapshotDeletedAt, deletedAt)
+	}
+	if f.snapshotDeletedBy != testerActor || f.auditDeletedBy != testerActor {
+		t.Errorf("deletedBy not threaded through: snapshot=%q audit=%q", f.snapshotDeletedBy, f.auditDeletedBy)
+	}
+	if f.auditTaskCount != 7 {
+		t.Errorf("audit taskCount = %d, want 7 (CountTasks' answer)", f.auditTaskCount)
+	}
 }
 
 // TestDeleteProjectOrchestration_EveryTaskCleanupPrecedesTheRowDelete states
@@ -178,7 +247,7 @@ func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
 // would just be updated alongside it.
 func TestDeleteProjectOrchestration_EveryTaskCleanupPrecedesTheRowDelete(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: true}
-	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f); err != nil {
+	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -218,7 +287,7 @@ func TestDeleteProjectOrchestration_EveryTaskCleanupPrecedesTheRowDelete(t *test
 func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: false, taskCount: 99}
 
-	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f)
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f)
 	if err != nil {
 		t.Fatalf("a missing project must not error, got %v", err)
 	}
@@ -226,7 +295,8 @@ func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
 		t.Errorf("returned %d, want 0 — nothing was deleted", n)
 	}
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "Delete") || strings.HasPrefix(c, "Nullify") || strings.HasPrefix(c, "Cleanup") {
+		if strings.HasPrefix(c, "Delete") || strings.HasPrefix(c, "Nullify") || strings.HasPrefix(c, "Cleanup") ||
+			c == "SnapshotProjectAndTasks" || c == "WriteDeletionAuditLog" {
 			t.Fatalf("precheck said the project is not in this workspace, yet %s ran", c)
 		}
 	}
@@ -241,7 +311,7 @@ func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
 // "this project had no tasks", so the bug would read as a valid answer.
 func TestDeleteProjectOrchestration_CountIsReadBeforeAnyDeletion(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 3}
-	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f); err != nil {
+	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	countAt, deleteAt := -1, -1
@@ -267,6 +337,7 @@ func TestDeleteProjectOrchestration_CountIsReadBeforeAnyDeletion(t *testing.T) {
 // commit a half-cleaned project.
 func TestDeleteProjectOrchestration_StepFailureStopsAndRollsBack(t *testing.T) {
 	steps := []string{
+		"SnapshotProjectAndTasks",
 		"CleanupWorkSessionTasks",
 		"NullifyWorkSessionsCurrentTask",
 		"CleanupCompletionCandidates",
@@ -278,8 +349,11 @@ func TestDeleteProjectOrchestration_StepFailureStopsAndRollsBack(t *testing.T) {
 		"NullifyKnowledgeItemProjectRefs",
 		"NullifySessionHandoffProjectRefs",
 		"NullifyWorkSessionProjectRefs",
+		"NullifyVisionItemProjectRefs",
+		"NullifyProceduralMemoryProjectRefs",
 		"DeleteTaskRows",
 		"DeleteProjectRow",
+		"WriteDeletionAuditLog",
 	}
 	for _, step := range steps {
 		t.Run(step, func(t *testing.T) {
@@ -290,7 +364,7 @@ func TestDeleteProjectOrchestration_StepFailureStopsAndRollsBack(t *testing.T) {
 				failOn:    map[string]error{step: boom},
 			}
 
-			n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f)
+			n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f)
 			if err == nil {
 				t.Fatalf("%s failed but the orchestration reported success", step)
 			}
@@ -322,7 +396,7 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("BeginTx", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{beginTxErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f); !errors.Is(err, boom) {
+		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		if f.rollbackDone {
@@ -332,7 +406,7 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("WorkspacePrecheck", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{precheckErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f); !errors.Is(err, boom) {
+		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		if !f.rollbackDone {
@@ -342,7 +416,7 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("CountTasks", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{exists: true, countTasksErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f); !errors.Is(err, boom) {
+		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		for _, c := range f.calls {
@@ -359,7 +433,7 @@ func TestDeleteProjectOrchestration_CommitFailureIsReported(t *testing.T) {
 	boom := errors.New("commit refused")
 	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 4, commitErr: boom}
 
-	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), f)
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f)
 	if !errors.Is(err, boom) {
 		t.Fatalf("want wrapped commit error, got %v", err)
 	}

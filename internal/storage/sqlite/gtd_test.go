@@ -288,7 +288,7 @@ func TestGTDStore_DeleteTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if err := s.DeleteTask(ctx, task.ID); err != nil {
+	if err := s.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
 	tasks, _ := s.Tasks(ctx, nil)
@@ -365,7 +365,7 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 	}
 
 	// Delete the task — should cascade.
-	if err := store.DeleteTask(ctx, task.ID); err != nil {
+	if err := store.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
 
@@ -414,7 +414,7 @@ func TestGTDStore_DeleteTask_NoLinkedRows(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if err := s.DeleteTask(ctx, task.ID); err != nil {
+	if err := s.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask without linked rows: %v", err)
 	}
 
@@ -531,7 +531,7 @@ func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	t.Cleanup(func() { _ = dB.Close() })
 	storeB := sqlite.NewGTDStore(dB)
 
-	if err := storeB.DeleteTask(ctx, task.ID); err != nil {
+	if err := storeB.DeleteTask(ctx, task.ID, "tester"); err != nil {
 		t.Fatalf("DeleteTask cross-workspace: %v", err)
 	}
 
