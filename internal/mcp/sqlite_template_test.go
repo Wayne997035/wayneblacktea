@@ -216,7 +216,7 @@ func schemaMigrationsVersion(t *testing.T, path string) int64 {
 // migration-on-open or WAL-pragma setup.
 func openRawSQLite(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite", path) //nolint:gosec // G304: path is a test-controlled temp file, not user input
+	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
