@@ -1630,12 +1630,12 @@ func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(
 }
 
 // WriteDeletionAuditLog writes one activity_log row inside the same tx as
-// the delete (design 3, P2(a)): if this insert fails, the whole delete rolls
-// back rather than leaving a delete with no record of who did it. notes
-// carries only the deletion id, the deleted project's id, and the task
-// count — never a name or other stored text (design 3's redaction rule,
-// backend-security-design.md §3.1/§3.2). project_id is NULL: the project row
-// this audit entry is about no longer exists by the time Commit runs.
+// the delete: if this insert fails, the whole delete rolls back rather than
+// leaving a delete with no record of who did it. notes carries only the
+// deletion id, the deleted project's id, and the task count — never a name
+// or other stored text, so the audit trail cannot leak stored user content
+// back out through a log line. project_id is NULL: the project row this
+// audit entry is about no longer exists by the time Commit runs.
 func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(ctx context.Context, deletionID uuid.UUID, deletedBy string, taskCount int) error {
 	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s project_id=%s tasks=%d", deletionID, a.id, taskCount))
 	if _, err := a.s.q.WithTx(a.tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
@@ -2110,10 +2110,10 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 	}
 
 	// [F191-12] notes carries only the deletion id and the write-back
-	// count — never the restored project's name (design "已定案" 5,
-	// backend-security-design.md §3.1/§3.2). project_id (unlike the delete
-	// side's audit row) is populated: the restored project exists again by
-	// the time this insert runs.
+	// count — never the restored project's name, so the audit trail cannot
+	// leak stored user content back out through a log line. project_id
+	// (unlike the delete side's audit row) is populated: the restored
+	// project exists again by the time this insert runs.
 	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
 	if _, err := s.q.WithTx(tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
 		Actor:       actor,

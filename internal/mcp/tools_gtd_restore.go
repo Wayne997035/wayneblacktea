@@ -10,22 +10,22 @@ import (
 )
 
 // handleRestoreProject implements restore_project [F191-07], the sole undo
-// path for delete_project (soft-delete design 4, 2026-09-23-soft-delete-dispatch.md).
+// path for delete_project.
 //
 // Unlike delete_task/delete_project this is single-step: the tool only
 // writes rows back from deletion_tombstones, it never deletes anything, so
 // the two-step confirmation flow those tools share (deletion_confirm.go)
-// does not apply — see design 4's own rationale in the soft-delete dispatch.
+// does not apply — a restore has no destructive side effect for that flow
+// to gate.
 //
 // actor is always s.auditSessionID(ctx), the same provenance contract
 // handleDeleteTask/handleDeleteProject use below — NEVER a caller-supplied
-// tool argument (backend-security-design.md §2.1: LLM tool input is
-// hostile, and actor is exactly the field a forged call would want to
-// control, to make a restore look like it came from someone else).
-// RestoreProjectArgs (tools_gtd_args.go) has no field that could carry one.
+// tool argument. LLM tool input is hostile, and actor is exactly the field
+// a forged call would want to control, to make a restore look like it came
+// from someone else. RestoreProjectArgs (tools_gtd_args.go) has no field
+// that could carry one.
 //
-// Error translation (design 2, soft-delete dispatch, decided alongside 3cc5350f
-// and 17a1086b): gtd.ErrNotFound and gtd.ErrConflict get caller-facing,
+// Error translation: gtd.ErrNotFound and gtd.ErrConflict get caller-facing,
 // non-echoing messages; every other error — including the contract-stage
 // gtd.ErrNotImplemented stub (see RestoreProject's doc comment in
 // internal/gtd/iface.go, cleared once the storage-layer PR in this same

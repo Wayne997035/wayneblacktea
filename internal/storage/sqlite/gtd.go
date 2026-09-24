@@ -1338,8 +1338,8 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 	}
 
 	// [F191-12] notes carries only the deletion id and the write-back
-	// count — never the restored project's name (backend-security-
-	// design.md §3.1/§3.2).
+	// count — never the restored project's name, so the audit trail cannot
+	// leak stored user content back out through a log line.
 	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
 	if _, err := tx.ExecContext(
 		ctx,

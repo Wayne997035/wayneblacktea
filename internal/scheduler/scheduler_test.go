@@ -632,9 +632,9 @@ func TestMergedPRsPrunerAdapter_DelegatesToPruneOlderThanWithDuration(t *testing
 
 // ---------------------------------------------------------------------------
 // deletionTombstonePrunerAdapter tests (F191-08) — unlike the two adapters
-// above, PruneDeletionTombstones already takes a cutoff time.Time (design 1,
-// 2026-09-23-soft-delete-dispatch.md), so no duration<->cutoff conversion is
-// needed — only the method name differs from PrunerStore's PruneOlderThan.
+// above, PruneDeletionTombstones already takes a cutoff time.Time, so no
+// duration<->cutoff conversion is needed — only the method name differs
+// from PrunerStore's PruneOlderThan.
 // ---------------------------------------------------------------------------
 
 type stubDeletionTombstonePruner struct {

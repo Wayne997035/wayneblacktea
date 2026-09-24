@@ -17,10 +17,10 @@ import (
 // fakeRestoreProjectStore embeds noopGTDStore (tools_contextpack_fakes_test.go)
 // for every gtd.StoreIface method restore_project's handler never calls, and
 // overrides RestoreProject so each test controls what it returns and
-// captures the id/actor the handler actually passed through — the
-// F191-07 dispatch's own instruction ("本隻的測試一律用 fake store, NEVER
-// 依賴真的還原邏輯", 2026-09-24-softdelete-mcp-dispatch.md) since the real
-// stores are still contract-stage stubs at this point in the fan-out.
+// captures the id/actor the handler actually passed through — [F191-07]
+// tests use a fake store and never depend on the real restore logic, since
+// the real stores are still contract-stage stubs at this point in the
+// fan-out.
 type fakeRestoreProjectStore struct {
 	noopGTDStore
 	project       *db.Project
@@ -39,10 +39,9 @@ func (f *fakeRestoreProjectStore) RestoreProject(_ context.Context, id uuid.UUID
 	return f.project, f.tasksRestored, f.err
 }
 
-// TestRestoreProjectTool_IsInHiddenGTDGroup pins design 5
-// (2026-09-23-soft-delete-dispatch.md): restore_project must not be
-// advertised in tools/list by default, only reachable via
-// expand_tools(group="gtd").
+// TestRestoreProjectTool_IsInHiddenGTDGroup pins the rule that
+// restore_project must not be advertised in tools/list by default, only
+// reachable via expand_tools(group="gtd").
 func TestRestoreProjectTool_IsInHiddenGTDGroup(t *testing.T) {
 	if coreToolSet["restore_project"] {
 		t.Error("restore_project must not be in coreToolNames — it belongs in the hidden \"gtd\" group only")

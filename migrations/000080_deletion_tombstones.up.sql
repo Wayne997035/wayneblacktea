@@ -11,7 +11,8 @@
 -- DeleteProjectAdapter interface for the (declared here, stubbed, not yet
 -- wired into the delete transaction) methods this table exists to serve.
 --
--- No FK constraints (red line #9 / backend-security-design.md §1.1).
+-- No FK constraints (red line #9): referential integrity lives in Go, at
+-- the write boundary, exactly as project_id already does elsewhere.
 -- deletion_tombstones.project_id is itself exempt from delete_project's own
 -- project_id cleanup sweep — see gtd.ProjectIDCleanupExemptions for why
 -- nulling it here would make restore_project unable to find what it just

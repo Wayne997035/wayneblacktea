@@ -1066,13 +1066,12 @@ func wireScheduler(
 		}
 	}
 	// [F191-08] Wire deletion_tombstones pruner (both backends; 30-day TTL,
-	// design 6 of 2026-09-23-soft-delete-dispatch.md, decision 17a1086b). 04:50 avoids the
-	// 03:00-04:45 prune cluster documented on the pruners above. Until the
-	// storage-layer PR in this same fan-out lands, PruneDeletionTombstones is
-	// a contract-stage stub returning gtd.ErrNotImplemented — runPrune logs
-	// that as a daily slog.Warn (scheduler.go), not a startup failure; it
-	// clears once that PR merges, which the dispatch requires happen before
-	// this PR merges (F191-08 self-check, 2026-09-24-softdelete-mcp-dispatch.md).
+	// decision 17a1086b). 04:50 avoids the 03:00-04:45 prune cluster
+	// documented on the pruners above. Until the storage-layer PR in this
+	// same fan-out lands, PruneDeletionTombstones is a contract-stage stub
+	// returning gtd.ErrNotImplemented — runPrune logs that as a daily
+	// slog.Warn (scheduler.go), not a startup failure; it clears once that
+	// PR merges, which is required before this PR merges too.
 	if gtdStore := stores.GTD(); gtdStore != nil {
 		if err := sched.WithPruner(scheduler.PrunerSpec{
 			Name:      "deletion_tombstones",

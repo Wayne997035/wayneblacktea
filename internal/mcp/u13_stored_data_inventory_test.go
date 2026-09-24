@@ -118,10 +118,10 @@ var storedDataReaders = []storedDataReader{
 	// title so the caller can see what it is about to destroy — caller-
 	// authored free text, so it is clipSafe'd and belongs in this table.
 	{file: "tools_gtd.go", tool: "delete_project", status: readerPass},
-	// tools_gtd_restore.go — restore_project's success response echoes the
-	// restored project's stored name, so like delete_project's preview above
-	// it is clipSafe'd and belongs in this table, not the computed exclusions
-	// below (F191-07, 2026-09-24-softdelete-mcp-dispatch.md).
+	// tools_gtd_restore.go — [F191-07] restore_project's success response
+	// echoes the restored project's stored name, so like delete_project's
+	// preview above it is clipSafe'd and belongs in this table, not the
+	// computed exclusions below.
 	{file: "tools_gtd_restore.go", tool: "restore_project", status: readerPass},
 	// tools_health.go
 	{file: "tools_health.go", tool: "system_health", status: readerPass},

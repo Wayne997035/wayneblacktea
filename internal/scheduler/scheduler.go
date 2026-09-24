@@ -447,9 +447,8 @@ func NewMergedPRsPrunerAdapter(store mergedPRsRetentionStore) PrunerStore {
 }
 
 // deletionTombstoneRetentionStore is the narrow prune interface used by the
-// daily deletion_tombstones cleanup job (F191-08, design 6 of
-// 2026-09-23-soft-delete-dispatch.md, decision 17a1086b — 30-day retention).
-// gtd.StoreIface satisfies it.
+// daily deletion_tombstones cleanup job [F191-08] (decision 17a1086b —
+// 30-day retention). gtd.StoreIface satisfies it.
 type deletionTombstoneRetentionStore interface {
 	PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error)
 }

@@ -166,8 +166,9 @@ type StoreIface interface {
 	// UpdateProject performs a full update of a project, replacing all mutable fields.
 	UpdateProject(ctx context.Context, id uuid.UUID, p UpdateProjectParams) (*db.Project, error)
 	// DeleteTask deletes a task by id. actor identifies who requested the
-	// delete (the MCP handler's auditSessionID — see backend-security-
-	// design.md §2.1: never a caller-supplied tool argument). Contract stage
+	// delete (the MCP handler's auditSessionID) — never a caller-supplied
+	// tool argument, since a tool payload is adversarial input and could
+	// otherwise forge an actor identity. Contract stage
 	// (PR #191 fan-out): actor is accepted now so the interface's final
 	// shape is fixed, but is not yet consumed — the delete transaction does
 	// not write a tombstone snapshot or an activity_log audit row until

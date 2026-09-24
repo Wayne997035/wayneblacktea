@@ -227,8 +227,8 @@ func TestDeleteTask_SnapshotsTaskWithArea(t *testing.T) {
 
 // TestSoftDelete_ActivityLogWrittenInSameTx is F191-06: both delete paths
 // leave exactly one new activity_log row, and its notes column never carries
-// the deleted entity's stored name/title text (design 3's redaction rule,
-// backend-security-design.md §3.1).
+// the deleted entity's stored name/title text, so the audit trail cannot
+// leak stored user content back out through a log line.
 func TestSoftDelete_ActivityLogWrittenInSameTx(t *testing.T) {
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
