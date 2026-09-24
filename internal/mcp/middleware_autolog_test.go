@@ -258,6 +258,7 @@ func waitForLogs(t *testing.T, store *mockGTDStore, n int, deadline time.Duratio
 }
 
 func TestAutoLogMiddleware(t *testing.T) {
+	t.Parallel()
 	type testCase struct {
 		name         string
 		tool         string
@@ -428,6 +429,7 @@ func waitForLogsWithLookup(t *testing.T, store *mockGTDStoreWithTaskLookup, n in
 // populates project_id on the activity_log entry when the GTD store implements
 // taskProjectGetter and the task has a project_id.
 func TestAutoLogMiddleware_ProjectIDEnrichment(t *testing.T) {
+	t.Parallel()
 	projectID := uuid.New()
 	taskID := uuid.New()
 	unknownTaskID := uuid.New()
@@ -536,6 +538,7 @@ func TestAutoLogMiddleware_ProjectIDEnrichment(t *testing.T) {
 // TestAutoLogEntry_KnownTools verifies the pure mapping function directly,
 // covering all five high-signal tools and the non-signal default.
 func TestAutoLogEntry_KnownTools(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		tool       string
 		args       map[string]any
@@ -572,6 +575,7 @@ func TestAutoLogEntry_KnownTools(t *testing.T) {
 // (slog.Warn + drop), and the wrapped call returns without blocking.
 // Pattern mirrors TestClassifySem_SelectDefaultDrops_WhenFull in middleware_classify_test.go.
 func TestAutologSem_SaturationDropPath(t *testing.T) {
+	t.Parallel()
 	mock := &mockGTDStore{}
 
 	// Build a Server with a saturated autologSem (capacity = 50).
@@ -620,6 +624,7 @@ func TestAutologSem_SaturationDropPath(t *testing.T) {
 
 // TestJsonArrayLen verifies edge cases for the JSON array length helper.
 func TestJsonArrayLen(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		raw  string
 		want int

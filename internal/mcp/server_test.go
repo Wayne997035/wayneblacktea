@@ -14,6 +14,7 @@ import (
 // panicking. This is the regression guard for the SQLite v2 cmd dispatch:
 // if the constructor regresses to requiring *pgxpool.Pool, this fails fast.
 func TestNew_AcceptsSQLiteBundle(t *testing.T) {
+	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "mcp-bundle.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,

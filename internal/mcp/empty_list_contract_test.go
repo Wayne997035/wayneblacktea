@@ -97,6 +97,7 @@ type emptyListContractCase struct {
 // tools_learning_pg_test.go / tools_proposal_pg_contract_test.go, reusing the
 // existing mcpPlanTestPgPool testcontainers pool from tools_plan_pg_test.go.
 func TestEmptyListContract_MCP_SQLite(t *testing.T) {
+	t.Parallel()
 	cases := []emptyListContractCase{
 		{
 			// THE FIX under test in this PR: internal/storage/sqlite/learning.go

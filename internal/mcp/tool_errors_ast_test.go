@@ -1036,6 +1036,7 @@ func exprText(fset *token.FileSet, e ast.Expr) string {
 // package — an error by name. The pre-existing regex gate stays green through
 // exactly that mutation, which is why this test exists.
 func TestSEC_U14BypassViaErrMsgIndirection(t *testing.T) {
+	t.Parallel()
 	a := newErrProvenanceAnalyzer(t)
 	sites := a.collectClientMessageSites(t)
 	if len(sites) == 0 {
@@ -1130,6 +1131,7 @@ func verdictFor(t *testing.T, a *errProvenanceAnalyzer, file *ast.File) provenan
 // cannot see, reduced to its smallest form: the error never appears inside the
 // NewToolResultError call, only two frames below it.
 func TestSEC_U14ProvenanceCatchesIndirectErrMsg(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func materialize() (any, string) {
@@ -1160,6 +1162,7 @@ func handler() *mcp.CallToolResult {
 // Without this the gate could be "passing" by flagging every errMsg it sees,
 // which would make the fix indistinguishable from the bug.
 func TestSEC_U14ProvenanceAcceptsRoutedErrMsg(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func materialize() (any, string) {
@@ -1191,6 +1194,7 @@ func handler() *mcp.CallToolResult {
 // package supplies, so there is nothing to trace — and the verdict must be a
 // violation, not a pass.
 func TestSEC_U14ProvenanceFailsClosedOnUntraceableSource(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func handler(detail string) *mcp.CallToolResult {
@@ -1211,6 +1215,7 @@ func handler(detail string) *mcp.CallToolResult {
 // TestSEC_U14ProvenanceFailsClosedOnFuncValueCall is the second untraceable
 // shape: a call through a func-typed value has no declaration to follow.
 func TestSEC_U14ProvenanceFailsClosedOnFuncValueCall(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func handler(render func() string) *mcp.CallToolResult {
@@ -1229,6 +1234,7 @@ func handler(render func() string) *mcp.CallToolResult {
 // literal rather than being judged on their name, or this gate needs the very
 // exemption list it was designed to avoid.
 func TestSEC_U14ProvenanceStaticConstSitesStayGreen(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 const errMsgInvalidProjectIDUUID = "invalid project_id UUID"
@@ -1248,6 +1254,7 @@ func handler() *mcp.CallToolResult {
 // NewToolResultError(errMsg*) sites must not turn red. It asserts on the count
 // the scan actually finds rather than on a number copied from the ticket.
 func TestSEC_U14ProvenanceStaticConstSitesStayGreenInRealPackage(t *testing.T) {
+	t.Parallel()
 	a := newErrProvenanceAnalyzer(t)
 	checked := 0
 	for _, decls := range a.funcs {
@@ -1287,6 +1294,7 @@ func TestSEC_U14ProvenanceStaticConstSitesStayGreenInRealPackage(t *testing.T) {
 // needle can ever match. This is the tools_proposal.go batchAccept shape that
 // U13 deferred to U14 and U14 could not see.
 func TestSEC_U14ProvenanceScansJSONTextErrFields(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func batch() *mcp.CallToolResult {
@@ -1338,6 +1346,7 @@ func batch() *mcp.CallToolResult {
 // Without this control the fix has nothing holding it: the next refactor of
 // the key extraction reintroduces the gap silently.
 func TestSEC_U14ProvenanceScansMapLiteralErrKeys(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func handler() *mcp.CallToolResult {
@@ -1396,6 +1405,7 @@ func handler() *mcp.CallToolResult {
 // test rather than discovering the divergence in production, which is exactly
 // how the two descriptions drifted apart the first time.
 func TestSEC_U14ProvenanceCrossPackageNonErrLhsIsData(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func handler() *mcp.CallToolResult {
@@ -1414,6 +1424,7 @@ func handler() *mcp.CallToolResult {
 // boundary, so the pair documents where the line actually falls: same call
 // shape, error-shaped receiving name, caught.
 func TestSEC_U14ProvenanceCrossPackageErrLhsIsError(t *testing.T) {
+	t.Parallel()
 	a, file := analyzerFromSource(t, `package mcp
 
 func handler() *mcp.CallToolResult {

@@ -63,6 +63,7 @@ var _ discipline.Store = (*stubDisciplineStore)(nil)
 // TestEvaluateDisciplineDrift_MutatingWithoutDecision: a mutating call with
 // no preceding decision in the same session is drift.
 func TestEvaluateDisciplineDrift_MutatingWithoutDecision(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	mutAt := now.Add(-1 * time.Hour)
 
@@ -84,6 +85,7 @@ func TestEvaluateDisciplineDrift_MutatingWithoutDecision(t *testing.T) {
 // preceded by a log_decision in the same session within driftWindow does
 // NOT count as drift.
 func TestEvaluateDisciplineDrift_MutatingWithRecentDecision(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	mutAt := now.Add(-1 * time.Hour)
 	decAt := mutAt.Add(-5 * time.Minute) // 5 min before, inside 15-min window
@@ -105,6 +107,7 @@ func TestEvaluateDisciplineDrift_MutatingWithRecentDecision(t *testing.T) {
 // TestEvaluateDisciplineDrift_DecisionOutsideWindow: a decision more than
 // driftWindow before the mutating call does NOT cover it.
 func TestEvaluateDisciplineDrift_DecisionOutsideWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	mutAt := now.Add(-1 * time.Hour)
 	// 16 minutes before — just outside the 15-minute window
@@ -127,6 +130,7 @@ func TestEvaluateDisciplineDrift_DecisionOutsideWindow(t *testing.T) {
 // TestEvaluateDisciplineDrift_DecisionAfterMutation: a decision logged AFTER
 // the mutating call does NOT cover it (decisions must precede).
 func TestEvaluateDisciplineDrift_DecisionAfterMutation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	mutAt := now.Add(-1 * time.Hour)
 	decAt := mutAt.Add(2 * time.Minute) // AFTER the mutation
@@ -150,6 +154,7 @@ func TestEvaluateDisciplineDrift_DecisionAfterMutation(t *testing.T) {
 // within the next 15 minutes, not just the next one. Calls beyond the
 // window are drift.
 func TestEvaluateDisciplineDrift_BackToBackMutationsSingleDecision(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	decAt := now.Add(-2 * time.Hour)
 	// Three mutations: at +1m, +5m, +20m relative to the decision.
@@ -179,6 +184,7 @@ func TestEvaluateDisciplineDrift_BackToBackMutationsSingleDecision(t *testing.T)
 // TestEvaluateDisciplineDrift_DecisionInDifferentSession: a decision in
 // session A does NOT cover a mutation in session B (per-session scope).
 func TestEvaluateDisciplineDrift_DecisionInDifferentSession(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	mutAt := now.Add(-1 * time.Hour)
 
@@ -199,6 +205,7 @@ func TestEvaluateDisciplineDrift_DecisionInDifferentSession(t *testing.T) {
 // TestEvaluateDisciplineDrift_NilStore: a nil discipline store yields a
 // zero-value health snapshot. Verifies the explicit nil-guard.
 func TestEvaluateDisciplineDrift_NilStore(t *testing.T) {
+	t.Parallel()
 	got := EvaluateDisciplineDrift(context.Background(), nil, time.Now())
 	if got.DriftCount24h != 0 {
 		t.Errorf("DriftCount24h: want 0 with nil store, got %d", got.DriftCount24h)
@@ -212,6 +219,7 @@ func TestEvaluateDisciplineDrift_NilStore(t *testing.T) {
 // maxDisciplineSamples drifts populate RecentDrifts even when the count is
 // higher.
 func TestEvaluateDisciplineDrift_SampleCap(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	store := &stubDisciplineStore{}
 	for i := 0; i < maxDisciplineSamples+3; i++ {
@@ -235,6 +243,7 @@ func TestEvaluateDisciplineDrift_SampleCap(t *testing.T) {
 // zero-value snapshot rather than blowing up. The signal is missing rather
 // than the whole system_health response failing.
 func TestEvaluateDisciplineDrift_StoreErrorSwallowed(t *testing.T) {
+	t.Parallel()
 	store := &stubDisciplineStore{
 		mutatingErr: context.DeadlineExceeded,
 	}
@@ -246,6 +255,7 @@ func TestEvaluateDisciplineDrift_StoreErrorSwallowed(t *testing.T) {
 
 // TestHasDecisionInWindow exercises the window-membership helper directly.
 func TestHasDecisionInWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
@@ -304,6 +314,7 @@ func TestHasDecisionInWindow(t *testing.T) {
 // TestMutatingTools_ContainsExpectedSet verifies the canonical mutating-tool
 // allowlist matches the spec (Lead-frozen list).
 func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
+	t.Parallel()
 	mustBeMutating := []string{
 		"add_task", "update_task", "complete_task", "delete_task", "set_task_status",
 		"confirm_plan", "confirm_proposal", "confirm_proposals",
@@ -358,6 +369,7 @@ func TestMutatingTools_ContainsExpectedSet(t *testing.T) {
 // fail this test immediately, instead of silently becoming invisible to
 // drift detection like the 15 tools this remediation round just fixed.
 func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
+	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "mcp-parity.db")
 	stores, err := storage.NewServerStores(context.Background(), storage.FactoryConfig{
 		Backend:    storage.BackendSQLite,

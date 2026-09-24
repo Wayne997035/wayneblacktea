@@ -44,6 +44,7 @@ func callListDecisionsCtx(t *testing.T, ctx context.Context, s *Server, args map
 // anywhere in the response text — while the write-side audit trail (the DB
 // row itself) is unaffected.
 func TestListDecisions_DoesNotLeakOtherSessionActorSessionID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	const sessionA = "mcp-session-1111-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

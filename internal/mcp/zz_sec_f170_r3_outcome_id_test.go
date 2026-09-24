@@ -36,6 +36,7 @@ import (
 // handleExtractSkill and the source_atom_ids row goes red while the other four
 // stay green.
 func TestSEC171_08_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
+	t.Parallel()
 	for _, field := range []string{
 		"triggers", "steps", "failure_modes", "verification_checklist", "source_atom_ids",
 	} {
@@ -93,6 +94,7 @@ func TestSEC171_08_AllFiveCSVArgumentsScreenControlChars(t *testing.T) {
 // typecheck degrades every other linter's view of it, which is how this was
 // found.
 func TestF170SECR301_OutcomeIDIsBoundedServerSide(t *testing.T) {
+	t.Parallel()
 	oversized := strings.Repeat("A", skillOutcomeIDMaxRunes*3)
 
 	store := &stubSkillStore{returnSkill: &skill.Skill{Name: "bounded probe"}}

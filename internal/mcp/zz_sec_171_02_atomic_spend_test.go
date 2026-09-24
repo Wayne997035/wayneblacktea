@@ -80,6 +80,7 @@ func wins(results ...*mcpmsg.CallToolResult) int {
 // Mutation proof: put the unconditional Delete back in place of the
 // LoadAndDelete spend in handleReconcileMergedPRsConfirm — this goes red.
 func TestSEC171_02_ReconcileConfirmSpendsTokenExactlyOnce(t *testing.T) {
+	t.Parallel()
 	s := withReconcileCandidates(t, newTestWorkSessionServer(t))
 	branch := "feature/sec171-02-reconcile"
 	seedBranchedTask(t, s, "atomic reconcile spend", branch)
@@ -125,6 +126,7 @@ func TestSEC171_02_ReconcileConfirmSpendsTokenExactlyOnce(t *testing.T) {
 // Mutation proof: replace the CompareAndDelete spend in handleDeleteTask with
 // an unconditional Delete — this goes red.
 func TestSEC171_02_DeleteTaskConfirmSpendsTokenExactlyOnce(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	ctx := s.MCPServer().WithContext(context.Background(), fakeClientSession{id: "sec171-02-D"})
@@ -192,6 +194,7 @@ func TestSEC171_02_DeleteTaskConfirmSpendsTokenExactlyOnce(t *testing.T) {
 // spend (tools_gtd.go, `if !s.deleteTokens.CompareAndDelete(id.String(),
 // stored)`) — this goes red either way.
 func TestSEC171_02_SpendDoesNotConsumeReplacementToken(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -249,6 +252,7 @@ func TestSEC171_02_SpendDoesNotConsumeReplacementToken(t *testing.T) {
 // Mutation proof: put the unconditional Delete back on the mismatch branch
 // (tools_gtd.go, the `if suppliedToken != rec.token` block) — this goes red.
 func TestSEC171_13_MismatchRefusalDoesNotDestroyReplacementToken(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -304,6 +308,7 @@ func TestSEC171_13_MismatchRefusalDoesNotDestroyReplacementToken(t *testing.T) {
 // Mutation proof: put the unconditional Delete back on the expired branch
 // (tools_gtd.go, the `if s.now().After(rec.expiresAt)` block) — this goes red.
 func TestSEC171_17_ExpiredRefusalDoesNotDestroyReplacementToken(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 

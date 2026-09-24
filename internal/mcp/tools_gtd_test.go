@@ -98,6 +98,7 @@ var _ outcome.StoreIface = (*spyOutcomeStore)(nil)
 // running in warn mode. Dedup follow-up: this package no longer owns its own
 // copy of the reader — see internal/validator/task_input.go.
 func TestStrictVagueness_ParseBool(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_STRICT_VAGUENESS), which panics in parallel tests.
 	cases := []struct {
 		name string
 		env  string
@@ -198,6 +199,7 @@ func seedTaskWithDueDate(t *testing.T, s *Server, status string) uuid.UUID {
 // ---- handleListTasks tests ----
 
 func TestListTasks_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"status": "unknown"})
 	if !r.IsError {
@@ -209,6 +211,7 @@ func TestListTasks_InvalidStatus(t *testing.T) {
 }
 
 func TestListTasks_EmptyDB_ReturnsEmptySlice(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{})
 	if r.IsError {
@@ -228,6 +231,7 @@ func TestListTasks_EmptyDB_ReturnsEmptySlice(t *testing.T) {
 }
 
 func TestListTasks_LimitZeroDefaultsTo50(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	// Just verify the call succeeds — limit defaulting is internal.
 	r := callListTasks(t, s, map[string]any{"limit": float64(0)})
@@ -246,6 +250,7 @@ func TestListTasks_LimitZeroDefaultsTo50(t *testing.T) {
 }
 
 func TestListTasks_LimitNegativeDefaultsTo50(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"limit": float64(-5)})
 	if r.IsError {
@@ -261,6 +266,7 @@ func TestListTasks_LimitNegativeDefaultsTo50(t *testing.T) {
 }
 
 func TestListTasks_LimitClampsTo200(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"limit": float64(999)})
 	if r.IsError {
@@ -276,6 +282,7 @@ func TestListTasks_LimitClampsTo200(t *testing.T) {
 }
 
 func TestListTasks_OffsetPastEnd_EmptyHasMoreFalse(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedTaskWithDueDate(t, s, "")
 	r := callListTasks(t, s, map[string]any{"offset": float64(1000)})
@@ -293,6 +300,7 @@ func TestListTasks_OffsetPastEnd_EmptyHasMoreFalse(t *testing.T) {
 }
 
 func TestListTasks_StatusCompleted_ReturnsThem(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "completed")
 	r := callListTasks(t, s, map[string]any{"status": "completed"})
@@ -314,6 +322,7 @@ func TestListTasks_StatusCompleted_ReturnsThem(t *testing.T) {
 }
 
 func TestListTasks_StatusCancelled_ReturnsThem(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "cancelled")
 	r := callListTasks(t, s, map[string]any{"status": "cancelled"})
@@ -326,6 +335,7 @@ func TestListTasks_StatusCancelled_ReturnsThem(t *testing.T) {
 }
 
 func TestListTasks_StatusAll_ReturnsOpenAndTerminal(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	pendingID := seedTaskWithDueDate(t, s, "")
 	completedID := seedTaskWithDueDate(t, s, "completed")
@@ -342,6 +352,7 @@ func TestListTasks_StatusAll_ReturnsOpenAndTerminal(t *testing.T) {
 }
 
 func TestListTasks_SummaryFalse_FullObjects(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedTaskWithDueDate(t, s, "")
 	r := callListTasks(t, s, map[string]any{"summary": false})
@@ -368,6 +379,7 @@ func TestListTasks_SummaryFalse_FullObjects(t *testing.T) {
 // zero-length nil slice), so a string-level check is the only test that can
 // actually catch a regression here.
 func TestListTasks_SummaryFalse_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"summary": false})
 	if r.IsError {
@@ -384,6 +396,7 @@ func TestListTasks_SummaryFalse_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
 }
 
 func TestListTasks_HasMore_LimitPlusOneDetection(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	// Seed 3 tasks; request limit=2 — has_more must be true.
 	for i := 0; i < 3; i++ {
@@ -407,6 +420,7 @@ func TestListTasks_HasMore_LimitPlusOneDetection(t *testing.T) {
 }
 
 func TestListTasks_ProjectIDAndStatusCombo(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	// Seed a task under a project and one without.
 	proj, err := s.gtd.CreateProject(context.Background(), gtd.CreateProjectParams{
@@ -486,6 +500,7 @@ func firstListedTask(t *testing.T, r *mcpmsg.CallToolResult, label string) map[s
 // genuinely populated (i.e. the default-path assertion isn't a false negative
 // caused by a seeding bug).
 func TestListTasks_DefaultSummary_OmitsHeavyFields(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -542,6 +557,7 @@ func TestListTasks_DefaultSummary_OmitsHeavyFields(t *testing.T) {
 }
 
 func TestListTasks_InvalidProjectIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"project_id": "not-a-uuid"})
 	if !r.IsError {
@@ -552,6 +568,7 @@ func TestListTasks_InvalidProjectIDUUID(t *testing.T) {
 // ---- handleGetTask tests ----
 
 func TestGetTask_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "")
 	r := callGetTask(t, s, map[string]any{"task_id": id.String()})
@@ -564,6 +581,7 @@ func TestGetTask_HappyPath(t *testing.T) {
 }
 
 func TestGetTask_CompletedTaskRetrievable(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "completed")
 	r := callGetTask(t, s, map[string]any{"task_id": id.String()})
@@ -576,6 +594,7 @@ func TestGetTask_CompletedTaskRetrievable(t *testing.T) {
 }
 
 func TestGetTask_CancelledTaskRetrievable(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "cancelled")
 	r := callGetTask(t, s, map[string]any{"task_id": id.String()})
@@ -585,6 +604,7 @@ func TestGetTask_CancelledTaskRetrievable(t *testing.T) {
 }
 
 func TestGetTask_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetTask(t, s, map[string]any{"task_id": uuid.New().String()})
 	if !r.IsError {
@@ -596,6 +616,7 @@ func TestGetTask_NotFound(t *testing.T) {
 }
 
 func TestGetTask_MissingTaskID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetTask(t, s, map[string]any{})
 	if !r.IsError {
@@ -604,6 +625,7 @@ func TestGetTask_MissingTaskID(t *testing.T) {
 }
 
 func TestGetTask_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetTask(t, s, map[string]any{"task_id": "bad-uuid"})
 	if !r.IsError {
@@ -614,6 +636,7 @@ func TestGetTask_InvalidUUID(t *testing.T) {
 // ---- handleSetTaskStatus tests ----
 
 func TestSetTaskStatus_SameToSame_NoOp(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "pending")
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "pending"})
@@ -631,6 +654,7 @@ func TestSetTaskStatus_SameToSame_NoOp(t *testing.T) {
 }
 
 func TestSetTaskStatus_PendingToInProgress(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "")
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "in_progress"})
@@ -649,6 +673,7 @@ func TestSetTaskStatus_PendingToInProgress(t *testing.T) {
 // requireAssigneeForInProgress) — the guarantee is enforced by
 // gtd.UpdateTaskStatus itself, so any caller is covered.
 func TestSetTaskStatus_PendingToInProgress_RequiresAssignee(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s) // no assignee set
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "in_progress"})
@@ -671,6 +696,7 @@ func TestSetTaskStatus_PendingToInProgress_RequiresAssignee(t *testing.T) {
 // task that already has an assignee transitions cleanly via set_task_status
 // with no extra argument needed.
 func TestSetTaskStatus_PendingToInProgress_ExistingAssigneeNotBlocked(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithAssignee(t, s, "claude")
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "in_progress"})
@@ -687,6 +713,7 @@ func TestSetTaskStatus_PendingToInProgress_ExistingAssigneeNotBlocked(t *testing
 }
 
 func TestSetTaskStatus_CompletedToCancelled(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "completed")
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "cancelled"})
@@ -696,6 +723,7 @@ func TestSetTaskStatus_CompletedToCancelled(t *testing.T) {
 }
 
 func TestSetTaskStatus_CancelledToCompleted(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "cancelled")
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "completed"})
@@ -711,6 +739,7 @@ func TestSetTaskStatus_CancelledToCompleted(t *testing.T) {
 // same spy wired, proving the spy actually detects calls when they occur
 // (otherwise a spy that never fires isn't a meaningful assertion).
 func TestSetTaskStatus_ReopenAndRedo_NoOutcomeWritten(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	spy := &spyOutcomeStore{}
 	s.outcome = spy
@@ -753,6 +782,7 @@ func TestSetTaskStatus_ReopenAndRedo_NoOutcomeWritten(t *testing.T) {
 }
 
 func TestSetTaskStatus_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": uuid.New().String(), "status": "in_progress"})
 	if !r.IsError {
@@ -764,6 +794,7 @@ func TestSetTaskStatus_NotFound(t *testing.T) {
 }
 
 func TestSetTaskStatus_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "")
 	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "done"})
@@ -773,6 +804,7 @@ func TestSetTaskStatus_InvalidStatus(t *testing.T) {
 }
 
 func TestSetTaskStatus_MissingTaskID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callSetTaskStatus(t, s, map[string]any{"status": "pending"})
 	if !r.IsError {
@@ -786,6 +818,7 @@ func TestSetTaskStatus_MissingTaskID(t *testing.T) {
 // task with no outcome auto-seeds exactly one result="unknown" outcome row,
 // while leaving the response shape (task JSON, not outcome JSON) unchanged.
 func TestHandleCompleteTask_SeedsOutcome(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	id := seedTaskWithDueDate(t, s, "")
@@ -838,6 +871,7 @@ func TestHandleCompleteTask_SeedsOutcome(t *testing.T) {
 // 000074) — see TestSeedDraftOutcome_ConcurrentCompleteTask_NoDuplicateDraft
 // in tools_outcome_lifecycle_test.go for the race-safety proof.
 func TestHandleCompleteTask_SeedsOutcome_Idempotent(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	id := seedTaskWithDueDate(t, s, "")
@@ -870,6 +904,7 @@ func TestHandleCompleteTask_SeedsOutcome_Idempotent(t *testing.T) {
 // task_id returns "task not found" and never reaches the outcome-seeding
 // step (spy detects zero calls).
 func TestHandleCompleteTask_NotFound_NoOutcomeSeeded(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	spy := &spyOutcomeStore{}
 	s.outcome = spy
@@ -891,6 +926,7 @@ func TestHandleCompleteTask_NotFound_NoOutcomeSeeded(t *testing.T) {
 // completed task successfully (best-effort, log-and-swallow per
 // applyArtifactSideEffects' established pattern in this file).
 func TestHandleCompleteTask_SeedFailure_TaskStillSucceeds(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithDueDate(t, s, "")
 	s.outcome = &stubOutcomeStore{returnErr: errors.New("outcome store unavailable")}
@@ -913,6 +949,7 @@ func TestHandleCompleteTask_SeedFailure_TaskStillSucceeds(t *testing.T) {
 // ---- handleAddTask due_date HARD-REQUIRE tests ----
 
 func TestAddTask_MissingDueDate_HardError(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title": "no due date task",
@@ -926,6 +963,7 @@ func TestAddTask_MissingDueDate_HardError(t *testing.T) {
 }
 
 func TestAddTask_InvalidDueDateFormat_HardError(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":    "bad due date",
@@ -940,6 +978,7 @@ func TestAddTask_InvalidDueDateFormat_HardError(t *testing.T) {
 }
 
 func TestAddTask_ValidDueDate_TaskCreated(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":    "task with due date",
@@ -957,6 +996,7 @@ func TestAddTask_ValidDueDate_TaskCreated(t *testing.T) {
 }
 
 func TestAddTask_EmptyDueDate_HardError(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":    "empty due date",
@@ -974,6 +1014,7 @@ func TestAddTask_EmptyDueDate_HardError(t *testing.T) {
 // function to `if goals == nil { return nil }`) would silently flip the
 // resource's wire shape without this test catching it at the Go level.
 func TestF160_03_WrapUntrustedGoalsReturnsNonNilOnNilInput(t *testing.T) {
+	t.Parallel()
 	got := wrapUntrustedGoals(nil)
 	if got == nil {
 		t.Fatal("wrapUntrustedGoals(nil) returned nil, want a non-nil, zero-length slice")

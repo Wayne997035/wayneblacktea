@@ -145,6 +145,7 @@ func rpcCallToolText(t *testing.T, ms *server.MCPServer, ctx context.Context, na
 
 // TestZeroExpansionSession_ListsOnlyCore is the visible half of the feature.
 func TestZeroExpansionSession_ListsOnlyCore(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	ctx := ms.WithContext(context.Background(), newFakeSession("sess-core"))
 
@@ -163,6 +164,7 @@ func TestZeroExpansionSession_ListsOnlyCore(t *testing.T) {
 // changed that, this test breaks loudly instead of the feature silently
 // amputating 74 tools.
 func TestAllTools_CallableWhenHidden(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	ctx := ms.WithContext(context.Background(), newFakeSession("sess-hidden"))
 
@@ -198,6 +200,7 @@ func TestAllTools_CallableWhenHidden(t *testing.T) {
 }
 
 func TestFilterToolsForSession_FailsOpenWithoutSession(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 
 	// No client session in context — the stdio/in-process case.
@@ -216,6 +219,7 @@ func TestFilterToolsForSession_FailsOpenWithoutSession(t *testing.T) {
 }
 
 func TestExpandTools_CatalogueIsReadOnly(t *testing.T) {
+	t.Parallel()
 	srv, ms := newTestMCPServer(t)
 	sess := newFakeSession("sess-catalogue")
 	ctx := ms.WithContext(context.Background(), sess)
@@ -259,6 +263,7 @@ func TestExpandTools_CatalogueIsReadOnly(t *testing.T) {
 }
 
 func TestExpandTools_RevealsGroupWithSchemas(t *testing.T) {
+	t.Parallel()
 	srv, ms := newTestMCPServer(t)
 	sess := newFakeSession("sess-expand")
 	ctx := ms.WithContext(context.Background(), sess)
@@ -314,6 +319,7 @@ func TestExpandTools_RevealsGroupWithSchemas(t *testing.T) {
 }
 
 func TestExpandTools_SessionIsolation(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	ctxA := ms.WithContext(context.Background(), newFakeSession("sess-a"))
 	ctxB := ms.WithContext(context.Background(), newFakeSession("sess-b"))
@@ -331,6 +337,7 @@ func TestExpandTools_SessionIsolation(t *testing.T) {
 }
 
 func TestExpandTools_AllThenReset(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	sess := newFakeSession("sess-all")
 	ctx := ms.WithContext(context.Background(), sess)
@@ -363,6 +370,7 @@ func TestExpandTools_AllThenReset(t *testing.T) {
 }
 
 func TestExpandTools_ArgumentErrors(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	ctx := ms.WithContext(context.Background(), newFakeSession("sess-bad"))
 
@@ -397,6 +405,7 @@ func TestExpandTools_ArgumentErrors(t *testing.T) {
 // the WRITE path: with no session there is nothing to key state by, so the
 // call must say so rather than silently pretend it stored something.
 func TestExpandTools_WithoutSession(t *testing.T) {
+	t.Parallel()
 	srv, ms := newTestMCPServer(t)
 	req := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":` +
 		`{"name":"expand_tools","arguments":{"group":"gtd"}}}`
@@ -414,6 +423,7 @@ func TestExpandTools_WithoutSession(t *testing.T) {
 }
 
 func TestProgressiveDisclosureEnabled(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_DISABLE_PROGRESSIVE_DISCLOSURE), which panics in parallel tests.
 	tests := []struct {
 		name  string
 		value string
@@ -440,6 +450,7 @@ func TestProgressiveDisclosureEnabled(t *testing.T) {
 }
 
 func TestMCPServer_KillSwitchSkipsFilter(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_DISABLE_PROGRESSIVE_DISCLOSURE), which panics in parallel tests.
 	t.Setenv(disableProgressiveDisclosureEnvVar, "1")
 	_, ms := newTestMCPServer(t)
 	ctx := ms.WithContext(context.Background(), newFakeSession("sess-killswitch"))
@@ -457,6 +468,7 @@ func TestMCPServer_KillSwitchSkipsFilter(t *testing.T) {
 }
 
 func TestExpansionStore_TTLExpiry(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	st := newExpansionStore(8, time.Hour, clock)
@@ -485,6 +497,7 @@ func TestExpansionStore_TTLExpiry(t *testing.T) {
 }
 
 func TestExpansionStore_EvictsLeastRecentlyExpandedAtCap(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	st := newExpansionStore(3, 24*time.Hour, clock)
@@ -513,6 +526,7 @@ func TestExpansionStore_EvictsLeastRecentlyExpandedAtCap(t *testing.T) {
 }
 
 func TestExpansionStore_ConcurrentAccessIsSafe(t *testing.T) {
+	t.Parallel()
 	st := newExpansionStore(64, time.Hour, time.Now)
 	done := make(chan struct{})
 	for i := range 8 {

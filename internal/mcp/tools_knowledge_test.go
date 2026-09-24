@@ -83,6 +83,7 @@ func callAddKnowledge(t *testing.T, s *Server, args map[string]any) *mcpmsg.Call
 // error result (IsError=true) rather than a Go error, matching the MCP
 // contract.
 func TestHandleAddKnowledge_InvalidProjectIDUUID(t *testing.T) {
+	t.Parallel()
 	s := &Server{knowledge: &stubKnowledgeStore{}}
 
 	r := callAddKnowledge(t, s, map[string]any{
@@ -101,6 +102,7 @@ func TestHandleAddKnowledge_InvalidProjectIDUUID(t *testing.T) {
 // TestHandleAddKnowledge_InvalidTaskIDUUID verifies that a malformed task_id
 // UUID value causes handleAddKnowledge to return a tool-level error result.
 func TestHandleAddKnowledge_InvalidTaskIDUUID(t *testing.T) {
+	t.Parallel()
 	s := &Server{knowledge: &stubKnowledgeStore{}}
 
 	r := callAddKnowledge(t, s, map[string]any{

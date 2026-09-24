@@ -58,6 +58,7 @@ func newTestServerWithCandidates(t *testing.T, store completionCandidateStore) *
 // TestDetectCompletionCandidates_DefaultParams verifies that the tool returns
 // valid JSON with candidates key when the store returns 0 candidates.
 func TestDetectCompletionCandidates_DefaultParams(t *testing.T) {
+	t.Parallel()
 	store := &fakeDashCandidateStore{
 		detected: []completioncandidate.Candidate{},
 		pending:  []completioncandidate.Candidate{},
@@ -91,6 +92,7 @@ func TestDetectCompletionCandidates_DefaultParams(t *testing.T) {
 // TestReconcileDashboard_Summary verifies that the reconcile_dashboard tool
 // returns a summary string that contains the candidate count.
 func TestReconcileDashboard_Summary(t *testing.T) {
+	t.Parallel()
 	taskID1 := uuid.New()
 	taskID2 := uuid.New()
 	candidates := []completioncandidate.Candidate{
@@ -150,6 +152,7 @@ func TestReconcileDashboard_Summary(t *testing.T) {
 
 // TestDetectCompletionCandidates_CustomParams verifies custom params are accepted.
 func TestDetectCompletionCandidates_CustomParams(t *testing.T) {
+	t.Parallel()
 	store := &fakeDashCandidateStore{
 		detected: []completioncandidate.Candidate{},
 		pending:  []completioncandidate.Candidate{},

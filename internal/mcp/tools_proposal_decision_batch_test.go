@@ -53,6 +53,7 @@ func createDecisionProposal(t *testing.T, s *Server, title string) uuid.UUID {
 // state — matching the round-trip test pattern in
 // internal/proposal/decision_roundtrip_test.go.
 func TestHandleConfirmProposals_TypeDecision_Materialises(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 
@@ -98,6 +99,7 @@ func TestHandleConfirmProposals_TypeDecision_Materialises(t *testing.T) {
 // containing both TypeDecision + TypeConcept ids materialises both entities.
 // This is the core round-trip property the singular-only round-2 fix missed.
 func TestHandleConfirmProposals_MixedBatch_DecisionAndConcept(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 
@@ -159,6 +161,7 @@ func TestHandleConfirmProposals_MixedBatch_DecisionAndConcept(t *testing.T) {
 // malformed TypeDecision payload yields a per-id failure entry but does NOT
 // fail the whole batch — the other ids still resolve.
 func TestHandleConfirmProposals_BadDecisionPayload_FailsThatIDOnly(t *testing.T) {
+	t.Parallel()
 	s := newProposalTestServer(t)
 	ctx := context.Background()
 

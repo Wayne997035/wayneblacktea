@@ -23,6 +23,7 @@ import (
 // was handed — the value that becomes the SQL LIMIT is the thing under test.
 
 func TestB0C90957_SearchSkillsCapsTheLimitReachingSQL(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{}
 	s := newSkillServer(store)
 
@@ -39,6 +40,7 @@ func TestB0C90957_SearchSkillsCapsTheLimitReachingSQL(t *testing.T) {
 }
 
 func TestB0C90957_ListRelevantSkillsCapsTheLimitReachingSQL(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{}
 	s := newSkillServer(store)
 
@@ -55,6 +57,7 @@ func TestB0C90957_ListRelevantSkillsCapsTheLimitReachingSQL(t *testing.T) {
 // resolving "unset" to the cap, which would quietly turn every default call
 // into a 100-row response.
 func TestB0C90957_UnsetLimitStillMeansTheDefault(t *testing.T) {
+	t.Parallel()
 	store := &stubSkillStore{}
 	s := newSkillServer(store)
 
@@ -79,6 +82,7 @@ func TestB0C90957_UnsetLimitStillMeansTheDefault(t *testing.T) {
 // agent reads before choosing a limit; if it keeps promising "default 10" after
 // the constants move, the tool lies to every caller and nothing else notices.
 func TestB0C90957_LimitSchemaMatchesTheConstants(t *testing.T) {
+	t.Parallel()
 	ms := server.NewMCPServer("test", "0.0.0")
 	(&Server{}).registerSkillTools(ms)
 	tools := ms.ListTools()

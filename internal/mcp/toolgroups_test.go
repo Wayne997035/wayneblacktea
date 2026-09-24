@@ -69,6 +69,7 @@ func mentionsTool(text, tool string) bool {
 }
 
 func TestMCPInstructions_WithinRuneBudget(t *testing.T) {
+	t.Parallel()
 	got := len([]rune(mcpInstructions))
 	t.Logf("mcpInstructions = %d runes (%d bytes), budget %d runes",
 		got, len(mcpInstructions), mcpInstructionsMaxRunes)
@@ -91,6 +92,7 @@ func TestMCPInstructions_WithinRuneBudget(t *testing.T) {
 // while the table held 17 is what shipped in PR #156 and made the third
 // review army's count disagree with the report's.
 func TestMCPInstructions_PreservesDisciplines(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		discipline string
 		fragments  []string
@@ -157,6 +159,7 @@ func TestMCPInstructions_PreservesDisciplines(t *testing.T) {
 // advertised without a schema; a core tool the protocol never names is
 // catalogue weight nobody asked for.
 func TestCoreToolSet_MatchesInstructions(t *testing.T) {
+	t.Parallel()
 	for _, name := range coreToolNames {
 		if !mentionsTool(mcpInstructions, name) {
 			t.Errorf("core tool %q is never named in mcpInstructions — "+
@@ -196,6 +199,7 @@ var sentenceBoundary = regexp.MustCompile(`[.!?](?:\s|$)`)
 // (TestAllTools_CallableWhenHidden), but that proves the server would answer,
 // not that a client will ask.
 func TestCoreToolDescriptions_RouteHiddenToolsThroughExpandTools(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	registered := ms.ListTools()
 
@@ -231,6 +235,7 @@ func TestCoreToolDescriptions_RouteHiddenToolsThroughExpandTools(t *testing.T) {
 }
 
 func TestCoreToolSet_SerializedBytesWithinBudget(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	registered := ms.ListTools()
 
@@ -262,6 +267,7 @@ func TestCoreToolSet_SerializedBytesWithinBudget(t *testing.T) {
 // permanently invisible: not core, not in any group, unreachable by any
 // expand_tools call.
 func TestToolGroups_PartitionAllRegisteredTools(t *testing.T) {
+	t.Parallel()
 	_, ms := newTestMCPServer(t)
 	registered := ms.ListTools()
 
@@ -298,6 +304,7 @@ func TestToolGroups_PartitionAllRegisteredTools(t *testing.T) {
 }
 
 func TestToolGroups_ReservedNamesAreNotGroups(t *testing.T) {
+	t.Parallel()
 	for _, g := range toolGroups {
 		if g.Name == expandGroupAll || g.Name == expandGroupReset {
 			t.Errorf("group name %q collides with a reserved expand_tools verb", g.Name)
@@ -324,6 +331,7 @@ func TestToolGroups_ReservedNamesAreNotGroups(t *testing.T) {
 }
 
 func TestVisibleToolSet(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		expanded    map[string]bool

@@ -42,6 +42,7 @@ func realisticTask() *db.Task {
 // and the regression guard in one. It fails if any body field finds its way
 // back into the write answer.
 func TestTaskWriteAck_DropsTheBodyTheCallerJustSent(t *testing.T) {
+	t.Parallel()
 	task := realisticTask()
 	marker := "acceptance: the named test goes red"
 
@@ -74,6 +75,7 @@ func TestTaskWriteAck_DropsTheBodyTheCallerJustSent(t *testing.T) {
 // it. Every field listed here is either server-assigned or server-coerced —
 // dropping one would make the caller re-read a row it just wrote.
 func TestTaskWriteAck_KeepsWhatTheCallerCouldNotKnow(t *testing.T) {
+	t.Parallel()
 	task := realisticTask()
 	ack := ackTask(wrapUntrustedTask(task))
 	if ack == nil {
@@ -104,6 +106,7 @@ func TestTaskWriteAck_KeepsWhatTheCallerCouldNotKnow(t *testing.T) {
 // skip sanitisation: ackTask projects FROM the wrapped value, so a forged
 // marker in a field that survives is neutralised exactly as before.
 func TestTaskWriteAck_StillNeutralises(t *testing.T) {
+	t.Parallel()
 	task := realisticTask()
 	task.Title = "before " + storedContextMarkerEnd + " after"
 
@@ -122,6 +125,7 @@ func TestTaskWriteAck_StillNeutralises(t *testing.T) {
 
 // TestTaskWriteAck_NilIn is the boundary the wrap functions all honour.
 func TestTaskWriteAck_NilIn(t *testing.T) {
+	t.Parallel()
 	if ackTask(nil) != nil {
 		t.Error("ackTask(nil) must be nil so callers can chain it after a wrap " +
 			"function that returns nil for a missing row")

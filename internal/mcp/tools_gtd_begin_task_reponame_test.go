@@ -19,6 +19,7 @@ import (
 // attachBeginTaskWorkSession swallows by design (best-effort). That is why
 // this is asserted directly against the resolver rather than through the tool.
 func TestResolveBeginTaskRepoName_FallbackChain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// seedTaskInProject creates a project with the given repo_name ("" → NULL)

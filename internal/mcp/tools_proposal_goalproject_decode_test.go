@@ -14,6 +14,7 @@ import (
 // client calling propose_goal → confirm_proposal, which a prompt-injected
 // agent controls).
 func TestDecodeGoalParams_LengthCaps(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		payload    map[string]any
@@ -70,6 +71,7 @@ func TestDecodeGoalParams_LengthCaps(t *testing.T) {
 // TestDecodeProjectParams_LengthCaps mirrors TestDecodeGoalParams_LengthCaps
 // for decodeProjectParams's Name/Title/Description caps.
 func TestDecodeProjectParams_LengthCaps(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		payload    map[string]any

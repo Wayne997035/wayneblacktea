@@ -27,6 +27,7 @@ import (
 // in the suite does — the handler itself never sees the difference, because a
 // conforming client stops the call before it arrives.
 func TestAddTaskSchema_AreaRequired(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	tool := s.MCPServer().GetTool("add_task")
@@ -54,6 +55,7 @@ func TestAddTaskSchema_AreaRequired(t *testing.T) {
 // and force a value on the one query — "everything still open" — that has no
 // single area.
 func TestListTasksSchema_AreaNotRequired(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	tool := s.MCPServer().GetTool("list_tasks")
@@ -72,6 +74,7 @@ func TestListTasksSchema_AreaNotRequired(t *testing.T) {
 // --- the one-line summary that rides on get_today_context ---
 
 func TestAreasSummaryLine(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		areas []gtd.AreaCount
@@ -121,6 +124,7 @@ func TestAreasSummaryLine(t *testing.T) {
 // nobody reads answers nothing, and get_today_context is the call the
 // protocol makes every session start with.
 func TestTodayContextCarriesAreasSummary(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	res, err := s.handleGetTodayContext(context.Background(), mcp.CallToolRequest{})
@@ -147,6 +151,7 @@ func TestTodayContextCarriesAreasSummary(t *testing.T) {
 // empty list caused by a typo reads exactly like an area that is finished —
 // the class of wrong answer this whole column exists to end.
 func TestListTasksRejectsUnknownArea(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	res, err := s.handleListTasks(context.Background(), ListTasksArgs{Area: "no-such-area"})
@@ -174,6 +179,7 @@ func TestListTasksRejectsUnknownArea(t *testing.T) {
 }
 
 func TestAddTaskRejectsUnknownArea(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	res, err := s.handleAddTask(context.Background(), AddTaskArgs{
@@ -195,6 +201,7 @@ func TestAddTaskRejectsUnknownArea(t *testing.T) {
 // inner join, and areas holding nothing disappear — including 'unsorted'
 // reaching zero, which is the single most useful thing the breakdown can say.
 func TestTaskAreaCountsKeepsEmptyAreas(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	counts, err := s.gtd.TaskAreaCounts(context.Background())
@@ -227,6 +234,7 @@ func TestTaskAreaCountsKeepsEmptyAreas(t *testing.T) {
 // few hundred here. If the payload ever grows past a kilobyte, the tradeoff
 // that justified the design has stopped holding.
 func TestGTDAreasResourceIsSmall(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	contents, err := s.handleResourceGTDAreas(context.Background(), mcp.ReadResourceRequest{})

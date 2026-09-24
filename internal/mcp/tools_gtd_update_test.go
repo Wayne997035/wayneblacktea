@@ -54,6 +54,7 @@ func callGetUpcomingWork(t *testing.T, s *Server, args map[string]any) *mcpmsg.C
 // seam's check rather than parseUpdateTaskArgs' own.
 
 func TestParseUpdateTaskArgs_ValidStatuses(t *testing.T) {
+	t.Parallel()
 	for _, st := range []string{"pending", "in_progress", "cancelled"} {
 		p, msg := parseUpdateTaskArgs(UpdateTaskArgs{Status: st})
 		if msg != "" {
@@ -66,6 +67,7 @@ func TestParseUpdateTaskArgs_ValidStatuses(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_PriorityOutOfRange(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{Priority: 6})
 	if msg == "" {
 		t.Fatal("expected error for priority=6")
@@ -73,6 +75,7 @@ func TestParseUpdateTaskArgs_PriorityOutOfRange(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_ImportanceOutOfRange(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{Importance: 4})
 	if msg == "" {
 		t.Fatal("expected error for importance=4")
@@ -80,6 +83,7 @@ func TestParseUpdateTaskArgs_ImportanceOutOfRange(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_InvalidDueDate(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{DueDate: "not-a-date"})
 	if msg == "" {
 		t.Fatal("expected error for bad due_date")
@@ -90,6 +94,7 @@ func TestParseUpdateTaskArgs_InvalidDueDate(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_ValidDueDate(t *testing.T) {
+	t.Parallel()
 	p, msg := parseUpdateTaskArgs(UpdateTaskArgs{DueDate: "2026-12-31T00:00:00Z"})
 	if msg != "" {
 		t.Fatalf("valid RFC3339 should pass, got: %s", msg)
@@ -102,6 +107,7 @@ func TestParseUpdateTaskArgs_ValidDueDate(t *testing.T) {
 // --- handleUpdateTask validation paths ---
 
 func TestUpdateTask_MissingTaskID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateTask(t, s, map[string]any{"status": "pending"})
 	if !r.IsError {
@@ -113,6 +119,7 @@ func TestUpdateTask_MissingTaskID(t *testing.T) {
 }
 
 func TestUpdateTask_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateTask(t, s, map[string]any{"task_id": "not-a-uuid", "status": "pending"})
 	if !r.IsError {
@@ -121,6 +128,7 @@ func TestUpdateTask_InvalidUUID(t *testing.T) {
 }
 
 func TestUpdateTask_AllNilParamsFails(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{"task_id": id.String()})
@@ -133,6 +141,7 @@ func TestUpdateTask_AllNilParamsFails(t *testing.T) {
 }
 
 func TestUpdateTask_InvalidStatusReturnsError(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{"task_id": id.String(), "status": "completed"})
@@ -142,6 +151,7 @@ func TestUpdateTask_InvalidStatusReturnsError(t *testing.T) {
 }
 
 func TestUpdateTask_StatusToInProgress(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	// p6-6: in_progress now requires an assignee (this call supplies one
@@ -177,6 +187,7 @@ func TestUpdateTask_StatusToInProgress(t *testing.T) {
 // validator.ValidTaskKinds is accepted by update_task and actually persists,
 // end-to-end through the MCP seam.
 func TestUpdateTask_Kind_AllValidValues(t *testing.T) {
+	t.Parallel()
 	for _, k := range []string{"general", "fix-pr", "feature", "refactor", "research", "chore"} {
 		t.Run(k, func(t *testing.T) {
 			s := newTestWorkSessionServer(t)
@@ -200,6 +211,7 @@ func TestUpdateTask_Kind_AllValidValues(t *testing.T) {
 // rejected with an explicit error and does NOT silently fall back to
 // "general" — the task's kind must be left unchanged.
 func TestUpdateTask_Kind_InvalidValue(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	// seedTask leaves kind at its CreateTaskParams zero value, which
@@ -254,6 +266,7 @@ func TestUpdateTask_Kind_InvalidValue(t *testing.T) {
 // "redundant" with TestUpdateTask_Kind_InvalidValue — the two tests
 // discriminate different layers on purpose.
 func TestParseUpdateTaskArgs_InvalidKind(t *testing.T) {
+	t.Parallel()
 	const wantValidKind = "feature"
 	tests := []struct {
 		name string
@@ -296,6 +309,7 @@ func TestParseUpdateTaskArgs_InvalidKind(t *testing.T) {
 // unrelated field without touching kind leaves the existing kind value
 // untouched (preserve-on-omit, matching every other update_task field).
 func TestUpdateTask_Kind_OmittedPreservesExisting(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -322,6 +336,7 @@ func TestUpdateTask_Kind_OmittedPreservesExisting(t *testing.T) {
 // --- handleGetUpcomingWork ---
 
 func TestGetUpcomingWork_EmptyDB(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetUpcomingWork(t, s, map[string]any{})
 	if r.IsError {
@@ -333,6 +348,7 @@ func TestGetUpcomingWork_EmptyDB(t *testing.T) {
 }
 
 func TestGetUpcomingWork_DaysClampedTo14(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetUpcomingWork(t, s, map[string]any{"days": float64(999)})
 	if r.IsError {
@@ -341,6 +357,7 @@ func TestGetUpcomingWork_DaysClampedTo14(t *testing.T) {
 }
 
 func TestGetUpcomingWork_DefaultsApplied(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetUpcomingWork(t, s, map[string]any{})
 	if r.IsError {
@@ -355,6 +372,7 @@ func TestGetUpcomingWork_DefaultsApplied(t *testing.T) {
 // --- branch_name / pr_url validation (M-1, M-2) ---
 
 func TestParseUpdateTaskArgs_BranchNameTooLong(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr(strings.Repeat("a", 256))})
 	if msg == "" {
 		t.Fatal("expected error for branch_name > 255 chars")
@@ -365,6 +383,7 @@ func TestParseUpdateTaskArgs_BranchNameTooLong(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_BranchNameNewline(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr("feature/bad\nname")})
 	if msg == "" {
 		t.Fatal("expected error for branch_name with \\n control char")
@@ -375,6 +394,7 @@ func TestParseUpdateTaskArgs_BranchNameNewline(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_BranchNameDEL(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr("feature/bad\x7fname")})
 	if msg == "" {
 		t.Fatal("expected error for branch_name with DEL (0x7F)")
@@ -382,6 +402,7 @@ func TestParseUpdateTaskArgs_BranchNameDEL(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_BranchNameUnicodeControl(t *testing.T) {
+	t.Parallel()
 	// U+200B zero-width space — a Unicode format char (Cf) that bytes < 0x20 alone would miss.
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{BranchName: strPtr("feature/bad" + "\u200b" + "name")})
 	if msg == "" {
@@ -390,6 +411,7 @@ func TestParseUpdateTaskArgs_BranchNameUnicodeControl(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_PRUrlInvalidHost(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("https://notgithub.com/foo/bar/pull/1")})
 	if msg == "" {
 		t.Fatal("expected error for pr_url on non-github host")
@@ -397,6 +419,7 @@ func TestParseUpdateTaskArgs_PRUrlInvalidHost(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_PRUrlJavaScript(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("javascript:alert(1)")})
 	if msg == "" {
 		t.Fatal("expected error for javascript: pr_url")
@@ -404,6 +427,7 @@ func TestParseUpdateTaskArgs_PRUrlJavaScript(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_PRUrlIssuesNotPulls(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("https://github.com/foo/bar/issues/1")})
 	if msg == "" {
 		t.Fatal("expected error for pr_url pointing to issues (not pulls)")
@@ -411,6 +435,7 @@ func TestParseUpdateTaskArgs_PRUrlIssuesNotPulls(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_PRUrlTrailingPath(t *testing.T) {
+	t.Parallel()
 	_, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("https://github.com/owner/repo/pull/42/files")})
 	if msg == "" {
 		t.Fatal("expected error for pr_url with trailing path /files")
@@ -418,6 +443,7 @@ func TestParseUpdateTaskArgs_PRUrlTrailingPath(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_ValidBranchAndPR(t *testing.T) {
+	t.Parallel()
 	p, msg := parseUpdateTaskArgs(UpdateTaskArgs{
 		BranchName: strPtr("feature/my-feature"),
 		PRUrl:      strPtr("https://github.com/owner/repo/pull/42"),
@@ -434,6 +460,7 @@ func TestParseUpdateTaskArgs_ValidBranchAndPR(t *testing.T) {
 }
 
 func TestParseUpdateTaskArgs_ClearPRUrl(t *testing.T) {
+	t.Parallel()
 	// Explicit empty string clears the field without triggering URL validation.
 	p, msg := parseUpdateTaskArgs(UpdateTaskArgs{PRUrl: strPtr("")})
 	if msg != "" {
@@ -450,6 +477,7 @@ func TestParseUpdateTaskArgs_ClearPRUrl(t *testing.T) {
 // --- handleAddTask required-title (seam-absorbed) ---
 
 func TestAddTask_MissingTitle(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{"due_date": "2026-12-31T00:00:00Z"})
 	if !r.IsError || resultText(r) != wantTitleRequired {
@@ -460,6 +488,7 @@ func TestAddTask_MissingTitle(t *testing.T) {
 // --- handleAddTask branch_name / pr_url end-to-end ---
 
 func TestAddTask_BranchNameTooLong(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":       "test task",
@@ -474,6 +503,7 @@ func TestAddTask_BranchNameTooLong(t *testing.T) {
 }
 
 func TestAddTask_BranchNameControlChar(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":       "test task",
@@ -485,6 +515,7 @@ func TestAddTask_BranchNameControlChar(t *testing.T) {
 }
 
 func TestAddTask_PRUrlInvalid(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":  "test task",
@@ -496,6 +527,7 @@ func TestAddTask_PRUrlInvalid(t *testing.T) {
 }
 
 func TestAddTask_ValidBranchAndPR(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":       "test task",
@@ -511,6 +543,7 @@ func TestAddTask_ValidBranchAndPR(t *testing.T) {
 // --- handleUpdateTask branch_name / pr_url end-to-end ---
 
 func TestUpdateTask_BranchNameTooLong(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{
@@ -523,6 +556,7 @@ func TestUpdateTask_BranchNameTooLong(t *testing.T) {
 }
 
 func TestUpdateTask_BranchNameDEL(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{
@@ -535,6 +569,7 @@ func TestUpdateTask_BranchNameDEL(t *testing.T) {
 }
 
 func TestUpdateTask_PRUrlNotGitHub(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{
@@ -547,6 +582,7 @@ func TestUpdateTask_PRUrlNotGitHub(t *testing.T) {
 }
 
 func TestUpdateTask_ValidBranchAndPR(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{
@@ -568,6 +604,7 @@ func TestUpdateTask_ValidBranchAndPR(t *testing.T) {
 // update_task tool's description FIELD must say so, so a caller cannot
 // mistake "update_task(description=\"add this note\")" for an append.
 func TestUpdateTaskDescriptionDiscloses(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	task, err := s.gtd.CreateTask(context.Background(), gtd.CreateTaskParams{
 		Title:       "disclosure test " + uuid.NewString(),
@@ -610,6 +647,7 @@ func TestUpdateTaskDescriptionDiscloses(t *testing.T) {
 // buildUpdateProjectParams: description falls back to existing only when the
 // arg is the empty string), same missing-disclosure gap fixed the same way.
 func TestUpdateProjectDescriptionDiscloses(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	tool := s.MCPServer().GetTool("update_project")

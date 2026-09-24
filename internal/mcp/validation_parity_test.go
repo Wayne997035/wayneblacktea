@@ -163,6 +163,7 @@ func idOnly(t *testing.T, raw string) uuid.UUID {
 }
 
 func TestValidationParity_MCPvsHTTP(t *testing.T) {
+	t.Parallel()
 	for _, tc := range validationParityCases() {
 		t.Run(tc.gap+"_"+tc.name, func(t *testing.T) {
 			env := newParityEnv(t)

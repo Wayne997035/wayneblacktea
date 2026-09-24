@@ -9,6 +9,7 @@ import (
 )
 
 func TestHandleInitialInstructions_ReturnsProtocol(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	result, err := s.handleInitialInstructions(context.Background(), mcpmsg.CallToolRequest{})
 	if err != nil {
@@ -59,6 +60,7 @@ func TestHandleInitialInstructions_ReturnsProtocol(t *testing.T) {
 // pins the DERIVATION, so the two strings can never drift into two
 // independently-edited copies of the protocol.
 func TestHandleInitialInstructions_ReturnsProtocolFull(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	result, err := s.handleInitialInstructions(context.Background(), mcpmsg.CallToolRequest{})
 	if err != nil {
@@ -91,6 +93,7 @@ func TestHandleInitialInstructions_ReturnsProtocolFull(t *testing.T) {
 // descriptions. Trimming for byte budget is only legitimate if the detail
 // survives somewhere the client can still fetch it.
 func TestMCPProtocolAppendix_KeepsDetailMovedOutOfDescriptions(t *testing.T) {
+	t.Parallel()
 	moved := []struct {
 		source   string
 		fragment string
@@ -138,6 +141,7 @@ func TestMCPProtocolAppendix_KeepsDetailMovedOutOfDescriptions(t *testing.T) {
 // — this lane produces the protocol text only, per the dispatch's file
 // ownership split.
 func TestInitialInstructions_NotMandatoryLanguage(t *testing.T) {
+	t.Parallel()
 	old := []string{"once per session", "at session start"}
 	for _, phrase := range old {
 		if strings.Contains(mcpInstructions, phrase) {
@@ -173,6 +177,7 @@ func TestInitialInstructions_NotMandatoryLanguage(t *testing.T) {
 }
 
 func TestMCPInstructions_NotEmpty(t *testing.T) {
+	t.Parallel()
 	if mcpInstructions == "" {
 		t.Fatal("mcpInstructions constant must not be empty")
 	}

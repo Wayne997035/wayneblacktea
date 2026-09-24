@@ -33,6 +33,7 @@ const wantKindGeneral = "general"
 // behaviour §3, since materializeTaskPg / materializeTaskIface /
 // materializeTaskSQLite's pre-commit gate all call this one helper.
 func TestDecodeTaskProposalParams_InvalidKind(t *testing.T) {
+	t.Parallel()
 	t.Run("non-strict bogus kind → general + warning", func(t *testing.T) {
 		payload := mustMarshal(t, proposal.TaskPayload{
 			Title:         "Bogus kind task",
@@ -151,6 +152,7 @@ func createTaskProposal(t *testing.T, s *Server, title, description, suggestedKi
 // {"task":..., "warnings":[...]} shape (neutralizeCreatedEntity's existing
 // special case) now carries the kind message.
 func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_STRICT_VAGUENESS), which panics in parallel tests.
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	s := newProposalTestServer(t)
 	ctx := context.Background()
@@ -188,6 +190,7 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode(t *testing.T) {
 // open tx via decodeTaskProposalParams's strict branch, so the tx never
 // commits — the proposal stays pending and no task row is created.
 func TestHandleConfirmProposal_TypeTask_InvalidKind_StrictMode(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_STRICT_VAGUENESS), which panics in parallel tests.
 	t.Setenv("WBT_STRICT_VAGUENESS", "true")
 	s := newProposalTestServer(t)
 	ctx := context.Background()
@@ -223,6 +226,7 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_StrictMode(t *testing.T) {
 // belt-and-braces coverage beyond spec's "no PG-specific test needed"
 // disclaimer, closing the sprint dispatch's explicit PG-response ask.
 func TestHandleConfirmProposal_TypeTask_InvalidKind_Pg_WarnMode(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_STRICT_VAGUENESS), which panics in parallel tests.
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}
@@ -289,6 +293,7 @@ const markerBearingSuggestedKind = "bogus" + storedContextMarkerEnd
 // assertion is what proves the marker was actually neutralised rather than
 // never having reached the response at all.
 func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode_SanitisesBoundaryMarker(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_STRICT_VAGUENESS), which panics in parallel tests.
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	s := newProposalTestServer(t)
 
@@ -321,6 +326,7 @@ func TestHandleConfirmProposal_TypeTask_InvalidKind_WarnMode_SanitisesBoundaryMa
 // This replaces the pre-r2 draft's "StrictMode behaviour unchanged" framing,
 // which would have pinned the hole in place instead of closing it.
 func TestHandleConfirmProposal_TypeTask_InvalidKind_StrictMode_SanitisesBoundaryMarker(t *testing.T) {
+	// Not parallel: uses t.Setenv(WBT_STRICT_VAGUENESS), which panics in parallel tests.
 	t.Setenv("WBT_STRICT_VAGUENESS", "true")
 	s := newProposalTestServer(t)
 	ctx := context.Background()

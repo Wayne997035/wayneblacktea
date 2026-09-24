@@ -54,6 +54,7 @@ func projectStillExists(t *testing.T, s *Server, id uuid.UUID) bool {
 // destroys every task under the project, and a caller that cannot see how
 // many that is has no way to notice it aimed at the wrong project.
 func TestDeleteProject_FirstCallPreviewsTheBlastRadius(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id, name := seedProjectWithTasks(t, s, 4)
 
@@ -97,6 +98,7 @@ func TestDeleteProject_FirstCallPreviewsTheBlastRadius(t *testing.T) {
 // every refusal test below: without it, a delete_project that refused
 // everything unconditionally would pass them all.
 func TestDeleteProject_ConfirmDeletesProjectAndTasks(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id, _ := seedProjectWithTasks(t, s, 3)
 
@@ -126,6 +128,7 @@ func TestDeleteProject_ConfirmDeletesProjectAndTasks(t *testing.T) {
 // back a token for an id that does not exist would produce a confirmable
 // no-op, and "deleted (0 task(s) removed)" reads exactly like success.
 func TestDeleteProject_UnknownProjectIsRejectedBeforeAnyTokenIsIssued(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	missing := uuid.New()
@@ -145,6 +148,7 @@ func TestDeleteProject_UnknownProjectIsRejectedBeforeAnyTokenIsIssued(t *testing
 // which live in spendPendingDeletion. The assertion that matters in every
 // case is the same one: the project is still there afterwards.
 func TestDeleteProject_ConfirmRefusals(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		args    func(id uuid.UUID, token string) map[string]any
@@ -213,6 +217,7 @@ func TestDeleteProject_ConfirmRefusals(t *testing.T) {
 // below therefore aims delete_project at the task's own id, which is the only
 // input that reaches the shared key.
 func TestDeleteProject_CannotDestroyAPendingTaskDeletion(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 
@@ -258,6 +263,7 @@ func TestDeleteProject_CannotDestroyAPendingTaskDeletion(t *testing.T) {
 // TestDeleteProject_TokenIsSingleUse: a spent token must not delete a second
 // project, and re-confirming must not silently succeed.
 func TestDeleteProject_TokenIsSingleUse(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id, _ := seedProjectWithTasks(t, s, 1)
 

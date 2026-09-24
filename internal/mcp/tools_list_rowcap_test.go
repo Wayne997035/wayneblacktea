@@ -129,6 +129,7 @@ func assertPayloadCeiling(t *testing.T, tool string, pagedBody string, uncapped 
 // this same call returned all 500 rows — one tool call spending as much of the
 // caller's context window as the projects table happened to be worth.
 func TestF170_04_ListProjectsRowCap(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedProjectsForPaging(t, s, rowCapSeedCount)
 
@@ -162,6 +163,7 @@ func TestF170_04_ListProjectsRowCap(t *testing.T) {
 // TestF170_04_ListProjectsClampsAndPages covers the two edges the default-page
 // test cannot: a caller asking for more than the maximum, and the last page.
 func TestF170_04_ListProjectsClampsAndPages(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedProjectsForPaging(t, s, rowCapSeedCount)
 
@@ -198,6 +200,7 @@ func TestF170_04_ListProjectsClampsAndPages(t *testing.T) {
 // created in the same instant-ish window, which is exactly the tie the old
 // ORDER BY could not break.
 func TestF170_04_ListProjectsPagesDoNotOverlap(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedProjectsForPaging(t, s, 120)
 
@@ -230,6 +233,7 @@ func TestF170_04_ListProjectsPagesDoNotOverlap(t *testing.T) {
 // are the worst case for stable paging: none of these fixtures has a due_date,
 // so every row ties under `ORDER BY due_date ASC NULLS LAST`.
 func TestF170_05_ListGoalsRowCap(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedGoalsForPaging(t, s, rowCapSeedCount)
 
@@ -257,6 +261,7 @@ func TestF170_05_ListGoalsRowCap(t *testing.T) {
 
 // TestF170_05_ListGoalsClampsAndPages mirrors the projects edge cases.
 func TestF170_05_ListGoalsClampsAndPages(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedGoalsForPaging(t, s, rowCapSeedCount)
 
@@ -278,6 +283,7 @@ func TestF170_05_ListGoalsClampsAndPages(t *testing.T) {
 // proposals carry a whole JSON payload each, so this was the largest per-row
 // uncapped list on the surface.
 func TestF170_06_ListPendingProposalsRowCap(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedProposalsForPaging(t, s, rowCapSeedCount)
 
@@ -310,6 +316,7 @@ func TestF170_06_ListPendingProposalsRowCap(t *testing.T) {
 // map — a different decode path from the two above, and one that would fail
 // independently).
 func TestF170_06_ListPendingProposalsClampsAndPages(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	seedProposalsForPaging(t, s, rowCapSeedCount)
 
@@ -396,6 +403,7 @@ func (s *pagingSpyProposalStore) ListPending(context.Context) ([]db.PendingPropo
 // limit+1 rather than limit is the has_more probe: asking for exactly `limit`
 // makes a full page indistinguishable from the last page.
 func TestF170_04_ListHandlersAskTheStoreForOneMorePage(t *testing.T) {
+	t.Parallel()
 	gtdSpy := &pagingSpyGTDStore{}
 	propSpy := &pagingSpyProposalStore{stubProposalStore: &stubProposalStore{}}
 	s := &Server{gtd: gtdSpy, proposal: propSpy}
@@ -455,6 +463,7 @@ func TestF170_04_ListHandlersAskTheStoreForOneMorePage(t *testing.T) {
 //
 // Revert either clamp branch and this goes red immediately.
 func TestF170_13_ListPageBoundsClampsWithinInt32(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                 string
 		rawLimit, rawOffset  int32
@@ -491,6 +500,7 @@ func TestF170_13_ListPageBoundsClampsWithinInt32(t *testing.T) {
 }
 
 func TestF170_04_ListToolDescriptionsDoNotPromiseEverything(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	registered := s.MCPServer().ListTools()
 	for _, name := range []string{"list_projects", "list_goals", "list_pending_proposals"} {

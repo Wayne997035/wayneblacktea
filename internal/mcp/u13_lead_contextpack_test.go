@@ -40,6 +40,7 @@ func (forgingContextPackKnowledgeStore) SearchReadOnly(context.Context, string, 
 // ports, none of which neutralise on the way in. A single unneutralised
 // domain would leak here even if every other reader were wired.
 func TestU13_AssembleContext_NeutralizesForgedMarkerInItemSummary(t *testing.T) {
+	t.Parallel()
 	assembler, err := contextpack.NewAssembler(
 		noopGTDStore{}, noopDecisionStore{}, forgingContextPackKnowledgeStore{}, noopAtomStore{},
 		noopProceduralStore{}, noopSkillStore{}, noopOutcomeStore{}, noopReflectionStore{},

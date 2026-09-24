@@ -32,6 +32,7 @@ type beginTaskResponse struct {
 // the MCP begin_task tool MUST persist branch_name + pr_url when supplied so a
 // later reconcile_merged_prs call can match.
 func TestMCPBeginTask_PersistsBranchAndPR(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -69,6 +70,7 @@ func TestMCPBeginTask_PersistsBranchAndPR(t *testing.T) {
 
 // TestMCPBeginTask_RejectsInvalidPRURL covers MCP-side validation.
 func TestMCPBeginTask_RejectsInvalidPRURL(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -126,6 +128,7 @@ func TestMCPBeginTask_RejectsInvalidPRURL(t *testing.T) {
 // without needing an assignee arg on this call (see
 // TestMCPBeginTask_RequiresAssignee below for the no-owner rejection case).
 func TestMCPBeginTask_NoLinkageArgs(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithAssignee(t, s, "claude")
 
@@ -150,6 +153,7 @@ func TestMCPBeginTask_NoLinkageArgs(t *testing.T) {
 // has no assignee (neither already on the row nor supplied this call) — the
 // p6-7 domain-layer gate applied to the begin_task path.
 func TestMCPBeginTask_RequiresAssignee(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s) // no assignee set
 
@@ -174,6 +178,7 @@ func TestMCPBeginTask_RequiresAssignee(t *testing.T) {
 // assignee on the begin_task call itself both persists the assignee and
 // satisfies the in_progress guard for a task that had no prior owner.
 func TestMCPBeginTask_AssigneeArgPersistsAndUnblocks(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s) // no assignee set
 
@@ -198,6 +203,7 @@ func TestMCPBeginTask_AssigneeArgPersistsAndUnblocks(t *testing.T) {
 // unrecognized assignee value via the same NormalizeActor allowlist used by
 // add_task/update_task.
 func TestMCPBeginTask_InvalidAssignee(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -237,6 +243,7 @@ type beginTaskResponseWithSession struct {
 // not found"). Positive control: GetByID on that same ID returns a real,
 // non-nil row.
 func TestBeginTask_ReturnedSessionIDIsPersisted(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 

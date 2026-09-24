@@ -38,6 +38,7 @@ func seedTaskWithAssignee(t *testing.T, s *Server, assignee string) uuid.UUID {
 // — hence testing the registered *mcp.Tool directly instead of exercising
 // handleAddTask.
 func TestAddTaskSchema_AssigneeMaxLength(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	tool := s.MCPServer().GetTool("add_task")
@@ -63,6 +64,7 @@ func TestAddTaskSchema_AssigneeMaxLength(t *testing.T) {
 // --- add_task assignee validation ---
 
 func TestAddTask_InvalidAssignee(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":    "test task",
@@ -79,6 +81,7 @@ func TestAddTask_InvalidAssignee(t *testing.T) {
 }
 
 func TestAddTask_ValidAssigneeAliasNormalized(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":    "test task",
@@ -123,6 +126,7 @@ func TestAddTask_ValidAssigneeAliasNormalized(t *testing.T) {
 }
 
 func TestAddTask_NoAssigneeAllowed(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{
 		"title":    "unowned task",
@@ -136,6 +140,7 @@ func TestAddTask_NoAssigneeAllowed(t *testing.T) {
 // --- update_task assignee validation ---
 
 func TestUpdateTask_InvalidAssignee(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{
@@ -153,6 +158,7 @@ func TestUpdateTask_InvalidAssignee(t *testing.T) {
 }
 
 func TestUpdateTask_ValidAssigneeAliasNormalized(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callUpdateTask(t, s, map[string]any{
@@ -174,6 +180,7 @@ func TestUpdateTask_ValidAssigneeAliasNormalized(t *testing.T) {
 // --- update_task in_progress requires assignee ---
 
 func TestUpdateTask_InProgressWithoutAssignee_NoExisting(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s) // no assignee set
 
@@ -190,6 +197,7 @@ func TestUpdateTask_InProgressWithoutAssignee_NoExisting(t *testing.T) {
 }
 
 func TestUpdateTask_InProgressWithAssigneeThisCall(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s) // no assignee set
 
@@ -211,6 +219,7 @@ func TestUpdateTask_InProgressWithAssigneeThisCall(t *testing.T) {
 }
 
 func TestUpdateTask_InProgressWithExistingAssignee_NotBlocked(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTaskWithAssignee(t, s, "claude") // already has an assignee
 
@@ -231,6 +240,7 @@ func TestUpdateTask_InProgressWithExistingAssignee_NotBlocked(t *testing.T) {
 }
 
 func TestUpdateTask_PendingStatusDoesNotRequireAssignee(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s) // no assignee set
 

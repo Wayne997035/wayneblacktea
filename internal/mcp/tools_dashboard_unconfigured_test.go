@@ -41,6 +41,7 @@ func callDashboardTool(
 }
 
 func TestDetectCompletionCandidates_UnconfiguredStoreIsAnError(t *testing.T) {
+	t.Parallel()
 	s := &Server{} // completionCandidates left nil: the domain is not wired
 
 	res := callDashboardTool(t, s.handleDetectCompletionCandidates, nil)
@@ -56,6 +57,7 @@ func TestDetectCompletionCandidates_UnconfiguredStoreIsAnError(t *testing.T) {
 }
 
 func TestReconcileDashboard_UnconfiguredStoreIsAnError(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 
 	res := callDashboardTool(t, s.handleReconcileDashboard, nil)
@@ -72,6 +74,7 @@ func TestReconcileDashboard_UnconfiguredStoreIsAnError(t *testing.T) {
 // stops being true the convention has moved, and these two should move with it
 // — deliberately, not by being the last ones left behind.
 func TestDashboardUnconfigured_MatchesTheSurfaceConvention(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 
 	for name, res := range map[string]*mcpmsg.CallToolResult{

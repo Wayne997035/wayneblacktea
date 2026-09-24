@@ -55,6 +55,7 @@ func newAtomizeServer(t *testing.T) *Server {
 // With 15 goroutines and a 5-slot semaphore the peak concurrent count must
 // never exceed 5.
 func TestLaunchAtomize_ConcurrencyAndRace(t *testing.T) {
+	t.Parallel()
 	const (
 		semCap     = 5
 		goroutines = 15
@@ -139,6 +140,7 @@ func TestLaunchAtomize_ConcurrencyAndRace(t *testing.T) {
 // TestLaunchAtomize_NilGuard verifies that launchAtomize returns immediately
 // when atomizer or atom store is nil, without spawning any goroutine.
 func TestLaunchAtomize_NilGuard(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		nilField string
@@ -172,6 +174,7 @@ func TestLaunchAtomize_NilGuard(t *testing.T) {
 // TestLaunchAtomize_SemDrop verifies that when all semaphore slots are held,
 // additional launchAtomize calls are silently dropped (not queued).
 func TestLaunchAtomize_SemDrop(t *testing.T) {
+	t.Parallel()
 	const semCap = 5
 
 	srv := newAtomizeServer(t)
@@ -267,6 +270,7 @@ func callPromoteAtom(t *testing.T, s *Server, atomID string) *mcpmsg.CallToolRes
 // TestPromoteAtom_RejectsNonConsolidated verifies that MAJOR-1 fix works:
 // atoms with digest_status != "consolidated" are rejected with a clear error.
 func TestPromoteAtom_RejectsNonConsolidated(t *testing.T) {
+	t.Parallel()
 	s, db := newPromoteServer(t)
 
 	cases := []struct {
@@ -299,6 +303,7 @@ func TestPromoteAtom_RejectsNonConsolidated(t *testing.T) {
 // TestPromoteAtom_AcceptsConsolidated verifies that a consolidated atom with
 // sufficient content and tags is promoted successfully (MAJOR-1 happy path).
 func TestPromoteAtom_AcceptsConsolidated(t *testing.T) {
+	t.Parallel()
 	s, db := newPromoteServer(t)
 	content := strings.Repeat("knowledge content for promotion ", 3)
 	id := insertAtomFixture(t, db, content, []string{"go", "testing"}, "consolidated")
@@ -316,6 +321,7 @@ func TestPromoteAtom_AcceptsConsolidated(t *testing.T) {
 // TestPromoteAtom_RuneAwareContentLength verifies MAJOR-3: a CJK atom whose
 // byte length >= 80 but rune count < 80 is correctly rejected by the quality gate.
 func TestPromoteAtom_RuneAwareContentLength(t *testing.T) {
+	t.Parallel()
 	s, db := newPromoteServer(t)
 	// Each CJK character is 3 UTF-8 bytes but 1 rune.
 	// 27 runes × 3 bytes = 81 bytes but only 27 runes → must be rejected.
@@ -338,6 +344,7 @@ func TestPromoteAtom_RuneAwareContentLength(t *testing.T) {
 // sufficient rune count has its title truncated at rune boundary (no panic,
 // valid UTF-8).
 func TestPromoteAtom_RuneAwareTitleTruncation(t *testing.T) {
+	t.Parallel()
 	s, db := newPromoteServer(t)
 	// 100 CJK runes — well above the 80-rune minimum; title must be 80 runes.
 	content := strings.Repeat("漢", 100)
@@ -357,6 +364,7 @@ func TestPromoteAtom_RuneAwareTitleTruncation(t *testing.T) {
 // three pre-merge functions — this is new coverage, not a renamed existing
 // test.
 func TestClipSafeSlice_NilInYieldsNilOut(t *testing.T) {
+	t.Parallel()
 	got := clipSafeSlice(nil, 10)
 	if got != nil {
 		t.Fatalf("clipSafeSlice(nil, 10) = %#v, want nil", got)
@@ -378,6 +386,7 @@ func TestClipSafeSlice_NilInYieldsNilOut(t *testing.T) {
 // (1 rune) is under the cap and passes through unchanged — this is clipSafe's
 // documented contract, not something this merge changes.
 func TestClipSafeSlice_RuneSafeClip(t *testing.T) {
+	t.Parallel()
 	got := clipSafeSlice([]string{"héllo", "x"}, 3)
 	want := []string{"hél" + clipMarker, "x"}
 	if len(got) != len(want) {
@@ -395,6 +404,7 @@ func TestClipSafeSlice_RuneSafeClip(t *testing.T) {
 // []string{} must stay a non-nil []string{} (JSON []), not be folded into the
 // nil early-return above it — F981-04.
 func TestClipSafeSlice_EmptyNonNilStaysEmpty(t *testing.T) {
+	t.Parallel()
 	got := clipSafeSlice([]string{}, 10)
 	if got == nil {
 		t.Fatal("clipSafeSlice([]string{}, 10) = nil, want non-nil empty slice")

@@ -14,6 +14,7 @@ import "testing"
 // that value). Folding the first two together is exactly the bug Ω6 fixed —
 // every sync_repo call that omitted a field used to silently wipe it.
 func TestF160_09_ParseSyncRepoOptionalArgs_PresenceSemantics(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		args    map[string]any
@@ -66,6 +67,7 @@ func TestF160_09_ParseSyncRepoOptionalArgs_PresenceSemantics(t *testing.T) {
 // "current_branch") would pass a single-field test like the one above but
 // fail here.
 func TestF160_09_ParseSyncRepoOptionalArgs_AllFieldsWired(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"path":              "p",
 		"description":       "d",
@@ -103,6 +105,7 @@ func TestF160_09_ParseSyncRepoOptionalArgs_AllFieldsWired(t *testing.T) {
 // existing error path: a non-string value for any of the 5 fields returns a
 // non-nil tool-error result rather than panicking or silently coercing.
 func TestF160_09_ParseSyncRepoOptionalArgs_TypeMismatchPropagatesError(t *testing.T) {
+	t.Parallel()
 	_, errResult := parseSyncRepoOptionalArgs(map[string]any{"path": 42})
 	if errResult == nil {
 		t.Fatal("expected a non-nil error result for a non-string path value")

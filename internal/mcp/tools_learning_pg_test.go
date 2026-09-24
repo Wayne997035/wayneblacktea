@@ -38,6 +38,7 @@ func callSubmitReview(t *testing.T, s *Server, args map[string]any) *mcpmsg.Call
 // starting a second Postgres container — internal/mcp already has exactly one
 // TestMain per package, and Go permits at most one per package.
 func TestHandleGetDueReviews_Postgres_EmptyReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}
@@ -64,6 +65,7 @@ func TestHandleGetDueReviews_Postgres_EmptyReturnsEmptyArrayNotNull(t *testing.T
 // FSRS path (which would show up as review_count resetting or stability
 // collapsing back toward its tiny w[0..3] initial value).
 func TestHandleSubmitReview_MatureScheduleNotResetByOmittedState(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}

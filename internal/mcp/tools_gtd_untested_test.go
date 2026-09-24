@@ -91,6 +91,7 @@ func seedProject(t *testing.T, s *Server, name string) uuid.UUID {
 // ---- list_projects ----
 
 func TestListProjects_EmptyDB(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListProjects(t, s, map[string]any{})
 	if r.IsError {
@@ -122,6 +123,7 @@ func TestListProjects_EmptyDB(t *testing.T) {
 // whole body is []" to "the projects field is [] and never null". The property
 // under test is unchanged.
 func TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListProjects(t, s, map[string]any{})
 	if r.IsError {
@@ -137,6 +139,7 @@ func TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
 }
 
 func TestListProjects_ReturnsSeeded(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 	r := callListProjects(t, s, map[string]any{})
@@ -151,6 +154,7 @@ func TestListProjects_ReturnsSeeded(t *testing.T) {
 // ---- create_project ----
 
 func TestCreateProject_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	name := "proj-" + uuid.NewString()[:8]
 	r := callCreateProject(t, s, map[string]any{
@@ -167,6 +171,7 @@ func TestCreateProject_HappyPath(t *testing.T) {
 }
 
 func TestCreateProject_MissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	cases := []map[string]any{
 		{"title": "t", "area": "a"},
@@ -186,6 +191,7 @@ func TestCreateProject_MissingRequiredFields(t *testing.T) {
 }
 
 func TestCreateProject_InvalidRepoName(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callCreateProject(t, s, map[string]any{
 		"name": "proj-" + uuid.NewString()[:8], "title": "t", "area": "a",
@@ -200,6 +206,7 @@ func TestCreateProject_InvalidRepoName(t *testing.T) {
 }
 
 func TestCreateProject_DuplicateName(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	name := "proj-" + uuid.NewString()[:8]
 	first := callCreateProject(t, s, map[string]any{"name": name, "title": "t", "area": "a"})
@@ -216,6 +223,7 @@ func TestCreateProject_DuplicateName(t *testing.T) {
 }
 
 func TestCreateProject_InvalidGoalIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callCreateProject(t, s, map[string]any{
 		"name": "proj-" + uuid.NewString()[:8], "title": "t", "area": "a",
@@ -232,6 +240,7 @@ func TestCreateProject_InvalidGoalIDUUID(t *testing.T) {
 // ---- update_project ----
 
 func TestUpdateProject_HappyPath_PartialUpdate(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 
@@ -252,6 +261,7 @@ func TestUpdateProject_HappyPath_PartialUpdate(t *testing.T) {
 }
 
 func TestUpdateProject_MissingProjectID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateProject(t, s, map[string]any{"title": "x"})
 	if !r.IsError {
@@ -263,6 +273,7 @@ func TestUpdateProject_MissingProjectID(t *testing.T) {
 }
 
 func TestUpdateProject_InvalidUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateProject(t, s, map[string]any{"project_id": "not-a-uuid"})
 	if !r.IsError {
@@ -274,6 +285,7 @@ func TestUpdateProject_InvalidUUID(t *testing.T) {
 }
 
 func TestUpdateProject_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateProject(t, s, map[string]any{"project_id": uuid.New().String(), "title": "x"})
 	if !r.IsError {
@@ -285,6 +297,7 @@ func TestUpdateProject_NotFound(t *testing.T) {
 }
 
 func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 	r := callUpdateProject(t, s, map[string]any{"project_id": id.String(), "status": "bogus"})
@@ -298,6 +311,7 @@ func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
 }
 
 func TestUpdateProject_TitleExceedsMaxLength(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 	r := callUpdateProject(t, s, map[string]any{
@@ -313,6 +327,7 @@ func TestUpdateProject_TitleExceedsMaxLength(t *testing.T) {
 }
 
 func TestUpdateProject_RepoNameClearedOnExplicitEmpty(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 	// Set repo_name first.
@@ -337,6 +352,7 @@ func TestUpdateProject_RepoNameClearedOnExplicitEmpty(t *testing.T) {
 // ---- list_goals ----
 
 func TestListGoals_EmptyDB(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListGoals(t, s, map[string]any{})
 	if r.IsError {
@@ -362,6 +378,7 @@ func TestListGoals_EmptyDB(t *testing.T) {
 // for GTD c282cc04 item #3 — see TestListProjects_EmptyDB_ReturnsEmptyArrayNotNull
 // doc comment for why this must be a raw-string check, not json.Unmarshal.
 func TestListGoals_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListGoals(t, s, map[string]any{})
 	if r.IsError {
@@ -377,6 +394,7 @@ func TestListGoals_EmptyDB_ReturnsEmptyArrayNotNull(t *testing.T) {
 }
 
 func TestListGoals_ReturnsSeeded(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callCreateGoal(t, s, map[string]any{"title": "goal-1", "area": "career"})
 	if r.IsError {
@@ -394,6 +412,7 @@ func TestListGoals_ReturnsSeeded(t *testing.T) {
 // ---- create_goal ----
 
 func TestCreateGoal_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callCreateGoal(t, s, map[string]any{"title": "ship v2", "area": "career"})
 	if r.IsError {
@@ -405,6 +424,7 @@ func TestCreateGoal_HappyPath(t *testing.T) {
 }
 
 func TestCreateGoal_MissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	cases := []map[string]any{
 		{"area": "career"},
@@ -423,6 +443,7 @@ func TestCreateGoal_MissingRequiredFields(t *testing.T) {
 }
 
 func TestCreateGoal_InvalidDueDate(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callCreateGoal(t, s, map[string]any{"title": "t", "area": "a", "due_date": "not-a-date"})
 	if !r.IsError {
@@ -434,6 +455,7 @@ func TestCreateGoal_InvalidDueDate(t *testing.T) {
 }
 
 func TestCreateGoal_ValidDueDate(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callCreateGoal(t, s, map[string]any{"title": "t", "area": "a", "due_date": "2026-12-31T00:00:00Z"})
 	if r.IsError {
@@ -447,6 +469,7 @@ func TestCreateGoal_ValidDueDate(t *testing.T) {
 // ---- update_project_status ----
 
 func TestUpdateProjectStatus_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 	r := callUpdateProjectStatus(t, s, map[string]any{"project_id": id.String(), "status": "completed"})
@@ -459,6 +482,7 @@ func TestUpdateProjectStatus_HappyPath(t *testing.T) {
 }
 
 func TestUpdateProjectStatus_MissingFields(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 
@@ -474,6 +498,7 @@ func TestUpdateProjectStatus_MissingFields(t *testing.T) {
 }
 
 func TestUpdateProjectStatus_InvalidEnum(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 	r := callUpdateProjectStatus(t, s, map[string]any{"project_id": id.String(), "status": "bogus"})
@@ -487,6 +512,7 @@ func TestUpdateProjectStatus_InvalidEnum(t *testing.T) {
 }
 
 func TestUpdateProjectStatus_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateProjectStatus(t, s, map[string]any{"project_id": uuid.New().String(), "status": "completed"})
 	if !r.IsError || resultText(r) != "project not found" {
@@ -497,6 +523,7 @@ func TestUpdateProjectStatus_NotFound(t *testing.T) {
 // ---- get_project ----
 
 func TestGetProject_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	name := "proj-" + uuid.NewString()[:8]
 	seedProject(t, s, name)
@@ -518,6 +545,7 @@ func TestGetProject_HappyPath(t *testing.T) {
 // string-level check because json.Unmarshal into a slice cannot distinguish
 // "null" from "[]" on the wire.
 func TestGetProject_NoDecisions_ReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	name := "proj-" + uuid.NewString()[:8]
 	seedProject(t, s, name)
@@ -536,6 +564,7 @@ func TestGetProject_NoDecisions_ReturnsEmptyArrayNotNull(t *testing.T) {
 }
 
 func TestGetProject_MissingName(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetProject(t, s, map[string]any{})
 	if !r.IsError || resultText(r) != "name is required" {
@@ -544,6 +573,7 @@ func TestGetProject_MissingName(t *testing.T) {
 }
 
 func TestGetProject_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetProject(t, s, map[string]any{"name": "does-not-exist"})
 	if !r.IsError {
@@ -558,6 +588,7 @@ func TestGetProject_NotFound(t *testing.T) {
 // ---- log_activity ----
 
 func TestLogActivity_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callLogActivity(t, s, map[string]any{"actor": "claude-code", "action": "did something"})
 	if r.IsError {
@@ -569,6 +600,7 @@ func TestLogActivity_HappyPath(t *testing.T) {
 }
 
 func TestLogActivity_MissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	cases := []map[string]any{
 		{"action": "did something"},
@@ -584,6 +616,7 @@ func TestLogActivity_MissingRequiredFields(t *testing.T) {
 }
 
 func TestLogActivity_InvalidProjectIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callLogActivity(t, s, map[string]any{
 		"actor": "claude-code", "action": "did something", "project_id": "not-a-uuid",
@@ -600,6 +633,7 @@ func TestLogActivity_InvalidProjectIDUUID(t *testing.T) {
 // (contain "reserved") without echoing back the caller's own notes, and no
 // row may reach activity_log.
 func TestLogActivityTool_ReservedActionIsRefused(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	cases := []string{
@@ -629,6 +663,7 @@ func TestLogActivityTool_ReservedActionIsRefused(t *testing.T) {
 // ---- task_checklist_add_item ----
 
 func TestChecklistAddItem_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callChecklistAddItem(t, s, map[string]any{"task_id": id.String(), "title": "step one"})
@@ -641,6 +676,7 @@ func TestChecklistAddItem_HappyPath(t *testing.T) {
 }
 
 func TestChecklistAddItem_MissingTaskID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callChecklistAddItem(t, s, map[string]any{"title": "step one"})
 	if !r.IsError || resultText(r) != "task_id is required" {
@@ -649,6 +685,7 @@ func TestChecklistAddItem_MissingTaskID(t *testing.T) {
 }
 
 func TestChecklistAddItem_MissingTitle(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callChecklistAddItem(t, s, map[string]any{"task_id": id.String()})
@@ -658,6 +695,7 @@ func TestChecklistAddItem_MissingTitle(t *testing.T) {
 }
 
 func TestChecklistAddItem_TitleExceedsMaxLength(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callChecklistAddItem(t, s, map[string]any{
@@ -669,6 +707,7 @@ func TestChecklistAddItem_TitleExceedsMaxLength(t *testing.T) {
 }
 
 func TestChecklistAddItem_FileRefAndNotesExceedMaxLength(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 
@@ -693,6 +732,7 @@ func TestChecklistAddItem_FileRefAndNotesExceedMaxLength(t *testing.T) {
 // once sanitised down to an empty string — business logic the seam cannot
 // express (it only sees the pre-sanitised value).
 func TestChecklistAddItem_TitleAllControlChars_BlankAfterSanitisation(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callChecklistAddItem(t, s, map[string]any{"task_id": id.String(), "title": "\x01\x02\x03"})
@@ -702,6 +742,7 @@ func TestChecklistAddItem_TitleAllControlChars_BlankAfterSanitisation(t *testing
 }
 
 func TestChecklistAddItem_TaskNotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callChecklistAddItem(t, s, map[string]any{"task_id": uuid.New().String(), "title": "x"})
 	if !r.IsError || resultText(r) != "task not found" {
@@ -726,6 +767,7 @@ func seedChecklistItem(t *testing.T, s *Server, taskID uuid.UUID) uuid.UUID {
 }
 
 func TestChecklistToggle_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	itemID := seedChecklistItem(t, s, taskID)
@@ -742,6 +784,7 @@ func TestChecklistToggle_HappyPath(t *testing.T) {
 }
 
 func TestChecklistToggle_MissingDone(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	itemID := seedChecklistItem(t, s, taskID)
@@ -752,6 +795,7 @@ func TestChecklistToggle_MissingDone(t *testing.T) {
 }
 
 func TestChecklistToggle_TaskOrItemNotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	r := callChecklistToggle(t, s, map[string]any{
@@ -763,6 +807,7 @@ func TestChecklistToggle_TaskOrItemNotFound(t *testing.T) {
 }
 
 func TestChecklistToggle_EvidenceURLExceedsMaxLength(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	itemID := seedChecklistItem(t, s, taskID)
@@ -776,6 +821,7 @@ func TestChecklistToggle_EvidenceURLExceedsMaxLength(t *testing.T) {
 }
 
 func TestChecklistToggle_InvalidItemIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	r := callChecklistToggle(t, s, map[string]any{
@@ -789,6 +835,7 @@ func TestChecklistToggle_InvalidItemIDUUID(t *testing.T) {
 // ---- task_checklist_complete ----
 
 func TestChecklistComplete_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	itemID := seedChecklistItem(t, s, taskID)
@@ -803,6 +850,7 @@ func TestChecklistComplete_HappyPath(t *testing.T) {
 }
 
 func TestChecklistComplete_MissingItemID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	r := callChecklistComplete(t, s, map[string]any{"task_id": taskID.String()})
@@ -812,6 +860,7 @@ func TestChecklistComplete_MissingItemID(t *testing.T) {
 }
 
 func TestChecklistComplete_TaskOrItemNotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	r := callChecklistComplete(t, s, map[string]any{

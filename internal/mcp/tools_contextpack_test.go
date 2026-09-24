@@ -46,6 +46,7 @@ func callAssembleContext(t *testing.T, s *Server, args map[string]any) *mcpmsg.C
 }
 
 func TestHandleAssembleContext_MissingObjective(t *testing.T) {
+	t.Parallel()
 	s := newContextPackTestServer()
 	r := callAssembleContext(t, s, map[string]any{})
 	if !r.IsError {
@@ -57,6 +58,7 @@ func TestHandleAssembleContext_MissingObjective(t *testing.T) {
 }
 
 func TestHandleAssembleContext_ObjectiveAllControlChars(t *testing.T) {
+	t.Parallel()
 	// Stripping control chars leaves an empty string — must be treated the
 	// same as a missing objective, not silently accepted.
 	s := newContextPackTestServer()
@@ -69,6 +71,7 @@ func TestHandleAssembleContext_ObjectiveAllControlChars(t *testing.T) {
 }
 
 func TestHandleAssembleContext_ObjectiveTooLong(t *testing.T) {
+	t.Parallel()
 	s := newContextPackTestServer()
 	r := callAssembleContext(t, s, map[string]any{
 		"objective": strings.Repeat("x", maxObjectiveRunes+1),
@@ -79,6 +82,7 @@ func TestHandleAssembleContext_ObjectiveTooLong(t *testing.T) {
 }
 
 func TestHandleAssembleContext_PersistTrueRejected(t *testing.T) {
+	t.Parallel()
 	s := newContextPackTestServer()
 	r := callAssembleContext(t, s, map[string]any{
 		"objective": "ship the assemble_context tool",
@@ -93,6 +97,7 @@ func TestHandleAssembleContext_PersistTrueRejected(t *testing.T) {
 }
 
 func TestHandleAssembleContext_NilAssembler(t *testing.T) {
+	t.Parallel()
 	s := &Server{} // contextAssembler left nil
 	r := callAssembleContext(t, s, map[string]any{
 		"objective": "ship the assemble_context tool",
@@ -103,6 +108,7 @@ func TestHandleAssembleContext_NilAssembler(t *testing.T) {
 }
 
 func TestHandleAssembleContext_InvalidProjectIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newContextPackTestServer()
 	r := callAssembleContext(t, s, map[string]any{
 		"objective":  "ship the assemble_context tool",
@@ -114,6 +120,7 @@ func TestHandleAssembleContext_InvalidProjectIDUUID(t *testing.T) {
 }
 
 func TestHandleAssembleContext_InvalidTaskIDUUID(t *testing.T) {
+	t.Parallel()
 	s := newContextPackTestServer()
 	r := callAssembleContext(t, s, map[string]any{
 		"objective": "ship the assemble_context tool",
@@ -125,6 +132,7 @@ func TestHandleAssembleContext_InvalidTaskIDUUID(t *testing.T) {
 }
 
 func TestHandleAssembleContext_ValidInput_TopLevelKeys(t *testing.T) {
+	t.Parallel()
 	s := newContextPackTestServer()
 	r := callAssembleContext(t, s, map[string]any{
 		"objective":     "ship the assemble_context tool",
@@ -200,6 +208,7 @@ func (f fakeDecisionStoreDistinguishesAllFromScoped) All(context.Context, int32)
 // the test is actually exercising the fallback branch, not passing
 // vacuously.
 func TestHandleAssembleContext_UnscopedRequestReachesDecisionAll(t *testing.T) {
+	t.Parallel()
 	allID := uuid.New()
 	assembler, err := contextpack.NewAssembler(
 		noopGTDStore{},
@@ -250,6 +259,7 @@ func TestHandleAssembleContext_UnscopedRequestReachesDecisionAll(t *testing.T) {
 }
 
 func TestHandleAssembleContext_BudgetCharsClamped(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		input any
@@ -282,6 +292,7 @@ func TestHandleAssembleContext_BudgetCharsClamped(t *testing.T) {
 }
 
 func TestHandleAssembleContext_FilesTouchedCapAndLengthGuard(t *testing.T) {
+	t.Parallel()
 	// 51 entries, plus one oversized entry — the request must still succeed
 	// (excess/oversized entries are dropped, not rejected).
 	files := make([]any, 0, 52)
@@ -301,6 +312,7 @@ func TestHandleAssembleContext_FilesTouchedCapAndLengthGuard(t *testing.T) {
 }
 
 func TestHandleAssembleContext_IncludeTypesCapAndLengthGuard(t *testing.T) {
+	t.Parallel()
 	// 40 entries (over maxIncludeTypes=32) plus one oversized entry (over
 	// maxIncludeTypesRunes=200) — adversarial LLM-supplied array input must
 	// be bounded, not rejected outright (backend-security-design.md §2.1).
@@ -321,6 +333,7 @@ func TestHandleAssembleContext_IncludeTypesCapAndLengthGuard(t *testing.T) {
 }
 
 func TestStringArrayArg_CapsCount(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{"key": []any{"a", "b", "c", "d"}}
 	got := stringArrayArg(args, "key", 2, 0)
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
@@ -329,6 +342,7 @@ func TestStringArrayArg_CapsCount(t *testing.T) {
 }
 
 func TestStringArrayArg_DropsOversizedElementsNotWholeRequest(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{"key": []any{"ok", strings.Repeat("x", 10)}}
 	got := stringArrayArg(args, "key", 0, 5)
 	if len(got) != 1 || got[0] != "ok" {
@@ -337,6 +351,7 @@ func TestStringArrayArg_DropsOversizedElementsNotWholeRequest(t *testing.T) {
 }
 
 func TestFilterKnownContextPackTypes(t *testing.T) {
+	t.Parallel()
 	got := filterKnownContextPackTypes([]string{"semantic", "bogus", "outcomes", ""})
 	want := []string{"semantic", "outcomes"}
 	if len(got) != len(want) {
@@ -353,6 +368,7 @@ func TestFilterKnownContextPackTypes(t *testing.T) {
 }
 
 func TestClampBudgetChars(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   int32
 		want int
@@ -371,6 +387,7 @@ func TestClampBudgetChars(t *testing.T) {
 }
 
 func TestStripControlChars(t *testing.T) {
+	t.Parallel()
 	got := stripControlChars("hello\x00 world\x1b[31m")
 	if strings.ContainsAny(got, "\x00\x1b") {
 		t.Errorf("stripControlChars left control chars: %q", got)

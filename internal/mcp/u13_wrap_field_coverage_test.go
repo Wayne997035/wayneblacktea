@@ -735,6 +735,7 @@ const wrapUntrustedAcceptedGapSurface = 44
 // number forces whoever adds the 50th entry to touch this line too, and the
 // failure message says what that person is actually doing.
 func TestF171_02_AcceptedGapSurfaceIsTracked(t *testing.T) {
+	t.Parallel()
 	var entries []string
 	for _, c := range wrapUntrustedCases {
 		for field := range c.exemptions {
@@ -773,6 +774,7 @@ func TestF171_02_AcceptedGapSurfaceIsTracked(t *testing.T) {
 // knownUnprotectedFields — all three are escape hatches, and an escape hatch
 // that costs nothing to use is not a control.
 func TestF160_06_AllExemptionsHaveNonEmptyReason(t *testing.T) {
+	t.Parallel()
 	for _, c := range wrapUntrustedCases {
 		for field, reason := range c.exemptions {
 			if strings.TrimSpace(reason) == "" {
@@ -800,6 +802,7 @@ func TestF160_06_AllExemptionsHaveNonEmptyReason(t *testing.T) {
 // exemptions with a reason. A newly added field with neither is a red test
 // by construction — nothing has to remember to add it to a coverage list.
 func TestF160_06_WrapUntrustedFunctionsProtectEveryStringField(t *testing.T) {
+	t.Parallel()
 	for _, c := range wrapUntrustedCases {
 		t.Run(c.typeName, func(t *testing.T) {
 			blank := c.blank()
@@ -889,6 +892,7 @@ func undispositionedUnforgeable(c wrapUntrustedCase, res *walkResult) []string {
 // never actually leaking, which would silently suppress a real assertion in
 // TestF160_06_WrapUntrustedFunctionsProtectEveryStringField.
 func TestF170_11_KnownUnprotectedFieldsStillReflectReality(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for _, c := range wrapUntrustedCases {
 		blank := c.blank()
@@ -942,6 +946,7 @@ type unforgeableProbe struct {
 // map[string]string and nested structs fell outside the type switch and the
 // suite stayed green while markers walked out through them.
 func TestF170_11_UnforgeableFieldWithoutDispositionFailsClosed(t *testing.T) {
+	t.Parallel()
 	res := forgeStringFields(&unforgeableProbe{})
 
 	if len(res.forged) != 0 {
@@ -991,6 +996,7 @@ func TestF170_11_UnforgeableFieldWithoutDispositionFailsClosed(t *testing.T) {
 // that test PASS while removing the protection it appears to verify. This
 // test fails instead, and names the shape that went missing.
 func TestF170_11_WalkerReachesMapAndNestedStructFields(t *testing.T) {
+	t.Parallel()
 	res := forgeStringFields(&contextpack.Pack{})
 
 	want := []string{
@@ -1070,6 +1076,7 @@ var vacuousForgePositions = map[string]string{
 // assertion). Exempted paths are skipped — an exemption already declares that
 // the marker is allowed to survive, so vacuity says nothing extra about them.
 func TestF170_18_VacuousForgePositionsAreNamed(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for _, c := range wrapUntrustedCases {
 		bare := c.blank()
@@ -1132,6 +1139,7 @@ type blobProbe struct {
 // It asserts on the marshalled bytes, so it fails if the marker is planted in
 // the wrong position even when both paths are recorded.
 func TestF170_18_WalkerForgesBothKeyAndValueInsideBlobs(t *testing.T) {
+	t.Parallel()
 	probe := &blobProbe{}
 	res := forgeStringFields(probe)
 

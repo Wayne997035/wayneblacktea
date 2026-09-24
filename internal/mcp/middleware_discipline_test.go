@@ -25,6 +25,7 @@ import (
 // injection — control chars in stored audit text can break CLI rendering
 // and forge new log lines).
 func TestSanitizeAuditText(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		in       string
@@ -144,6 +145,7 @@ func TestSanitizeAuditText(t *testing.T) {
 // audit log behaviour changes — callers below assert the tier so that any
 // future tweak surfaces in the test diff.
 func TestSanitizeAuditText_ConstantsMatchRequirements(t *testing.T) {
+	t.Parallel()
 	if maxToolNameRunes != 128 {
 		t.Errorf("maxToolNameRunes drift: want 128, got %d", maxToolNameRunes)
 	}
@@ -229,6 +231,7 @@ func fireDiscipline(
 // already expects ok=true here) — see TestDisciplineMiddleware_
 // RecordsFailedCalls for the mutation that catches that specific bug.
 func TestDisciplineMiddleware_RecordsOkAndSize(t *testing.T) {
+	t.Parallel()
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
@@ -264,6 +267,7 @@ func TestDisciplineMiddleware_RecordsOkAndSize(t *testing.T) {
 // return res, err }` placed before the discipline.Insert call) makes this
 // test time out waiting for an insert that never happens (len(got) == 0).
 func TestDisciplineMiddleware_RecordsFailedCalls(t *testing.T) {
+	t.Parallel()
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
@@ -294,6 +298,7 @@ func TestDisciplineMiddleware_RecordsFailedCalls(t *testing.T) {
 // res to marshal. Mutation-proof: unconditionally allocating responseBytes
 // even when res == nil makes the final assertion below fail.
 func TestDisciplineMiddleware_RecordsGoLevelError(t *testing.T) {
+	t.Parallel()
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 
@@ -327,6 +332,7 @@ func TestDisciplineMiddleware_RecordsGoLevelError(t *testing.T) {
 // middleware_discipline.go makes duration_ms read the jumped nowFn value
 // (tens of hours in milliseconds), which the upper bound below catches.
 func TestDisciplineMiddleware_DurationUsesWallClockNotNowFn(t *testing.T) {
+	t.Parallel()
 	disc := &captureDisciplineStore{}
 	srv := &Server{
 		discipline: disc,
@@ -360,6 +366,7 @@ func TestDisciplineMiddleware_DurationUsesWallClockNotNowFn(t *testing.T) {
 // Mutation-proof: change the middleware to flip res.IsError (or overwrite
 // res.Content) before its final `return res, err`, and this test goes red.
 func TestDisciplineMiddleware_DoesNotMutateResult(t *testing.T) {
+	t.Parallel()
 	disc := &captureDisciplineStore{}
 	srv := &Server{discipline: disc, sessionID: "test-session-1"}
 

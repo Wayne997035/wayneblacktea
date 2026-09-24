@@ -91,6 +91,7 @@ func extractVisionID(t *testing.T, r *mcpmsg.CallToolResult) uuid.UUID {
 // ---- add_vision_item ----
 
 func TestHandleAddVisionItem_MissingTitle(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"why_blocked": "Need to investigate",
@@ -104,6 +105,7 @@ func TestHandleAddVisionItem_MissingTitle(t *testing.T) {
 }
 
 func TestHandleAddVisionItem_MissingWhyBlocked(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title": "Some future idea",
@@ -117,6 +119,7 @@ func TestHandleAddVisionItem_MissingWhyBlocked(t *testing.T) {
 }
 
 func TestHandleAddVisionItem_InvalidDependsOnJSON(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":       "Some idea",
@@ -129,6 +132,7 @@ func TestHandleAddVisionItem_InvalidDependsOnJSON(t *testing.T) {
 }
 
 func TestHandleAddVisionItem_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":             "Add semantic search",
@@ -149,6 +153,7 @@ func TestHandleAddVisionItem_HappyPath(t *testing.T) {
 // the same 255-rune cap as HTTP AddVision (internal/handler/vision_handler.go:48-50) —
 // before this change, add_vision_item had no length limit at all.
 func TestHandleAddVisionItem_TitleTooLong(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":       strings.Repeat("t", 256), // 256 runes > 255 limit
@@ -165,6 +170,7 @@ func TestHandleAddVisionItem_TitleTooLong(t *testing.T) {
 // TestHandleAddVisionItem_TitleExactly255_OK verifies the boundary is
 // inclusive (255 runes is accepted, matching HTTP's `> 255` rejection test).
 func TestHandleAddVisionItem_TitleExactly255_OK(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":       strings.Repeat("t", 255),
@@ -179,6 +185,7 @@ func TestHandleAddVisionItem_TitleExactly255_OK(t *testing.T) {
 // enforces the same 2000-rune cap as HTTP AddVision
 // (internal/handler/vision_handler.go:54-56).
 func TestHandleAddVisionItem_WhyBlockedTooLong(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":       "Some future idea",
@@ -198,6 +205,7 @@ func TestHandleAddVisionItem_WhyBlockedTooLong(t *testing.T) {
 // still succeeds, and the warnings ride along in the response body under a
 // "warnings" key since MCP has no HTTP header channel to carry them.
 func TestHandleAddVisionItem_VaguenessWarningsEmbedded(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":       "short",
@@ -226,6 +234,7 @@ func TestHandleAddVisionItem_VaguenessWarningsEmbedded(t *testing.T) {
 // it did before the vagueness check was added — no regression for callers
 // that read "id" directly off the top-level result.
 func TestHandleAddVisionItem_NoVaguenessWhenDescriptive(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddVision(t, s, map[string]any{
 		"title":       "Add semantic search to knowledge base (internal/knowledge/search.go:42)",
@@ -250,6 +259,7 @@ func TestHandleAddVisionItem_NoVaguenessWhenDescriptive(t *testing.T) {
 // ---- list_vision_items ----
 
 func TestHandleListVisionItems_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListVision(t, s, map[string]any{
 		"status": "invalid_status_value",
@@ -260,6 +270,7 @@ func TestHandleListVisionItems_InvalidStatus(t *testing.T) {
 }
 
 func TestHandleListVisionItems_EmptyResult(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListVision(t, s, map[string]any{})
 	if r.IsError {
@@ -273,6 +284,7 @@ func TestHandleListVisionItems_EmptyResult(t *testing.T) {
 }
 
 func TestHandleListVisionItems_FilterByStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	// Add an item first.
@@ -292,6 +304,7 @@ func TestHandleListVisionItems_FilterByStatus(t *testing.T) {
 // ---- update_vision_item ----
 
 func TestHandleUpdateVisionItem_MissingID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateVision(t, s, map[string]any{
 		"status": "discussing",
@@ -302,6 +315,7 @@ func TestHandleUpdateVisionItem_MissingID(t *testing.T) {
 }
 
 func TestHandleUpdateVisionItem_InvalidID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateVision(t, s, map[string]any{
 		"id":     "not-a-uuid",
@@ -313,6 +327,7 @@ func TestHandleUpdateVisionItem_InvalidID(t *testing.T) {
 }
 
 func TestHandleUpdateVisionItem_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateVision(t, s, map[string]any{
 		"id":     uuid.New().String(),
@@ -324,6 +339,7 @@ func TestHandleUpdateVisionItem_InvalidStatus(t *testing.T) {
 }
 
 func TestHandleUpdateVisionItem_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callUpdateVision(t, s, map[string]any{
 		"id":     uuid.New().String(),
@@ -338,6 +354,7 @@ func TestHandleUpdateVisionItem_NotFound(t *testing.T) {
 }
 
 func TestHandleUpdateVisionItem_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	// Add an item.
@@ -370,6 +387,7 @@ func TestHandleUpdateVisionItem_HappyPath(t *testing.T) {
 // The bad-case half proves that behaviour end-to-end; the schema half proves
 // the registered tool now says so.
 func TestUpdateVisionItemContextMDDiscloses(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	added := callAddVision(t, s, map[string]any{
@@ -416,6 +434,7 @@ func TestUpdateVisionItemContextMDDiscloses(t *testing.T) {
 // ---- promote_vision_to_task ----
 
 func TestHandlePromoteVisionToTask_MissingID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callPromoteVision(t, s, map[string]any{})
 	if !r.IsError {
@@ -424,6 +443,7 @@ func TestHandlePromoteVisionToTask_MissingID(t *testing.T) {
 }
 
 func TestHandlePromoteVisionToTask_InvalidID(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callPromoteVision(t, s, map[string]any{
 		"id": "not-a-uuid",
@@ -434,6 +454,7 @@ func TestHandlePromoteVisionToTask_InvalidID(t *testing.T) {
 }
 
 func TestHandlePromoteVisionToTask_NotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callPromoteVision(t, s, map[string]any{
 		"id": uuid.New().String(),
@@ -444,6 +465,7 @@ func TestHandlePromoteVisionToTask_NotFound(t *testing.T) {
 }
 
 func TestHandlePromoteVisionToTask_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	// Add a vision item.
@@ -485,6 +507,7 @@ func TestHandlePromoteVisionToTask_HappyPath(t *testing.T) {
 }
 
 func TestHandlePromoteVisionToTask_WithDueDate(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	added := callAddVision(t, s, map[string]any{
@@ -517,6 +540,7 @@ func TestHandlePromoteVisionToTask_WithDueDate(t *testing.T) {
 }
 
 func TestHandlePromoteVisionToTask_InvalidDueDate(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 
 	added := callAddVision(t, s, map[string]any{

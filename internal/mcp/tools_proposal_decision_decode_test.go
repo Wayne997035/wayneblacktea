@@ -18,6 +18,7 @@ import (
 // decision.SourceAuto for this materialiser, a path constant never decoded
 // from the payload.
 func TestDecodeDecisionParams_ForgedSourceIgnored(t *testing.T) {
+	t.Parallel()
 	payload := []byte(`{
 		"title": "forged-source decision",
 		"decision": "adopt X",
@@ -51,6 +52,7 @@ func TestDecodeDecisionParams_ForgedSourceIgnored(t *testing.T) {
 // decodeDecisionParams (byte-identical caps, string error-message return
 // convention instead of error).
 func TestDecodeDecisionParams_LengthCaps(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		payload    map[string]any

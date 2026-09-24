@@ -15,6 +15,7 @@ import (
 // specifically so a nil map disappears from the wire rather than serializing
 // as null.
 func TestHandleGetProjectArch_FileMapOptIn_DefaultOff(t *testing.T) {
+	t.Parallel()
 	s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{
 		ID:      "1",
 		Slug:    "wayneblacktea",
@@ -40,6 +41,7 @@ func TestHandleGetProjectArch_FileMapOptIn_DefaultOff(t *testing.T) {
 // when the caller passes include_file_map=false explicitly rather than
 // omitting it, since MCP clients may send either shape.
 func TestHandleGetProjectArch_FileMapOptIn_ExplicitFalse(t *testing.T) {
+	t.Parallel()
 	s := &Server{arch: fakeArchStore{snap: &arch.Snapshot{
 		ID: "1", Slug: "wayneblacktea", Summary: "arch",
 		FileMap:       map[string]string{"a.go": "purpose"},
@@ -59,6 +61,7 @@ func TestHandleGetProjectArch_FileMapOptIn_ExplicitFalse(t *testing.T) {
 // for the injection-neutralisation assertions, which reuse this same true
 // path via getProjectArchText's default).
 func TestHandleGetProjectArch_FileMapOptIn_True(t *testing.T) {
+	t.Parallel()
 	fileMap := map[string]string{
 		"cmd/server/main.go":     "HTTP+MCP entry point",
 		"internal/mcp/server.go": "MCP server wiring",
@@ -90,6 +93,7 @@ func TestHandleGetProjectArch_FileMapOptIn_True(t *testing.T) {
 // which the spec's self-verification pass could not reproduce from any
 // fixture in-repo.
 func TestHandleGetProjectArch_FileMapOptIn_ByteSizeDrop(t *testing.T) {
+	t.Parallel()
 	fileMap := make(map[string]string, 40)
 	for i := 0; i < 40; i++ {
 		fileMap[archTestFileKey(i)] = archTestFileVal(i)
@@ -130,6 +134,7 @@ func TestHandleGetProjectArch_FileMapOptIn_ByteSizeDrop(t *testing.T) {
 // questions and their percentages are not interchangeable; don't quote one
 // as if it were the other.
 func TestHandleGetProjectArch_ByteSizeMeasurement_ProductionScale(t *testing.T) {
+	t.Parallel()
 	const productionFileMapEntries = 18
 	fileMap := make(map[string]string, productionFileMapEntries)
 	for i := 0; i < productionFileMapEntries; i++ {

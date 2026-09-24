@@ -364,6 +364,7 @@ func (m *mockClassifyGTDStore) TaskAreaExists(_ context.Context, _ string) (bool
 
 // TestMaybeClassifyToolCall_NilClassifier verifies that a nil classifier results in no-op.
 func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
+	t.Parallel()
 	g := &mockClassifyGTDStore{}
 	dec := &mockDecisionStore{}
 	s := &Server{gtd: g, decision: dec, classifier: nil}
@@ -382,6 +383,7 @@ func TestMaybeClassifyToolCall_NilClassifier(t *testing.T) {
 
 // TestMaybeClassifyToolCall_NonSignificantTool verifies non-significant tools are skipped.
 func TestMaybeClassifyToolCall_NonSignificantTool(t *testing.T) {
+	t.Parallel()
 	g := &mockClassifyGTDStore{}
 	dec := &mockDecisionStore{}
 	// Use a real ActivityClassifier stub — we just verify it's never called.
@@ -403,6 +405,7 @@ func TestMaybeClassifyToolCall_NonSignificantTool(t *testing.T) {
 
 // TestSignificantTools_Map verifies the significantTools map contains expected entries.
 func TestSignificantTools_Map(t *testing.T) {
+	t.Parallel()
 	expected := []string{
 		"complete_task",
 		"confirm_proposal",
@@ -428,6 +431,7 @@ func TestSignificantTools_Map(t *testing.T) {
 
 // TestLogMCPDecision_Dedup verifies that a duplicate title is skipped.
 func TestLogMCPDecision_Dedup(t *testing.T) {
+	t.Parallel()
 	dec := &mockDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -461,6 +465,7 @@ func TestLogMCPDecision_Dedup(t *testing.T) {
 
 // TestLogMCPDecision_TruncatesTitle verifies rune-safe truncation of long titles.
 func TestLogMCPDecision_TruncatesTitle(t *testing.T) {
+	t.Parallel()
 	dec := &mockDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -486,6 +491,7 @@ func TestLogMCPDecision_TruncatesTitle(t *testing.T) {
 
 // TestLogMCPDecision_EmptyTitle verifies empty/whitespace titles are skipped.
 func TestLogMCPDecision_EmptyTitle(t *testing.T) {
+	t.Parallel()
 	dec := &mockDecisionStore{}
 	s := &Server{decision: dec}
 
@@ -504,6 +510,7 @@ func TestLogMCPDecision_EmptyTitle(t *testing.T) {
 // proposal with the same title is skipped (dedup is against the proposal
 // queue, NOT the tasks table — a closed task can legitimately recur).
 func TestAutoCaptureMCPTask_Dedup(t *testing.T) {
+	t.Parallel()
 	existingPayload, _ := json.Marshal(proposal.TaskPayload{Title: "Write integration tests"})
 	p := &mockProposalStore{
 		pending: []db.PendingProposal{
@@ -534,6 +541,7 @@ func TestAutoCaptureMCPTask_Dedup(t *testing.T) {
 // enqueued (NOT a real task row) when no duplicate pending proposal exists.
 // This is the core SA-decision-42e0b783 behaviour.
 func TestAutoCaptureMCPTask_CreatesProposal(t *testing.T) {
+	t.Parallel()
 	p := &mockProposalStore{}
 	s := &Server{proposal: p}
 
@@ -585,6 +593,7 @@ func TestAutoCaptureMCPTask_CreatesProposal(t *testing.T) {
 // TestAutoCaptureMCPTask_TruncatesTitle verifies rune-safe truncation
 // applied to the proposal payload title (NOT to a task row).
 func TestAutoCaptureMCPTask_TruncatesTitle(t *testing.T) {
+	t.Parallel()
 	p := &mockProposalStore{}
 	s := &Server{proposal: p}
 
@@ -614,6 +623,7 @@ func TestAutoCaptureMCPTask_TruncatesTitle(t *testing.T) {
 // is a graceful no-op (legacy callers without proposal wiring should not
 // panic when classifier verdict triggers task capture).
 func TestAutoCaptureMCPTask_NilProposalStore(t *testing.T) {
+	t.Parallel()
 	s := &Server{proposal: nil}
 	if err := s.autoCaptureMCPTask(context.Background(), "title", "tool", "", "", "", 0); err != nil {
 		t.Errorf("nil proposal store should be no-op, got err: %v", err)
@@ -625,6 +635,7 @@ func TestAutoCaptureMCPTask_NilProposalStore(t *testing.T) {
 // member (not "complete_task" — that now short-circuits before the
 // title-blank check under the F184-08 guard).
 func TestAutoCaptureMCPTask_EmptyTitleSkips(t *testing.T) {
+	t.Parallel()
 	p := &mockProposalStore{}
 	s := &Server{proposal: p}
 	for _, title := range []string{"", "   ", "\t\n"} {
@@ -641,6 +652,7 @@ func TestAutoCaptureMCPTask_EmptyTitleSkips(t *testing.T) {
 // cap (proposal.MaxTaskPayloadBytes) drops oversize payloads with a warning
 // instead of writing a giant row.
 func TestAutoCaptureMCPTask_OversizePayloadSkipped(t *testing.T) {
+	t.Parallel()
 	p := &mockProposalStore{}
 	s := &Server{proposal: p}
 
@@ -662,6 +674,7 @@ func TestAutoCaptureMCPTask_OversizePayloadSkipped(t *testing.T) {
 // realistic argSummary / resultSummary and verifies the proposal carries the
 // expected payload shape AND the gtd store is NOT touched.
 func TestMaybeClassifyToolCall_CreatesProposalNotTask(t *testing.T) {
+	t.Parallel()
 	p := &mockProposalStore{}
 	g := &mockClassifyGTDStore{} // must NOT be touched
 	s := &Server{
@@ -711,6 +724,7 @@ func TestMaybeClassifyToolCall_CreatesProposalNotTask(t *testing.T) {
 // is verified by re-invoking autoCaptureMCPTask with the already-redacted
 // strings and confirming the second payload is byte-identical to the first.
 func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
+	t.Parallel()
 	const fakePAT = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 40 chars, fake
 	const wantPlaceholder = "[REDACTED:github-token]"
 
@@ -794,6 +808,7 @@ func TestAutoCaptureMCPTask_RedactsCredentials(t *testing.T) {
 
 // TestTruncateRunes verifies UTF-8-safe truncation.
 func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input    string
 		max      int
@@ -824,6 +839,7 @@ func TestTruncateRunes(t *testing.T) {
 // instantly. This proves the drop semantics in maybeClassifyToolCall:46-90
 // without going through the nil-classifier short circuit.
 func TestClassifySem_SelectDefaultDrops_WhenFull(t *testing.T) {
+	// Not parallel: fills the global mcpClassifySem; other classify tests would fail to acquire a slot.
 	// Fill the semaphore completely.
 	for i := 0; i < cap(mcpClassifySem); i++ {
 		mcpClassifySem <- struct{}{}
@@ -859,6 +875,7 @@ func TestClassifySem_SelectDefaultDrops_WhenFull(t *testing.T) {
 // reject calls after the bucket is drained within the same window, and
 // refill once the window elapses.
 func TestTryAcquireClassifyToken_DrainsAndRefills(t *testing.T) {
+	// Not parallel: drains the global mcpClassifyBudget; parallel classify tests would interfere.
 	// Reset bucket to a known state pinned to t0.
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mcpClassifyBudget.mu.Lock()
@@ -896,6 +913,7 @@ func TestTryAcquireClassifyToken_DrainsAndRefills(t *testing.T) {
 // TestMaybeClassifyToolCall_NilClassifier (which checks no DB writes happen)
 // by also asserting timing.
 func TestMaybeClassifyToolCall_NilGuardReturnsInstant(t *testing.T) {
+	t.Parallel()
 	s := &Server{classifier: nil}
 	start := time.Now()
 	s.maybeClassifyToolCall("complete_task", "args", "result", "actor-session-1")
@@ -962,6 +980,7 @@ var (
 // ≥ ClassifierAutoAcceptThreshold (0.85) + zero-warning synthesised
 // description → direct gtd.CreateTask, skipping the proposal queue.
 func TestAutoCaptureMCPTask_AutoAccept_HighConfidence(t *testing.T) {
+	t.Parallel()
 	const richArg = "complete_task(id=abc-123) for repo github.com/foo/bar at commit a1b2c3"
 	const richRationale = "completion implies follow-up regression task at " +
 		"internal/handler/cleanup.go:45 to drop expired session rows"
@@ -1011,6 +1030,7 @@ func TestAutoCaptureMCPTask_AutoAccept_HighConfidence(t *testing.T) {
 // plaintext. Mirror of the HTTP test in autolog_handler_test.go
 // (backend-security-design.md §3.1).
 func TestAutoCaptureMCPTask_AutoAccept_RedactsTitleCredentials(t *testing.T) {
+	t.Parallel()
 	// 35-rune body keeps the fixture above redact.go's ghp_ {30,} match while
 	// staying below the commit-quality hook's {36} block pattern (the existing
 	// TestAutoCaptureMCPTask_RedactsCredentials fixture predates the hook,
@@ -1063,6 +1083,7 @@ func TestAutoCaptureMCPTask_AutoAccept_RedactsTitleCredentials(t *testing.T) {
 // safety net: confidence below threshold routes through the proposal queue
 // regardless of how clean the description is.
 func TestAutoCaptureMCPTask_AutoAccept_LowConfidence(t *testing.T) {
+	t.Parallel()
 	const richArg = "complete_task(id=abc-123) for repo github.com/foo/bar at commit a1b2c3"
 	const richRationale = "completion implies follow-up regression task at " +
 		"internal/handler/cleanup.go:45 to drop expired session rows"
@@ -1101,6 +1122,7 @@ func TestAutoCaptureMCPTask_AutoAccept_LowConfidence(t *testing.T) {
 // confidence ≥ 0.85 but a vague synthesised description trips
 // validator.CheckVagueness and routes the verdict through the proposal queue.
 func TestAutoCaptureMCPTask_AutoAccept_VagueDescription(t *testing.T) {
+	t.Parallel()
 	p := &mockProposalStore{}
 	g := &mockClassifyGTDStore{}
 	s := &Server{proposal: p, gtd: g}
@@ -1136,6 +1158,7 @@ func TestAutoCaptureMCPTask_AutoAccept_VagueDescription(t *testing.T) {
 // titled "Complete task <uuid>"). Covers both materialisation paths the
 // guard must short-circuit before reaching.
 func TestAutoCaptureMCPTask_CompleteTask_NeverCreatesTask(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		confidence float64

@@ -52,6 +52,7 @@ func oversizedPayloadError() error {
 // this test goes red on the first assertion — the client text falls back to
 // "creating proposal failed".
 func TestSEC_PR1_05_ProposeGoalTellsTheCallerThePayloadWasTooLarge(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	_ = bufferLogger(t)
 
 	s := &Server{proposal: &stubProposalStore{createEr: oversizedPayloadError()}}
@@ -81,6 +82,7 @@ func TestSEC_PR1_05_ProposeGoalTellsTheCallerThePayloadWasTooLarge(t *testing.T)
 // that — a future edit switching it to err.Error() would ship the byte counts
 // and the driver topology spliced in above.
 func TestSEC_PR1_05_PayloadTooLargeCarriesNothingElse(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	_ = bufferLogger(t)
 
 	s := &Server{proposal: &stubProposalStore{createEr: oversizedPayloadError()}}
@@ -110,6 +112,7 @@ func TestSEC_PR1_05_PayloadTooLargeCarriesNothingElse(t *testing.T) {
 // tests guard: client-facing redaction must not also blind the operator, or an
 // information leak has been traded for an undiagnosable incident.
 func TestSEC_PR1_05_OperatorKeepsTheFullChain(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
 	buf := bufferLogger(t)
 
 	s := &Server{proposal: &stubProposalStore{createEr: oversizedPayloadError()}}

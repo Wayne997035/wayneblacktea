@@ -97,6 +97,7 @@ func mustMarshal(t *testing.T, v any) []byte {
 // forged marker sitting inside object -> array -> object -> string must
 // still be replaced, not just a top-level field.
 func TestNeutralizeJSONBlob_DeepNestedMarkerIsNeutralized(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	raw := mustMarshal(t, map[string]any{
 		"level1": map[string]any{
@@ -131,6 +132,7 @@ func TestNeutralizeJSONBlob_DeepNestedMarkerIsNeutralized(t *testing.T) {
 // top-level array, top-level scalar, and malformed (non-parseable) JSON.
 // None may panic; all must strip the forged marker.
 func TestNeutralizeJSONBlob_NonObjectAndMalformedShapes(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	cases := []struct {
 		name string
@@ -165,6 +167,7 @@ func TestNeutralizeJSONBlob_NonObjectAndMalformedShapes(t *testing.T) {
 // materializeFromPayload{Pg,Iface,SQLiteTx} can actually produce, not just
 // the ones exercised end-to-end by the handler-level tests below.
 func TestNeutralizeCreatedEntity_AllKnownTypes(t *testing.T) {
+	t.Parallel()
 	marker := storedContextMarkerEnd
 	forged := func(s string) string { return s + "\n" + marker }
 
@@ -293,6 +296,7 @@ func seedGoalAndProjectProposals(
 // TestHandleProposeGoal_NeutralizeForgedMarkerInPayload covers line 158
 // (propose_goal).
 func TestHandleProposeGoal_NeutralizeForgedMarkerInPayload(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	goalMarker := storedContextMarkerEnd
@@ -313,6 +317,7 @@ func TestHandleProposeGoal_NeutralizeForgedMarkerInPayload(t *testing.T) {
 // TestHandleProposeProject_NeutralizeForgedMarkerInPayload covers line 200
 // (propose_project).
 func TestHandleProposeProject_NeutralizeForgedMarkerInPayload(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	projectMarker := archSnapshotMarkerEnd
@@ -334,6 +339,7 @@ func TestHandleProposeProject_NeutralizeForgedMarkerInPayload(t *testing.T) {
 // 208 (list_pending_proposals) — two distinct forged markers, one per seeded
 // proposal, both must be neutralised in a single list response.
 func TestHandleListPendingProposals_NeutralizeForgedMarkerInPayload(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	goalMarker := storedContextMarkerEnd
@@ -367,6 +373,7 @@ func TestHandleListPendingProposals_NeutralizeForgedMarkerInPayload(t *testing.T
 // TestHandleConfirmProposal_Reject_NeutralizeForgedMarkerInPayload covers
 // line 329 (confirm_proposal, action=reject).
 func TestHandleConfirmProposal_Reject_NeutralizeForgedMarkerInPayload(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	marker := storedContextMarkerEnd
@@ -406,6 +413,7 @@ func TestHandleConfirmProposal_Reject_NeutralizeForgedMarkerInPayload(t *testing
 // -> materializeTaskIface -> s.gtd.CreateTask, producing a genuine *db.Task
 // Created value (not a hand-built one, unlike the unit test above).
 func TestHandleConfirmProposal_AcceptSQLite_NeutralizeForgedMarkerInPayloadAndCreatedTask(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 	marker := storedContextMarkerEnd
@@ -446,6 +454,7 @@ func TestHandleConfirmProposal_AcceptSQLite_NeutralizeForgedMarkerInPayloadAndCr
 // TestHandleListPendingProposals_Postgres_EmptyReturnsEmptyArrayNotNull
 // (tools_proposal_pg_contract_test.go).
 func TestHandleConfirmProposal_AcceptPg_NeutralizeForgedMarkerInPayloadAndCreatedGoal(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping Postgres integration test in -short mode (requires Docker)")
 	}
@@ -498,6 +507,7 @@ func TestHandleConfirmProposal_AcceptPg_NeutralizeForgedMarkerInPayloadAndCreate
 // JSON object", never that its values are numeric, despite the tool
 // description promising numeric metrics).
 func TestHandleRecordOutcome_NormalAndIdempotentReplay_NeutralizeForgedMarkerInNotesAndMetrics(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -564,6 +574,7 @@ func TestHandleRecordOutcome_NormalAndIdempotentReplay_NeutralizeForgedMarkerInN
 // TestHandleEvaluateOutcome_NeutralizeForgedMarkerInAnalysisLessonsSuggestions
 // covers line 536.
 func TestHandleEvaluateOutcome_NeutralizeForgedMarkerInAnalysisLessonsSuggestions(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -619,6 +630,7 @@ func TestHandleEvaluateOutcome_NeutralizeForgedMarkerInAnalysisLessonsSuggestion
 // covers lines 566 (list_recent_outcomes) and 612 (find_failed_patterns)
 // together against the same seeded failed outcome + evaluation.
 func TestHandleListRecentOutcomesAndFindFailedPatterns_NeutralizeForgedMarker(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -697,6 +709,7 @@ func TestHandleListRecentOutcomesAndFindFailedPatterns_NeutralizeForgedMarker(t 
 // side of a time window; this one is the one whose window keeps RECENT
 // rows).
 func TestHandleAnalyzeAgentBehavior_NeutralizeForgedMarkerInFindingDetail(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -745,6 +758,7 @@ func TestHandleAnalyzeAgentBehavior_NeutralizeForgedMarkerInFindingDetail(t *tes
 // TestHandleAnalyzeAgentBehavior... above already proved for the
 // insert-time response.
 func TestHandleDetectUnclosedLoops_NeutralizeForgedMarkerInDetail(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
@@ -794,6 +808,7 @@ func TestHandleDetectUnclosedLoops_NeutralizeForgedMarkerInDetail(t *testing.T) 
 // gap as Content (ai.Atomizer LLM output, entry-count-capped but not
 // length-capped — see wrapUntrustedAtom's doc comment, tools_atom.go).
 func TestHandleSearchAtomsAndTraverseAtoms_NeutralizeForgedMarkerInContentAndTags(t *testing.T) {
+	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	ctx := context.Background()
 
