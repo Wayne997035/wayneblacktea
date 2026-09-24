@@ -192,6 +192,16 @@ type DeleteProjectArgs struct {
 	DeletionToken string    `mcp:"deletion_token"`
 }
 
+// RestoreProjectArgs — restore_project. Single-step (design 4,
+// 2026-09-23-soft-delete-dispatch.md: restore only writes rows back, it
+// never deletes anything, so it carries none of DeleteProjectArgs' confirm/
+// deletion_token fields). No actor field either — the handler always takes
+// actor from s.auditSessionID(ctx), never a caller-supplied argument
+// (backend-security-design.md §2.1).
+type RestoreProjectArgs struct {
+	ProjectID uuid.UUID `mcp:"project_id"`
+}
+
 // ChecklistAddItemArgs — task_checklist_add_item. Title/FileRef/Notes are
 // plain strings: their maxLength enforcement runs on the seam's raw value
 // (Pass B), but the handler still applies gtd.SanitiseChecklistText to the

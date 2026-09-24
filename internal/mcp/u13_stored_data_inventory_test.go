@@ -118,6 +118,11 @@ var storedDataReaders = []storedDataReader{
 	// title so the caller can see what it is about to destroy — caller-
 	// authored free text, so it is clipSafe'd and belongs in this table.
 	{file: "tools_gtd.go", tool: "delete_project", status: readerPass},
+	// tools_gtd_restore.go — restore_project's success response echoes the
+	// restored project's stored name, so like delete_project's preview above
+	// it is clipSafe'd and belongs in this table, not the computed exclusions
+	// below (F191-07, 2026-09-24-softdelete-mcp-dispatch.md).
+	{file: "tools_gtd_restore.go", tool: "restore_project", status: readerPass},
 	// tools_health.go
 	{file: "tools_health.go", tool: "system_health", status: readerPass},
 	// tools_knowledge.go
@@ -327,7 +332,11 @@ var storedDataSelfDefinitionExclusions = map[string]int{
 // to echo stored text back (the project's name and title, so a caller can see
 // what it is about to destroy), which is why it is a table row and not a
 // computed exclusion like delete_task's token-only twin.
-const wantStoredDataReaderTotal = 94
+//
+// 94 -> 95: restore_project's success response (tools_gtd_restore.go, F191-07)
+// echoes the restored project's stored name, clipSafe'd — same reasoning as
+// delete_project's row directly above it.
+const wantStoredDataReaderTotal = 95
 
 // TestStoredDataReaderInventory_TotalMatchesDocumentedCount pins
 // storedDataReaders' length against the inventory doc. If someone edits the
@@ -422,7 +431,10 @@ func TestStoredDataReaderInventory_GrepCountMatchesCode(t *testing.T) {
 	// 112 -> 113: handleDeleteProject's confirmation_required preview.
 	// Accounted for as a storedDataReaders row — it echoes the project's
 	// stored name and title, clipSafe'd.
-	const wantTotal = 113
+	// 113 -> 114: handleRestoreProject's success response (tools_gtd_restore.go,
+	// F191-07). Accounted for as a storedDataReaders row — it echoes the
+	// restored project's stored name, clipSafe'd.
+	const wantTotal = 114
 	if total != wantTotal {
 		t.Errorf("jsonText(/marshalResource( call-site count in internal/mcp/*.go (excluding _test.go) "+
 			"= %d, want %d — storedDataReaders above needs updating to match the current code before "+
