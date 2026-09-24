@@ -1269,6 +1269,11 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// [SEC-PR191-01] deleted_at >= retentionCutoff enforces the 30-day
+	// restore window at the lookup itself, not just via the scheduled
+	// pruner (which doesn't run on every process — stdio transport wires
+	// none at all).
+	retentionCutoff := time.Now().UTC().Add(-gtd.DeletionTombstoneRetention).Format(sqliteTimestampLayout)
 	var deletionID, payloadName string
 	row := tx.QueryRowContext(
 		ctx,
@@ -1276,9 +1281,10 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 		   FROM deletion_tombstones
 		  WHERE entity_kind = 'project' AND project_id = ?1
 		    AND (?2 IS NULL OR workspace_id = ?2)
+		    AND deleted_at >= ?3
 		  ORDER BY deleted_at DESC
 		  LIMIT 1`,
-		id.String(), s.db.workspaceArg(),
+		id.String(), s.db.workspaceArg(), retentionCutoff,
 	)
 	if err := row.Scan(&deletionID, &payloadName); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2095,6 +2101,20 @@ func (a *sqliteDeleteTaskAdapter) Rollback(context.Context) {
 // without that wrapper would double-encode them as an escaped string value
 // instead of a nested JSON array.
 func (a *sqliteDeleteTaskAdapter) SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
+	// [SEC-PR191-01] Prune tombstone rows that already fell out of the
+	// retention window before writing this delete's own snapshot — see
+	// gtd.DeletionTombstoneRetention's doc comment for why this runs here
+	// instead of relying solely on the scheduled pruner. cutoff is derived
+	// from deletedAt (the single clock read this whole deletion already
+	// took), not a fresh time.Now().
+	if _, err := a.tx.ExecContext(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deleted_at < ?1`,
+		deletedAt.Add(-gtd.DeletionTombstoneRetention).UTC().Format(sqliteTimestampLayout),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+
 	q := `INSERT INTO deletion_tombstones
 		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
 		SELECT ` + sqliteRandomUUIDExpr + `, t.workspace_id, ?2, 'task', t.id, t.project_id, ` + sqliteTaskSnapshotJSON + `, ?3, ?4
@@ -2320,6 +2340,14 @@ func (a *sqliteDeleteProjectAdapter) SnapshotProjectAndTasks(
 	ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
 ) error {
 	deletedAtStr := deletedAt.UTC().Format(sqliteTimestampLayout)
+
+	// [SEC-PR191-01] Prune tombstone rows that already fell out of the
+	// retention window before writing this delete's own snapshot — see
+	// sqliteDeleteTaskAdapter.SnapshotTask's twin for the full rationale.
+	cutoffStr := deletedAt.Add(-gtd.DeletionTombstoneRetention).UTC().Format(sqliteTimestampLayout)
+	if err := a.run(ctx, `DELETE FROM deletion_tombstones WHERE deleted_at < ?1`, cutoffStr); err != nil {
+		return err
+	}
 
 	projectQ := `INSERT INTO deletion_tombstones
 		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)

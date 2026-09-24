@@ -1607,6 +1607,22 @@ func (a *pgDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.
 func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(
 	ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
 ) error {
+	// [SEC-PR191-01] Prune tombstone rows that already fell out of the
+	// retention window before writing this delete's own snapshot — every
+	// delete is a write path, so this keeps deletion_tombstones bounded
+	// even when the scheduled pruner hasn't run yet (e.g. a fresh stdio
+	// process, which has no pruner wired at all). cutoff is derived from
+	// deletedAt — the single clock read this whole deletion already took —
+	// not a fresh time.Now(), so it can't disagree with the deleted_at this
+	// same call is about to write.
+	if _, err := a.tx.Exec(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deleted_at < $1`,
+		deletedAt.Add(-DeletionTombstoneRetention),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+	}
+
 	const projectQ = `INSERT INTO deletion_tombstones
 		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
 		SELECT gen_random_uuid(), p.workspace_id, $2, 'project', p.id, p.id, to_jsonb(p), $3, $4
@@ -1820,6 +1836,17 @@ func (a *pgDeleteTaskAdapter) Rollback(ctx context.Context) {
 // the full rationale (never assembled from db.Task, same workspace predicate
 // as WorkspacePrecheck, tombstone.workspace_id from the source row).
 func (a *pgDeleteTaskAdapter) SnapshotTask(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error {
+	// [SEC-PR191-01] Same expired-tombstone prune as
+	// pgDeleteProjectAdapter.SnapshotProjectAndTasks — see that method's
+	// comment for the full rationale.
+	if _, err := a.tx.Exec(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deleted_at < $1`,
+		deletedAt.Add(-DeletionTombstoneRetention),
+	); err != nil {
+		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
+	}
+
 	const q = `INSERT INTO deletion_tombstones
 		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
 		SELECT gen_random_uuid(), t.workspace_id, $2, 'task', t.id, t.project_id, to_jsonb(t), $3, $4
@@ -2003,6 +2030,54 @@ func isUniqueViolationPG(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// findAndLockRestorableGroup is RestoreProject's find-and-lock step, split
+// out to keep RestoreProject's cyclomatic complexity under the project's
+// gocyclo threshold (SEC-PR191-01 added the retention bound and the two
+// FOR UPDATE locks, pushing the combined function over it). Returns the
+// group's deletion_id and the project payload's stored name (used by the
+// caller's id/name precheck), or ErrNotFound when no group is found within
+// the retention window and workspace scope.
+//
+// [SEC-PR191-01] deleted_at >= retentionCutoff enforces the 30-day restore
+// window at the lookup itself, not just via the scheduled pruner (which
+// doesn't run on every process — stdio transport wires none at all). The
+// first FOR UPDATE locks the row this SELECT actually returns; the second
+// lock extends that to every row in the group (the SELECT only locked the
+// single project row it returned) before any write — a concurrent prune or
+// a second restore racing on the same deletion_id now blocks here instead
+// of interleaving with the writes RestoreProject performs afterward.
+func (s *Store) findAndLockRestorableGroup(ctx context.Context, tx pgx.Tx, id uuid.UUID) (uuid.UUID, string, error) {
+	retentionCutoff := time.Now().UTC().Add(-DeletionTombstoneRetention)
+	var deletionID uuid.UUID
+	var payloadName string
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT deletion_id, payload->>'name'
+		   FROM deletion_tombstones
+		  WHERE entity_kind = 'project' AND project_id = $1
+		    AND ($2::uuid IS NULL OR workspace_id = $2)
+		    AND deleted_at >= $3
+		  ORDER BY deleted_at DESC
+		  LIMIT 1
+		    FOR UPDATE`,
+		id, s.workspaceID, retentionCutoff,
+	).Scan(&deletionID, &payloadName); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, "", ErrNotFound
+		}
+		return uuid.Nil, "", fmt.Errorf("finding deletion group for project %s: %w", id, err)
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`SELECT 1 FROM deletion_tombstones WHERE deletion_id = $1 FOR UPDATE`,
+		deletionID,
+	); err != nil {
+		return uuid.Nil, "", fmt.Errorf("locking deletion group for project %s: %w", id, err)
+	}
+	return deletionID, payloadName, nil
+}
+
 // RestoreProject reverses the most recent delete_project for id within the
 // 30-day retention window (design 4, decisions 3cc5350f/17a1086b, F191-11).
 //
@@ -2038,22 +2113,9 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var deletionID uuid.UUID
-	var payloadName string
-	if err := tx.QueryRow(
-		ctx,
-		`SELECT deletion_id, payload->>'name'
-		   FROM deletion_tombstones
-		  WHERE entity_kind = 'project' AND project_id = $1
-		    AND ($2::uuid IS NULL OR workspace_id = $2)
-		  ORDER BY deleted_at DESC
-		  LIMIT 1`,
-		id, s.workspaceID,
-	).Scan(&deletionID, &payloadName); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, 0, ErrNotFound
-		}
-		return nil, 0, fmt.Errorf("finding deletion group for project %s: %w", id, err)
+	deletionID, payloadName, err := s.findAndLockRestorableGroup(ctx, tx, id)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Precheck (design "已定案" 2): an id or name collision is rejected
