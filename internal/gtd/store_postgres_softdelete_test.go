@@ -863,3 +863,64 @@ func TestPGSoftDelete_PruneDropsOlderThanRetention(t *testing.T) {
 		t.Errorf("new group has %d row(s) after prune, want 2 (untouched)", got)
 	}
 }
+
+// TestPGSoftDelete_RestoreWritesAuditRow is F191-12's Postgres half —
+// mirrors the SQLite twin (TestRestoreProject_WritesAuditRow,
+// internal/storage/sqlite/gtd_softdelete_test.go): exactly one new
+// activity_log row, action='project_restored', actor = the actor passed
+// to RestoreProject, project_id populated with the restored project's own
+// id, notes never carrying the project's stored title.
+func TestPGSoftDelete_RestoreWritesAuditRow(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	countActivityLog := func() int {
+		return countPGRows(t, pool, `SELECT count(*) FROM activity_log WHERE workspace_id = $1`, wsID)
+	}
+
+	secretTitle := fmt.Sprintf("Secret PG Restore Project %s", uuid.New().String()[:8])
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-12-pg-proj-%s", uuid.New()), Title: secretTitle,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	before := countActivityLog()
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("RestoreProject: %v", err)
+	}
+
+	if got := countActivityLog(); got != before+1 {
+		t.Fatalf("activity_log grew by %d, want exactly 1", got-before)
+	}
+
+	var action, actor, notes string
+	var projectIDCol uuid.UUID
+	if err := pool.QueryRow(
+		ctx,
+		`SELECT action, actor, notes, project_id FROM activity_log
+		  WHERE workspace_id = $1 AND action = 'project_restored' ORDER BY created_at DESC LIMIT 1`,
+		wsID,
+	).Scan(&action, &actor, &notes, &projectIDCol); err != nil {
+		t.Fatalf("read audit row: %v", err)
+	}
+	if action != "project_restored" {
+		t.Errorf("action = %q, want %q", action, "project_restored")
+	}
+	if actor != testerActor {
+		t.Errorf("actor = %q, want %q", actor, testerActor)
+	}
+	if projectIDCol != proj.ID {
+		t.Errorf("activity_log.project_id = %s, want %s", projectIDCol, proj.ID)
+	}
+	if strings.Contains(notes, secretTitle) {
+		t.Errorf("audit notes leaked the project's stored title: %q", notes)
+	}
+}
