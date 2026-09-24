@@ -1065,6 +1065,25 @@ func wireScheduler(
 			return nil, fmt.Errorf("wiring session_handoffs pruner: %w", err)
 		}
 	}
+	// [F191-08] Wire deletion_tombstones pruner (both backends; 30-day TTL,
+	// design 6 of 2026-09-23-soft-delete-dispatch.md, decision 17a1086b). 04:50 avoids the
+	// 03:00-04:45 prune cluster documented on the pruners above. Until the
+	// storage-layer PR in this same fan-out lands, PruneDeletionTombstones is
+	// a contract-stage stub returning gtd.ErrNotImplemented — runPrune logs
+	// that as a daily slog.Warn (scheduler.go), not a startup failure; it
+	// clears once that PR merges, which the dispatch requires happen before
+	// this PR merges (F191-08 self-check, 2026-09-24-softdelete-mcp-dispatch.md).
+	if gtdStore := stores.GTD(); gtdStore != nil {
+		if err := sched.WithPruner(scheduler.PrunerSpec{
+			Name:      "deletion_tombstones",
+			Store:     scheduler.NewDeletionTombstonePrunerAdapter(gtdStore),
+			Retention: 30 * 24 * time.Hour,
+			Hour:      4,
+			Minute:    50,
+		}); err != nil {
+			return nil, fmt.Errorf("wiring deletion_tombstones pruner: %w", err)
+		}
+	}
 	// Wire behavior governance weekly job (Wednesday 04:15 Asia/Taipei). Applies
 	// outcome→rule confidence updates and auto-deprecates stale low-confidence rules.
 	// Startup-fatal if it errors (registering a gocron job should not fail in practice).

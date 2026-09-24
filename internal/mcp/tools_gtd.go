@@ -411,6 +411,23 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		uuidArgs("project_id"),
 	)
 
+	// [F191-07] restore_project — see handleRestoreProject (tools_gtd_restore.go).
+	s.addTool(
+		ms, mcp.NewTool(
+			"restore_project",
+			mcp.WithDescription(
+				"Restores a project (and its tasks) that delete_project removed within the "+
+					"last 30 days. Single-step — nothing is deleted by this call. Fails if the "+
+					"id or name is already in use, or if no deletion is found within the "+
+					"retention window. Known limitation: does not restore references cleared "+
+					"by the original delete (activity log, decisions, knowledge items, session "+
+					"handoffs, work sessions, vision items) — only the project and task rows.",
+			),
+			mcp.WithString("project_id", mcp.Description("Project UUID to restore"), mcp.Required()),
+		), seam("restore_project", s.handleRestoreProject),
+		uuidArgs("project_id"),
+	)
+
 	s.addTool(
 		ms, mcp.NewTool(
 			"task_checklist_add_item",

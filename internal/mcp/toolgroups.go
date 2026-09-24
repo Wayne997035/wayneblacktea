@@ -90,7 +90,7 @@ var toolGroups = []toolGroup{
 	{Name: "gtd", Tools: []string{
 		"add_task", "begin_task", "complete_task", "create_goal", "create_project",
 		"delete_project", "delete_task", "get_project", "get_task", "get_upcoming_work", "list_goals",
-		"list_projects", "list_tasks", "log_activity", "set_task_status",
+		"list_projects", "list_tasks", "log_activity", "restore_project", "set_task_status",
 		"task_checklist_add_item", "task_checklist_complete", "task_checklist_toggle",
 		"update_project", "update_project_status", "update_task",
 	}},
