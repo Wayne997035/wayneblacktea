@@ -59,7 +59,7 @@ var (
 // options the caller passed to mcp.NewTool) and caches it under tool.Name.
 // This is the single point where validation metadata is read out of the
 // registration — callers never hand-write a parallel declaration.
-func registerToolSpec(tool mcp.Tool) *toolSpec {
+func registerToolSpec(tool mcp.Tool, opts ...specOption) *toolSpec {
 	ts := &toolSpec{args: map[string]*argSpec{}}
 
 	for name, raw := range tool.InputSchema.Properties {
@@ -87,6 +87,15 @@ func registerToolSpec(tool mcp.Tool) *toolSpec {
 		if a, ok := ts.args[name]; ok {
 			a.required = true
 		}
+	}
+
+	// opts MUST run before ts is published into toolSpecRegistry below: once
+	// the lock releases, a concurrent seam()/specFor() reader can reach this
+	// same *toolSpec, and mutating it post-publish (the pre-F0925-01 bug) is
+	// a data race that also lets a reader observe an incomplete spec (e.g.
+	// isUUID not yet set), silently skipping a validation constraint.
+	for _, opt := range opts {
+		opt(ts)
 	}
 
 	toolSpecMu.Lock()
@@ -156,10 +165,7 @@ func noMaxLength(names ...string) specOption {
 // never altered by this wrapper — only the internal validation cache and the
 // registration call site change shape.
 func (s *Server) addTool(ms *server.MCPServer, tool mcp.Tool, handler server.ToolHandlerFunc, opts ...specOption) {
-	ts := registerToolSpec(tool)
-	for _, opt := range opts {
-		opt(ts)
-	}
+	registerToolSpec(tool, opts...)
 	ms.AddTool(tool, handler)
 }
 
