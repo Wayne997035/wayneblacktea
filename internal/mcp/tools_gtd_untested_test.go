@@ -593,6 +593,39 @@ func TestLogActivity_InvalidProjectIDUUID(t *testing.T) {
 	}
 }
 
+// TestLogActivityTool_ReservedActionIsRefused is SEC-PR191-02's MCP-surface
+// half: log_activity must refuse to write a row whose action names one of
+// the three values only the delete/restore transactions themselves may
+// produce, including case/whitespace variants — the message must say why
+// (contain "reserved") without echoing back the caller's own notes, and no
+// row may reach activity_log.
+func TestLogActivityTool_ReservedActionIsRefused(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+
+	cases := []string{
+		"project_deleted", "task_deleted", "project_restored",
+		"Project_Deleted", " project_deleted ", "TASK_DELETED",
+	}
+	forgedNotesPayload := "forged-audit-row-payload-should-not-echo"
+	for _, action := range cases {
+		t.Run(action, func(t *testing.T) {
+			r := callLogActivity(t, s, map[string]any{
+				"actor": "claude-code", "action": action, "notes": forgedNotesPayload,
+			})
+			if !r.IsError {
+				t.Fatalf("action %q: expected an error result, got success: %s", action, resultText(r))
+			}
+			got := resultText(r)
+			if !strings.Contains(got, "reserved") {
+				t.Errorf("action %q: message = %q, want it to contain %q", action, got, "reserved")
+			}
+			if strings.Contains(got, forgedNotesPayload) {
+				t.Errorf("action %q: message echoed the caller's notes: %q", action, got)
+			}
+		})
+	}
+}
+
 // ---- task_checklist_add_item ----
 
 func TestChecklistAddItem_HappyPath(t *testing.T) {

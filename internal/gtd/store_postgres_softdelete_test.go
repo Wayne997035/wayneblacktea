@@ -494,6 +494,39 @@ func TestPGSoftDelete_AuditRowWritten(t *testing.T) {
 	})
 }
 
+// TestPGLogActivity_RejectsReservedAuditActions is SEC-PR191-02's Postgres
+// half — the twin of the SQLite package's TestLogActivity_
+// RejectsReservedAuditActions. See that test's doc comment for the full
+// rationale; this one proves the same contract holds against the real
+// Postgres backend, not just the SQLite one.
+func TestPGLogActivity_RejectsReservedAuditActions(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	countActivityLog := func() int {
+		return countPGRows(t, pool, `SELECT count(*) FROM activity_log WHERE workspace_id = $1`, wsID)
+	}
+
+	cases := []string{
+		"project_deleted", "task_deleted", "project_restored",
+		"Project_Deleted", " project_deleted ", "TASK_DELETED",
+	}
+	before := countActivityLog()
+	for _, action := range cases {
+		t.Run(action, func(t *testing.T) {
+			err := store.LogActivity(ctx, testerActor, action, nil, "forged audit row")
+			if !errors.Is(err, gtd.ErrReservedAction) {
+				t.Fatalf("LogActivity(%q) error = %v, want gtd.ErrReservedAction", action, err)
+			}
+		})
+	}
+	if got := countActivityLog(); got != before {
+		t.Errorf("activity_log grew by %d row(s) after %d rejected LogActivity calls, want 0", got-before, len(cases))
+	}
+}
+
 // ----- F191-11/13: RestoreProject / PruneDeletionTombstones, Postgres half -----
 
 // readRawPGRow reads every column of one row via SELECT * — generic on
