@@ -3,10 +3,15 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -418,6 +423,610 @@ func TestSnapshotColumnList_MatchesPragmaTableInfo(t *testing.T) {
 			if diff := columnListDiff(short, want); diff == "" {
 				t.Fatal("dropping a column from the produced list produced no diff — " +
 					"the completeness check cannot catch a column the snapshot expression forgot")
+			}
+		})
+	})
+}
+
+// ----- F191-10/11/12/13: RestoreProject / PruneDeletionTombstones -----
+
+// createFullTask creates one task under projectID with a non-default area,
+// one checklist item, and one commit sha — the three columns db.Task never
+// carries faithfully (design 2), needed so
+// TestRestoreProject_RoundTripsEveryColumn actually exercises them.
+func createFullTask(t *testing.T, store *GTDStore, ctx context.Context, projectID uuid.UUID, title string) uuid.UUID {
+	t.Helper()
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &projectID, Title: title, Area: "wbt"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.AddChecklistItem(ctx, tk.ID, uuid.UUID{}, gtd.ChecklistItem{
+		ID: uuid.New(), Title: "verify it works", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("AddChecklistItem: %v", err)
+	}
+	sha := "deadbeef" + uuid.New().String()[:8]
+	if _, err := store.UpdateTask(ctx, tk.ID, gtd.UpdateTaskParams{AppendCommitSHA: &sha}); err != nil {
+		t.Fatalf("UpdateTask (AppendCommitSHA): %v", err)
+	}
+	return tk.ID
+}
+
+// readRawRow reads every column of one row via SELECT * — generic on
+// purpose: a hand-picked column list here would be exactly the kind of
+// silent omission F191-11's round-trip check exists to catch. Values come
+// back as the driver's native Go types (int64/string/nil/[]byte); two calls
+// through this same helper are safe to compare with reflect.DeepEqual.
+func readRawRow(t *testing.T, d *DB, table, id string) map[string]any {
+	t.Helper()
+	//nolint:unqueryvet // table is always a hardcoded literal ("projects" or
+	// "tasks") passed by this same test file's call sites — never external
+	// input. SELECT * is intentional: this helper's whole purpose (F191-11)
+	// is catching a column restore_project forgot, which an explicit column
+	// list would itself risk omitting.
+	rows, err := d.SqlConn().QueryContext(context.Background(), `SELECT * FROM `+table+` WHERE id = ?1`, id)
+	if err != nil {
+		t.Fatalf("query all columns of %s: %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("columns for %s: %v", table, err)
+	}
+	if !rows.Next() {
+		t.Fatalf("no row for id %s in %s", id, table)
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		t.Fatalf("scan %s row: %v", table, err)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s row: %v", table, err)
+	}
+	out := make(map[string]any, len(cols))
+	for i, c := range cols {
+		out[c] = vals[i]
+	}
+	return out
+}
+
+// rawRowDiff compares two readRawRow results column-by-column, returning a
+// human-readable description of every mismatch or "" if they are identical.
+func rawRowDiff(before, after map[string]any) string {
+	keys := make([]string, 0, len(before))
+	for k := range before {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var diffs []string
+	for _, k := range keys {
+		b, a := before[k], after[k]
+		if !reflect.DeepEqual(b, a) {
+			diffs = append(diffs, fmt.Sprintf("%s: before=%v after=%v", k, b, a))
+		}
+	}
+	return strings.Join(diffs, "; ")
+}
+
+// TestRestoreProject_RoundTripsEveryColumn is F191-11: delete → restore
+// must reproduce the project row and every task row exactly, including the
+// columns db.Task/db.Project never carry faithfully (area, checklist,
+// commit_shas — design 2), and must consume the tombstone group it used.
+func TestRestoreProject_RoundTripsEveryColumn(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "f191-11-doomed-" + uuid.New().String(), Title: "Doomed", Area: "wbt", RepoName: "wbt-demo",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	const wantTasks = 2
+	taskIDs := make([]uuid.UUID, 0, wantTasks)
+	for i := 0; i < wantTasks; i++ {
+		taskIDs = append(taskIDs, createFullTask(t, store, ctx, proj.ID, fmt.Sprintf("t%d", i)))
+	}
+
+	beforeProject := readRawRow(t, d, "projects", proj.ID.String())
+	beforeTasks := make(map[string]map[string]any, wantTasks)
+	for _, id := range taskIDs {
+		beforeTasks[id.String()] = readRawRow(t, d, "tasks", id.String())
+	}
+
+	deleted, err := store.DeleteProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if deleted != wantTasks {
+		t.Fatalf("DeleteProject reported %d tasks removed, want %d", deleted, wantTasks)
+	}
+
+	var deletionID string
+	if err := d.QueryRowContext(
+		ctx,
+		`SELECT deletion_id FROM deletion_tombstones WHERE entity_kind = 'project' AND entity_id = ?1`,
+		proj.ID.String(),
+	).Scan(&deletionID); err != nil {
+		t.Fatalf("read deletion_id: %v", err)
+	}
+
+	restored, tasksRestored, err := store.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("RestoreProject: %v", err)
+	}
+	if tasksRestored != wantTasks {
+		t.Fatalf("tasksRestored = %d, want %d", tasksRestored, wantTasks)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+
+	if diff := rawRowDiff(beforeProject, readRawRow(t, d, "projects", proj.ID.String())); diff != "" {
+		t.Errorf("project row after restore differs from before delete: %s", diff)
+	}
+	for _, id := range taskIDs {
+		if diff := rawRowDiff(beforeTasks[id.String()], readRawRow(t, d, "tasks", id.String())); diff != "" {
+			t.Errorf("task %s row after restore differs from before delete: %s", id, diff)
+		}
+	}
+
+	var remaining int
+	if err := d.QueryRowContext(
+		ctx,
+		`SELECT count(*) FROM deletion_tombstones WHERE deletion_id = ?1`, deletionID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining tombstones: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("deletion_tombstones still has %d row(s) for deletion_id %s after restore, want 0", remaining, deletionID)
+	}
+}
+
+// TestRestoreProject_LeavesEarlierDeleteTaskTombstoneIntact is F191-11's
+// core regression guard (three prior review rounds' central concern):
+// delete_task(T1) then delete_project(P) (which now only holds T2) produces
+// TWO separate deletion_id groups under the same project_id. restore_project
+// must write back only T2's group and must not touch T1's earlier,
+// unrelated group at all.
+func TestRestoreProject_LeavesEarlierDeleteTaskTombstoneIntact(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-11-earlier-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	t1, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t1"})
+	if err != nil {
+		t.Fatalf("CreateTask t1: %v", err)
+	}
+	t2, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t2"})
+	if err != nil {
+		t.Fatalf("CreateTask t2: %v", err)
+	}
+
+	if err := store.DeleteTask(ctx, t1.ID, testerActor); err != nil {
+		t.Fatalf("DeleteTask t1: %v", err)
+	}
+	var earlierDeletionID string
+	if err := d.QueryRowContext(
+		ctx,
+		`SELECT deletion_id FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = ?1`,
+		t1.ID.String(),
+	).Scan(&earlierDeletionID); err != nil {
+		t.Fatalf("read earlier deletion_id: %v", err)
+	}
+
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	restored, tasksRestored, err := store.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("RestoreProject: %v", err)
+	}
+	if tasksRestored != 1 {
+		t.Fatalf("tasksRestored = %d, want 1 (only t2 — t1 was already gone before delete_project ran)", tasksRestored)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM tasks WHERE id = ?1`, t2.ID.String()); got != 1 {
+		t.Errorf("t2 not present in tasks after restore, want 1 row")
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM tasks WHERE id = ?1`, t1.ID.String()); got != 0 {
+		t.Errorf("t1 present in tasks after restore, want 0 — t1 belongs to an earlier, separate deletion_id group")
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = ?1`, earlierDeletionID); got != 1 {
+		t.Errorf("earlier delete_task tombstone group has %d row(s) after restore_project, want 1 (untouched)", got)
+	}
+}
+
+// countRows runs a COUNT(*)-shaped query and returns the scalar result.
+func countRows(t *testing.T, d *DB, q string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRowContext(context.Background(), q, args...).Scan(&n); err != nil {
+		t.Fatalf("count query %q: %v", q, err)
+	}
+	return n
+}
+
+// TestRestoreProject_RefusesWhenIDTaken is F191-11's precheck path: a live
+// project already occupies the deleted project's id. Nothing may be
+// written, and the tombstone group must survive untouched.
+func TestRestoreProject_RefusesWhenIDTaken(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-11-idtaken-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	now := nowRFC3339()
+	collidingName := "someone-elses-project-" + uuid.New().String()
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`INSERT INTO projects (id, workspace_id, goal_id, name, title, description, status, area, priority, repo_name, created_at, updated_at)
+		 VALUES (?1, NULL, NULL, ?2, ?3, NULL, 'active', 'projects', 3, NULL, ?4, ?4)`,
+		proj.ID.String(), collidingName, "Someone Else", now,
+	); err != nil {
+		t.Fatalf("seed id-colliding project: %v", err)
+	}
+
+	before := countRows(t, d, `SELECT count(*) FROM deletion_tombstones`)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrConflict", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones`); got != before {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — a refused restore must not consume the group", before, got)
+	}
+	var name string
+	if err := d.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?1`, proj.ID.String()).Scan(&name); err != nil {
+		t.Fatalf("read colliding project name: %v", err)
+	}
+	if name != collidingName {
+		t.Errorf("projects.id=%s name = %q, want unchanged %q (a refused restore must not overwrite the row)", proj.ID, name, collidingName)
+	}
+}
+
+// TestRestoreProject_RefusesWhenNameTaken is F191-11's precheck path via the
+// name axis: a different, live project now holds the deleted project's
+// name. Nothing may be written.
+func TestRestoreProject_RefusesWhenNameTaken(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	sharedName := "f191-11-nametaken-" + uuid.New().String()
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: sharedName, Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if _, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: sharedName, Title: "Other"}); err != nil {
+		t.Fatalf("CreateProject (name collision): %v", err)
+	}
+
+	before := countRows(t, d, `SELECT count(*) FROM deletion_tombstones`)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrConflict", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones`); got != before {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — a refused restore must not consume the group", before, got)
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM projects WHERE id = ?1`, proj.ID.String()); got != 0 {
+		t.Errorf("a refused restore wrote the project row anyway (found %d)", got)
+	}
+}
+
+// TestRestoreProject_RefusesWhenTaskIDTaken is F191-11's write-time
+// collision path (distinct from the two precheck tests above): the
+// project's own id/name are free, so the precheck passes, and only the
+// INSERT INTO tasks write-back collides. The whole tx — including the
+// project row that INSERT already wrote — must roll back.
+func TestRestoreProject_RefusesWhenTaskIDTaken(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-11-taskidtaken-" + uuid.New().String(), Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	otherName := "f191-11-taskidtaken-other-" + uuid.New().String()
+	otherProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: otherName, Title: "Other"})
+	if err != nil {
+		t.Fatalf("CreateProject (other): %v", err)
+	}
+	now := nowRFC3339()
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`INSERT INTO tasks (id, workspace_id, project_id, title, description, status, priority, importance, context,
+		  assignee, due_date, artifact, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id, created_at,
+		  updated_at, area)
+		 VALUES (?1, NULL, ?2, 'squatter', NULL, 'pending', 3, NULL, NULL, NULL, NULL, NULL, '[]', 'general', NULL,
+		  NULL, '[]', NULL, ?3, ?3, 'unsorted')`,
+		tk.ID.String(), otherProj.ID.String(), now,
+	); err != nil {
+		t.Fatalf("seed id-colliding task: %v", err)
+	}
+
+	before := countRows(t, d, `SELECT count(*) FROM deletion_tombstones`)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrConflict", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones`); got != before {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — a refused restore must not consume the group", before, got)
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM projects WHERE id = ?1`, proj.ID.String()); got != 0 {
+		t.Errorf("project row left behind after a task-id-collision rollback, want 0 (got %d)", got)
+	}
+	var squatterTitle string
+	if err := d.QueryRowContext(ctx, `SELECT title FROM tasks WHERE id = ?1`, tk.ID.String()).Scan(&squatterTitle); err != nil {
+		t.Fatalf("read squatter task: %v", err)
+	}
+	if squatterTitle != "squatter" {
+		t.Errorf("squatter task row changed, want untouched (got title=%q)", squatterTitle)
+	}
+}
+
+// TestRestoreProject_OtherWorkspaceIsInvisible is the workspace-scoping
+// guard: a store scoped to workspace B must not be able to find (let alone
+// restore) a deletion made under workspace A, even over the same database
+// file. File-backed, not ":memory:", so the two workspace-scoped handles
+// see the same rows.
+func TestRestoreProject_OtherWorkspaceIsInvisible(t *testing.T) {
+	wsA := uuid.New().String()
+	wsB := uuid.New().String()
+	path := filepath.Join(t.TempDir(), "restore-ws.db")
+	ctx := context.Background()
+
+	dA, err := Open(ctx, path, wsA)
+	if err != nil {
+		t.Fatalf("Open(A): %v", err)
+	}
+	t.Cleanup(func() { _ = dA.Close() })
+	dB, err := Open(ctx, path, wsB)
+	if err != nil {
+		t.Fatalf("Open(B): %v", err)
+	}
+	t.Cleanup(func() { _ = dB.Close() })
+
+	storeA := NewGTDStore(dA)
+	storeB := NewGTDStore(dB)
+
+	proj, err := storeA.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-11-wsA-" + uuid.New().String(), Title: "A"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := storeA.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	if _, _, err := storeB.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrNotFound) {
+		t.Fatalf("RestoreProject from another workspace error = %v, want gtd.ErrNotFound", err)
+	}
+
+	// Positive control: the owning workspace must still be able to restore
+	// it, proving the ErrNotFound above is workspace-scoping and not some
+	// other bug hiding the tombstone from everyone.
+	restored, tasksRestored, err := storeA.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("owning-workspace RestoreProject: %v", err)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+	if tasksRestored != 0 {
+		t.Errorf("tasksRestored = %d, want 0", tasksRestored)
+	}
+}
+
+// TestRestoreProject_NotFound: no tombstone group exists for this id at all.
+func TestRestoreProject_NotFound(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	if _, _, err := store.RestoreProject(ctx, uuid.New(), testerActor); !errors.Is(err, gtd.ErrNotFound) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrNotFound", err)
+	}
+}
+
+// TestRestoreProject_WritesAuditRow is F191-12: exactly one new
+// activity_log row, action='project_restored', project_id populated with
+// the restored project's own id, notes carrying only the deletion id and
+// the write-back count — never the project's stored title.
+func TestRestoreProject_WritesAuditRow(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	secretTitle := "Secret Restore Project " + uuid.New().String()[:8]
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-12-proj-" + uuid.New().String(), Title: secretTitle})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	before := countRows(t, d, `SELECT count(*) FROM activity_log`)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("RestoreProject: %v", err)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM activity_log`); got != before+1 {
+		t.Fatalf("activity_log grew by %d, want exactly 1", got-before)
+	}
+
+	var action, notes, projectIDCol string
+	row := d.QueryRowContext(ctx,
+		`SELECT action, notes, project_id FROM activity_log WHERE action = 'project_restored' ORDER BY created_at DESC LIMIT 1`)
+	if err := row.Scan(&action, &notes, &projectIDCol); err != nil {
+		t.Fatalf("read audit row: %v", err)
+	}
+	if action != "project_restored" {
+		t.Errorf("action = %q, want %q", action, "project_restored")
+	}
+	if projectIDCol != proj.ID.String() {
+		t.Errorf("activity_log.project_id = %s, want %s", projectIDCol, proj.ID)
+	}
+	if strings.Contains(notes, secretTitle) {
+		t.Errorf("audit notes leaked the project's stored title: %q", notes)
+	}
+	if !strings.Contains(notes, "tasks=0") {
+		t.Errorf("notes = %q, want it to carry the write-back count", notes)
+	}
+}
+
+// TestPruneDeletionTombstones_DropsOlderThanRetention is F191-13: a group
+// entirely before cutoff is dropped in full; a group entirely after cutoff
+// is left in full. Both groups are 2 rows (one project + one task), proving
+// the deleted count is per-row, not per-group, and that a range DELETE
+// cannot split a group (design 1: one deletion_id shares one deleted_at).
+func TestPruneDeletionTombstones_DropsOlderThanRetention(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+	store := NewGTDStore(d)
+	ctx := context.Background()
+
+	oldProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-13-old-" + uuid.New().String(), Title: "Old"})
+	if err != nil {
+		t.Fatalf("CreateProject (old): %v", err)
+	}
+	if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &oldProj.ID, Title: "old-t"}); err != nil {
+		t.Fatalf("CreateTask (old): %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, oldProj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject (old): %v", err)
+	}
+
+	// cutoff is captured BEFORE the "new" group is created/deleted — not
+	// after both groups exist — so the new group's real deleted_at (written
+	// by DeleteProject below, using the wall clock at call time) is
+	// guaranteed later than cutoff by ordinary happens-before, rather than
+	// relying on two time.Now() calls landing on different sides of a value
+	// captured after both already happened.
+	cutoff := time.Now().UTC()
+	oldDeletedAt := cutoff.Add(-31 * 24 * time.Hour).Format(sqliteTimestampLayout)
+	if _, err := d.SqlConn().ExecContext(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = ?1 WHERE project_id = ?2`,
+		oldDeletedAt, oldProj.ID.String(),
+	); err != nil {
+		t.Fatalf("backdate old group: %v", err)
+	}
+
+	newProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: "f191-13-new-" + uuid.New().String(), Title: "New"})
+	if err != nil {
+		t.Fatalf("CreateProject (new): %v", err)
+	}
+	if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &newProj.ID, Title: "new-t"}); err != nil {
+		t.Fatalf("CreateTask (new): %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, newProj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject (new): %v", err)
+	}
+
+	oldRows := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, oldProj.ID.String())
+	newRows := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, newProj.ID.String())
+	if oldRows != 2 || newRows != 2 {
+		t.Fatalf("seed mismatch: oldRows=%d newRows=%d, want 2 and 2", oldRows, newRows)
+	}
+
+	deleted, err := store.PruneDeletionTombstones(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneDeletionTombstones: %v", err)
+	}
+	if deleted != int64(oldRows) {
+		t.Errorf("PruneDeletionTombstones returned %d, want %d (the old group's full row count)", deleted, oldRows)
+	}
+
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, oldProj.ID.String()); got != 0 {
+		t.Errorf("old group still has %d row(s) after prune, want 0 (entire group must be dropped)", got)
+	}
+	if got := countRows(t, d, `SELECT count(*) FROM deletion_tombstones WHERE project_id = ?1`, newProj.ID.String()); got != 2 {
+		t.Errorf("new group has %d row(s) after prune, want 2 (untouched)", got)
+	}
+}
+
+// TestRestoreColumnList_MatchesPragmaTableInfo is F191-10: the hand-
+// maintained sqliteProjectRestoreColumns/sqliteTaskRestoreColumns lists
+// RestoreProject's write-back query is built from must match the real,
+// migrated schema — the SQLite twin of the Postgres backend's
+// jsonb_populate_record(...).*  catch-all, which needs no such guard
+// because it maps by column name automatically.
+func TestRestoreColumnList_MatchesPragmaTableInfo(t *testing.T) {
+	d := openSoftDeleteTestDB(t)
+
+	t.Run("tasks", func(t *testing.T) {
+		want := pragmaTableColumns(t, d, "tasks")
+		got := append([]string(nil), sqliteTaskRestoreColumns...)
+		sort.Strings(got)
+		if diff := columnListDiff(got, want); diff != "" {
+			t.Fatalf("sqliteTaskRestoreColumns is out of sync with tasks' migrated schema (%s) — "+
+				"a column was added to the table without a matching entry in the restore write-back list", diff)
+		}
+
+		t.Run("reverse_control_missing_column_turns_red", func(t *testing.T) {
+			if len(got) == 0 {
+				t.Fatal("empty column list — nothing to drop, probe is meaningless")
+			}
+			short := append([]string(nil), got[1:]...)
+			if diff := columnListDiff(short, want); diff == "" {
+				t.Fatal("dropping a column from the produced list produced no diff — " +
+					"the completeness check cannot catch a column the restore list forgot")
+			}
+		})
+	})
+
+	t.Run("projects", func(t *testing.T) {
+		want := pragmaTableColumns(t, d, "projects")
+		got := append([]string(nil), sqliteProjectRestoreColumns...)
+		sort.Strings(got)
+		if diff := columnListDiff(got, want); diff != "" {
+			t.Fatalf("sqliteProjectRestoreColumns is out of sync with projects' migrated schema (%s)", diff)
+		}
+
+		t.Run("reverse_control_missing_column_turns_red", func(t *testing.T) {
+			if len(got) == 0 {
+				t.Fatal("empty column list — nothing to drop, probe is meaningless")
+			}
+			short := append([]string(nil), got[1:]...)
+			if diff := columnListDiff(short, want); diff == "" {
+				t.Fatal("dropping a column from the produced list produced no diff")
 			}
 		})
 	})

@@ -1992,18 +1992,173 @@ func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, er
 	return tag.RowsAffected(), nil
 }
 
-// RestoreProject is a soft-delete contract-stage stub (PR #191 fan-out) —
-// see StoreIface.RestoreProject's doc comment. F191-07 implements the real
-// tombstone-backed restore (design 4).
-func (s *Store) RestoreProject(context.Context, uuid.UUID, string) (*db.Project, int, error) {
-	return nil, 0, fmt.Errorf("pg store: RestoreProject: %w", ErrNotImplemented)
+// isUniqueViolationPG reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505) — RestoreProject's write-back uses this to
+// detect "this group's payload carries an id that already exists" (the
+// RefusesWhenTaskIDTaken path: a task id collision only a live INSERT can
+// catch, not the id/name precheck above it) — same check CreateProject uses
+// two methods up (pgErr.Code == "23505").
+func isUniqueViolationPG(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-// PruneDeletionTombstones is a soft-delete contract-stage stub (PR #191
-// fan-out) — see StoreIface.PruneDeletionTombstones's doc comment. F191-08
-// implements the real 30-day retention sweep.
-func (s *Store) PruneDeletionTombstones(context.Context, time.Time) (int64, error) {
-	return 0, fmt.Errorf("pg store: PruneDeletionTombstones: %w", ErrNotImplemented)
+// RestoreProject reverses the most recent delete_project for id within the
+// 30-day retention window (design 4, decisions 3cc5350f/17a1086b, F191-11).
+//
+// The tombstone group is found by its most recent entity_kind='project' row
+// for this project_id, then everything after — conflict check, write-back,
+// consume, audit — operates on that group's deletion_id alone, NEVER on
+// project_id: a project can have an earlier, unrelated delete_task group
+// still inside the retention window (assertTaskTombstones's sibling test,
+// RestoreLeavesEarlierDeleteTaskTombstoneIntact), and project_id would reach
+// both.
+//
+// Write-back uses jsonb_populate_record(NULL::<table>, payload).* rather
+// than a hand-maintained column list: the composite type IS the projects/
+// tasks row type, so Postgres maps JSON keys to columns by name, and a
+// column added to either table later needs no matching update here (unlike
+// the SQLite twin, which has no equivalent and must name every column by
+// hand — see gtd_softdelete_test.go's round-trip test for why this was
+// verified rather than assumed).
+//
+// Every step — the two INSERTs, the DELETE that consumes the group, and the
+// activity_log audit row — runs inside one tx: any failure (including a
+// unique-constraint hit on either INSERT) rolls the whole restore back, so a
+// partially-written project/task set or a consumed-but-failed-to-write group
+// can never happen (P2(a)).
+func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) (*db.Project, int, error) {
+	beginner, ok := s.dbtx.(txBeginner)
+	if !ok {
+		return nil, 0, errors.New("dbtx does not support Begin (cannot run restore atomically)")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("restoring project %s: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var deletionID uuid.UUID
+	var payloadName string
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT deletion_id, payload->>'name'
+		   FROM deletion_tombstones
+		  WHERE entity_kind = 'project' AND project_id = $1
+		    AND ($2::uuid IS NULL OR workspace_id = $2)
+		  ORDER BY deleted_at DESC
+		  LIMIT 1`,
+		id, s.workspaceID,
+	).Scan(&deletionID, &payloadName); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, ErrNotFound
+		}
+		return nil, 0, fmt.Errorf("finding deletion group for project %s: %w", id, err)
+	}
+
+	// Precheck (design "已定案" 2): an id or name collision is rejected
+	// before anything is written, distinct from the write-time unique-
+	// violation catches below which handle a task id collision the
+	// precheck cannot see (it only looks at projects).
+	var conflict bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 OR name = $2)`,
+		id, payloadName,
+	).Scan(&conflict); err != nil {
+		return nil, 0, fmt.Errorf("checking restore conflict for project %s: %w", id, err)
+	}
+	if conflict {
+		return nil, 0, ErrConflict
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`INSERT INTO projects
+		 SELECT (jsonb_populate_record(NULL::projects, payload)).*
+		   FROM deletion_tombstones
+		  WHERE deletion_id = $1 AND entity_kind = 'project'`,
+		deletionID,
+	); err != nil {
+		if isUniqueViolationPG(err) {
+			return nil, 0, ErrConflict
+		}
+		return nil, 0, fmt.Errorf("restoring project row %s: %w", id, err)
+	}
+
+	taskTag, err := tx.Exec(
+		ctx,
+		`INSERT INTO tasks
+		 SELECT (jsonb_populate_record(NULL::tasks, payload)).*
+		   FROM deletion_tombstones
+		  WHERE deletion_id = $1 AND entity_kind = 'task'`,
+		deletionID,
+	)
+	if err != nil {
+		if isUniqueViolationPG(err) {
+			return nil, 0, ErrConflict
+		}
+		return nil, 0, fmt.Errorf("restoring tasks for project %s: %w", id, err)
+	}
+	tasksRestored := int(taskTag.RowsAffected())
+
+	if _, err := tx.Exec(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deletion_id = $1`, deletionID,
+	); err != nil {
+		return nil, 0, fmt.Errorf("consuming tombstone group for project %s: %w", id, err)
+	}
+
+	// [F191-12] notes carries only the deletion id and the write-back
+	// count — never the restored project's name (design "已定案" 5,
+	// backend-security-design.md §3.1/§3.2). project_id (unlike the delete
+	// side's audit row) is populated: the restored project exists again by
+	// the time this insert runs.
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
+	if _, err := s.q.WithTx(tx).CreateActivityLog(ctx, db.CreateActivityLogParams{
+		Actor:       actor,
+		Action:      "project_restored",
+		ProjectID:   pgconv.ToUUID(&id),
+		Notes:       pgconv.ToText(notes),
+		WorkspaceID: s.workspaceID,
+	}); err != nil {
+		return nil, 0, fmt.Errorf("writing restore audit log for project %s: %w", id, err)
+	}
+
+	var restored db.Project
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT id, goal_id, name, title, description, status, area, priority,
+		        created_at, updated_at, workspace_id, repo_name
+		   FROM projects WHERE id = $1`, id,
+	).Scan(
+		&restored.ID, &restored.GoalID, &restored.Name, &restored.Title, &restored.Description,
+		&restored.Status, &restored.Area, &restored.Priority, &restored.CreatedAt, &restored.UpdatedAt,
+		&restored.WorkspaceID, &restored.RepoName,
+	); err != nil {
+		return nil, 0, fmt.Errorf("reading back restored project %s: %w", id, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, 0, fmt.Errorf("committing restore of project %s: %w", id, err)
+	}
+	return &restored, tasksRestored, nil
+}
+
+// PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
+// cutoff (design 6, decision 17a1086b, F191-13). No per-group logic is
+// needed here: every row a single delete_project/delete_task call wrote
+// shares the exact same deleted_at value (design 1, asserted by
+// TestDeleteProject_SnapshotsProjectAndTasksWithArea), so a plain range
+// DELETE can never remove half of a group. Global cleanup (no workspace
+// filter), mirroring PruneOlderThan's activity_log contract.
+func (s *Store) PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM deletion_tombstones WHERE deleted_at < $1`
+	tag, err := s.dbtx.Exec(ctx, q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("pruning deletion_tombstones: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // TopPendingTask returns the single highest-priority pending task in the

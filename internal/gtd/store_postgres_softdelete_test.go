@@ -3,7 +3,9 @@ package gtd_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -345,7 +347,8 @@ func TestPGSoftDelete_DeleteProjectSnapshotsWithArea(t *testing.T) {
 	}
 
 	var deletionID, tsProjectID, projectPayloadText, deletedBy, projectDeletedAt string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT deletion_id, project_id, payload::text, deleted_by, deleted_at::text
 		   FROM deletion_tombstones WHERE entity_kind = 'project' AND entity_id = $1`,
 		proj.ID,
@@ -387,7 +390,8 @@ func TestPGSoftDelete_DeleteTaskSnapshotsWithArea(t *testing.T) {
 	}
 
 	var tsProjectID, payloadText, deletedBy string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(
+		ctx,
 		`SELECT project_id, payload::text, deleted_by
 		   FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = $1`,
 		taskID,
@@ -438,7 +442,8 @@ func TestPGSoftDelete_AuditRowWritten(t *testing.T) {
 		}
 
 		var action, notes string
-		if err := pool.QueryRow(ctx,
+		if err := pool.QueryRow(
+			ctx,
 			`SELECT action, notes FROM activity_log
 			  WHERE workspace_id = $1 AND action = 'project_deleted' ORDER BY created_at DESC LIMIT 1`,
 			wsID,
@@ -475,7 +480,8 @@ func TestPGSoftDelete_AuditRowWritten(t *testing.T) {
 		}
 
 		var notes string
-		if err := pool.QueryRow(ctx,
+		if err := pool.QueryRow(
+			ctx,
 			`SELECT notes FROM activity_log
 			  WHERE workspace_id = $1 AND action = 'task_deleted' ORDER BY created_at DESC LIMIT 1`,
 			wsID,
@@ -486,4 +492,374 @@ func TestPGSoftDelete_AuditRowWritten(t *testing.T) {
 			t.Errorf("audit notes leaked the task's stored title: %q", notes)
 		}
 	})
+}
+
+// ----- F191-11/13: RestoreProject / PruneDeletionTombstones, Postgres half -----
+
+// readRawPGRow reads every column of one row via SELECT * — generic on
+// purpose, same rationale as the SQLite twin's readRawRow
+// (internal/storage/sqlite/gtd_softdelete_test.go): a hand-picked column
+// list here would be exactly the kind of silent omission the round-trip
+// check exists to catch. pgx's Values() decodes each column with the
+// driver's default Go type; two calls through this same helper are safe to
+// compare with reflect.DeepEqual.
+func readRawPGRow(t *testing.T, pool *pgxpool.Pool, table, id string) map[string]any {
+	t.Helper()
+	//nolint:unqueryvet // table is always a hardcoded literal ("projects" or
+	// "tasks") passed by this same test file's call sites — never external
+	// input. SELECT * is intentional: this helper's whole purpose (F191-11)
+	// is catching a column restore_project forgot, which an explicit column
+	// list would itself risk omitting.
+	rows, err := pool.Query(context.Background(), `SELECT * FROM `+table+` WHERE id = $1`, id)
+	if err != nil {
+		t.Fatalf("query all columns of %s: %v", table, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("no row for id %s in %s", id, table)
+	}
+	fields := rows.FieldDescriptions()
+	vals, err := rows.Values()
+	if err != nil {
+		t.Fatalf("read values for %s: %v", table, err)
+	}
+	out := make(map[string]any, len(fields))
+	for i, f := range fields {
+		out[f.Name] = vals[i]
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s row: %v", table, err)
+	}
+	return out
+}
+
+// pgRawRowDiff is the Postgres twin of the SQLite package's rawRowDiff.
+func pgRawRowDiff(before, after map[string]any) string {
+	keys := make([]string, 0, len(before))
+	for k := range before {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var diffs []string
+	for _, k := range keys {
+		b, a := before[k], after[k]
+		if !reflect.DeepEqual(b, a) {
+			diffs = append(diffs, fmt.Sprintf("%s: before=%v after=%v", k, b, a))
+		}
+	}
+	return strings.Join(diffs, "; ")
+}
+
+// countPGRows runs a COUNT(*)-shaped query and returns the scalar result.
+func countPGRows(t *testing.T, pool *pgxpool.Pool, q string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), q, args...).Scan(&n); err != nil {
+		t.Fatalf("count query %q: %v", q, err)
+	}
+	return n
+}
+
+// TestPGSoftDelete_RestoreRoundTripsEveryColumn is F191-11's Postgres half —
+// the exact assumption the dispatch ticket flags as unverified:
+// jsonb_populate_record(NULL::tasks/projects, payload) must reproduce every
+// column (including checklist jsonb and commit_shas TEXT[]) byte-for-byte,
+// and the write-back must consume the tombstone group it used.
+func TestPGSoftDelete_RestoreRoundTripsEveryColumn(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-11-pg-doomed-%s", uuid.New()), Title: "Doomed", Area: "wbt", RepoName: "wbt-demo",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	const wantTasks = 2
+	taskIDs := make([]uuid.UUID, 0, wantTasks)
+	for i := 0; i < wantTasks; i++ {
+		taskIDs = append(taskIDs, createPGTaskWithChecklistAndSHA(t, store, ctx, wsID, proj.ID))
+	}
+
+	beforeProject := readRawPGRow(t, pool, "projects", proj.ID.String())
+	beforeTasks := make(map[string]map[string]any, wantTasks)
+	for _, id := range taskIDs {
+		beforeTasks[id.String()] = readRawPGRow(t, pool, "tasks", id.String())
+	}
+
+	deleted, err := store.DeleteProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if deleted != wantTasks {
+		t.Fatalf("DeleteProject reported %d tasks removed, want %d", deleted, wantTasks)
+	}
+
+	var deletionID uuid.UUID
+	if err := pool.QueryRow(
+		ctx,
+		`SELECT deletion_id FROM deletion_tombstones WHERE entity_kind = 'project' AND entity_id = $1`,
+		proj.ID,
+	).Scan(&deletionID); err != nil {
+		t.Fatalf("read deletion_id: %v", err)
+	}
+
+	restored, tasksRestored, err := store.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("RestoreProject: %v", err)
+	}
+	if tasksRestored != wantTasks {
+		t.Fatalf("tasksRestored = %d, want %d", tasksRestored, wantTasks)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+
+	if diff := pgRawRowDiff(beforeProject, readRawPGRow(t, pool, "projects", proj.ID.String())); diff != "" {
+		t.Errorf("project row after restore differs from before delete: %s", diff)
+	}
+	for _, id := range taskIDs {
+		if diff := pgRawRowDiff(beforeTasks[id.String()], readRawPGRow(t, pool, "tasks", id.String())); diff != "" {
+			t.Errorf("task %s row after restore differs from before delete: %s", id, diff)
+		}
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, deletionID); got != 0 {
+		t.Errorf("deletion_tombstones still has %d row(s) for deletion_id %s after restore, want 0", got, deletionID)
+	}
+}
+
+// TestPGSoftDelete_RestoreLeavesEarlierDeleteTaskTombstoneIntact is
+// F191-11's core regression guard, Postgres half — mirrors the SQLite
+// twin's TestRestoreProject_LeavesEarlierDeleteTaskTombstoneIntact: an
+// earlier, unrelated delete_task group under the same project must survive
+// restore_project untouched.
+func TestPGSoftDelete_RestoreLeavesEarlierDeleteTaskTombstoneIntact(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-11-pg-earlier-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	t1, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t1"})
+	if err != nil {
+		t.Fatalf("CreateTask t1: %v", err)
+	}
+	t2, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t2"})
+	if err != nil {
+		t.Fatalf("CreateTask t2: %v", err)
+	}
+
+	if err := store.DeleteTask(ctx, t1.ID, testerActor); err != nil {
+		t.Fatalf("DeleteTask t1: %v", err)
+	}
+	var earlierDeletionID uuid.UUID
+	if err := pool.QueryRow(
+		ctx,
+		`SELECT deletion_id FROM deletion_tombstones WHERE entity_kind = 'task' AND entity_id = $1`,
+		t1.ID,
+	).Scan(&earlierDeletionID); err != nil {
+		t.Fatalf("read earlier deletion_id: %v", err)
+	}
+
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	restored, tasksRestored, err := store.RestoreProject(ctx, proj.ID, testerActor)
+	if err != nil {
+		t.Fatalf("RestoreProject: %v", err)
+	}
+	if tasksRestored != 1 {
+		t.Fatalf("tasksRestored = %d, want 1 (only t2 — t1 was already gone before delete_project ran)", tasksRestored)
+	}
+	if restored.ID != proj.ID {
+		t.Errorf("restored.ID = %s, want %s", restored.ID, proj.ID)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM tasks WHERE id = $1`, t2.ID); got != 1 {
+		t.Errorf("t2 not present in tasks after restore, want 1 row")
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM tasks WHERE id = $1`, t1.ID); got != 0 {
+		t.Errorf("t1 present in tasks after restore, want 0 — t1 belongs to an earlier, separate deletion_id group")
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE deletion_id = $1`, earlierDeletionID); got != 1 {
+		t.Errorf("earlier delete_task tombstone group has %d row(s) after restore_project, want 1 (untouched)", got)
+	}
+}
+
+// TestPGSoftDelete_RestoreRefusesWhenNameTaken is F191-11's precheck path,
+// Postgres half: a different, live project now holds the deleted project's
+// name. Nothing may be written, and the tombstone group must survive.
+func TestPGSoftDelete_RestoreRefusesWhenNameTaken(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	sharedName := fmt.Sprintf("f191-11-pg-nametaken-%s", uuid.New())
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: sharedName, Title: "P"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if _, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: sharedName, Title: "Other"}); err != nil {
+		t.Fatalf("CreateProject (name collision): %v", err)
+	}
+
+	before := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE workspace_id = $1`, wsID)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrConflict", err)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE workspace_id = $1`, wsID); got != before {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — a refused restore must not consume the group", before, got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM projects WHERE id = $1`, proj.ID); got != 0 {
+		t.Errorf("a refused restore wrote the project row anyway (found %d)", got)
+	}
+}
+
+// TestPGSoftDelete_RestoreRefusesWhenTaskIDTaken is F191-11's write-time
+// collision path, Postgres half (distinct from the precheck test above):
+// the project's own id/name are free, so the precheck passes, and only the
+// INSERT INTO tasks write-back collides on the task's primary key. The
+// whole tx — including the project row that INSERT already wrote — must
+// roll back.
+func TestPGSoftDelete_RestoreRefusesWhenTaskIDTaken(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-11-pg-taskidtaken-%s", uuid.New()), Title: "P",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	tk, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj.ID, Title: "t"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, proj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	otherProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: fmt.Sprintf("f191-11-pg-taskidtaken-other-%s", uuid.New()), Title: "Other",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject (other): %v", err)
+	}
+	// Raw INSERT (not store.CreateTask, which always generates its own id):
+	// a different, unrelated task now occupies the deleted task's id, so the
+	// projects-only precheck passes and only the tasks write-back collides.
+	if _, err := pool.Exec(
+		ctx,
+		`INSERT INTO tasks (id, workspace_id, project_id, title) VALUES ($1, $2, $3, 'squatter')`,
+		tk.ID, wsID, otherProj.ID,
+	); err != nil {
+		t.Fatalf("seed id-colliding task: %v", err)
+	}
+
+	before := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE workspace_id = $1`, wsID)
+
+	if _, _, err := store.RestoreProject(ctx, proj.ID, testerActor); !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("RestoreProject error = %v, want gtd.ErrConflict", err)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE workspace_id = $1`, wsID); got != before {
+		t.Errorf("deletion_tombstones row count changed from %d to %d — a refused restore must not consume the group", before, got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM projects WHERE id = $1`, proj.ID); got != 0 {
+		t.Errorf("project row left behind after a task-id-collision rollback, want 0 (got %d)", got)
+	}
+	var squatterTitle string
+	if err := pool.QueryRow(ctx, `SELECT title FROM tasks WHERE id = $1`, tk.ID).Scan(&squatterTitle); err != nil {
+		t.Fatalf("read squatter task: %v", err)
+	}
+	if squatterTitle != "squatter" {
+		t.Errorf("squatter task row changed, want untouched (got title=%q)", squatterTitle)
+	}
+}
+
+// TestPGSoftDelete_PruneDropsOlderThanRetention is F191-13's Postgres half:
+// a group entirely before cutoff is dropped in full; a group entirely after
+// cutoff is left in full.
+func TestPGSoftDelete_PruneDropsOlderThanRetention(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	oldProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: fmt.Sprintf("f191-13-pg-old-%s", uuid.New()), Title: "Old"})
+	if err != nil {
+		t.Fatalf("CreateProject (old): %v", err)
+	}
+	if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &oldProj.ID, Title: "old-t"}); err != nil {
+		t.Fatalf("CreateTask (old): %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, oldProj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject (old): %v", err)
+	}
+
+	// cutoff is captured BEFORE the "new" group is created/deleted — not
+	// after both groups exist — so the new group's real deleted_at (written
+	// by DeleteProject below, using the wall clock at call time) is
+	// guaranteed later than cutoff by ordinary happens-before, rather than
+	// relying on two time.Now() calls landing on different sides of a
+	// value captured after both already happened.
+	cutoff := time.Now().UTC()
+	if _, err := pool.Exec(
+		ctx,
+		`UPDATE deletion_tombstones SET deleted_at = $1 WHERE project_id = $2`,
+		cutoff.Add(-31*24*time.Hour), oldProj.ID,
+	); err != nil {
+		t.Fatalf("backdate old group: %v", err)
+	}
+
+	newProj, err := store.CreateProject(ctx, gtd.CreateProjectParams{Name: fmt.Sprintf("f191-13-pg-new-%s", uuid.New()), Title: "New"})
+	if err != nil {
+		t.Fatalf("CreateProject (new): %v", err)
+	}
+	if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &newProj.ID, Title: "new-t"}); err != nil {
+		t.Fatalf("CreateTask (new): %v", err)
+	}
+	if _, err := store.DeleteProject(ctx, newProj.ID, testerActor); err != nil {
+		t.Fatalf("DeleteProject (new): %v", err)
+	}
+
+	oldRows := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, oldProj.ID)
+	newRows := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, newProj.ID)
+	if oldRows != 2 || newRows != 2 {
+		t.Fatalf("seed mismatch: oldRows=%d newRows=%d, want 2 and 2", oldRows, newRows)
+	}
+
+	deleted, err := store.PruneDeletionTombstones(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneDeletionTombstones: %v", err)
+	}
+	if deleted < int64(oldRows) {
+		t.Errorf("PruneDeletionTombstones returned %d, want at least %d (the old group's full row count — "+
+			"global cleanup, other tests' leftover rows may add more)", deleted, oldRows)
+	}
+
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, oldProj.ID); got != 0 {
+		t.Errorf("old group still has %d row(s) after prune, want 0 (entire group must be dropped)", got)
+	}
+	if got := countPGRows(t, pool, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, newProj.ID); got != 2 {
+		t.Errorf("new group has %d row(s) after prune, want 2 (untouched)", got)
+	}
 }

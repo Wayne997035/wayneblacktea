@@ -1207,18 +1207,178 @@ func (s *GTDStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64,
 	return n, nil
 }
 
-// RestoreProject is a soft-delete contract-stage stub (PR #191 fan-out) —
-// see gtd.StoreIface.RestoreProject's doc comment. F191-07 implements the
-// real tombstone-backed restore (design 4).
-func (s *GTDStore) RestoreProject(context.Context, uuid.UUID, string) (*db.Project, int, error) {
-	return nil, 0, errWrap("RestoreProject", ErrNotImplemented)
+// sqliteProjectRestoreColumns / sqliteTaskRestoreColumns name every column
+// RestoreProject writes back via json_extract(payload, '$.<col>') — SQLite
+// has no jsonb_populate_record equivalent (see the Postgres twin,
+// gtd.Store.RestoreProject in internal/gtd/store.go), so every column is
+// named explicitly, the same way sqliteProjectSnapshotJSON/
+// sqliteTaskSnapshotJSON name every column on the way IN.
+// TestRestoreColumnList_MatchesPragmaTableInfo (F191-10) asserts both lists
+// against pragma_table_info so a column added to either table without a
+// matching entry here fails a test instead of silently vanishing from every
+// future restore.
+var sqliteProjectRestoreColumns = []string{
+	"id", "workspace_id", "goal_id", "name", "title", "description",
+	"status", "area", "priority", "repo_name", "created_at", "updated_at",
 }
 
-// PruneDeletionTombstones is a soft-delete contract-stage stub (PR #191
-// fan-out) — see gtd.StoreIface.PruneDeletionTombstones's doc comment.
-// F191-08 implements the real 30-day retention sweep.
-func (s *GTDStore) PruneDeletionTombstones(context.Context, time.Time) (int64, error) {
-	return 0, errWrap("PruneDeletionTombstones", ErrNotImplemented)
+var sqliteTaskRestoreColumns = []string{
+	"id", "workspace_id", "project_id", "title", "description", "status",
+	"priority", "importance", "context", "assignee", "due_date", "artifact",
+	"checklist", "kind", "branch_name", "pr_url", "commit_shas",
+	"vision_item_id", "created_at", "updated_at", "area",
+}
+
+// sqliteRestoreInsertSQL builds "INSERT INTO <table> (<cols…>) SELECT
+// json_extract(payload,'$.<col>'), … FROM deletion_tombstones WHERE
+// deletion_id = ?1 AND entity_kind = '<entityKind>'" from cols — the exact
+// same Go slice TestRestoreColumnList_MatchesPragmaTableInfo checks against
+// pragma_table_info, so the query actually executed and the query the test
+// verifies can never drift apart the way two independently hand-copied SQL
+// strings could.
+func sqliteRestoreInsertSQL(table, entityKind string, cols []string) string {
+	exprs := make([]string, len(cols))
+	for i, c := range cols {
+		exprs[i] = fmt.Sprintf("json_extract(payload,'$.%s')", c)
+	}
+	return fmt.Sprintf(
+		`INSERT INTO %s (%s) SELECT %s FROM deletion_tombstones WHERE deletion_id = ?1 AND entity_kind = '%s'`,
+		table, strings.Join(cols, ", "), strings.Join(exprs, ", "), entityKind,
+	)
+}
+
+var (
+	sqliteProjectRestoreInsertQ = sqliteRestoreInsertSQL("projects", "project", sqliteProjectRestoreColumns)
+	sqliteTaskRestoreInsertQ    = sqliteRestoreInsertSQL("tasks", "task", sqliteTaskRestoreColumns)
+)
+
+// RestoreProject is the SQLite twin of gtd.Store.RestoreProject — see that
+// method's doc comment for the full design rationale (design 4, decisions
+// 3cc5350f/17a1086b, F191-11). The tombstone group is found by its most
+// recent entity_kind='project' row for this project_id, then everything
+// after — conflict check, write-back, consume, audit — operates on that
+// group's deletion_id alone, NEVER on project_id (an earlier, unrelated
+// delete_task group under the same project may still be inside the
+// retention window). Every step runs inside one *sql.Tx: any failure,
+// including a unique-constraint hit on either INSERT, rolls the whole
+// restore back via the deferred Rollback (P2(a)).
+func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor string) (*db.Project, int, error) {
+	tx, err := s.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, errWrap("RestoreProject begin", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var deletionID, payloadName string
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT deletion_id, json_extract(payload,'$.name')
+		   FROM deletion_tombstones
+		  WHERE entity_kind = 'project' AND project_id = ?1
+		    AND (?2 IS NULL OR workspace_id = ?2)
+		  ORDER BY deleted_at DESC
+		  LIMIT 1`,
+		id.String(), s.db.workspaceArg(),
+	)
+	if err := row.Scan(&deletionID, &payloadName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, gtd.ErrNotFound
+		}
+		return nil, 0, errWrap("RestoreProject find group", err)
+	}
+
+	// Precheck: an id or name collision is rejected before anything is
+	// written, distinct from the write-time unique-violation catches below
+	// which handle a task id collision the precheck cannot see (it only
+	// looks at projects).
+	var conflict int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 OR name = ?2)`,
+		id.String(), payloadName,
+	).Scan(&conflict); err != nil {
+		return nil, 0, errWrap("RestoreProject conflict check", err)
+	}
+	if conflict != 0 {
+		return nil, 0, gtd.ErrConflict
+	}
+
+	//nolint:unqueryvet // sqliteProjectRestoreInsertQ is built once at package
+	// init from sqliteProjectRestoreColumns (a hardcoded Go string slice,
+	// gtd.go above) — never from a request/tool argument; the only bound
+	// value here is deletionID via ?1.
+	if _, err := tx.ExecContext(ctx, sqliteProjectRestoreInsertQ, deletionID); err != nil {
+		if isUniqueViolationSQLite(err) {
+			return nil, 0, gtd.ErrConflict
+		}
+		return nil, 0, errWrap("RestoreProject insert project", err)
+	}
+
+	//nolint:unqueryvet // sqliteTaskRestoreInsertQ: same rationale as
+	// sqliteProjectRestoreInsertQ above (built once from
+	// sqliteTaskRestoreColumns, a hardcoded Go string slice).
+	res, err := tx.ExecContext(ctx, sqliteTaskRestoreInsertQ, deletionID)
+	if err != nil {
+		if isUniqueViolationSQLite(err) {
+			return nil, 0, gtd.ErrConflict
+		}
+		return nil, 0, errWrap("RestoreProject insert tasks", err)
+	}
+	tasksRestoredI64, err := res.RowsAffected()
+	if err != nil {
+		return nil, 0, errWrap("RestoreProject tasks rows affected", err)
+	}
+	tasksRestored := int(tasksRestoredI64)
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`DELETE FROM deletion_tombstones WHERE deletion_id = ?1`, deletionID,
+	); err != nil {
+		return nil, 0, errWrap("RestoreProject consume tombstones", err)
+	}
+
+	// notes carries only the deletion id and the write-back count — never
+	// the restored project's name (backend-security-design.md §3.1/§3.2).
+	notes := sanitize.Notes(fmt.Sprintf("deletion_id=%s tasks=%d", deletionID, tasksRestored))
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO activity_log (id, workspace_id, actor, project_id, action, notes)
+		 VALUES (?1, ?2, ?3, ?4, 'project_restored', ?5)`,
+		uuid.New().String(), s.db.workspaceArg(), actor, id.String(), notes,
+	); err != nil {
+		return nil, 0, errWrap("RestoreProject audit log", err)
+	}
+
+	restoreRow := tx.QueryRowContext(ctx, `SELECT `+projectsSelectCols+` FROM projects WHERE id = ?1`, id.String())
+	restored, err := scanProject(restoreRow.Scan)
+	if err != nil {
+		return nil, 0, errWrap("RestoreProject read back", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, 0, errWrap("RestoreProject commit", err)
+	}
+	return &restored, tasksRestored, nil
+}
+
+// PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
+// cutoff (design 6, decision 17a1086b, F191-13). No per-group logic is
+// needed: every row a single delete_project/delete_task call wrote shares
+// the exact same deleted_at value (design 1), so a plain range DELETE can
+// never remove half of a group. Global cleanup (no workspace filter),
+// matching the Postgres twin and PruneOlderThan's activity_log contract.
+func (s *GTDStore) PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM deletion_tombstones WHERE deleted_at < ?1`
+	cutoffStr := cutoff.UTC().Format(sqliteTimestampLayout)
+	res, err := s.db.conn.ExecContext(ctx, q, cutoffStr)
+	if err != nil {
+		return 0, errWrap("PruneDeletionTombstones", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, errWrap("PruneDeletionTombstones rows affected", err)
+	}
+	return n, nil
 }
 
 // LogActivity records an activity log entry. project may be nil.
