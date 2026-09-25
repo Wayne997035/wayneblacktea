@@ -21,7 +21,8 @@ import (
 // schema (schema.sql) includes embedding_provider, embedding_model, and
 // embedding_dim on session_handoffs, and that UpdateEmbeddingByID writes them.
 func TestSQLiteEmbeddingProviderColumns_SessionHandoffs(t *testing.T) {
-	db, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                             // [F0925-10]
+	db, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -69,7 +70,8 @@ func TestSQLiteEmbeddingProviderColumns_SessionHandoffs(t *testing.T) {
 // TestSQLiteEmbeddingProviderColumns_Decisions verifies that the decisions table
 // has the 000064 columns in SQLite.
 func TestSQLiteEmbeddingProviderColumns_Decisions(t *testing.T) {
-	db, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                             // [F0925-10]
+	db, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -101,7 +103,8 @@ func TestSQLiteEmbeddingProviderColumns_Decisions(t *testing.T) {
 // TestSQLiteEmbeddingProviderColumns_ProjectStatusSnapshots verifies that
 // project_status_snapshots has the 000064 columns in SQLite.
 func TestSQLiteEmbeddingProviderColumns_ProjectStatusSnapshots(t *testing.T) {
-	db, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                             // [F0925-10]
+	db, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -130,7 +133,8 @@ func TestSQLiteEmbeddingProviderColumns_ProjectStatusSnapshots(t *testing.T) {
 // TestSQLiteSearchByCosine_ProviderFilter verifies that SearchByCosine on the
 // SQLite session store only returns rows matching the query's provider tag.
 func TestSQLiteSearchByCosine_ProviderFilter(t *testing.T) {
-	db, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                             // [F0925-10]
+	db, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

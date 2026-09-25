@@ -89,6 +89,7 @@ func rowStatus(t *testing.T, s *sqlite.ProposalStore, id uuid.UUID) string {
 // row existence, so a future accidental merge of the two code paths would
 // fail this test rather than pass it silently.
 func TestProposalStore_MarkAndDeleteStaleProposals_DeletesOnlyExpiredRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	now := time.Now().UTC()
 
@@ -171,6 +172,7 @@ func TestProposalStore_MarkAndDeleteStaleProposals_DeletesOnlyExpiredRows(t *tes
 // they age out through the resolved retention so the audit trail survives);
 // fresh and already-resolved TypeTask rows are left untouched.
 func TestProposalStore_MarkAndDeleteStaleProposals_TypeTaskTTL(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	now := time.Now().UTC()
 
@@ -215,6 +217,7 @@ func TestProposalStore_MarkAndDeleteStaleProposals_TypeTaskTTL(t *testing.T) {
 // a panic here would take the whole scheduler job down, not just skip a
 // no-op prune.
 func TestProposalStore_MarkAndDeleteStaleProposals_EmptyTableNoPanic(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	marked, deleted, err := s.MarkAndDeleteStaleProposals(
 		context.Background(), 30*24*time.Hour, 180*24*time.Hour, 90*24*time.Hour, markReasonTTLExpired,
@@ -244,6 +247,7 @@ const markReasonGoalFamilyTTLExpired = "ttl-expired-90d"
 // of all 5 goal-family types stay exactly as seeded, and the returned count
 // equals the number of matching rows.
 func TestProposalStore_MarkStaleGoalFamilyProposals_DryRunTrue_CountOnly_NoWrites(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	now := time.Now().UTC()
 	stale := now.AddDate(0, 0, -95)
@@ -272,6 +276,7 @@ func TestProposalStore_MarkStaleGoalFamilyProposals_DryRunTrue_CountOnly_NoWrite
 // 5 goal-family types MUST be marked status='rejected',
 // reason='ttl-expired-90d'; a fresh (<90d) row MUST stay pending.
 func TestProposalStore_MarkStaleGoalFamilyProposals_DryRunFalse_MarksStaleRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	now := time.Now().UTC()
 	stale := now.AddDate(0, 0, -95)
@@ -314,6 +319,7 @@ func TestProposalStore_MarkStaleGoalFamilyProposals_DryRunFalse_MarksStaleRows(t
 // row), asserts the dry-run count is exactly 3, then asserts the real-mark
 // count is also exactly 3 and only the 3 matching rows were touched.
 func TestProposalStore_MarkStaleGoalFamilyProposals_DryRunCount_MatchesActualRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	now := time.Now().UTC()
 	stale := now.AddDate(0, 0, -95)
@@ -362,6 +368,7 @@ func TestProposalStore_MarkStaleGoalFamilyProposals_DryRunCount_MatchesActualRow
 // have their own narrower TTL that lives in MarkAndDeleteStaleProposals,
 // not here.
 func TestProposalStore_MarkStaleGoalFamilyProposals_DoesNotTouchTaskOrDecision(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	now := time.Now().UTC()
 	stale := now.AddDate(0, 0, -95)

@@ -14,7 +14,7 @@ const statusActive = "active"
 
 func openWorkspaceStore(t *testing.T, dsn, workspaceID string) *sqlite.WorkspaceStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), dsn, workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), dsn, workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -23,6 +23,7 @@ func openWorkspaceStore(t *testing.T, dsn, workspaceID string) *sqlite.Workspace
 }
 
 func TestWorkspaceStore_UpsertAndGetRoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	repo, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{
 		Name:            "round-trip",
@@ -50,6 +51,7 @@ func TestWorkspaceStore_UpsertAndGetRoundTrip(t *testing.T) {
 }
 
 func TestWorkspaceStore_NullOptionalFields(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	repo, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{Name: "minimal"})
 	if err != nil {
@@ -65,6 +67,7 @@ func TestWorkspaceStore_NullOptionalFields(t *testing.T) {
 }
 
 func TestWorkspaceStore_EmptyTable(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	rows, err := s.ActiveRepos(context.Background())
 	if err != nil {
@@ -80,6 +83,7 @@ func TestWorkspaceStore_EmptyTable(t *testing.T) {
 }
 
 func TestWorkspaceStore_UpdateExistingRepo(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	first, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{
 		Name: "update-me", Language: strPtr("go"),
@@ -103,6 +107,7 @@ func TestWorkspaceStore_UpdateExistingRepo(t *testing.T) {
 }
 
 func TestWorkspaceStore_ActiveReposOrderingByNameWhenActivityTies(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	if _, err := s.UpsertRepo(context.Background(), workspace.UpsertRepoParams{Name: "b-repo"}); err != nil {
 		t.Fatalf("UpsertRepo b: %v", err)
@@ -120,6 +125,7 @@ func TestWorkspaceStore_ActiveReposOrderingByNameWhenActivityTies(t *testing.T) 
 }
 
 func TestWorkspaceStore_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:workspace-" + uuid.New().String() + "?mode=memory&cache=shared"
 	storeA := openWorkspaceStore(t, dsn, wsA)
@@ -142,6 +148,7 @@ func TestWorkspaceStore_WorkspaceIsolation(t *testing.T) {
 }
 
 func TestWorkspaceStore_ContextCanceled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -152,6 +159,7 @@ func TestWorkspaceStore_ContextCanceled(t *testing.T) {
 }
 
 func TestWorkspaceStore_RepoByID(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	ctx := context.Background()
 

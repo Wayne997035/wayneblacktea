@@ -42,6 +42,7 @@ func sqlitePullForwardCreateTask(
 // TestPullForwardTasks_SQLite_ImportantNoDueIncluded mirrors PG acceptance
 // case A: importance=1, due_date=NULL, status=pending → pulled forward.
 func TestPullForwardTasks_SQLite_ImportantNoDueIncluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -67,6 +68,7 @@ func TestPullForwardTasks_SQLite_ImportantNoDueIncluded(t *testing.T) {
 // TestPullForwardTasks_SQLite_ImportantFutureDueIncluded mirrors PG
 // acceptance case B: importance=1, due_date=+7d → pulled forward.
 func TestPullForwardTasks_SQLite_ImportantFutureDueIncluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -93,6 +95,7 @@ func TestPullForwardTasks_SQLite_ImportantFutureDueIncluded(t *testing.T) {
 // TestPullForwardTasks_SQLite_LowImportanceExcluded mirrors PG acceptance
 // case C: importance=2, due_date=NULL → NOT pulled forward.
 func TestPullForwardTasks_SQLite_LowImportanceExcluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -114,6 +117,7 @@ func TestPullForwardTasks_SQLite_LowImportanceExcluded(t *testing.T) {
 // TestPullForwardTasks_SQLite_DueTodayExcluded mirrors PG acceptance case D:
 // importance=1, due_date=today → NOT pulled forward.
 func TestPullForwardTasks_SQLite_DueTodayExcluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -136,6 +140,7 @@ func TestPullForwardTasks_SQLite_DueTodayExcluded(t *testing.T) {
 // TestPullForwardTasks_SQLite_CompletedExcluded mirrors PG acceptance case E:
 // importance=1, status=completed → NOT pulled forward.
 func TestPullForwardTasks_SQLite_CompletedExcluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -157,6 +162,7 @@ func TestPullForwardTasks_SQLite_CompletedExcluded(t *testing.T) {
 // TestPullForwardTasks_SQLite_CancelledExcluded verifies cancelled tasks are
 // excluded — "active" means pending/in_progress only.
 func TestPullForwardTasks_SQLite_CancelledExcluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -178,6 +184,7 @@ func TestPullForwardTasks_SQLite_CancelledExcluded(t *testing.T) {
 // TestPullForwardTasks_SQLite_InProgressIncluded verifies in_progress tasks
 // qualify as "active".
 func TestPullForwardTasks_SQLite_InProgressIncluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -205,6 +212,7 @@ func TestPullForwardTasks_SQLite_InProgressIncluded(t *testing.T) {
 // gtd.PullForwardCap (5) returned, the 5 earliest due-dated tasks, proving
 // SQLite's NULLS LAST equivalent behaves the same as Postgres.
 func TestPullForwardTasks_SQLite_CapAtFiveOrdered(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -246,6 +254,7 @@ func TestPullForwardTasks_SQLite_CapAtFiveOrdered(t *testing.T) {
 // TestPullForwardTasks_SQLite_PriorityTiebreakSameDueDate verifies the
 // second sort key: when due_date is equal, lower priority number sorts first.
 func TestPullForwardTasks_SQLite_PriorityTiebreakSameDueDate(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -274,6 +283,7 @@ func TestPullForwardTasks_SQLite_PriorityTiebreakSameDueDate(t *testing.T) {
 // TestPullForwardTasks_SQLite_WorkspaceScoping verifies each in-memory store
 // is isolated — sA cannot see sB's importance=1 tasks.
 func TestPullForwardTasks_SQLite_WorkspaceScoping(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	sA := openMem(t, uuid.New().String())
@@ -295,6 +305,7 @@ func TestPullForwardTasks_SQLite_WorkspaceScoping(t *testing.T) {
 // TestPullForwardTasks_SQLite_EmptyWorkspace verifies a fresh store with no
 // tasks returns an empty (not nil-erroring) slice.
 func TestPullForwardTasks_SQLite_EmptyWorkspace(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -314,6 +325,7 @@ func TestPullForwardTasks_SQLite_EmptyWorkspace(t *testing.T) {
 // 2026-07-20 23:00 (still today locally) MUST be excluded, and a task due
 // Taipei 2026-07-21 (tomorrow locally) MUST be included.
 func TestPullForwardTasks_SQLite_TaipeiDayBoundary_DueTonightExcluded_DueTomorrowIncluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	s := openMem(t, uuid.New().String())
 	imp1 := int16(1)

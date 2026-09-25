@@ -12,7 +12,7 @@ import (
 
 func openDisciplineEventsDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -21,6 +21,7 @@ func openDisciplineEventsDB(t *testing.T) *wbtsqlite.DB {
 }
 
 func TestSQLiteDisciplineEventM8Store_Insert(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openDisciplineEventsDB(t)
 	store := wbtsqlite.NewDisciplineEventM8Store(db)
 	ctx := context.Background()
@@ -57,6 +58,7 @@ func TestSQLiteDisciplineEventM8Store_Insert(t *testing.T) {
 }
 
 func TestSQLiteDisciplineEventM8Store_ListUnresolved(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openDisciplineEventsDB(t)
 	store := wbtsqlite.NewDisciplineEventM8Store(db)
 	ctx := context.Background()
@@ -98,6 +100,7 @@ func TestSQLiteDisciplineEventM8Store_ListUnresolved(t *testing.T) {
 }
 
 func TestSQLiteDisciplineEventM8Store_MarkResolved(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openDisciplineEventsDB(t)
 	store := wbtsqlite.NewDisciplineEventM8Store(db)
 	ctx := context.Background()
@@ -139,6 +142,7 @@ func TestSQLiteDisciplineEventM8Store_MarkResolved(t *testing.T) {
 }
 
 func TestSQLiteDisciplineEventM8Store_MarkResolved_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openDisciplineEventsDB(t)
 	store := wbtsqlite.NewDisciplineEventM8Store(db)
 	ctx := context.Background()
@@ -150,6 +154,7 @@ func TestSQLiteDisciplineEventM8Store_MarkResolved_NotFound(t *testing.T) {
 }
 
 func TestSQLiteDisciplineEventM8Store_PruneOlderThan(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openDisciplineEventsDB(t)
 	store := wbtsqlite.NewDisciplineEventM8Store(db)
 	ctx := context.Background()

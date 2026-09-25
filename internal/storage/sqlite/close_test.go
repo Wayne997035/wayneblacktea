@@ -49,6 +49,7 @@ func seedDirtyMigrationState(t *testing.T, path string) {
 // runMigrations fails, matching the "fail only after openSQLiteConnection
 // succeeds" requirement.
 func TestOpen_DirtyMigrationStateFailsAtRunMigrations(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dbPath := filepath.Join(t.TempDir(), "dirty.db")
 	seedDirtyMigrationState(t, dbPath)
 
@@ -79,6 +80,7 @@ func TestOpen_DirtyMigrationStateFailsAtRunMigrations(t *testing.T) {
 // only technique in this file that reliably goes red when conn.Close() is
 // removed from closeAbandonedOpen.
 func TestCloseAbandonedOpen_ReleasesConnAndModeReference(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dsn := "file:" + filepath.Join(t.TempDir(), "abandoned.db")
 	conn, _, modeReference, err := openSQLiteConnection(context.Background(), dsn)
 	if err != nil {
@@ -113,6 +115,7 @@ func TestCloseAbandonedOpen_ReleasesConnAndModeReference(t *testing.T) {
 // TestDB_Close_ReleasesModeReferenceDescriptor in modeof_reconnect_test.go)
 // — this is a behavioural consistency fix, not a resource-leak fix.
 func TestDB_Close_IsIdempotent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dsn := "file:" + filepath.Join(t.TempDir(), "idempotent-close.db")
 	db, err := Open(context.Background(), dsn, "")
 	if err != nil {

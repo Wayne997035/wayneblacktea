@@ -13,7 +13,7 @@ import (
 // openVisionDB opens an in-memory SQLite DB for vision store tests.
 func openVisionDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -24,6 +24,7 @@ func openVisionDB(t *testing.T) *wbtsqlite.DB {
 // ---- VisionStore tests ----
 
 func TestSQLiteVisionStore_Add(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openVisionDB(t)
 	store := wbtsqlite.NewVisionStore(db)
 	ctx := context.Background()
@@ -87,6 +88,7 @@ func TestSQLiteVisionStore_Add(t *testing.T) {
 }
 
 func TestSQLiteVisionStore_GetByID(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openVisionDB(t)
 	store := wbtsqlite.NewVisionStore(db)
 	ctx := context.Background()
@@ -122,6 +124,7 @@ func TestSQLiteVisionStore_GetByID(t *testing.T) {
 }
 
 func TestSQLiteVisionStore_List(t *testing.T) { //nolint:gocyclo // table-driven filter test requires many branches
+	t.Parallel() // [F0925-10]
 	db := openVisionDB(t)
 	store := wbtsqlite.NewVisionStore(db)
 	ctx := context.Background()
@@ -204,6 +207,7 @@ func TestSQLiteVisionStore_List(t *testing.T) { //nolint:gocyclo // table-driven
 }
 
 func TestSQLiteVisionStore_Update(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openVisionDB(t)
 	store := wbtsqlite.NewVisionStore(db)
 	ctx := context.Background()
@@ -251,6 +255,7 @@ func TestSQLiteVisionStore_Update(t *testing.T) {
 }
 
 func TestSQLiteVisionStore_Promote(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openVisionDB(t)
 	store := wbtsqlite.NewVisionStore(db)
 	ctx := context.Background()

@@ -12,7 +12,7 @@ import (
 
 func openArchDB(t *testing.T, dsn string) *sqlite.ArchStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), dsn, "")
+	d, err := sqlite.OpenTemplated(t, context.Background(), dsn, "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -34,6 +34,7 @@ func fileMapPtr(m map[string]string) *map[string]string { return &m }
 func strPtr(s string) *string { return &s }
 
 func TestArchStore_UpsertAndGet(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -69,6 +70,7 @@ func TestArchStore_UpsertAndGet(t *testing.T) {
 }
 
 func TestArchStore_UpsertUpdatesExisting(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -102,6 +104,7 @@ func TestArchStore_UpsertUpdatesExisting(t *testing.T) {
 }
 
 func TestArchStore_GetNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	_, err := s.GetSnapshot(context.Background(), "nonexistent-slug")
 	if !errors.Is(err, arch.ErrNotFound) {
@@ -110,6 +113,7 @@ func TestArchStore_GetNotFound(t *testing.T) {
 }
 
 func TestArchStore_EmptyFileMap(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -132,6 +136,7 @@ func TestArchStore_EmptyFileMap(t *testing.T) {
 }
 
 func TestArchStore_ContextCanceled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -142,6 +147,7 @@ func TestArchStore_ContextCanceled(t *testing.T) {
 }
 
 func TestArchStore_InvalidJSONFileMap_Roundtrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -169,6 +175,7 @@ func TestArchStore_InvalidJSONFileMap_Roundtrip(t *testing.T) {
 // merge). Mirrored in internal/arch/store_postgres_test.go for parity.
 
 func TestArchStore_UpsertFileMapAbsent_PreservesExisting(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -211,6 +218,7 @@ func TestArchStore_UpsertFileMapAbsent_PreservesExisting(t *testing.T) {
 }
 
 func TestArchStore_UpsertFileMapExplicitEmpty_Clears(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -236,6 +244,7 @@ func TestArchStore_UpsertFileMapExplicitEmpty_Clears(t *testing.T) {
 }
 
 func TestArchStore_UpsertFileMapContent_Replaces(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -278,6 +287,7 @@ func TestArchStore_UpsertFileMapContent_Replaces(t *testing.T) {
 // further down for the current (unconditional-overwrite) contract.
 
 func TestArchStore_UpsertSummaryAbsent_PreservesExisting(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -306,6 +316,7 @@ func TestArchStore_UpsertSummaryAbsent_PreservesExisting(t *testing.T) {
 }
 
 func TestArchStore_UpsertSummaryExplicitEmpty_Clears(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -329,6 +340,7 @@ func TestArchStore_UpsertSummaryExplicitEmpty_Clears(t *testing.T) {
 }
 
 func TestArchStore_UpsertSummaryContent_Replaces(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -365,6 +377,7 @@ func TestArchStore_UpsertSummaryContent_Replaces(t *testing.T) {
 // NULL guard around last_commit_sha in arch.go's ON CONFLICT clause makes
 // this test fail (got "original-sha", want "").
 func TestArchStore_UpsertLastCommitSHAAbsent_SelfHeals(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -396,6 +409,7 @@ func TestArchStore_UpsertLastCommitSHAAbsent_SelfHeals(t *testing.T) {
 // now-reversed contract). Mirrored in internal/arch/store_postgres_test.go
 // for parity — see that test's doc comment for the full rationale.
 func TestArchStore_UpsertLastCommitSHAAbsent_HealsPoisonedValue(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -441,6 +455,7 @@ func TestArchStore_UpsertLastCommitSHAAbsent_HealsPoisonedValue(t *testing.T) {
 // doc comment for why this is the intended consequence of m-R11, not a
 // reproduction of the pre-#157 stringArg bug.
 func TestArchStore_UpsertLastCommitSHA_AbsentAndExplicitEmptyCollapse(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -477,6 +492,7 @@ const sqliteCoveronesStyleSHA = "multi-repo gateway:8a5ad46 user:5a501da kyc:c1b
 // its doc comment for the full rationale (accepted trade-off, decision
 // 0d1a41fc point ④: no shape-based heuristics).
 func TestArchStore_UpsertLastCommitSHA_ClearsCoveronesStyleValue(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -504,6 +520,8 @@ func TestArchStore_UpsertLastCommitSHA_ClearsCoveronesStyleValue(t *testing.T) {
 // internal/arch/store_postgres_test.go's identically-purposed test.
 // captureSlogWarn is defined once for this package in outcome_test.go.
 func TestArchStore_UpsertLastCommitSHA_WarnsWhenAutoClearing(t *testing.T) {
+	// Not parallel: F0925-10 -- calls captureSlogWarn, which redirects the
+	// process-wide slog default logger for the duration of the test.
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -564,6 +582,7 @@ func TestArchStore_UpsertLastCommitSHA_WarnsWhenAutoClearing(t *testing.T) {
 }
 
 func TestArchStore_UpsertLastCommitSHAExplicitEmpty_Clears(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 
@@ -589,6 +608,7 @@ func TestArchStore_UpsertLastCommitSHAExplicitEmpty_Clears(t *testing.T) {
 }
 
 func TestArchStore_UpsertLastCommitSHAContent_Replaces(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openArchDB(t, ":memory:")
 	ctx := context.Background()
 

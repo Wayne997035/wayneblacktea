@@ -24,7 +24,7 @@ func openDisciplineDB(t *testing.T) *wbtsqlite.DB {
 // RecentDecisionTimes.
 func openDisciplineDBWS(t *testing.T, workspaceID string) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", workspaceID)
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -68,6 +68,7 @@ func queryDisciplineOutcome(t *testing.T, db *wbtsqlite.DB, sessionID, toolName 
 }
 
 func TestSQLiteDisciplineStore_Insert(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsID := uuid.New()
 	linkedID := uuid.New()
@@ -217,6 +218,7 @@ func assertRecentMutatingReflectsInsert(
 }
 
 func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	db := openDisciplineDB(t)
 	store := wbtsqlite.NewDisciplineStore(db)
@@ -290,6 +292,7 @@ func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
 }
 
 func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	db := openDisciplineDB(t)
 	store := wbtsqlite.NewDisciplineStore(db)
@@ -364,6 +367,7 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 // scoped store sees only its own workspace_id rows and never the other
 // workspace's, even when both rows are written through the same store.
 func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 	wsB := uuid.New()
@@ -407,6 +411,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *test
 // store does NOT see legacy NULL-workspace rows, preventing pre-migration
 // data from leaking into a multi-tenant scoped read.
 func TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 
@@ -448,6 +453,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL(t *testing.T) 
 // unscoped store sees only NULL-workspace rows, never scoped rows. Mirror
 // of the scoped test, ensuring the partition is symmetric.
 func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 	wsB := uuid.New()
@@ -498,6 +504,7 @@ func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) 
 // TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes: the
 // decision-times read path applies the same partition rule.
 func TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 	wsB := uuid.New()

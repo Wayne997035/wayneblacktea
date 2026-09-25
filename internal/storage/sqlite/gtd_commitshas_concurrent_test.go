@@ -29,6 +29,7 @@ import (
 // concurrent calls, both survive" as the first two entries of a larger burst,
 // while actually being a reliable regression guard.
 func TestCompleteTask_ConcurrentArtifactAppend_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

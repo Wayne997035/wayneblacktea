@@ -35,6 +35,7 @@ func seedSQLiteProject(t *testing.T, s *sqlite.GTDStore, status string) uuid.UUI
 // TestSQLiteStore_ProjectsFiltered_ActiveDefault verifies that empty status
 // ("") and "active" both return only active projects.
 func TestSQLiteStore_ProjectsFiltered_ActiveDefault(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -69,6 +70,7 @@ func TestSQLiteStore_ProjectsFiltered_ActiveDefault(t *testing.T) {
 // name: unset status MUST return the exact same rows, in the exact same
 // order, as ListActiveProjects.
 func TestSQLiteStore_ProjectsFiltered_ActiveDefault_ByteIdenticalToListActiveProjects(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -98,6 +100,7 @@ func TestSQLiteStore_ProjectsFiltered_ActiveDefault_ByteIdenticalToListActivePro
 
 // TestSQLiteStore_ProjectsFiltered_StatusCompleted returns only completed projects.
 func TestSQLiteStore_ProjectsFiltered_StatusCompleted(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -125,6 +128,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusCompleted(t *testing.T) {
 // TestSQLiteStore_ProjectsFiltered_StatusArchived returns only archived
 // projects — the status the production DB actually has a row in.
 func TestSQLiteStore_ProjectsFiltered_StatusArchived(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -151,6 +155,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusArchived(t *testing.T) {
 
 // TestSQLiteStore_ProjectsFiltered_StatusOnHold returns only on_hold projects.
 func TestSQLiteStore_ProjectsFiltered_StatusOnHold(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -177,6 +182,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusOnHold(t *testing.T) {
 
 // TestSQLiteStore_ProjectsFiltered_StatusAll returns projects of every status.
 func TestSQLiteStore_ProjectsFiltered_StatusAll(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -207,6 +213,7 @@ func TestSQLiteStore_ProjectsFiltered_StatusAll(t *testing.T) {
 // uses (two separate :memory: DBs would pass vacuously even with the
 // workspace_id predicate deleted).
 func TestSQLiteStore_ProjectsFiltered_WorkspaceScoping(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.NewString()
 	wsB := uuid.NewString()
 	sharedPath := filepath.Join(t.TempDir(), "shared-projects.db")
@@ -251,6 +258,7 @@ func TestSQLiteStore_ProjectsFiltered_WorkspaceScoping(t *testing.T) {
 // TestSQLiteStore_TasksFiltered_WorkspaceScoping_StatusAll's rationale for
 // why each branch needs its own dedicated scoping test.
 func TestSQLiteStore_ProjectsFiltered_WorkspaceScoping_ActiveDefault(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.NewString()
 	wsB := uuid.NewString()
 	sharedPath := filepath.Join(t.TempDir(), "shared-projects-active.db")
@@ -274,6 +282,7 @@ func TestSQLiteStore_ProjectsFiltered_WorkspaceScoping_ActiveDefault(t *testing.
 // TestSQLiteStore_ProjectsFiltered_EmptyDB_NoError verifies that querying an
 // empty database returns an empty result (not nil error, not panic).
 func TestSQLiteStore_ProjectsFiltered_EmptyDB_NoError(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

@@ -10,6 +10,7 @@ import (
 // is returned by ListActivityLogsSince using the normalised ".000Z07:00" timestamp
 // format — regression guard for the RFC3339Nano vs .000 lexicographic ordering bug.
 func TestGTDStore_LogActivity_RoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

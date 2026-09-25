@@ -27,6 +27,9 @@ type openDSNCase struct {
 }
 
 func TestOpen_DSNMatrixUsesSQLiteResolvedPath(t *testing.T) {
+	// Not parallel: F0925-10 -- runOpenDSNCase's subtests call t.Chdir, which
+	// changes the whole process's working directory and therefore cannot be
+	// used in a parallel test or a test with parallel ancestors.
 	tests := []openDSNCase{
 		{name: "plain.db", dsn: func(string) string { return "plain.db" }, expectedFile: "plain.db"},
 		{name: "plain.db?cache=shared", dsn: func(string) string { return "plain.db?cache=shared" }, expectedFile: "plain.db"},
@@ -142,6 +145,7 @@ func assertNoDecoyFiles(t *testing.T, dir, dsn, mainPath string) {
 }
 
 func TestOpen_TightensPreExistingMainAndSidecars(t *testing.T) {
+	t.Parallel() // [F0925-10] os.Chmod below only ever targets this test's own t.TempDir() path, not shared state
 	dbPath := filepath.Join(t.TempDir(), "permissive.db")
 	first, err := Open(context.Background(), dbPath, "")
 	if err != nil {
@@ -180,6 +184,7 @@ func TestOpen_TightensPreExistingMainAndSidecars(t *testing.T) {
 }
 
 func TestOpenSQLiteConnection_NewFileStartsOwnerOnly(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	tests := []struct {
 		name         string
 		dsn          func(string) string
@@ -251,6 +256,7 @@ func TestOpenSQLiteConnection_NewFileStartsOwnerOnly(t *testing.T) {
 }
 
 func TestSecureCreationDSN_MemoryNeverCreatesModeReference(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	for _, dsn := range []string{
 		memoryDSN,
 		":memory:?cache=shared",
@@ -283,6 +289,7 @@ func TestSecureCreationDSN_MemoryNeverCreatesModeReference(t *testing.T) {
 }
 
 func TestOpen_RefusesSymlinks(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dir := t.TempDir()
 	realPath := filepath.Join(dir, "real.db")
 	seed, err := Open(context.Background(), realPath, "")
@@ -338,6 +345,7 @@ func TestOpen_RefusesSymlinks(t *testing.T) {
 }
 
 func TestChmodOwnerOnlyWith_ToleratesFailureOnlyForObservedSafeMode(t *testing.T) {
+	t.Parallel() // [F0925-10] os.Chmod calls below only ever target this test's own t.TempDir() path
 	injected := errors.New("injected chmod failure")
 	tests := []struct {
 		mode    os.FileMode

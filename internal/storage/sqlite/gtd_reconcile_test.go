@@ -18,6 +18,7 @@ const (
 
 // TestSQLiteReconcileExactMatch covers the basic happy path.
 func TestSQLiteReconcileExactMatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -71,6 +72,7 @@ func TestSQLiteReconcileExactMatch(t *testing.T) {
 
 // TestSQLiteReconcileIdempotent verifies 2nd identical call is a no-op.
 func TestSQLiteReconcileIdempotent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -116,6 +118,7 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 
 // TestSQLiteReconcileNoMatch: PR head_ref doesn't match any task's branch_name.
 func TestSQLiteReconcileNoMatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -145,6 +148,7 @@ func TestSQLiteReconcileNoMatch(t *testing.T) {
 
 // TestSQLiteReconcileAmbiguousBranchPicksMostRecent covers the multi-task case.
 func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -198,6 +202,7 @@ func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
 
 // TestSQLiteReconcilePRURLMatchPriority covers pr_url winning over branch.
 func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 

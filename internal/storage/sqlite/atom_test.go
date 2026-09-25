@@ -13,7 +13,7 @@ import (
 
 func openAtomDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -22,6 +22,7 @@ func openAtomDB(t *testing.T) *wbtsqlite.DB {
 }
 
 func TestSQLiteAtomStore_AddAtom(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -92,6 +93,7 @@ func TestSQLiteAtomStore_AddAtom(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_AddLink(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -152,6 +154,7 @@ func TestSQLiteAtomStore_AddLink(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_ListByParent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -210,6 +213,7 @@ func TestSQLiteAtomStore_ListByParent(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_Traverse(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -277,6 +281,7 @@ func TestSQLiteAtomStore_Traverse(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_Search(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -359,6 +364,7 @@ func TestSQLiteAtomStore_Search(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_PruneAtoms(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -377,7 +383,8 @@ func TestSQLiteAtomStore_PruneAtoms(t *testing.T) {
 	// Insert an old atom by backdating created_at directly.
 	oldID := uuid.New()
 	oldTimestamp := time.Now().UTC().Add(-91 * 24 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
-	if err := db.ExecContext(ctx,
+	if err := db.ExecContext(
+		ctx,
 		`INSERT INTO memory_atoms (id, workspace_id, parent_table, parent_id, content, keywords, tags, created_at)
 		 VALUES (?, NULL, 'decisions', ?, 'old atom — must be pruned', '[]', '[]', ?)`,
 		oldID.String(), parentID.String(), oldTimestamp,
@@ -424,6 +431,7 @@ func TestSQLiteAtomStore_PruneAtoms(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_ErrNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -444,6 +452,7 @@ func TestSQLiteAtomStore_ErrNotFound(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_SetDigestStatus(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -518,6 +527,7 @@ func TestSQLiteAtomStore_SetDigestStatus(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_CountByDigestStatus(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openAtomDB(t)
 	store := wbtsqlite.NewAtomStore(db)
 	ctx := context.Background()
@@ -630,6 +640,7 @@ func setupListByDigestStatusFixture(t *testing.T) (store *wbtsqlite.AtomStore, w
 }
 
 func TestSQLiteAtomStore_ListByDigestStatus_HappyPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store, wsID, _ := setupListByDigestStatusFixture(t)
 	ctx := context.Background()
 	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 10)
@@ -647,6 +658,7 @@ func TestSQLiteAtomStore_ListByDigestStatus_HappyPath(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_ListByDigestStatus_Limit(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store, wsID, _ := setupListByDigestStatusFixture(t)
 	ctx := context.Background()
 	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 1)
@@ -659,6 +671,7 @@ func TestSQLiteAtomStore_ListByDigestStatus_Limit(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_ListByDigestStatus_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store, wsID, otherWsID := setupListByDigestStatusFixture(t)
 	ctx := context.Background()
 	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 100)
@@ -673,6 +686,7 @@ func TestSQLiteAtomStore_ListByDigestStatus_WorkspaceIsolation(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_ListByDigestStatus_UnknownStatus(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store, wsID, _ := setupListByDigestStatusFixture(t)
 	ctx := context.Background()
 	results, err := store.ListByDigestStatus(ctx, &wsID, "nosuchstatus", 10)
@@ -685,6 +699,7 @@ func TestSQLiteAtomStore_ListByDigestStatus_UnknownStatus(t *testing.T) {
 }
 
 func TestSQLiteAtomStore_ListByDigestStatus_NilWorkspace(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store, _, _ := setupListByDigestStatusFixture(t)
 	ctx := context.Background()
 	results, err := store.ListByDigestStatus(ctx, nil, "consolidated", 100)

@@ -97,6 +97,7 @@ type goalSeedStore interface {
 // different for every possible value of the random id, which is what makes
 // this a real guard rather than one that passes ~75% of the time.
 func TestSQLiteStore_ActiveGoalsPage_MixedWritePathOrdering(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -151,6 +152,7 @@ func TestSQLiteStore_ActiveGoalsPage_MixedWritePathOrdering(t *testing.T) {
 // (both shapes parse to the same instant); byte equality is what SQLite's
 // ORDER BY actually sees.
 func TestSQLiteStore_DueDateLayout_IdenticalAcrossWritePaths(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s, d := openMemWithDB(t, "")
 	ctx := context.Background()
 
@@ -192,6 +194,7 @@ func TestSQLiteStore_DueDateLayout_IdenticalAcrossWritePaths(t *testing.T) {
 // lexicographically, so leaving it unfixed would have left a second instance
 // of the same defect behind.
 func TestSQLiteStore_TaskDueDateLayout_IdenticalAcrossWritePaths(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s, d := openMemWithDB(t, "")
 	ctx := context.Background()
 
@@ -245,6 +248,7 @@ func TestSQLiteStore_TaskDueDateLayout_IdenticalAcrossWritePaths(t *testing.T) {
 // exactly at `from` — '.' (0x2E) sorts before 'Z' (0x5A) — so the task
 // silently vanishes from its own due window.
 func TestSQLiteStore_TasksByDueDateRange_IncludesBoundaryRow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

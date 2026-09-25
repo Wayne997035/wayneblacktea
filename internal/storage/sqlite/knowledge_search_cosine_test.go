@@ -12,6 +12,7 @@ import (
 // nil/empty queryEmbedding or non-positive limit returns nil immediately
 // without touching the DB.
 func TestKnowledgeStore_SearchByCosine_EmptyInput(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	cases := []struct {
 		name  string
@@ -37,6 +38,7 @@ func TestKnowledgeStore_SearchByCosine_EmptyInput(t *testing.T) {
 // TestKnowledgeStore_SearchByCosine_EmptyTable verifies that searching an
 // empty table returns nil without error (no rows to scan, no false drop).
 func TestKnowledgeStore_SearchByCosine_EmptyTable(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	got, err := s.SearchByCosine(context.Background(), []float32{0.1, 0.2}, 5)
 	if err != nil {
@@ -51,6 +53,7 @@ func TestKnowledgeStore_SearchByCosine_EmptyTable(t *testing.T) {
 // that AddItem (which does not populate embedding) yields rows that
 // SearchByCosine correctly excludes via the WHERE embedding IS NOT NULL clause.
 func TestKnowledgeStore_SearchByCosine_ItemWithoutEmbeddingExcluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	if _, err := s.AddItem(context.Background(), knowledge.AddItemParams{
 		Type: "article", Title: "no embed", Content: "x",
@@ -75,6 +78,7 @@ func TestKnowledgeStore_SearchByCosine_ItemWithoutEmbeddingExcluded(t *testing.T
 // We populate one item + its embedding, then SearchByCosine MUST return it
 // (not silently drop it via Scan failure).
 func TestKnowledgeStore_SearchByCosine_ScanColumnsMatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	item, err := s.AddItem(context.Background(), knowledge.AddItemParams{
 		Type: "article", Title: "with embed", Content: "x",
@@ -110,6 +114,10 @@ func TestKnowledgeStore_SearchByCosine_ScanColumnsMatch(t *testing.T) {
 // workspace_id filter is enforced — a search in workspace B must not
 // return items written in workspace A.
 func TestKnowledgeStore_SearchByCosine_WorkspaceIsolation(t *testing.T) {
+	// Not parallel: F0925-10 -- uses a fixed-name (not per-test uuid-suffixed)
+	// cache=shared DSN; SQLite's shared-cache pool is process-wide and keyed
+	// by name, so this stays serial rather than risk sharing state with a
+	// same-named connection elsewhere.
 	const dsn = "file::memory:?cache=shared"
 	wsA := "11111111-1111-1111-1111-111111111111"
 	wsB := "22222222-2222-2222-2222-222222222222"

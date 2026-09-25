@@ -143,7 +143,8 @@ func seedProjectReferences(t *testing.T, d *sqlite.DB, projectID uuid.UUID, task
 // table that carries a project_id or a task_id is therefore populated here
 // and asserted individually.
 func TestGTDStore_DeleteProject_RemovesTasksAndClearsEveryReference(t *testing.T) {
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                            // [F0925-10]
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -255,7 +256,8 @@ func assertReferencingRowsSurvive(t *testing.T, d *sqlite.DB) {
 // there must leave the database untouched and report zero, so a repeated
 // delete is quiet rather than destructive or noisy.
 func TestGTDStore_DeleteProject_UnknownProjectIsNoOp(t *testing.T) {
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                            // [F0925-10]
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -290,6 +292,7 @@ func TestGTDStore_DeleteProject_UnknownProjectIsNoOp(t *testing.T) {
 // guard. The pre-check is the only thing standing between a scoped store and
 // another workspace's data.
 func TestGTDStore_DeleteProject_OtherWorkspaceIsNoOp(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
 
@@ -298,12 +301,12 @@ func TestGTDStore_DeleteProject_OtherWorkspaceIsNoOp(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ws.db")
 	ctx := context.Background()
 
-	dA, err := sqlite.Open(ctx, path, wsA)
+	dA, err := sqlite.OpenTemplated(t, ctx, path, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open(A): %v", err)
 	}
 	t.Cleanup(func() { _ = dA.Close() })
-	dB, err := sqlite.Open(ctx, path, wsB)
+	dB, err := sqlite.OpenTemplated(t, ctx, path, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open(B): %v", err)
 	}
@@ -516,7 +519,8 @@ func tableListDiff(derived, registered []string) string {
 // going red, because the list it checks IS the schema — see the
 // reverse_control subtest for proof that claim actually holds.
 func TestDeleteProject_ClearsEveryProjectIDTableFromMigratedSchema(t *testing.T) {
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                            // [F0925-10]
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

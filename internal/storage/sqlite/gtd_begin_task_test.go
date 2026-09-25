@@ -18,6 +18,7 @@ const (
 // TestGTDStore_BeginTask_HappyPath verifies the basic path: pending → in_progress
 // + activity_log row written.
 func TestGTDStore_BeginTask_HappyPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -58,6 +59,7 @@ func TestGTDStore_BeginTask_HappyPath(t *testing.T) {
 // already in_progress task returns the task without error and without writing
 // a duplicate activity_log entry.
 func TestGTDStore_BeginTask_Idempotent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -109,6 +111,7 @@ func TestGTDStore_BeginTask_Idempotent(t *testing.T) {
 // TestGTDStore_BeginTask_NotFound verifies ErrNotFound is returned for a
 // non-existent task ID.
 func TestGTDStore_BeginTask_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -121,6 +124,7 @@ func TestGTDStore_BeginTask_NotFound(t *testing.T) {
 // TestGTDStore_BeginTask_WorkspaceIsolation verifies that BeginTask respects
 // workspace scoping: a task created in workspace A cannot be begun with workspace B.
 func TestGTDStore_BeginTask_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
 
@@ -155,6 +159,7 @@ func TestGTDStore_BeginTask_WorkspaceIsolation(t *testing.T) {
 // that path exists to guarantee, and holds regardless of the exact
 // goroutine interleaving.
 func TestGTDStore_BeginTask_Concurrent_GuardBlocked(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

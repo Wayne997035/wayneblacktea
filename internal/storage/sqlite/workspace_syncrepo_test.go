@@ -89,6 +89,7 @@ func assertKnownIssuesPreserved(t *testing.T, label string, got []string) {
 // the independent reload round-trip (defence-in-depth in case UpsertRepo's
 // own returned row ever drifted from what's actually persisted).
 func TestSyncRepo_OmittedKnownIssuesPreserved(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", "")
 	ctx := context.Background()
 

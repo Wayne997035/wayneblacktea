@@ -16,6 +16,7 @@ import (
 // PR/commit link. artifact is now presence-aware
 // (COALESCE(?2, artifact), sqlite/gtd.go's CompleteTask).
 func TestCompleteTask_OmittedArtifactPreservesExisting(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

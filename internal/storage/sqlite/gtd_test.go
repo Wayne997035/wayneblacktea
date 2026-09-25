@@ -18,7 +18,7 @@ import (
 // Each test gets its own DB so they cannot interfere.
 func openMem(t *testing.T, workspaceID string) *sqlite.GTDStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -27,6 +27,7 @@ func openMem(t *testing.T, workspaceID string) *sqlite.GTDStore {
 }
 
 func TestGTDStore_CreateAndListProjects(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -52,6 +53,7 @@ func TestGTDStore_CreateAndListProjects(t *testing.T) {
 }
 
 func TestGTDStore_DuplicateProjectNameConflict(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -66,6 +68,7 @@ func TestGTDStore_DuplicateProjectNameConflict(t *testing.T) {
 }
 
 func TestGTDStore_CreateTaskWithImportanceAndContext(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -92,6 +95,7 @@ func TestGTDStore_CreateTaskWithImportanceAndContext(t *testing.T) {
 }
 
 func TestGTDStore_CompleteTask(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -111,6 +115,7 @@ func TestGTDStore_CompleteTask(t *testing.T) {
 }
 
 func TestGTDStore_CompleteTaskNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	_, err := s.CompleteTask(context.Background(), uuid.New(), nil)
 	if !errors.Is(err, gtd.ErrNotFound) {
@@ -119,6 +124,7 @@ func TestGTDStore_CompleteTaskNotFound(t *testing.T) {
 }
 
 func TestGTDStore_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	scoped := openMem(t, "11111111-1111-4111-8111-111111111111")
 	other := openMem(t, "22222222-2222-4222-8222-222222222222") // different DB, different scope
 
@@ -145,6 +151,7 @@ func TestGTDStore_WorkspaceIsolation(t *testing.T) {
 }
 
 func TestGTDStore_WeeklyProgress_Empty(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -158,6 +165,7 @@ func TestGTDStore_WeeklyProgress_Empty(t *testing.T) {
 }
 
 func TestGTDStore_WeeklyProgress_CompletedThisWeek(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -182,6 +190,7 @@ func TestGTDStore_WeeklyProgress_CompletedThisWeek(t *testing.T) {
 }
 
 func TestGTDStore_WeeklyProgress_MixedStatuses(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -212,6 +221,7 @@ func TestGTDStore_WeeklyProgress_MixedStatuses(t *testing.T) {
 }
 
 func TestGTDStore_WeeklyProgress_FutureViaProperty(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -241,6 +251,7 @@ func TestGTDStore_WeeklyProgress_FutureViaProperty(t *testing.T) {
 }
 
 func TestGTDStore_WeeklyProgress_AllStatuses(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -281,6 +292,7 @@ func TestGTDStore_WeeklyProgress_AllStatuses(t *testing.T) {
 }
 
 func TestGTDStore_DeleteTask(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -311,7 +323,8 @@ func TestGTDStore_DeleteTask(t *testing.T) {
 // both as the current_task_id and via a join row, then deletes the task and
 // asserts the cleanup happened.
 func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                            // [F0925-10]
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -406,6 +419,7 @@ func TestGTDStore_DeleteTask_CascadesIntoWorkSessions(t *testing.T) {
 // no work_session_tasks / work_sessions rows reference the task. The cleanup
 // statements should be no-ops and the parent DELETE should commit normally.
 func TestGTDStore_DeleteTask_NoLinkedRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -500,6 +514,7 @@ func assertCurrentTaskIDPreserved(t *testing.T, d *sqlite.DB, ctx context.Contex
 // pre-check the cleanup statements (keyed only by task_id) would silently
 // erase neighbouring data even though the parent DELETE 0-rowed.
 func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
 
@@ -507,7 +522,7 @@ func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	// auto-deleted via t.Cleanup on the temp file.
 	dbPath := t.TempDir() + "/wbt-cascade-test.db"
 
-	dA, err := sqlite.Open(context.Background(), "file:"+dbPath, wsA)
+	dA, err := sqlite.OpenTemplated(t, context.Background(), "file:"+dbPath, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open A: %v", err)
 	}
@@ -524,7 +539,7 @@ func TestGTDStore_DeleteTask_WorkspaceMismatch(t *testing.T) {
 	sessionID := insertWSAFixture(t, dA, ctx, wsA, task.ID.String())
 
 	// Open the same file with workspace B.
-	dB, err := sqlite.Open(context.Background(), "file:"+dbPath, wsB)
+	dB, err := sqlite.OpenTemplated(t, context.Background(), "file:"+dbPath, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open B: %v", err)
 	}
@@ -566,6 +581,7 @@ func assertTaskStillVisible(t *testing.T, store *sqlite.GTDStore, ctx context.Co
 }
 
 func TestGTDStore_LogActivityAndUpdateStatus(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -587,6 +603,7 @@ func TestGTDStore_LogActivityAndUpdateStatus(t *testing.T) {
 }
 
 func TestGTDStore_ActiveGoals(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -605,12 +622,13 @@ func TestGTDStore_ActiveGoals(t *testing.T) {
 // TestGTDStore_GetProjectByID_WorkspaceIsolation verifies that GetProjectByID
 // cannot cross workspace boundaries — workspace B must not read workspace A's data.
 func TestGTDStore_GetProjectByID_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	tmp := t.TempDir() + "/iso.db"
 	ctx := context.Background()
 	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
@@ -624,7 +642,7 @@ func TestGTDStore_GetProjectByID_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -648,6 +666,7 @@ func TestGTDStore_GetProjectByID_WorkspaceIsolation(t *testing.T) {
 
 // TestGTDStore_GetProjectByID_NotFound ensures ErrNotFound for unknown UUIDs.
 func TestGTDStore_GetProjectByID_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "11111111-1111-4111-8111-111111111111")
 	_, err := s.GetProjectByID(context.Background(), uuid.New())
 	if !errors.Is(err, gtd.ErrNotFound) {
@@ -657,6 +676,7 @@ func TestGTDStore_GetProjectByID_NotFound(t *testing.T) {
 
 // TestGTDStore_TopPendingTask verifies ordering and nil return for empty set.
 func TestGTDStore_TopPendingTask(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	t.Run("multiple pending tasks → returns lowest priority then importance", func(t *testing.T) {
 		s := openMem(t, "")
 		ctx := context.Background()
@@ -717,6 +737,7 @@ func TestGTDStore_TopPendingTask(t *testing.T) {
 // the new SQLite all-statuses query: completed rows show up, default Tasks
 // stays active-only.
 func TestGTDStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -772,6 +793,7 @@ func TestGTDStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted(t *testin
 // per-workspace scope: a request from workspace B for workspace A's
 // project_id MUST return 0 rows.
 func TestGTDStore_TasksByProjectAllStatuses_WorkspaceMismatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	owner := openMem(t, "11111111-1111-4111-8111-111111111111")
 	other := openMem(t, "22222222-2222-4222-8222-222222222222")
 	ctx := context.Background()
@@ -803,6 +825,7 @@ func TestGTDStore_TasksByProjectAllStatuses_WorkspaceMismatch(t *testing.T) {
 // TestGTDStore_TasksByProjectAllStatuses_EmptyProject pins the empty-result
 // path: a project with no tasks returns an empty slice (not nil error).
 func TestGTDStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -823,6 +846,7 @@ func TestGTDStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
 }
 
 func TestGTDStore_RecentCompletedTasks(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -891,6 +915,7 @@ func TestGTDStore_RecentCompletedTasks(t *testing.T) {
 }
 
 func TestGTDStore_RecentActivityByProject(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -950,6 +975,7 @@ func TestGTDStore_RecentActivityByProject(t *testing.T) {
 
 // TestGTDStore_UpdateGoal verifies the SQLite UpdateGoal full-update path.
 func TestGTDStore_UpdateGoal(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	t.Run("updates all mutable fields", func(t *testing.T) {
 		s := openMem(t, "")
 		ctx := context.Background()
@@ -998,7 +1024,7 @@ func TestGTDStore_UpdateGoal(t *testing.T) {
 		const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 		const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-		dbA, err := sqlite.Open(ctx, tmp, wsA)
+		dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 		if err != nil {
 			t.Fatalf("Open A: %v", err)
 		}
@@ -1010,7 +1036,7 @@ func TestGTDStore_UpdateGoal(t *testing.T) {
 			t.Fatalf("CreateGoal: %v", err)
 		}
 
-		dbB, err := sqlite.Open(ctx, tmp, wsB)
+		dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 		if err != nil {
 			t.Fatalf("Open B: %v", err)
 		}
@@ -1032,12 +1058,13 @@ func TestGTDStore_UpdateGoal(t *testing.T) {
 // different workspace. This mirrors the workspace filter added in PR #102 to
 // match the pattern already applied to taskByID, projectByID, etc.
 func TestGTDStore_GoalByID_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	tmp := t.TempDir() + "/iso.db"
 	ctx := context.Background()
 	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
@@ -1051,7 +1078,7 @@ func TestGTDStore_GoalByID_WorkspaceIsolation(t *testing.T) {
 	}
 
 	// Workspace B must not be able to update (and therefore read via goalByID) the goal.
-	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -1069,6 +1096,7 @@ func TestGTDStore_GoalByID_WorkspaceIsolation(t *testing.T) {
 
 // TestGTDStore_UpdateProject verifies the SQLite UpdateProject full-update path.
 func TestGTDStore_UpdateProject(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	t.Run("updates all mutable fields", func(t *testing.T) {
 		s := openMem(t, "")
 		ctx := context.Background()
@@ -1144,7 +1172,7 @@ func TestGTDStore_UpdateProject(t *testing.T) {
 		const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 		const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-		dbA, err := sqlite.Open(ctx, tmp, wsA)
+		dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 		if err != nil {
 			t.Fatalf("Open A: %v", err)
 		}
@@ -1158,7 +1186,7 @@ func TestGTDStore_UpdateProject(t *testing.T) {
 			t.Fatalf("CreateProject: %v", err)
 		}
 
-		dbB, err := sqlite.Open(ctx, tmp, wsB)
+		dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 		if err != nil {
 			t.Fatalf("Open B: %v", err)
 		}
@@ -1218,6 +1246,7 @@ func assertSqliteProjectRepoNameFreshRead(t *testing.T, ctx context.Context, s *
 // Mirrors TestGTDStore_PG_UpdateProject_RepoName in store_postgres_test.go —
 // required by backend-security-design.md §6.5 (dual-backend integration parity).
 func TestGTDStore_UpdateProject_RepoName(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	t.Run("repo_name omitted (nil pointer) → preserves existing value", func(t *testing.T) {
 		s := openMem(t, "")
 		ctx := context.Background()
@@ -1317,6 +1346,7 @@ var sqliteTimelineRange = func() [2]time.Time {
 // acceptance criterion §1: task created AND completed inside [from,to] →
 // row returned (aggregator emits task_created + task_completed from it).
 func TestGTDStore_TasksForTimeline_AC1_CreatedAndCompletedInRange(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
@@ -1338,7 +1368,8 @@ func TestGTDStore_TasksForTimeline_AC1_CreatedAndCompletedInRange(t *testing.T) 
 // acceptance criterion §2: task created before [from], completed inside
 // [from,to] → row returned via the updated_at branch.
 func TestGTDStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside(t *testing.T) {
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                            // [F0925-10]
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -1370,6 +1401,7 @@ func TestGTDStore_TasksForTimeline_AC2_CreatedBeforeCompletedInside(t *testing.T
 // TestGTDStore_TasksForTimeline_AC3_PendingCreatedInside verifies acceptance
 // criterion §3: pending task created inside [from,to] → row returned.
 func TestGTDStore_TasksForTimeline_AC3_PendingCreatedInside(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
@@ -1390,7 +1422,8 @@ func TestGTDStore_TasksForTimeline_AC3_PendingCreatedInside(t *testing.T) {
 // TestGTDStore_TasksForTimeline_AC4_PendingCreatedBeforeRange verifies
 // acceptance criterion §4: pending task created before [from] → excluded.
 func TestGTDStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	t.Parallel()                                                            // [F0925-10]
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -1419,6 +1452,7 @@ func TestGTDStore_TasksForTimeline_AC4_PendingCreatedBeforeRange(t *testing.T) {
 // TestGTDStore_TasksForTimeline_WorkspaceIsolation verifies workspace scoping:
 // a scoped store must not return another workspace's rows.
 func TestGTDStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	sA := openMem(t, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	sB := openMem(t, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 	ctx := context.Background()
@@ -1438,6 +1472,7 @@ func TestGTDStore_TasksForTimeline_WorkspaceIsolation(t *testing.T) {
 // TestGTDStore_TasksForTimeline_EmptyStore verifies that an empty store
 // returns no rows (no panic, no error).
 func TestGTDStore_TasksForTimeline_EmptyStore(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	may1, may31 := sqliteTimelineRange[0], sqliteTimelineRange[1]
 	got := mustQueryTimeline(t, s, may1, may31)
@@ -1472,6 +1507,7 @@ func mustQueryDueRange(t *testing.T, s *sqlite.GTDStore, from, to time.Time) []d
 // pending / in_progress tasks whose due_date falls inside [from, to] are
 // returned, and only within the configured workspace.
 func TestGTDStore_TasksByDueDateRange(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	weekEnd := now.Add(7 * 24 * time.Hour)
 
@@ -1592,6 +1628,7 @@ func assertSQLiteTaskAllFields(t *testing.T, updated *db.Task,
 
 // TestGTDStore_UpdateTask_PartialPatch verifies that unspecified fields are preserved.
 func TestGTDStore_UpdateTask_PartialPatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1621,6 +1658,7 @@ func TestGTDStore_UpdateTask_PartialPatch(t *testing.T) {
 // TestGTDStore_UpdateTask_AllFields verifies all mutable fields are written correctly.
 // Paired with TestGTDStore_UpdateTask_PG_AllFields per backend-security-design.md §6.5.
 func TestGTDStore_UpdateTask_AllFields(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1650,6 +1688,7 @@ func TestGTDStore_UpdateTask_AllFields(t *testing.T) {
 
 // TestGTDStore_UpdateTask_CreatedAtImmutable verifies that created_at is not modified.
 func TestGTDStore_UpdateTask_CreatedAtImmutable(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1674,6 +1713,7 @@ func TestGTDStore_UpdateTask_CreatedAtImmutable(t *testing.T) {
 
 // TestGTDStore_UpdateTask_NotFound verifies ErrNotFound for unknown IDs.
 func TestGTDStore_UpdateTask_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1689,6 +1729,7 @@ func TestGTDStore_UpdateTask_NotFound(t *testing.T) {
 // backend (GTD c282cc04 item #1). Paired with
 // TestGTDStore_UpdateTask_PG_Kind_AllValidValues per backend-security-design.md §6.5.
 func TestGTDStore_UpdateTask_Kind_AllValidValues(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1715,6 +1756,7 @@ func TestGTDStore_UpdateTask_Kind_AllValidValues(t *testing.T) {
 // existing kind value untouched — the "preserve-on-omit" contract shared by
 // every other UpdateTaskParams field.
 func TestGTDStore_UpdateTask_Kind_OmittedPreservesExisting(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1741,6 +1783,7 @@ func TestGTDStore_UpdateTask_Kind_OmittedPreservesExisting(t *testing.T) {
 // non-empty repo_name that fails validator.IsValidRepoName, even when the
 // caller bypassed MCP/HTTP-layer validation.
 func TestGTDStore_CreateProject_InvalidRepoName(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1758,6 +1801,7 @@ func TestGTDStore_CreateProject_InvalidRepoName(t *testing.T) {
 // repo_name must still be accepted after the store-layer validation was
 // added, so the new check cannot have accidentally tightened past legal data.
 func TestGTDStore_CreateProject_ValidRepoName_StillWorks(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -1777,6 +1821,7 @@ func TestGTDStore_CreateProject_ValidRepoName_StillWorks(t *testing.T) {
 // the window and all no-due-date pending tasks are returned, while
 // beyond-window and completed tasks are excluded.
 func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	imp1 := int16(1)
@@ -1834,6 +1879,7 @@ func TestGTDStore_UpcomingTasks_WithinWindow(t *testing.T) {
 // with no due_date appear in UpcomingTasks regardless of their importance value.
 // This guards against a regression where only importance=1 no-date tasks were returned.
 func TestGTDStore_UpcomingTasks_NoDueDateAllImportances(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 
@@ -1870,6 +1916,7 @@ func TestGTDStore_UpcomingTasks_NoDueDateAllImportances(t *testing.T) {
 // TestGTDStore_UpcomingTasks_WorkspaceScoping verifies that SQLite in-memory
 // stores are fully isolated — each workspace sees only its own tasks.
 func TestGTDStore_UpcomingTasks_WorkspaceScoping(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	todayDue := now.Add(time.Hour)
@@ -1903,6 +1950,7 @@ func TestGTDStore_UpcomingTasks_WorkspaceScoping(t *testing.T) {
 // TestGTDStore_UpcomingTasks_EmptyWorkspace verifies that a fresh store
 // returns an empty slice (not nil or error).
 func TestGTDStore_UpcomingTasks_EmptyWorkspace(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -1919,6 +1967,7 @@ func TestGTDStore_UpcomingTasks_EmptyWorkspace(t *testing.T) {
 // TestGTDStore_UpcomingTasks_PastDue verifies that a task whose due_date is
 // in the past is included in the result set (store does not filter past-due).
 func TestGTDStore_UpcomingTasks_PastDue(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	s := openMem(t, uuid.New().String())
@@ -1940,6 +1989,7 @@ func TestGTDStore_UpcomingTasks_PastDue(t *testing.T) {
 // TestGTDStore_UpcomingTasks_InProgressIncluded verifies that tasks with
 // status in_progress are included alongside pending tasks.
 func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	now := time.Now().UTC()
 	todayDue := now.Add(time.Hour)
@@ -1965,12 +2015,13 @@ func TestGTDStore_UpcomingTasks_InProgressIncluded(t *testing.T) {
 // TestGTDStore_UpdateTaskStatus_WorkspaceIsolation verifies that UpdateTaskStatus
 // returns ErrNotFound when the task belongs to a different workspace.
 func TestGTDStore_UpdateTaskStatus_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	tmp := t.TempDir() + "/iso_task_status.db"
 	ctx := context.Background()
 	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
@@ -1982,7 +2033,7 @@ func TestGTDStore_UpdateTaskStatus_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -2003,12 +2054,13 @@ func TestGTDStore_UpdateTaskStatus_WorkspaceIsolation(t *testing.T) {
 // TestGTDStore_UpdateProjectStatus_WorkspaceIsolation verifies that UpdateProjectStatus
 // returns ErrNotFound when the project belongs to a different workspace.
 func TestGTDStore_UpdateProjectStatus_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	tmp := t.TempDir() + "/iso_proj_status.db"
 	ctx := context.Background()
 	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
@@ -2022,7 +2074,7 @@ func TestGTDStore_UpdateProjectStatus_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -2043,6 +2095,7 @@ func TestGTDStore_UpdateProjectStatus_WorkspaceIsolation(t *testing.T) {
 // TestGTDStore_ProjectsByRepoName_EmptyInput verifies the fast-path: empty
 // repoName returns nil immediately without a DB round-trip.
 func TestGTDStore_ProjectsByRepoName_EmptyInput(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -2066,6 +2119,7 @@ func TestGTDStore_ProjectsByRepoName_EmptyInput(t *testing.T) {
 // queried repo slug is returned with correct fields, while projects linked to
 // other repos are excluded.
 func TestGTDStore_ProjectsByRepoName_Match(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -2099,6 +2153,7 @@ func TestGTDStore_ProjectsByRepoName_Match(t *testing.T) {
 // TestGTDStore_ProjectsByRepoName_NoMatch verifies that a non-matching repo
 // slug returns an empty slice (not an error).
 func TestGTDStore_ProjectsByRepoName_NoMatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -2120,12 +2175,13 @@ func TestGTDStore_ProjectsByRepoName_NoMatch(t *testing.T) {
 // TestGTDStore_ProjectsByRepoName_WorkspaceIsolation verifies that workspace B
 // cannot see workspace A's projects even when the repo_name matches.
 func TestGTDStore_ProjectsByRepoName_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	tmp := t.TempDir() + "/repo-name-ws.db"
 	ctx := context.Background()
 	const wsA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const wsB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-	dbA, err := sqlite.Open(ctx, tmp, wsA)
+	dbA, err := sqlite.OpenTemplated(t, ctx, tmp, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
@@ -2138,7 +2194,7 @@ func TestGTDStore_ProjectsByRepoName_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("CreateProject A: %v", err)
 	}
 
-	dbB, err := sqlite.Open(ctx, tmp, wsB)
+	dbB, err := sqlite.OpenTemplated(t, ctx, tmp, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -2166,6 +2222,7 @@ func TestGTDStore_ProjectsByRepoName_WorkspaceIsolation(t *testing.T) {
 // TestGTDStore_GetTaskByID exercises the three key behaviours of GetTaskByID:
 // found, not found, and wrong workspace (isolation).
 func TestGTDStore_GetTaskByID(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	t.Run("found", func(t *testing.T) {
 		s := openMem(t, "")
 		ctx := context.Background()

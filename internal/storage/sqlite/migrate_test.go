@@ -52,6 +52,7 @@ func buildPreExistingDB(t *testing.T) *sql.DB {
 // outcomes.supersedes_id column and its new index — so this test exercises
 // the exact real-world gap, not a synthetic one.
 func TestRunMigrations_AdoptsPreExistingDB(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	conn := buildPreExistingDB(t)
 
@@ -129,6 +130,7 @@ func TestRunMigrations_AdoptsPreExistingDB(t *testing.T) {
 // takes the Force-stamp shortcut — sqliteTableExists must report both
 // conditions independently so a fresh DB always goes through full replay.
 func TestRunMigrations_FreshDBHasNoAdoptionSignal(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

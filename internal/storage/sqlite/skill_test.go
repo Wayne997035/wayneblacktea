@@ -29,7 +29,7 @@ func exampleOutcomeIDs(examples []any) []string {
 
 func newSkillTestDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open :memory: DB: %v", err)
 	}
@@ -39,6 +39,7 @@ func newSkillTestDB(t *testing.T) *wbtsqlite.DB {
 
 // TestSkillStore_Add verifies Add inserts a skill and returns it with defaults.
 func TestSkillStore_Add(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := newSkillTestDB(t)
 	store := wbtsqlite.NewSkillStore(db)
 	ctx := context.Background()
@@ -114,6 +115,7 @@ func TestSkillStore_Add(t *testing.T) {
 
 // TestSkillStore_Search verifies LIKE-based search and empty-result behaviour.
 func TestSkillStore_Search(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := newSkillTestDB(t)
 	store := wbtsqlite.NewSkillStore(db)
 	ctx := context.Background()
@@ -153,6 +155,7 @@ func TestSkillStore_Search(t *testing.T) {
 
 // TestSkillStore_IncrementSuccess verifies counter increment and ErrNotFound.
 func TestSkillStore_IncrementSuccess(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := newSkillTestDB(t)
 	store := wbtsqlite.NewSkillStore(db)
 	ctx := context.Background()
@@ -184,6 +187,7 @@ func TestSkillStore_IncrementSuccess(t *testing.T) {
 
 // TestSkillStore_UpdateFromOutcome verifies outcome tracking and counter increments.
 func TestSkillStore_UpdateFromOutcome(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := newSkillTestDB(t)
 	store := wbtsqlite.NewSkillStore(db)
 	ctx := context.Background()
@@ -244,6 +248,7 @@ func TestSkillStore_UpdateFromOutcome(t *testing.T) {
 // success path: 25 consecutive successful outcomes leave exactly the most
 // recent 20 examples, oldest to newest, with the first 5 outcome_ids dropped.
 func TestF0906_SQLite_UpdateFromOutcome_CapsAt20_SuccessPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := newSkillTestDB(t)
 	store := wbtsqlite.NewSkillStore(db)
 	ctx := context.Background()
@@ -287,6 +292,7 @@ func TestF0906_SQLite_UpdateFromOutcome_CapsAt20_SuccessPath(t *testing.T) {
 // would require re-deriving the mutation table in acceptance ②; see the
 // dispatch doc for the full rationale.
 func TestF0906_SQLite_UpdateFromOutcome_CapsAt20_FailurePath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := newSkillTestDB(t)
 	store := wbtsqlite.NewSkillStore(db)
 	ctx := context.Background()

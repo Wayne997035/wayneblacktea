@@ -24,7 +24,7 @@ const outcomeResultSuccess = "success"
 
 func openOutcomeDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -37,6 +37,7 @@ func openOutcomeDB(t *testing.T) *wbtsqlite.DB {
 // succeeds without "duplicate column name" errors. This is the key invariant of
 // applyColumnUpgrades — it must be safe on both fresh and pre-existing DBs.
 func TestApplyColumnUpgrades_Idempotent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "upgrade-test.db")
 	ctx := context.Background()
@@ -78,6 +79,7 @@ func TestApplyColumnUpgrades_Idempotent(t *testing.T) {
 // TestSQLiteOutcomeStore_CreateOutcome verifies CreateOutcome happy paths and
 // edge cases.
 func TestSQLiteOutcomeStore_CreateOutcome(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -152,6 +154,7 @@ func TestSQLiteOutcomeStore_CreateOutcome(t *testing.T) {
 // (wbt-2.0 P2.4) round-trips through CreateOutcome + GetOutcomeByID, and that
 // omitting it (nil) is a pure regression.
 func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -198,6 +201,7 @@ func TestSQLiteOutcomeStore_WorkSessionID(t *testing.T) {
 // TestSQLiteOutcomeStore_GetOutcomeByID verifies found, not-found, and
 // wrong-workspace cases.
 func TestSQLiteOutcomeStore_GetOutcomeByID(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -247,6 +251,7 @@ func TestSQLiteOutcomeStore_GetOutcomeByID(t *testing.T) {
 // TestSQLiteOutcomeStore_CreateAndListEvaluation verifies evaluation round-trip
 // and workspace-scoped list.
 func TestSQLiteOutcomeStore_CreateAndListEvaluation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -319,6 +324,7 @@ func TestSQLiteOutcomeStore_CreateAndListEvaluation(t *testing.T) {
 // TestSQLiteOutcomeStore_ListFailedOutcomes verifies that only failure/regressed
 // results are returned.
 func TestSQLiteOutcomeStore_ListFailedOutcomes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -355,6 +361,7 @@ func TestSQLiteOutcomeStore_ListFailedOutcomes(t *testing.T) {
 // TestSQLiteOutcomeStore_PruneOlderThan verifies that old rows are deleted and
 // recent rows are preserved.
 func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -409,6 +416,7 @@ func TestSQLiteOutcomeStore_PruneOlderThan(t *testing.T) {
 // exists, true after one is created, workspace-scoped false for a different
 // workspace, and unscoped (nil workspaceID) true regardless of workspace.
 func TestSQLiteOutcomeStore_ExistsForEntity(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -480,6 +488,7 @@ func TestSQLiteOutcomeStore_ExistsForEntity(t *testing.T) {
 // TestSQLiteOutcomeStore_RelatedRuleIDs verifies JSON round-trip for
 // related_rule_ids (empty and populated cases — migration 000063).
 func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -559,6 +568,7 @@ func TestSQLiteOutcomeStore_RelatedRuleIDs(t *testing.T) {
 // TestSQLiteOutcomeStore_GetLatestForEntity verifies not-found, found (most
 // recent of several), and workspace-scoping behaviour.
 func TestSQLiteOutcomeStore_GetLatestForEntity(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -638,6 +648,7 @@ func insertOutcomeWithIDAndCreatedAt(
 // uses (TestMigration000074_Dedup_SQLite_CreatedAtTieBreak) — not from
 // running the query once and recording what it happened to return.
 func TestSQLiteOutcomeStore_GetLatestForEntity_CreatedAtTieBreak(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -670,6 +681,7 @@ func TestSQLiteOutcomeStore_GetLatestForEntity_CreatedAtTieBreak(t *testing.T) {
 // TestSQLiteOutcomeStore_FinalizeDraft_HappyPath verifies a draft transitions
 // to a terminal result IN PLACE — same ID, no second row.
 func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -719,6 +731,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_HappyPath(t *testing.T) {
 // WHERE result='unknown' guard: finalizing an already-terminal row returns
 // outcome.ErrDraftAlreadyFinalized instead of silently overwriting it.
 func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -760,6 +773,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
 // FinalizeDraft: RelatedRuleIDs must survive even though the SQLite column
 // is a TEXT-encoded JSON array, not a native array type like PG's uuid[].
 func TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -817,6 +831,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_MergeSemantics_PreservesExistingFields
 // with ruleA, then enriched with ruleB, must end up with EXACTLY
 // [ruleA, ruleB] — existing first, new appended, no duplicates.
 func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -892,6 +907,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_UnionsNotReplaces(t *te
 // (NEVER do so per the dispatch boundary; if either changes, THIS test is
 // the tripwire).
 func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSurvive(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -959,6 +975,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ConcurrentEnrich_BothSu
 // postmortem content must not remove that content — it can only be appended
 // after it.
 func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -995,6 +1012,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_NotesNeverRemoved(t *t
 // verifies the SQLite Go-side JSON merge: an existing key's value can never
 // be overwritten, but a genuinely new key is still admitted.
 func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1037,6 +1055,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_MetricsOnlyAddsNewKeys
 // TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce
 // verifies the SQLite twin of the set-once rule, both directions.
 func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1088,6 +1107,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_AppendSemantics_WorkSessionIDSetOnce(t
 // TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite is the
 // SQLite twin of the Store-level updated_at proof.
 func TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1120,6 +1140,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_UpdatedAt_BumpsOnlyOnRealWrite(t *test
 // is the RecordExecutionResult-level (not just Store-level) proof that a
 // no-op path never touches updated_at, on the SQLite backend.
 func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempotent_UpdatedAtUnchanged(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1180,6 +1201,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_ByteIdenticalRetryIsIdempo
 // genuinely new information in EACH append-only field must still write and
 // report ActionDraftEnriched.
 func TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrites(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1243,6 +1265,7 @@ func TestRecordExecutionResult_SQLite_AppendSemantics_GenuinelyNewInfoStillWrite
 // happy path: first call creates, second call is a no-op read returning the
 // same row.
 func TestSQLiteOutcomeStore_SeedDraft_CreatesOnce(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1278,6 +1301,7 @@ func TestSQLiteOutcomeStore_SeedDraft_CreatesOnce(t *testing.T) {
 // (this is exactly the production duplication bug — 2 entities found with
 // both an unknown draft AND a terminal outcome coexisting).
 func TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1318,6 +1342,7 @@ func TestSQLiteOutcomeStore_SeedDraft_SkipsWhenTerminalOutcomeExists(t *testing.
 // rejecting every INSERT past the first for the same entity via
 // ON CONFLICT DO NOTHING, not from any application-level lock.
 func TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1391,6 +1416,7 @@ func TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft(t *testing.T) {
 // DEFAULT without a full table rebuild) — every seeded draft's updated_at
 // scanned back as the Go zero time.Time (0001-01-01), not CreatedAt.
 func TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1422,6 +1448,7 @@ func TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt(t *testing.T) {
 // in this file also happens to seed via CreateOutcome, so this closes the
 // same "SeedDraft path specifically" coverage gap the PG twin does.
 func TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1463,6 +1490,7 @@ func TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPat
 // closing the zero-coverage gap the dispatch flagged (a no-op dedup
 // passthrough left the suite green), mirroring the PG matrix's structure.
 func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1549,6 +1577,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_DedupMatrix(t *testing.
 // 1-5 (which fill the cap exactly) must survive intact while batch 6 is
 // entirely dropped.
 func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_CumulativeCapTruncates(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1696,6 +1725,8 @@ func insertDraftWithRelatedRuleIDs(
 // Also verifies the SQLite side of the m-R6-4 warn-accuracy fix in the same
 // run.
 func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDropsExisting(t *testing.T) {
+	// Not parallel: F0925-10 -- calls captureSlogWarn, which redirects the
+	// process-wide slog default logger for the duration of the test.
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1766,6 +1797,8 @@ func TestSQLiteOutcomeStore_FinalizeDraft_RelatedRuleIDs_ExistingOverCap_NeverDr
 // (internal/outcome/store_test.go) — PR #152 round 6 Major M-R6-2 guarantee
 // B. Same scenario, same assertions, against the SQLite backend.
 func TestSQLiteOutcomeStore_FinalizeDraft_Notes_CumulativeCapTruncates(t *testing.T) {
+	// Not parallel: F0925-10 -- calls captureSlogWarn, which redirects the
+	// process-wide slog default logger for the duration of the test.
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -1864,6 +1897,8 @@ func insertDraftWithNotes(t *testing.T, db *wbtsqlite.DB, id, wsID, entityID uui
 // (internal/outcome/store_test.go) — exercising outcome.CapNotesTotal's
 // "existing already over cap" branch through the SQLite backend's Go glue.
 func TestSQLiteOutcomeStore_FinalizeDraft_Notes_ExistingOverCap_NeverDropsExisting(t *testing.T) {
+	// Not parallel: F0925-10 -- calls captureSlogWarn, which redirects the
+	// process-wide slog default logger for the duration of the test.
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()

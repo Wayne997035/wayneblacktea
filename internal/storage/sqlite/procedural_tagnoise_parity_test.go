@@ -22,7 +22,7 @@ import (
 
 func openParityProceduralStore(t *testing.T) *sqlite.ProceduralStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -78,6 +78,7 @@ func pgxAddRejection(t *testing.T, p procedural.AddParams) (err error) {
 // pool; the clean path is not, which is why the positive control below runs on
 // SQLite only.
 func TestProceduralTagNoiseParity_RepoName(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	p := cleanAddParams()
 	p.RepoName = tagNoise
 
@@ -102,6 +103,7 @@ func TestProceduralTagNoiseParity_RepoName(t *testing.T) {
 // screen that rejects everything passes the test above; this is what rejects
 // that implementation.
 func TestProceduralTagNoiseParity_CleanReachesInsert(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openParityProceduralStore(t)
 	if _, err := s.Add(context.Background(), cleanAddParams()); err != nil {
 		t.Fatalf("clean AddParams must reach the INSERT, got: %v", err)
@@ -117,6 +119,7 @@ func TestProceduralTagNoiseParity_CleanReachesInsert(t *testing.T) {
 // into "screen everything" and start refusing legitimate procedures, and
 // nothing would object.
 func TestProceduralTagNoise_ProseFieldsNotValidated(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	fields := []struct {
 		name string
 		set  func(p *procedural.AddParams, v string)

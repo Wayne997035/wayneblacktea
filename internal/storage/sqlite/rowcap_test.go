@@ -47,6 +47,7 @@ func seedRowCapProjects(t *testing.T, s *sqlite.GTDStore, n int) {
 // the SQL clause exists for: the LIMIT bounds the result, OFFSET advances it,
 // and the two together enumerate every row exactly once.
 func TestSQLiteStore_ActiveProjectsPage_CapsAndPages(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	seedRowCapProjects(t, s, rowCapStoreSeed)
@@ -93,6 +94,7 @@ func TestSQLiteStore_ActiveProjectsPage_CapsAndPages(t *testing.T) {
 // field, and resolving it to "no cap" is how a pagination guard gets switched
 // off by accident.
 func TestSQLiteStore_ActiveProjectsPage_ZeroLimitDoesNotDisableTheCap(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	seedRowCapProjects(t, s, rowCapStoreSeed)
@@ -114,6 +116,7 @@ func TestSQLiteStore_ActiveProjectsPage_ZeroLimitDoesNotDisableTheCap(t *testing
 // dashboard, context handler, qa-seed) asked for every row before this change
 // and must still get every row.
 func TestSQLiteStore_ListActiveProjects_StaysUnbounded(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	seedRowCapProjects(t, s, rowCapStoreSeed)
@@ -133,6 +136,7 @@ func TestSQLiteStore_ListActiveProjects_StaysUnbounded(t *testing.T) {
 // every row ties under `ORDER BY due_date ASC NULLS LAST` and only the id
 // tiebreaker makes paging deterministic.
 func TestSQLiteStore_ActiveGoalsPage_CapsAndPages(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	for i := range rowCapStoreSeed {
@@ -182,6 +186,7 @@ func TestSQLiteStore_ActiveGoalsPage_CapsAndPages(t *testing.T) {
 // TestSQLiteProposalStore_ListPendingPage_CapsAndPages is [F170-06]'s
 // store-level probe.
 func TestSQLiteProposalStore_ListPendingPage_CapsAndPages(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 	for i := range rowCapStoreSeed {
@@ -233,6 +238,7 @@ func TestSQLiteProposalStore_ListPendingPage_CapsAndPages(t *testing.T) {
 // [] -not-null contract (empty_list_contract_test.go's SQLite half) attached to
 // the paged variant too — the MCP handler now serialises THIS method's result.
 func TestSQLiteProposalStore_ListPendingPage_EmptyStaysNonNil(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 
 	rows, err := s.ListPendingPage(context.Background(), 50, 0)

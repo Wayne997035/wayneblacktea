@@ -263,6 +263,9 @@ func buildLegacySchemaDB(ctx context.Context, t *testing.T) *sql.DB {
 // testdata/schema_golden.sql from the legacy schema.sql mechanism — NOT from
 // Open(), which now runs the migration runner (see buildLegacySchemaDB).
 func TestGenerateGoldenSchema(t *testing.T) {
+	// Not parallel: F0925-10 -- writes testdata/schema_golden.sql, a shared
+	// fixed path (not under t.TempDir()) that TestGoldenSchemaEquivalence
+	// reads.
 	if os.Getenv("WBT_GENERATE_GOLDEN") != "1" {
 		t.Skip("set WBT_GENERATE_GOLDEN=1 to (re)generate testdata/schema_golden.sql")
 	}
@@ -482,6 +485,8 @@ var runnerBookkeepingObjects = map[string]bool{
 // content differences in acceptedDifferences (see backend-security-design.md
 // §6.3/§6.4 and the team-lead ruling cited on each entry).
 func TestGoldenSchemaEquivalence(t *testing.T) {
+	// Not parallel: F0925-10 -- reads testdata/schema_golden.sql, the same
+	// shared fixed path TestGenerateGoldenSchema writes.
 	ctx := context.Background()
 	conn := runMigrationsOnMemoryDB(t)
 	defer func() { _ = conn.Close() }()

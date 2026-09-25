@@ -23,6 +23,7 @@ import (
 // KB literals) so a future cap change — like [F983-01]'s 128 KB -> 2 MiB
 // widening — doesn't also require re-deriving these boundary values.
 func TestProposalStore_Create_RejectsPayloadOverLimit(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 

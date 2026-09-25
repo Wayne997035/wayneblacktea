@@ -93,6 +93,7 @@ func insertLegacyDecision(t *testing.T, conn *sql.DB, title, decCtx, rationale, 
 // the backfill's created_at cutoff regardless of wall-clock test time,
 // EXCEPT the dedicated boundary case below (security review round 2, M-1).
 func TestMigration000073_Backfill_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	conn, m := openMigratorAt72(t)
 
@@ -159,6 +160,7 @@ func TestMigration000073_Backfill_SQLite(t *testing.T) {
 // before ever reaching the DB, so the CHECK constraint is defence-in-depth,
 // not the primary enforcement point.
 func TestMigration000073_InvalidSourceWritesZeroRows_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	d, err := Open(ctx, ":memory:", "")
 	if err != nil {

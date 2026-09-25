@@ -37,6 +37,7 @@ func logSQLiteDecision(
 }
 
 func TestDecisionStore_List_ManualOnlyByDefault(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	manual := logSQLiteDecision(t, s, "manual one", decision.SourceManual)
 	logSQLiteDecision(t, s, "auto one", decision.SourceAuto)
@@ -51,6 +52,7 @@ func TestDecisionStore_List_ManualOnlyByDefault(t *testing.T) {
 }
 
 func TestDecisionStore_List_IncludeAutoTrue(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	manual := logSQLiteDecision(t, s, "manual two", decision.SourceManual)
 	auto := logSQLiteDecision(t, s, "auto two", decision.SourceAuto)
@@ -73,6 +75,7 @@ func TestDecisionStore_List_IncludeAutoTrue(t *testing.T) {
 }
 
 func TestDecisionStore_List_FilterByProject(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	projA, projB := uuid.New(), uuid.New()
 	a := logSQLiteDecision(t, s, "in project A", decision.SourceManual, func(p *decision.LogParams) { p.ProjectID = &projA })
@@ -88,6 +91,7 @@ func TestDecisionStore_List_FilterByProject(t *testing.T) {
 }
 
 func TestDecisionStore_List_FilterByRepo(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	a := logSQLiteDecision(t, s, "in repo A", decision.SourceManual, func(p *decision.LogParams) { p.RepoName = "repo-a" })
 	logSQLiteDecision(t, s, "in repo B", decision.SourceManual, func(p *decision.LogParams) { p.RepoName = "repo-b" })
@@ -105,6 +109,7 @@ func TestDecisionStore_List_FilterByRepo(t *testing.T) {
 // table row "project not owned / nonexistent -> returns [] (not an error)"
 // at the store layer.
 func TestDecisionStore_List_NonexistentProjectReturnsEmpty(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	logSQLiteDecision(t, s, "some decision", decision.SourceManual)
 
@@ -119,6 +124,7 @@ func TestDecisionStore_List_NonexistentProjectReturnsEmpty(t *testing.T) {
 }
 
 func TestDecisionStore_List_RejectsConflictingFilter(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	proj := uuid.New()
 	_, err := s.List(context.Background(), decision.ListParams{ProjectID: &proj, RepoName: "x", Limit: 20})
@@ -128,6 +134,7 @@ func TestDecisionStore_List_RejectsConflictingFilter(t *testing.T) {
 }
 
 func TestDecisionStore_List_RejectsLimitOutOfRange(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	for _, limit := range []int32{0, -5, 101, 1000} {
 		_, err := s.List(context.Background(), decision.ListParams{Limit: limit})
@@ -143,6 +150,7 @@ func TestDecisionStore_List_RejectsLimitOutOfRange(t *testing.T) {
 // older 'manual' rows; if LIMIT 2 were applied before excluding 'auto' rows,
 // zero manual rows would ever surface.
 func TestDecisionStore_List_SourceFilterAppliedBeforeLimit(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -188,6 +196,7 @@ func TestDecisionStore_List_SourceFilterAppliedBeforeLimit(t *testing.T) {
 // TestDecisionStore_List_OrderingTiebreaksOnID verifies the "created_at
 // DESC, id DESC" ordering contract when two rows share the same created_at.
 func TestDecisionStore_List_OrderingTiebreaksOnID(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -221,6 +230,7 @@ func TestDecisionStore_List_OrderingTiebreaksOnID(t *testing.T) {
 // store-scoped workspace boundary, even though ListParams carries no
 // workspace field (IDOR threat surface — dispatch prompt).
 func TestDecisionStore_List_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:decision-list-" + uuid.New().String() + "?mode=memory&cache=shared"
 	_, storeA := openDecisionDB(t, dsn, wsA)
@@ -241,6 +251,7 @@ func TestDecisionStore_List_WorkspaceIsolation(t *testing.T) {
 // Step 5 regression: All/ByRepo/ByProject/ByTask must keep returning both
 // manual and auto decisions — Stage B only changes the NEW List path.
 func TestDecisionStore_LegacyReaders_UnfilteredBySource(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 

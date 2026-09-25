@@ -76,6 +76,7 @@ var deletionTombstonesIndexes = []string{
 // TestMigration000080_UpDown proves the table and its three indexes appear
 // after up and disappear after down.
 func TestMigration000080_UpDown(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	conn, m := openMigratorAt79(t)
 
 	if sqliteObjectExists(t, conn, "table", "deletion_tombstones") {

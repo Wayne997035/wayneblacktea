@@ -14,7 +14,7 @@ import (
 // WorkSessionStore wrapping it.
 func openWorkSessionMem(t *testing.T, workspaceID string) (*sqlite.WorkSessionStore, *sqlite.DB) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -33,7 +33,8 @@ func insertRawEvidence(t *testing.T, d *sqlite.DB, sessionID uuid.UUID, workspac
 		(id, workspace_id, session_id, evidence_type, status, command, artifact, output_excerpt, created_at)
 		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)`
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	if err := d.ExecContext(context.Background(), q,
+	if err := d.ExecContext(
+		context.Background(), q,
 		id.String(), workspaceIDArg, sessionID.String(), evidenceType, "passed", nil, nil, nil, now,
 	); err != nil {
 		t.Fatalf("insertRawEvidence: %v", err)
@@ -49,6 +50,7 @@ func insertRawEvidence(t *testing.T, d *sqlite.DB, sessionID uuid.UUID, workspac
 // sentinel. Before this fix, the strict `workspace_id = ?1` equality filter
 // made the NULL row permanently invisible with no error.
 func TestWorkSessionStore_GetEvidence_LegacyMode_ReadsLegacyNullAndZeroUUIDRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store, d := openWorkSessionMem(t, "")
 	sessionID := uuid.New()
 
@@ -80,6 +82,7 @@ func TestWorkSessionStore_GetEvidence_LegacyMode_ReadsLegacyNullAndZeroUUIDRows(
 // row correctly stamped with the configured workspace IS returned. Non-legacy
 // mode intentionally keeps the strict equality-only predicate.
 func TestWorkSessionStore_GetEvidence_NonLegacyMode_NullRowStaysInvisible(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	store, d := openWorkSessionMem(t, wsID.String())
 	sessionID := uuid.New()
@@ -108,6 +111,7 @@ func TestWorkSessionStore_GetEvidence_NonLegacyMode_NullRowStaysInvisible(t *tes
 // regression guard alongside it): a row stamped with a DIFFERENT workspace's
 // UUID must not be visible either.
 func TestWorkSessionStore_GetEvidence_NonLegacyMode_OtherWorkspaceRowInvisible(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	otherWsID := uuid.New()
 	store, d := openWorkSessionMem(t, wsID.String())

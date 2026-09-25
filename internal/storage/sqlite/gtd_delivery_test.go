@@ -14,6 +14,7 @@ import (
 // mirroring TestStore_BuildGoalsDue_Postgres so both backends are proven to
 // produce identical delivery-visibility output shapes.
 func TestGTDStore_BuildGoalsDue_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -44,6 +45,7 @@ func TestGTDStore_BuildGoalsDue_SQLite(t *testing.T) {
 // TestGTDStore_BuildGoalsDue_SQLite_EmptyWorkspace verifies a fresh SQLite
 // DB with no goals returns a non-nil empty slice, not an error.
 func TestGTDStore_BuildGoalsDue_SQLite_EmptyWorkspace(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -59,6 +61,7 @@ func TestGTDStore_BuildGoalsDue_SQLite_EmptyWorkspace(t *testing.T) {
 // TestGTDStore_BuildTopPending_SQLite mirrors
 // TestStore_BuildTopPending_Postgres against SQLite.
 func TestGTDStore_BuildTopPending_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -84,6 +87,7 @@ func TestGTDStore_BuildTopPending_SQLite(t *testing.T) {
 // TestGTDStore_BuildTopPending_SQLite_NoPendingTasks verifies BuildTopPending
 // returns nil, nil (JSON null) for an empty SQLite DB.
 func TestGTDStore_BuildTopPending_SQLite_NoPendingTasks(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

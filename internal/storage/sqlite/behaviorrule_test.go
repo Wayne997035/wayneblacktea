@@ -12,7 +12,7 @@ import (
 
 func openBehaviorRuleDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -21,6 +21,7 @@ func openBehaviorRuleDB(t *testing.T) *wbtsqlite.DB {
 }
 
 func TestSQLiteBehaviorRuleStore_Propose(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -54,6 +55,7 @@ func TestSQLiteBehaviorRuleStore_Propose(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_ApplyOutcome_SuccessOnProposed(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -84,6 +86,7 @@ func TestSQLiteBehaviorRuleStore_ApplyOutcome_SuccessOnProposed(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_ApplyOutcome_SuccessOnActive(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -124,6 +127,7 @@ func TestSQLiteBehaviorRuleStore_ApplyOutcome_SuccessOnActive(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_ApplyOutcome_Failure(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -154,6 +158,7 @@ func TestSQLiteBehaviorRuleStore_ApplyOutcome_Failure(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_ApplyOutcome_ConfidenceCap(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -180,6 +185,7 @@ func TestSQLiteBehaviorRuleStore_ApplyOutcome_ConfidenceCap(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_ApplyOutcome_ConfidenceFloor(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -206,6 +212,7 @@ func TestSQLiteBehaviorRuleStore_ApplyOutcome_ConfidenceFloor(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_Deprecate(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
@@ -237,6 +244,7 @@ func TestSQLiteBehaviorRuleStore_Deprecate(t *testing.T) {
 }
 
 func TestSQLiteBehaviorRuleStore_PruneOlderThan(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openBehaviorRuleDB(t)
 	store := wbtsqlite.NewBehaviorRuleStore(db)
 	ctx := context.Background()
