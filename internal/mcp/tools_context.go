@@ -94,6 +94,7 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 		mcp.WithString("language", mcp.Description("Primary programming language")),
 		mcp.WithString("current_branch", mcp.Description("Current git branch")),
 		mcp.WithString("next_planned_step", mcp.Description("What to work on next")),
+		mcp.WithString("github_slug", mcp.Description("GitHub owner/repo used by reconcile; empty string clears")),
 	), s.handleSyncRepo)
 }
 
@@ -830,6 +831,8 @@ type repoListItem struct {
 	CurrentBranchTruncated   bool               `json:"current_branch_truncated,omitempty"`
 	KnownIssuesTruncated     bool               `json:"known_issues_truncated,omitempty"`
 	NextPlannedStepTruncated bool               `json:"next_planned_step_truncated,omitempty"`
+	GithubSlug               pgtype.Text        `json:"github_slug"`
+	GithubSlugTruncated      bool               `json:"github_slug_truncated,omitempty"`
 }
 
 // clipRepoListField projects one free-text field to maxRunes, reporting
@@ -944,6 +947,10 @@ func toRepoListItem(raw, r *db.Repo) repoListItem {
 	issues, _ := clipRepoListIssues(r.KnownIssues)
 	issuesTruncated := repoListIssuesTruncated(issues, raw.KnownIssues)
 
+	// [F0925-31] RepoSlugRe has no length cap, so github_slug is clipped.
+	slug, _ := clipRepoListText(r.GithubSlug, repoListShortFieldMaxRunes)
+	slugTruncated := raw.GithubSlug.Valid && slug.String != raw.GithubSlug.String
+
 	return repoListItem{
 		ID:                       r.ID,
 		Name:                     name,
@@ -965,6 +972,8 @@ func toRepoListItem(raw, r *db.Repo) repoListItem {
 		CurrentBranchTruncated:   branchTruncated,
 		KnownIssuesTruncated:     issuesTruncated,
 		NextPlannedStepTruncated: stepTruncated,
+		GithubSlug:               slug,
+		GithubSlugTruncated:      slugTruncated,
 	}
 }
 
@@ -1071,7 +1080,7 @@ func (s *Server) handleListActiveRepos(ctx context.Context, req mcp.CallToolRequ
 // (rather than 5 separate local vars) purely to keep handleSyncRepo under the
 // gocyclo threshold with an early-return per field.
 type syncRepoOptionalStringArgs struct {
-	path, description, language, currentBranch, nextPlannedStep *string
+	path, description, language, currentBranch, nextPlannedStep, githubSlug *string
 }
 
 // parseSyncRepoOptionalArgs runs optionalStringArg over sync_repo's 5
@@ -1098,6 +1107,14 @@ func parseSyncRepoOptionalArgs(args map[string]any) (syncRepoOptionalStringArgs,
 	out.nextPlannedStep, errResult = optionalStringArg(args, "next_planned_step")
 	if errResult != nil {
 		return out, errResult
+	}
+	out.githubSlug, errResult = optionalStringArg(args, "github_slug")
+	if errResult != nil {
+		return out, errResult
+	}
+	// [F0925-31] github_slug reaches `gh -R`; "" clears it.
+	if out.githubSlug != nil && *out.githubSlug != "" && !validator.ValidGitHubSlug(*out.githubSlug) {
+		return out, mcp.NewToolResultError(validator.GitHubSlugMessage)
 	}
 	return out, nil
 }
@@ -1141,6 +1158,7 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 		Language:        opt.language,
 		CurrentBranch:   opt.currentBranch,
 		NextPlannedStep: opt.nextPlannedStep,
+		GitHubSlug:      opt.githubSlug,
 	})
 	if err != nil {
 		return storeErrorResult("syncing repo", err), nil

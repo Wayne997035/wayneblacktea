@@ -45,6 +45,7 @@ type upsertRepoRequest struct {
 	CurrentBranch   *string  `json:"current_branch"`
 	KnownIssues     []string `json:"known_issues"`
 	NextPlannedStep *string  `json:"next_planned_step"`
+	GitHubSlug      *string  `json:"github_slug"`
 }
 
 // UpsertRepo creates or updates a repo.
@@ -63,6 +64,10 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 	if !validator.ValidRepoPath(req.Name) {
 		return c.JSON(http.StatusBadRequest, errResp(repoPathMessage))
 	}
+	// [F0925-31] github_slug reaches `gh -R`; "" clears it.
+	if req.GitHubSlug != nil && *req.GitHubSlug != "" && !validator.ValidGitHubSlug(*req.GitHubSlug) {
+		return c.JSON(http.StatusBadRequest, errResp(validator.GitHubSlugMessage))
+	}
 
 	repo, err := h.store.UpsertRepo(c.Request().Context(), workspace.UpsertRepoParams{
 		Name:            req.Name,
@@ -72,10 +77,14 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 		CurrentBranch:   req.CurrentBranch,
 		KnownIssues:     req.KnownIssues,
 		NextPlannedStep: req.NextPlannedStep,
+		GitHubSlug:      req.GitHubSlug,
 	})
 	if err != nil {
 		if errors.Is(err, validator.ErrInvalidRepoName) {
 			return c.JSON(http.StatusBadRequest, errResp(repoPathMessage))
+		}
+		if errors.Is(err, validator.ErrInvalidGitHubSlug) {
+			return c.JSON(http.StatusBadRequest, errResp(validator.GitHubSlugMessage))
 		}
 		c.Logger().Errorf("UpsertRepo: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))

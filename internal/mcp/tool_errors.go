@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -203,6 +204,9 @@ var callerFacingSentinels = []error{
 	gtd.ErrInvalidAssignee,
 	gtd.ErrAssigneeRequiredForInProgress,
 	gtd.ErrInvalidRepoName,
+	// [F0925-31] Same shape as ErrInvalidRepoName: a fixed message naming
+	// the github_slug argument and its rule.
+	validator.ErrInvalidGitHubSlug,
 	// [SEC-PR191-02] log_activity's action is a caller-supplied string
 	// rejected against a fixed reserved-name set (gtd.IsReservedAuditAction)
 	// — same "property of the request, not a server internal" shape as the
