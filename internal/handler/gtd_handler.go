@@ -178,7 +178,8 @@ func (h *GTDHandler) ListProjects(c echo.Context) error {
 	status := c.QueryParam("status")
 	if !listProjectsStatusEnum[status] {
 		return c.JSON(http.StatusBadRequest, errResp(
-			"status must be one of: active, all, completed, archived, on_hold"))
+			"status must be one of: active, all, completed, archived, on_hold",
+		))
 	}
 
 	projects, err := h.store.ProjectsFiltered(c.Request().Context(), status)
@@ -662,7 +663,8 @@ func (h *GTDHandler) ListTasks(c echo.Context) error {
 	status := c.QueryParam("status")
 	if !listTasksStatusEnum[status] {
 		return c.JSON(http.StatusBadRequest, errResp(
-			"status must be one of: active, all, pending, in_progress, completed, cancelled"))
+			"status must be one of: active, all, pending, in_progress, completed, cancelled",
+		))
 	}
 
 	tasks, err := h.store.TasksFiltered(c.Request().Context(), gtd.TaskFilter{
