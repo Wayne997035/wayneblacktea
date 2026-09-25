@@ -5,9 +5,9 @@
 --
 -- Realigns 3 SQLite indexes whose shape drifted from their Postgres
 -- counterpart back to being textually identical to PG. Merged migration
--- files are immutable (backend-security-design.md §6.4), so each fix is a
--- DROP INDEX + CREATE INDEX pair rather than an edit to the migration that
--- originally created the index.
+-- files are immutable (CI enforces this), so each fix is a DROP INDEX +
+-- CREATE INDEX pair rather than an edit to the migration that originally
+-- created the index.
 --
 -- #1: idx_decisions_task_id — PG (migrations/000048_decisions_task_id.up.sql:7)
 -- is a partial index (WHERE task_id IS NOT NULL); SQLite's twin
