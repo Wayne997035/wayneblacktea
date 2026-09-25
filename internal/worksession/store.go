@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -136,6 +137,11 @@ func validateCreateParams(p CreateParams) error {
 		return fmt.Errorf("worksession.Create: goal is required")
 	case p.Source == "":
 		return fmt.Errorf("worksession.Create: source is required")
+	}
+	// [F0925-29] repo_name is required above; beyond that it must follow the
+	// workspace repo name rule.
+	if !validator.ValidRepoPath(p.RepoName) {
+		return fmt.Errorf("worksession.Create: %w", validator.ErrInvalidRepoName)
 	}
 	if p.BranchName != nil {
 		if reason := CheckControlChars("branch_name", *p.BranchName); reason != "" {

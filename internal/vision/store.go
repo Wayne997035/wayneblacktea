@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -127,6 +128,10 @@ const selectCols = `id, workspace_id, repo_name, project_id, title, why_blocked,
 
 // Add inserts a new vision item and returns the persisted record.
 func (s *Store) Add(ctx context.Context, p AddVisionParams) (*VisionItem, error) {
+	// [F0925-29] Workspace repo name rule; empty stays allowed (optional column).
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("add_vision_item: %w", validator.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	deps := dependsOnJSON(p.DependsOn)
 	const q = `

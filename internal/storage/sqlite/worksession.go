@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 )
@@ -204,6 +205,10 @@ func validateCreateParams(p worksession.CreateParams) error {
 		return fmt.Errorf("worksession.Create: goal is required")
 	case p.Source == "":
 		return fmt.Errorf("worksession.Create: source is required")
+	}
+	// [F0925-29] Same repo name backstop as the Postgres store.
+	if !validator.ValidRepoPath(p.RepoName) {
+		return fmt.Errorf("worksession.Create: %w", validator.ErrInvalidRepoName)
 	}
 	if p.BranchName != nil {
 		if reason := worksession.CheckControlChars("branch_name", *p.BranchName); reason != "" {

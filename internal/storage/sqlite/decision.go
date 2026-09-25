@@ -9,6 +9,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -90,6 +91,10 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("log_decision: repo_name %w", err)
 	}
+	// [F0925-29] Same repo name backstop as the pgx Store.Log.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("log_decision: %w", validator.ErrInvalidRepoName)
+	}
 	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
 		return nil, fmt.Errorf("log_decision: rationale %w", err)
 	}
@@ -136,6 +141,10 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 	}
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return uuid.UUID{}, fmt.Errorf("log_decision: repo_name %w", err)
+	}
+	// [F0925-29] Same repo name backstop as Log.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return uuid.UUID{}, fmt.Errorf("log_decision: %w", validator.ErrInvalidRepoName)
 	}
 	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
 		return uuid.UUID{}, fmt.Errorf("log_decision: rationale %w", err)

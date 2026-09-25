@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/vision"
 	"github.com/google/uuid"
 )
@@ -147,6 +148,10 @@ func visionToSummary(item vision.VisionItem) vision.VisionItemSummary {
 
 // Add inserts a new vision item.
 func (s *VisionStore) Add(ctx context.Context, p vision.AddVisionParams) (*vision.VisionItem, error) {
+	// [F0925-29] Same repo name backstop as the pgx Store.Add.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("add_vision_item: %w", validator.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	deps := "[]"
 	if len(p.DependsOn) > 0 {
@@ -159,7 +164,8 @@ func (s *VisionStore) Add(ctx context.Context, p vision.AddVisionParams) (*visio
 		 depends_on, parent_initiative, context_md, created_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
 	now := nowRFC3339()
-	_, err := s.db.conn.ExecContext(ctx, q,
+	_, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		s.db.workspaceArg(),
 		nullStringIfEmpty(p.RepoName),
@@ -289,7 +295,8 @@ func (s *VisionStore) Promote(ctx context.Context, id uuid.UUID, p vision.Promot
 		    last_discussed_at = ?4
 		WHERE id = ?1
 		  AND (?2 IS NULL OR workspace_id = ?2)`
-	res, err := s.db.conn.ExecContext(ctx, q,
+	res, err := s.db.conn.ExecContext(
+		ctx, q,
 		id.String(),
 		s.db.workspaceArg(),
 		p.PromotedTaskID.String(),

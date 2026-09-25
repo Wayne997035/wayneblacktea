@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -131,6 +132,10 @@ func (s *ProceduralStore) Add(ctx context.Context, p procedural.AddParams) (*pro
 	// is a row a later reader trusts identically.
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("record_procedure: repo_name %w", err)
+	}
+	// [F0925-29] Same repo name backstop as the pgx Store.Add.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("record_procedure: %w", validator.ErrInvalidRepoName)
 	}
 	id := uuid.New()
 	tools := encodeStrings(p.ToolsUsed)
