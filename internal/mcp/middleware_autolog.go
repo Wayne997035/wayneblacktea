@@ -159,8 +159,9 @@ const (
 //
 // [GTD 4d5b3354] Deliberately no count and no list: the switch below is the
 // only inventory. This said "the five high-signal tools" while the switch
-// carried eleven, and the same stale five had been copied into the repo's
-// CLAUDE.md — written down twice, it drifted in both places at once.
+// carried eleven, and the same stale five had been copied into the
+// maintainer's local project notes — written down twice, it drifted in
+// both places at once.
 func autoLogEntry(tool string, args map[string]any) (action, notes string, ok bool) {
 	switch tool {
 	case "begin_task":

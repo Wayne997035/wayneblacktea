@@ -235,8 +235,8 @@ type beginTaskResponseWithSession struct {
 	WorkSessionID string `json:"work_session_id"`
 }
 
-// TestBeginTask_ReturnedSessionIDIsPersisted pins U16 (F17,
-// 2026-08-20-mcp-surface-spec.md): begin_task's work_session_id must be a
+// TestBeginTask_ReturnedSessionIDIsPersisted pins U16 (F17): begin_task's
+// work_session_id must be a
 // real, persisted worksession.Session row, not a phantom uuid.New() with
 // nothing behind it. Bad case: take the ID straight out of begin_task's
 // response and feed it to checkpoint_work — it must succeed (not "session

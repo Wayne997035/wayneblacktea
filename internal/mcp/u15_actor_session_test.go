@@ -9,7 +9,7 @@ import (
 )
 
 // --- U15: MCP audit records get a per-client actor identity, not a shared
-// per-process one (2026-08-20-mcp-surface-spec.md). ---
+// per-process one. ---
 
 // callLogDecisionCtx is callLogDecision (tools_decision_test.go) with a
 // caller-supplied context, mirroring callDeleteTaskCtx

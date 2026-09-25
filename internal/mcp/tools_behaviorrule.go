@@ -77,8 +77,8 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 	), s.handleDeprecateBehaviorRule)
 }
 
-// behaviorRuleTextMaxRunes bounds Condition/Action on read — U13
-// (2026-08-20-mcp-surface-spec.md). sanitizeRuleText already caps write-time
+// behaviorRuleTextMaxRunes bounds Condition/Action on read — U13.
+// sanitizeRuleText already caps write-time
 // length at 2000 runes (see the two sanitizeRuleText(..., 2000) calls
 // below), so this read-time bound is length-equal, not tighter; what it adds
 // is the boundary-marker neutralisation clipSafe performs that

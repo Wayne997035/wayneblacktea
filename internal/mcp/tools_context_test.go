@@ -1290,8 +1290,8 @@ func TestHandleGetTodayContext_ErrorPriorityIsDeterministic(t *testing.T) {
 // failure surfaces with its own distinct message, and that the documented
 // "no pending handoff" sentinel is NOT an error.
 //
-// The expected strings lost their ": store exploded" suffix in U14
-// (.specs/2026-08-20-mcp-surface-spec.md): this handler runs six store lookups
+// The expected strings lost their ": store exploded" suffix in U14: this
+// handler runs six store lookups
 // and used to render whichever failed as "<op>: %v", which put the raw store
 // error into get_today_context — the one tool the core protocol calls at every
 // session start. The property this test guards is unchanged (each lookup is

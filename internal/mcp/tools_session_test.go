@@ -259,7 +259,7 @@ func TestParseAndValidateNextActions_TitleControlChar(t *testing.T) {
 // with no checkCommandField gate — newline, ESC, NUL, and U+2028 all passed
 // write-time validation unmodified even though next_actions.title got the
 // same check earlier in this same PR. Each of the four control characters
-// found live in the round-2 PoC (r2-security-engineer.md RT3) must now be
+// found live in the round-2 security review's PoC (case RT3) must now be
 // rejected.
 func TestSetSessionHandoff_RepoNameControlChars(t *testing.T) {
 	t.Parallel()
@@ -405,7 +405,7 @@ func TestParseAndValidateNextActions_FieldCheckOrder(t *testing.T) {
 }
 
 // TestSetSessionHandoff_RejectsInvalidSteps is U10's acceptance criterion
-// (F8, 2026-08-20-mcp-surface-spec.md): set_session_handoff.next_actions[].step
+// (F8): set_session_handoff.next_actions[].step
 // previously had no range or uniqueness check at all, unlike
 // mark_next_action_done's own step param (bounded 0-maxNextActionItems) —
 // a step stored out of that range, or duplicated across items, could never
@@ -548,7 +548,7 @@ func TestHandleMarkNextActionDone_InvalidUUID(t *testing.T) {
 
 // TestHandleMarkNextActionDone_RejectsFractionalStep is U12's end-to-end
 // acceptance criterion applied to this handler's own numberArg call site
-// (F9, 2026-08-20-mcp-surface-spec.md): step=2.5 previously silently
+// (F9): step=2.5 previously silently
 // truncated to 2 via numberArg's int32(v) with no error — the caller had no
 // way to know 2.5 was not what got applied. requireIntArg (server.go)
 // rejects it instead.

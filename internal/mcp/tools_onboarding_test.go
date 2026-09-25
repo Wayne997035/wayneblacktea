@@ -129,7 +129,7 @@ func TestMCPProtocolAppendix_KeepsDetailMovedOutOfDescriptions(t *testing.T) {
 }
 
 // TestInitialInstructions_NotMandatoryLanguage is U11's acceptance criterion
-// (Category Σ decision 1, 2026-08-20-mcp-surface-spec.md): initial_instructions
+// (Category Σ decision 1): initial_instructions
 // moves from mandatory-every-session to on-demand, triggered ONLY by a tool's
 // own description pointing here — never "once per session" / "at session
 // start" ambient framing, which contradicted the code's own design-intent

@@ -18,8 +18,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// U13 Phase B — boundary-marker neutralisation for tools_atom.go
-// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// U13 Phase B — boundary-marker neutralisation for tools_atom.go.
 // ---------------------------------------------------------------------------
 
 // atomContentMaxRunes bounds Atom.Content at read time — U13. Mirrors

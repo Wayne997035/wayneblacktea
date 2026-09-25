@@ -93,7 +93,7 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			ok := err == nil && res != nil && !res.IsError
 
 			// [F184-05] error_class: 2-way split only this ticket (decision
-			// D-05, docs/p1p2-sweep/decisions.md). Every failure — Go-level
+			// D-05). Every failure — Go-level
 			// err != nil or res.IsError — classifies "internal"; empty
 			// string (NULL) when ok. See discipline.ErrorClass's doc for why
 			// a finer split isn't implemented here.

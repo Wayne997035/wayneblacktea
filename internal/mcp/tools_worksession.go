@@ -397,7 +397,7 @@ func (s *Server) handleGetActiveWork(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return storeErrorResult("get_active_work failed", err), nil
 	}
-	// U13 (2026-08-20-mcp-surface-spec.md): result.Session is read back from
+	// U13: result.Session is read back from
 	// a session that may have been started by an earlier, possibly
 	// untrusted, call — unlike start_work's own response below (which only
 	// ever echoes what THIS call just wrote), so it needs the same
@@ -644,7 +644,7 @@ func neutralizeProvenanceMap(prov map[string]string) map[string]string {
 // wrapUntrustedContextPack returns a copy of pack with every caller-reachable
 // free-text field of every Item / Warning / Omitted entry clipSafe'd (bounded
 // + boundary-marker-neutralised) or neutralised — U13 Phase B
-// (.specs/2026-08-20-u13-inventory.md, tools_worksession.go:365). pack.Items
+// (tools_worksession.go:365). pack.Items
 // aggregates summaries assembled from decisions/knowledge/procedural/
 // skills/outcomes/reflection/behaviorrule/session read ports (contextpack.
 // Assemble) — none of those source domains neutralise boundary-marker text
@@ -1229,9 +1229,9 @@ func wrapUntrustedFinalSummary(sess *worksession.Session) *worksession.Session {
 //     tool-call argument, so no marker-forgery surface exists.
 //
 // Rationale for neutralising but NOT wrapping Title/Goal/RepoName/
-// VerificationCommand/BranchName (concrete-failure test —
-// backend-security-design.md §2.1 / CLAUDE.md red line #8 "不加會壞什麼具體失
-// 敗?"):
+// VerificationCommand/BranchName (concrete-failure test: for each
+// candidate addition, name the concrete failure it prevents — can't name
+// one, don't add it):
 //   - Neutralisation alone already defeats the marker-forgery attack: once
 //     every currently-defined marker substring is replaced with an inert
 //     placeholder, none of these fields can produce a string that matches a

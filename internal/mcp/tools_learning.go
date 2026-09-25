@@ -37,8 +37,8 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 	), s.handleCreateConcept)
 }
 
-// learningTextMaxRunes bounds DueReview/Concept Title/Content on read — U13
-// (2026-08-20-mcp-surface-spec.md). Neither field has a write-time
+// learningTextMaxRunes bounds DueReview/Concept Title/Content on read — U13.
+// Neither field has a write-time
 // neutralisation step (create_concept below only requires non-empty), so
 // this is sized like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes
 // (tools_gtd.go) — generous enough that legitimate content never trips it.

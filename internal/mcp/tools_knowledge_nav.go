@@ -22,8 +22,8 @@ type knowledgeNavItem struct {
 }
 
 // navItemFromDB projects a db.KnowledgeItem into the lightweight nav shape.
-// Title/HeadingPath go through clipSafe (tools_context.go) — U13
-// (2026-08-20-mcp-surface-spec.md); reusing tools_knowledge.go's
+// Title/HeadingPath go through clipSafe (tools_context.go) — U13;
+// reusing tools_knowledge.go's
 // knowledgeTitleMaxRunes keeps this file's bound in sync with the same
 // column's cap on the full-record readers (add_knowledge/search_knowledge/
 // list_knowledge). One fix here covers all 3 call sites in this file

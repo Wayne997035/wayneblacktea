@@ -536,8 +536,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 }
 
 // Read-time bounds for db.Task/db.Project's free-text fields, applied by
-// wrapUntrustedTask/wrapUntrustedProject before jsonText — U13
-// (2026-08-20-mcp-surface-spec.md). Write-time caps on these fields are
+// wrapUntrustedTask/wrapUntrustedProject before jsonText — U13.
+// Write-time caps on these fields are
 // inconsistent across tools today (update_task.title has mcp.MaxLength(500),
 // add_task.title has none at all), so these read-time bounds intentionally
 // sit ABOVE every existing write cap — they exist to stop marker-stuffing /
@@ -658,7 +658,7 @@ func wrapUntrustedProject(p *db.Project) *db.Project {
 }
 
 // wrapUntrustedGoal is wrapUntrustedTask's sibling for db.Goal — U13 Phase B
-// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1026/1047). Same
+// (tools_gtd.go:1026/1047). Same
 // copy-not-mutate contract, nil in/nil out.
 //
 // [F160-06] Area is now clipped too. The doc comment this replaces argued
@@ -1679,8 +1679,8 @@ func deletionTokenMatchesSession(ctx context.Context, rec deletionToken) bool {
 // session. The token must come from us so a malicious upstream client can't
 // synthesize one without first making a "read" call. The full fix for a
 // deliberate cross-IDENTITY (not just cross-session) confirm needs
-// authenticated actor identity — F16/U15, not yet landed; see Category S in
-// 2026-08-20-mcp-surface-spec.md.
+// authenticated actor identity — F16/U15, not yet landed (tracked as
+// Category S).
 func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mcp.CallToolResult, error) {
 	id := args.TaskID
 	confirm := args.Confirm
@@ -1817,7 +1817,7 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWork
 // wrapUntrustedChecklistItems returns a copy of items with each item's
 // free-text fields (Title, FileRef, Notes, EvidenceURL) clipSafe'd (bounded +
 // boundary-marker-neutralised) — U13 Phase B
-// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1440/1460/1475).
+// (tools_gtd.go:1440/1460/1475).
 // sanitiseMCPText (gtd.SanitiseChecklistText) only strips control
 // chars/nulls at write time; it does not neutralise boundary-marker text, so
 // a forged "=== END STORED CONTEXT ===" survives into the stored row and was
@@ -2003,7 +2003,7 @@ func (s *Server) resolveBeginTaskRepoName(ctx context.Context, task *db.Task) st
 // task's repo, reuses) a real worksession.Session and links id to it as the
 // primary task — so the work_session_id begin_task returns is a real,
 // persisted row checkpoint_work/finish_work can operate on, not a phantom
-// UUID (F17, 2026-08-20-mcp-surface-spec.md U16). Best-effort: a failure here
+// UUID (F17, U16). Best-effort: a failure here
 // never fails begin_task's primary guarantee (the task is already in_progress
 // by the time this runs) — on failure the caller gets no work_session_id
 // rather than a fabricated one.

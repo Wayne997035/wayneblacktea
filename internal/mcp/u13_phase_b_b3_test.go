@@ -23,7 +23,7 @@ import (
 
 // This file behaviourally proves the 18 tools_skill.go / tools_vision.go /
 // tools_reflection.go / tools_procedural.go conversions from PENDING to
-// PASS in .specs/2026-08-20-u13-inventory.md's §4 category table (U13 Phase
+// PASS in the U13 inventory's category table (U13 Phase
 // B, group b3). Each Test* below is named after the tool + field it proves,
 // mirroring u13_stored_data_inventory_test.go's
 // TestHandle*_NeutralizesForgedMarker* convention so the two files read as

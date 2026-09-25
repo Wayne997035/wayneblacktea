@@ -114,7 +114,7 @@ func splitKnowledgeTags(raw string) []string {
 
 // Read-time bounds for db.KnowledgeItem/atom.Atom free-text fields, applied
 // by wrapUntrustedKnowledgeItem(s)/wrapUntrustedAtom(s) before jsonText —
-// U13 (2026-08-20-mcp-surface-spec.md). sanitizeKnowledgeText below only
+// U13. sanitizeKnowledgeText below only
 // rejects control characters at write time, never neutralises a forged
 // boundary marker — these exist purely to close that read-side gap, sized
 // like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes (tools_gtd.go).

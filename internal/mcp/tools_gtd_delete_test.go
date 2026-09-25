@@ -338,7 +338,7 @@ func TestDeleteTask_PruneExpiredOnWrite(t *testing.T) {
 	}
 }
 
-// --- U9: session-binding partial mitigation (Category S, 2026-08-20-mcp-surface-spec.md) ---
+// --- U9: session-binding partial mitigation (Category S) ---
 //
 // fakeClientSession is a minimal server.ClientSession for tests: only
 // SessionID matters here, the other 3 methods are unused by

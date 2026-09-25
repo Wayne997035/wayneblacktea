@@ -22,7 +22,7 @@ const (
 )
 
 // knownContextPackTypes is the include_types allowlist from the assemble_context
-// spec (docs/wayneblacktea-2.0-development-prompt.md:260). Values outside this
+// spec. Values outside this
 // set are silently ignored rather than rejected — include_types narrows an
 // already-safe default (everything), so an unrecognised value cannot widen
 // access or trigger unintended retrieval.
@@ -133,7 +133,7 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	// contextpack.Pack carries its own snake_case json tags (the wire
-	// contract at docs/wayneblacktea-2.0-development-prompt.md:265-291), so
+	// contract for assemble_context's response shape), so
 	// no wrapper struct is needed here.
 	//
 	// U13: Pack.Items[].Summary aggregates summaries pulled from decisions,

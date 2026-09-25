@@ -15,8 +15,8 @@ import (
 )
 
 // Read-time bounds for procedural.ProceduralMemory's free-text fields,
-// applied by wrapUntrustedProceduralMemory before jsonText — U13
-// (2026-08-20-mcp-surface-spec.md). proceduralTitleMaxRunes/
+// applied by wrapUntrustedProceduralMemory before jsonText — U13.
+// proceduralTitleMaxRunes/
 // proceduralWhenToUseMaxRunes/proceduralApproachMaxRunes mirror
 // handleAddProcedural's write-time caps (200/2000/20000 runes).
 // proceduralListItemMaxRunes bounds ToolsUsed/FilesTouched, which have no

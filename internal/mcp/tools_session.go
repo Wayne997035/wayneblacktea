@@ -223,7 +223,7 @@ func validateNextActionFields(a session.NextAction) string {
 	if a.Title == "" {
 		return "title is required"
 	}
-	// F8 (2026-08-20-mcp-surface-spec.md U10): step previously had NO range
+	// F8 (U10): step previously had NO range
 	// check at write time, while mark_next_action_done's own step param was
 	// already bounded to 0-maxNextActionItems — a step value written here
 	// outside that range could never be marked done later. Reusing the same

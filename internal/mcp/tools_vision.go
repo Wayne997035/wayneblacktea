@@ -25,8 +25,8 @@ const (
 
 // visionParentInitiativeMaxRunes / visionContextMDMaxRunes are read-time
 // bounds for the two vision.VisionItem free-text fields that have no
-// write-time cap of their own (unlike Title/WhyBlocked above) — U13
-// (2026-08-20-mcp-surface-spec.md). Generous read-time-only backstop
+// write-time cap of their own (unlike Title/WhyBlocked above) — U13.
+// Generous read-time-only backstop
 // against marker-stuffing, same rationale as decisionBodyMaxRunes
 // (tools_decision.go).
 //

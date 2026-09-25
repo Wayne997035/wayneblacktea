@@ -181,8 +181,8 @@ func fenceArchSummary(s string) string {
 }
 
 // neutralizePtr is neutralizeBoundaryMarkers over an optional string pointer;
-// nil becomes "". Moved here from resources.go (U13, 2026-08-20-mcp-surface-
-// spec.md) so every stored-data reader added under Phase B has a single
+// nil becomes "". Moved here from resources.go (U13) so every stored-data
+// reader added under Phase B has a single
 // shared home for this helper instead of each file growing its own
 // nil-pointer-neutralise wrapper — this file is already the registry every
 // other neutralisation helper in the package lives in.

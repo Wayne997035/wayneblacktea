@@ -16,8 +16,8 @@ import (
 
 // reflectionSummaryMaxRunes / reflectionJSONLeafMaxRunes are read-time
 // bounds for reflection.Reflection's free-text fields, applied by
-// wrapUntrustedReflection before jsonText — U13 (2026-08-20-mcp-surface-
-// spec.md). reflectionSummaryMaxRunes mirrors buildReflectionCreateParams'
+// wrapUntrustedReflection before jsonText — U13.
+// reflectionSummaryMaxRunes mirrors buildReflectionCreateParams'
 // write-time maxSummary cap; reflectionJSONLeafMaxRunes is a generous
 // read-time-only backstop for the string leaves inside
 // Insights/PatternsDetected/SuggestedActions (parseOptionalJSON only
@@ -87,7 +87,8 @@ func wrapUntrustedReflections(reflections []*reflection.Reflection) []*reflectio
 }
 
 func (s *Server) registerReflectionTools(ms *server.MCPServer) {
-	ms.AddTool(mcp.NewTool("generate_reflection",
+	ms.AddTool(mcp.NewTool(
+		"generate_reflection",
 		mcp.WithDescription(
 			"Persists an AI-generated reflection record. Does NOT call an LLM — the caller "+
 				"provides the already-generated content. "+
@@ -113,7 +114,8 @@ func (s *Server) registerReflectionTools(ms *server.MCPServer) {
 			mcp.Description("UUID of the related entity. Optional.")),
 	), s.handleGenerateReflection)
 
-	ms.AddTool(mcp.NewTool("list_reflections",
+	ms.AddTool(mcp.NewTool(
+		"list_reflections",
 		mcp.WithDescription("Lists persisted reflection records, ordered by creation time descending."),
 		mcp.WithString("type",
 			mcp.Description("Filter by reflection type. One of: daily, weekly, task, decision, proposal, knowledge, system.")),
@@ -121,14 +123,16 @@ func (s *Server) registerReflectionTools(ms *server.MCPServer) {
 			mcp.Description("Maximum number of reflections to return. Default: 20.")),
 	), s.handleListReflections)
 
-	ms.AddTool(mcp.NewTool("get_latest_reflection",
+	ms.AddTool(mcp.NewTool(
+		"get_latest_reflection",
 		mcp.WithDescription("Returns the most recently created reflection of a given type, or null when none exists yet."),
 		mcp.WithString("type",
 			mcp.Required(),
 			mcp.Description("Reflection type. One of: daily, weekly, task, decision, proposal, knowledge, system.")),
 	), s.handleGetLatestReflection)
 
-	ms.AddTool(mcp.NewTool("analyze_recent_patterns",
+	ms.AddTool(mcp.NewTool(
+		"analyze_recent_patterns",
 		mcp.WithDescription(
 			"Returns recent reflection records that contain detected patterns. "+
 				"Useful for surfacing recurring themes across the last N days.",

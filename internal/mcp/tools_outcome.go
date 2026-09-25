@@ -74,8 +74,7 @@ func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 const maxOutcomeLimit = 100
 
 // ---------------------------------------------------------------------------
-// U13 Phase B — boundary-marker neutralisation for tools_outcome.go
-// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// U13 Phase B — boundary-marker neutralisation for tools_outcome.go.
 // ---------------------------------------------------------------------------
 
 // outcomeNotesMaxRunes / outcomeBlobFieldMaxRunes bound outcome.Outcome's and

@@ -112,8 +112,8 @@ func classifyTaskForCloseout(t db.Task, report *closeoutReport) {
 		return
 	}
 	if time.Since(t.CreatedAt.Time) > stuckTaskThreshold {
-		// clipSafe (tools_context.go), not the raw t.Title — U13
-		// (2026-08-20-mcp-surface-spec.md). Fixing it here also closes the
+		// clipSafe (tools_context.go), not the raw t.Title — U13.
+		// Fixing it here also closes the
 		// second half of the same gap: buildCloseoutActions below re-embeds
 		// every StuckTasks[].Title into its "Complete or cancel N stuck
 		// task(s): ..." sentence, so neutralising at the point of insertion

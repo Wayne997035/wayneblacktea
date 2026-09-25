@@ -12,7 +12,7 @@ import (
 )
 
 // Error-message hygiene for the MCP tool surface — U14
-// (.specs/2026-08-20-mcp-surface-spec.md, root cause F15).
+// (root cause F15).
 //
 // Every tool handler that fails has to say something to its caller, and the
 // caller is an LLM whose context is, in practice, readable by whoever is

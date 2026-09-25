@@ -704,7 +704,7 @@ type handoffResource struct {
 	CreatedAt        string              `json:"created_at,omitempty"`
 	NextActions      []nextActionSummary `json:"next_actions,omitempty"`
 	NextActionsTotal *int                `json:"next_actions_total,omitempty"`
-	// Resolved is U8's addition (Category R / F1, 2026-08-20-mcp-surface-spec.md):
+	// Resolved is U8's addition (Category R / F1):
 	// this resource now returns the most recently created handoff REGARDLESS
 	// of resolved_at (see handleResourceHandoffLatest's doc comment), so a
 	// reader needs a way to tell "still actionable" apart from "already
@@ -724,7 +724,7 @@ var sinceEpoch = time.Unix(0, 0)
 // handleResourceHandoffLatest serves the wayneblacktea://session/handoff/latest
 // resource.
 //
-// U8 (Category R / F1, 2026-08-20-mcp-surface-spec.md): deliberately reads
+// U8 (Category R / F1): deliberately reads
 // via HandoffsSince(sinceEpoch, 1) — "every handoff, newest first, capped at
 // 1" — rather than LatestHandoff, which filters WHERE resolved_at IS NULL.
 // The mandated session-start sequence (server.go's mcpInstructions) calls
@@ -877,7 +877,7 @@ type buildInfoResource struct {
 	BuildDate       string `json:"build_date"`
 	ProtocolVersion string `json:"protocol_version"`
 	Backend         string `json:"backend"`
-	// BuildID and BuildIDNote are U6's addition (2026-08-20-mcp-surface-spec.md):
+	// BuildID and BuildIDNote are U6's addition:
 	// always emitted (not omitempty) so the resource's field SHAPE never
 	// changes between a tagged release and an untagged production deploy.
 	//

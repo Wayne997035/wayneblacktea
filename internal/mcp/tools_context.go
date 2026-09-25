@@ -676,7 +676,7 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 }
 
 // Read-time bounds for db.Repo's free-text fields, applied by
-// wrapUntrustedRepo before jsonText — U13 (2026-08-20-mcp-surface-spec.md).
+// wrapUntrustedRepo before jsonText — U13.
 // sync_repo's args declare no mcp.MaxLength on any of them, so these exist
 // purely to stop marker-stuffing / pathological-growth content from
 // reaching an unbounded read, sized like wrapUntrustedTask/wrapUntrustedProject's
@@ -745,9 +745,8 @@ const (
 // contract. nil in, nil out.
 //
 // Both list_active_repos and sync_repo route through this (Phase A
-// inventory, .specs/2026-08-20-u13-inventory.md §3 tools_context.go, which
-// corrected the dispatch's original "already wired" assumption for this
-// file): sync_repo's own echo of the caller's just-written value is
+// inventory corrected the dispatch's original "already wired" assumption
+// for this file): sync_repo's own echo of the caller's just-written value is
 // deliberately NOT given buildPendingHandoffView's echo exemption here —
 // the repo row is workspace-shared and re-read later by list_active_repos in
 // a different, possibly untrusted session, so wiring both call sites the
@@ -1059,7 +1058,7 @@ func (s *Server) handleListActiveRepos(ctx context.Context, req mcp.CallToolRequ
 }
 
 // syncRepoOptionalStringArgs extracts sync_repo's 5 optional fields using
-// optionalStringArg's presence semantics (Ω6, 2026-08-20-mcp-surface-spec.md):
+// optionalStringArg's presence semantics (Ω6):
 // a nil *string means the field was entirely absent from the call and the
 // stored value must be preserved, not wiped to "". Bundled into one struct
 // (rather than 5 separate local vars) purely to keep handleSyncRepo under the

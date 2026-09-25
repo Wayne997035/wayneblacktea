@@ -14,8 +14,8 @@ import (
 const maxListDecisionsLimit = 100
 
 // Read-time bounds for db.Decision's free-text fields, applied by
-// wrapUntrustedDecision before jsonText — U13 (2026-08-20-mcp-surface-
-// spec.md). log_decision/list_decisions register no mcp.MaxLength on any of
+// wrapUntrustedDecision before jsonText — U13. log_decision/list_decisions
+// register no mcp.MaxLength on any of
 // these fields today (checkDecisionNoise below only screens for tag-noise,
 // not length), so these bounds exist purely to stop marker-stuffing /
 // pathological-growth content from reaching an unbounded read. They are

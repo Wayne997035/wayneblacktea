@@ -14,7 +14,7 @@ import (
 )
 
 // Read-time bounds for skill.Skill's free-text fields, applied by
-// wrapUntrustedSkill before jsonText — U13 (2026-08-20-mcp-surface-spec.md).
+// wrapUntrustedSkill before jsonText — U13.
 // Name/Description mirror their write-time caps
 // (validateSkillName/validateSkillDescription: 200/5000 runes).
 // Triggers/Steps/FailureModes/VerificationChecklist have no write-time
@@ -57,9 +57,9 @@ const (
 //
 // Steps/FailureModes/VerificationChecklist are literally step-by-step
 // instructions an assistant wrote — exactly the shape a forged marker plus
-// injected instruction would want to hide inside (backend-security-
-// design.md §2.1: treat LLM-authored text as adversarial regardless of
-// which model wrote it, not exempt because "it's our own model's output").
+// injected instruction would want to hide inside (treat LLM-authored text
+// as adversarial regardless of which model wrote it, not exempt because
+// "it's our own model's output").
 //
 // [SEC171-08] SourceAtomIDs is treated exactly like the other four comma-separated
 // fields, because it IS one: extract_skill takes source_atom_ids as a plain

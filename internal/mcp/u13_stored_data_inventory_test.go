@@ -26,10 +26,10 @@ const (
 	readerPass storedDataReaderStatus = "PASS"
 	// readerPending means this call site still returns at least one
 	// free-text field unneutralised. This is Phase A's KNOWN, DOCUMENTED
-	// gap list, not a test failure — U13 (2026-08-20-mcp-surface-spec.md)
+	// gap list, not a test failure — U13
 	// only requires the contract + a handful of template conversions in
 	// this phase; the full sweep is Phase B's fan-out, keyed off this same
-	// table (also recorded in .specs/2026-08-20-u13-inventory.md).
+	// table.
 	readerPending storedDataReaderStatus = "PENDING"
 )
 
@@ -166,7 +166,7 @@ var storedDataReaders = []storedDataReader{
 	// existing multiple-rows-one-tool convention above.
 	//
 	// Two of the three (no_match, confirmation_required) are pure same-turn
-	// echo — Match/Ambiguous.PRHeadRef is gtd.reconcile.go's `pr.HeadRef`,
+	// echo — Match/Ambiguous.PRHeadRef is internal/gtd/reconcile.go's `pr.HeadRef`,
 	// read straight out of THIS call's own merged_prs input (三軍/round-2
 	// verification: "呼叫端自己送進來的回音, 不是 stored data"). The third
 	// (applied/confirm) reads the SAME struct back out of a server-held
@@ -542,7 +542,7 @@ func TestF160_02_RealCallSiteCountMatchesTableAndExclusions(t *testing.T) {
 }
 
 // TestAllStoredDataReaders_PassThroughBoundaryRenderer is U13's structural
-// acceptance test (2026-08-20-mcp-surface-spec.md, U13 criterion 2).
+// acceptance test (U13 criterion 2).
 //
 // The Phase A edition of this test deliberately TOLERATED readerPending rows,
 // because asserting on them while 81 of 87 sites were still unwired would have

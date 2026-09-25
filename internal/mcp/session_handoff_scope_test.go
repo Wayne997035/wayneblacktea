@@ -23,8 +23,8 @@ import (
 // Granularity is per FUNCTION/TYPE, not per FILE: an earlier version of this
 // whitelist listed whole files, which meant any NEW function added later to
 // an already-whitelisted file passed silently even if it leaked a raw
-// handoff — round-4 security review confirmed this exact bypass (probe 7,
-// chokepoint-r4.md). Add an entry here ONLY when the scope has been reviewed
+// handoff — round-4 security review confirmed this exact bypass (probe 7).
+// Add an entry here ONLY when the scope has been reviewed
 // and either (a) touches only non-text fields (CreatedAt/ResolvedAt/error
 // values, never Intent/ContextSummary/RepoName/NextActions text) or (b)
 // immediately wraps the raw row in safeSessionHandoff / passes it through a

@@ -120,8 +120,8 @@ func TestHandleGetProjectArch_FileMapOptIn_ByteSizeDrop(t *testing.T) {
 // committed, reproducible replacement for the PR body's original "8,300 B
 // -> 255 B (-96.9%)" get_project_arch headline claim. Review round 1
 // (testing-reality-checker) found that number unreproducible: the scratch
-// test that produced it (internal/mcp/zz_measure_test.go) was never
-// committed anywhere in the repo, and an independent reconstruction against
+// test that produced it was never committed anywhere in the repo, and an
+// independent reconstruction against
 // the real production row (slug=wayneblacktea, 18 file_map entries, an
 // 862-byte summary) run through this exact unmodified handler gave
 // ~-65.5%, not -96.9%.

@@ -20,7 +20,7 @@ const statusSlugMaxLen = 64
 var statusSlugRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 // statusFieldMaxRunes bounds SprintSummary/GapAnalysis/PendingSummary on
-// read — U13 (2026-08-20-mcp-surface-spec.md). These are Haiku-generated but
+// read — U13. These are Haiku-generated but
 // cached in the snapshot store and read back on subsequent calls
 // (from_cache=true) — the U13 inventory classifies this as "stored on
 // behalf of an LLM, read back into an LLM context" even though the content
