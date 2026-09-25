@@ -66,7 +66,7 @@ func RunPostMergeLocal(args []string) error {
 	}
 
 	// A post-merge hook MUST NOT print to stderr (git surfaces it mid-merge),
-	// so redirect slog to a tmp file BEFORE any parsing. (backend-security-design.md §5.1)
+	// so redirect slog to a tmp file BEFORE any parsing.
 	InitHookSlog("wbt-post-merge")
 
 	fs := flag.NewFlagSet("post-merge-local", flag.ContinueOnError)

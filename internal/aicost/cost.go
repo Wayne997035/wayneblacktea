@@ -156,14 +156,13 @@ func (r *pgRecorder) writeSync(ctx context.Context, workspaceID *uuid.UUID, p Re
 //   - is guarded by a buffered semaphore (cap recordSemCap = 50); if the
 //     semaphore is full the write is dropped with a slog.Warn.
 //   - uses context.Background()+recordWriteTimeout so the write survives
-//     request-context cancellation (backend-security-design.md goroutine rule).
+//     request-context cancellation.
 //   - wraps the body in defer recover() so a panic inside writeSync can never
 //     crash the server.
 //
 // contextcheck is suppressed: Record intentionally ignores the caller's ctx and
 // spawns a goroutine with a fresh context.Background()-based timeout so the DB
-// write survives request cancellation (fire-and-forget design per
-// backend-security-design.md goroutine rule).
+// write survives request cancellation (fire-and-forget design).
 func (r *pgRecorder) Record(_ context.Context, workspaceID *uuid.UUID, p RecordParams) {
 	// Caller ctx is intentionally ignored — we must not inherit a request
 	// context that may already be cancelled when the goroutine runs.

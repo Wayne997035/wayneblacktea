@@ -49,7 +49,6 @@ import (
 
 // dueReviewsLimit matches the pre-A5a hook's fixed cap for the "## Due
 // reviews" section (concepts table has no natural ranking here — see
-// backend-security-design.md-adjacent §8 notes in the A5a dispatch on why
 // this stays a small, unranked CLI-adapter-only query).
 const dueReviewsLimit = 10
 
@@ -76,8 +75,8 @@ type SessionStartOutput struct {
 // runSessionStart resolves the storage backend (dual-backend, matching every
 // other wbt entry point — see storage.ResolveFromEnv doc, whose two steps
 // (BackendFor + EnsureSupported) this inlines so the resolved dsn can be
-// threaded through explicitly instead of round-tripping through os.Environ —
-// backend-security-design.md §4.2) and dispatches to the Postgres or SQLite
+// threaded through explicitly instead of round-tripping through os.Environ)
+// and dispatches to the Postgres or SQLite
 // implementation. Both branches build the same 11 contextpack read ports,
 // call Assemble() once, and hand the result to renderSessionContext.
 // Always calls EmitContext exactly once so the hook's fail-soft, always-exit-0
@@ -126,7 +125,7 @@ func runSessionStart() {
 }
 
 // runSessionStartPostgres builds a hook-tuned pgxpool (MaxConns=2, 30s
-// lifetime — backend-security-design.md §5.3; NOT the generic
+// lifetime — sized for a short-lived, high-frequency hook process; NOT the generic
 // storage.BuildServerStores pool config, which is sized for the
 // long-running cmd/server process instead), wires the 11 contextpack read
 // ports directly off it (deliberately NOT storage.NewServerStores/
@@ -229,7 +228,7 @@ func runSessionStartSQLite(ctx context.Context, wsID *uuid.UUID) (*contextpack.P
 }
 
 // newHookPgxPool builds a pgxpool tuned for a short-lived, high-frequency
-// hook process (backend-security-design.md §5.3): MaxConns=2, MinConns=0,
+// hook process: MaxConns=2, MinConns=0,
 // MaxConnLifetime=30s. Deliberately NOT the same sizing as
 // internal/storage/factory.go's buildPgxPoolConfig, which targets the single
 // long-running cmd/server process.

@@ -407,7 +407,7 @@ func (s *Store) PruneAtoms(ctx context.Context, cutoff time.Time) (int64, error)
 // single atom. status is validated against the five-value enum
 // (digest_status.go) before the UPDATE is sent — an invalid value is
 // rejected with ErrInvalidDigestStatus rather than silently written to the
-// column (backend-security-design.md §2: adversarial input handling).
+// column; LLM tool input is treated as adversarial.
 func (s *Store) SetDigestStatus(ctx context.Context, atomID uuid.UUID, status string, errMsg string) error {
 	if !IsValidDigestStatus(status) {
 		return fmt.Errorf("%w: %q", ErrInvalidDigestStatus, status)

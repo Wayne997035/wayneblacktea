@@ -66,8 +66,7 @@ type DoctorSnapshot struct {
 	// or explicit "null" — see newDoctorSnapshot for the always-non-nil
 	// GoalsDue initialisation that makes this hold even on fail-soft paths
 	// that never reach the DB. Title + deadline only; no goal/task IDs,
-	// descriptions, or other context is exposed (backend-security-design.md
-	// §3.2 data minimisation).
+	// descriptions, or other context is exposed (data minimisation).
 	GoalsDue   []gtd.DeliveryGoal `json:"goals_due"`
 	TopPending *gtd.DeliveryTask  `json:"top_pending"`
 }
