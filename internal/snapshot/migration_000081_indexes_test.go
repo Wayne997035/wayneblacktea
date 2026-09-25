@@ -50,7 +50,6 @@ func TestMigration000081_QueryIndexesExistPG(t *testing.T) {
 	ctx := context.Background()
 
 	for name, want := range queryIndexes000081ExpectedDef {
-		name, want := name, want
 		t.Run(name, func(t *testing.T) {
 			var got string
 			err := pool.QueryRow(ctx, `SELECT indexdef FROM pg_indexes WHERE indexname = $1`, name).Scan(&got)

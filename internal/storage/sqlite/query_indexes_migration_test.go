@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -79,7 +80,10 @@ var queryIndexesExpectedSQL = map[string]string{
 func sqliteIndexSQL(t *testing.T, conn *sql.DB, name string) string {
 	t.Helper()
 	var raw string
-	err := conn.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&raw)
+	err := conn.QueryRowContext(
+		context.Background(),
+		`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, name,
+	).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return ""
 	}
