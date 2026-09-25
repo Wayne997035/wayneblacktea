@@ -22,7 +22,7 @@ jobs:
         run: |
           # Exclude comment-only lines (lines where content after filename:linenum: starts with --)
           if grep -rn 'FOREIGN KEY\|REFERENCES\|ON DELETE\|ON UPDATE' migrations/ --include='*.sql' | grep -v ':[[:space:]]*--'; then
-            echo "ERROR: FK constraint found in migrations/ — workspace policy forbids FK constraints in any DB schema path (CLAUDE.md #9)"
+            echo "ERROR: FK constraint found in migrations/ — workspace policy forbids FK constraints in any DB schema path"
             exit 1
           fi
 

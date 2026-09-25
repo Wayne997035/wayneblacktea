@@ -371,7 +371,7 @@ func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, e
 //     linked via work_session_tasks are marked completed.
 //   - Otherwise (both empty/false), no tasks are marked completed — Ω5 fix:
 //     omitting completed_task_ids used to silently complete every linked
-//     task with no way to opt out (backend-security-design.md §2.1).
+//     task with no way to opt out.
 //
 // Returns the updated session and the actual list of task IDs marked
 // completed, so callers can report exactly what happened instead of leaving

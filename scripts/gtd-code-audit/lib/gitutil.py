@@ -1,7 +1,7 @@
 """gitutil — the ONLY place anchor strings extracted from ticket text touch
 the filesystem or a subprocess.
 
-Threat model (backend-security-design.md §2.2, §2.3): a GTD ticket's title/
+Threat model: a GTD ticket's title/
 description is writable by any agent, including a prompt-injected one. Every
 string that reaches this module ultimately came from that untrusted text.
 Two rules make that safe:

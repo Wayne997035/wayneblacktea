@@ -29,7 +29,7 @@ func TestIsValidKind(t *testing.T) {
 // silently resolves to general, an invalid kind resolves to general WITH a
 // warning (the bug this task fixes — the four call sites previously
 // discarded this signal), and the 80-rune truncation boundary on a hostile
-// caller-supplied kind value (backend-security-design.md §2.1/§3.1).
+// caller-supplied kind value.
 func TestResolveTaskKind(t *testing.T) {
 	t.Parallel()
 
