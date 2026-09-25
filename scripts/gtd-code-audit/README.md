@@ -210,8 +210,8 @@ file containing real data (F167-04). Each ticket is tagged
   dropped in without new test code, but the guard that actually matters now
   is `test_synthetic_permanent_tradeoff_never_flagged_suspect`: it anchors
   to `internal/storage/sqlite/knowledge.go`'s `SearchByCosine`, an
-  *accepted* design trade-off (SQLite has no ANN index — documented in
-  `wayneblacktea/CLAUDE.md`, not tracked as a bug), and computes
+  *accepted* design trade-off (SQLite has no ANN index by design, not
+  tracked as a bug), and computes
   `created_at` **at test-run time** from that file's own last-commit
   timestamp rather than trusting a frozen calendar date — the exact axis
   that made `72de9051` rot.

@@ -4,7 +4,7 @@ status: accepted
 
 # Dual-backend orchestration seam: a bounded, reusable exception to "no Service/Repository split"
 
-[ADR 0002](0002-gtd-dual-backend-transaction-orchestration.md) opened a **GTD-only** narrow exception to `CLAUDE.md`'s "no Service/Repository split" rule: `BeginTask`/`DeleteTask` were duplicated in full across the pgx/Postgres and database/sql/SQLite stores, and "a bug fixed in one, missed in the other" is a real correctness risk because SQLite is a genuine production backend, not a test stand-in.
+[ADR 0002](0002-gtd-dual-backend-transaction-orchestration.md) opened a **GTD-only** narrow exception to the project's "no Service/Repository split" rule: `BeginTask`/`DeleteTask` were duplicated in full across the pgx/Postgres and database/sql/SQLite stores, and "a bug fixed in one, missed in the other" is a real correctness risk because SQLite is a genuine production backend, not a test stand-in.
 
 A 2026-07-24 full-repo architecture scan plus 2026-07-25 in-code verification found that this shape **recurs**: proposal acceptance (`internal/handler/proposal_handler.go` + `internal/mcp/tools_proposal.go` + `internal/storage/server_stores.go:42-56`, where the code's own comments already name the target as "a TxCoordinator inside the storage package, not pgx leaking into MCP"), knowledge `AddItem` dedup policy (`internal/knowledge/store.go` vs `internal/storage/sqlite/knowledge.go`), and — reported but not yet independently verified — work-session lifecycle, completion-candidate rules, and atom graph traversal. That is roughly **five sites**, not dozens.
 

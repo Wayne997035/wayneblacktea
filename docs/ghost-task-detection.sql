@@ -17,7 +17,8 @@
 -- ticket 92991ba2 reserves that for a separate cleanup ticket.
 --
 -- Portable across both backends (no regex, no Postgres-only operators) —
--- see wayneblacktea/CLAUDE.md "Dual backend, runtime-resolved".
+-- this project resolves SQLite vs Postgres at runtime, so ad-hoc queries
+-- like this one must run unmodified against either backend.
 --
 -- Matches the exact shape `synthesiseClassifierDescription`
 -- (internal/mcp/middleware_classify.go:366-379) produces on the auto-accept
