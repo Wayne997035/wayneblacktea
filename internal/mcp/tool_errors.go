@@ -6,9 +6,9 @@ import (
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 

@@ -309,7 +309,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 		"skipped_repo_mismatch":      result.SkippedRepoMismatch,
 		"unverified_repo_candidates": unverifiedWrites,
-		"expires_at":       expires.UTC().Format(time.RFC3339),
+		"expires_at":                 expires.UTC().Format(time.RFC3339),
 		"message": "Call reconcile_merged_prs again with confirm=true and reconcile_token " +
 			"to apply these completions. Token expires in 60s.",
 	})

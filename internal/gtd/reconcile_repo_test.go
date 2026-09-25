@@ -139,4 +139,3 @@ func TestMatchPendingTasksFuzzy_RepoAware(t *testing.T) {
 		t.Fatalf("nil resolver must keep the previous behaviour, got %+v", got)
 	}
 }
-
