@@ -401,6 +401,20 @@ var expectedNewEntries = map[string]bool{
 	// from a migration numbered above frozenSnapshotVersion belongs here
 	// rather than in testdata/schema_golden.sql.
 	"table|f170_21_due_date_backup": true,
+
+	// migrations/sqlite/000081_query_indexes.up.sql (F0925-11): 8 of the 10
+	// PG existing-debt indexes (PR #193 scan, decision e0bfb453) — skips
+	// project_status_snapshots (no SQLite store reads it) and guard_bypasses
+	// (no SQLite twin table). All 8 are net-new versus the frozen golden
+	// baseline.
+	"index|idx_session_handoffs_project_id":       true,
+	"index|idx_work_sessions_project_id":          true,
+	"index|idx_work_sessions_current_task_id":     true,
+	"index|idx_vision_items_workspace_created_at": true,
+	"index|idx_vision_items_project_id":           true,
+	"index|idx_vision_items_promoted_task_id":     true,
+	"index|idx_procedural_memories_project_id":    true,
+	"index|idx_memory_atoms_created_at":           true,
 }
 
 // migrations/sqlite/000076_decision_actor_provenance.up.sql (U15 contract
