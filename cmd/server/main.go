@@ -874,7 +874,8 @@ func wireHandlers(
 	// candidate/merged-PRs stores may be nil under unusual configs; the handler
 	// tolerates nil.
 	reconcileH := handler.NewReconcileHandler(stores.GTD(), candidateStore).
-		WithMergedPRsStore(mergedPRsStore)
+		WithMergedPRsStore(mergedPRsStore).
+		WithWorkspaceStore(stores.Workspace())
 	// [GTD ab472814] Reports the chain wireAI already built — deliberately the
 	// same instance the application calls, not a second one built from env.
 	// A health surface constructed independently would report the config

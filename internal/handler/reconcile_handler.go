@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -73,6 +74,70 @@ type ReconcileHandler struct {
 	gtd       gtd.StoreIface
 	candidate completioncandidate.Store
 	mergedPRs mergedprs.Store
+	repos     reconcileRepoLister
+	// resolverOverride replaces the per-call resolver; set only by tests
+	// (export_test.go) whose subject is not repo verification.
+	resolverOverride gtd.RepoResolver
+}
+
+// reconcileRepoLister is the one workspace method the repo resolver needs.
+type reconcileRepoLister interface {
+	ActiveRepos(ctx context.Context) ([]db.Repo, error)
+}
+
+// WithWorkspaceStore wires the repo list the branch matcher uses to tell
+// which repo a task belongs to ([F0925-31]). Without it every task's repo is
+// unknown: branch hits become candidates and nothing auto-closes by branch.
+func (h *ReconcileHandler) WithWorkspaceStore(w reconcileRepoLister) *ReconcileHandler {
+	h.repos = w
+	return h
+}
+
+// repoResolver builds the task → github_slug resolver for one reconcile call.
+// A load failure degrades to "every repo unknown", which only ever turns
+// auto-closes into candidates — never the reverse.
+func (h *ReconcileHandler) repoResolver(ctx context.Context) gtd.RepoResolver {
+	if h.resolverOverride != nil {
+		return h.resolverOverride
+	}
+	unknown := func(db.Task) (string, bool) { return "", false }
+	if h.repos == nil {
+		return unknown
+	}
+	projects, err := h.gtd.ProjectsFiltered(ctx, "all")
+	if err != nil {
+		slog.Warn("reconcile: loading projects for repo resolver failed", "err", err)
+		return unknown
+	}
+	repos, err := h.repos.ActiveRepos(ctx)
+	if err != nil {
+		slog.Warn("reconcile: loading repos for repo resolver failed", "err", err)
+		return unknown
+	}
+	return gtd.NewRepoResolver(projects, repos)
+}
+
+// writeUnverifiedRepoCandidates records branch hits whose task repo is
+// unknown as pending candidates ([F0925-31]). Returns rows written.
+func writeUnverifiedRepoCandidates(ctx context.Context, store completioncandidate.Store, hits []gtd.Ambiguous) int {
+	if store == nil {
+		return 0
+	}
+	wrote := 0
+	for _, a := range hits {
+		if _, err := store.UpsertCandidate(ctx, completioncandidate.UpsertParams{
+			TaskID:            a.TaskID,
+			Reason:            completioncandidate.ReasonPRMergedRepoUnverified,
+			Confidence:        completioncandidate.ConfidenceMedium,
+			EvidenceRefs:      []string{"branch_name_exact:repo_unverified", a.PRUrl},
+			SuggestedArtifact: a.PRUrl,
+		}); err != nil {
+			slog.Warn("reconcile: unverified-repo candidate upsert failed", "err", err, "task_id", a.TaskID)
+			continue
+		}
+		wrote++
+	}
+	return wrote
 }
 
 // NewReconcileHandler wires the GTD store + completion-candidate store into
@@ -121,6 +186,10 @@ type reconcileResponse struct {
 	Applied         int                `json:"applied"`
 	NoMatch         int                `json:"no_match"`
 	CandidateWrites int                `json:"candidate_writes"`
+	// [F0925-31] branch hits dropped as another repo's, and branch hits
+	// recorded as candidates because the task's repo is unknown.
+	SkippedRepoMismatch      int `json:"skipped_repo_mismatch"`
+	UnverifiedRepoCandidates int `json:"unverified_repo_candidates"`
 }
 
 type matchSummary struct {
@@ -185,7 +254,8 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 	// the exact-match path (and any in-batch fuzzy path below) still runs.
 	persistObservedPRs(c.Request().Context(), h.mergedPRs, prs)
 
-	result, err := gtd.MatchMergedPRs(c.Request().Context(), h.gtd, prs)
+	resolve := h.repoResolver(c.Request().Context())
+	result, err := gtd.MatchMergedPRs(c.Request().Context(), h.gtd, prs, resolve)
 	if err != nil {
 		c.Logger().Errorf("Reconcile match: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
@@ -239,7 +309,9 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 	// Phase 2 (GTD-fix 10/12): fuzzy-match the input PRs against pending
 	// tasks with NULL linkage. Each fuzzy hit becomes a 'medium'-confidence
 	// completion_candidate — never auto-applied.
-	candidateWrites += h.writeFuzzyCandidates(c.Request().Context(), prs)
+	candidateWrites += h.writeFuzzyCandidates(c.Request().Context(), prs, resolve)
+	unverifiedWrites := writeUnverifiedRepoCandidates(c.Request().Context(), h.candidate, result.UnverifiedRepo)
+	candidateWrites += unverifiedWrites
 
 	// Build response.
 	matchOut := make([]matchSummary, 0, len(result.Matches))
@@ -268,6 +340,9 @@ func (h *ReconcileHandler) Reconcile(c echo.Context) error {
 		Applied:         applied,
 		NoMatch:         result.NoMatch,
 		CandidateWrites: candidateWrites,
+
+		SkippedRepoMismatch:      result.SkippedRepoMismatch,
+		UnverifiedRepoCandidates: unverifiedWrites,
 	})
 }
 
@@ -421,6 +496,7 @@ func capBodyExcerptForAudit(s string) string {
 func (h *ReconcileHandler) writeFuzzyCandidates(
 	ctx context.Context,
 	prs []gtd.MergedPR,
+	resolve gtd.RepoResolver,
 ) int {
 	if h.candidate == nil || len(prs) == 0 {
 		return 0
@@ -430,7 +506,7 @@ func (h *ReconcileHandler) writeFuzzyCandidates(
 		slog.Warn("reconcile writeFuzzyCandidates: load tasks failed", "err", err)
 		return 0
 	}
-	matches := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	matches := gtd.MatchPendingTasksFuzzy(prs, tasks, resolve)
 	if len(matches) == 0 {
 		return 0
 	}

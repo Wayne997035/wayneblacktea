@@ -20,6 +20,7 @@ package gtd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -82,6 +83,57 @@ type MatchResult struct {
 	Ambiguous []Ambiguous
 	// NoMatch counts PRs with zero pending-task hit (logged but not actioned).
 	NoMatch int
+	// SkippedRepoMismatch counts branch_name hits dropped because the task's
+	// repo is known and is not the PR's repo ([F0925-31]).
+	SkippedRepoMismatch int
+	// UnverifiedRepo lists branch_name hits whose task repo cannot be
+	// derived: never auto-closed, surfaced as completion candidates instead.
+	UnverifiedRepo []Ambiguous
+}
+
+// RepoResolver reports the GitHub owner/repo a task belongs to. known=false
+// means it cannot be derived ([F0925-31]). known=true with an empty slug
+// means "same repo as whichever PR it is compared with" — only
+// AssumeSameRepo returns that; NewRepoResolver never does.
+type RepoResolver func(t db.Task) (slug string, known bool)
+
+// AssumeSameRepo treats every task as belonging to the PR's repo, i.e.
+// repo-blind matching. Production reconcile always uses NewRepoResolver; this
+// exists for tests whose subject is branch / pr_url / token behaviour, not
+// repo verification.
+func AssumeSameRepo(db.Task) (string, bool) { return "", true }
+
+// sameRepo reports whether a resolved task repo matches a PR's repo.
+func sameRepo(taskSlug, prRepo string) bool {
+	return taskSlug == "" || strings.EqualFold(taskSlug, prRepo)
+}
+
+// NewRepoResolver resolves task → project.repo_name → the repo with that name
+// → its github_slug. Any missing or empty link makes the task's repo unknown.
+func NewRepoResolver(projects []db.Project, repos []db.Repo) RepoResolver {
+	slugByRepo := make(map[string]string, len(repos))
+	for _, r := range repos {
+		if r.GithubSlug.Valid && r.GithubSlug.String != "" {
+			slugByRepo[r.Name] = r.GithubSlug.String
+		}
+	}
+	repoByProject := make(map[uuid.UUID]string, len(projects))
+	for _, p := range projects {
+		if p.RepoName.Valid && p.RepoName.String != "" {
+			repoByProject[p.ID] = p.RepoName.String
+		}
+	}
+	return func(t db.Task) (string, bool) {
+		if !t.ProjectID.Valid {
+			return "", false
+		}
+		name, ok := repoByProject[uuid.UUID(t.ProjectID.Bytes)]
+		if !ok {
+			return "", false
+		}
+		slug, ok := slugByRepo[name]
+		return slug, ok
+	}
 }
 
 // bodyExcerptMaxLen caps the persisted body slice to keep the audit log
@@ -117,11 +169,19 @@ func sanitiseBodyExcerpt(s string) string {
 // Returns a MatchResult; the caller is responsible for invoking
 // BatchCompleteTasksByPRMatch + completioncandidate WriteAutoApplied with the
 // outputs. The matcher is purely read-only.
+//
+// resolve decides which repo a task belongs to for the branch_name path
+// ([F0925-31]); it must not be nil — this matcher auto-closes tasks, so it
+// never falls back to repo-blind branch matching.
 func MatchMergedPRs(
 	ctx context.Context,
 	store StoreIface,
 	prs []MergedPR,
+	resolve RepoResolver,
 ) (MatchResult, error) {
+	if resolve == nil {
+		return MatchResult{}, errors.New("MatchMergedPRs: nil RepoResolver")
+	}
 	if len(prs) == 0 {
 		return MatchResult{Matches: []Match{}, Ambiguous: []Ambiguous{}}, nil
 	}
@@ -150,8 +210,9 @@ func MatchMergedPRs(
 	}
 
 	result := MatchResult{
-		Matches:   make([]Match, 0, len(prs)),
-		Ambiguous: make([]Ambiguous, 0),
+		Matches:        make([]Match, 0, len(prs)),
+		Ambiguous:      make([]Ambiguous, 0),
+		UnverifiedRepo: make([]Ambiguous, 0),
 	}
 
 	// Track which task IDs have been claimed already (to avoid double-counting
@@ -160,14 +221,16 @@ func MatchMergedPRs(
 	claimed := make(map[uuid.UUID]bool, len(prs))
 
 	for _, pr := range prs {
-		match, ambig, hit := matchSinglePR(pr, prURLIndex, branchIndex, claimed)
-		if hit {
-			result.Matches = append(result.Matches, match)
-			claimed[match.TaskID] = true
+		o := matchSinglePR(pr, prURLIndex, branchIndex, claimed, resolve)
+		if o.hit {
+			result.Matches = append(result.Matches, o.match)
+			claimed[o.match.TaskID] = true
 		} else {
 			result.NoMatch++
 		}
-		result.Ambiguous = append(result.Ambiguous, ambig...)
+		result.Ambiguous = append(result.Ambiguous, o.ambig...)
+		result.UnverifiedRepo = append(result.UnverifiedRepo, o.unverified...)
+		result.SkippedRepoMismatch += o.mismatch
 	}
 
 	return result, nil
@@ -187,11 +250,17 @@ func MatchMergedPRs(
 // on a fix-pr task is a false-positive risk — it would silently auto-complete
 // a review-debt task the moment the PR that merely reported it gets merged.
 // fix-pr tasks can still auto-close, but only via branch_name_exact below.
+//
+// [F0925-31] branch_name hits are split by repo: a task whose repo is known
+// and equals the PR's repo (case-insensitive) is eligible; known but
+// different is skipped and counted; unknown is reported as unverified and
+// never auto-closed. pr_url_exact is not split — a PR URL names one PR.
 func matchSinglePR(
 	pr MergedPR,
 	prURLIndex, branchIndex map[string][]db.Task,
 	claimed map[uuid.UUID]bool,
-) (Match, []Ambiguous, bool) {
+	resolve RepoResolver,
+) prOutcome {
 	// 1) pr_url_exact (case-insensitive)
 	if pr.URL != "" {
 		k := strings.ToLower(strings.TrimSpace(pr.URL))
@@ -210,30 +279,47 @@ func matchSinglePR(
 			// reason it isn't, prefer the most-recent unclaimed task.
 			pick := pickMostRecentUnclaimed(candidates, claimed)
 			if pick != nil {
-				return Match{
+				return prOutcome{hit: true, match: Match{
 					TaskID:      pick.ID,
 					Reason:      MatchReasonPRURLExact,
 					PRUrl:       pr.URL,
 					PRHeadRef:   pr.HeadRef,
 					MergedAt:    pr.MergedAt,
 					BodyExcerpt: sanitiseBodyExcerpt(pr.Body),
-				}, nil, true
+				}}
 			}
 		}
 	}
 
 	// 2) branch_name_exact (case-sensitive — git branch names are case-sensitive)
 	if pr.HeadRef == "" {
-		return Match{}, nil, false
+		return prOutcome{}
 	}
-	hits := branchIndex[pr.HeadRef]
+	var out prOutcome
+	hits := make([]db.Task, 0, len(branchIndex[pr.HeadRef]))
+	for _, t := range branchIndex[pr.HeadRef] {
+		if claimed[t.ID] {
+			continue
+		}
+		slug, known := resolve(t)
+		switch {
+		case !known:
+			out.unverified = append(out.unverified, Ambiguous{
+				TaskID: t.ID, Reason: MatchReasonBranchNameExact, PRUrl: pr.URL, PRHeadRef: pr.HeadRef,
+			})
+		case sameRepo(slug, pr.Repo):
+			hits = append(hits, t)
+		default:
+			out.mismatch++
+		}
+	}
 	if len(hits) == 0 {
-		return Match{}, nil, false
+		return out
 	}
 
 	pick := pickMostRecentUnclaimed(hits, claimed)
 	if pick == nil {
-		return Match{}, nil, false
+		return out
 	}
 	winner := Match{
 		TaskID:      pick.ID,
@@ -244,20 +330,30 @@ func matchSinglePR(
 		BodyExcerpt: sanitiseBodyExcerpt(pr.Body),
 	}
 
-	// Surface remaining unclaimed siblings as ambiguous → operator decides.
-	var ambig []Ambiguous
+	// Surface remaining unclaimed same-repo siblings as ambiguous → operator
+	// decides.
 	for _, t := range hits {
-		if t.ID == pick.ID || claimed[t.ID] {
+		if t.ID == pick.ID {
 			continue
 		}
-		ambig = append(ambig, Ambiguous{
+		out.ambig = append(out.ambig, Ambiguous{
 			TaskID:    t.ID,
 			Reason:    MatchReasonBranchNameExact,
 			PRUrl:     pr.URL,
 			PRHeadRef: pr.HeadRef,
 		})
 	}
-	return winner, ambig, true
+	out.match, out.hit = winner, true
+	return out
+}
+
+// prOutcome is matchSinglePR's result for one PR.
+type prOutcome struct {
+	match      Match
+	hit        bool
+	ambig      []Ambiguous
+	unverified []Ambiguous
+	mismatch   int
 }
 
 // pickMostRecentUnclaimed returns a pointer to the most-recently-updated task

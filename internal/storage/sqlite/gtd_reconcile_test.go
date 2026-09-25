@@ -36,7 +36,7 @@ func TestSQLiteReconcileExactMatch(t *testing.T) {
 		URL:      prURL,
 		HeadRef:  branch,
 		MergedAt: time.Now().UTC(),
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 	prs := []gtd.MergedPR{{
 		URL: "https://github.com/owner/repo/pull/22", HeadRef: branch,
 	}}
-	r1, err := gtd.MatchMergedPRs(ctx, store, prs)
+	r1, err := gtd.MatchMergedPRs(ctx, store, prs, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("first MatchMergedPRs: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 		t.Fatalf("first applied = %d, want 1", len(a1))
 	}
 
-	r2, err := gtd.MatchMergedPRs(ctx, store, prs)
+	r2, err := gtd.MatchMergedPRs(ctx, store, prs, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("second MatchMergedPRs: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSQLiteReconcileNoMatch(t *testing.T) {
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL:     "https://github.com/owner/repo/pull/33",
 		HeadRef: "feature/x",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
 
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL: "https://github.com/owner/repo/pull/44", HeadRef: branch,
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
 
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL: prURL, HeadRef: "irrelevant-branch",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}

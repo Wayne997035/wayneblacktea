@@ -167,7 +167,13 @@ func jaccard(a, b map[string]struct{}) float64 {
 // silently skipped here even if they appear in the input slice — this lets
 // the caller pass `store.Tasks(ctx, nil)` directly without pre-filtering
 // and the fuzzy matcher just does the right thing.
-func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
+//
+// [F0925-31] resolve excludes at the (task, PR) pair level: a task whose repo
+// is known skips only PRs from another repo (strings.EqualFold, same as
+// branch_name_exact) and still matches same-repo PRs in the batch. A nil
+// resolve treats every task's repo as unknown and excludes nothing — fuzzy
+// hits only become candidates, never auto-closes.
+func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task, resolve RepoResolver) []FuzzyMatch {
 	if len(prs) == 0 || len(tasks) == 0 {
 		return nil
 	}
@@ -188,9 +194,17 @@ func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
 		bestScore := 0.0
 		bestFound := false
 		taskIDStr := t.ID.String()
+		var taskRepo string
+		repoKnown := false
+		if resolve != nil {
+			taskRepo, repoKnown = resolve(t)
+		}
 
 		forcedMatched := false
 		for i, pr := range prs {
+			if repoKnown && !sameRepo(taskRepo, pr.Repo) {
+				continue
+			}
 			// Rule 1: task UUID literally appears in body. The first such PR
 			// wins for this task (subsequent PRs with the same UUID-in-body
 			// would be the same hit; candidate uniqueness key (task_id, reason)

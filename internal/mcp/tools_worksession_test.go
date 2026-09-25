@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	wbtsqlite "github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
@@ -63,6 +64,10 @@ func newTestWorkSessionServerWithDB(t *testing.T) (*Server, *wbtsqlite.DB) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// [F0925-31] The reconcile tests built on this server test token,
+	// session and TOCTOU behaviour, not repo verification; that has its own
+	// tests (tools_reconcile_repo_test.go) that clear this override.
+	srv.reconcileResolverOverride = gtd.AssumeSameRepo
 	// MCPServer() registers every tool (including deriving+caching each
 	// toolSpec via addTool/registerToolSpec — see toolspec.go). Tests below
 	// call handler methods directly rather than dispatching through the

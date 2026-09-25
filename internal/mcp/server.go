@@ -175,6 +175,10 @@ type Server struct {
 	// not a new risk class).
 	reconcileTokens sync.Map
 
+	// reconcileResolverOverride replaces the per-call reconcile repo resolver
+	// ([F0925-31]); set only by tests whose subject is not repo verification.
+	reconcileResolverOverride gtd.RepoResolver
+
 	// nowFn is overridable in tests so deletion-token expiry can be tested
 	// deterministically without time.Sleep. Defaults to time.Now.
 	nowFn func() time.Time

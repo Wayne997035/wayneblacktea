@@ -45,6 +45,13 @@ const (
 	// matcher MUST NOT auto-apply because Jaccard similarity false-positives
 	// are common enough that silent task closure would damage trust.
 	ReasonPRMerged Reason = "pr_merged_fuzzy"
+	// ReasonPRMergedRepoUnverified ([F0925-31]): a merged PR's head branch
+	// exactly matches the task's branch_name, but the task's repo (project →
+	// repo → github_slug) cannot be derived, so the matcher cannot tell it
+	// from a same-named branch in another repo. Never auto-applied —
+	// confidence 'medium', manual accept. Kept apart from ReasonPRMerged,
+	// whose rows are fuzzy title matches on tasks with no linkage at all.
+	ReasonPRMergedRepoUnverified Reason = "pr_merged_repo_unverified"
 )
 
 // Candidate is the domain model for a completion_candidates row.

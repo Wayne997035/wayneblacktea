@@ -75,7 +75,7 @@ func runReconcileRequest(t *testing.T, h *handler.ReconcileHandler, body []byte)
 // with status='auto_applied' exists.
 func TestReconcileMergedPRs_ExactMatch_AutoApplies(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	task, err := store.CreateTask(context.Background(),
 		gtd.CreateTaskParams{Title: "do the thing", Priority: 3})
@@ -136,7 +136,7 @@ func TestReconcileMergedPRs_ExactMatch_AutoApplies(t *testing.T) {
 // TestReconcileMergedPRs_Idempotent covers idempotency.
 func TestReconcileMergedPRs_Idempotent(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	task, err := store.CreateTask(context.Background(),
 		gtd.CreateTaskParams{Title: "idem", Priority: 3})
@@ -195,7 +195,7 @@ func TestReconcileMergedPRs_Idempotent(t *testing.T) {
 // TestReconcileMergedPRs_NoMatch covers the no-match path.
 func TestReconcileMergedPRs_NoMatch(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	task, err := store.CreateTask(context.Background(),
 		gtd.CreateTaskParams{Title: "untouched", Priority: 3})
@@ -242,7 +242,7 @@ func TestReconcileMergedPRs_NoMatch(t *testing.T) {
 // confirmation of the matcher contract.
 func TestReconcileMergedPRs_MultipleSameBranch_PicksMostRecent(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 	ctx := context.Background()
 
 	branch := "feature/dup-handler"
@@ -308,7 +308,7 @@ func TestReconcileMergedPRs_MultipleSameBranch_PicksMostRecent(t *testing.T) {
 // TestReconcileMergedPRs_PRURLMatch — pr_url linkage path.
 func TestReconcileMergedPRs_PRURLMatch(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	task, err := store.CreateTask(context.Background(),
 		gtd.CreateTaskParams{Title: "linked-by-url", Priority: 3})
@@ -431,7 +431,7 @@ func TestReconcileMergedPRs_TOCTOUCancelSkipsFalseAutoAppliedCandidate(t *testin
 	}
 
 	wrapped := &toctouCancelStore{StoreIface: store, t: t, cancelTaskID: task.ID}
-	h := handler.NewReconcileHandler(wrapped, candStore)
+	h := handler.NewReconcileHandler(wrapped, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	body := mustJSON(t, map[string]any{
 		"merged_prs": []map[string]any{{
@@ -496,7 +496,7 @@ func TestReconcileMergedPRs_TOCTOUCancelSkipsFalseAutoAppliedCandidate(t *testin
 // case (skipped match → applied:false).
 func TestReconcileMergedPRs_AppliedFieldTrueForGenuineApply(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	task, err := store.CreateTask(context.Background(),
 		gtd.CreateTaskParams{Title: "genuine-apply", Priority: 3})
@@ -540,7 +540,7 @@ func TestReconcileMergedPRs_AppliedFieldTrueForGenuineApply(t *testing.T) {
 // TestReconcileMergedPRs_DoSGuards covers input limits.
 func TestReconcileMergedPRs_DoSGuards(t *testing.T) {
 	store, candStore := openMemForReconcile(t)
-	h := handler.NewReconcileHandler(store, candStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo)
 
 	cases := []struct {
 		name     string
@@ -678,7 +678,7 @@ func sleepShort() {
 // second POST with the same payload.
 func TestReconcileMergedPRs_PersistsMergedPRsObserved(t *testing.T) {
 	store, candStore, mpsStore, d := openMemForReconcileWithMergedPRs(t)
-	h := handler.NewReconcileHandler(store, candStore).WithMergedPRsStore(mpsStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo).WithMergedPRsStore(mpsStore)
 
 	prURL := "https://github.com/owner/repo/pull/501"
 	body := mustJSON(t, map[string]any{
@@ -730,7 +730,7 @@ func TestReconcileMergedPRs_PersistsMergedPRsObserved(t *testing.T) {
 // task must remain pending — fuzzy candidates NEVER auto-apply.
 func TestReconcileMergedPRs_FuzzyCandidateForNullLinkageTask(t *testing.T) {
 	store, candStore, mpsStore, _ := openMemForReconcileWithMergedPRs(t)
-	h := handler.NewReconcileHandler(store, candStore).WithMergedPRsStore(mpsStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo).WithMergedPRsStore(mpsStore)
 	ctx := context.Background()
 
 	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{
@@ -818,7 +818,7 @@ func TestReconcileMergedPRs_FuzzyCandidateForNullLinkageTask(t *testing.T) {
 // NOT touch fuzzy logic here.
 func TestReconcileMergedPRs_FuzzyCandidateFromCurl(t *testing.T) {
 	store, candStore, mpsStore, d := openMemForReconcileWithMergedPRs(t)
-	h := handler.NewReconcileHandler(store, candStore).WithMergedPRsStore(mpsStore)
+	h := handler.NewReconcileHandler(store, candStore).WithRepoResolverForTest(gtd.AssumeSameRepo).WithMergedPRsStore(mpsStore)
 	ctx := context.Background()
 
 	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{

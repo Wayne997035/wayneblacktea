@@ -587,7 +587,7 @@ func validateUpsertParams(p UpsertParams) error {
 func validateReason(r Reason) error {
 	switch r {
 	case ReasonStaleInProgress, ReasonFinishWorkGap, ReasonArtifactEvidence,
-		ReasonCompletionSignal, ReasonPRMerged:
+		ReasonCompletionSignal, ReasonPRMerged, ReasonPRMergedRepoUnverified:
 		return nil
 	default:
 		return fmt.Errorf("unknown reason %q", r)

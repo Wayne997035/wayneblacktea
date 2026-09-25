@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/completioncandidate"
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/mergedprs"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
@@ -198,7 +199,8 @@ func (s *Server) handleReconcileMergedPRsPreview(
 	// runs end-to-end.
 	reconcileMCPPersistObserved(ctx, s.mergedPRsStore, prs)
 
-	result, err := gtd.MatchMergedPRs(ctx, s.gtd, prs)
+	resolve := s.reconcileRepoResolver(ctx)
+	result, err := gtd.MatchMergedPRs(ctx, s.gtd, prs, resolve)
 	if err != nil {
 		return storeErrorResult("match", err), nil
 	}
@@ -225,8 +227,13 @@ func (s *Server) handleReconcileMergedPRsPreview(
 		for _, m := range result.Matches {
 			excludeExactMatches[m.TaskID] = true
 		}
-		candidateWrites = reconcileMCPWriteFuzzyCandidates(ctx, s.gtd, cs, prs, excludeExactMatches)
+		candidateWrites = reconcileMCPWriteFuzzyCandidates(ctx, s.gtd, cs, prs, excludeExactMatches, resolve)
 	}
+	// [F0925-31] Branch hits whose task repo is unknown are never confirmed
+	// into completions; they are recorded as pending candidates now, the
+	// same moment fuzzy candidates are.
+	unverifiedWrites := reconcileMCPWriteUnverifiedCandidates(ctx, s.reconcileCandidateStore(), result.UnverifiedRepo)
+	candidateWrites += unverifiedWrites
 
 	// Round-3 Finding 1: gate token issuance on the MATCH RESULT, not merely
 	// on payload non-emptiness. The len(p.MergedPRs)==0 short-circuit above
@@ -246,12 +253,14 @@ func (s *Server) handleReconcileMergedPRsPreview(
 	// through to token issuance.
 	if len(result.Matches) == 0 && len(result.Ambiguous) == 0 {
 		return jsonText(map[string]any{
-			"status":           "no_match",
-			"matches":          []reconcileMCPMatch{},
-			"ambiguous":        []reconcileMCPAmbiguous{},
-			"applied":          0,
-			"no_match":         result.NoMatch,
-			"candidate_writes": candidateWrites,
+			"status":                     "no_match",
+			"matches":                    []reconcileMCPMatch{},
+			"ambiguous":                  []reconcileMCPAmbiguous{},
+			"applied":                    0,
+			"no_match":                   result.NoMatch,
+			"candidate_writes":           candidateWrites,
+			"skipped_repo_mismatch":      result.SkippedRepoMismatch,
+			"unverified_repo_candidates": unverifiedWrites,
 			"message": "No merged_prs entry matched a pending/in_progress task; nothing to " +
 				"confirm. No reconcile_token issued.",
 		})
@@ -297,6 +306,9 @@ func (s *Server) handleReconcileMergedPRsPreview(
 		"no_match":         result.NoMatch,
 		"candidate_writes": candidateWrites,
 		"reconcile_token":  token,
+
+		"skipped_repo_mismatch":      result.SkippedRepoMismatch,
+		"unverified_repo_candidates": unverifiedWrites,
 		"expires_at":       expires.UTC().Format(time.RFC3339),
 		"message": "Call reconcile_merged_prs again with confirm=true and reconcile_token " +
 			"to apply these completions. Token expires in 60s.",
@@ -564,6 +576,53 @@ func reconcileMCPHasControlChars(s string) bool {
 // interface (PG or SQLite). Returns nil when the feature is disabled or when
 // the wired store is a narrowed fake (e.g. dashboard test stub) that doesn't
 // expose WriteAutoApplied.
+// reconcileRepoResolver builds the task → github_slug resolver for one
+// reconcile call ([F0925-31]). Any load failure degrades to "every repo
+// unknown", which only turns auto-closes into candidates.
+func (s *Server) reconcileRepoResolver(ctx context.Context) gtd.RepoResolver {
+	if s.reconcileResolverOverride != nil {
+		return s.reconcileResolverOverride
+	}
+	unknown := func(db.Task) (string, bool) { return "", false }
+	if s.workspace == nil || s.gtd == nil {
+		return unknown
+	}
+	projects, err := s.gtd.ProjectsFiltered(ctx, "all")
+	if err != nil {
+		slog.Warn("reconcile_mcp: loading projects for repo resolver failed", "err", err)
+		return unknown
+	}
+	repos, err := s.workspace.ActiveRepos(ctx)
+	if err != nil {
+		slog.Warn("reconcile_mcp: loading repos for repo resolver failed", "err", err)
+		return unknown
+	}
+	return gtd.NewRepoResolver(projects, repos)
+}
+
+// reconcileMCPWriteUnverifiedCandidates records branch hits whose task repo
+// is unknown as pending candidates ([F0925-31]). Returns rows written.
+func reconcileMCPWriteUnverifiedCandidates(ctx context.Context, store completioncandidate.Store, hits []gtd.Ambiguous) int {
+	if store == nil {
+		return 0
+	}
+	wrote := 0
+	for _, a := range hits {
+		if _, err := store.UpsertCandidate(ctx, completioncandidate.UpsertParams{
+			TaskID:            a.TaskID,
+			Reason:            completioncandidate.ReasonPRMergedRepoUnverified,
+			Confidence:        completioncandidate.ConfidenceMedium,
+			EvidenceRefs:      []string{"branch_name_exact:repo_unverified", a.PRUrl},
+			SuggestedArtifact: a.PRUrl,
+		}); err != nil {
+			slog.Warn("reconcile_mcp: unverified-repo candidate upsert failed", "err", err, "task_id", a.TaskID)
+			continue
+		}
+		wrote++
+	}
+	return wrote
+}
+
 func (s *Server) reconcileCandidateStore() completioncandidate.Store {
 	if s.completionCandidates == nil {
 		return nil
@@ -635,6 +694,7 @@ func reconcileMCPWriteFuzzyCandidates(
 	candStore completioncandidate.Store,
 	prs []gtd.MergedPR,
 	excludeTaskIDs map[uuid.UUID]bool,
+	resolve gtd.RepoResolver,
 ) int {
 	if candStore == nil || len(prs) == 0 {
 		return 0
@@ -644,7 +704,7 @@ func reconcileMCPWriteFuzzyCandidates(
 		slog.Warn("reconcile_mcp writeFuzzyCandidates: load tasks failed", "err", err)
 		return 0
 	}
-	matches := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	matches := gtd.MatchPendingTasksFuzzy(prs, tasks, resolve)
 	if len(matches) == 0 {
 		return 0
 	}
