@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -109,8 +110,11 @@ func TestHandleUpsertProjectArch_SlugAllowlistRejectsNonAlnum(t *testing.T) {
 		name string
 		slug string
 	}{
-		{"slash_org_repo", "org/repo"},
-		{"dot", "repo.name"},
+		// [F0925-29] The slug now follows the workspace repo name rule, so
+		// "org/repo" and "repo.name" are accepted (see
+		// TestArchAndStatusSlug_AcceptRepoPaths); these stay rejected.
+		{"empty_segment", "org//repo"},
+		{"leading_dot", ".repo"},
 		{"space", "repo name"},
 	}
 	for _, tc := range tests {
@@ -126,8 +130,8 @@ func TestHandleUpsertProjectArch_SlugAllowlistRejectsNonAlnum(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected TextContent, got %T", result.Content[0])
 			}
-			if !strings.Contains(text.Text, "^[a-zA-Z0-9_-]+$") {
-				t.Errorf("error message does not name the allow-list pattern: %q", text.Text)
+			if !strings.Contains(text.Text, validator.RepoPathSegmentRule) {
+				t.Errorf("error message does not state the slug rule: %q", text.Text)
 			}
 			if store.upserted != nil {
 				t.Errorf("store must not be called when slug fails the allow-list, got %+v", store.upserted)

@@ -5,7 +5,12 @@ import "errors"
 // RepoNameRule describes the workspace repo name format in words. It is the
 // text every caller-facing rejection message quotes, so a caller that trips
 // the rule is told what a valid name looks like.
-const RepoNameRule = "1-100 ASCII characters: one or more '/'-separated segments, " +
+const RepoNameRule = "1-100 ASCII characters: " + RepoPathSegmentRule
+
+// RepoPathSegmentRule is the segment half of RepoNameRule, without a length.
+// Identifiers that share the segment rule under their own length limit
+// (ValidRepoPathMax) quote it next to that limit.
+const RepoPathSegmentRule = "one or more '/'-separated segments, " +
 	"each starting with a letter, digit or '_' and continuing with letters, digits, '.', '_' or '-'"
 
 // RepoPathPattern is ValidRepoPath's rule written as a regular expression, for

@@ -2,22 +2,28 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
-	"regexp"
 
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// statusSlugMaxLen + statusSlugRe define the slug-format guard at the
-// generate_project_status MCP boundary. Slug flows into a Haiku prompt
-// (see snapshot/generator.go); a free-text slug containing newlines or
-// "[END UNTRUSTED]" can break out of the boundary block and inject
-// instructions into the model context (security audit C-2).
+// statusSlugMaxLen is the slug length limit at the generate_project_status
+// MCP boundary. Slug flows into a Haiku prompt (see snapshot/generator.go); a
+// free-text slug containing newlines or "[END UNTRUSTED]" could break out of
+// the boundary block and inject instructions into the model context
+// (security audit C-2). The character gate is the workspace repo name rule
+// (validator.ValidRepoPathMax): every boundary marker in
+// internal/safetext/boundary_markers.go needs '=', '[' or whitespace, and
+// the rule admits none of them.
 const statusSlugMaxLen = 64
 
-var statusSlugRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+// statusSlugMessage is the rejection text for a slug outside the rule.
+var statusSlugMessage = fmt.Sprintf("slug must be at most %d characters: %s",
+	statusSlugMaxLen, validator.RepoPathSegmentRule)
 
 // statusFieldMaxRunes bounds SprintSummary/GapAnalysis/PendingSummary on
 // read — U13. These are Haiku-generated but
@@ -50,17 +56,12 @@ func (s *Server) handleGenerateProjectStatus(ctx context.Context, req mcp.CallTo
 		return mcp.NewToolResultError("slug is required"), nil
 	}
 	// Reject slugs that could break out of the [BEGIN UNTRUSTED] boundary
-	// in the Haiku snapshot prompt. Shares statusSlugRe (the character
-	// allow-list: alphanumeric + underscore + dash) with
-	// upsert_project_arch's validateArchSlug (tools_arch.go) — that gate
-	// used to have no allow-list at all despite this comment previously
-	// claiming otherwise (R4 dispatch round 3 finding). The length cap
-	// differs on purpose: 64 here is this tool's own Haiku-prompt budget,
-	// not shared with upsert_project_arch's maxSlugLen=128.
-	if len(slug) > statusSlugMaxLen || !statusSlugRe.MatchString(slug) {
-		return mcp.NewToolResultError(
-			"slug must match ^[a-zA-Z0-9_-]+$ and be ≤ 64 chars",
-		), nil
+	// in the Haiku snapshot prompt. Same segment rule as upsert_project_arch's
+	// validateArchSlug (tools_arch.go) and every repo_name column
+	// ([F0925-29]). The length cap differs on purpose: 64 here is this
+	// tool's own Haiku-prompt budget, not upsert_project_arch's maxSlugLen=128.
+	if !validator.ValidRepoPathMax(slug, statusSlugMaxLen) {
+		return mcp.NewToolResultError(statusSlugMessage), nil
 	}
 
 	forceRefresh, _ := args["force_refresh"].(bool)

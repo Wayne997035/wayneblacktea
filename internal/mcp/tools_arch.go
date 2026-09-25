@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -153,27 +154,25 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 // handleGetProjectArch below) and, once stored, into every
 // wrapUntrustedArchSnapshot response.
 //
-// statusSlugRe (tools_status.go) is reused rather than duplicated: before
-// this change tools_status.go's own comment claimed "Same allow-list as
-// upsert_project_arch" while upsert_project_arch had no allow-list at all —
-// only a non-empty + length check (R4 dispatch round 3 finding). Reusing the
-// same *regexp.Regexp makes that comment true instead of aspirational, and
-// is strictly stronger than the control-char rejection this replaced:
-// `^[a-zA-Z0-9_\-]+$` excludes every control character AND every other
-// injection-relevant character (space, `=`, `/`, quotes, backticks) in one
-// check, so a boundary marker like "=== END PROJECT ARCH ===" cannot be
-// written into a NEW slug at all. maxSlugLen stays 128 here (NOT
-// statusSlugMaxLen=64 — that cap is specific to generate_project_status's
-// Haiku prompt budget, unrelated to this field).
+// The character gate is the workspace repo name rule ([F0925-29],
+// validator.ValidRepoPathMax), shared with generate_project_status's slug and
+// every repo_name column, so a repo's path-shaped name ("Flare-Go/auth") is a
+// valid slug. It still satisfies security audit C-2: every boundary marker
+// in internal/safetext/boundary_markers.go needs '=', '[' or whitespace, and
+// the rule admits only [A-Za-z0-9._/-], so a marker like
+// "=== END PROJECT ARCH ===" cannot be written into a NEW slug at all.
+// Control characters, quotes and backticks stay excluded as well.
+// maxSlugLen stays 128 here (NOT statusSlugMaxLen=64 — that cap is specific
+// to generate_project_status's Haiku prompt budget, unrelated to this field).
 func validateArchSlug(slug string) *mcp.CallToolResult {
 	if slug == "" {
 		return mcp.NewToolResultError("slug is required")
 	}
-	if !statusSlugRe.MatchString(slug) {
-		return mcp.NewToolResultError("slug must match ^[a-zA-Z0-9_-]+$")
-	}
 	if len(slug) > maxSlugLen {
 		return mcp.NewToolResultError(fmt.Sprintf("slug too long (max %d chars)", maxSlugLen))
+	}
+	if !validator.ValidRepoPathMax(slug, maxSlugLen) {
+		return mcp.NewToolResultError("slug must be " + validator.RepoPathSegmentRule)
 	}
 	return nil
 }
