@@ -3,8 +3,7 @@ package sanitize
 // Notes strips control characters (except horizontal tab) — both the C0 set
 // (U+0000-U+001F) plus DEL (U+007F) and the C1 set (U+0080-U+009F, [F191-17])
 // — and ANSI escape sequences from text before it is stored in
-// activity_log.notes. Capped at 500 runes per §5.4 of
-// backend-security-design.md.
+// activity_log.notes. Capped at 500 runes.
 func Notes(s string) string {
 	var b []rune
 	runes := []rune(s)

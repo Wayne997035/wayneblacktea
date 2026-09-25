@@ -263,8 +263,7 @@ func (s *Store) ByRelatedEntity(
 }
 
 // PruneOlderThan hard-deletes reflection rows with created_at < cutoff.
-// Called daily by the scheduler to enforce the 180-day TTL per
-// backend-security-design.md §1.3.
+// Called daily by the scheduler to enforce the 180-day TTL.
 func (s *Store) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
 	const q = `DELETE FROM reflections WHERE created_at < $1`
 	tag, err := s.pool.Exec(ctx, q, cutoff)
