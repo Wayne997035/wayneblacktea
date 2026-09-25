@@ -19,7 +19,7 @@ RUN npm run test
 RUN npm run build
 
 # Stage 2: Build the Go binary (with embedded frontend)
-FROM golang:1.26.4-alpine AS builder
+FROM golang:1.26.8-alpine AS builder
 
 # Build identity for internal/buildinfo (GTD 61838147 — the MCP server's
 # serverInfo.version and the wayneblacktea://system/build-info resource read

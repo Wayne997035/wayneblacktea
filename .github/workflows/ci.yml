@@ -132,36 +132,21 @@ jobs:
         working-directory: build
         run: task build-all
 
+  # [F0925-26] Runs on every push/PR unconditionally, not just when go.mod /
+  # go.sum changed — an upstream advisory on an already-committed dependency
+  # needs to surface even when this diff doesn't touch dependency files.
   vuln:
     name: vuln check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 2
-
-      - name: Detect go.mod / go.sum changes
-        id: deps
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            git diff --name-only "$BASE" HEAD | grep -q 'go\.mod\|go\.sum' \
-              && echo "changed=true" >> $GITHUB_OUTPUT \
-              || echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            git diff --name-only HEAD~1 HEAD | grep -q 'go\.mod\|go\.sum' \
-              && echo "changed=true" >> $GITHUB_OUTPUT \
-              || echo "changed=false" >> $GITHUB_OUTPUT
-          fi
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        if: steps.deps.outputs.changed == 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install and run govulncheck
-        if: steps.deps.outputs.changed == 'true'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
