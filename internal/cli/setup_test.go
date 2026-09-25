@@ -17,59 +17,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/lifecycle"
 )
 
-// buildFakeServer compiles internal/cli/testdata/fakeserver as a side test
-// fixture and returns its absolute path. Each test that needs it should
-// call this exactly once via t.Helper.
-func buildFakeServer(t *testing.T) string {
-	t.Helper()
-	out := filepath.Join(t.TempDir(), "fakeserver")
-	// Build at package level — go test cwd is the package dir.
-	//nolint:gosec // G204: go binary from PATH; fixed args; testdata path under repo
-	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", out, "./testdata/fakeserver")
-	cmd.Env = os.Environ()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building fakeserver: %v\nout:\n%s", err, out)
-	}
-	return out
-}
-
-// buildFakeClaude compiles a tiny stub that records arguments to a file
-// then exits 0. Returns the path to the binary and the path to the file
-// that will contain one line per invocation.
-func buildFakeClaude(t *testing.T) (string, string) {
-	t.Helper()
-	dir := t.TempDir()
-	src := filepath.Join(dir, "main.go")
-	logPath := filepath.Join(dir, "calls.log")
-	stub := fmt.Sprintf(`package main
-
-import (
-	"fmt"
-	"os"
-	"strings"
-)
-
-func main() {
-	f, _ := os.OpenFile(%q, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if f != nil {
-		fmt.Fprintln(f, strings.Join(os.Args[1:], " "))
-		_ = f.Close()
-	}
-	os.Exit(0)
-}
-`, logPath)
-	if err := os.WriteFile(src, []byte(stub), 0o600); err != nil {
-		t.Fatalf("writing stub: %v", err)
-	}
-	bin := filepath.Join(dir, "fake-claude")
-	//nolint:gosec // G204: go binary from PATH; fixed flags; src under t.TempDir()
-	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, src)
-	cmd.Env = os.Environ()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building fake-claude: %v\nout:\n%s", err, out)
-	}
-	return bin, logPath
-}
+// buildFakeServer and buildFakeClaude (build-once, package-level) live in
+// fakebin_test.go (F0925-07).
 
 // setupTestEnv overrides all XDG vars + HOME so the test does not touch
 // the real user directories. Also clears WBT_PORT so the test controls
