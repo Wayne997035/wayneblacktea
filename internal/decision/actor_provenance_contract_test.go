@@ -97,9 +97,9 @@ func decisionColumnNames(t *testing.T, ctx context.Context, conn *sql.DB) map[st
 // TestMigration000076_SQLite_UpDownUp steps golang-migrate forward across
 // migration 000076, back down, then forward again, asserting the columns
 // appear/disappear at each step. Proves both up.sql and down.sql parse and
-// apply cleanly against the real SQLite driver (backend-security-design.md
-// §6.1 requires plain SQL that golang-migrate can actually run, not just
-// "no psql metacommands" by inspection) and that the migration is reversible
+// apply cleanly against the real SQLite driver (plain SQL that golang-migrate
+// can actually run, not just "no psql metacommands" by inspection) and that
+// the migration is reversible
 // (§6.5-adjacent dual-backend parity expectation: the SQLite twin must behave
 // like a real migration, not a one-way schema patch).
 func TestMigration000076_SQLite_UpDownUp(t *testing.T) {
@@ -241,9 +241,9 @@ func TestDecisionStore_ActorProvenance_SQLite(t *testing.T) {
 }
 
 // TestStore_ActorProvenance_Postgres mirrors TestDecisionStore_ActorProvenance_SQLite
-// on the real Postgres backend via testcontainers (backend-security-design.md
-// §6.5: any store logic touching PG needs its own testcontainers coverage,
-// not just "PG and SQLite are the same SQL so one suffices" — and Lead's
+// on the real Postgres backend via testcontainers (any store logic touching
+// PG needs its own testcontainers coverage, not just "PG and SQLite are the
+// same SQL so one suffices" — and Lead's
 // dispatch correction made this unconditional for both directions, not only
 // the omitted-value case).
 func TestStore_ActorProvenance_Postgres(t *testing.T) {

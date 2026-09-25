@@ -47,9 +47,8 @@ type DecisionReadPort interface {
 	// used only when req has no scope signal at all (RepoName == "" &&
 	// ProjectID == nil && TaskID == nil). The session-start hook (A5a) is one
 	// caller that hits this: it has no current-repo signal to pass — see
-	// retrieveDecisions and backend-security-design.md-adjacent dispatch
-	// notes on why deriveRepoSlug is deliberately not used to manufacture
-	// one. It is NOT the only caller: assemble_context's MCP tool schema
+	// retrieveDecisions for why deriveRepoSlug is deliberately not used to
+	// manufacture one. It is NOT the only caller: assemble_context's MCP tool schema
 	// (internal/mcp/tools_contextpack.go) marks repo_name/project_id/task_id
 	// Optional — only objective is Required — so any MCP client that omits
 	// all three (e.g. a bare "what have we decided" query) reaches this

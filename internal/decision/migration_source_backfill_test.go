@@ -23,9 +23,9 @@ const preCutoffCreatedAt = "2026-07-20T00:00:00Z"
 const postCutoffCreatedAt = "2026-07-25T08:00:00Z"
 
 // TestMigration000073_Backfill_Postgres mirrors the SQLite twin coverage
-// (internal/storage/sqlite's real-SQLite test) — backend-security-design.md
-// §6.5 dual-backend parity requires the same predicate logic to be
-// independently verified on both engines. Runs inside a transaction that is
+// (internal/storage/sqlite's real-SQLite test) — dual-backend parity
+// requires the same predicate logic to be independently verified on both
+// engines. Runs inside a transaction that is
 // always rolled back (t.Cleanup), same technique as
 // TestMigration000073_UpDownUp_PreservesNonSourceFields below: M-1 changed
 // the ALTER from `ADD COLUMN IF NOT EXISTS` to plain `ADD COLUMN`, so

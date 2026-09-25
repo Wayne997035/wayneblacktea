@@ -96,8 +96,7 @@ func (p PendingProposal) MarshalJSON() ([]byte, error) {
 // decisionJSON is the wire shape for Decision — every field Decision has
 // EXCEPT actor_session_id and confirmed_by_human.
 //
-// actor_session_id is a server-side audit/provenance identity
-// (backend-security-design.md §2 adversarial input / provenance integrity):
+// actor_session_id is a server-side audit/provenance identity:
 // PR160 round-2 security review (M-3) found that any caller of
 // list_decisions / GET /api/decisions could read another MCP session's
 // actor_session_id back out, turning the residual risk accepted by decision
