@@ -194,7 +194,8 @@ func (s *SQLiteStore) UpsertCandidate(ctx context.Context, p UpsertParams) (*Can
 			evidence_refs     = excluded.evidence_refs,
 			suggested_artifact = COALESCE(excluded.suggested_artifact, completion_candidates.suggested_artifact)`
 
-	if _, err := s.db.ExecContext(ctx, q,
+	if _, err := s.db.ExecContext(
+		ctx, q,
 		id.String(), wsArg, p.TaskID.String(), repoArg,
 		string(p.Reason), evidenceJSON, string(p.Confidence), artifactArg, now,
 	); err != nil {
@@ -247,7 +248,8 @@ func (s *SQLiteStore) WriteAutoApplied(
 			suggested_artifact = COALESCE(excluded.suggested_artifact, completion_candidates.suggested_artifact),
 			status             = 'auto_applied',
 			resolved_at        = excluded.detected_at`
-	if _, err := s.db.ExecContext(ctx, q,
+	if _, err := s.db.ExecContext(
+		ctx, q,
 		id.String(), wsArg, taskID.String(), evidenceJSON, artifactArg, now,
 	); err != nil {
 		return fmt.Errorf("completioncandidate.SQLiteStore.WriteAutoApplied: %w", err)

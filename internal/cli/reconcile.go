@@ -86,7 +86,8 @@ func parseReconcileArgs(args []string) (reconcileOptions, bool, error) {
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
 		return reconcileOptions{}, false, errors.New(
-			"reconcile: API_KEY must be set (run `wbt init` or export API_KEY)")
+			"reconcile: API_KEY must be set (run `wbt init` or export API_KEY)",
+		)
 	}
 	since, err := resolveSince(*sinceFlag)
 	if err != nil {

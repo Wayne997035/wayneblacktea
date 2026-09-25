@@ -56,10 +56,14 @@ func TestReconcileMergedPRs_RepoAware(t *testing.T) {
 
 	h := handler.NewReconcileHandler(store, candStore).WithWorkspaceStore(ws)
 	rec := runReconcileRequest(t, h, mustJSON(t, map[string]any{"merged_prs": []map[string]any{
-		{"url": "https://github.com/Wayne997035/wayneblacktea/pull/1", "head_ref": "feat/a",
-			"merged_at": "2026-05-18T12:00:00Z", "title": "a", "repo": slug},
-		{"url": "https://github.com/someone/else/pull/2", "head_ref": "feat/c",
-			"merged_at": "2026-05-18T12:00:00Z", "title": "c", "repo": "someone/else"},
+		{
+			"url": "https://github.com/Wayne997035/wayneblacktea/pull/1", "head_ref": "feat/a",
+			"merged_at": "2026-05-18T12:00:00Z", "title": "a", "repo": slug,
+		},
+		{
+			"url": "https://github.com/someone/else/pull/2", "head_ref": "feat/c",
+			"merged_at": "2026-05-18T12:00:00Z", "title": "c", "repo": "someone/else",
+		},
 	}}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
