@@ -19,17 +19,29 @@ const MAX_SUGGESTIONS_SHOWN = 5
 interface SuggestionItemProps {
   suggestion: LearningSuggestion
   kind: 'knowledge' | 'decision'
-  onAdd: () => void
+  // [F0925-21] Promise-returning contract: the caller's success/failure is
+  // structurally visible to this component instead of being swallowed at
+  // the call site, so "已加入" can be gated on it actually succeeding.
+  onAdd: () => Promise<void>
   isPending: boolean
 }
 
 function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemProps) {
+  const { t } = useTranslation()
   const [added, setAdded] = useState(false)
+  const [error, setError] = useState(false)
 
-  function handleAdd() {
-    onAdd()
-    setAdded(true)
-    setTimeout(() => setAdded(false), 1000)
+  // [F0925-21] "已加入" must only render once onAdd's promise resolves;
+  // a rejection leaves the button clickable with a visible, retryable error.
+  async function handleAdd() {
+    setError(false)
+    try {
+      await onAdd()
+      setAdded(true)
+      setTimeout(() => setAdded(false), 1000)
+    } catch {
+      setError(true)
+    }
   }
 
   return (
@@ -60,7 +72,7 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
       </span>
       <button
         type="button"
-        onClick={handleAdd}
+        onClick={() => void handleAdd()}
         disabled={isPending || added}
         aria-label={`加入學習：${suggestion.title}`}
         className="text-label rounded px-2 py-0.5 shrink-0 transition-opacity"
@@ -76,6 +88,12 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
       >
         {added ? '已加入' : isPending ? '加入中…' : '加入學習'}
       </button>
+      {/* [F0925-21] Visible, retryable error when onAdd's promise rejects */}
+      {error && (
+        <span role="alert" className="text-label shrink-0" style={{ color: 'var(--color-error)' }}>
+          {t('reviews.addError')}
+        </span>
+      )}
     </div>
   )
 }
@@ -130,11 +148,13 @@ function SuggestionsPanel() {
             suggestion={item}
             kind={item.kind}
             isPending={addFromKnowledge.isPending || createConcept.isPending}
-            onAdd={() => {
+            // [F0925-21] mutateAsync (not mutate) so SuggestionItem's
+            // await onAdd() structurally observes success/failure.
+            onAdd={async () => {
               if (item.kind === 'knowledge') {
-                addFromKnowledge.mutate({ knowledge_id: item.id })
+                await addFromKnowledge.mutateAsync({ knowledge_id: item.id })
               } else {
-                createConcept.mutate({
+                await createConcept.mutateAsync({
                   title: item.title,
                   content: item.context ?? item.content,
                   tags: [],
