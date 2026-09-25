@@ -247,6 +247,9 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 		return inputErrorResult("approach_md", ccErr), nil
 	}
 
+	if errResult := repoNameArgError(stringArg(args, "repo_name")); errResult != nil {
+		return errResult, nil
+	}
 	p := procedural.AddParams{
 		Title:        title,
 		WhenToUse:    whenToUse,

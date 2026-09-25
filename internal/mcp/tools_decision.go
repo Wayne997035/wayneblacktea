@@ -134,6 +134,9 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 	if reason := checkDecisionNoise(title, decCtx, dec, rationale); reason != "" {
 		return mcp.NewToolResultError("invalid params: " + reason), nil
 	}
+	if errResult := repoNameArgError(stringArg(args, "repo_name")); errResult != nil {
+		return errResult, nil
+	}
 
 	p := decision.LogParams{
 		Title:          title,

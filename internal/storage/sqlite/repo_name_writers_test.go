@@ -117,6 +117,27 @@ func TestRepoNameBackstop_Procedural(t *testing.T) {
 	}
 }
 
+// TestRepoNameBackstop_PGPoolStores covers the Postgres vision, procedural
+// and work session stores. Their backstops return before the pool is
+// touched, so a nil pool proves the rejection without a database; a nil
+// pool reached by a passing value would panic instead.
+func TestRepoNameBackstop_PGPoolStores(t *testing.T) {
+	t.Parallel() // [F0925-29]
+	ctx := context.Background()
+	vp := vision.AddVisionParams{RepoName: badRepoName, Title: "t"}
+	if _, err := vision.NewStore(nil, nil).Add(ctx, vp); !errors.Is(err, validator.ErrInvalidRepoName) {
+		t.Errorf("pg vision Add(%q): want ErrInvalidRepoName, got %v", badRepoName, err)
+	}
+	pp := procedural.AddParams{RepoName: badRepoName, Title: "t"}
+	if _, err := procedural.New(nil, nil).Add(ctx, pp); !errors.Is(err, validator.ErrInvalidRepoName) {
+		t.Errorf("pg procedural Add(%q): want ErrInvalidRepoName, got %v", badRepoName, err)
+	}
+	wp := worksession.CreateParams{RepoName: badRepoName, Title: "t", Goal: "g", Source: "manual"}
+	if _, err := worksession.NewStore(nil, nil).Create(ctx, wp); !errors.Is(err, validator.ErrInvalidRepoName) {
+		t.Errorf("pg worksession Create(%q): want ErrInvalidRepoName, got %v", badRepoName, err)
+	}
+}
+
 // TestRepoNameBackstop_PGDecisionAndHandoff exercises the Postgres decision
 // and session stores through fakeDBTX: the backstop returns before any query,
 // so a bad value fails with ErrInvalidRepoName while an empty value reaches

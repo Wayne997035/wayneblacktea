@@ -200,6 +200,9 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 		}
 	}
 
+	if errResult := repoNameArgError(stringArg(args, "repo_name")); errResult != nil {
+		return errResult, nil
+	}
 	p := vision.AddVisionParams{
 		Title:            title,
 		WhyBlocked:       whyBlocked,

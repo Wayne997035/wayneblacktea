@@ -14,6 +14,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/safetext"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -1094,6 +1095,21 @@ func parseSyncRepoOptionalArgs(args map[string]any) (syncRepoOptionalStringArgs,
 		return out, errResult
 	}
 	return out, nil
+}
+
+// repoNameArgError is the entry check for an optional repo_name tool
+// argument ([F0925-29]): nil when it is empty or follows the workspace repo
+// name rule, otherwise a static tool error naming the rule. Tools call it
+// before any store write so the caller learns the rule instead of a store
+// error. A value carrying tool-call serialization noise is left to the
+// store, whose ValidateNoTagNoise check runs before its repo name backstop
+// and reports the field with a bounded excerpt of the offending text; the
+// value is rejected either way.
+func repoNameArgError(name string) *mcp.CallToolResult {
+	if validator.IsValidRepoName(name) || sanitize.ValidateNoTagNoise(name) != nil {
+		return nil
+	}
+	return mcp.NewToolResultError(validator.RepoNameMessage)
 }
 
 func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

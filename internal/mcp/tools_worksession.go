@@ -295,6 +295,9 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 	if repoName == "" || title == "" || goal == "" {
 		return mcp.NewToolResultError("repo_name, title, and goal are required"), nil
 	}
+	if errResult := repoNameArgError(repoName); errResult != nil {
+		return errResult, nil
+	}
 
 	// Server-side length guards: mcp.MaxLength() is client-side advisory only
 	// and is not enforced by the mcp-go server runtime.
@@ -910,7 +913,12 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 	// asking the caller to repeat something the server already knows, and
 	// avoids a new "caller's repo_name disagrees with the session's actual
 	// repo" inconsistency a schema param would introduce.
-	decisionResult := s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"), sess.RepoName)
+	//
+	// [F0925-29] A session row written before the workspace repo name rule
+	// may carry a value the decision store now rejects; the decisions are
+	// still logged, with repo_name left empty (automatic writer policy).
+	decisionResult := s.logFinishWorkDecisions(ctx, sessID, stringArg(args, "new_decisions"),
+		validator.RepoNameOrEmpty(sess.RepoName))
 
 	outcomeID := s.autoCreateOutcomeOnFailure(
 		ctx, sessID, sess, completedTaskIDs, deferredTaskIDs, evidenceParams.finalResult, summary,

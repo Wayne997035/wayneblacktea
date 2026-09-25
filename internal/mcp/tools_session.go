@@ -68,6 +68,9 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 	if reason := checkCommandField("repo_name", repoName); reason != "" {
 		return mcp.NewToolResultError("invalid params: " + reason), nil
 	}
+	if errResult := repoNameArgError(repoName); errResult != nil {
+		return errResult, nil
+	}
 
 	p := session.HandoffParams{
 		Intent:         intent,

@@ -96,6 +96,11 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 		projectID = &id
 	}
 	repoName := stringArg(args, "repo_name")
+	// [F0925-29] Checked before the transaction: the name reaches both the
+	// logged decisions and the plan's work session.
+	if errResult := repoNameArgError(repoName); errResult != nil {
+		return errResult, nil
+	}
 
 	// P6.8: assignee is optional but, when present, MUST resolve through
 	// gtd.NormalizeActor's whitelist (LLM tool input is adversarial). Same
