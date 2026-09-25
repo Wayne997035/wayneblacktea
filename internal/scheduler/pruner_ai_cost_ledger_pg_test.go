@@ -10,8 +10,8 @@ import (
 
 // TestAICostLedgerPrunerAdapter_DeletesOnlyExpiredRows exercises the
 // parameterized-cutoff DELETE introduced by NewAICostLedgerPrunerAdapter
-// against a real Postgres (backend-security-design.md §6.5 — any code path
-// touching PG gets a testcontainers test by default, unconditionally). Seeds
+// against a real Postgres (any code path touching PG gets a testcontainers
+// test by default, unconditionally). Seeds
 // rows inside and outside the 30-day retention window and asserts only the
 // expired ones are removed.
 func TestAICostLedgerPrunerAdapter_DeletesOnlyExpiredRows(t *testing.T) {

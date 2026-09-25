@@ -373,8 +373,7 @@ func TestRegisterDailyDisciplinePrune_NilPool_JobNotRegistered(t *testing.T) {
 // TestRunDailyPendingProposalsPrune_NilPool_NoPanic verifies the runner short-
 // circuits cleanly when no Postgres pool is wired in (SQLite mode), without
 // touching the DB or panicking. Mirrors the discipline-prune nil-pool guard
-// (backend-security-design.md §1.3 — TTL is Postgres-only because SQLite is
-// dev-local single-tenant).
+// (TTL is Postgres-only because SQLite is dev-local single-tenant).
 func TestRunDailyPendingProposalsPrune_NilPool_NoPanic(t *testing.T) {
 	store := &stubLearningStore{}
 	sc, err := New(store, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)

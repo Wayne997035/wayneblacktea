@@ -181,8 +181,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	if wsID == nil {
 		// Fail-closed: in Postgres mode an unset WORKSPACE_ID writes NULL
 		// workspace_id, which would silently desync from workspace-scoped reads
-		// once M3 strict scoping lands (see backend-security-design.md §1 +
-		// incident 2026-05-09 / 117 rows backfilled). Refuse to start so the
+		// once M3 strict scoping lands (see incident 2026-05-09 / 117 rows backfilled). Refuse to start so the
 		// operator either sets the env explicitly or migrates to SQLite.
 		pool.Close()
 		return nil, fmt.Errorf(
@@ -306,7 +305,7 @@ const ServerPoolMaxConns = 8
 
 // HookPoolMaxConns is the pgxpool cap for short-lived CLI/hook processes
 // (wbt-context SessionStart hook, wbt doctor Stop hook, wbt reembed,
-// internal/guard) per backend-security-design.md §5.3. Centralized here so
+// internal/guard). Centralized here so
 // redeploy_budget_test.go can verify the worst-case formula against the
 // real values instead of 4 independently-drifting literals.
 const HookPoolMaxConns = 2

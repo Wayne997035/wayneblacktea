@@ -55,8 +55,8 @@ type PGOnlyJob struct {
 var pgOnlyJobs = []PGOnlyJob{
 	{
 		Name: "daily-discipline-prune",
-		Reason: "discipline_events retention is disk-growth-only, not user-observable " +
-			"(backend-security-design.md §1.3); SQLite is dev-local single-tenant with no growth concern",
+		Reason: "discipline_events retention is disk-growth-only, not user-observable; " +
+			"SQLite is dev-local single-tenant with no growth concern",
 	},
 	{
 		Name: "daily-guard-prune",
@@ -85,8 +85,7 @@ const disciplinePruneTimeout = 60 * time.Second
 
 // disciplinePruneAge is the retention window enforced by the daily prune job.
 // 30 days mirrors `task discipline-prune` (build/Taskfile.yml) and
-// guard_events; codified by backend-security-design.md §1.3 as the mandatory
-// TTL for observability tables.
+// guard_events; this is the mandatory TTL for observability tables.
 const disciplinePruneAge = "30 days"
 
 const (
@@ -131,8 +130,8 @@ var pendingProposalsGoalFamilyTTLDryRun = true
 
 // pendingProposalsResolvedRetention / pendingProposalsPendingDecisionRetention
 // / pendingProposalsPendingTaskRetention document the per-status TTL on
-// pending_proposals (backend-security-design.md §1.3 — observability tables
-// MUST have a working retention policy in the same PR that introduces them).
+// pending_proposals — observability tables MUST have a working retention
+// policy in the same PR that introduces them.
 //
 //   - 90 days for resolved (accepted / rejected) rows: the user has already
 //     acted on them; we keep ~1 quarter for retrospective audit + then drop.
@@ -209,7 +208,7 @@ const pendingProposalsGoalFamilyTTLReason = "ttl-expired-90d"
 // a SQLite backend. nil under Postgres (disciplinePool covers that path
 // instead). Deliberately NOT part of proposal.StoreIface — mirrors
 // CognitiveSQLiteStore's domain-ownership rationale documented in
-// cognitive_jobs.go (backend-security-design.md): this one method is
+// cognitive_jobs.go: this one method is
 // scheduler-local plumbing, not a cross-domain proposal operation every
 // other StoreIface implementer would have to grow a matching method for.
 //
@@ -1019,8 +1018,7 @@ func (s *Scheduler) runDailyDecayPrune() {
 	s.pruner.Run()
 }
 
-// runDailyDisciplinePrune deletes discipline_events rows older than 30 days
-// (TTL codified by backend-security-design.md §1.3). Mirrors the existing
+// runDailyDisciplinePrune deletes discipline_events rows older than 30 days. Mirrors the existing
 // `task discipline-prune` Taskfile target so operators don't need to wire a
 // separate cron in production. Runs at 23:00 Asia/Taipei alongside the decay
 // prune. Errors are logged at warn level — the scheduler MUST keep running

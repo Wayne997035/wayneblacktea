@@ -103,7 +103,7 @@ type embedResponse struct {
 }
 
 // credentialRe matches common credential patterns that should not be sent to
-// external APIs. Replacement is [REDACTED] per backend-security-design.md §3.1.
+// external APIs. Replacement is [REDACTED].
 var credentialRe = regexp.MustCompile(
 	`(?i)(ghp_[A-Za-z0-9]+` +
 		`|sk-[A-Za-z0-9_-]{20,}` + // OpenAI sk-... / Anthropic sk-ant-... style keys

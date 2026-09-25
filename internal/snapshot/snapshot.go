@@ -60,8 +60,8 @@ type StoreIface interface {
 	LatestSlugs(ctx context.Context) ([]string, error)
 	// PruneOlderThan hard-deletes project_status_snapshots rows generated
 	// before cutoff. Global cleanup (no workspace filter) — called daily by
-	// the scheduler to enforce the 180-day TTL per backend-security-design.md
-	// §1.3. Postgres-only: there is no SQLite implementation of StoreIface
+	// the scheduler to enforce the 180-day TTL. Postgres-only: there is no
+	// SQLite implementation of StoreIface
 	// (project status snapshots are not available under the SQLite backend).
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
