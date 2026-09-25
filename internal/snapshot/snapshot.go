@@ -13,6 +13,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// SlugMaxLen is the project_status_snapshots.slug length limit (the
+// generate_project_status Haiku-prompt budget), shared by the MCP entry
+// check and the store backstop ([F0925-29]).
+const SlugMaxLen = 64
+
 // ErrNotFound is returned when no snapshot exists for the given slug.
 var ErrNotFound = errors.New("snapshot: not found")
 

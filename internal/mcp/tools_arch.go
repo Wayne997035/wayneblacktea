@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	maxSlugLen    = 128
+	maxSlugLen    = arch.SlugMaxLen
 	maxSummaryLen = 8000
 	maxFileMapRaw = 128 * 1024 // 128 KB
 

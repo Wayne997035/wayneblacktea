@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -27,6 +28,10 @@ var _ arch.StoreIface = (*ArchStore)(nil)
 
 // UpsertSnapshot inserts or updates the architecture snapshot for the given slug.
 func (s *ArchStore) UpsertSnapshot(ctx context.Context, p arch.UpsertParams) (*arch.Snapshot, error) {
+	// [F0925-29] Same slug backstop as the Postgres store.
+	if !validator.ValidRepoPathMax(p.Slug, arch.SlugMaxLen) {
+		return nil, fmt.Errorf("arch: upserting snapshot: %w", validator.ErrInvalidSlug)
+	}
 	// summaryArg/fileMapArg mirror the Postgres store's patch semantics
 	// (see internal/arch/store.go): nil binds as SQL NULL, which the query
 	// below checks directly (?N IS NULL), not excluded.<col> (always

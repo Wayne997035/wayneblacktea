@@ -47,6 +47,10 @@ type Snapshot struct {
 //
 // LastCommitSHA is the ONE exception to this contract (m-R11, GTD 25537a73,
 // decision 0d1a41fc) — see its own field doc comment below.
+// SlugMaxLen is the project_arch.slug length limit, shared by the MCP entry
+// check and both stores' backstops ([F0925-29]).
+const SlugMaxLen = 128
+
 type UpsertParams struct {
 	Slug string
 	// Summary is patch semantics — see the type doc comment above.

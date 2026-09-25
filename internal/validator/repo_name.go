@@ -29,6 +29,11 @@ const RepoPathMaxLen = 100
 // their own, so errors.Is matches no matter which layer rejected the value.
 var ErrInvalidRepoName = errors.New(RepoNameMessage)
 
+// ErrInvalidSlug is the store-layer sentinel for a project_arch or status
+// snapshot slug that fails RepoPathSegmentRule under the store's own length
+// limit (ValidRepoPathMax).
+var ErrInvalidSlug = errors.New("slug must be " + RepoPathSegmentRule)
+
 // RepoNameMessage is the rejection text for an invalid repo_name, shared by
 // the sentinel above and by every HTTP/MCP entry point that rejects the value
 // before it reaches a store. It is a constant: no server state is interpolated.

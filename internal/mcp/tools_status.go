@@ -19,7 +19,7 @@ import (
 // (validator.ValidRepoPathMax): every boundary marker in
 // internal/safetext/boundary_markers.go needs '=', '[' or whitespace, and
 // the rule admits none of them.
-const statusSlugMaxLen = 64
+const statusSlugMaxLen = snapshot.SlugMaxLen
 
 // statusSlugMessage is the rejection text for a slug outside the rule.
 var statusSlugMessage = fmt.Sprintf("slug must be at most %d characters: %s",
