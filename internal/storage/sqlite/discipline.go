@@ -100,8 +100,8 @@ func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, l
 	}
 	// [F184-05] AND ok = 1 — a failed mutating call did not actually mutate
 	// anything; counting it here would inflate system_health's
-	// DriftCount24h with calls that never happened. See decisions.md D-05
-	// and migrations/sqlite/000078_discipline_events_outcome.up.sql.
+	// DriftCount24h with calls that never happened. See
+	// migrations/sqlite/000078_discipline_events_outcome.up.sql.
 	const q = `SELECT ` + disciplineSelectCols + ` FROM discipline_events
 		WHERE is_mutating = 1
 		  AND ok = 1
@@ -140,7 +140,7 @@ func (s *DisciplineStore) RecentMutating(ctx context.Context, since time.Time, l
 func (s *DisciplineStore) RecentDecisionTimes(ctx context.Context, sessionID string, since time.Time) ([]time.Time, error) {
 	// [F184-05] AND ok = 1 — a failed log_decision/confirm_plan call must
 	// not suppress a real drift signal: the caller's actual, successful
-	// decision-log still hasn't happened. See decisions.md D-05.
+	// decision-log still hasn't happened.
 	const q = `SELECT observed_at FROM discipline_events
 		WHERE session_id = ?1
 		  AND tool_name IN ('log_decision', 'confirm_plan')

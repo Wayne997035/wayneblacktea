@@ -14,8 +14,8 @@ import (
 const maxListDecisionsLimit = 100
 
 // Read-time bounds for db.Decision's free-text fields, applied by
-// wrapUntrustedDecision before jsonText — U13 (2026-08-20-mcp-surface-
-// spec.md). log_decision/list_decisions register no mcp.MaxLength on any of
+// wrapUntrustedDecision before jsonText — U13. log_decision/list_decisions
+// register no mcp.MaxLength on any of
 // these fields today (checkDecisionNoise below only screens for tag-noise,
 // not length), so these bounds exist purely to stop marker-stuffing /
 // pathological-growth content from reaching an unbounded read. They are
@@ -48,6 +48,8 @@ const (
 // non-test callers returns only project create/update (gtd_handler.go:214 and
 // :498, tools_gtd.go:737). log_decision never went through it, on either
 // backend, so the sentence was true of a path this field does not take.
+// Since [F0925-29] log_decision and both decision stores do apply it; the
+// clip stays for rows written before that rule and its cleanup migration.
 //
 // The same sentence, in wrapUntrustedProceduralMemory, exempted that type's
 // RepoName from the U13 coverage walker on the same false premise; both are
@@ -133,6 +135,9 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 
 	if reason := checkDecisionNoise(title, decCtx, dec, rationale); reason != "" {
 		return mcp.NewToolResultError("invalid params: " + reason), nil
+	}
+	if errResult := repoNameArgError(stringArg(args, "repo_name")); errResult != nil {
+		return errResult, nil
 	}
 
 	p := decision.LogParams{

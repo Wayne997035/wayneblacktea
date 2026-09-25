@@ -39,7 +39,7 @@ func TestMatchPendingTasksFuzzy_TaskIDInBody(t *testing.T) {
 		Title: "completely different",
 		Body:  "Closes task " + taskID.String(),
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d matches, want 1", len(got))
 	}
@@ -65,7 +65,7 @@ func TestMatchPendingTasksFuzzy_JaccardAboveThreshold(t *testing.T) {
 		Title: "fix: useCompleteTask onError invalidation",
 		Body:  "",
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d matches, want 1 (high token overlap)", len(got))
 	}
@@ -90,7 +90,7 @@ func TestMatchPendingTasksFuzzy_BelowThresholdRejected(t *testing.T) {
 		Title: "bump golangci-lint",
 		Body:  "",
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 0 {
 		t.Fatalf("got %d matches, want 0 (no overlap below threshold)", len(got))
 	}
@@ -107,7 +107,7 @@ func TestMatchPendingTasksFuzzy_MultiPRPicksBestScore(t *testing.T) {
 		{URL: "https://github.com/o/r/pull/200", Title: "refactor frontend dashboard pagination logic update"},
 		{URL: "https://github.com/o/r/pull/300", Title: "unrelated CI infra change"},
 	}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d matches, want 1 (best-score pick)", len(got))
 	}
@@ -128,7 +128,7 @@ func TestMatchPendingTasksFuzzy_SkipsTaskWithLinkage(t *testing.T) {
 		URL:   "https://github.com/o/r/pull/7",
 		Title: "refactor frontend dashboard",
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 0 {
 		t.Errorf("got %d matches, want 0 (task already linked → skip)", len(got))
 	}
@@ -146,7 +146,7 @@ func TestMatchPendingTasksFuzzy_SkipsCompletedTask(t *testing.T) {
 		URL:   "https://github.com/o/r/pull/8",
 		Title: "do the thing",
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 0 {
 		t.Errorf("got %d matches, want 0 (task already completed)", len(got))
 	}
@@ -154,13 +154,13 @@ func TestMatchPendingTasksFuzzy_SkipsCompletedTask(t *testing.T) {
 
 func TestMatchPendingTasksFuzzy_EmptyInputs(t *testing.T) {
 	t.Parallel()
-	if got := gtd.MatchPendingTasksFuzzy(nil, nil); len(got) != 0 {
+	if got := gtd.MatchPendingTasksFuzzy(nil, nil, nil); len(got) != 0 {
 		t.Errorf("nil/nil: got %d, want 0", len(got))
 	}
-	if got := gtd.MatchPendingTasksFuzzy([]gtd.MergedPR{}, []db.Task{pendingTask(uuid.New(), "x")}); len(got) != 0 {
+	if got := gtd.MatchPendingTasksFuzzy([]gtd.MergedPR{}, []db.Task{pendingTask(uuid.New(), "x")}, nil); len(got) != 0 {
 		t.Errorf("empty PRs: got %d, want 0", len(got))
 	}
-	if got := gtd.MatchPendingTasksFuzzy([]gtd.MergedPR{{URL: "https://github.com/o/r/pull/1", Title: "x"}}, []db.Task{}); len(got) != 0 {
+	if got := gtd.MatchPendingTasksFuzzy([]gtd.MergedPR{{URL: "https://github.com/o/r/pull/1", Title: "x"}}, []db.Task{}, nil); len(got) != 0 {
 		t.Errorf("empty tasks: got %d, want 0", len(got))
 	}
 }
@@ -176,7 +176,7 @@ func TestMatchPendingTasksFuzzy_StopwordsDoNotDominate(t *testing.T) {
 		URL:   "https://github.com/o/r/pull/9",
 		Title: "the and for with from this",
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	// Both sets reduce to empty after stopwords + len<3 → jaccard(∅,∅)=0
 	// → below threshold → no match.
 	if len(got) != 0 {
@@ -214,7 +214,7 @@ func TestMatchPendingTasksFuzzy_UUIDInBody_MultipleTasksAllScanned(t *testing.T)
 			Body:  "",
 		},
 	}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 2 {
 		t.Fatalf("got %d matches, want 2 (one per task — UUID-in-body MUST NOT short-circuit outer loop)", len(got))
 	}
@@ -265,7 +265,7 @@ func TestMatchPendingTasksFuzzy_UUIDInBodyBeatsLowJaccard(t *testing.T) {
 		Title: "completely different bump dependency",
 		Body:  "Random body referencing task " + taskID.String() + " inline.",
 	}}
-	got := gtd.MatchPendingTasksFuzzy(prs, tasks)
+	got := gtd.MatchPendingTasksFuzzy(prs, tasks, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d, want 1", len(got))
 	}

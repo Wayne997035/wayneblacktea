@@ -17,13 +17,12 @@ import (
 
 // PgAcceptDeps groups the concrete Postgres store handles pgAcceptAdapter
 // needs. Threaded in from a storage.ServerStores by the caller
-// (internal/storage/accept_seam.go's AcceptSeam) rather than passed as a
-// storage.ServerStores value directly: internal/storage already imports
-// internal/proposal (server_stores.go's Proposal() accessor / factory.go),
-// so internal/proposal importing internal/storage back would cycle. Hence
-// AcceptSeam itself lives in internal/storage, not here — see that file's
-// doc comment for the full explanation; this is a deliberate deviation from
-// the dispatch's literal `internal/proposal/accept_seam.go` file location.
+// (cmd/server/main.go's buildGoalProjectAcceptAdapter) rather than passed
+// as a storage.ServerStores value directly: internal/storage already
+// imports internal/proposal (server_stores.go's Proposal() accessor /
+// factory.go), so internal/proposal importing internal/storage back would
+// cycle. See AcceptAdapter's own doc comment (accept_orchestration.go) for
+// the backend-selection contract this deps struct feeds into.
 type PgAcceptDeps struct {
 	Pool      *pgxpool.Pool
 	Proposal  *Store

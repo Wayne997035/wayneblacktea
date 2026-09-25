@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ExternalLink } from 'lucide-react'
 import type { KnowledgeItem } from '../../types/api'
 import { useCreateConceptFromKnowledge } from '../../hooks/useReviews'
 import { useUpdateKnowledge } from '../../hooks/useKnowledge'
+import { safeHref } from '../../lib/safeHref'
 
 interface KnowledgeCardProps {
   item: KnowledgeItem;
@@ -29,6 +31,7 @@ interface InteractiveStarRatingProps {
 }
 
 function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
+  const { t } = useTranslation()
   const [hovered, setHovered] = useState<number | null>(null)
   const updateKnowledge = useUpdateKnowledge()
 
@@ -48,7 +51,8 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
         onMouseEnter={() => setHovered(1)}
         aria-label="Rate this item"
       >
-        評個分？
+        {/* [F0925-24] */}
+        {t('knowledge.card.rateLabel')}
       </span>
     )
   }
@@ -93,8 +97,12 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
 }
 
 export function KnowledgeCard({ item }: KnowledgeCardProps) {
+  const { t } = useTranslation()
   const addToLearning = useCreateConceptFromKnowledge()
   const [added, setAdded] = useState(false)
+  // [F0925-22] Guard item.url through the scheme allowlist before it can
+  // become a clickable href — see lib/safeHref.ts.
+  const href = safeHref(item.url ?? undefined)
 
   function handleAddToLearning() {
     addToLearning.mutate(
@@ -163,7 +171,7 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
           <span
             className="text-label rounded-full px-2 py-0.5"
             style={{
-              background: item.source === 'discord' ? 'rgba(79, 195, 247, 0.1)' : 'var(--color-bg-hover)',
+              background: item.source === 'discord' ? 'var(--color-accent-blue-tint)' : 'var(--color-bg-hover)', // [F0925-25]
               color: item.source === 'discord' ? 'var(--color-accent-blue)' : 'var(--color-text-muted)',
               border: `1px solid ${item.source === 'discord' ? 'var(--color-accent-blue)' : 'var(--color-border)'}`,
             }}
@@ -191,38 +199,53 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
           {/* Interactive learning value stars */}
           <InteractiveStarRating value={item.learning_value} itemId={item.id} />
 
-          {/* Add to learning button */}
+          {/* Add to learning button — [F0925-24] */}
           <button
             type="button"
             onClick={handleAddToLearning}
             disabled={addToLearning.isPending || added}
-            aria-label={`加入學習：${item.title}`}
+            aria-label={t('knowledge.card.addToLearningAria', { title: item.title })}
             className="text-label rounded px-2 py-0.5 transition-opacity"
             style={{
               minHeight: '28px',
-              background: added ? 'rgba(34,197,94,0.1)' : 'var(--color-bg-hover)',
-              color: added ? '#22c55e' : 'var(--color-accent-blue)',
-              border: `1px solid ${added ? '#22c55e' : 'var(--color-accent-blue)'}`,
+              // [F0925-25]
+              background: added ? 'var(--color-accent-green-bg)' : 'var(--color-bg-hover)',
+              color: added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)',
+              border: `1px solid ${added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)'}`,
               cursor: addToLearning.isPending || added ? 'not-allowed' : 'pointer',
               opacity: addToLearning.isPending ? 0.5 : 1,
               whiteSpace: 'nowrap',
             }}
           >
-            {added ? '已加入' : addToLearning.isPending ? '加入中…' : '加入學習'}
+            {added
+              ? t('knowledge.card.addedToLearning')
+              : addToLearning.isPending
+                ? t('knowledge.card.addingToLearning')
+                : t('knowledge.card.addToLearning')}
           </button>
 
-          {/* URL link */}
+          {/* URL link — [F0925-22] non-allowlisted schemes render inert */}
           {item.url !== null && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`Open link for ${item.title}`}
-              className="transition-colors"
-              style={{ color: 'var(--color-accent-blue)' }}
-            >
-              <ExternalLink size={14} aria-hidden="true" />
-            </a>
+            href === '#' ? (
+              <span
+                aria-label={`Open link for ${item.title}`}
+                className="transition-colors"
+                style={{ color: 'var(--color-text-disabled)' }}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+              </span>
+            ) : (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Open link for ${item.title}`}
+                className="transition-colors"
+                style={{ color: 'var(--color-accent-blue)' }}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+              </a>
+            )
           )}
         </div>
       </div>

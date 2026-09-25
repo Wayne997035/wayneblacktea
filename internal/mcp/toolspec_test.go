@@ -369,7 +369,7 @@ func TestDecodeToolArgs_AllKinds(t *testing.T) {
 }
 
 // TestDecodeToolArgs_RejectsFractionalIntFields is U12's bad-case acceptance
-// criterion (F9, 2026-08-20-mcp-surface-spec.md): decodeIntField used to
+// criterion (F9): decodeIntField used to
 // silently truncate a fractional number into an int/int16/int32 field
 // (int64(nv)) with no error at all — e.g. priority=2.5 became 2 and the
 // caller had no way to know their exact input was not applied. Table test

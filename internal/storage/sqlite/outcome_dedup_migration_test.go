@@ -77,11 +77,12 @@ func insertLegacyUnknownOutcome(t *testing.T, conn *sql.DB, wsID, entityType, en
 // code path (pre-decision-80c1e8ae) unconditionally INSERTed with no
 // uniqueness rule at all — must not abort CREATE UNIQUE INDEX. Mirrors the
 // Postgres coverage (internal/outcome's testcontainers test) —
-// backend-security-design.md §6.5 dual-backend parity requires the same
-// dedup SQL to be independently verified on both engines, since the two
+// dual-backend parity requires the same dedup SQL to be independently
+// verified on both engines, since the two
 // migration files use different window-function/COALESCE dialect syntax
 // even though the semantics are meant to be identical.
 func TestMigration000074_Dedup_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	conn, m := openOutcomeMigratorAt73(t)
 
@@ -94,7 +95,8 @@ func TestMigration000074_Dedup_SQLite(t *testing.T) {
 	single := insertLegacyUnknownOutcome(t, conn, wsID, "task", otherEntityID, "2026-01-01T00:00:00.000Z", "no dup")
 
 	evalID := uuid.New().String()
-	if _, err := conn.ExecContext(ctx,
+	if _, err := conn.ExecContext(
+		ctx,
 		`INSERT INTO evaluations (id, workspace_id, outcome_id, analysis) VALUES (?, ?, ?, ?)`,
 		evalID, wsID, older, "stale eval on the older dup",
 	); err != nil {
@@ -110,7 +112,8 @@ func TestMigration000074_Dedup_SQLite(t *testing.T) {
 	}
 
 	var remaining string
-	err := conn.QueryRowContext(ctx,
+	err := conn.QueryRowContext(
+		ctx,
 		`SELECT id FROM outcomes WHERE entity_id = ? AND result = 'unknown'`, entityID,
 	).Scan(&remaining)
 	if err != nil {
@@ -143,7 +146,8 @@ func TestMigration000074_Dedup_SQLite(t *testing.T) {
 	}
 
 	// The unique index now actually enforces uniqueness going forward.
-	_, err = conn.ExecContext(ctx,
+	_, err = conn.ExecContext(
+		ctx,
 		`INSERT INTO outcomes (id, workspace_id, entity_type, entity_id, result) VALUES (?, ?, 'task', ?, 'unknown')`,
 		uuid.New().String(), wsID, entityID,
 	)
@@ -182,6 +186,7 @@ func insertLegacyUnknownOutcomeWithID(t *testing.T, conn *sql.DB, id, wsID, enti
 // GREATER id) is derived from that ORDER BY clause itself, not from
 // observing what one run happens to produce.
 func TestMigration000074_Dedup_SQLite_CreatedAtTieBreak(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	conn, m := openOutcomeMigratorAt73(t)
 
@@ -205,7 +210,8 @@ func TestMigration000074_Dedup_SQLite_CreatedAtTieBreak(t *testing.T) {
 	}
 
 	var remaining string
-	err := conn.QueryRowContext(ctx,
+	err := conn.QueryRowContext(
+		ctx,
 		`SELECT id FROM outcomes WHERE entity_id = ? AND result = 'unknown'`, entityID,
 	).Scan(&remaining)
 	if err != nil {

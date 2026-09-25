@@ -191,6 +191,12 @@ func TestLSofTCPListen_BinaryOverride(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("shell fixture requires Unix")
 	}
+	// Widen the probe timeout (F0925-08): this test already uses t.Setenv
+	// below, which bars t.Parallel, so mutating the package-level timeout
+	// here cannot race with a parallel test reading it. Machine load (e.g.
+	// EDR scanning the freshly-written fake-lsof.sh) has been observed to
+	// push the real lsof probe past the production 3s default.
+	lifecycle.SetPortProbeTimeoutForTest(t, 30*time.Second)
 	tmp := t.TempDir()
 	fake := filepath.Join(tmp, "fake-lsof.sh")
 	script := "#!/bin/sh\ncat <<'EOF'\np42\ncfakecmd\nn127.0.0.1:8080\nEOF\n"

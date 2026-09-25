@@ -12,12 +12,12 @@ import (
 
 // [F981-05] TestProposalStore_Create_RejectsPayloadOverLimit pins the
 // fail-closed payload size guard at Store.Create's write path
-// (store.go:MaxPayloadBytes) — backend-security-design.md §2.1 ("LLM tool
-// input is hostile"): a prompt-injected agent controls
+// (store.go:MaxPayloadBytes) — LLM tool input is treated as hostile:
+// a prompt-injected agent controls
 // pending_proposals.payload via propose_goal/propose_project, and before
 // this guard nothing checked len(p.Payload) before the row was written.
 // Uses the testcontainers Postgres pool shared with this package's other PG
-// tests (backend-security-design.md §6.5), not a mock or shared dev DB.
+// tests, not a mock or shared dev DB.
 //
 // Sizes are expressed relative to proposal.MaxPayloadBytes (not hardcoded
 // KB literals) so a future cap change — like [F983-01]'s 128 KB -> 2 MiB

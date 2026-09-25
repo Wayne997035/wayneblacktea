@@ -13,18 +13,19 @@ interface ChipStyle {
   bg: string
 }
 
+// [F0925-25]
 function getChipStyle(type: ProposalType): ChipStyle {
   switch (type) {
     case 'concept':
       return { color: 'var(--color-accent-blue)', bg: 'var(--color-bg-hover)' }
     case 'goal':
-      return { color: 'var(--color-success)', bg: '#0a2e0a' }
+      return { color: 'var(--color-success)', bg: 'var(--color-status-active-bg)' }
     case 'project':
-      return { color: 'var(--color-accent-purple)', bg: '#1a0a35' }
+      return { color: 'var(--color-accent-purple)', bg: 'var(--color-accent-purple-bg)' }
     case 'task':
-      return { color: 'var(--color-warning)', bg: '#2e1f00' }
+      return { color: 'var(--color-warning)', bg: 'var(--color-status-on-hold-bg)' }
     case 'knowledge':
-      return { color: 'var(--color-accent-teal, #0d9488)', bg: '#0a2e2e' }
+      return { color: 'var(--color-accent-teal)', bg: 'var(--color-accent-teal-bg)' }
     case 'decision':
       return { color: 'var(--color-status-on-hold-text)', bg: 'var(--color-status-on-hold-bg)' }
   }
@@ -114,7 +115,7 @@ export function PendingProposalsCard({ onClick }: PendingProposalsCardProps) {
           className="rounded-full font-mono text-caption px-2 py-0.5"
           aria-label={`${count} pending proposals`}
           style={{
-            background: '#2e1f00',
+            background: 'var(--color-status-on-hold-bg)', // [F0925-25]
             color: 'var(--color-warning)',
             border: '1px solid var(--color-warning)',
           }}

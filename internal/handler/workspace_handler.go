@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -31,8 +32,8 @@ func (h *WorkspaceHandler) ListRepos(c echo.Context) error {
 // upsertRepoRequest's optional fields are *string (not string) so
 // encoding/json's standard pointer-unmarshal behaviour distinguishes "key
 // absent from the JSON body" (nil, preserve stored value) from "key present
-// with an empty string" (non-nil *string pointing at "", explicit clear) —
-// Ω6, 2026-08-20-mcp-surface-spec.md. A plain string field folds both into
+// with an empty string" (non-nil *string pointing at "", explicit clear).
+// A plain string field folds both into
 // "", which is the omission-clobber bug this type change closes on the HTTP
 // path (workspace.UpsertRepoParams already required this type on the Go
 // side once its fields became presence-aware).
@@ -44,6 +45,7 @@ type upsertRepoRequest struct {
 	CurrentBranch   *string  `json:"current_branch"`
 	KnownIssues     []string `json:"known_issues"`
 	NextPlannedStep *string  `json:"next_planned_step"`
+	GitHubSlug      *string  `json:"github_slug"`
 }
 
 // UpsertRepo creates or updates a repo.
@@ -55,8 +57,16 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, errResp("name is required"))
 	}
-	if !validator.RepoSlugRe.MatchString(req.Name) {
-		return c.JSON(http.StatusBadRequest, errResp("name must match owner/repo slug pattern"))
+	// [F0925-29] The workspace repo name rule, not the GitHub owner/repo slug
+	// rule: repos.name holds directory names ("wayneblacktea",
+	// "Flare-Go/auth"). The slug that reaches `gh -R` is validated with
+	// RepoSlugRe at the reconcile boundary, independently of this check.
+	if !validator.ValidRepoPath(req.Name) {
+		return c.JSON(http.StatusBadRequest, errResp(repoPathMessage))
+	}
+	// [F0925-31] github_slug reaches `gh -R`; "" clears it.
+	if req.GitHubSlug != nil && *req.GitHubSlug != "" && !validator.ValidGitHubSlug(*req.GitHubSlug) {
+		return c.JSON(http.StatusBadRequest, errResp(validator.GitHubSlugMessage))
 	}
 
 	repo, err := h.store.UpsertRepo(c.Request().Context(), workspace.UpsertRepoParams{
@@ -67,13 +77,24 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 		CurrentBranch:   req.CurrentBranch,
 		KnownIssues:     req.KnownIssues,
 		NextPlannedStep: req.NextPlannedStep,
+		GitHubSlug:      req.GitHubSlug,
 	})
 	if err != nil {
+		if errors.Is(err, validator.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(repoPathMessage))
+		}
+		if errors.Is(err, validator.ErrInvalidGitHubSlug) {
+			return c.JSON(http.StatusBadRequest, errResp(validator.GitHubSlugMessage))
+		}
 		c.Logger().Errorf("UpsertRepo: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, repo)
 }
+
+// repoPathMessage is the 400 text for a repos.name that fails the workspace
+// repo name rule. Constant — no request value is echoed back.
+const repoPathMessage = "name must be a repo path: " + validator.RepoNameRule
 
 // workspaceSettings is the GET/PATCH /api/workspace/settings response/request body.
 type workspaceSettings struct {

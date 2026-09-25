@@ -51,8 +51,8 @@ type BudgetEnforcer interface {
 // correctly. A grader wired directly to internal/contextpack.trimToBudget
 // (or an adapter satisfying BudgetEnforcer by calling it) would be required
 // to make that claim, and is out of scope for this fix — see P6-F1 scope
-// boundaries (backend-security-design.md §2: grader semantics are not
-// touched by this change; this comment only documents an existing gap).
+// boundaries (grader semantics are not touched by this change; this comment
+// only documents an existing gap).
 type stubBudgetEnforcer struct{}
 
 func (stubBudgetEnforcer) Apply(items []BudgetItem, budgetBytes int) ([]BudgetItem, int) {

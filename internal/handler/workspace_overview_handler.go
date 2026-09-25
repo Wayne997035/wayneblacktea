@@ -76,6 +76,7 @@ type repoSummary struct {
 	LastActivity    string   `json:"last_activity,omitempty"`
 	Path            string   `json:"path,omitempty"`
 	KnownIssues     []string `json:"known_issues"`
+	GithubSlug      string   `json:"github_slug,omitempty"`
 }
 
 type completedTaskItem struct {
@@ -266,6 +267,9 @@ func toRepoSummary(repo *db.Repo) repoSummary {
 	}
 	if repo.Path.Valid {
 		out.Path = repo.Path.String
+	}
+	if repo.GithubSlug.Valid { // [F0925-31]
+		out.GithubSlug = repo.GithubSlug.String
 	}
 	out.LastActivity = formatTS(repo.LastActivity)
 	return out

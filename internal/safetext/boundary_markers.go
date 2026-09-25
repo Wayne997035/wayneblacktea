@@ -1,7 +1,6 @@
 // Package safetext holds the boundary-marker registry shared by the tools
 // that fence and neutralise untrusted, LLM-authored free text before it is
-// read back into an LLM context (backend-security-design.md §2.1 — LLM tool
-// input is adversarial). It has zero internal/ dependencies, so any domain
+// read back into an LLM context (LLM tool input is treated as adversarial). It has zero internal/ dependencies, so any domain
 // package can sanitise stored text without creating an import cycle back
 // through internal/mcp.
 //

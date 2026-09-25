@@ -12,8 +12,8 @@ import (
 
 // [F981-05] TestProposalStore_Create_RejectsPayloadOverLimit is the SQLite
 // twin of internal/proposal's testcontainers-backed
-// TestProposalStore_Create_RejectsPayloadOverLimit — backend-security-
-// design.md §6.5: the SQLite ProposalStore is a separate Create
+// TestProposalStore_Create_RejectsPayloadOverLimit — dual-backend parity:
+// the SQLite ProposalStore is a separate Create
 // implementation (internal/storage/sqlite/proposal.go), not a wrapper
 // around the Postgres one, so it needs its own test proving the guard is
 // actually wired here too, not just on the Postgres side. Uses a real
@@ -23,6 +23,7 @@ import (
 // KB literals) so a future cap change — like [F983-01]'s 128 KB -> 2 MiB
 // widening — doesn't also require re-deriving these boundary values.
 func TestProposalStore_Create_RejectsPayloadOverLimit(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 

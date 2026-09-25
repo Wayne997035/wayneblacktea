@@ -33,7 +33,7 @@ import (
 // wrapper with t.Cleanup wired in.
 func openSoftDeleteTestDB(t *testing.T) *DB {
 	t.Helper()
-	d, err := Open(context.Background(), ":memory:", "")
+	d, err := openTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -130,6 +130,7 @@ func assertTaskTombstones(
 // deliberately omits it), proving the snapshot really is built in SQL and
 // not silently reconstructed from the Go type.
 func TestDeleteProject_SnapshotsProjectAndTasksWithArea(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -186,6 +187,7 @@ func TestDeleteProject_SnapshotsProjectAndTasksWithArea(t *testing.T) {
 // row whose project_id is the task's OWN original project (not NULL, not
 // some other value) and whose payload carries the non-default area.
 func TestDeleteTask_SnapshotsTaskWithArea(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -231,6 +233,7 @@ func TestDeleteTask_SnapshotsTaskWithArea(t *testing.T) {
 // the deleted entity's stored name/title text, so the audit trail cannot
 // leak stored user content back out through a log line.
 func TestSoftDelete_ActivityLogWrittenInSameTx(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -316,6 +319,7 @@ func TestSoftDelete_ActivityLogWrittenInSameTx(t *testing.T) {
 // produce, including case/whitespace variants, and must not write any row
 // when it refuses.
 func TestLogActivity_RejectsReservedAuditActions(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -361,6 +365,7 @@ func TestLogActivity_RejectsReservedAuditActions(t *testing.T) {
 // TestPGLogActivity_StripsControlCharsFromAction
 // (internal/gtd/store_postgres_softdelete_test.go).
 func TestLogActivity_StripsControlCharsFromAction(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -499,6 +504,7 @@ func columnListDiff(got, want []string) string {
 // JSON must name every column by hand — this test is the guard that keeps
 // that hand-maintained list honest against the real, migrated schema.
 func TestSnapshotColumnList_MatchesPragmaTableInfo(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 
 	t.Run("tasks", func(t *testing.T) {
@@ -630,6 +636,7 @@ func rawRowDiff(before, after map[string]any) string {
 // columns db.Task/db.Project never carry faithfully (area, checklist,
 // commit_shas — design 2), and must consume the tombstone group it used.
 func TestRestoreProject_RoundTripsEveryColumn(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -709,6 +716,7 @@ func TestRestoreProject_RoundTripsEveryColumn(t *testing.T) {
 // must write back only T2's group and must not touch T1's earlier,
 // unrelated group at all.
 func TestRestoreProject_LeavesEarlierDeleteTaskTombstoneIntact(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -778,6 +786,7 @@ func countRows(t *testing.T, d *DB, q string, args ...any) int {
 // project already occupies the deleted project's id. Nothing may be
 // written, and the tombstone group must survive untouched.
 func TestRestoreProject_RefusesWhenIDTaken(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -823,6 +832,7 @@ func TestRestoreProject_RefusesWhenIDTaken(t *testing.T) {
 // name axis: a different, live project now holds the deleted project's
 // name. Nothing may be written.
 func TestRestoreProject_RefusesWhenNameTaken(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -859,6 +869,7 @@ func TestRestoreProject_RefusesWhenNameTaken(t *testing.T) {
 // INSERT INTO tasks write-back collides. The whole tx — including the
 // project row that INSERT already wrote — must roll back.
 func TestRestoreProject_RefusesWhenTaskIDTaken(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -920,17 +931,18 @@ func TestRestoreProject_RefusesWhenTaskIDTaken(t *testing.T) {
 // file. File-backed, not ":memory:", so the two workspace-scoped handles
 // see the same rows.
 func TestRestoreProject_OtherWorkspaceIsInvisible(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
 	path := filepath.Join(t.TempDir(), "restore-ws.db")
 	ctx := context.Background()
 
-	dA, err := Open(ctx, path, wsA)
+	dA, err := openTemplated(t, ctx, path, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open(A): %v", err)
 	}
 	t.Cleanup(func() { _ = dA.Close() })
-	dB, err := Open(ctx, path, wsB)
+	dB, err := openTemplated(t, ctx, path, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open(B): %v", err)
 	}
@@ -968,6 +980,7 @@ func TestRestoreProject_OtherWorkspaceIsInvisible(t *testing.T) {
 
 // TestRestoreProject_NotFound: no tombstone group exists for this id at all.
 func TestRestoreProject_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -982,6 +995,7 @@ func TestRestoreProject_NotFound(t *testing.T) {
 // the restored project's own id, notes carrying only the deletion id and
 // the write-back count — never the project's stored title.
 func TestRestoreProject_WritesAuditRow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -1031,6 +1045,7 @@ func TestRestoreProject_WritesAuditRow(t *testing.T) {
 // the deleted count is per-row, not per-group, and that a range DELETE
 // cannot split a group (design 1: one deletion_id shares one deleted_at).
 func TestPruneDeletionTombstones_DropsOlderThanRetention(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -1106,6 +1121,7 @@ func TestPruneDeletionTombstones_DropsOlderThanRetention(t *testing.T) {
 // jsonb_populate_record(...).*  catch-all, which needs no such guard
 // because it maps by column name automatically.
 func TestRestoreColumnList_MatchesPragmaTableInfo(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 
 	t.Run("tasks", func(t *testing.T) {
@@ -1156,6 +1172,7 @@ func TestRestoreColumnList_MatchesPragmaTableInfo(t *testing.T) {
 // not be found by restore_project's lookup — same ErrNotFound response as
 // "never deleted" — and nothing gets written or consumed.
 func TestRestoreProject_RefusesOutsideRetention(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -1203,6 +1220,7 @@ func TestRestoreProject_RefusesOutsideRetention(t *testing.T) {
 // control: a group 29 days old (inside the 30-day window) restores
 // normally, proving the boundary isn't rejecting everything.
 func TestRestoreProject_AllowsInsideRetention(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -1244,6 +1262,7 @@ func TestRestoreProject_AllowsInsideRetention(t *testing.T) {
 // delete untouched, so a still-restorable group in another workspace is
 // never collateral damage of a later, unrelated delete.
 func TestSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()
@@ -1314,6 +1333,7 @@ func TestSoftDelete_DeletePrunesExpiredTombstones(t *testing.T) {
 // (internal/storage/sqlite/gtd.go), which is a separate expression that
 // could be broken independently of the task path's.
 func TestSoftDelete_DeleteProjectPrunesExpiredTombstones(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d := openSoftDeleteTestDB(t)
 	store := NewGTDStore(d)
 	ctx := context.Background()

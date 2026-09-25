@@ -77,8 +77,8 @@ func (s *Server) registerBehaviorRuleTools(ms *server.MCPServer) {
 	), s.handleDeprecateBehaviorRule)
 }
 
-// behaviorRuleTextMaxRunes bounds Condition/Action on read — U13
-// (2026-08-20-mcp-surface-spec.md). sanitizeRuleText already caps write-time
+// behaviorRuleTextMaxRunes bounds Condition/Action on read — U13.
+// sanitizeRuleText already caps write-time
 // length at 2000 runes (see the two sanitizeRuleText(..., 2000) calls
 // below), so this read-time bound is length-equal, not tighter; what it adds
 // is the boundary-marker neutralisation clipSafe performs that
@@ -246,7 +246,7 @@ func (s *Server) handleApplyBehaviorRules(ctx context.Context, req mcp.CallToolR
 
 // sanitizeRuleText validates and truncates rule text fields (condition, action).
 // It rejects strings containing null bytes or ASCII control characters (other
-// than tab), and enforces a maximum rune length per backend-security-design.md §5.4.
+// than tab), and enforces a maximum rune length (audit/stored-text hygiene).
 func sanitizeRuleText(s string, maxRunes int) (string, error) {
 	for _, r := range s {
 		if r == '\x00' || (r < 0x20 && r != '\t') {

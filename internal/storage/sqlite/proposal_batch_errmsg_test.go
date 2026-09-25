@@ -21,7 +21,7 @@ import (
 
 func openBatchProposalStore(t *testing.T) (*sqlite.DB, *sqlite.ProposalStore) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -33,6 +33,7 @@ func openBatchProposalStore(t *testing.T) (*sqlite.DB, *sqlite.ProposalStore) {
 // error a caller can act on must survive. An implementation that replaced
 // every message with the generic text would pass the leak test below.
 func TestBatchConfirm_UnknownIDReportsTheSentinel(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openBatchProposalStore(t)
 	id := uuid.New()
 
@@ -59,6 +60,7 @@ func TestBatchConfirm_UnknownIDReportsTheSentinel(t *testing.T) {
 // case ("no such table: pending_proposals") needs the unexported handle to
 // reproduce, and this exercises the same code path.
 func TestBatchConfirm_StoreFailureDoesNotShipDriverText(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openBatchProposalStore(t)
 	if err := d.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

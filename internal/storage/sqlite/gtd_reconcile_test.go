@@ -8,7 +8,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
-// SQLite parity for the reconcile flow (backend-security-design §6.3 dual-backend).
+// SQLite parity for the reconcile flow (dual-backend).
 // Mirrors the PG tests in internal/gtd/reconcile_test.go.
 
 const (
@@ -18,6 +18,7 @@ const (
 
 // TestSQLiteReconcileExactMatch covers the basic happy path.
 func TestSQLiteReconcileExactMatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -35,7 +36,7 @@ func TestSQLiteReconcileExactMatch(t *testing.T) {
 		URL:      prURL,
 		HeadRef:  branch,
 		MergedAt: time.Now().UTC(),
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -71,6 +72,7 @@ func TestSQLiteReconcileExactMatch(t *testing.T) {
 
 // TestSQLiteReconcileIdempotent verifies 2nd identical call is a no-op.
 func TestSQLiteReconcileIdempotent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -86,7 +88,7 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 	prs := []gtd.MergedPR{{
 		URL: "https://github.com/owner/repo/pull/22", HeadRef: branch,
 	}}
-	r1, err := gtd.MatchMergedPRs(ctx, store, prs)
+	r1, err := gtd.MatchMergedPRs(ctx, store, prs, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("first MatchMergedPRs: %v", err)
 	}
@@ -98,7 +100,7 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 		t.Fatalf("first applied = %d, want 1", len(a1))
 	}
 
-	r2, err := gtd.MatchMergedPRs(ctx, store, prs)
+	r2, err := gtd.MatchMergedPRs(ctx, store, prs, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("second MatchMergedPRs: %v", err)
 	}
@@ -116,6 +118,7 @@ func TestSQLiteReconcileIdempotent(t *testing.T) {
 
 // TestSQLiteReconcileNoMatch: PR head_ref doesn't match any task's branch_name.
 func TestSQLiteReconcileNoMatch(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -131,7 +134,7 @@ func TestSQLiteReconcileNoMatch(t *testing.T) {
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL:     "https://github.com/owner/repo/pull/33",
 		HeadRef: "feature/x",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -145,6 +148,7 @@ func TestSQLiteReconcileNoMatch(t *testing.T) {
 
 // TestSQLiteReconcileAmbiguousBranchPicksMostRecent covers the multi-task case.
 func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -169,7 +173,7 @@ func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
 
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL: "https://github.com/owner/repo/pull/44", HeadRef: branch,
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -198,6 +202,7 @@ func TestSQLiteReconcileAmbiguousBranchPicksMostRecent(t *testing.T) {
 
 // TestSQLiteReconcilePRURLMatchPriority covers pr_url winning over branch.
 func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	store := openMem(t, "")
 	ctx := context.Background()
 
@@ -212,7 +217,7 @@ func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
 
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL: prURL, HeadRef: "irrelevant-branch",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}

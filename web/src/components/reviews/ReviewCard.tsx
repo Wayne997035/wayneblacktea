@@ -13,11 +13,12 @@ interface RatingButton {
   color: string
 }
 
+// [F0925-25]
 const RATING_BUTTONS: RatingButton[] = [
-  { rating: 1, labelKey: 'reviews.ratings.again', color: '#ef4444' },
-  { rating: 2, labelKey: 'reviews.ratings.hard',  color: '#f97316' },
-  { rating: 3, labelKey: 'reviews.ratings.good',  color: '#22c55e' },
-  { rating: 4, labelKey: 'reviews.ratings.easy',  color: '#3b82f6' },
+  { rating: 1, labelKey: 'reviews.ratings.again', color: 'var(--color-rating-again)' },
+  { rating: 2, labelKey: 'reviews.ratings.hard',  color: 'var(--color-accent-orange)' },
+  { rating: 3, labelKey: 'reviews.ratings.good',  color: 'var(--color-accent-green)' },
+  { rating: 4, labelKey: 'reviews.ratings.easy',  color: 'var(--color-rating-easy)' },
 ]
 
 function formatDueDate(iso: string): string {
@@ -45,18 +46,29 @@ export function ReviewCard({ review }: ReviewCardProps) {
   const { t } = useTranslation()
   const { mutate: submitReview, isPending, variables } = useSubmitReview()
   const [rated, setRated] = useState<{ nextDays: number } | null>(null)
+  const [error, setError] = useState(false)
 
   const isPendingForThis = isPending && variables?.scheduleId === review.schedule_id
 
+  // [F0925-20] "已記錄" must only render after the backend confirms the
+  // write — setRated moves into onSuccess so a failed submit stays on the
+  // rating buttons with a visible, retryable error instead of a false
+  // success state.
   function handleRating(rating: 1 | 2 | 3 | 4) {
-    submitReview({
-      scheduleId: review.schedule_id,
-      rating,
-      stability: review.stability,
-      difficulty: review.difficulty,
-      review_count: review.review_count,
-    })
-    setRated({ nextDays: estimateNextDays(rating, review.review_count) })
+    setError(false)
+    submitReview(
+      {
+        scheduleId: review.schedule_id,
+        rating,
+        stability: review.stability,
+        difficulty: review.difficulty,
+        review_count: review.review_count,
+      },
+      {
+        onSuccess: () => setRated({ nextDays: estimateNextDays(rating, review.review_count) }),
+        onError: () => setError(true),
+      },
+    )
   }
 
   if (rated) {
@@ -64,7 +76,7 @@ export function ReviewCard({ review }: ReviewCardProps) {
       <div
         style={{
           background: 'var(--color-bg-card)',
-          border: '1px solid #22c55e',
+          border: '1px solid var(--color-accent-green)', // [F0925-25]
           borderRadius: '8px',
           padding: '16px',
           display: 'flex',
@@ -74,9 +86,10 @@ export function ReviewCard({ review }: ReviewCardProps) {
         role="status"
         aria-live="polite"
       >
-        <span style={{ color: '#22c55e', fontWeight: 600 }}>✓ 已記錄</span>
+        {/* [F0925-24] */}
+        <span style={{ color: 'var(--color-accent-green)', fontWeight: 600 }}>✓ {t('reviews.card.recorded')}</span> {/* [F0925-25] */}
         <span style={{ color: 'var(--color-text-muted)' }}>
-          · 下次複習：{rated.nextDays}天後
+          · {t('reviews.card.nextReviewIn', { days: rated.nextDays })}
         </span>
       </div>
     )
@@ -147,7 +160,7 @@ export function ReviewCard({ review }: ReviewCardProps) {
               minHeight: '44px',
               fontSize: 'var(--text-body-sm, 0.8125rem)',
               fontWeight: 600,
-              color: '#ffffff',
+              color: 'var(--color-white)', // [F0925-25]
               background: color,
               border: 'none',
               borderRadius: '8px',
@@ -161,6 +174,13 @@ export function ReviewCard({ review }: ReviewCardProps) {
           </button>
         ))}
       </div>
+
+      {/* [F0925-20] Visible, retryable error when the API rejects the rating */}
+      {error && (
+        <p role="alert" className="text-body-sm" style={{ color: 'var(--color-error)' }}>
+          {t('reviews.submitError')}
+        </p>
+      )}
     </article>
   )
 }

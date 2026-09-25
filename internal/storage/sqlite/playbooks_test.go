@@ -12,7 +12,7 @@ import (
 
 func openPlaybookDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -21,6 +21,7 @@ func openPlaybookDB(t *testing.T) *wbtsqlite.DB {
 }
 
 func TestSQLitePlaybookStore_Create(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openPlaybookDB(t)
 	store := wbtsqlite.NewPlaybookStore(db)
 	ctx := context.Background()
@@ -101,6 +102,7 @@ func TestSQLitePlaybookStore_Create(t *testing.T) {
 
 //nolint:gocyclo // table-driven filter test with 5 sub-scenarios; splitting would obscure shared setup
 func TestSQLitePlaybookStore_List(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openPlaybookDB(t)
 	store := wbtsqlite.NewPlaybookStore(db)
 	ctx := context.Background()
@@ -108,7 +110,7 @@ func TestSQLitePlaybookStore_List(t *testing.T) {
 	// Seed two playbooks.
 	_, err := store.Create(ctx, playbook.CreateParams{
 		TriggerPattern: "Before adding a migration",
-		ActionTemplate: "Read backend-security-design.md §6",
+		ActionTemplate: "Read the migration conventions",
 		Confidence:     0.90,
 	})
 	if err != nil {
@@ -197,6 +199,7 @@ func TestSQLitePlaybookStore_List(t *testing.T) {
 }
 
 func TestSQLitePlaybookStore_IncrementHits(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openPlaybookDB(t)
 	store := wbtsqlite.NewPlaybookStore(db)
 	ctx := context.Background()

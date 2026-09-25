@@ -9,7 +9,9 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // DecisionStore is the SQLite-backed implementation of decision.StoreIface.
@@ -90,6 +92,10 @@ func (s *DecisionStore) Log(ctx context.Context, p decision.LogParams) (*db.Deci
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("log_decision: repo_name %w", err)
 	}
+	// [F0925-29] Same repo name backstop as the pgx Store.Log.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("log_decision: %w", validator.ErrInvalidRepoName)
+	}
 	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
 		return nil, fmt.Errorf("log_decision: rationale %w", err)
 	}
@@ -137,6 +143,10 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return uuid.UUID{}, fmt.Errorf("log_decision: repo_name %w", err)
 	}
+	// [F0925-29] Same repo name backstop as Log.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return uuid.UUID{}, fmt.Errorf("log_decision: %w", validator.ErrInvalidRepoName)
+	}
 	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
 		return uuid.UUID{}, fmt.Errorf("log_decision: rationale %w", err)
 	}
@@ -175,11 +185,15 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 // callers MUST import into a fresh database. d.Source is validated before
 // write, same as Log/LogTx — the source-of-truth Postgres row is expected to
 // already be valid, but this guard doesn't delegate that assumption to the
-// DB CHECK constraint (backend-security-design.md §5.2; security review
-// round 2, m-1).
+// DB CHECK constraint (security review round 2, m-1).
 func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error {
 	if !decision.Source(d.Source).Valid() {
 		return decision.ErrInvalidSource
+	}
+	// [F0925-29] qa-seed is an automatic writer: a production repo_name that
+	// breaks the workspace repo name rule is imported as NULL.
+	if d.RepoName.Valid && !validator.IsValidRepoName(d.RepoName.String) {
+		d.RepoName = pgtype.Text{}
 	}
 	const q = `INSERT INTO decisions
 		(id, workspace_id, project_id, repo_name, title, context, decision,

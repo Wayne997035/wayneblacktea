@@ -79,8 +79,7 @@ type Omitted struct {
 }
 
 // Pack is the assembled, budget-capped result handed back to the caller. The
-// json tags here are the wire contract documented at
-// docs/wayneblacktea-2.0-development-prompt.md:265-291 — snake_case at every
+// json tags here follow the documented wire contract: snake_case at every
 // level, including nested Item/Warning/Omitted.
 type Pack struct {
 	PackID      *uuid.UUID `json:"pack_id"`

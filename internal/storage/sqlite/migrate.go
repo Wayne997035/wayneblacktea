@@ -23,7 +23,12 @@ import (
 // [F184-04] 77 -> 78 for migrations/sqlite/000078_discipline_events_outcome.
 // [F186-01] 78 -> 79 for migrations/sqlite/000079_task_area.
 // [F191-03] 79 -> 80 for migrations/sqlite/000080_deletion_tombstones.
-const latestSQLiteSchemaVersion = 80
+// [F0925-11] 80 -> 81 for migrations/sqlite/000081_query_indexes.
+// [F0925-15] 81 -> 82 for migrations/sqlite/000082_index_parity.
+// [F0925-31] 82 -> 83 for migrations/sqlite/000083_repos_github_slug.
+// [F0925-33] 83 -> 84 for migrations/sqlite/000084_repo_name_cleanup (data
+// cleanup only, no schema object added).
+const latestSQLiteSchemaVersion = 84
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

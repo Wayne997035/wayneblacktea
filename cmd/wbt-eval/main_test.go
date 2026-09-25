@@ -10,8 +10,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/evals"
 )
 
-// TestValidateFlags exercises the exhaustive client-side flag allowlist
-// (backend-security-design.md §5.2): every rejection path must fail closed
+// TestValidateFlags exercises the exhaustive client-side flag allowlist:
+// every rejection path must fail closed
 // with a message naming the offending flag, and every legitimate combination
 // must pass. Categories are drawn from evals.ProviderEvalCategories (the real
 // registry) rather than hardcoded so this test tracks the source of truth.

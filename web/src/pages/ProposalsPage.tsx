@@ -14,9 +14,12 @@ function ProposalTypeBadge({ type }: { type: PendingProposal['type'] }) {
     goal:      { bg: 'var(--color-status-active-bg)',    text: 'var(--color-status-active-text)' },
     project:   { bg: 'var(--color-status-on-hold-bg)',   text: 'var(--color-status-on-hold-text)' },
     task:      { bg: 'var(--color-status-archived-bg)',  text: 'var(--color-status-archived-text)' },
-    concept:   { bg: 'var(--color-accent-blue-bg, rgba(88,166,255,.15))', text: 'var(--color-accent-blue)' },
+    // [F0925-25] --color-accent-blue-bg newly defined in @theme, fallback dropped.
+    // --color-status-on-hold-bg was ALREADY defined (#2e1f00) before this change, so its
+    // rgba(210,153,34,.15) fallback here was already dead/unreachable — dropping it changes nothing rendered.
+    concept:   { bg: 'var(--color-accent-blue-bg)', text: 'var(--color-accent-blue)' },
     knowledge: { bg: 'var(--color-status-completed-bg)', text: 'var(--color-status-completed-text)' },
-    decision:  { bg: 'var(--color-status-on-hold-bg, rgba(210,153,34,.15))', text: 'var(--color-status-on-hold-text)' },
+    decision:  { bg: 'var(--color-status-on-hold-bg)', text: 'var(--color-status-on-hold-text)' },
   }
   const { bg, text } = colorMap[type]
   return (
@@ -162,7 +165,8 @@ function ProposalCard({ proposal }: { proposal: PendingProposal }) {
             onClick={handleReject}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-body-sm transition-colors"
             style={{
-              background: confirming ? 'var(--color-error-bg, rgba(248,81,73,.15))' : 'var(--color-bg-input)',
+              // [F0925-25] --color-error-bg already defined (#2e0a0a); fallback was already dead, drop it.
+              background: confirming ? 'var(--color-error-bg)' : 'var(--color-bg-input)',
               color: confirming ? 'var(--color-error)' : 'var(--color-text-muted)',
               border: `1px solid ${confirming ? 'var(--color-error)' : 'var(--color-border)'}`,
               cursor: isPending ? 'not-allowed' : 'pointer',
@@ -243,7 +247,7 @@ export function ProposalsPage() {
         <div
           className="rounded-md p-3 mb-6 text-body-sm"
           style={{
-            background: 'var(--color-error-bg, #2e0a0a)',
+            background: 'var(--color-error-bg)', // [F0925-25]
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}

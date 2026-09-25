@@ -20,6 +20,7 @@ import (
 // used to reach the doomed SQL query) returns decision.ErrCosineUnsupported,
 // checkable via errors.Is, and does not panic.
 func TestDecisionStore_SearchByCosine_ReturnsCapabilityError(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 
 	rows, err := s.SearchByCosine(context.Background(), []float32{0.1, 0.2, 0.3}, 10)
@@ -42,6 +43,7 @@ func TestDecisionStore_SearchByCosine_ReturnsCapabilityError(t *testing.T) {
 // dodge the sentinel by passing a degenerate query and get back (nil, nil)
 // looking like "searched, found nothing".
 func TestDecisionStore_SearchByCosine_EdgeCaseInputs(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -74,6 +76,7 @@ func TestDecisionStore_SearchByCosine_EdgeCaseInputs(t *testing.T) {
 // If SearchByCosine were still issuing a SELECT, this test would fail with a
 // SQL error instead of the capability sentinel.
 func TestDecisionStore_SearchByCosine_NoSQLIssued(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -93,9 +96,9 @@ func TestDecisionStore_SearchByCosine_NoSQLIssued(t *testing.T) {
 
 // TestDecisionStore_SearchByCosine_ErrorDoesNotLeakInternals verifies the
 // error message stays generic — no DSN, file path, or schema/column detail
-// (backend-security-design.md §2 threat surface note in the dispatch: a
-// capability error must not leak storage internals).
+// (a capability error must not leak storage internals).
 func TestDecisionStore_SearchByCosine_ErrorDoesNotLeakInternals(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 
 	_, err := s.SearchByCosine(context.Background(), []float32{0.1}, 1)

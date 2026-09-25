@@ -93,7 +93,7 @@ export function DueReviewsCard({ onClick }: DueReviewsCardProps) {
         <span
           className="rounded-full font-mono text-caption px-2 py-0.5"
           style={{
-            background: '#0a1f35',
+            background: 'var(--color-status-completed-bg)', // [F0925-25]
             color: 'var(--color-accent-blue)',
             border: '1px solid var(--color-accent-blue)',
           }}

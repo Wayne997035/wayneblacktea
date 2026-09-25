@@ -1,7 +1,7 @@
 //go:build integration
 
 // Cross-backend golden-parity tests for the A5a SessionStart hook rewrite.
-// Uses testcontainers Postgres (backend-security-design.md §6.5 — real
+// Uses testcontainers Postgres (a real
 // container, never mocked/shared) plus a real file-backed SQLite DB, seeded
 // with byte-identical fixture content through the SAME domain Store methods
 // production code calls (decision.Store.Log / learning.Store.CreateConcept /

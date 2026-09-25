@@ -15,7 +15,7 @@ import (
 
 func openLearningStore(t *testing.T, dsn, workspaceID string) *sqlite.LearningStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), dsn, workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), dsn, workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -24,6 +24,7 @@ func openLearningStore(t *testing.T, dsn, workspaceID string) *sqlite.LearningSt
 }
 
 func TestLearningStore_CreateConceptAndDueReviewRoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	concept, err := s.CreateConcept(context.Background(), "FSRS", "spaced repetition", []string{"memory", "cards"})
 	if err != nil {
@@ -43,6 +44,7 @@ func TestLearningStore_CreateConceptAndDueReviewRoundTrip(t *testing.T) {
 }
 
 func TestLearningStore_NilTagsBecomeEmptySlice(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	concept, err := s.CreateConcept(context.Background(), "No tags", "content", nil)
 	if err != nil {
@@ -54,6 +56,7 @@ func TestLearningStore_NilTagsBecomeEmptySlice(t *testing.T) {
 }
 
 func TestLearningStore_EmptyTable(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	reviews, err := s.DueReviews(context.Background(), 10)
 	if err != nil {
@@ -81,6 +84,7 @@ func TestLearningStore_EmptyTable(t *testing.T) {
 // distinguish the two — this test marshals the store's return value directly
 // and asserts the raw JSON text, which can.
 func TestLearningStore_DueReviews_EmptyReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	reviews, err := s.DueReviews(context.Background(), 10)
 	if err != nil {
@@ -96,6 +100,7 @@ func TestLearningStore_DueReviews_EmptyReturnsEmptyArrayNotNull(t *testing.T) {
 }
 
 func TestLearningStore_DueReviewPastVsFuture(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	if _, err := s.CreateConcept(context.Background(), "past", "due now", nil); err != nil {
 		t.Fatalf("CreateConcept past: %v", err)
@@ -128,6 +133,7 @@ func TestLearningStore_DueReviewPastVsFuture(t *testing.T) {
 }
 
 func TestLearningStore_SubmitReviewUpdatesCountAndNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	if _, err := s.CreateConcept(context.Background(), "submit", "content", nil); err != nil {
 		t.Fatalf("CreateConcept: %v", err)
@@ -158,6 +164,7 @@ func TestLearningStore_SubmitReviewUpdatesCountAndNotFound(t *testing.T) {
 // (Ω7 fix) reads back exactly what SubmitReview wrote — the SQLite sibling
 // of TestStore_GetScheduleState_MatchesDBRow (Postgres).
 func TestLearningStore_GetScheduleState_MatchesDBRow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	if _, err := s.CreateConcept(context.Background(), "get schedule state", "content", nil); err != nil {
 		t.Fatalf("CreateConcept: %v", err)
@@ -191,6 +198,7 @@ func TestLearningStore_GetScheduleState_MatchesDBRow(t *testing.T) {
 // TestLearningStore_GetScheduleState_NotFound verifies ErrNotFound for an
 // unknown schedule ID.
 func TestLearningStore_GetScheduleState_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	if _, err := s.GetScheduleState(context.Background(), uuid.New()); !errors.Is(err, learning.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
@@ -198,6 +206,7 @@ func TestLearningStore_GetScheduleState_NotFound(t *testing.T) {
 }
 
 func TestLearningStore_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:learning-" + uuid.New().String() + "?mode=memory&cache=shared"
 	storeA := openLearningStore(t, dsn, wsA)
@@ -216,6 +225,7 @@ func TestLearningStore_WorkspaceIsolation(t *testing.T) {
 }
 
 func TestLearningStore_ContextCanceled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openLearningStore(t, ":memory:", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

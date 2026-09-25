@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -136,6 +137,11 @@ func validateCreateParams(p CreateParams) error {
 		return fmt.Errorf("worksession.Create: goal is required")
 	case p.Source == "":
 		return fmt.Errorf("worksession.Create: source is required")
+	}
+	// [F0925-29] repo_name is required above; beyond that it must follow the
+	// workspace repo name rule.
+	if !validator.ValidRepoPath(p.RepoName) {
+		return fmt.Errorf("worksession.Create: %w", validator.ErrInvalidRepoName)
 	}
 	if p.BranchName != nil {
 		if reason := CheckControlChars("branch_name", *p.BranchName); reason != "" {
@@ -371,7 +377,7 @@ func (s *Store) Checkpoint(ctx context.Context, p CheckpointParams) (*Session, e
 //     linked via work_session_tasks are marked completed.
 //   - Otherwise (both empty/false), no tasks are marked completed — Ω5 fix:
 //     omitting completed_task_ids used to silently complete every linked
-//     task with no way to opt out (backend-security-design.md §2.1).
+//     task with no way to opt out.
 //
 // Returns the updated session and the actual list of task IDs marked
 // completed, so callers can report exactly what happened instead of leaving

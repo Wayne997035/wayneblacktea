@@ -247,8 +247,8 @@ func TestHandleRecordOutcome_InvalidResult(t *testing.T) {
 
 // TestHandleRecordOutcome_InvalidSessionIDUUID verifies a malformed session_id
 // is rejected BEFORE CreateOutcome is ever called (validate UUID format
-// first, per backend-security-design.md's no-FK design note: a stale-but-
-// well-formed UUID is tolerated, a malformed string is not).
+// first — no FK constraints by design, so a stale-but-well-formed UUID is
+// tolerated, but a malformed string is not).
 func TestHandleRecordOutcome_InvalidSessionIDUUID(t *testing.T) {
 	t.Parallel()
 	store := &stubOutcomeStore{}

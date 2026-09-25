@@ -184,6 +184,7 @@ func show(p *string) string {
 // WHERE clause. Every fixture is checked for the value it should hold after
 // the migration AND for whether it should have been touched at all.
 func TestMigration000077_NormalisesOnlyStrippedRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	conn, m := openMigratorAt76(t)
 
 	fixtures := dueDateFixtures()
@@ -240,6 +241,7 @@ func TestMigration000077_NormalisesOnlyStrippedRows(t *testing.T) {
 // true inverse, including for the sub-millisecond fixture whose original text
 // is NOT recomputable from the normalised value.
 func TestMigration000077_DownRestoresExactOriginals(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	conn, m := openMigratorAt76(t)
 
 	fixtures := dueDateFixtures()
@@ -288,6 +290,7 @@ func TestMigration000077_DownRestoresExactOriginals(t *testing.T) {
 // If it were not, the `due_date <> strftime(...)` condition could not be used
 // to mean "not already normalised".
 func TestMigration000077_IsIdempotent(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	conn, m := openMigratorAt76(t)
 
 	id := uuid.New().String()

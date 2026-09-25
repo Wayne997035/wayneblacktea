@@ -62,8 +62,8 @@ func TestNormalizeActor_CaseAndWhitespaceInsensitive(t *testing.T) {
 
 // TestNormalizeActor_UnknownValue asserts an unrecognized actor is rejected
 // (whitelist, not blacklist) and the error message lists the allowlist
-// without echoing the raw input back (backend-security-design.md §5.4-style
-// sanitisation — untrusted input must not round-trip into an error string).
+// without echoing the raw input back — untrusted input must not
+// round-trip into an error string.
 func TestNormalizeActor_UnknownValue(t *testing.T) {
 	raw := "gemini"
 	_, err := NormalizeActor(raw)

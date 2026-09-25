@@ -84,7 +84,6 @@ func fallbackEnvCandidates(home string) []string {
 
 // warnIfInsecureEnvFile emits a slog warning when the fallback env file has
 // group/world-readable permissions. Credential-bearing files MUST be 0600.
-// (backend-security-design.md §4.1)
 func warnIfInsecureEnvFile(path string) {
 	info, err := os.Stat(path)
 	if err != nil {

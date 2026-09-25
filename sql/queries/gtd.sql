@@ -88,8 +88,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
 -- name: CompleteTask :one
--- artifact is presence-aware (Ω4, 2026-08-20-mcp-surface-spec.md): omitting
--- it (sqlc.narg → SQL NULL) preserves whatever is already stored, matching
+-- artifact is presence-aware: omitting it (sqlc.narg → SQL NULL) preserves
+-- whatever is already stored, matching
 -- upsert_project_arch.summary/file_map's established convention. Without
 -- COALESCE, re-completing a reopened task without re-supplying artifact
 -- silently wiped an already-recorded PR/commit link.

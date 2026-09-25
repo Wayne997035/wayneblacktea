@@ -23,8 +23,8 @@ func (s *Server) registerPlaybookTools(ms *server.MCPServer) {
 	), s.handleListPlaybooks)
 }
 
-// playbookTextMaxRunes bounds TriggerPattern/ActionTemplate on read — U13
-// (2026-08-20-mcp-surface-spec.md). Playbooks are derived-rule text
+// playbookTextMaxRunes bounds TriggerPattern/ActionTemplate on read — U13.
+// Playbooks are derived-rule text
 // generalised from past decisions with no write-time neutralisation, so
 // this is sized like wrapUntrustedTask's gtdBodyMaxRunes (tools_gtd.go):
 // long-form by nature, not a short title.

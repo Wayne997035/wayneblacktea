@@ -300,7 +300,7 @@ export function PendingProposalCard({
               className="rounded-md px-4 py-2 text-body-sm"
               style={{
                 background: 'var(--color-error)',
-                color: '#fff',
+                color: 'var(--color-white)', // [F0925-25]
                 border: 'none',
                 cursor: 'pointer',
               }}

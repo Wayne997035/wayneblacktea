@@ -21,9 +21,9 @@ import (
 //   - pass plain ASCII through unchanged
 //   - handle empty strings as a fast path
 //
-// Backed by backend-security-design.md §5.4 and CWE-117 (log/audit
-// injection — control chars in stored audit text can break CLI rendering
-// and forge new log lines).
+// Audit reason/note text must strip control characters and cap length
+// before persisting (CWE-117: log/audit injection — control chars in
+// stored audit text can break CLI rendering and forge new log lines).
 func TestSanitizeAuditText(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

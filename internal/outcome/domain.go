@@ -95,9 +95,8 @@ const MaxRelatedRuleIDsTotal = 100
 // MaxNotesTotalRunes caps the CUMULATIVE size (in runes) of a single outcome
 // row's Notes field across its entire append-only enrich lifetime
 // (FinalizeDraft's "\n\n"-joined append, migration 000075) — a different
-// guarantee from sanitize.Notes's per-call 500-rune cap
-// (backend-security-design.md §5.4), which only bounds what ONE
-// record_outcome/finish_work call may contribute. Without this cap, N
+// guarantee from sanitize.Notes's per-call 500-rune cap, which only bounds
+// what ONE record_outcome/finish_work call may contribute. Without this cap, N
 // enrich calls against the same draft (each carrying up to 500 runes) grow
 // the stored Notes column by up to 500*N runes with no upper bound — the
 // same unbounded-accumulation shape as MaxRelatedRuleIDsTotal above, and
@@ -161,17 +160,17 @@ type Outcome struct {
 	// RelatedRuleIDs optionally links this outcome to one or more behavior rules.
 	// The behavior governance scheduler job uses this to call ApplyOutcome per
 	// referenced rule, closing the outcome→rule confidence feedback loop.
-	// NO FK per CLAUDE.md #9; stale rule IDs are tolerated application-side.
+	// No FK by design; stale rule IDs are tolerated application-side.
 	RelatedRuleIDs []uuid.UUID `json:"related_rule_ids,omitempty"`
 	// WorkSessionID optionally links this outcome back to the work_sessions
-	// row it was recorded from (wbt-2.0 P2.4, migration 000067). NO FK per
-	// CLAUDE.md #9; a stale session_id is tolerated application-side.
+	// row it was recorded from (wbt-2.0 P2.4, migration 000067). No FK by
+	// design; a stale session_id is tolerated application-side.
 	WorkSessionID *uuid.UUID `json:"work_session_id,omitempty"`
 	// SupersedesID optionally links this outcome to the prior outcome row it
 	// explicitly replaces (migration 000074, decision 80c1e8ae). Set only by
 	// RecordExecutionResult's supersede branch (lifecycle.go) when the
 	// entity already has a DIFFERENT terminal result — the prior row is left
-	// untouched, never silently overwritten. NO FK per CLAUDE.md #9.
+	// untouched, never silently overwritten. No FK by design.
 	SupersedesID *uuid.UUID `json:"supersedes_id,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	// UpdatedAt records the last time this row was actually written to in

@@ -82,8 +82,7 @@ type agentBehaviorFinding struct {
 }
 
 // ---------------------------------------------------------------------------
-// U13 Phase B — boundary-marker neutralisation for tools_watchdog.go
-// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// U13 Phase B — boundary-marker neutralisation for tools_watchdog.go.
 //
 // Applied ONLY at the two jsonText response boundaries below (analyze_agent_
 // behavior, detect_unclosed_loops), never inside the 8 detectXxx functions

@@ -15,8 +15,8 @@ import (
 )
 
 // Read-time bounds for procedural.ProceduralMemory's free-text fields,
-// applied by wrapUntrustedProceduralMemory before jsonText — U13
-// (2026-08-20-mcp-surface-spec.md). proceduralTitleMaxRunes/
+// applied by wrapUntrustedProceduralMemory before jsonText — U13.
+// proceduralTitleMaxRunes/
 // proceduralWhenToUseMaxRunes/proceduralApproachMaxRunes mirror
 // handleAddProcedural's write-time caps (200/2000/20000 runes).
 // proceduralListItemMaxRunes bounds ToolsUsed/FilesTouched, which have no
@@ -29,8 +29,7 @@ import (
 // add_procedural/query_procedural/mark_procedural_used store literal
 // step-by-step approach text (ApproachMD is explicitly "Markdown-formatted
 // step-by-step approach") — exactly the shape a forged marker plus
-// injected instruction would want to hide inside
-// (backend-security-design.md §2.1).
+// injected instruction would want to hide inside.
 const (
 	proceduralTitleMaxRunes     = 200
 	proceduralWhenToUseMaxRunes = 2000
@@ -55,15 +54,13 @@ const (
 // opposite. It claimed repo_name was "validator-gated at every write path",
 // and the exemption recorded against it in u13_wrap_field_coverage_test.go
 // cited this comment as its evidence — a claim and its own citation.
-// validator.IsValidRepoName does forbid marker text ([a-zA-Z0-9_.-]{1,100}),
-// but its only non-test callers are project create/update (gtd_handler.go:214
-// and :498, tools_gtd.go:737). record_procedure never went through it, so a
+// record_procedure did not go through validator.IsValidRepoName, so a
 // forged marker written to this column read back verbatim.
 //
-// The write path now screens repo_name for tool-call fragments (GTD d76ebc56)
-// — that is a different guarantee and does not cover boundary markers, which
-// is why the read-side clipSafe below is the fix rather than the write-side
-// screen.
+// Since [F0925-29] record_procedure and the procedural stores do apply
+// IsValidRepoName, whose charset admits no marker text. The read-side
+// clipSafe below stays: rows written before that rule keep their stored
+// value until the repo name cleanup migration runs.
 func wrapUntrustedProceduralMemory(m *procedural.ProceduralMemory) *procedural.ProceduralMemory {
 	if m == nil {
 		return nil
@@ -248,6 +245,9 @@ func (s *Server) handleAddProcedural(ctx context.Context, req mcp.CallToolReques
 		return inputErrorResult("approach_md", ccErr), nil
 	}
 
+	if errResult := repoNameArgError(stringArg(args, "repo_name")); errResult != nil {
+		return errResult, nil
+	}
 	p := procedural.AddParams{
 		Title:        title,
 		WhenToUse:    whenToUse,

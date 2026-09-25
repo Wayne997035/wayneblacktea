@@ -103,7 +103,7 @@ func TestMCPServer_NoLdflagsSentinel(t *testing.T) {
 
 // TestMCPServer_VersionFallsBackToBuildIDWhenSentinel is U6's acceptance
 // criterion for serverInfo.version reading buildinfo.EffectiveVersion()
-// (server.go:471, 2026-08-20-mcp-surface-spec.md): when Version is at its
+// (server.go:471): when Version is at its
 // "dev" sentinel but Commit/Date carry real production values (the state
 // every current Railway deploy is in — no git tag has ever driven one, see
 // README's new "Checking what's running" section), serverInfo.version must
@@ -285,9 +285,9 @@ func TestResourceBuildInfo_ProtocolVersionAndBackend(t *testing.T) {
 }
 
 // TestResourceBuildInfo_PostgresBackend is backendKind's Postgres half
-// (backend-security-design.md §6.5 — every PG-vs-SQLite-differing bit of
-// logic gets both a SQLite test and a real testcontainers Postgres test, not
-// "logic is trivial so one suffices"). Reuses the package's existing
+// (every PG-vs-SQLite-differing bit of logic gets both a SQLite test and a
+// real testcontainers Postgres test, not "logic is trivial so one
+// suffices"). Reuses the package's existing
 // Postgres testcontainer (tools_plan_pg_test.go's TestMain / mcpPlanTestPgPool)
 // rather than starting a second one — handleResourceBuildInfo only touches
 // s.pool and s.now (both safe on a bare &Server{}), so no store bundle is
@@ -317,8 +317,8 @@ func TestResourceBuildInfo_PostgresBackend(t *testing.T) {
 // TestResourceBuildInfo_NoUnexpectedFields is the compensating control for
 // the dispatch threat surface (build info is easy to accidentally widen into
 // an environment/secret dump): the resource's JSON MUST carry exactly the 8
-// declared fields (6 pre-U6 + build_id/build_id_note, U6:
-// 2026-08-20-mcp-surface-spec.md) and nothing else. A future author adding a
+// declared fields (6 pre-U6 + build_id/build_id_note, U6) and nothing else.
+// A future author adding a
 // field to buildInfoResource without updating this allowlist fails loudly
 // here instead of silently shipping whatever they added.
 func TestResourceBuildInfo_NoUnexpectedFields(t *testing.T) {

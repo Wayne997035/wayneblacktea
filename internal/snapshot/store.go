@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,6 +33,10 @@ var _ StoreIface = (*Store)(nil)
 
 // Write inserts a new snapshot row.
 func (s *Store) Write(ctx context.Context, p WriteParams) (*Snapshot, error) {
+	// [F0925-29] Store-layer backstop for the slug rule the MCP entry applies.
+	if !validator.ValidRepoPathMax(p.Slug, SlugMaxLen) {
+		return nil, fmt.Errorf("snapshot: writing: %w", validator.ErrInvalidSlug)
+	}
 	src := p.Source
 	if src == "" {
 		src = "auto-status-snapshot"

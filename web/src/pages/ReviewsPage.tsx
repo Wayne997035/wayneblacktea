@@ -19,17 +19,29 @@ const MAX_SUGGESTIONS_SHOWN = 5
 interface SuggestionItemProps {
   suggestion: LearningSuggestion
   kind: 'knowledge' | 'decision'
-  onAdd: () => void
+  // [F0925-21] Promise-returning contract: the caller's success/failure is
+  // structurally visible to this component instead of being swallowed at
+  // the call site, so "已加入" can be gated on it actually succeeding.
+  onAdd: () => Promise<void>
   isPending: boolean
 }
 
 function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemProps) {
+  const { t } = useTranslation()
   const [added, setAdded] = useState(false)
+  const [error, setError] = useState(false)
 
-  function handleAdd() {
-    onAdd()
-    setAdded(true)
-    setTimeout(() => setAdded(false), 1000)
+  // [F0925-21] "已加入" must only render once onAdd's promise resolves;
+  // a rejection leaves the button clickable with a visible, retryable error.
+  async function handleAdd() {
+    setError(false)
+    try {
+      await onAdd()
+      setAdded(true)
+      setTimeout(() => setAdded(false), 1000)
+    } catch {
+      setError(true)
+    }
   }
 
   return (
@@ -43,9 +55,10 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
       <span
         className="text-label rounded px-1.5 py-0.5 shrink-0"
         style={{
-          background: kind === 'knowledge' ? 'rgba(79,195,247,0.1)' : 'rgba(167,139,250,0.1)',
-          color: kind === 'knowledge' ? 'var(--color-accent-blue)' : '#a78bfa',
-          border: `1px solid ${kind === 'knowledge' ? 'var(--color-accent-blue)' : '#a78bfa'}`,
+          // [F0925-25]
+          background: kind === 'knowledge' ? 'var(--color-accent-blue-tint)' : 'var(--color-accent-violet-bg)',
+          color: kind === 'knowledge' ? 'var(--color-accent-blue)' : 'var(--color-accent-violet)',
+          border: `1px solid ${kind === 'knowledge' ? 'var(--color-accent-blue)' : 'var(--color-accent-violet)'}`,
           fontSize: '0.7rem',
         }}
       >
@@ -58,29 +71,42 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
       >
         {suggestion.title}
       </span>
+      {/* [F0925-24] */}
       <button
         type="button"
-        onClick={handleAdd}
+        onClick={() => void handleAdd()}
         disabled={isPending || added}
-        aria-label={`加入學習：${suggestion.title}`}
+        aria-label={t('reviews.suggestions.addAria', { title: suggestion.title })}
         className="text-label rounded px-2 py-0.5 shrink-0 transition-opacity"
         style={{
           minHeight: '28px',
-          background: added ? 'rgba(34,197,94,0.1)' : 'transparent',
-          color: added ? '#22c55e' : 'var(--color-accent-blue)',
-          border: `1px solid ${added ? '#22c55e' : 'var(--color-accent-blue)'}`,
+          // [F0925-25]
+          background: added ? 'var(--color-accent-green-bg)' : 'transparent',
+          color: added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)',
+          border: `1px solid ${added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)'}`,
           cursor: isPending || added ? 'not-allowed' : 'pointer',
           opacity: isPending ? 0.5 : 1,
           whiteSpace: 'nowrap',
         }}
       >
-        {added ? '已加入' : isPending ? '加入中…' : '加入學習'}
+        {added
+          ? t('reviews.suggestions.added')
+          : isPending
+            ? t('reviews.suggestions.adding')
+            : t('reviews.suggestions.add')}
       </button>
+      {/* [F0925-21] Visible, retryable error when onAdd's promise rejects */}
+      {error && (
+        <span role="alert" className="text-label shrink-0" style={{ color: 'var(--color-error)' }}>
+          {t('reviews.addError')}
+        </span>
+      )}
     </div>
   )
 }
 
 function SuggestionsPanel() {
+  const { t } = useTranslation()
   const { data: suggestions, isLoading, isError } = useLearningSuggestions()
   const addFromKnowledge = useCreateConceptFromKnowledge()
   const createConcept = useCreateConcept()
@@ -108,8 +134,9 @@ function SuggestionsPanel() {
     >
       <div className="flex items-center gap-2 mb-3">
         <Sparkles size={15} aria-hidden="true" style={{ color: 'var(--color-accent-blue)' }} />
+        {/* [F0925-24] */}
         <h2 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
-          AI 推薦
+          {t('reviews.suggestions.title')}
         </h2>
         <span
           className="text-label rounded-full px-2 py-0.5 ml-auto"
@@ -119,7 +146,7 @@ function SuggestionsPanel() {
             border: '1px solid var(--color-border)',
           }}
         >
-          {allItems.length} 項
+          {t('reviews.suggestions.itemCount', { count: allItems.length })}
         </span>
       </div>
 
@@ -130,11 +157,13 @@ function SuggestionsPanel() {
             suggestion={item}
             kind={item.kind}
             isPending={addFromKnowledge.isPending || createConcept.isPending}
-            onAdd={() => {
+            // [F0925-21] mutateAsync (not mutate) so SuggestionItem's
+            // await onAdd() structurally observes success/failure.
+            onAdd={async () => {
               if (item.kind === 'knowledge') {
-                addFromKnowledge.mutate({ knowledge_id: item.id })
+                await addFromKnowledge.mutateAsync({ knowledge_id: item.id })
               } else {
-                createConcept.mutate({
+                await createConcept.mutateAsync({
                   title: item.title,
                   content: item.context ?? item.content,
                   tags: [],
@@ -158,7 +187,9 @@ function SuggestionsPanel() {
             padding: '4px 0',
           }}
         >
-          {expanded ? '收起' : `顯示全部 ${allItems.length} 項`}
+          {expanded
+            ? t('reviews.suggestions.collapse')
+            : t('reviews.suggestions.showAll', { count: allItems.length })}
         </button>
       )}
     </div>
@@ -415,7 +446,7 @@ export function ReviewsPage() {
         <div
           className="rounded-md p-3 mb-4 text-body-sm"
           style={{
-            background: '#2e0a0a',
+            background: 'var(--color-error-bg)', // [F0925-25]
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}

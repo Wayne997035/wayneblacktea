@@ -12,6 +12,7 @@ interface SourceBadgeProps {
   sourceItemId?: string
 }
 
+// [F0925-25]
 const SOURCE_CONFIG: Record<
   SourceType,
   { icon: string; label: string; bg: string; color: string; border: string }
@@ -19,37 +20,37 @@ const SOURCE_CONFIG: Record<
   article: {
     icon: '📄',
     label: 'Article',
-    bg: 'rgba(21, 101, 192, 0.15)',
-    color: '#4fc3f7',
-    border: 'rgba(79, 195, 247, 0.4)',
+    bg: 'var(--color-source-article-bg)',
+    color: 'var(--color-accent-blue)',
+    border: 'var(--color-source-article-border)',
   },
   til: {
     icon: '💡',
     label: 'TIL',
-    bg: 'rgba(46, 125, 50, 0.15)',
-    color: '#66bb6a',
-    border: 'rgba(102, 187, 106, 0.4)',
+    bg: 'var(--color-source-til-bg)',
+    color: 'var(--color-source-til-text)',
+    border: 'var(--color-source-til-border)',
   },
   bookmark: {
     icon: '🔖',
     label: 'Bookmark',
-    bg: 'rgba(81, 45, 168, 0.15)',
-    color: '#ba68c8',
-    border: 'rgba(186, 104, 200, 0.4)',
+    bg: 'var(--color-source-bookmark-bg)',
+    color: 'var(--color-source-bookmark-text)',
+    border: 'var(--color-source-bookmark-border)',
   },
   zettelkasten: {
     icon: '📚',
     label: 'Note',
-    bg: 'rgba(230, 81, 0, 0.15)',
-    color: '#ffb74d',
-    border: 'rgba(255, 183, 77, 0.4)',
+    bg: 'var(--color-source-note-bg)',
+    color: 'var(--color-source-note-text)',
+    border: 'var(--color-source-note-border)',
   },
   'agent-proposed': {
     icon: '🤖',
     label: 'Agent',
-    bg: 'rgba(96, 96, 96, 0.15)',
-    color: '#9e9e9e',
-    border: 'rgba(158, 158, 158, 0.4)',
+    bg: 'var(--color-source-agent-bg)',
+    color: 'var(--color-source-agent-text)',
+    border: 'var(--color-source-agent-border)',
   },
 }
 
@@ -124,7 +125,7 @@ export function SourceBadge({ type, sourceTitle, sourceContent, sourceItemId }: 
             background: 'var(--color-bg-card)',
             border: '1px solid var(--color-border)',
             color: 'var(--color-text-primary)',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+            boxShadow: '0 4px 16px var(--color-overlay-40)', // [F0925-25]
             pointerEvents: 'none',
           }}
         >

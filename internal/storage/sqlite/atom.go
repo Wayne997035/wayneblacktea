@@ -271,7 +271,7 @@ func (s *AtomStore) Search(ctx context.Context, workspaceID *uuid.UUID, query st
 // single atom. status is validated against the five-value enum
 // (internal/atom/digest_status.go) before the UPDATE is sent — mirrors the
 // Postgres Store's validation so both backends reject the same invalid
-// values identically (backend-security-design.md §2, §6.3 PG/SQLite parity).
+// values identically (PG/SQLite parity).
 func (s *AtomStore) SetDigestStatus(ctx context.Context, id uuid.UUID, status string, errMsg string) error {
 	if !atom.IsValidDigestStatus(status) {
 		return fmt.Errorf("%w: %q", atom.ErrInvalidDigestStatus, status)

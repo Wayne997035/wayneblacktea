@@ -172,6 +172,45 @@ describe('CandidateRow snapshot', () => {
       container.querySelector('[data-testid="status"]')?.textContent,
     ).toBe('待確認')
   })
+
+  it('F0925-32: renders pr_merged_repo_unverified reason in en without the fuzzy-match wording', () => {
+    const candidate: CompletionCandidate = {
+      id: 'unverified-en-001',
+      task_id: 'task-unverified-en',
+      reason: 'pr_merged_repo_unverified',
+      confidence: 'medium',
+      status: 'pending',
+      suggested_artifact: 'https://github.com/owner/repo/pull/300',
+      created_at: '2026-05-20T00:00:00Z',
+    }
+
+    const { container } = render(<CandidateRow candidate={candidate} />)
+
+    const reasonText = container.querySelector('[data-testid="reason-label"]')?.textContent
+    expect(reasonText).toBe('PR merged (branch match, repo unverified)')
+    expect(reasonText).not.toContain('fuzzy')
+  })
+
+  it('F0925-32: renders pr_merged_repo_unverified reason in zh-TW without the fuzzy-match wording', async () => {
+    await act(async () => {
+      await i18next.changeLanguage('zh-TW')
+    })
+    const candidate: CompletionCandidate = {
+      id: 'unverified-zh-001',
+      task_id: 'task-unverified-zh',
+      reason: 'pr_merged_repo_unverified',
+      confidence: 'medium',
+      status: 'pending',
+      suggested_artifact: 'https://github.com/owner/repo/pull/301',
+      created_at: '2026-05-20T00:00:00Z',
+    }
+
+    const { container } = render(<CandidateRow candidate={candidate} />)
+
+    const reasonText = container.querySelector('[data-testid="reason-label"]')?.textContent
+    expect(reasonText).toBe('PR 已合併（branch 相符、repo 未驗證）')
+    expect(reasonText).not.toContain('模糊比對')
+  })
 })
 
 describe('CandidateRow safeArtifactHref hardening', () => {

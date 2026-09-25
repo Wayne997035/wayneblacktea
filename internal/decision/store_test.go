@@ -73,8 +73,8 @@ func TestLog_TagNoiseRejection_ReportsFieldAndExcerpt(t *testing.T) {
 }
 
 // TestLog_CleanRationale_NoTagNoiseError is the positive control for the
-// test above (backend-security-design.md checker discipline — a checker
-// must be proven to NOT fire on good input, not just to fire on bad input):
+// test above (a checker must be proven to NOT fire on good input, not just
+// to fire on bad input):
 // clean text in every field must pass ValidateNoTagNoise and reach the DB
 // call. It still fails there (fakeDBTX has no real row), but that failure
 // must be errFakeRowScan, never sanitize.ErrTagNoise.

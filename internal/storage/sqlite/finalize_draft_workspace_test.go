@@ -25,6 +25,7 @@ import (
 // reproduction: a draft created under workspace A must not be finalizable
 // by a call whose params.WorkspaceID is workspace B.
 func TestSQLiteOutcomeStore_FinalizeDraft_CrossWorkspace_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()
@@ -65,6 +66,7 @@ func TestSQLiteOutcomeStore_FinalizeDraft_CrossWorkspace_NotFound(t *testing.T) 
 // FinalizeDraft test in outcome_test.go already uses) must keep matching
 // the target row regardless of that row's own workspace_id.
 func TestSQLiteOutcomeStore_FinalizeDraft_LegacyNilWorkspace_StillMatchesAnyRow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openOutcomeDB(t)
 	store := wbtsqlite.NewOutcomeStore(db)
 	ctx := context.Background()

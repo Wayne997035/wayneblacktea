@@ -15,8 +15,7 @@ type StoreIface interface {
 	ByRelatedEntity(ctx context.Context, workspaceID *uuid.UUID, entityType string, entityID uuid.UUID, limit int) ([]*Reflection, error)
 	RecentWithPatterns(ctx context.Context, workspaceID *uuid.UUID, since time.Time, limit int) ([]*Reflection, error)
 	// PruneOlderThan hard-deletes reflection rows with created_at < cutoff.
-	// Called daily by the scheduler to enforce the 180-day TTL per
-	// backend-security-design.md §1.3.
+	// Called daily by the scheduler to enforce the 180-day TTL.
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 

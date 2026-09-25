@@ -315,7 +315,7 @@ func TestHandleAssembleContext_IncludeTypesCapAndLengthGuard(t *testing.T) {
 	t.Parallel()
 	// 40 entries (over maxIncludeTypes=32) plus one oversized entry (over
 	// maxIncludeTypesRunes=200) — adversarial LLM-supplied array input must
-	// be bounded, not rejected outright (backend-security-design.md §2.1).
+	// be bounded, not rejected outright.
 	types := make([]any, 0, 41)
 	for range 40 {
 		types = append(types, "semantic")

@@ -22,7 +22,7 @@ jobs:
         run: |
           # Exclude comment-only lines (lines where content after filename:linenum: starts with --)
           if grep -rn 'FOREIGN KEY\|REFERENCES\|ON DELETE\|ON UPDATE' migrations/ --include='*.sql' | grep -v ':[[:space:]]*--'; then
-            echo "ERROR: FK constraint found in migrations/ — workspace policy forbids FK constraints in any DB schema path (CLAUDE.md #9)"
+            echo "ERROR: FK constraint found in migrations/ — workspace policy forbids FK constraints in any DB schema path"
             exit 1
           fi
 
@@ -44,7 +44,8 @@ jobs:
 
       - name: Install golangci-lint v2
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+          # [F0925-28] install.sh pinned to the v2.11.4 tag commit
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/8f3b0c7ed018e57905fbd873c697e0b1ede605a5/install.sh \
             | sh -s -- -b $(go env GOPATH)/bin v2.11.4
 
       - name: Run lint
@@ -132,36 +133,21 @@ jobs:
         working-directory: build
         run: task build-all
 
+  # [F0925-26] Runs on every push/PR unconditionally, not just when go.mod /
+  # go.sum changed — an upstream advisory on an already-committed dependency
+  # needs to surface even when this diff doesn't touch dependency files.
   vuln:
     name: vuln check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 2
-
-      - name: Detect go.mod / go.sum changes
-        id: deps
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            git diff --name-only "$BASE" HEAD | grep -q 'go\.mod\|go\.sum' \
-              && echo "changed=true" >> $GITHUB_OUTPUT \
-              || echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            git diff --name-only HEAD~1 HEAD | grep -q 'go\.mod\|go\.sum' \
-              && echo "changed=true" >> $GITHUB_OUTPUT \
-              || echo "changed=false" >> $GITHUB_OUTPUT
-          fi
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        if: steps.deps.outputs.changed == 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install and run govulncheck
-        if: steps.deps.outputs.changed == 'true'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...

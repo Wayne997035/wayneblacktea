@@ -55,8 +55,7 @@
 // .env.test is gitignored (matches the repo-wide ".env*" pattern in
 // .gitignore) and is regenerated — overwritten — on every qa-seed run, so
 // it always matches whatever SQLite file was seeded most recently. It is
-// written with 0600 permissions per backend-security-design.md §4.1
-// (credential-bearing files).
+// written with 0600 permissions because it is a credential-bearing file.
 package main
 
 import (
@@ -88,8 +87,8 @@ func main() {
 }
 
 // config holds validated CLI input. All fields are populated by parseFlags,
-// which rejects invalid combinations before run() touches any store — see
-// backend-security-design.md §5.2 (exhaustive client-side CLI validation).
+// which rejects invalid combinations before run() touches any store —
+// every flag value is validated client-side before use.
 type config struct {
 	envFile       string
 	dest          string
@@ -237,7 +236,7 @@ func writeEnvTest(path, sqlitePath, workspaceID string, port int) error {
 	}
 
 	// 0600: credential-bearing file (API_KEY), even though the key is a
-	// declared dummy — backend-security-design.md §4.1.
+	// declared dummy.
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
@@ -310,7 +309,7 @@ func parseFlags(args []string) (config, error) {
 // directory is always rejected (SQLite would refuse to open it as a database
 // file, but this gives a clearer error up front). Null bytes / control
 // characters are rejected defensively even though this is operator-supplied
-// input, not adversarial LLM tool input (backend-security-design.md §2.2).
+// input, not adversarial LLM tool input.
 func resolveDestPath(dest string, overwrite bool) (string, error) {
 	if dest == "" {
 		return filepath.Join(os.TempDir(), fmt.Sprintf("wbt-qa-seed-%s.db", time.Now().UTC().Format("20060102-150405"))), nil
@@ -399,8 +398,9 @@ type proposalReader interface {
 // active-only project listing missed (see projectByIDReader). Order matters
 // for human-readability of the summary log and because the backfill step
 // needs the task/decision project_id references already collected — there
-// are no FK constraints (CLAUDE.md red-line #9), so SQLite itself does not
-// require parents to exist before children reference them.
+// are no FK constraints by design (referential integrity is enforced in
+// Go), so SQLite itself does not require parents to exist before children
+// reference them.
 func seedAll(
 	ctx context.Context,
 	srcGoals goalReader, srcProjects projectReader, srcProjectByID projectByIDReader, srcTasks taskReader,

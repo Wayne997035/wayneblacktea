@@ -419,7 +419,7 @@ export function PendingProposalsSection() {
                 <span
                   className="text-label rounded-full px-1.5 py-0.5"
                   style={{
-                    background: isActive ? 'rgba(0,0,0,0.2)' : 'var(--color-bg-input)',
+                    background: isActive ? 'var(--color-overlay-20)' : 'var(--color-bg-input)', // [F0925-25]
                     color: isActive ? 'var(--color-bg-base)' : 'var(--color-text-muted)',
                     minWidth: '20px',
                     textAlign: 'center',
@@ -445,7 +445,7 @@ export function PendingProposalsSection() {
             <div
               className="rounded-md p-3 text-body-sm flex items-center justify-between"
               style={{
-                background: '#2e0a0a',
+                background: 'var(--color-error-bg)', // [F0925-25]
                 border: '1px solid var(--color-error)',
                 color: 'var(--color-error)',
               }}
@@ -458,7 +458,7 @@ export function PendingProposalsSection() {
                 className="rounded px-2 py-1 text-body-sm transition-opacity hover:opacity-80"
                 style={{
                   background: 'var(--color-error)',
-                  color: '#fff',
+                  color: 'var(--color-white)', // [F0925-25]
                   border: 'none',
                   cursor: 'pointer',
                 }}
@@ -704,7 +704,7 @@ export function PendingProposalsSection() {
                 background: pendingBatchAction === 'accept'
                   ? 'var(--color-accent-blue)'
                   : 'var(--color-error)',
-                color: pendingBatchAction === 'accept' ? 'var(--color-bg-base)' : '#fff',
+                color: pendingBatchAction === 'accept' ? 'var(--color-bg-base)' : 'var(--color-white)', // [F0925-25]
                 border: 'none',
                 cursor: 'pointer',
               }}

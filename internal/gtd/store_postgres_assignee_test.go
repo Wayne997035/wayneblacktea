@@ -17,8 +17,7 @@ const statusInProgress = "in_progress"
 
 // TestStore_CreateTask_InvalidAssignee_PG verifies the p6-7 domain-layer gate
 // (sunk from the MCP-only guard in p6-6) rejects an unrecognized assignee
-// value at CreateTask, regardless of caller. Paired with the SQLite variant
-// per backend-security-design.md §6.5.
+// value at CreateTask, regardless of caller. Paired with the SQLite variant.
 func TestStore_CreateTask_InvalidAssignee_PG(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()

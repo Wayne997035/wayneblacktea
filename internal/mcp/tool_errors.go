@@ -8,11 +8,12 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // Error-message hygiene for the MCP tool surface — U14
-// (.specs/2026-08-20-mcp-surface-spec.md, root cause F15).
+// (root cause F15).
 //
 // Every tool handler that fails has to say something to its caller, and the
 // caller is an LLM whose context is, in practice, readable by whoever is
@@ -203,6 +204,9 @@ var callerFacingSentinels = []error{
 	gtd.ErrInvalidAssignee,
 	gtd.ErrAssigneeRequiredForInProgress,
 	gtd.ErrInvalidRepoName,
+	// [F0925-31] Same shape as ErrInvalidRepoName: a fixed message naming
+	// the github_slug argument and its rule.
+	validator.ErrInvalidGitHubSlug,
 	// [SEC-PR191-02] log_activity's action is a caller-supplied string
 	// rejected against a fixed reserved-name set (gtd.IsReservedAuditAction)
 	// — same "property of the request, not a server internal" shape as the

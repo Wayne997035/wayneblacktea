@@ -21,6 +21,7 @@ import (
 // *LearningStore. No real SQLite connection or open tx is needed — the nil
 // check fires before either is touched.
 func TestSqliteAcceptAdapter_MaterializeGoal_NilGTDStore(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	a := &sqliteAcceptAdapter{deps: AcceptDeps{GTD: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "goal title", "area": "career"})
 	if err != nil {
@@ -38,6 +39,7 @@ func TestSqliteAcceptAdapter_MaterializeGoal_NilGTDStore(t *testing.T) {
 }
 
 func TestSqliteAcceptAdapter_MaterializeProject_NilGTDStore(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	a := &sqliteAcceptAdapter{deps: AcceptDeps{GTD: nil}}
 	payload, err := json.Marshal(map[string]any{"name": "proj", "title": "Project", "area": "projects"})
 	if err != nil {
@@ -55,6 +57,7 @@ func TestSqliteAcceptAdapter_MaterializeProject_NilGTDStore(t *testing.T) {
 }
 
 func TestSqliteAcceptAdapter_MaterializeConcept_NilLearningStore(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	a := &sqliteAcceptAdapter{deps: AcceptDeps{Learning: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "concept title", "content": "concept content"})
 	if err != nil {

@@ -24,7 +24,7 @@ func openDisciplineDB(t *testing.T) *wbtsqlite.DB {
 // RecentDecisionTimes.
 func openDisciplineDBWS(t *testing.T, workspaceID string) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", workspaceID)
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -68,6 +68,7 @@ func queryDisciplineOutcome(t *testing.T, db *wbtsqlite.DB, sessionID, toolName 
 }
 
 func TestSQLiteDisciplineStore_Insert(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsID := uuid.New()
 	linkedID := uuid.New()
@@ -217,6 +218,7 @@ func assertRecentMutatingReflectsInsert(
 }
 
 func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	db := openDisciplineDB(t)
 	store := wbtsqlite.NewDisciplineStore(db)
@@ -226,8 +228,8 @@ func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
 		{SessionID: "s1", ToolName: "add_task", IsMutating: true, Ok: true},
 		{SessionID: "s1", ToolName: "list_tasks", IsMutating: false, Ok: true},
 		{SessionID: "s2", ToolName: "complete_task", IsMutating: true, Ok: true},
-		// [F184-05] a failed mutating call must NOT count as drift — see
-		// decisions.md D-05, Acceptance criteria row 5. Verified: dropping
+		// [F184-05] a failed mutating call must NOT count as drift —
+		// Acceptance criteria row 5. Verified: dropping
 		// `AND ok = 1` from RecentMutating's WHERE clause
 		// (internal/storage/sqlite/discipline.go) makes both subtests
 		// below fail (3 events instead of 2, and s3 leaking through) — see
@@ -290,6 +292,7 @@ func TestSQLiteDisciplineStore_RecentMutating(t *testing.T) {
 }
 
 func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	db := openDisciplineDB(t)
 	store := wbtsqlite.NewDisciplineStore(db)
@@ -300,7 +303,7 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 		{SessionID: "s1", ToolName: "add_task", IsMutating: true, Ok: true}, // not a decision tool
 		{SessionID: "s2", ToolName: "log_decision", IsMutating: true, Ok: true},
 		// [F184-05] a failed log_decision must not suppress a real drift
-		// signal — see decisions.md D-05, Acceptance criteria row 6.
+		// signal — Acceptance criteria row 6.
 		// Verified: dropping `AND ok = 1` from RecentDecisionTimes' WHERE
 		// clause makes both subtests below fail (3 events instead of 2 for
 		// s1) — see the implement record's "突變證明" section for the
@@ -364,6 +367,7 @@ func TestSQLiteDisciplineStore_RecentDecisionTimes(t *testing.T) {
 // scoped store sees only its own workspace_id rows and never the other
 // workspace's, even when both rows are written through the same store.
 func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 	wsB := uuid.New()
@@ -407,6 +411,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedReadsOnlyOwnWorkspace(t *test
 // store does NOT see legacy NULL-workspace rows, preventing pre-migration
 // data from leaking into a multi-tenant scoped read.
 func TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 
@@ -448,6 +453,7 @@ func TestSQLiteDisciplineStore_StrictScoping_ScopedDoesNotSeeNULL(t *testing.T) 
 // unscoped store sees only NULL-workspace rows, never scoped rows. Mirror
 // of the scoped test, ensuring the partition is symmetric.
 func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 	wsB := uuid.New()
@@ -498,6 +504,7 @@ func TestSQLiteDisciplineStore_StrictScoping_UnscopedSeesOnlyNULL(t *testing.T) 
 // TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes: the
 // decision-times read path applies the same partition rule.
 func TestSQLiteDisciplineStore_StrictScoping_RecentDecisionTimes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA := uuid.New()
 	wsB := uuid.New()

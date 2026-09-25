@@ -219,7 +219,8 @@ func (s *Server) logMCPDecision(ctx context.Context, title, toolName, actorSessi
 // the tasks.description column (auto-accept) or pending_proposals.payload
 // (proposal path) — matching the HTTP path in autoCreateTaskFromClassifier
 // (internal/handler/autolog_handler.go) so both writers of these long-lived
-// columns share the same posture (backend-security-design.md §3.1).
+// columns share the same posture (raw LLM-influenced text must go through
+// a redaction layer before persisting, never stored as plaintext).
 // redact.ForLLM is idempotent: re-applying it to an already-redacted string
 // is a safe no-op (the kv-secret catch-all is guarded against re-matching its
 // own placeholder).
@@ -250,7 +251,7 @@ func (s *Server) autoCaptureMCPTask(
 	// The classifier may echo a prompt-injected token from argSummary into
 	// `task_title`; without redaction, the auto-accept path persists the raw
 	// token into tasks.title plaintext. redact.ForLLM is idempotent
-	// (backend-security-design.md §3.1, security M-1).
+	// (raw LLM tool input must never be stored as plaintext; security M-1).
 	title = redact.ForLLM(title)
 	if title == "" {
 		return nil

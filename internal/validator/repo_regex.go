@@ -1,6 +1,9 @@
 package validator
 
-import "regexp"
+import (
+	"errors"
+	"regexp"
+)
 
 // RepoSlugRe validates owner/repo style GitHub slugs at the reconcile boundary
 // where the slug flows into `gh -R <slug>` CLI invocation. Rejects whitespace,
@@ -11,3 +14,21 @@ import "regexp"
 // in both owner and repo segments; rejecting anything else is conservative
 // but eliminates shell-injection / path-traversal / newline-smuggling vectors.
 var RepoSlugRe = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+// ErrInvalidGitHubSlug is the sentinel for a repos.github_slug that is not a
+// valid owner/repo slug ([F0925-31]).
+var ErrInvalidGitHubSlug = errors.New(GitHubSlugMessage)
+
+// GitHubSlugMessage is the caller-facing rejection text for github_slug; a
+// constant, so entry points return it without deriving text from an error.
+const GitHubSlugMessage = "github_slug must be an owner/repo GitHub slug: " +
+	"exactly two segments of letters, digits, '.', '_' or '-', each starting with a letter, digit or '_'"
+
+// ValidGitHubSlug reports whether s may be stored as repos.github_slug and
+// later passed to `gh -R`: RepoSlugRe (exactly one '/') plus the workspace
+// repo name segment rule, so "../x" and "-x/y" — which RepoSlugRe alone
+// admits — are rejected. Cost: a repo whose name starts with '.' (e.g.
+// "owner/.github") cannot be reconciled.
+func ValidGitHubSlug(s string) bool {
+	return RepoSlugRe.MatchString(s) && ValidRepoPath(s)
+}

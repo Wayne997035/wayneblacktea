@@ -41,7 +41,7 @@ const (
 // ProviderEvalCategories lists every individual (non-"all") category
 // ProviderEvalSuite recognizes, in the fixed order CategoryAll iterates
 // them. Exported so cmd/wbt-eval can validate --category exhaustively
-// client-side (backend-security-design.md §5.2) before ever calling Run,
+// client-side before ever calling Run,
 // rather than relying on Run's internal fallback as the validation gate.
 var ProviderEvalCategories = []string{
 	CategoryContextRelevance,
@@ -67,7 +67,7 @@ var providerEvalFixtures embed.FS
 // loadEmbeddedFixture decodes an embedded testdata/*.json fixture into
 // []T. name is still passed through validateFixtureName (fixture_loader.go)
 // as defence in depth even though every call site below uses a hardcoded
-// literal, not caller input (backend-security-design.md §2.2).
+// literal, not caller input.
 func loadEmbeddedFixture[T any](name string) ([]T, error) {
 	if err := validateFixtureName(name); err != nil {
 		return nil, fmt.Errorf("evals: %w", err)
@@ -239,9 +239,8 @@ func (s ProviderEvalSuite) Run(ctx context.Context, _ llm.JSONClient) []EvalResu
 // graders resolves s.Category to the concrete Grader set. An unrecognized
 // category name fails closed to zero graders rather than silently falling
 // back to "all" — cmd/wbt-eval validates --category exhaustively against
-// ProviderEvalCategories before it ever reaches here
-// (backend-security-design.md §5.2), so this branch is a defensive
-// fallback, not the primary validation gate.
+// ProviderEvalCategories before it ever reaches here, so this branch is a
+// defensive fallback, not the primary validation gate.
 func (s ProviderEvalSuite) graders() ([]Grader, error) {
 	category := s.Category
 	if category == "" {

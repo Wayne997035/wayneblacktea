@@ -10,8 +10,8 @@ import (
 )
 
 // TestIsValidDigestStatus verifies the five-value enum and rejects anything
-// outside it, including adversarial-shaped input (backend-security-design.md
-// §2 — a caller must not be able to slip an arbitrary string past this gate).
+// outside it, including adversarial-shaped input — a caller must not be
+// able to slip an arbitrary string past this gate.
 func TestIsValidDigestStatus(t *testing.T) {
 	tests := []struct {
 		name   string

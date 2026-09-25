@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -111,6 +112,10 @@ func (h *DecisionHandler) LogDecision(c echo.Context) error {
 	if reason := validator.CheckDecisionNoise(req.Title, req.Context, req.Decision, req.Rationale); reason != "" {
 		return c.JSON(http.StatusBadRequest, errResp("invalid params: "+reason))
 	}
+	// [F0925-29] Workspace repo name rule; empty stays allowed.
+	if !validator.IsValidRepoName(req.RepoName) {
+		return c.JSON(http.StatusBadRequest, errResp(validator.RepoNameMessage))
+	}
 
 	// Vagueness check on rationale (warn-only; decisions are not task descriptions).
 	if warnings := validator.CheckVagueness("rationale", req.Rationale, "general"); len(warnings) > 0 {
@@ -129,6 +134,9 @@ func (h *DecisionHandler) LogDecision(c echo.Context) error {
 		Source:       decision.SourceManual,
 	})
 	if err != nil {
+		if errors.Is(err, validator.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(validator.RepoNameMessage))
+		}
 		c.Logger().Errorf("LogDecision: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}

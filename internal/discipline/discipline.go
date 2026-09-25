@@ -9,8 +9,7 @@
 // CLI) gets identical drift signals.
 //
 // TTL is 30 days, enforced via `task discipline-prune` (build/Taskfile.yml).
-// Per backend-security-design.md §1.3, this retention policy is mandatory
-// for any "every observation" table.
+// This retention policy is mandatory for any "every observation" table.
 package discipline
 
 import (
@@ -213,8 +212,8 @@ type Event struct {
 
 // ErrorClass classifies why a discipline_events row has ok=false.
 //
-// [F184-05] This ticket implements only a 2-way ok/not-ok split (decision
-// D-05, docs/p1p2-sweep/decisions.md): disciplineMiddleware always sets
+// [F184-05] This ticket implements only a 2-way ok/not-ok split:
+// disciplineMiddleware always sets
 // ErrorClassInternal for any failure (Go-level err != nil, or
 // res.IsError == true). ErrorClassValidation / ErrorClassStore are
 // forward-declared for a follow-up ticket that would need to thread a

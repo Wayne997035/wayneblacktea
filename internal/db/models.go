@@ -100,6 +100,18 @@ type Decision struct {
 	ConfirmedByHuman  bool               `json:"confirmed_by_human"`
 }
 
+type DeletionTombstone struct {
+	ID          uuid.UUID          `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	DeletionID  uuid.UUID          `json:"deletion_id"`
+	EntityKind  string             `json:"entity_kind"`
+	EntityID    uuid.UUID          `json:"entity_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	Payload     []byte             `json:"payload"`
+	DeletedBy   string             `json:"deleted_by"`
+	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
+}
+
 // MCP tool-call audit trail for meta-rule drift detection; 30-day TTL via task discipline-prune
 type DisciplineEvent struct {
 	ID               int64              `json:"id"`
@@ -110,6 +122,10 @@ type DisciplineEvent struct {
 	ObservedAt       pgtype.Timestamptz `json:"observed_at"`
 	LinkedDecisionID pgtype.UUID        `json:"linked_decision_id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Ok               bool               `json:"ok"`
+	ErrorClass       pgtype.Text        `json:"error_class"`
+	ResponseBytes    pgtype.Int4        `json:"response_bytes"`
+	DurationMs       pgtype.Int4        `json:"duration_ms"`
 }
 
 // Watchdog meta-cognition events (M8). 90-day retention via daily-discipline-event-m8-prune scheduler job per backend-security-design.md §1.3.
@@ -379,6 +395,7 @@ type Repo struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	GithubSlug      pgtype.Text        `json:"github_slug"`
 }
 
 type ReviewSchedule struct {
@@ -452,6 +469,15 @@ type Task struct {
 	PRUrl        pgtype.Text        `json:"pr_url"`
 	CommitSHAs   []string           `json:"commit_shas"`
 	VisionItemID pgtype.UUID        `json:"vision_item_id"`
+	Area         string             `json:"area"`
+}
+
+type TaskArea struct {
+	Area      string             `json:"area"`
+	Label     string             `json:"label"`
+	SortOrder int32              `json:"sort_order"`
+	Archived  bool               `json:"archived"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type VisionItem struct {

@@ -37,8 +37,8 @@ func (s *Server) registerLearningTools(ms *server.MCPServer) {
 	), s.handleCreateConcept)
 }
 
-// learningTextMaxRunes bounds DueReview/Concept Title/Content on read — U13
-// (2026-08-20-mcp-surface-spec.md). Neither field has a write-time
+// learningTextMaxRunes bounds DueReview/Concept Title/Content on read — U13.
+// Neither field has a write-time
 // neutralisation step (create_concept below only requires non-empty), so
 // this is sized like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes
 // (tools_gtd.go) — generous enough that legitimate content never trips it.
@@ -119,7 +119,7 @@ func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("rating must be between 1 and 4"), nil
 	}
 
-	// Ω7 fix (mcp-surface spec, backend-security-design.md §2.1): the
+	// Ω7 fix (mcp-surface spec — LLM tool input is adversarial): the
 	// current CardState is read from the DB, never trusted from the caller.
 	// submit_review used to accept stability/difficulty/review_count as
 	// LLM-supplied "current state" params; an omitted or wrong review_count

@@ -21,6 +21,13 @@ type Occupier struct {
 // ErrNoOccupier signals that no process is listening on the queried port.
 var ErrNoOccupier = errors.New("no process listening on port")
 
+// portProbeTimeout bounds how long the lsof/ss probe subprocess is allowed
+// to run before we give up on it. Not exported: production code always
+// uses the default; only export_test.go (F0925-08) may override it, via
+// SetPortProbeTimeoutForTest, to absorb machine-load-induced slowness in
+// TestLSofTCPListen_BinaryOverride without touching the production default.
+var portProbeTimeout = 3 * time.Second
+
 // LSofTCPListen identifies the process listening on the given TCP port by
 // shelling out to `lsof -nP -iTCP:<port> -sTCP:LISTEN -F pcn` and parsing
 // the structured output. On systems without lsof (some Linux containers)
@@ -73,8 +80,8 @@ func tryLSof(parent context.Context, port int) (*Occupier, error) {
 	if bin == "" {
 		return nil, errors.New("lsof not found in PATH")
 	}
-	// 3s safety timeout: lsof can stall on slow filesystems if invoked under load.
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	// Safety timeout: lsof can stall on slow filesystems if invoked under load.
+	ctx, cancel := context.WithTimeout(parent, portProbeTimeout)
 	defer cancel()
 	//nolint:gosec // G204: bin is resolved via lookupBin (LSOF_BIN test override or PATH); arg is numeric port we validated
 	cmd := exec.CommandContext(ctx, bin, "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-F", "pcn")
@@ -128,7 +135,7 @@ func tryLSS(parent context.Context, port int) (*Occupier, error) {
 	if bin == "" {
 		return nil, errors.New("ss not found in PATH")
 	}
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, portProbeTimeout)
 	defer cancel()
 	//nolint:gosec // G204: bin is resolved via lookupBin; flag args are fixed literals
 	cmd := exec.CommandContext(ctx, bin, "-lntp")

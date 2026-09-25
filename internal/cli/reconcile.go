@@ -86,7 +86,8 @@ func parseReconcileArgs(args []string) (reconcileOptions, bool, error) {
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
 		return reconcileOptions{}, false, errors.New(
-			"reconcile: API_KEY must be set (run `wbt init` or export API_KEY)")
+			"reconcile: API_KEY must be set (run `wbt init` or export API_KEY)",
+		)
 	}
 	since, err := resolveSince(*sinceFlag)
 	if err != nil {
@@ -319,10 +320,11 @@ func ghListMergedPRs(ctx context.Context, slug string, since time.Time) ([]recon
 	return prs, nil
 }
 
-// fetchActiveRepos GETs /api/workspace/repos and returns the repo slugs in
-// "owner/name" form. The server's ListRepos returns []db.Repo with .Name;
-// the CLI assumes .Name is the "owner/name" GitHub slug (this matches every
-// existing repo registered via `wbt init` and the workspace UI).
+// fetchActiveRepos GETs /api/workspace/repos and returns each repo's
+// github_slug ("owner/repo"). [F0925-31] repos.name is the workspace
+// directory name ("wayneblacktea", "Flare-Go/auth"), not a GitHub slug, so a
+// repo without github_slug is skipped with a stderr line instead of being
+// guessed from its name.
 func fetchActiveRepos(ctx context.Context, serverURL, apiKey string) ([]string, error) {
 	u := serverURL + "/api/workspace/repos"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
@@ -343,16 +345,19 @@ func fetchActiveRepos(ctx context.Context, serverURL, apiKey string) ([]string, 
 		return nil, fmt.Errorf("GET %s: status %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var raw []struct {
-		Name string `json:"name"`
+		Name       string  `json:"name"`
+		GitHubSlug *string `json:"github_slug"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode body: %w", err)
 	}
 	out := make([]string, 0, len(raw))
 	for _, r := range raw {
-		if r.Name != "" {
-			out = append(out, r.Name)
+		if r.GitHubSlug == nil || *r.GitHubSlug == "" {
+			fmt.Fprintf(os.Stderr, "wbt reconcile: skip %s: no github_slug set\n", r.Name)
+			continue
 		}
+		out = append(out, *r.GitHubSlug)
 	}
 	return out, nil
 }

@@ -20,7 +20,7 @@ import (
 // missing/broken workspace filter.
 func openFileStore(t *testing.T, path, workspaceID string) *sqlite.GTDStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), path, workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), path, workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open(%s): %v", path, err)
 	}
@@ -54,6 +54,7 @@ func seedSQLiteTask(t *testing.T, s *sqlite.GTDStore, due *time.Time, status str
 // TestSQLiteStore_TasksFiltered_ActiveDefault verifies that empty status ("") and
 // "active" both return pending + in_progress tasks and omit completed/cancelled.
 func TestSQLiteStore_TasksFiltered_ActiveDefault(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -88,6 +89,7 @@ func TestSQLiteStore_TasksFiltered_ActiveDefault(t *testing.T) {
 
 // TestSQLiteStore_TasksFiltered_StatusCompleted returns only completed tasks.
 func TestSQLiteStore_TasksFiltered_StatusCompleted(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -115,6 +117,7 @@ func TestSQLiteStore_TasksFiltered_StatusCompleted(t *testing.T) {
 
 // TestSQLiteStore_TasksFiltered_StatusCancelled returns only cancelled tasks.
 func TestSQLiteStore_TasksFiltered_StatusCancelled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -142,6 +145,7 @@ func TestSQLiteStore_TasksFiltered_StatusCancelled(t *testing.T) {
 
 // TestSQLiteStore_TasksFiltered_StatusAll returns open and terminal tasks.
 func TestSQLiteStore_TasksFiltered_StatusAll(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -167,6 +171,7 @@ func TestSQLiteStore_TasksFiltered_StatusAll(t *testing.T) {
 
 // TestSQLiteStore_TasksFiltered_Pagination verifies Limit and Offset work.
 func TestSQLiteStore_TasksFiltered_Pagination(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -202,6 +207,7 @@ func TestSQLiteStore_TasksFiltered_Pagination(t *testing.T) {
 
 // TestSQLiteStore_TasksFiltered_ProjectIDFilter verifies project-scoped queries.
 func TestSQLiteStore_TasksFiltered_ProjectIDFilter(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -246,6 +252,7 @@ func TestSQLiteStore_TasksFiltered_ProjectIDFilter(t *testing.T) {
 // vacuously because the DBs never share any rows regardless of the
 // predicate).
 func TestSQLiteStore_TasksFiltered_WorkspaceScoping(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.NewString()
 	wsB := uuid.NewString()
 	sharedPath := filepath.Join(t.TempDir(), "shared.db")
@@ -295,6 +302,7 @@ func TestSQLiteStore_TasksFiltered_WorkspaceScoping(t *testing.T) {
 // branch's predicate — a mutation to the "all" branch's predicate would not
 // be caught by that test alone.
 func TestSQLiteStore_TasksFiltered_WorkspaceScoping_StatusAll(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.NewString()
 	wsB := uuid.NewString()
 	sharedPath := filepath.Join(t.TempDir(), "shared-all.db")
@@ -341,6 +349,7 @@ func TestSQLiteStore_TasksFiltered_WorkspaceScoping_StatusAll(t *testing.T) {
 // its own separate workspace_id predicate not covered by the other two
 // workspace-scoping tests.
 func TestSQLiteStore_TasksFiltered_WorkspaceScoping_CustomStatus(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA := uuid.NewString()
 	wsB := uuid.NewString()
 	sharedPath := filepath.Join(t.TempDir(), "shared-custom.db")
@@ -383,6 +392,7 @@ func TestSQLiteStore_TasksFiltered_WorkspaceScoping_CustomStatus(t *testing.T) {
 // TestSQLiteStore_TasksFiltered_EmptyDB_NoError verifies that querying an empty
 // database returns an empty result (not nil error, not panic).
 func TestSQLiteStore_TasksFiltered_EmptyDB_NoError(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -401,7 +411,7 @@ func TestSQLiteStore_TasksFiltered_EmptyDB_NoError(t *testing.T) {
 // no "set completion time" method).
 func openMemWithDB(t *testing.T, workspaceID string) (*sqlite.GTDStore, *sqlite.DB) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -424,6 +434,7 @@ func setSQLiteTaskUpdatedAt(t *testing.T, d *sqlite.DB, id uuid.UUID, when time.
 // excludes rows updated before the cutoff and includes rows updated at/after
 // it. Regression coverage for wbt-2.0 review round2 F2.
 func TestSQLiteStore_TasksFiltered_UpdatedSince(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s, d := openMemWithDB(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)
@@ -457,6 +468,7 @@ func TestSQLiteStore_TasksFiltered_UpdatedSince(t *testing.T) {
 // created_at ASC would surface the old tasks first and the LIMIT would cut
 // off before ever reaching the one recently-updated task.
 func TestSQLiteStore_TasksFiltered_UpdatedSince_SurvivesLimitCap(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s, d := openMemWithDB(t, "")
 	ctx := context.Background()
 	due := time.Now().Add(24 * time.Hour)

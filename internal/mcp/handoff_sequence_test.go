@@ -38,7 +38,7 @@ func handoffIDFromSetResponse(t *testing.T, r *mcpmsg.CallToolResult) string {
 }
 
 // TestHandoffFullSequence_BodySurvivesResolve_SQLite is U8's acceptance
-// criterion (F1 / Category R, 2026-08-20-mcp-surface-spec.md): the mandated
+// criterion (F1 / Category R): the mandated
 // session-start sequence (mcpInstructions' "## Session start" line)
 // resolves a pending handoff before any client is told to read its body via
 // the wayneblacktea://session/handoff/latest resource. Before this fix,
@@ -101,9 +101,9 @@ func TestHandoffFullSequence_BodySurvivesResolve_SQLite(t *testing.T) {
 }
 
 // TestHandoffFullSequence_BodySurvivesResolve_Postgres is the Postgres half
-// of TestHandoffFullSequence_BodySurvivesResolve_SQLite (backend-security-
-// design.md §6.5: every PG-vs-SQLite-differing code path gets both a SQLite
-// test and a real testcontainers PG test). Only wires s.session — the
+// of TestHandoffFullSequence_BodySurvivesResolve_SQLite (every
+// PG-vs-SQLite-differing code path gets both a SQLite test and a real
+// testcontainers PG test). Only wires s.session — the
 // get_today_context bystander step needs every other store wired too, which
 // is orthogonal to what this test proves (get_today_context's own read path
 // is unchanged by U8, see handleResourceHandoffLatest's doc comment), so

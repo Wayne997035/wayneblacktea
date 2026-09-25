@@ -19,6 +19,7 @@ import (
 // sqlite_test package).
 
 func TestDecisionStore_ImportDecision(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	fixed := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
 	projectID := uuid.New()
 	taskID := uuid.New()
@@ -77,6 +78,7 @@ func TestDecisionStore_ImportDecision(t *testing.T) {
 }
 
 func TestDecisionStore_ImportDecision_DuplicateIDFails(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 	d := db.Decision{
@@ -95,9 +97,9 @@ func TestDecisionStore_ImportDecision_DuplicateIDFails(t *testing.T) {
 // TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows verifies
 // ImportDecision has its own Source.Valid() guard, matching Log/LogTx,
 // instead of delegating that validation to the decisions.source CHECK
-// constraint (backend-security-design.md §5.2; security review round 2,
-// m-1). Asserts both the sentinel error and that no row lands in the table.
+// constraint (security review round 2, m-1). Asserts both the sentinel error and that no row lands in the table.
 func TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	raw, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 	id := uuid.New()
@@ -125,6 +127,7 @@ func TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows(t *testing.T) 
 }
 
 func TestProposalStore_ImportProposal(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	fixed := time.Date(2025, 5, 1, 0, 0, 0, 0, time.UTC)
 	resolved := time.Date(2025, 5, 2, 0, 0, 0, 0, time.UTC)
 
@@ -177,6 +180,7 @@ func TestProposalStore_ImportProposal(t *testing.T) {
 }
 
 func TestProposalStore_ImportProposal_DuplicateIDFails(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 	p := db.PendingProposal{ID: uuid.New(), Type: "goal", Payload: []byte(`{}`), Status: "pending", CreatedAt: pgTimeVal(time.Now())}

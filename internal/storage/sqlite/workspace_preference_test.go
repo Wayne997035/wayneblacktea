@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkspaceStore_ModelPreference_DefaultThenUpsert(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", uuid.New().String())
 	ctx := context.Background()
 
@@ -42,6 +43,7 @@ func TestWorkspaceStore_ModelPreference_DefaultThenUpsert(t *testing.T) {
 }
 
 func TestWorkspaceStore_ModelPreference_InvalidRejected(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openWorkspaceStore(t, ":memory:", uuid.New().String())
 	if err := s.UpsertModelPreference(context.Background(), "gpt-4"); !errors.Is(err, workspace.ErrInvalidModel) {
 		t.Fatalf("expected ErrInvalidModel, got %v", err)
@@ -49,6 +51,7 @@ func TestWorkspaceStore_ModelPreference_InvalidRejected(t *testing.T) {
 }
 
 func TestWorkspaceStore_ModelPreference_LegacyUnscopedReturnsDefault(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	// Empty workspaceID = legacy unscoped mode: Get returns the default and
 	// Upsert refuses (no workspace_id to key on).
 	s := openWorkspaceStore(t, ":memory:", "")

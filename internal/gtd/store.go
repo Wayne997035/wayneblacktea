@@ -328,11 +328,11 @@ func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UU
 // needs to happen.
 //
 // Hand-rolled query (rather than sqlc-generated) keeps the timeline
-// feature self-contained without churning the queries.sql codegen surface.
+// feature self-contained without churning the sql/queries/ codegen surface.
 func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE status IN ('pending','in_progress')
 		  AND due_date IS NOT NULL
@@ -351,7 +351,7 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 		); err != nil {
 			return nil, fmt.Errorf("scanning task by due date: %w", err)
 		}
@@ -372,11 +372,11 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 // COUNT query.
 //
 // Hand-rolled (not sqlc) to keep this feature self-contained without
-// churning the queries.sql codegen surface.
+// churning the sql/queries/ codegen surface.
 func (s *Store) TasksFiltered(ctx context.Context, f TaskFilter) ([]db.Task, error) {
 	const selectCols = `id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas`
+		branch_name, pr_url, commit_shas, area`
 	return s.queryFilteredTasks(ctx, selectCols, f)
 }
 
@@ -394,9 +394,8 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 	// two placeholders. Empty string means "every area", so existing callers
 	// are unaffected without needing a nil-able type.
 	//
-	// area is deliberately NOT added to selectCols: when a caller filters by
-	// one area, echoing that same area back on every row is pure payload —
-	// and payload is the cost this whole feature exists to cut.
+	// area is selected so every task object carries its classification,
+	// consistent across all read paths.
 	switch f.Status {
 	case "", "active":
 		q := `SELECT ` + selectCols + `
@@ -441,7 +440,7 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 		); err != nil {
 			return nil, fmt.Errorf("scanning filtered task: %w", err)
 		}
@@ -513,11 +512,11 @@ func (s *Store) TaskAreaExists(ctx context.Context, area string) (bool, error) {
 // every active task in the workspace.
 //
 // Hand-rolled query (not sqlc) to keep the timeline feature self-contained
-// without churning the queries.sql codegen surface.
+// without churning the sql/queries/ codegen surface.
 func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE (
 		    (created_at >= $1 AND created_at <= $2)
@@ -537,7 +536,7 @@ func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 		); err != nil {
 			return nil, fmt.Errorf("scanning task for timeline: %w", err)
 		}
@@ -572,7 +571,7 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 	}
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE status IN ('pending','in_progress')
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
@@ -593,7 +592,7 @@ func (s *Store) UpcomingTasks(ctx context.Context, refDate time.Time, days, limi
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 		); err != nil {
 			return nil, fmt.Errorf("scanning upcoming task: %w", err)
 		}
@@ -622,7 +621,7 @@ func (s *Store) PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.T
 	}
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE status IN ('pending','in_progress')
 		  AND importance = 1
@@ -641,7 +640,7 @@ func (s *Store) PullForwardTasks(ctx context.Context, refDate time.Time) ([]db.T
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 		); err != nil {
 			return nil, fmt.Errorf("scanning pull-forward task: %w", err)
 		}
@@ -692,7 +691,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, '{}', $12, $13, $14)
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		          branch_name, pr_url, commit_shas, vision_item_id`
+		          branch_name, pr_url, commit_shas, vision_item_id, area`
 	rows, err := s.dbtx.Query(
 		ctx, q,
 		pgconv.ToUUID(p.ProjectID), p.Title, pgconv.ToText(p.Description), priority, pgconv.ToText(assignee),
@@ -714,7 +713,7 @@ func (s *Store) CreateTask(ctx context.Context, p CreateTaskParams) (*db.Task, e
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-		&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.VisionItemID,
+		&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.VisionItemID, &t.Area,
 	); err != nil {
 		return nil, fmt.Errorf("scanning created task %q: %w", p.Title, err)
 	}
@@ -1064,7 +1063,7 @@ func (s *Store) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE id = $1
 		  AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -1084,7 +1083,7 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-		&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+		&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 	); err != nil {
 		return nil, fmt.Errorf("scanning task %s: %w", id, err)
 	}
@@ -1276,7 +1275,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		  AND ($14::uuid IS NULL OR workspace_id = $14)
 		RETURNING id, project_id, title, description, status, priority, assignee,
 		          due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		          branch_name, pr_url, commit_shas`
+		          branch_name, pr_url, commit_shas, area`
 	rows, err := s.dbtx.Query(
 		ctx, q,
 		merged.title, merged.description, merged.priority, merged.importance, assignee,
@@ -1298,7 +1297,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-		&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+		&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 	); err != nil {
 		return nil, fmt.Errorf("scanning updated task %s: %w", id, err)
 	}
@@ -2160,6 +2159,10 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 		return nil, 0, fmt.Errorf("restoring project row %s: %w", id, err)
 	}
 
+	if err := clearInvalidRestoredRepoName(ctx, tx, id); err != nil {
+		return nil, 0, err
+	}
+
 	taskTag, err := tx.Exec(
 		ctx,
 		`INSERT INTO tasks
@@ -2219,6 +2222,28 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 	return &restored, tasksRestored, nil
 }
 
+// clearInvalidRestoredRepoName is RestoreProject's [F0925-30] step, extracted
+// only to bring RestoreProject's cyclomatic complexity back under the
+// gocyclo threshold — behaviour and error wrapping are unchanged. The
+// tombstone payload predates the workspace repo name rule (the cleanup
+// migration clears table columns, not tombstone JSON), so a restored
+// repo_name breaking it is cleared to NULL — the restore itself still
+// succeeds. NULL (a project with no linked repo) stays NULL. Runs on the
+// same tx as the rest of RestoreProject, so it shares that transaction's
+// commit/rollback boundary.
+func clearInvalidRestoredRepoName(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	var restoredRepo pgtype.Text
+	if err := tx.QueryRow(ctx, `SELECT repo_name FROM projects WHERE id = $1`, id).Scan(&restoredRepo); err != nil {
+		return fmt.Errorf("reading restored repo_name for project %s: %w", id, err)
+	}
+	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
+		if _, err := tx.Exec(ctx, `UPDATE projects SET repo_name = NULL WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("clearing restored repo_name for project %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
 // PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
 // cutoff (design 6, decision 17a1086b, F191-13). No per-group logic is
 // needed here: every row a single delete_project/delete_task call wrote
@@ -2241,7 +2266,7 @@ func (s *Store) PruneDeletionTombstones(ctx context.Context, cutoff time.Time) (
 func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE status = 'pending'
 		  AND ($1::uuid IS NULL OR workspace_id = $1)
@@ -2262,7 +2287,7 @@ func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 	if err := rows.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 		&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-		&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+		&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 	); err != nil {
 		return nil, fmt.Errorf("scanning top pending task: %w", err)
 	}
@@ -2275,7 +2300,7 @@ func (s *Store) TopPendingTask(ctx context.Context) (*db.Task, error) {
 func (s *Store) RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
-		branch_name, pr_url, commit_shas
+		branch_name, pr_url, commit_shas, area
 		FROM tasks
 		WHERE status = 'completed'
 		  AND project_id = $1
@@ -2293,7 +2318,7 @@ func (s *Store) RecentCompletedTasks(ctx context.Context, projectID uuid.UUID, l
 		if err := rows.Scan(
 			&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee,
 			&t.DueDate, &t.Artifact, &t.CreatedAt, &t.UpdatedAt, &t.WorkspaceID, &t.Importance, &t.Context, &t.Checklist, &t.Kind,
-			&t.BranchName, &t.PRUrl, &t.CommitSHAs,
+			&t.BranchName, &t.PRUrl, &t.CommitSHAs, &t.Area,
 		); err != nil {
 			return nil, fmt.Errorf("scanning recent completed task: %w", err)
 		}

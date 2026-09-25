@@ -81,7 +81,7 @@ const MaxEvidenceListLimit = 100
 // Evidence.OutputExcerpt and Session.VerificationOutputExcerpt after
 // redaction. Applied AFTER redact.ForLLM — redact-then-cap order is
 // mandatory: a credential straddling the cap boundary must not survive as an
-// unredacted partial (backend-security-design.md §3.1).
+// unredacted partial.
 const EvidenceOutputExcerptCap = 2000
 
 // RedactAndCapOutputExcerpt applies redact.ForLLM to s and then caps the
@@ -260,8 +260,8 @@ type CreateParams struct {
 // U4 (mcp-surface spec P6): CompletedTaskIDs/NewTaskTitles/NewDecisionTitles/
 // Blockers/NextActions were registered on the checkpoint_work MCP tool but
 // never read by any handler or store method (dead params — confirmed by
-// repo-wide grep before removal, per backend-security-design.md §5.2's
-// "config/env present, zero code reads it = finding" principle applied to
+// repo-wide grep before removal — "config/env present, zero code reads
+// it = finding" applied to
 // tool schemas). Removed rather than wired up: checkpoint_work's own
 // description never promised progress-tracking side effects beyond
 // status=checkpointed + last_checkpoint_at.
@@ -283,7 +283,7 @@ type FinishParams struct {
 	Artifact         *string
 	// CompleteAllLinkedTasks opts into completing every task linked to this
 	// session when CompletedTaskIDs is empty (Ω5 fix, mcp-surface spec —
-	// backend-security-design.md §2.1: LLM tool input is adversarial, and an
+	// LLM tool input is treated as adversarial, and an
 	// omitted/empty completed_task_ids used to silently mark EVERY linked
 	// task completed with no way to opt out. Default false now means
 	// omission completes none; this flag is the explicit, auditable way to
@@ -386,6 +386,6 @@ type StoreIface interface {
 
 	// PruneOlderThan hard-deletes work_session_evidence rows older than
 	// cutoff. Mirrors outcome.Store.PruneOlderThan; called daily by the
-	// scheduler to enforce the 90-day TTL (backend-security-design.md §1.3).
+	// scheduler to enforce the 90-day TTL.
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }

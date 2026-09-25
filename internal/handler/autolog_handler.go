@@ -183,7 +183,7 @@ func (h *AutologHandler) maybeClassifyAsync(actor, action, notes string) {
 			// call — symmetry with the MCP twin (internal/mcp/middleware_classify.go)
 			// which redacts upstream too. redact.ForLLM is idempotent so the
 			// downstream auto-accept / proposal path re-redact (lines ~451 below)
-			// is a safe no-op (backend-security-design.md §3.1 defence-in-depth).
+			// is a safe no-op (defence-in-depth).
 			redactedNotes := redact.ForLLM(notes)
 			result := h.classifier.Classify(context.Background(), actor, action, redactedNotes)
 			if result.IsDecision && result.Title != "" {
@@ -451,7 +451,7 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 	// The classifier may echo a prompt-injected token from `notes` into
 	// `task_title`; without redaction, the auto-accept path persists the raw
 	// token into tasks.title plaintext. redact.ForLLM is idempotent
-	// (backend-security-design.md §3.1, security M-1).
+	// (security review M-1).
 	title = redact.ForLLM(title)
 	if title == "" {
 		return nil

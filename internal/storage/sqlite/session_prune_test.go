@@ -23,6 +23,7 @@ func handoffRowExists(t *testing.T, d *sqlite.DB, id string) bool {
 // TestSessionStore_PruneOlderThan_Expired verifies that a RESOLVED handoff
 // older than the cutoff is deleted.
 func TestSessionStore_PruneOlderThan_Expired(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openSessionStoreWithDB(t, "")
 	ctx := context.Background()
 
@@ -58,6 +59,7 @@ func TestSessionStore_PruneOlderThan_Expired(t *testing.T) {
 // that an unresolved handoff is never pruned regardless of age, and that a
 // recently-resolved handoff is not pruned.
 func TestSessionStore_PruneOlderThan_NotExpired_OpenHandoffNeverPruned(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openSessionStoreWithDB(t, "")
 	ctx := context.Background()
 
@@ -97,6 +99,7 @@ func TestSessionStore_PruneOlderThan_NotExpired_OpenHandoffNeverPruned(t *testin
 // strict-less-than: a resolved handoff exactly at the cutoff survives, one
 // resolved 1 second before the cutoff is deleted.
 func TestSessionStore_PruneOlderThan_Boundary(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openSessionStoreWithDB(t, "")
 	ctx := context.Background()
 

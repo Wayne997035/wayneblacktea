@@ -113,8 +113,8 @@ type wrapUntrustedCase struct {
 // could have authored: adding pgtype.JSONB or a new struct here would be a
 // reviewable, visible act, whereas a `strings.HasPrefix(t.String(), "pgtype.")`
 // rule would silently absorb the next text-bearing member of that package.
-// This is backend-security-design.md §2.3's default-deny rule applied to
-// types instead of tool names.
+// This is the same default-deny-for-unknown rule applied to types instead
+// of tool names.
 var (
 	pgTextType = reflect.TypeOf(pgtype.Text{})
 
@@ -395,8 +395,9 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 		blank:    func() any { return &db.Project{} },
 		invoke:   func(in any) any { return wrapUntrustedProject(in.(*db.Project)) },
 		exemptions: wrapUntrustedFieldExemptions{
-			"Status":   "closed ProjectStatus enum, cast+switch-validated in handleUpdateProjectStatus",
-			"RepoName": "regex-validated at write time (validator.IsValidRepoName, [a-zA-Z0-9_.-]{1,100})",
+			"Status": "closed ProjectStatus enum, cast+switch-validated in handleUpdateProjectStatus",
+			"RepoName": "validated at write time (validator.IsValidRepoName: 1-100 bytes of [A-Za-z0-9._/-] " +
+				"segments, no '=', '[' or whitespace, so no boundary marker fits)",
 		},
 	},
 	{

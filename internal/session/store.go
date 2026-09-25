@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -73,6 +74,10 @@ func (s *Store) SetHandoff(ctx context.Context, p HandoffParams) (*db.SessionHan
 	}
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("set_session_handoff: repo_name %w", err)
+	}
+	// [F0925-29] Workspace repo name rule; empty stays allowed (optional column).
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("set_session_handoff: %w", validator.ErrInvalidRepoName)
 	}
 
 	nextActionsJSON, err := marshalNextActions(p.NextActions)

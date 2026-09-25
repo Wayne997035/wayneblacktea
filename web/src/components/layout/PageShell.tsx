@@ -71,7 +71,7 @@ export function PageShell() {
           aria-hidden="true"
           style={{
             top: 'var(--spacing-header)',
-            background: 'rgba(0, 0, 0, 0.55)',
+            background: 'var(--color-overlay-55)', // [F0925-25]
             opacity: sidebarOpen ? 1 : 0,
             pointerEvents: sidebarOpen ? 'auto' : 'none',
             transition: 'opacity 250ms ease',

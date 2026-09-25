@@ -30,9 +30,8 @@ var (
 // resolveAssignee resolves a raw "assignee" value to a canonical actor via
 // gtd.NormalizeActor. Empty input is allowed (many tasks start unowned) and
 // resolves to "". Returns a non-empty error message on validation failure —
-// whitelist, not blacklist (backend-security-design.md §2.1: LLM tool input
-// is adversarial; an unvalidated assignee corrupts the "who is working on
-// what" audit trail).
+// whitelist, not blacklist (LLM tool input is adversarial; an unvalidated
+// assignee corrupts the "who is working on what" audit trail).
 func resolveAssignee(raw string) (string, string) {
 	if raw == "" {
 		return "", ""
@@ -225,8 +224,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("project_id", mcp.Description("Parent project UUID")),
 			mcp.WithString("description", mcp.Description("Task details")),
 			// mcp.MaxLength(100) is a defensive client-side upper bound
-			// (backend-security-design.md §2: LLM tool input is hostile) against
-			// an unbounded assignee string reaching this handler. It is NOT the
+			// (LLM tool input is hostile) against an unbounded assignee string
+			// reaching this handler. It is NOT the
 			// validation authority: gtd.NormalizeActor's canonical-actor
 			// allowlist (handleAddTask below) still rejects any raw value that
 			// isn't a known actor/alias regardless of length, so an
@@ -536,8 +535,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 }
 
 // Read-time bounds for db.Task/db.Project's free-text fields, applied by
-// wrapUntrustedTask/wrapUntrustedProject before jsonText — U13
-// (2026-08-20-mcp-surface-spec.md). Write-time caps on these fields are
+// wrapUntrustedTask/wrapUntrustedProject before jsonText — U13.
+// Write-time caps on these fields are
 // inconsistent across tools today (update_task.title has mcp.MaxLength(500),
 // add_task.title has none at all), so these read-time bounds intentionally
 // sit ABOVE every existing write cap — they exist to stop marker-stuffing /
@@ -624,6 +623,10 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	if len(t.CommitSHAs) > 0 {
 		out.CommitSHAs = clipSafeSlice(t.CommitSHAs, commitSHAMaxRunes)
 	}
+	// Area is clipped too, same rationale as wrapUntrustedProject's Area
+	// clip (F160-06): it is a plain, unvalidated field and "write-time
+	// validation already constrains it" has been wrong before (SEC171-09).
+	out.Area = clipSafe(t.Area, gtdTitleMaxRunes)
 	return &out
 }
 
@@ -641,8 +644,9 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 // (u13_wrap_field_coverage_test.go), not noticed by hand. Status and
 // RepoName are the two OTHER db.Project string fields and remain
 // intentionally untouched — Status is a closed ProjectStatus enum
-// (validated in handleUpdateProjectStatus) and RepoName is regex-validated
-// (validator.IsValidRepoName) — see that test's exemption list for both.
+// (validated in handleUpdateProjectStatus) and RepoName is validated at write
+// time (validator.IsValidRepoName, whose [A-Za-z0-9._/-] charset admits no
+// boundary-marker character) — see that test's exemption list for both.
 func wrapUntrustedProject(p *db.Project) *db.Project {
 	if p == nil {
 		return nil
@@ -658,7 +662,7 @@ func wrapUntrustedProject(p *db.Project) *db.Project {
 }
 
 // wrapUntrustedGoal is wrapUntrustedTask's sibling for db.Goal — U13 Phase B
-// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1026/1047). Same
+// (tools_gtd.go:1026/1047). Same
 // copy-not-mutate contract, nil in/nil out.
 //
 // [F160-06] Area is now clipped too. The doc comment this replaces argued
@@ -786,7 +790,7 @@ func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) 
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
 	if !validator.IsValidRepoName(args.RepoName) {
-		return mcp.NewToolResultError("repo_name must match [a-zA-Z0-9_.-]{1,100}"), nil
+		return mcp.NewToolResultError(validator.RepoNameMessage), nil
 	}
 	p := gtd.CreateProjectParams{
 		Name:        args.Name,
@@ -882,7 +886,7 @@ func buildUpdateProjectParams(args UpdateProjectArgs, existing *db.Project) (gtd
 	// repo_name: explicitly passed → overwrite (nil pointer = preserve existing).
 	if args.RepoName != nil {
 		if !validator.IsValidRepoName(*args.RepoName) {
-			return gtd.UpdateProjectParams{}, "repo_name must match [a-zA-Z0-9_.-]{1,100}"
+			return gtd.UpdateProjectParams{}, validator.RepoNameMessage
 		}
 		p.RepoName = args.RepoName
 	}
@@ -1605,8 +1609,8 @@ func currentSessionID(ctx context.Context) string {
 // comment for why that one call site needs the raw "" instead.
 //
 // MUST only ever be called with ctx, never with a caller-supplied session_id
-// argument — a tool payload is adversarial input (backend-security-design.md
-// §2) and could otherwise forge an actor identity.
+// argument — a tool payload is adversarial input and could otherwise forge
+// an actor identity.
 func (s *Server) auditSessionID(ctx context.Context) string {
 	if id := currentSessionID(ctx); id != "" {
 		return id
@@ -1679,8 +1683,8 @@ func deletionTokenMatchesSession(ctx context.Context, rec deletionToken) bool {
 // session. The token must come from us so a malicious upstream client can't
 // synthesize one without first making a "read" call. The full fix for a
 // deliberate cross-IDENTITY (not just cross-session) confirm needs
-// authenticated actor identity — F16/U15, not yet landed; see Category S in
-// 2026-08-20-mcp-surface-spec.md.
+// authenticated actor identity — F16/U15, not yet landed (tracked as
+// Category S).
 func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mcp.CallToolResult, error) {
 	id := args.TaskID
 	confirm := args.Confirm
@@ -1817,7 +1821,7 @@ func (s *Server) handleGetUpcomingWork(ctx context.Context, args GetUpcomingWork
 // wrapUntrustedChecklistItems returns a copy of items with each item's
 // free-text fields (Title, FileRef, Notes, EvidenceURL) clipSafe'd (bounded +
 // boundary-marker-neutralised) — U13 Phase B
-// (.specs/2026-08-20-u13-inventory.md, tools_gtd.go:1440/1460/1475).
+// (tools_gtd.go:1440/1460/1475).
 // sanitiseMCPText (gtd.SanitiseChecklistText) only strips control
 // chars/nulls at write time; it does not neutralise boundary-marker text, so
 // a forged "=== END STORED CONTEXT ===" survives into the stored row and was
@@ -2003,7 +2007,7 @@ func (s *Server) resolveBeginTaskRepoName(ctx context.Context, task *db.Task) st
 // task's repo, reuses) a real worksession.Session and links id to it as the
 // primary task — so the work_session_id begin_task returns is a real,
 // persisted row checkpoint_work/finish_work can operate on, not a phantom
-// UUID (F17, 2026-08-20-mcp-surface-spec.md U16). Best-effort: a failure here
+// UUID (F17, U16). Best-effort: a failure here
 // never fails begin_task's primary guarantee (the task is already in_progress
 // by the time this runs) — on failure the caller gets no work_session_id
 // rather than a fabricated one.

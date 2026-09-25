@@ -65,6 +65,11 @@ func (h *VisionHandler) AddVision(c echo.Context) error {
 		c.Response().Header().Set("X-Vagueness-Warnings", string(warningsJSON))
 	}
 
+	// [F0925-29] Workspace repo name rule; empty stays allowed.
+	if !validator.IsValidRepoName(req.RepoName) {
+		return c.JSON(http.StatusBadRequest, errResp(validator.RepoNameMessage))
+	}
+
 	item, err := h.store.Add(c.Request().Context(), vision.AddVisionParams{
 		Title:            req.Title,
 		WhyBlocked:       req.WhyBlocked,
@@ -74,6 +79,9 @@ func (h *VisionHandler) AddVision(c echo.Context) error {
 		RepoName:         req.RepoName,
 	})
 	if err != nil {
+		if errors.Is(err, validator.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(validator.RepoNameMessage))
+		}
 		c.Logger().Errorf("AddVision: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}

@@ -20,8 +20,7 @@ import (
 // *knowledge.Store / *sqlite.KnowledgeStore (accept_pg.go:33,
 // accept_proposal.go:23), not an interface, so a fake can no longer
 // substitute for either — the fake-based tests were structurally
-// incompatible with the seam (spec g1-seam-2026-09-15.md Section B, "Current
-// behaviour"). Real-backend coverage (both directions, HTTP layer) now lives
+// incompatible with the seam. Real-backend coverage (both directions, HTTP layer) now lives
 // in proposal_handler_knowledge_pg_test.go and
 // proposal_handler_knowledge_sqlite_test.go instead.
 //

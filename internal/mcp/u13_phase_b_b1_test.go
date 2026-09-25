@@ -10,8 +10,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
-// U13 Phase B, group B1 (.specs/2026-08-20-u13-inventory.md §"tools_gtd.go"
-// and §"tools_worksession.go"): behavioural proof that every PENDING→PASS
+// U13 Phase B, group B1 (tools_gtd.go and tools_worksession.go sections):
+// behavioural proof that every PENDING→PASS
 // conversion in tools_gtd.go (15 sites + handleGetUpcomingWork, the site the
 // jsonText( grep cannot find) and tools_worksession.go (3 sites) actually
 // neutralises a forged boundary marker in its response, mirroring the
@@ -456,9 +456,9 @@ func TestU13PhaseB_BeginTask_NeutralizesForgedMarker(t *testing.T) {
 }
 
 // TestU13PhaseB_GetUpcomingWork_NeutralizesForgedMarker proves the 19th
-// conversion point flagged in the U13 inventory (.specs/2026-08-20-u13-
-// inventory.md, "Not caught by the jsonText( grep at all"):
-// handleGetUpcomingWork returns mcp.NewToolResultText, not JSON, so it needed
+// conversion point flagged in the U13 inventory ("not caught by the
+// jsonText( grep at all"): handleGetUpcomingWork returns
+// mcp.NewToolResultText, not JSON, so it needed
 // a dedicated neutralisation call in renderUpcomingBuckets rather than
 // wrapUntrustedTask/clipSafe going through jsonText.
 func TestU13PhaseB_GetUpcomingWork_NeutralizesForgedMarker(t *testing.T) {

@@ -34,7 +34,7 @@ func pgTimeVal(t time.Time) pgtype.Timestamptz {
 
 func openGTDDB(t *testing.T) (*sqlite.DB, *sqlite.GTDStore) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -43,6 +43,7 @@ func openGTDDB(t *testing.T) (*sqlite.DB, *sqlite.GTDStore) {
 }
 
 func TestGTDStore_ImportGoal(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	fixed := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	due := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
 
@@ -99,6 +100,7 @@ func TestGTDStore_ImportGoal(t *testing.T) {
 }
 
 func TestGTDStore_ImportGoal_DuplicateIDFails(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openGTDDB(t)
 	ctx := context.Background()
 	g := db.Goal{ID: uuid.New(), Title: "dup", Status: "active", CreatedAt: pgTimeVal(time.Now()), UpdatedAt: pgTimeVal(time.Now())}
@@ -112,6 +114,7 @@ func TestGTDStore_ImportGoal_DuplicateIDFails(t *testing.T) {
 }
 
 func TestGTDStore_ImportProject(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	fixed := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
 	goalID := uuid.New()
 
@@ -167,6 +170,7 @@ func TestGTDStore_ImportProject(t *testing.T) {
 }
 
 func TestGTDStore_ImportProject_DuplicateIDFails(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openGTDDB(t)
 	ctx := context.Background()
 	p := db.Project{
@@ -182,6 +186,7 @@ func TestGTDStore_ImportProject_DuplicateIDFails(t *testing.T) {
 }
 
 func TestGTDStore_ImportTask(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	fixed := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
 	projectID := uuid.New()
 	visionID := uuid.New()
@@ -266,6 +271,7 @@ func TestGTDStore_ImportTask(t *testing.T) {
 }
 
 func TestGTDStore_ImportTask_DuplicateIDFails(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openGTDDB(t)
 	ctx := context.Background()
 	task := db.Task{

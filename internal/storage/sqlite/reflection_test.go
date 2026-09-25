@@ -14,7 +14,7 @@ import (
 
 func openReflectionDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -23,6 +23,7 @@ func openReflectionDB(t *testing.T) *wbtsqlite.DB {
 }
 
 func TestSQLiteReflectionStore_Create(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openReflectionDB(t)
 	store := wbtsqlite.NewReflectionStore(db)
 	ctx := context.Background()
@@ -120,6 +121,7 @@ func TestSQLiteReflectionStore_Create(t *testing.T) {
 }
 
 func TestSQLiteReflectionStore_List(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openReflectionDB(t)
 	store := wbtsqlite.NewReflectionStore(db)
 	ctx := context.Background()
@@ -195,6 +197,7 @@ func TestSQLiteReflectionStore_List(t *testing.T) {
 }
 
 func TestSQLiteReflectionStore_GetLatest(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openReflectionDB(t)
 	store := wbtsqlite.NewReflectionStore(db)
 	ctx := context.Background()
@@ -236,6 +239,7 @@ func TestSQLiteReflectionStore_GetLatest(t *testing.T) {
 }
 
 func TestSQLiteReflectionStore_RecentWithPatterns(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openReflectionDB(t)
 	store := wbtsqlite.NewReflectionStore(db)
 	ctx := context.Background()
@@ -312,8 +316,9 @@ func TestSQLiteReflectionStore_RecentWithPatterns(t *testing.T) {
 
 // TestSQLiteReflectionStore_PruneOlderThan verifies that PruneOlderThan removes
 // old reflections but leaves newer rows untouched. Mirrors the PG integration
-// test to ensure dual-backend parity per backend-security-design.md §6.5.
+// test to ensure dual-backend parity.
 func TestSQLiteReflectionStore_PruneOlderThan(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openReflectionDB(t)
 	store := wbtsqlite.NewReflectionStore(db)
 	ctx := context.Background()

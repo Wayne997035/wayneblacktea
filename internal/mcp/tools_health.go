@@ -107,8 +107,8 @@ type disciplineSample struct {
 // in a caller-supplied argument (sync_repo's `name`, start_work's
 // `repo_name`) and is copied into the discipline event at write time with
 // no boundary-marker screening, so a forged marker in a repo name used to
-// reach system_health's discipline.recent_drifts[] verbatim — U13
-// (.specs/2026-08-20-mcp-surface-spec.md). ToolName is the registered tool
+// reach system_health's discipline.recent_drifts[] verbatim — U13.
+// ToolName is the registered tool
 // name, a server-owned constant, and needs no neutralisation; ObservedAt is
 // a timestamp.
 func newDisciplineSample(ev discipline.Event) disciplineSample {
@@ -624,7 +624,7 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 		}
 		if len(evidence) > 0 {
 			// Strip ASCII control characters from the title before surfacing
-			// it (per backend-security-design.md §5.4). Tabs are preserved.
+			// it (audit/stored-text hygiene). Tabs are preserved.
 			title := strings.Map(func(r rune) rune {
 				if r < 0x20 && r != '\t' {
 					return -1
@@ -632,13 +632,13 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 				return r
 			}, t.Title)
 			// clipSafe (tools_context.go) on top of the control-char strip
-			// above — U13 (2026-08-20-mcp-surface-spec.md). The control-char
+			// above — U13. The control-char
 			// strip alone does not neutralise a forged boundary marker
 			// (printable ASCII), so a task title containing one used to
 			// reach system_health's CompletionDrift[].Title unneutralised —
 			// this is the "nested field" gap Phase A's inventory corrected
-			// from an initial "computed" assumption (.specs/2026-08-20-
-			// u13-inventory.md §2). Reuses gtdTitleMaxRunes (tools_gtd.go):
+			// from an initial "computed" assumption. Reuses gtdTitleMaxRunes
+			// (tools_gtd.go):
 			// system_health is not a session-start-budget tool, so the
 			// full-record read cap applies, not tools_context.go's smaller
 			// session-start caps.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
 )
@@ -204,6 +205,10 @@ func validateCreateParams(p worksession.CreateParams) error {
 		return fmt.Errorf("worksession.Create: goal is required")
 	case p.Source == "":
 		return fmt.Errorf("worksession.Create: source is required")
+	}
+	// [F0925-29] Same repo name backstop as the Postgres store.
+	if !validator.ValidRepoPath(p.RepoName) {
+		return fmt.Errorf("worksession.Create: %w", validator.ErrInvalidRepoName)
 	}
 	if p.BranchName != nil {
 		if reason := worksession.CheckControlChars("branch_name", *p.BranchName); reason != "" {
@@ -654,8 +659,7 @@ func (s *WorkSessionStore) AddEvidence(ctx context.Context, ev worksession.Evide
 	// single-tenant deployment with no WORKSPACE_ID set still sees its own
 	// data. work_session_evidence gets the stricter treatment as
 	// defence-in-depth because evidence rows carry free-text command output
-	// that is later read back into an LLM context via get_work_session_trace
-	// (backend-security-design.md §2).
+	// that is later read back into an LLM context via get_work_session_trace.
 	wsArg := s.db.workspaceID
 	if wsArg == "" {
 		wsArg = uuid.Nil.String()

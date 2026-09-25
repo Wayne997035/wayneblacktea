@@ -1042,7 +1042,7 @@ func TestSetOutcomeLink_Success(t *testing.T) {
 }
 
 // TestCreate_RejectsControlCharsInBranchName verifies branch_name containing
-// a newline is rejected (adversarial-input handling, backend-security-design.md §2.1).
+// a newline is rejected (adversarial-input handling).
 func TestCreate_RejectsControlCharsInBranchName(t *testing.T) {
 	wsID := uuid.New().String()
 	store := newStore(t, wsID)

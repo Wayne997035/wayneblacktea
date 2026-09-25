@@ -18,8 +18,7 @@ var ErrControlChar = errors.New("text contains forbidden control character")
 // allowNewline should be true for long-form / markdown fields (article
 // content, approach_md) where line breaks are semantic content, and false
 // for single-line classifier-style fields (title, condition) where an
-// embedded newline is either noise or a CLI-listing-spoofing attempt per
-// backend-security-design.md §5.4.
+// embedded newline is either noise or a CLI-listing-spoofing attempt.
 func RejectControlChars(s string, maxRunes int, allowNewline bool) (string, error) {
 	n := 0
 	for _, r := range s {

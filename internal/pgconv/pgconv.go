@@ -23,8 +23,8 @@ func ToText(v string) pgtype.Text {
 // to that exact string (Valid: true), an explicit value including an
 // explicit clear. Unlike ToText, ToTextPtr does NOT collapse "" into NULL:
 // that collapse is what let "omitted" and "explicitly empty" fold into the
-// same wire value upstream, the root cause behind Ω6
-// (2026-08-20-mcp-surface-spec.md, sync_repo's clobber-on-omit bug).
+// same wire value upstream, the root cause behind sync_repo's
+// clobber-on-omit bug.
 func ToTextPtr(v *string) pgtype.Text {
 	if v == nil {
 		return pgtype.Text{}

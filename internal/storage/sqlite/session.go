@@ -13,6 +13,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -74,6 +75,10 @@ func (s *SessionStore) SetHandoff(ctx context.Context, p session.HandoffParams) 
 	}
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("set_session_handoff: repo_name %w", err)
+	}
+	// [F0925-29] Same repo name backstop as the pgx Store.SetHandoff.
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("set_session_handoff: %w", validator.ErrInvalidRepoName)
 	}
 
 	id := uuid.New()

@@ -595,7 +595,7 @@ func TestUpdateTask_ValidBranchAndPR(t *testing.T) {
 	}
 }
 
-// --- U1: clobber disclosure (P1/Ω1, spec 2026-08-20-mcp-surface-spec.md) ---
+// --- U1: clobber disclosure (P1/Ω1) ---
 
 // TestUpdateTaskDescriptionDiscloses pins U1. mergeTaskUpdateFields
 // (gtd/store.go) already REPLACES description whole-string when the field is

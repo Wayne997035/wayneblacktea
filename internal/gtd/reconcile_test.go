@@ -39,7 +39,7 @@ func TestReconcileMergedPRs_ExactMatch_PG_AutoApplies(t *testing.T) {
 		Title:    "feat: x",
 		Body:     "closes the task",
 		Repo:     "owner/repo",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestReconcileMergedPRs_PG_Idempotent(t *testing.T) {
 	prs := []gtd.MergedPR{{URL: prURL, HeadRef: branch, MergedAt: time.Now().UTC()}}
 
 	// First call.
-	r1, err := gtd.MatchMergedPRs(ctx, store, prs)
+	r1, err := gtd.MatchMergedPRs(ctx, store, prs, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("first MatchMergedPRs: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestReconcileMergedPRs_PG_Idempotent(t *testing.T) {
 
 	// Second call with same payload — task already 'completed', matcher should
 	// skip it (filtered out of pending/in_progress in matchSingle).
-	r2, err := gtd.MatchMergedPRs(ctx, store, prs)
+	r2, err := gtd.MatchMergedPRs(ctx, store, prs, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("second MatchMergedPRs: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestReconcileMergedPRs_PG_NoMatch(t *testing.T) {
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL:     "https://github.com/owner/repo/pull/3",
 		HeadRef: "feature/x", // different
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestReconcileMergedPRs_PG_MultipleSameBranch_PicksMostRecent(t *testing.T) 
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL:     "https://github.com/owner/repo/pull/4",
 		HeadRef: branch,
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestReconcileMergedPRs_PG_PRURLMatch(t *testing.T) {
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL:     prURL,
 		HeadRef: "no-such-branch",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestReconcileMergedPRs_PG_CaseInsensitivePRURL(t *testing.T) {
 	supplied := "https://github.com/wayne997035/wayneblacktea/pull/7"
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL: supplied, HeadRef: "irrelevant",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestMatchMergedPRs_FixPRIgnoresPRURL(t *testing.T) {
 		HeadRef:  "",
 		MergedAt: time.Now().UTC(),
 		Title:    "fix: mcp capability refactor",
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestMatchMergedPRs_FixPRStillMatchesViaBranchName(t *testing.T) {
 		URL:      "https://github.com/owner/repo/pull/150",
 		HeadRef:  branch,
 		MergedAt: time.Now().UTC(),
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestMatchMergedPRs_SharedPRURL_NonFixPRStillMatches(t *testing.T) {
 
 	result, err := gtd.MatchMergedPRs(ctx, store, []gtd.MergedPR{{
 		URL: prURL, HeadRef: "irrelevant", MergedAt: time.Now().UTC(),
-	}})
+	}}, gtd.AssumeSameRepo)
 	if err != nil {
 		t.Fatalf("MatchMergedPRs: %v", err)
 	}

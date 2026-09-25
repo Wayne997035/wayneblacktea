@@ -13,7 +13,7 @@ import (
 
 func openDecisionDB(t *testing.T, dsn, workspaceID string) (*sqlite.DB, *sqlite.DecisionStore) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), dsn, workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), dsn, workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -34,6 +34,7 @@ func seedDecisionProject(t *testing.T, d *sqlite.DB, name string) uuid.UUID {
 }
 
 func TestDecisionStore_LogAndListRoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openDecisionDB(t, ":memory:", "")
 	projectID := seedDecisionProject(t, d, "decision-round-trip")
 
@@ -64,6 +65,7 @@ func TestDecisionStore_LogAndListRoundTrip(t *testing.T) {
 }
 
 func TestDecisionStore_NullOptionalFields(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	row, err := s.Log(context.Background(), decision.LogParams{
 		Title:     "No optional fields",
@@ -81,6 +83,7 @@ func TestDecisionStore_NullOptionalFields(t *testing.T) {
 }
 
 func TestDecisionStore_EmptyQueriesReturnEmpty(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 	for name, fn := range map[string]func() (int, error){
@@ -108,6 +111,7 @@ func TestDecisionStore_EmptyQueriesReturnEmpty(t *testing.T) {
 }
 
 func TestDecisionStore_ByRepoByProjectAndLimit(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	d, s := openDecisionDB(t, ":memory:", "")
 	projectID := seedDecisionProject(t, d, "decision-filter")
 	if _, err := s.Log(context.Background(), decision.LogParams{
@@ -140,6 +144,7 @@ func TestDecisionStore_ByRepoByProjectAndLimit(t *testing.T) {
 }
 
 func TestDecisionStore_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:decision-" + uuid.New().String() + "?mode=memory&cache=shared"
@@ -169,6 +174,7 @@ func TestDecisionStore_WorkspaceIsolation(t *testing.T) {
 // design (matching the Postgres backend behaviour after migration 000026).
 
 func TestDecisionStore_ContextCanceled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -181,6 +187,7 @@ func TestDecisionStore_ContextCanceled(t *testing.T) {
 // TestDecisionStore_ByTask_HappyPath verifies that a decision linked to a
 // task_id is returned by ByTask.
 func TestDecisionStore_ByTask_HappyPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -212,6 +219,7 @@ func TestDecisionStore_ByTask_HappyPath(t *testing.T) {
 // TestDecisionStore_ByTask_EmptyResult verifies that querying an unknown task
 // ID returns an empty slice with no error.
 func TestDecisionStore_ByTask_EmptyResult(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")
 	rows, err := s.ByTask(context.Background(), uuid.New(), 10)
 	if err != nil {
@@ -225,6 +233,7 @@ func TestDecisionStore_ByTask_EmptyResult(t *testing.T) {
 // TestDecisionStore_ByTask_WorkspaceScoping verifies that decisions belonging
 // to workspace A are not visible when queried from workspace B via ByTask.
 func TestDecisionStore_ByTask_WorkspaceScoping(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:decision-task-ws-" + uuid.New().String() + "?mode=memory&cache=shared"

@@ -8,11 +8,13 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/gitremote"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
@@ -32,6 +34,8 @@ func main() {
 
 func run() error {
 	demo := flag.Bool("demo", false, "seed demo data (projects, tasks, decisions, knowledge, concepts)")
+	githubOwners := flag.String("github-owners", "Wayne997035,goflare-io,Flare-Go",
+		"comma-separated GitHub owners whose repos get repos.github_slug filled from their origin remote")
 	flag.Parse()
 
 	if _, err := storage.ResolveFromEnv(); err != nil {
@@ -69,7 +73,7 @@ func run() error {
 	wsStore := workspace.NewStore(pool, wsID)
 
 	goalsCreated := seedGoals(ctx, gtdStore)
-	reposSynced := seedRepos(ctx, wsStore)
+	reposSynced := seedRepos(ctx, wsStore, parseGitHubOwners(*githubOwners))
 
 	slog.Info("seed complete", "goals_created", goalsCreated, "repos_synced", reposSynced)
 
@@ -509,7 +513,36 @@ type repoSpec struct {
 	desc     string
 }
 
-func seedRepos(ctx context.Context, store *workspace.Store) int {
+// parseGitHubOwners turns the -github-owners flag into a lower-cased set
+// (GitHub owners compare case-insensitively).
+func parseGitHubOwners(csv string) map[string]bool {
+	out := map[string]bool{}
+	for o := range strings.SplitSeq(csv, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out[strings.ToLower(o)] = true
+		}
+	}
+	return out
+}
+
+// resolveGitHubSlug derives dir's GitHub owner/repo from its origin remote
+// ([F0925-31]). nil — never overwrite a stored slug — when git fails, the
+// remote is not on github.com, or the owner is not in owners.
+func resolveGitHubSlug(ctx context.Context, dir string, owners map[string]bool) *string {
+	//nolint:gosec // G204: fixed git argv, no shell; dir is seed's own registered repo directory, not caller input
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return nil
+	}
+	slug := gitremote.DeriveGitHubSlug(string(out))
+	owner, _, ok := strings.Cut(slug, "/")
+	if !ok || !owners[strings.ToLower(owner)] {
+		return nil
+	}
+	return &slug
+}
+
+func seedRepos(ctx context.Context, store *workspace.Store, owners map[string]bool) int {
 	root := os.Getenv("PROJECT_ROOT")
 	if root == "" {
 		slog.Warn("PROJECT_ROOT not set, skipping repo discovery")
@@ -527,6 +560,7 @@ func seedRepos(ctx context.Context, store *workspace.Store) int {
 			Path:        &r.path,
 			Language:    &r.language,
 			Description: &r.desc,
+			GitHubSlug:  resolveGitHubSlug(ctx, r.path, owners),
 		})
 		if err != nil {
 			slog.Warn("failed to upsert repo", "name", r.name, "err", err)

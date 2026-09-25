@@ -302,6 +302,13 @@
       "contentPlaceholder": "Write your notes here...",
       "url": "URL (optional)",
       "urlPlaceholder": "https://..."
+    },
+    "card": {
+      "rateLabel": "Rate this item?",
+      "addToLearning": "Add to learning",
+      "addingToLearning": "Adding…",
+      "addedToLearning": "Added",
+      "addToLearningAria": "Add to learning: {{title}}"
     }
   },
   "reviews": {
@@ -323,6 +330,22 @@
       "hard": "Hard",
       "good": "Good",
       "easy": "Easy"
+    },
+    "submitError": "Failed to save your rating. Try again.",
+    "addError": "Failed to add. Try again.",
+    "card": {
+      "recorded": "Recorded",
+      "nextReviewIn": "Next review in {{days}} days"
+    },
+    "suggestions": {
+      "title": "AI Suggestions",
+      "itemCount": "{{count}} items",
+      "collapse": "Collapse",
+      "showAll": "Show all {{count}} items",
+      "add": "Add to learning",
+      "adding": "Adding…",
+      "added": "Added",
+      "addAria": "Add to learning: {{title}}"
     }
   },
   "comingSoon": {
@@ -463,7 +486,8 @@
       "finish_work_gap": "Finish work gap",
       "artifact_evidence": "Artifact evidence",
       "completion_signal": "Completion signal",
-      "pr_merged_fuzzy": "PR merged (fuzzy match)"
+      "pr_merged_fuzzy": "PR merged (fuzzy match)",
+      "pr_merged_repo_unverified": "PR merged (branch match, repo unverified)"
     },
     "confidence": {
       "high": "High",

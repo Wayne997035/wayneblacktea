@@ -7,7 +7,7 @@ import "testing"
 // had zero test coverage on the integration branch before this file.
 
 // TestF160_09_ParseSyncRepoOptionalArgs_PresenceSemantics pins Ω6
-// (2026-08-20-mcp-surface-spec.md) at the MCP-args layer: parseSyncRepoOptionalArgs
+// at the MCP-args layer: parseSyncRepoOptionalArgs
 // must distinguish "key absent from args" (nil — preserve the stored value)
 // from "key present with an empty string" (non-nil pointer to "" — an
 // explicit clear) and from "key present with a value" (non-nil pointer to

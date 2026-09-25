@@ -8,10 +8,11 @@ export function ImportanceBadge({ importance, dimmed = false }: ImportanceBadgeP
 
   const level = Math.max(1, Math.min(3, Math.round(importance))) as 1 | 2 | 3
 
+  // [F0925-25]
   const colorMap: Record<1 | 2 | 3, { bg: string; color: string }> = {
-    1: { bg: 'var(--color-error)',   color: '#ffffff' },
+    1: { bg: 'var(--color-error)',   color: 'var(--color-white)' },
     2: { bg: 'var(--color-warning)', color: 'var(--color-bg-base)' },
-    3: { bg: 'var(--color-success)', color: '#ffffff' },
+    3: { bg: 'var(--color-success)', color: 'var(--color-white)' },
   }
 
   const { bg, color } = colorMap[level]

@@ -200,7 +200,7 @@ func TestCreateProject_InvalidRepoName(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid repo_name must error, got: %s", resultText(r))
 	}
-	if !strings.Contains(resultText(r), "repo_name must match") {
+	if !strings.Contains(resultText(r), "repo_name must be") {
 		t.Errorf("error should mention repo_name format, got: %s", resultText(r))
 	}
 }

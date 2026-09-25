@@ -21,7 +21,7 @@ function getPriorityStyle(priority: number | null): PriorityStyle | null {
   if (priority === 1) {
     return {
       label: 'P1',
-      bg: '#2e0a0a',
+      bg: 'var(--color-error-bg)', // [F0925-25]
       color: 'var(--color-error)',
       border: 'var(--color-error)',
       leftBorder: 'var(--color-error)',
@@ -30,7 +30,7 @@ function getPriorityStyle(priority: number | null): PriorityStyle | null {
   if (priority === 2) {
     return {
       label: 'P2',
-      bg: '#2e1f00',
+      bg: 'var(--color-status-on-hold-bg)', // [F0925-25]
       color: 'var(--color-warning)',
       border: 'var(--color-warning)',
       leftBorder: 'var(--color-warning)',
@@ -38,7 +38,7 @@ function getPriorityStyle(priority: number | null): PriorityStyle | null {
   }
   return {
     label: `P${priority}+`,
-    bg: '#0a1f35',
+    bg: 'var(--color-status-completed-bg)', // [F0925-25]
     color: 'var(--color-accent-blue)',
     border: 'var(--color-accent-blue)',
     leftBorder: 'var(--color-accent-blue)',

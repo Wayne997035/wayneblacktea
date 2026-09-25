@@ -122,7 +122,7 @@ func TestDecisionDrafter_PromptWrapsUntrustedInput(t *testing.T) {
 		t.Fatalf("Draft: %v", err)
 	}
 	// User message MUST wrap untrusted input in [BEGIN UNTRUSTED] markers
-	// (defence against prompt injection per backend-security-design.md §2.1).
+	// (defence against prompt injection — LLM tool input is treated as adversarial).
 	if !strings.Contains(stub.gotR.User, "[BEGIN UNTRUSTED]") ||
 		!strings.Contains(stub.gotR.User, "[END UNTRUSTED]") {
 		t.Errorf("user message missing UNTRUSTED markers: %q", stub.gotR.User)

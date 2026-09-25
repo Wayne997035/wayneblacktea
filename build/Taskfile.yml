@@ -354,7 +354,7 @@ tasks:
       - sh: test -n "{{.DATABASE_URL}}"
         msg: "DATABASE_URL is not set — add it to .env or export it"
     cmds:
-      # 30-day TTL on observability tables, codified by docs/p0a-design-rationale.md §6.1.
+      # 30-day TTL on observability tables, documented in docs/retention-policy.md.
       # Postgres-only: SQLite is dev-local single-tenant, no growth concern.
       - |
         psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM guard_events WHERE created_at < NOW() - INTERVAL '30 days';"
@@ -369,7 +369,7 @@ tasks:
       - sh: test -n "{{.DATABASE_URL}}"
         msg: "DATABASE_URL is not set — add it to .env or export it"
     cmds:
-      # 30-day TTL on observability tables (backend-security-design.md §1.3).
+      # 30-day TTL on observability tables, enforced by the daily prune job.
       # Postgres-only: SQLite is dev-local single-tenant, no growth concern.
       - |
         psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM discipline_events WHERE observed_at < NOW() - INTERVAL '30 days';"

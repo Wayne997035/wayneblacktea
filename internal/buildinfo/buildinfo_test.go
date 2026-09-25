@@ -10,9 +10,9 @@ import (
 // tests reference them directly instead of re-typing "dev"/"none"/"unknown"
 // as second, independently-drifting literals.
 
-// testCommitSHA is this repo's real HEAD commit at the time U6 was written
-// (2026-08-20-mcp-surface-spec.md's assumptions table, Lead-verified) — the
-// full 40-char SHA whose first 12 hex chars ("5b87fcbf4b78") anchor
+// testCommitSHA is this repo's real HEAD commit, captured at the time this
+// test was written (Lead-verified) — the full 40-char SHA whose first 12
+// hex chars ("5b87fcbf4b78") anchor
 // TestBuildID_RealValues' byte-exact assertion.
 const testCommitSHA = "5b87fcbf4b78dd0dc290e25e3b220da110dd316f"
 
@@ -35,8 +35,8 @@ func resetSentinels(t *testing.T) {
 	})
 }
 
-// TestBuildID_SentinelDefaults is U6's bad-case acceptance criterion
-// (2026-08-20-mcp-surface-spec.md, U6 row): a build with no injected
+// TestBuildID_SentinelDefaults is the bad-case acceptance criterion for
+// build identity defaults: a build with no injected
 // identity (the ldflags-less state this package's Commit/Date sentinels
 // default to) must report the "dev" sentinel, explicitly NOT a
 // pseudo-version-shaped string like "v0.0.0-unknown-none" that could pass

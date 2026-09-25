@@ -1,0 +1,12 @@
+-- 000083_repos_github_slug.up.sql
+--
+-- [F0925-31] repos.name holds the workspace directory name ("wayneblacktea",
+-- "Flare-Go/auth"), which is not a GitHub owner/repo slug. reconcile used to
+-- pass repos.name to `gh -R`, so 13 of 16 production repos were skipped and
+-- 3 path-shaped names were queried as someone else's account. github_slug
+-- carries the real owner/repo, validated with validator.RepoSlugRe at every
+-- write; NULL means "not a GitHub repo we reconcile" and is skipped.
+--
+-- ADD COLUMN (not IF NOT EXISTS), same as 000073 / 000076: a re-run fails
+-- loudly instead of silently no-oping.
+ALTER TABLE repos ADD COLUMN github_slug TEXT;

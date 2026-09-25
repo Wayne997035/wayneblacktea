@@ -74,8 +74,7 @@ func parseRelatedRuleIDs(raw string) ([]uuid.UUID, error) {
 const maxOutcomeLimit = 100
 
 // ---------------------------------------------------------------------------
-// U13 Phase B — boundary-marker neutralisation for tools_outcome.go
-// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// U13 Phase B — boundary-marker neutralisation for tools_outcome.go.
 // ---------------------------------------------------------------------------
 
 // outcomeNotesMaxRunes / outcomeBlobFieldMaxRunes bound outcome.Outcome's and
@@ -312,8 +311,9 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 
 	// session_id is optional. When present it MUST be a well-formed UUID —
 	// validate the format up front so malformed input is rejected outright,
-	// even though an unknown-but-valid UUID is tolerated below (no-FK design;
-	// backend-security-design.md §6 migration comment on work_session_id).
+	// even though an unknown-but-valid UUID is tolerated below (no FK
+	// constraints by design; referential integrity is enforced in code, not
+	// by the DB).
 	if raw := stringArg(args, "session_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {

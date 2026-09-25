@@ -97,7 +97,7 @@ class TestExtractAnchors(unittest.TestCase):
         a = extract.extract_anchors("t", "internal/mcp/resources_test.go 的 resources_test 案例壞了")
         self.assertNotIn("resources_test", a["symbols"])
 
-    # ── adversarial input (backend-security-design.md §2.1 / §5.4 spirit) ──
+    # ── adversarial input handling ──
 
     def test_control_chars_stripped(self):
         a = extract.extract_anchors("t\x01\x02", "resources.go:10\x00 evil")
@@ -572,8 +572,7 @@ class TestKnownFixtureRegression(unittest.TestCase):
 
         Anchors to internal/storage/sqlite/knowledge.go's SearchByCosine —
         an ACCEPTED, documented design trade-off (SQLite has no ANN, so it
-        brute-force cosine-scans capped at 200 rows; see
-        wayneblacktea/CLAUDE.md "SQLite cosine fallback" and the function's
+        brute-force cosine-scans capped at 200 rows; see the function's
         own doc comment), not a bug anyone is tracking to fix. Unlike a
         real bug ticket, "fixing" this would require a deliberate
         architecture decision (switching SQLite to some ANN index), not an

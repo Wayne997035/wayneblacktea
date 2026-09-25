@@ -60,7 +60,7 @@ $GitHubDl  = "https://github.com/$RepoOwner/$RepoName/releases/download"
 
 # cosign keyless verification — sigstore certificate identity / OIDC issuer.
 # Anchored regex (^...$) to prevent prefix/suffix injection attacks; restricts
-# to the release.yml workflow on a semver tag. (PR #85 R3 / S-N2)
+# to the release workflow on a semver tag. (PR #85 R3 / S-N2)
 $CosignCertIdentityRegex = '^https://github\.com/Wayne997035/wayneblacktea/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 $CosignOidcIssuer        = 'https://token.actions.githubusercontent.com'
 
@@ -68,8 +68,9 @@ $InstallDir = Join-Path $env:LOCALAPPDATA 'wayneblacktea\bin'
 $ConfigDir  = Join-Path $env:LOCALAPPDATA 'wayneblacktea\config'
 $EnvFile    = Join-Path $ConfigDir '.env'
 
-# Binaries shipped in the cli archive (must stay in sync with .goreleaser.yaml
-# archive id "cli" `ids:` list). The MCP stdio entry point is now `wbt mcp`
+# Binaries shipped in the cli release archive — this list MUST stay in sync
+# with whatever the release process actually packages under the "cli" id.
+# The MCP stdio entry point is now `wbt mcp`
 # (Phase 2.3 of install simplification); the standalone wayneblacktea-mcp
 # binary was removed.
 $CliBinaries = @('wbt.exe', 'wbt-context.exe', 'wbt-hook.exe', 'wbt-guard.exe', 'wbt-doctor.exe')
@@ -404,8 +405,9 @@ try {
     }
 
     # Install the 5 CLI binaries (wbt, wbt-context, wbt-hook, wbt-guard,
-    # wbt-doctor). MUST stay aligned with .goreleaser.yaml archive `cli` ids
-    # list. The MCP stdio entry point is now `wbt mcp`; the standalone
+    # wbt-doctor). MUST stay aligned with whatever the release process
+    # packages under the "cli" archive id. The MCP stdio entry point is now
+    # `wbt mcp`; the standalone
     # wayneblacktea-mcp binary was removed in Phase 2.3.
     foreach ($exe in $CliBinaries) {
         $src = Join-Path $extractDir $exe

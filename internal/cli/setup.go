@@ -1,6 +1,6 @@
 // setup.go implements `wbt setup`, the one-command install entry point.
-// The 9-step orchestration is documented in design-specs/setup-flow.md
-// (SA spec acfe9d7f1fbca1a54). Each step is a separate function so future
+// The 9-step orchestration follows a fixed, documented order (SA spec
+// acfe9d7f1fbca1a54). Each step is a separate function so future
 // flags (--dry-run, --no-mcp, etc.) can be inserted without restructuring.
 
 package cli

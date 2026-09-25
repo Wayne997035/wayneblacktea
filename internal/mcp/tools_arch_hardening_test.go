@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -20,10 +21,10 @@ import (
 // the raw, unwrapped snapshot straight back — Summary included — even though
 // get_project_arch's response had been fenced/neutralised since PR #156.
 //
-// slug's write-time gate is a character allow-list (`^[a-zA-Z0-9_\-]+$`,
-// shared with tools_status.go's statusSlugRe), not a control-char rejection —
-// it is strictly narrower, and doubles as the fix for tools_status.go:43's
-// comment, which claimed that allow-list already existed here before it did.
+// slug's write-time gate is a character allow-list — since [F0925-29] the
+// workspace repo name rule (validator.ValidRepoPathMax, shared with
+// generate_project_status), not a control-char rejection; it is strictly
+// narrower.
 
 // --- M-R6 write: control characters rejected --------------------------------
 
@@ -92,25 +93,27 @@ func TestHandleUpsertProjectArch_SlugControlCharsRejected(t *testing.T) {
 }
 
 // TestHandleUpsertProjectArch_SlugAllowlistRejectsNonAlnum pins the R4
-// round-3 upgrade from a control-char check to a full character allow-list
-// (`^[a-zA-Z0-9_\-]+$`, shared with tools_status.go's statusSlugRe): slashes,
-// dots and spaces are not control characters but are still outside the
-// allow-list, and each is individually injection-relevant (a boundary marker
-// like "=== END PROJECT ARCH ===" needs the space and "=" characters this
-// allow-list excludes). The error message must name the pattern so a caller
-// can self-correct.
+// round-3 upgrade from a control-char check to a full character allow-list,
+// now the workspace repo name rule ([F0925-29]): empty segments, leading dots
+// and spaces are not control characters but are still outside the rule (a
+// boundary marker like "=== END PROJECT ARCH ===" needs the space and "="
+// characters the rule excludes). The error message must state the rule so a
+// caller can self-correct.
 //
 // MUTATION (manually verified, not shipped as code): reverting
-// validateArchSlug's `!statusSlugRe.MatchString(slug)` check back to
-// checkCommandField makes every subtest here fail.
+// validateArchSlug's ValidRepoPathMax check back to checkCommandField makes
+// every subtest here fail.
 func TestHandleUpsertProjectArch_SlugAllowlistRejectsNonAlnum(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		slug string
 	}{
-		{"slash_org_repo", "org/repo"},
-		{"dot", "repo.name"},
+		// [F0925-29] The slug now follows the workspace repo name rule, so
+		// "org/repo" and "repo.name" are accepted (see
+		// TestArchAndStatusSlug_AcceptRepoPaths); these stay rejected.
+		{"empty_segment", "org//repo"},
+		{"leading_dot", ".repo"},
 		{"space", "repo name"},
 	}
 	for _, tc := range tests {
@@ -126,8 +129,8 @@ func TestHandleUpsertProjectArch_SlugAllowlistRejectsNonAlnum(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected TextContent, got %T", result.Content[0])
 			}
-			if !strings.Contains(text.Text, "^[a-zA-Z0-9_-]+$") {
-				t.Errorf("error message does not name the allow-list pattern: %q", text.Text)
+			if !strings.Contains(text.Text, validator.RepoPathSegmentRule) {
+				t.Errorf("error message does not state the slug rule: %q", text.Text)
 			}
 			if store.upserted != nil {
 				t.Errorf("store must not be called when slug fails the allow-list, got %+v", store.upserted)

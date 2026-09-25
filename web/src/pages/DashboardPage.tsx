@@ -73,7 +73,7 @@ export function DashboardPage() {
         <div
           className="rounded-md p-3 mb-6 text-body-sm flex items-center justify-between"
           style={{
-            background: '#2e0a0a',
+            background: 'var(--color-error-bg)', // [F0925-25]
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}

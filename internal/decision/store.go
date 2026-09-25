@@ -9,6 +9,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -45,6 +46,10 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 	}
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("log_decision: repo_name %w", err)
+	}
+	// [F0925-29] Workspace repo name rule; empty stays allowed (optional column).
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("log_decision: %w", validator.ErrInvalidRepoName)
 	}
 	if err := sanitize.ValidateNoTagNoise(p.Rationale); err != nil {
 		return nil, fmt.Errorf("log_decision: rationale %w", err)

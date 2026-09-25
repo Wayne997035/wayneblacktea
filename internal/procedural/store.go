@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -126,6 +127,11 @@ func (s *Store) Add(ctx context.Context, p AddParams) (*ProceduralMemory, error)
 	// legitimate write.
 	if err := sanitize.ValidateNoTagNoise(p.RepoName); err != nil {
 		return nil, fmt.Errorf("record_procedure: repo_name %w", err)
+	}
+	// [F0925-29] Workspace repo name rule; empty stays allowed (column
+	// defaults to '').
+	if !validator.IsValidRepoName(p.RepoName) {
+		return nil, fmt.Errorf("record_procedure: %w", validator.ErrInvalidRepoName)
 	}
 	id := uuid.New()
 	tools := jsonArray(p.ToolsUsed)

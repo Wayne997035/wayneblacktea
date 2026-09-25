@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wayne997035/wayneblacktea/internal/validator"
+	"github.com/Wayne997035/wayneblacktea/internal/gitremote"
 	"github.com/joho/godotenv"
 )
 
@@ -66,7 +66,7 @@ func RunPostMergeLocal(args []string) error {
 	}
 
 	// A post-merge hook MUST NOT print to stderr (git surfaces it mid-merge),
-	// so redirect slog to a tmp file BEFORE any parsing. (backend-security-design.md §5.1)
+	// so redirect slog to a tmp file BEFORE any parsing.
 	InitHookSlog("wbt-post-merge")
 
 	fs := flag.NewFlagSet("post-merge-local", flag.ContinueOnError)
@@ -130,7 +130,7 @@ func extractPostMergeInfo(repoRoot string) (postMergeInfo, error) {
 	if err != nil {
 		return postMergeInfo{}, err
 	}
-	repo := deriveRepoSlug(gitRemoteOrigin(repoRoot))
+	repo := gitremote.DeriveGitHubSlug(gitRemoteOrigin(repoRoot))
 	prNum := extractPRNumber(subject)
 	url := buildGitHubPRURL(repo, prNum)
 	head := gitMergedBranch(repoRoot)
@@ -210,31 +210,6 @@ func runGit(repoRoot string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return buf.String(), nil
-}
-
-// deriveRepoSlug normalizes a GitHub remote URL to "owner/repo". Non-github.com
-// remotes (GitLab, Bitbucket, etc.) return "" — out of scope for PR reconcile.
-func deriveRepoSlug(originURL string) string {
-	u := strings.TrimSpace(originURL)
-	if u == "" {
-		return ""
-	}
-	var path string
-	switch {
-	case strings.HasPrefix(u, "https://github.com/"):
-		path = strings.TrimPrefix(u, "https://github.com/")
-	case strings.HasPrefix(u, "git@github.com:"):
-		path = strings.TrimPrefix(u, "git@github.com:")
-	case strings.HasPrefix(u, "ssh://git@github.com/"):
-		path = strings.TrimPrefix(u, "ssh://git@github.com/")
-	default:
-		return ""
-	}
-	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
-	if validator.RepoSlugRe.MatchString(path) {
-		return path
-	}
-	return ""
 }
 
 // extractPRNumber returns the digits of the trailing "(#N)" marker, or "".

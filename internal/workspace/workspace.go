@@ -10,7 +10,7 @@ var (
 // UpsertRepoParams holds parameters for creating or updating a repo entry.
 //
 // Path, Description, Language, CurrentBranch, NextPlannedStep are
-// presence-aware (Ω6, 2026-08-20-mcp-surface-spec.md): nil preserves the
+// presence-aware: nil preserves the
 // stored value; a non-nil pointer — even to "" — explicitly replaces it,
 // matching upsert_project_arch.summary/file_map's established convention.
 // Previously these were plain strings and every field a caller didn't
@@ -23,4 +23,8 @@ type UpsertRepoParams struct {
 	CurrentBranch   *string
 	KnownIssues     []string // nil → preserve; non-nil (incl. empty slice) → replace
 	NextPlannedStep *string
+	// GitHubSlug is the repo's owner/repo on GitHub ([F0925-31]); same
+	// presence semantics as the fields above. A non-empty value must pass
+	// validator.ValidGitHubSlug.
+	GitHubSlug *string
 }

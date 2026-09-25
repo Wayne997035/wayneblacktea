@@ -19,11 +19,11 @@ RUN npm run test
 RUN npm run build
 
 # Stage 2: Build the Go binary (with embedded frontend)
-FROM golang:1.26.4-alpine AS builder
+FROM golang:1.26.8-alpine AS builder
 
 # Build identity for internal/buildinfo (GTD 61838147 — the MCP server's
 # serverInfo.version and the wayneblacktea://system/build-info resource read
-# these at runtime). Defaults are the SAME sentinels internal/buildinfo.go
+# these at runtime). Defaults are the SAME sentinels internal/buildinfo/buildinfo.go
 # itself defaults to, so `docker build .` with no --build-arg produces an
 # identical, obviously-unreleased binary — verified: an unmodified `docker
 # build` here embeds "dev"/"none"/"unknown", never a value that could pass

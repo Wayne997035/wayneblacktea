@@ -12,7 +12,7 @@ import (
 
 func openKnowledgeStore(t *testing.T, dsn, workspaceID string) *sqlite.KnowledgeStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), dsn, workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), dsn, workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -21,6 +21,7 @@ func openKnowledgeStore(t *testing.T, dsn, workspaceID string) *sqlite.Knowledge
 }
 
 func TestKnowledgeStore_AddListGetRoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	item, err := s.AddItem(context.Background(), knowledge.AddItemParams{
 		Type:          "article",
@@ -49,6 +50,7 @@ func TestKnowledgeStore_AddListGetRoundTrip(t *testing.T) {
 }
 
 func TestKnowledgeStore_NullOptionalFieldsAndDefaults(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	item, err := s.AddItem(context.Background(), knowledge.AddItemParams{
 		Type: "til", Title: "Minimal", Content: "",
@@ -62,6 +64,7 @@ func TestKnowledgeStore_NullOptionalFieldsAndDefaults(t *testing.T) {
 }
 
 func TestKnowledgeStore_EmptyTable(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	rows, err := s.List(context.Background(), 10, 0)
 	if err != nil {
@@ -84,6 +87,7 @@ func TestKnowledgeStore_EmptyTable(t *testing.T) {
 }
 
 func TestKnowledgeStore_SearchOrdering(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	// Renamed from LIKESearchOrdering: now uses FTS5; both items must be found.
 	// Strict first-result ordering is not asserted because FTS5 BM25 + Ebbinghaus
 	// re-sort is non-deterministic when items are created with identical decay
@@ -115,6 +119,7 @@ func TestKnowledgeStore_SearchOrdering(t *testing.T) {
 }
 
 func TestKnowledgeStore_SearchFTS5(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	s := openKnowledgeStore(t, ":memory:", "")
 
@@ -188,6 +193,7 @@ func TestKnowledgeStore_SearchFTS5(t *testing.T) {
 }
 
 func TestKnowledgeStore_SearchCoarseFTS5(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	s := openKnowledgeStore(t, ":memory:", "")
 
@@ -235,6 +241,7 @@ func TestKnowledgeStore_SearchCoarseFTS5(t *testing.T) {
 }
 
 func TestKnowledgeStore_URLDuplicate(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	params := knowledge.AddItemParams{
 		Type: "bookmark", Title: "First", Content: "", URL: "https://example.com/dup",
@@ -251,6 +258,7 @@ func TestKnowledgeStore_URLDuplicate(t *testing.T) {
 }
 
 func TestKnowledgeStore_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:knowledge-" + uuid.New().String() + "?mode=memory&cache=shared"
 	storeA := openKnowledgeStore(t, dsn, wsA)
@@ -289,6 +297,7 @@ func TestKnowledgeStore_WorkspaceIsolation(t *testing.T) {
 }
 
 func TestKnowledgeStore_ContextCanceled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -299,6 +308,7 @@ func TestKnowledgeStore_ContextCanceled(t *testing.T) {
 }
 
 func TestKnowledgeStore_UpdateLearningValue(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -334,9 +344,9 @@ func TestKnowledgeStore_UpdateLearningValue(t *testing.T) {
 // Search, the mutating counterpart, is exercised in the same test as a
 // contrast: it DOES bump recall, proving the assertions below aren't
 // vacuously true. Mirrors
-// internal/knowledge/store_search_readonly_pg_test.go (PG+SQLite parity,
-// backend-security-design.md §6.5).
+// internal/knowledge/store_search_readonly_pg_test.go (PG+SQLite parity).
 func TestKnowledgeStore_SearchReadOnlyDoesNotBumpRecall(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	s := openKnowledgeStore(t, ":memory:", "")
 

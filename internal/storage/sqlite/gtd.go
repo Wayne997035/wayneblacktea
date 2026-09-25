@@ -49,7 +49,7 @@ var _ gtd.StoreIface = (*GTDStore)(nil)
 
 const tasksSelectCols = `id, workspace_id, project_id, title, description, status,
 	priority, importance, context, assignee, due_date, artifact,
-	created_at, updated_at, kind, branch_name, pr_url, commit_shas`
+	created_at, updated_at, kind, branch_name, pr_url, commit_shas, area`
 
 // scanTask reads a row in tasksSelectCols order into db.Task, converting
 // SQLite TEXT columns to the pgtype values the Postgres stores already use.
@@ -64,11 +64,12 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		kindStr                                                                string
 		branchNameNS, prURLNS                                                  sql.NullString
 		commitSHAsStr                                                          sql.NullString
+		areaStr                                                                string
 	)
 
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &t.Title, &descNS, &statusStr,
 		&t.Priority, &importanceNI, &contextNS, &assigneeNS, &dueDateNS, &artifactNS,
-		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr)
+		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr, &areaStr)
 	if err != nil {
 		return db.Task{}, err
 	}
@@ -104,6 +105,7 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 			t.CommitSHAs = shas
 		}
 	}
+	t.Area = areaStr
 	return t, nil
 }
 
@@ -429,6 +431,11 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 // MUST import into a fresh database, never re-import into one that already
 // has the row.
 func (s *GTDStore) ImportProject(ctx context.Context, p db.Project) error {
+	// [F0925-29] qa-seed is an automatic writer: a production repo_name that
+	// breaks the workspace repo name rule is imported as NULL.
+	if p.RepoName.Valid && !validator.IsValidRepoName(p.RepoName.String) {
+		p.RepoName = pgtype.Text{}
+	}
 	const q = `INSERT INTO projects
 		(id, workspace_id, goal_id, name, title, description, status, area, priority, repo_name, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
@@ -486,11 +493,15 @@ func (s *GTDStore) ImportTask(ctx context.Context, t db.Task) error {
 	if len(t.Checklist) > 0 {
 		checklistJSON = string(t.Checklist)
 	}
+	area := t.Area
+	if area == "" {
+		area = "unsorted"
+	}
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, status, priority, importance,
 		 context, assignee, due_date, artifact, kind, branch_name, pr_url, commit_shas,
-		 checklist, vision_item_id, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)`
+		 checklist, vision_item_id, created_at, updated_at, area)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		t.ID.String(), pgUUIDToNullString(t.WorkspaceID), pgUUIDToNullString(t.ProjectID),
 		t.Title, pgTextToNullString(t.Description), t.Status, t.Priority, importance,
@@ -498,7 +509,7 @@ func (s *GTDStore) ImportTask(ctx context.Context, t db.Task) error {
 		pgTimestamptzToNullString(t.DueDate), pgTextToNullString(t.Artifact),
 		kind, pgTextToNullString(t.BranchName), pgTextToNullString(t.PRUrl), commitSHAsJSON,
 		checklistJSON, pgUUIDToNullString(t.VisionItemID),
-		pgTimestamptzToString(t.CreatedAt), pgTimestamptzToString(t.UpdatedAt))
+		pgTimestamptzToString(t.CreatedAt), pgTimestamptzToString(t.UpdatedAt), area)
 	if err != nil {
 		return errWrap("ImportTask", err)
 	}
@@ -1126,8 +1137,8 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 }
 
 // CompleteTask marks a task completed and records the optional artifact URL.
-// CompleteTask marks a task completed. artifact is presence-aware (Ω4,
-// 2026-08-20-mcp-surface-spec.md): nil preserves whatever is already stored
+// CompleteTask marks a task completed. artifact is presence-aware: nil
+// preserves whatever is already stored
 // (COALESCE), matching the Postgres-side fix and upsert_project_arch's
 // established summary/file_map convention. Without COALESCE here,
 // re-completing a reopened task without re-supplying artifact silently
@@ -1314,10 +1325,11 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 	// gtd.go above) — never from a request/tool argument; the only bound
 	// value here is deletionID via ?1.
 	if _, err := tx.ExecContext(ctx, sqliteProjectRestoreInsertQ, deletionID); err != nil {
-		if isUniqueViolationSQLite(err) {
-			return nil, 0, gtd.ErrConflict
-		}
-		return nil, 0, errWrap("RestoreProject insert project", err)
+		return nil, 0, mapRestoreInsertErrSQLite(err, "RestoreProject insert project")
+	}
+
+	if err := clearInvalidRestoredRepoNameSQLite(ctx, tx, id); err != nil {
+		return nil, 0, err
 	}
 
 	//nolint:unqueryvet // sqliteTaskRestoreInsertQ: same rationale as
@@ -1325,10 +1337,7 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 	// sqliteTaskRestoreColumns, a hardcoded Go string slice).
 	res, err := tx.ExecContext(ctx, sqliteTaskRestoreInsertQ, deletionID)
 	if err != nil {
-		if isUniqueViolationSQLite(err) {
-			return nil, 0, gtd.ErrConflict
-		}
-		return nil, 0, errWrap("RestoreProject insert tasks", err)
+		return nil, 0, mapRestoreInsertErrSQLite(err, "RestoreProject insert tasks")
 	}
 	tasksRestoredI64, err := res.RowsAffected()
 	if err != nil {
@@ -1366,6 +1375,38 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 		return nil, 0, errWrap("RestoreProject commit", err)
 	}
 	return &restored, tasksRestored, nil
+}
+
+// mapRestoreInsertErrSQLite maps a RestoreProject INSERT error to
+// gtd.ErrConflict (unique-constraint violation) or a wrapped error — shared
+// by both the project and task INSERT call sites. Extracted only to bring
+// RestoreProject's cyclomatic complexity back under the gocyclo threshold;
+// the conflict detection and error wrapping are unchanged.
+func mapRestoreInsertErrSQLite(err error, wrapMsg string) error {
+	if isUniqueViolationSQLite(err) {
+		return gtd.ErrConflict
+	}
+	return errWrap(wrapMsg, err)
+}
+
+// clearInvalidRestoredRepoNameSQLite is RestoreProject's [F0925-30] step —
+// the SQLite twin of gtd.Store's clearInvalidRestoredRepoName, extracted for
+// the same reason: bring RestoreProject's cyclomatic complexity back under
+// the gocyclo threshold without changing behaviour. Same repo_name clean-up
+// as the Postgres store: a restored value breaking the workspace repo name
+// rule is cleared to NULL, NULL stays NULL, and the restore still succeeds.
+// Runs on the same *sql.Tx as the rest of RestoreProject.
+func clearInvalidRestoredRepoNameSQLite(ctx context.Context, tx *sql.Tx, id uuid.UUID) error {
+	var restoredRepo sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT repo_name FROM projects WHERE id = ?1`, id.String()).Scan(&restoredRepo); err != nil {
+		return errWrap("RestoreProject read repo_name", err)
+	}
+	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET repo_name = NULL WHERE id = ?1`, id.String()); err != nil {
+			return errWrap("RestoreProject clear repo_name", err)
+		}
+	}
+	return nil
 }
 
 // PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
@@ -1852,6 +1893,12 @@ func (s *GTDStore) UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoa
 // (empty string clears to NULL). Two query branches avoid a gap in parameter
 // positions that would confuse SQLite's positional binding.
 func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.UpdateProjectParams) (*db.Project, error) {
+	// [F0925-29] Store-layer backstop, symmetric with the Postgres store's
+	// UpdateProject: ErrInvalidRepoName's contract covers CreateProject AND
+	// UpdateProject on both backends, and this side was missing the check.
+	if p.RepoName != nil && !validator.IsValidRepoName(*p.RepoName) {
+		return nil, fmt.Errorf("updating project %s: %w", id, gtd.ErrInvalidRepoName)
+	}
 	area := p.Area
 	if area == "" {
 		area = defaultProjectArea

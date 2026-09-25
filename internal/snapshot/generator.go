@@ -176,8 +176,8 @@ func (g *Generator) Generate(
 // through escapeUntrusted() to neutralise an embedded "[END UNTRUSTED]"
 // literal that would otherwise close the boundary block early and inject
 // instructions into the trusted zone (security audit C-2 / M-2).
-// The slug is gated by the MCP handler (statusSlugRe) so it cannot contain
-// boundary characters; we still keep it OUTSIDE the [BEGIN UNTRUSTED] block
+// The slug is gated by the MCP handler (validator.ValidRepoPathMax, which
+// admits no '=', '[' or whitespace) so it cannot contain boundary markers; we still keep it OUTSIDE the [BEGIN UNTRUSTED] block
 // because it is a system-controlled identifier, not user-authored content.
 func buildSnapshotPrompt(
 	slug string,

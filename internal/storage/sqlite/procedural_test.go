@@ -12,7 +12,7 @@ import (
 
 func openProceduralDB(t *testing.T) *wbtsqlite.DB {
 	t.Helper()
-	db, err := wbtsqlite.Open(context.Background(), ":memory:", "")
+	db, err := wbtsqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -21,6 +21,7 @@ func openProceduralDB(t *testing.T) *wbtsqlite.DB {
 }
 
 func TestSQLiteProceduralStore_Add(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openProceduralDB(t)
 	store := wbtsqlite.NewProceduralStore(db)
 	ctx := context.Background()
@@ -86,6 +87,7 @@ func TestSQLiteProceduralStore_Add(t *testing.T) {
 }
 
 func TestSQLiteProceduralStore_Query(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openProceduralDB(t)
 	store := wbtsqlite.NewProceduralStore(db)
 	ctx := context.Background()
@@ -151,6 +153,7 @@ func TestSQLiteProceduralStore_Query(t *testing.T) {
 }
 
 func TestSQLiteProceduralStore_MarkUsed(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	db := openProceduralDB(t)
 	store := wbtsqlite.NewProceduralStore(db)
 	ctx := context.Background()

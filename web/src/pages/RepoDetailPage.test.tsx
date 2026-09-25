@@ -142,6 +142,32 @@ describe('RepoDetailPage', () => {
     await waitFor(() => expect(screen.getByText('Failed to load')).toBeInTheDocument())
   })
 
+  // [F0925-22] task.artifact must be guarded through safeHref before it can
+  // become a clickable href.
+  it('renders no link for a completed task with a non-allowlisted artifact scheme', async () => {
+    apiFetchMock.mockResolvedValueOnce({
+      ...baseOverview,
+      completed_tasks: [
+        { id: 't3', title: 'Dangerous artifact', completed_at: '2026-04-15T10:00:00Z', artifact: 'javascript:alert(1)' },
+      ],
+    })
+    renderPage('r1')
+    await waitFor(() => expect(screen.getByText('Dangerous artifact')).toBeInTheDocument())
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('renders a working artifact link when the scheme is allowlisted', async () => {
+    apiFetchMock.mockResolvedValueOnce({
+      ...baseOverview,
+      completed_tasks: [
+        { id: 't4', title: 'Safe artifact', completed_at: '2026-04-15T10:00:00Z', artifact: 'https://github.com/x/y/pull/1' },
+      ],
+    })
+    renderPage('r1')
+    await waitFor(() => expect(screen.getByText('Safe artifact')).toBeInTheDocument())
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/x/y/pull/1')
+  })
+
   it('renders empty-state messages when sections are empty', async () => {
     apiFetchMock.mockResolvedValueOnce({
       ...baseOverview,

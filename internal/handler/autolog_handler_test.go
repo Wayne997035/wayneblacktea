@@ -1123,7 +1123,7 @@ func TestAutoCreateTaskFromClassifier_AutoAccept_HighConfidence(t *testing.T) {
 // into tasks.title verbatim. A prompt-injected classifier may echo a leaked
 // credential from the activity notes back into `task_title`; without
 // redact.ForLLM applied to the title BEFORE gtd.CreateTask, the raw token
-// lands on disk in plaintext (backend-security-design.md §3.1).
+// lands on disk in plaintext.
 //
 // Scenario: classifier returns a high-confidence task verdict whose title
 // contains a 40-char fake GitHub PAT. The handler MUST materialise a task

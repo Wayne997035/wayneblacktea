@@ -18,8 +18,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// U13 Phase B — boundary-marker neutralisation for tools_atom.go
-// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// U13 Phase B — boundary-marker neutralisation for tools_atom.go.
 // ---------------------------------------------------------------------------
 
 // atomContentMaxRunes bounds Atom.Content at read time — U13. Mirrors
@@ -216,7 +215,7 @@ func atomizeAndPersist(
 	text string,
 ) {
 	// Scrub credentials from skill text before sending to the Haiku API
-	// (backend-security-design.md §3.1 — raw LLM tool input redaction).
+	// (raw LLM tool input must go through redaction before use/persist).
 	text = redact.ForLLM(text)
 	result, err := atomizer.Atomize(ctx, text)
 	if errors.Is(err, ai.ErrEmptyAtomizeResponse) {

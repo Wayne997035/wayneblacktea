@@ -16,8 +16,8 @@ import (
 // MCP length caps for add_vision_item — mirror the HTTP boundary
 // (internal/handler/vision_handler.go:45-66) exactly. The MCP path had no
 // caps at all before this change (unbounded write), which is the reverse of
-// the usual "MCP is stricter than HTTP" framing for this repo — see
-// backend-security-design.md §2.
+// the usual "MCP is stricter than HTTP" framing for this repo — LLM tool
+// input is adversarial and must be bounded regardless of transport.
 const (
 	mcpVisionMaxTitleRunes      = 255
 	mcpVisionMaxWhyBlockedRunes = 2000
@@ -25,8 +25,8 @@ const (
 
 // visionParentInitiativeMaxRunes / visionContextMDMaxRunes are read-time
 // bounds for the two vision.VisionItem free-text fields that have no
-// write-time cap of their own (unlike Title/WhyBlocked above) — U13
-// (2026-08-20-mcp-surface-spec.md). Generous read-time-only backstop
+// write-time cap of their own (unlike Title/WhyBlocked above) — U13.
+// Generous read-time-only backstop
 // against marker-stuffing, same rationale as decisionBodyMaxRunes
 // (tools_decision.go).
 //
@@ -200,6 +200,9 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 		}
 	}
 
+	if errResult := repoNameArgError(stringArg(args, "repo_name")); errResult != nil {
+		return errResult, nil
+	}
 	p := vision.AddVisionParams{
 		Title:            title,
 		WhyBlocked:       whyBlocked,

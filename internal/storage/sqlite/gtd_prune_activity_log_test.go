@@ -37,8 +37,9 @@ func countActivityLogRows(t *testing.T, d *sqlite.DB, action string) int {
 // TestGTDStore_PruneOlderThan_ActivityLog_Expired verifies that a row older
 // than the cutoff is deleted.
 func TestGTDStore_PruneOlderThan_ActivityLog_Expired(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
-	d, err := sqlite.Open(ctx, ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, ctx, ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -66,8 +67,9 @@ func TestGTDStore_PruneOlderThan_ActivityLog_Expired(t *testing.T) {
 // TestGTDStore_PruneOlderThan_ActivityLog_NotExpired verifies that a row
 // younger than the cutoff is NOT deleted.
 func TestGTDStore_PruneOlderThan_ActivityLog_NotExpired(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
-	d, err := sqlite.Open(ctx, ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, ctx, ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -96,8 +98,9 @@ func TestGTDStore_PruneOlderThan_ActivityLog_NotExpired(t *testing.T) {
 // comparison is strict-less-than: a row exactly at the cutoff survives, a
 // row 1 second before the cutoff is deleted.
 func TestGTDStore_PruneOlderThan_ActivityLog_Boundary(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
-	d, err := sqlite.Open(ctx, ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, ctx, ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/guard"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 )
 
 // maxStdinBytes caps stdin reads. PreToolUse payloads can include full file
@@ -162,8 +163,7 @@ func run() error {
 
 	pool, _ := guard.OpenPool(ctx, dbURL)
 
-	// Derive repo name from cwd directory name.
-	repoName := filepath.Base(cwd)
+	repoName := repoNameFromCwd(cwd)
 
 	// Step 7: Check for active bypass.
 	store := guard.NewStore(pool)
@@ -223,4 +223,12 @@ func extractFilePath(raw json.RawMessage) string {
 		return ""
 	}
 	return m.FilePath
+}
+
+// repoNameFromCwd derives the guard_events repo name from the cwd directory
+// name. [F0925-29] wbt-guard is an automatic writer: a basename breaking the
+// workspace repo name rule (e.g. ".claude") is stored empty and the event is
+// still written.
+func repoNameFromCwd(cwd string) string {
+	return validator.RepoNameOrEmpty(filepath.Base(cwd))
 }

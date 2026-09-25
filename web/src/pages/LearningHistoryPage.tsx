@@ -67,12 +67,13 @@ function heatLevel(count: number): 0 | 1 | 2 | 3 | 4 {
   return 4
 }
 
+// [F0925-25]
 const HEAT_COLORS: Record<0 | 1 | 2 | 3 | 4, string> = {
   0: 'var(--color-bg-hover)',
-  1: '#1b4332',
-  2: '#2d6a4f',
-  3: '#40916c',
-  4: '#52b788',
+  1: 'var(--color-heat-b1)',
+  2: 'var(--color-heat-b2)',
+  3: 'var(--color-heat-b3)',
+  4: 'var(--color-heat-b4)',
 }
 
 // ----- Status badge -----
@@ -409,7 +410,7 @@ export function LearningHistoryPage() {
         <div
           className="rounded-md p-3 text-body-sm"
           style={{
-            background: '#2e0a0a',
+            background: 'var(--color-error-bg)', // [F0925-25]
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}

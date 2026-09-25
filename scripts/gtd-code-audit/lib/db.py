@@ -2,9 +2,9 @@
 
 This module issues SELECT only — there is no UPDATE/DELETE path anywhere in
 this package, by design (Lead's mandate: the audit script never closes a
-ticket, only triages). Credential handling follows
-backend-security-design.md §4: env var first, `.env.local` fallback, and the
-fallback file's permissions are checked (§4.1) before use.
+ticket, only triages). Credential handling follows the env-over-file
+convention: env var first, `.env.local` fallback, and the fallback file's
+permissions are checked before use.
 
 CLI-supplied `status` and `ids` are validated against explicit allowlists
 (§5.2) before being spliced into the SQL text — they are operator-provided
@@ -71,7 +71,7 @@ def _resolve_credentials(env_local: Path) -> tuple[str, str]:
     if not dsn or not sslrootcert:
         raise RuntimeError(
             "缺 DATABASE_URL 或 PGSSLROOTCERT(process env 和 "
-            f"{env_local} 都沒有) —— 見 wayneblacktea/CLAUDE.md 的 psql 連線段")
+            f"{env_local} 都沒有) —— 請設定 Postgres 連線所需的兩個環境變數")
     return dsn, sslrootcert
 
 

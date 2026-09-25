@@ -54,7 +54,7 @@ var errFakeRowScan = errors.New("fakeErrRow: no real row")
 // (table-driven, not t.Parallel) but must not share state across subtests.
 func openParitySessionStore(t *testing.T) *sqlite.SessionStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -64,7 +64,7 @@ func openParitySessionStore(t *testing.T) *sqlite.SessionStore {
 
 func openParityDecisionStore(t *testing.T) (*sqlite.DB, *sqlite.DecisionStore) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", "")
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "") // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -127,6 +127,7 @@ var decisionFields = []struct {
 // the same fields, in the same order, that their pgx counterparts already
 // do (internal/session/store.go:68-76, internal/decision/store.go:43-60).
 func TestTagNoiseParity(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	t.Run("session", func(t *testing.T) {
 		for _, f := range sessionFields {
 			t.Run(f.name, func(t *testing.T) {
@@ -220,6 +221,7 @@ func TestTagNoiseParity(t *testing.T) {
 // become "validate every field" — F0911-04 guards exactly the 6 named
 // fields, on purpose.
 func TestTagNoiseParity_ActorSessionIDNotValidated(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	p := cleanLogParams()
 	p.ActorSessionID = "sess</invoke>"
 
@@ -264,6 +266,7 @@ func TestTagNoiseParity_ActorSessionIDNotValidated(t *testing.T) {
 // shared baseline that both sqlite.DecisionStore.Log and .LogTx are
 // compared against.
 func TestTagNoiseParity_MessagesMatchAcrossBackends(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	for _, f := range decisionFields {
 		t.Run(f.name, func(t *testing.T) {
 			p := cleanLogParams()

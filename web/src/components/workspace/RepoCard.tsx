@@ -8,10 +8,11 @@ interface RepoCardProps {
   repo: Repo;
 }
 
+// [F0925-25]
 const languageColors: Record<string, { bg: string; color: string }> = {
-  Go:         { bg: '#00ADD8', color: '#fff' },
-  TypeScript: { bg: '#3178C6', color: '#fff' },
-  Java:       { bg: '#B07219', color: '#fff' },
+  Go:         { bg: 'var(--color-lang-go)',         color: 'var(--color-white)' },
+  TypeScript: { bg: 'var(--color-lang-typescript)', color: 'var(--color-white)' },
+  Java:       { bg: 'var(--color-lang-java)',        color: 'var(--color-white)' },
 }
 
 function LanguageBadge({ language }: { language: string | null | undefined }) {

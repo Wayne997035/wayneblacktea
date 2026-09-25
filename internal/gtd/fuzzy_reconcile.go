@@ -167,7 +167,13 @@ func jaccard(a, b map[string]struct{}) float64 {
 // silently skipped here even if they appear in the input slice — this lets
 // the caller pass `store.Tasks(ctx, nil)` directly without pre-filtering
 // and the fuzzy matcher just does the right thing.
-func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
+//
+// [F0925-31] resolve excludes at the (task, PR) pair level: a task whose repo
+// is known skips only PRs from another repo (strings.EqualFold, same as
+// branch_name_exact) and still matches same-repo PRs in the batch. A nil
+// resolve treats every task's repo as unknown and excludes nothing — fuzzy
+// hits only become candidates, never auto-closes.
+func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task, resolve RepoResolver) []FuzzyMatch {
 	if len(prs) == 0 || len(tasks) == 0 {
 		return nil
 	}
@@ -183,66 +189,61 @@ func MatchPendingTasksFuzzy(prs []MergedPR, tasks []db.Task) []FuzzyMatch {
 		if !isFuzzyEligible(t) {
 			continue
 		}
-		taskTok := tokenise(t.Title)
-		var best FuzzyMatch
-		bestScore := 0.0
-		bestFound := false
-		taskIDStr := t.ID.String()
-
-		forcedMatched := false
-		for i, pr := range prs {
-			// Rule 1: task UUID literally appears in body. The first such PR
-			// wins for this task (subsequent PRs with the same UUID-in-body
-			// would be the same hit; candidate uniqueness key (task_id, reason)
-			// dedups at write time). break the inner PR loop, then continue
-			// the outer task loop — earlier revisions `return`-ed here, which
-			// aborted evaluation of every subsequent task in the batch.
-			if pr.Body != "" && strings.Contains(pr.Body, taskIDStr) {
-				out = appendForcedMatch(out, t.ID, pr.URL, 1.0, FuzzyReasonTaskIDInBody)
-				forcedMatched = true
-				break
-			}
-
-			// Rule 2: Jaccard title similarity.
-			score := jaccard(taskTok, prTokens[i])
-			if score >= matchThreshold && score > bestScore {
-				bestScore = score
-				best = FuzzyMatch{
-					TaskID: t.ID,
-					PRURL:  pr.URL,
-					Score:  score,
-					Reason: FuzzyReasonJaccardTitle,
-				}
-				bestFound = true
-			}
-		}
-		if forcedMatched {
-			// UUID-in-body rule wins; skip Jaccard for this task.
-			continue
-		}
-		if bestFound {
-			out = append(out, best)
+		if m, ok := bestFuzzyMatchForTask(t, prs, prTokens, resolve); ok {
+			out = append(out, m)
 		}
 	}
 	return out
 }
 
-// appendForcedMatch appends a UUID-in-body (rule 1) hit to out and returns
-// the resulting slice. Single call site in MatchPendingTasksFuzzy — extracted
-// only to keep the inner PR loop tidy.
-func appendForcedMatch(
-	out []FuzzyMatch,
-	taskID uuid.UUID,
-	prURL string,
-	score float64,
-	reason string,
-) []FuzzyMatch {
-	return append(out, FuzzyMatch{
-		TaskID: taskID,
-		PRURL:  prURL,
-		Score:  score,
-		Reason: reason,
-	})
+// bestFuzzyMatchForTask evaluates a single task against every PR in prs and
+// returns its match, if any — extracted only to bring MatchPendingTasksFuzzy's
+// cyclomatic complexity back under the gocyclo threshold; the two rules and
+// their precedence are unchanged from the original single-loop version:
+//
+//  1. task UUID literally appears in a PR body — the first such PR wins for
+//     this task (subsequent PRs with the same UUID-in-body would be the same
+//     hit; candidate uniqueness key (task_id, reason) dedups at write time)
+//     and short-circuits rule 2 entirely, matching the original break+continue.
+//  2. else, the highest-scoring PR at or above matchThreshold by Jaccard
+//     title similarity.
+func bestFuzzyMatchForTask(
+	t db.Task, prs []MergedPR, prTokens []map[string]struct{}, resolve RepoResolver,
+) (FuzzyMatch, bool) {
+	taskTok := tokenise(t.Title)
+	taskIDStr := t.ID.String()
+	var taskRepo string
+	repoKnown := false
+	if resolve != nil {
+		taskRepo, repoKnown = resolve(t)
+	}
+
+	var best FuzzyMatch
+	bestScore := 0.0
+	bestFound := false
+	for i, pr := range prs {
+		if repoKnown && !sameRepo(taskRepo, pr.Repo) {
+			continue
+		}
+		// Rule 1: task UUID literally appears in body.
+		if pr.Body != "" && strings.Contains(pr.Body, taskIDStr) {
+			return FuzzyMatch{TaskID: t.ID, PRURL: pr.URL, Score: 1.0, Reason: FuzzyReasonTaskIDInBody}, true
+		}
+
+		// Rule 2: Jaccard title similarity.
+		score := jaccard(taskTok, prTokens[i])
+		if score >= matchThreshold && score > bestScore {
+			bestScore = score
+			best = FuzzyMatch{
+				TaskID: t.ID,
+				PRURL:  pr.URL,
+				Score:  score,
+				Reason: FuzzyReasonJaccardTitle,
+			}
+			bestFound = true
+		}
+	}
+	return best, bestFound
 }
 
 // isFuzzyEligible returns true when the task is pending or in_progress AND

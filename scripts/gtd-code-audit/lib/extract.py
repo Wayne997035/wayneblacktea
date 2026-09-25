@@ -48,8 +48,8 @@ TEST_NAME_RE = re.compile(r'\bTest[A-Za-z0-9_]{3,}\b')
 ACCEPT_RE = re.compile(r'acceptance[:：]', re.I)
 
 # C0 control chars minus \t/\n (already newline-safe since we operate on
-# whole fields) — strip before any downstream use, matching
-# backend-security-design.md §5.4's audit-text sanitisation pattern.
+# whole fields) — strip before any downstream use as an audit-text
+# sanitisation step.
 CONTROL_CHARS = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
 MIN_SYMBOL_LEN = 5
@@ -57,7 +57,7 @@ _SYMBOL_STOPLIST = {"e_g", "i_e", "vs_the"}
 
 # Anchor-count cap per category (DoS guard — GTD ticket description is an
 # unbounded TEXT column with no length cap at the add_task MCP tool layer
-# either; backend-security-design.md §2.1 treats this input as adversarial).
+# either; this input is treated as adversarial).
 # Every anchor that clears extraction potentially costs one `git grep`
 # subprocess call downstream in lib/rules.py (~0.12-0.13s measured locally,
 # subprocess.run + git process spin-up dominates). Without a cap, a ticket

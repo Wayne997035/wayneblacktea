@@ -38,8 +38,8 @@ func ContainsToolCallFragment(s string) bool {
 // input alongside that name would turn a validation-error message into an
 // unbounded reflection of whatever the caller sent — including anything
 // past the tag-noise fragment itself. A tight window gives enough context to
-// locate the fragment without that (backend-security-design.md §5.4 —
-// user-supplied text surfaced in a message must be length-capped).
+// locate the fragment without that — user-supplied text surfaced in a
+// message must be length-capped.
 const excerptWindowRunes = 10
 
 // findFragmentMatch returns the byte-offset range [start,end) of the

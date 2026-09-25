@@ -714,8 +714,8 @@ func TestMaybeClassifyToolCall_CreatesProposalNotTask(t *testing.T) {
 // mirroring the HTTP path in autoCreateTaskFromClassifier
 // (internal/handler/autolog_handler.go:447-448). Otherwise the MCP writer
 // would land raw credentials on disk while the HTTP writer redacts them —
-// inconsistent defence-in-depth posture for a long-lived column
-// (backend-security-design.md §3.1).
+// inconsistent defence-in-depth posture for a long-lived column (raw
+// LLM tool input must never be stored as plaintext).
 //
 // Scenario: invoke autoCaptureMCPTask directly with rationale AND argSummary
 // both containing a 40-char fake GitHub PAT. Decode the persisted payload
@@ -1027,8 +1027,8 @@ func TestAutoCaptureMCPTask_AutoAccept_HighConfidence(t *testing.T) {
 // tasks.title verbatim. A prompt-injected classifier may echo a leaked
 // credential from argSummary back into `task_title`; without redact.ForLLM
 // applied to the title BEFORE gtd.CreateTask, the raw token lands on disk in
-// plaintext. Mirror of the HTTP test in autolog_handler_test.go
-// (backend-security-design.md §3.1).
+// plaintext. Mirror of the HTTP test in autolog_handler_test.go (same
+// never-store-raw-LLM-input-as-plaintext rule).
 func TestAutoCaptureMCPTask_AutoAccept_RedactsTitleCredentials(t *testing.T) {
 	t.Parallel()
 	// 35-rune body keeps the fixture above redact.go's ghp_ {30,} match while

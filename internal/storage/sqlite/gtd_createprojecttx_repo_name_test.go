@@ -20,6 +20,7 @@ import (
 // SQLite-only backend asymmetry in the proposal-confirm flow, not a
 // transport (MCP vs HTTP) asymmetry — see the G row's dispatch note.
 func TestGTDStore_CreateProjectTx_InvalidRepoName(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -42,6 +43,7 @@ func TestGTDStore_CreateProjectTx_InvalidRepoName(t *testing.T) {
 // counterpart: a valid repo_name must still be persisted via CreateProjectTx
 // (the fix must reject bad input without breaking good input).
 func TestGTDStore_CreateProjectTx_ValidRepoName_Persists(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

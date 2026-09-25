@@ -303,7 +303,7 @@ func consolidateCluster(ctx context.Context, deps atomConsolidDeps, cl atomClust
 
 // buildConsolidationPrompt renders cluster atoms into a prompt for the Haiku
 // consolidation call. Content, keywords, and tags are credential-scrubbed before
-// sending (backend-security-design.md §3.1).
+// sending.
 func buildConsolidationPrompt(cl atomCluster) string {
 	summary := ""
 	for _, a := range cl.atoms {

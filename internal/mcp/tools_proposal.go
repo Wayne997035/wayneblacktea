@@ -66,8 +66,7 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// U13 Phase B — boundary-marker neutralisation for tools_proposal.go
-// (2026-08-20-mcp-surface-spec.md; .specs/2026-08-20-u13-inventory.md).
+// U13 Phase B — boundary-marker neutralisation for tools_proposal.go.
 // ---------------------------------------------------------------------------
 
 // proposalPayloadFieldMaxRunes bounds each individual string value found

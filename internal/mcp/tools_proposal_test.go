@@ -187,10 +187,9 @@ func TestHandleConfirmProposals_ExactlyMaxIDs_NoProposals(t *testing.T) {
 // [F981-05] mirrors internal/proposal/accept_decode_length_test.go's coverage
 // of the seam-side decoders — decodeGoalParams/decodeProjectParams (this
 // file) previously lacked the empty-title rejection both have, and
-// decodeProjectParams also lacked the priority 1-5 range check
-// (backend-security-design.md §2.1: LLM tool input is hostile; these
-// decoders run on a payload an agent controls via propose_goal/
-// propose_project).
+// decodeProjectParams also lacked the priority 1-5 range check (LLM tool
+// input is hostile; these decoders run on a payload an agent controls via
+// propose_goal/propose_project).
 
 func TestDecodeGoalParams_EmptyTitle(t *testing.T) {
 	t.Parallel()

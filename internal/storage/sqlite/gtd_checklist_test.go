@@ -14,6 +14,7 @@ import (
 // TestGTDStore_Checklist_AddItem verifies that AddChecklistItem appends a new item
 // to the task's checklist and returns the updated slice.
 func TestGTDStore_Checklist_AddItem(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := "11111111-1111-4111-8111-111111111111"
 	s := openMem(t, wsID)
 	ctx := context.Background()
@@ -55,6 +56,7 @@ func TestGTDStore_Checklist_AddItem(t *testing.T) {
 // TestGTDStore_Checklist_AddItem_TaskNotFound ensures ErrNotFound is returned
 // when the task does not exist in the workspace.
 func TestGTDStore_Checklist_AddItem_TaskNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -68,6 +70,7 @@ func TestGTDStore_Checklist_AddItem_TaskNotFound(t *testing.T) {
 // TestGTDStore_Checklist_Toggle verifies UpdateChecklistItem marks an item done
 // and sets CompletedAt, then can be unmarked (done=false clears CompletedAt).
 func TestGTDStore_Checklist_Toggle(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -119,6 +122,7 @@ func TestGTDStore_Checklist_Toggle(t *testing.T) {
 
 // TestGTDStore_Checklist_UpdateItem_ItemNotFound verifies ErrNotFound for unknown itemID.
 func TestGTDStore_Checklist_UpdateItem_ItemNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -132,6 +136,7 @@ func TestGTDStore_Checklist_UpdateItem_ItemNotFound(t *testing.T) {
 
 // TestGTDStore_Checklist_Delete verifies that DeleteChecklistItem removes the item.
 func TestGTDStore_Checklist_Delete(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -174,6 +179,7 @@ func TestGTDStore_Checklist_Delete(t *testing.T) {
 
 // TestGTDStore_Checklist_Delete_ItemNotFound verifies ErrNotFound for unknown itemID.
 func TestGTDStore_Checklist_Delete_ItemNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -186,6 +192,7 @@ func TestGTDStore_Checklist_Delete_ItemNotFound(t *testing.T) {
 
 // TestGTDStore_Checklist_Lifecycle exercises the full add → toggle → delete flow.
 func TestGTDStore_Checklist_Lifecycle(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -248,6 +255,7 @@ func TestGTDStore_Checklist_Lifecycle(t *testing.T) {
 
 // TestGTDStore_Checklist_SanitisesNullBytes verifies null bytes in title/notes are stripped.
 func TestGTDStore_Checklist_SanitisesNullBytes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

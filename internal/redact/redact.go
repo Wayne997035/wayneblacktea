@@ -4,8 +4,9 @@
 // applied as a defence-in-depth layer alongside structured payload design,
 // not as the only credential filter.
 //
-// Pattern set is derived from backend-security-design.md §3.1 (cross-language
-// rule). Even imperfect regex is better than nothing — coverage > precision.
+// Pattern set covers common credential shapes across languages (API keys,
+// bearer tokens, DB connection strings, cloud access keys). Even imperfect
+// regex is better than nothing — coverage > precision.
 package redact
 
 import "regexp"

@@ -34,6 +34,7 @@ import (
 // when a connection is returned/acquired and would need a sleep to
 // guarantee expiry before the next query runs.
 func TestOpen_ReconnectsAfterPoolDropsConnection(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dsn := "file:" + filepath.Join(t.TempDir(), "reconnect.db")
 	db, err := Open(context.Background(), dsn, "")
 	if err != nil {
@@ -86,6 +87,7 @@ func TestOpen_ReconnectsAfterPoolDropsConnection(t *testing.T) {
 // used fails with "already closed" — which is only true if DB.Close() really
 // released it. A leaked descriptor would let this second Close succeed.
 func TestDB_Close_ReleasesModeReferenceDescriptor(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dsn := "file:" + filepath.Join(t.TempDir(), "fdleak.db")
 	db, err := Open(context.Background(), dsn, "")
 	if err != nil {

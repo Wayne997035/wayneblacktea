@@ -15,6 +15,7 @@ import (
 // PreparedItem.Vec is always nil / DedupSkipped is always true — see
 // knowledge.PreparedItem.Vec's doc comment).
 func TestKnowledgeStore_Prepare_TableDriven(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -92,6 +93,7 @@ func TestKnowledgeStore_Prepare_TableDriven(t *testing.T) {
 // non-tx path. Mirrors the Postgres
 // TestKnowledgeStore_WriteItemTx_CommitRoundTrip.
 func TestKnowledgeStore_WriteItemTx_CommitRoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -139,6 +141,7 @@ func TestKnowledgeStore_WriteItemTx_CommitRoundTrip(t *testing.T) {
 // half of the property proposal.AcceptOrchestration's deferred Rollback
 // depends on when a later orchestration step fails.
 func TestKnowledgeStore_WriteItemTx_RollbackLeavesNoRow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -172,6 +175,7 @@ func TestKnowledgeStore_WriteItemTx_RollbackLeavesNoRow(t *testing.T) {
 // accessor added alongside Prepare/WriteItemTx (mirrors ProposalStore.DB()),
 // proving it returns a non-nil handle whose BeginTx works.
 func TestKnowledgeStore_DB_Accessor(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openKnowledgeStore(t, ":memory:", "")
 	if s.DB() == nil {
 		t.Fatal("DB() returned nil")

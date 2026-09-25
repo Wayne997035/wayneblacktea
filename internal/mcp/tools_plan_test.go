@@ -606,7 +606,7 @@ func TestPlanErrorTitleClip(t *testing.T) {
 	// caught here). Recording the failure and continuing keeps both anchors.
 	if planErrorTitleMaxRunes != 80 {
 		t.Errorf("planErrorTitleMaxRunes = %d, want 80 — this value is pinned by "+
-			"AC-13 in .specs/2026-09-11-validation-layer-matrix.md; change the spec first",
+			"AC-13 of the validation-layer spec; change that contract first",
 			planErrorTitleMaxRunes)
 	}
 

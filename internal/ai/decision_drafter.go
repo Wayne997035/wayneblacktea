@@ -254,8 +254,8 @@ func firstInjectionField(d *DecisionDraft) string {
 }
 
 // stripDraftControlChars removes ASCII control chars (< 0x20, except '\t')
-// AND Unicode Format category (Cf) chars from s, per backend-security-design.md
-// §5.4 audit-text sanitisation. Cf chars include invisible formatting codepoints
+// AND Unicode Format category (Cf) chars from s, as part of audit-text
+// sanitisation. Cf chars include invisible formatting codepoints
 // used for injection evasion: ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D, BOM U+FEFF,
 // word-joiners, RTL/LTR marks (U+200E/U+200F), etc. Stripping these before the
 // injection regex prevents "ig​nore" style bypass attempts.

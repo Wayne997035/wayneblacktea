@@ -18,6 +18,8 @@ export type CandidateReason =
   | 'artifact_evidence'
   | 'completion_signal'
   | 'pr_merged_fuzzy'
+  /** F0925-32: branch matched exactly but the task's repo could not be verified. */
+  | 'pr_merged_repo_unverified'
 
 /** Confidence band. Mirrors candidate.go:13-19. */
 export type CandidateConfidence = 'high' | 'medium' | 'low'

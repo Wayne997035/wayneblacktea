@@ -263,6 +263,9 @@ func buildLegacySchemaDB(ctx context.Context, t *testing.T) *sql.DB {
 // testdata/schema_golden.sql from the legacy schema.sql mechanism — NOT from
 // Open(), which now runs the migration runner (see buildLegacySchemaDB).
 func TestGenerateGoldenSchema(t *testing.T) {
+	// Not parallel: F0925-10 -- writes testdata/schema_golden.sql, a shared
+	// fixed path (not under t.TempDir()) that TestGoldenSchemaEquivalence
+	// reads.
 	if os.Getenv("WBT_GENERATE_GOLDEN") != "1" {
 		t.Skip("set WBT_GENERATE_GOLDEN=1 to (re)generate testdata/schema_golden.sql")
 	}
@@ -398,7 +401,38 @@ var expectedNewEntries = map[string]bool{
 	// from a migration numbered above frozenSnapshotVersion belongs here
 	// rather than in testdata/schema_golden.sql.
 	"table|f170_21_due_date_backup": true,
+
+	// migrations/sqlite/000081_query_indexes.up.sql (F0925-11): 8 of the 10
+	// PG existing-debt indexes (PR #193 scan, decision e0bfb453) — skips
+	// project_status_snapshots (no SQLite store reads it) and guard_bypasses
+	// (no SQLite twin table). All 8 are net-new versus the frozen golden
+	// baseline.
+	"index|idx_session_handoffs_project_id":       true,
+	"index|idx_work_sessions_project_id":          true,
+	"index|idx_work_sessions_current_task_id":     true,
+	"index|idx_vision_items_workspace_created_at": true,
+	"index|idx_vision_items_project_id":           true,
+	"index|idx_vision_items_promoted_task_id":     true,
+	"index|idx_procedural_memories_project_id":    true,
+	"index|idx_memory_atoms_created_at":           true,
 }
+
+// migrations/sqlite/000082_index_parity.up.sql (F0925-15) realigns 3
+// existing SQLite indexes to be textually identical to their Postgres
+// counterpart (idx_decisions_task_id gains a partial WHERE, idx_work_sessions_workspace_id
+// loses its partial WHERE, idx_work_sessions_repo_name gains DESC on
+// created_at). Same shape as 000076's/000078's column-hand-edit precedents
+// above: all 3 keys already exist in the golden baseline (from migrations
+// 000048 and 000021), so this is NOT a new expectedNewEntries case — the 3
+// existing golden lines are hand-edited in place to the new content, rather
+// than routed through this map (which is reserved for net-new schema
+// objects). Same KNOWN LIMITATION as those precedents: this hand-edit is not
+// itself derived from a replay or generator, so it could in principle drift
+// from what the real migration produces. The independent check against that
+// is TestMigration000082_IndexParityWithPG (index_parity_migration_test.go)
+// — it applies 000082's real up.sql via golang-migrate and asserts the exact
+// sqlite_master.sql text for all 3 indexes, so it cannot be fooled by a
+// wrong hand-edit here.
 
 // migrations/sqlite/000076_decision_actor_provenance.up.sql (U15 contract
 // layer) adds two new columns — actor_session_id and confirmed_by_human — to
@@ -443,7 +477,7 @@ var expectedNewEntries = map[string]bool{
 // accepted instead of "fixed" via a risky rebuild migration.
 var acceptedDifferences = map[string]string{
 	// table|procedural_memories: migrations/sqlite/000032_procedural_memories.up.sql
-	// (merged, immutable per backend-security-design.md §6.4) differs from
+	// (merged, and merged migrations are immutable) differs from
 	// schema.sql in two specific, itemized ways:
 	//   1. `id` has DEFAULT (lower(hex(randomblob(4)))||...) — an
 	//      auto-generating UUID fallback schema.sql's version lacks. Dead
@@ -479,9 +513,11 @@ var runnerBookkeepingObjects = map[string]bool{
 // against a fresh :memory: DB MUST match the schema previously produced by
 // schema.sql (captured in testdata/schema_golden.sql), except for the
 // documented additions in expectedNewEntries and the documented, itemized
-// content differences in acceptedDifferences (see backend-security-design.md
-// §6.3/§6.4 and the team-lead ruling cited on each entry).
+// content differences in acceptedDifferences (each entry documents why the
+// difference is accepted).
 func TestGoldenSchemaEquivalence(t *testing.T) {
+	// Not parallel: F0925-10 -- reads testdata/schema_golden.sql, the same
+	// shared fixed path TestGenerateGoldenSchema writes.
 	ctx := context.Background()
 	conn := runMigrationsOnMemoryDB(t)
 	defer func() { _ = conn.Close() }()

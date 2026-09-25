@@ -175,6 +175,10 @@ type Server struct {
 	// not a new risk class).
 	reconcileTokens sync.Map
 
+	// reconcileResolverOverride replaces the per-call reconcile repo resolver
+	// ([F0925-31]); set only by tests whose subject is not repo verification.
+	reconcileResolverOverride gtd.RepoResolver
+
 	// nowFn is overridable in tests so deletion-token expiry can be tested
 	// deterministically without time.Sleep. Defaults to time.Now.
 	nowFn func() time.Time
@@ -565,8 +569,8 @@ func stringArg(args map[string]any, key string) string {
 }
 
 // numberArg extracts a float64 argument and returns it as int32, silently
-// truncating any fractional part (F9, 2026-08-20-mcp-surface-spec.md U12:
-// e.g. priority=2.5 becomes 2 with no error). Kept as-is for its existing
+// truncating any fractional part (F9, U12: e.g. priority=2.5 becomes 2
+// with no error). Kept as-is for its existing
 // call sites — changing its signature to reject fractional input would
 // require updating every caller in the same commit, which spans files this
 // PR's lane split does not own (tools_atom.go, tools_behaviorrule.go,

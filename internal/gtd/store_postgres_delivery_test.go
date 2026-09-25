@@ -10,8 +10,8 @@ import (
 )
 
 // TestStore_BuildGoalsDue_Postgres verifies BuildGoalsDue against a real
-// Postgres-backed gtd.Store (testcontainers, backend-security-design.md
-// §6.5): active goals with a due date are surfaced with title + days_left,
+// Postgres-backed gtd.Store (testcontainers): active goals with a due date
+// are surfaced with title + days_left,
 // goals without a due date are omitted, and workspace scoping is honoured.
 func TestStore_BuildGoalsDue_Postgres(t *testing.T) {
 	pool := openTestPgPool(t)

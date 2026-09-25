@@ -21,12 +21,13 @@ interface YearHeatmapProps {
  * green ramp. Inline styles keep this independent of Tailwind class
  * generation (the v4 JIT cannot statically see indexed access).
  */
+// [F0925-25]
 const BUCKET_BG: Readonly<Record<HeatmapCell['bucket'], string>> = {
   0: 'var(--color-bg-card)',
-  1: '#0e4429',
-  2: '#006d32',
-  3: '#26a641',
-  4: '#39d353',
+  1: 'var(--color-heat-1)',
+  2: 'var(--color-heat-2)',
+  3: 'var(--color-heat-3)',
+  4: 'var(--color-heat-4)',
 }
 
 const CELL = 12

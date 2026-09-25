@@ -14,8 +14,10 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/safetext"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -86,12 +88,13 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 		mcp.WithDescription("Creates or updates a repository entry with current state. All params "+
 			"except name are optional and preserve their stored value when omitted — pass an "+
 			"empty string to explicitly clear one."),
-		mcp.WithString("name", mcp.Description("Repository name (unique key)"), mcp.Required()),
+		mcp.WithString("name", mcp.Description("Repository name (unique key): "+validator.RepoNameRule), mcp.Required()),
 		mcp.WithString("path", mcp.Description("Local filesystem path")),
 		mcp.WithString("description", mcp.Description("Short description")),
 		mcp.WithString("language", mcp.Description("Primary programming language")),
 		mcp.WithString("current_branch", mcp.Description("Current git branch")),
 		mcp.WithString("next_planned_step", mcp.Description("What to work on next")),
+		mcp.WithString("github_slug", mcp.Description("GitHub owner/repo used by reconcile; empty string clears")),
 	), s.handleSyncRepo)
 }
 
@@ -676,7 +679,7 @@ func (s *Server) handleGetTodayContext(ctx context.Context, _ mcp.CallToolReques
 }
 
 // Read-time bounds for db.Repo's free-text fields, applied by
-// wrapUntrustedRepo before jsonText — U13 (2026-08-20-mcp-surface-spec.md).
+// wrapUntrustedRepo before jsonText — U13.
 // sync_repo's args declare no mcp.MaxLength on any of them, so these exist
 // purely to stop marker-stuffing / pathological-growth content from
 // reaching an unbounded read, sized like wrapUntrustedTask/wrapUntrustedProject's
@@ -745,9 +748,8 @@ const (
 // contract. nil in, nil out.
 //
 // Both list_active_repos and sync_repo route through this (Phase A
-// inventory, .specs/2026-08-20-u13-inventory.md §3 tools_context.go, which
-// corrected the dispatch's original "already wired" assumption for this
-// file): sync_repo's own echo of the caller's just-written value is
+// inventory corrected the dispatch's original "already wired" assumption
+// for this file): sync_repo's own echo of the caller's just-written value is
 // deliberately NOT given buildPendingHandoffView's echo exemption here —
 // the repo row is workspace-shared and re-read later by list_active_repos in
 // a different, possibly untrusted session, so wiring both call sites the
@@ -780,6 +782,11 @@ func wrapUntrustedRepo(r *db.Repo) *db.Repo {
 	}
 	if r.NextPlannedStep.Valid {
 		out.NextPlannedStep.String = clipSafe(r.NextPlannedStep.String, repoLongFieldMaxRunes)
+	}
+	// [F0925-31] github_slug is validated at write time, but RepoSlugRe has
+	// no length cap, so it is clipped like the other short fields.
+	if r.GithubSlug.Valid {
+		out.GithubSlug.String = clipSafe(r.GithubSlug.String, repoShortFieldMaxRunes)
 	}
 	if len(r.KnownIssues) > 0 {
 		issues := make([]string, len(r.KnownIssues))
@@ -824,6 +831,8 @@ type repoListItem struct {
 	CurrentBranchTruncated   bool               `json:"current_branch_truncated,omitempty"`
 	KnownIssuesTruncated     bool               `json:"known_issues_truncated,omitempty"`
 	NextPlannedStepTruncated bool               `json:"next_planned_step_truncated,omitempty"`
+	GithubSlug               pgtype.Text        `json:"github_slug"`
+	GithubSlugTruncated      bool               `json:"github_slug_truncated,omitempty"`
 }
 
 // clipRepoListField projects one free-text field to maxRunes, reporting
@@ -938,6 +947,10 @@ func toRepoListItem(raw, r *db.Repo) repoListItem {
 	issues, _ := clipRepoListIssues(r.KnownIssues)
 	issuesTruncated := repoListIssuesTruncated(issues, raw.KnownIssues)
 
+	// [F0925-31] RepoSlugRe has no length cap, so github_slug is clipped.
+	slug, _ := clipRepoListText(r.GithubSlug, repoListShortFieldMaxRunes)
+	slugTruncated := raw.GithubSlug.Valid && slug.String != raw.GithubSlug.String
+
 	return repoListItem{
 		ID:                       r.ID,
 		Name:                     name,
@@ -959,6 +972,8 @@ func toRepoListItem(raw, r *db.Repo) repoListItem {
 		CurrentBranchTruncated:   branchTruncated,
 		KnownIssuesTruncated:     issuesTruncated,
 		NextPlannedStepTruncated: stepTruncated,
+		GithubSlug:               slug,
+		GithubSlugTruncated:      slugTruncated,
 	}
 }
 
@@ -1059,13 +1074,13 @@ func (s *Server) handleListActiveRepos(ctx context.Context, req mcp.CallToolRequ
 }
 
 // syncRepoOptionalStringArgs extracts sync_repo's 5 optional fields using
-// optionalStringArg's presence semantics (Ω6, 2026-08-20-mcp-surface-spec.md):
+// optionalStringArg's presence semantics (Ω6):
 // a nil *string means the field was entirely absent from the call and the
 // stored value must be preserved, not wiped to "". Bundled into one struct
 // (rather than 5 separate local vars) purely to keep handleSyncRepo under the
 // gocyclo threshold with an early-return per field.
 type syncRepoOptionalStringArgs struct {
-	path, description, language, currentBranch, nextPlannedStep *string
+	path, description, language, currentBranch, nextPlannedStep, githubSlug *string
 }
 
 // parseSyncRepoOptionalArgs runs optionalStringArg over sync_repo's 5
@@ -1093,7 +1108,30 @@ func parseSyncRepoOptionalArgs(args map[string]any) (syncRepoOptionalStringArgs,
 	if errResult != nil {
 		return out, errResult
 	}
+	out.githubSlug, errResult = optionalStringArg(args, "github_slug")
+	if errResult != nil {
+		return out, errResult
+	}
+	// [F0925-31] github_slug reaches `gh -R`; "" clears it.
+	if out.githubSlug != nil && *out.githubSlug != "" && !validator.ValidGitHubSlug(*out.githubSlug) {
+		return out, mcp.NewToolResultError(validator.GitHubSlugMessage)
+	}
 	return out, nil
+}
+
+// repoNameArgError is the entry check for an optional repo_name tool
+// argument ([F0925-29]): nil when it is empty or follows the workspace repo
+// name rule, otherwise a static tool error naming the rule. Tools call it
+// before any store write so the caller learns the rule instead of a store
+// error. A value carrying tool-call serialization noise is left to the
+// store, whose ValidateNoTagNoise check runs before its repo name backstop
+// and reports the field with a bounded excerpt of the offending text; the
+// value is rejected either way.
+func repoNameArgError(name string) *mcp.CallToolResult {
+	if validator.IsValidRepoName(name) || sanitize.ValidateNoTagNoise(name) != nil {
+		return nil
+	}
+	return mcp.NewToolResultError(validator.RepoNameMessage)
 }
 
 func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1101,6 +1139,11 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 	name := stringArg(args, "name")
 	if name == "" {
 		return mcp.NewToolResultError("name is required"), nil
+	}
+	// [F0925-29] Same workspace repo name rule as the HTTP path and both
+	// stores; rejected before the store so the error names the rule.
+	if !validator.ValidRepoPath(name) {
+		return mcp.NewToolResultError(validator.RepoNameMessage), nil
 	}
 
 	opt, errResult := parseSyncRepoOptionalArgs(args)
@@ -1115,6 +1158,7 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 		Language:        opt.language,
 		CurrentBranch:   opt.currentBranch,
 		NextPlannedStep: opt.nextPlannedStep,
+		GitHubSlug:      opt.githubSlug,
 	})
 	if err != nil {
 		return storeErrorResult("syncing repo", err), nil

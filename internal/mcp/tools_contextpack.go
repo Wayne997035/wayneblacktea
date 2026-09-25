@@ -22,7 +22,7 @@ const (
 )
 
 // knownContextPackTypes is the include_types allowlist from the assemble_context
-// spec (docs/wayneblacktea-2.0-development-prompt.md:260). Values outside this
+// spec. Values outside this
 // set are silently ignored rather than rejected — include_types narrows an
 // already-safe default (everything), so an unrecognised value cannot widen
 // access or trigger unintended retrieval.
@@ -133,7 +133,7 @@ func (s *Server) handleAssembleContext(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	// contextpack.Pack carries its own snake_case json tags (the wire
-	// contract at docs/wayneblacktea-2.0-development-prompt.md:265-291), so
+	// contract for assemble_context's response shape), so
 	// no wrapper struct is needed here.
 	//
 	// U13: Pack.Items[].Summary aggregates summaries pulled from decisions,
@@ -195,8 +195,7 @@ func filterKnownContextPackTypes(types []string) []string {
 // that are actually strings. maxCount caps the number of elements kept (0 =
 // unlimited); maxRunes drops any single element longer than that many runes
 // (0 = unlimited) rather than failing the whole request. Bounds adversarial
-// LLM-supplied array input before it reaches the Assembler
-// (backend-security-design.md §2.1).
+// LLM-supplied array input before it reaches the Assembler.
 func stringArrayArg(args map[string]any, key string, maxCount, maxRunes int) []string {
 	raw, ok := args[key].([]any)
 	if !ok {
@@ -221,7 +220,7 @@ func stringArrayArg(args map[string]any, key string, maxCount, maxRunes int) []s
 
 // stripControlChars removes NUL and other C0 control characters (except tab
 // and newline, which are legitimate in a free-text objective) before length
-// validation, per backend-security-design.md §2.1 adversarial-input handling.
+// validation — LLM tool input is adversarial input.
 func stripControlChars(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

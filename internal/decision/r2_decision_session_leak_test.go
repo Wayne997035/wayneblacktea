@@ -9,9 +9,9 @@ package decision_test
 // independent raw-SQL read-back bypassing the Go struct entirely (the
 // positive control — the audit trail must be untouched).
 //
-// backend-security-design.md §6.5 makes testcontainers PG coverage
-// unconditional for any code path touching PG, not conditional on "does PG
-// vs SQLite logic differ here" — this file exists specifically to satisfy
+// Testcontainers PG coverage is unconditional for any code path touching
+// PG, not conditional on "does PG vs SQLite logic differ here" — this file
+// exists specifically to satisfy
 // that even though the actual defect (JSON marshaling) is dialect-agnostic
 // Go code.
 
@@ -83,7 +83,7 @@ func TestDecisionStore_ActorSessionIDJSONLeak_SQLite(t *testing.T) {
 }
 
 // TestDecisionStore_ActorSessionIDJSONLeak_Postgres is the Postgres half via
-// testcontainers (backend-security-design.md §6.5).
+// testcontainers.
 func TestDecisionStore_ActorSessionIDJSONLeak_Postgres(t *testing.T) {
 	pool := openTestPgPool(t)
 	ctx := context.Background()

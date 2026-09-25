@@ -14,7 +14,7 @@ import (
 
 func openProposalStore(t *testing.T, dsn, workspaceID string) *sqlite.ProposalStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), dsn, workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), dsn, workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -23,6 +23,7 @@ func openProposalStore(t *testing.T, dsn, workspaceID string) *sqlite.ProposalSt
 }
 
 func TestProposalStore_CreateGetListRoundTrip(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	payload := []byte(`{"title":"Ship SQLite"}`)
 	created, err := s.Create(context.Background(), proposal.CreateParams{
@@ -55,6 +56,7 @@ func TestProposalStore_CreateGetListRoundTrip(t *testing.T) {
 }
 
 func TestProposalStore_NullOptionalFields(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	created, err := s.Create(context.Background(), proposal.CreateParams{
 		Type: proposal.TypeTask, Payload: []byte(`{"title":"task"}`),
@@ -68,6 +70,7 @@ func TestProposalStore_NullOptionalFields(t *testing.T) {
 }
 
 func TestProposalStore_EmptyTable(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	rows, err := s.ListPending(context.Background())
 	if err != nil {
@@ -83,6 +86,7 @@ func TestProposalStore_EmptyTable(t *testing.T) {
 }
 
 func TestProposalStore_ConfirmProposalAcceptCompletedFlow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	created, err := s.Create(context.Background(), proposal.CreateParams{
 		Type: proposal.TypeConcept, Payload: []byte(`{"title":"concept"}`),
@@ -107,6 +111,7 @@ func TestProposalStore_ConfirmProposalAcceptCompletedFlow(t *testing.T) {
 }
 
 func TestProposalStore_ConfirmProposalRejectRejectedFlow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	created, err := s.Create(context.Background(), proposal.CreateParams{
 		Type: proposal.TypeTask, Payload: []byte(`{"title":"task"}`),
@@ -127,6 +132,7 @@ func TestProposalStore_ConfirmProposalRejectRejectedFlow(t *testing.T) {
 }
 
 func TestProposalStore_AutoProposeConceptFromKnowledge(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	item := &db.KnowledgeItem{
 		ID:      uuid.New(),
@@ -152,6 +158,7 @@ func TestProposalStore_AutoProposeConceptFromKnowledge(t *testing.T) {
 }
 
 func TestProposalStore_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsA, wsB := uuid.New().String(), uuid.New().String()
 	dsn := "file:proposal-" + uuid.New().String() + "?mode=memory&cache=shared"
 	storeA := openProposalStore(t, dsn, wsA)
@@ -176,6 +183,7 @@ func TestProposalStore_WorkspaceIsolation(t *testing.T) {
 }
 
 func TestProposalStore_ContextCanceled(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -190,6 +198,7 @@ func TestProposalStore_ContextCanceled(t *testing.T) {
 // TestProposalStore_BatchConfirm_AllAccepted verifies that all proposals are
 // resolved when every ID is valid and pending.
 func TestProposalStore_BatchConfirm_AllAccepted(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -231,6 +240,7 @@ func TestProposalStore_BatchConfirm_AllAccepted(t *testing.T) {
 // TestProposalStore_BatchConfirm_PartialFailure verifies that SQLite best-effort
 // path resolves what it can and records per-item errors.
 func TestProposalStore_BatchConfirm_PartialFailure(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -269,6 +279,7 @@ func TestProposalStore_BatchConfirm_PartialFailure(t *testing.T) {
 // TestProposalStore_BatchConfirm_AllAlreadyResolved verifies that already-resolved
 // proposals produce ErrNotFound-style per-item errors without panicking.
 func TestProposalStore_BatchConfirm_AllAlreadyResolved(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 
@@ -298,6 +309,7 @@ func TestProposalStore_BatchConfirm_AllAlreadyResolved(t *testing.T) {
 // TestProposalStore_BatchConfirm_InvalidStatus verifies that an invalid status
 // is rejected before any DB operations are attempted.
 func TestProposalStore_BatchConfirm_InvalidStatus(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openProposalStore(t, ":memory:", "")
 	ctx := context.Background()
 

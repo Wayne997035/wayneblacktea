@@ -10,7 +10,7 @@ import (
 )
 
 // TestResolveBeginTaskRepoName_FallbackChain pins resolveBeginTaskRepoName's
-// three branches (U16, 2026-08-20-mcp-surface-spec.md). The function feeds
+// three branches (U16). The function feeds
 // worksession.CreateParams.RepoName, which rejects "" — so the load-bearing
 // property is not "picks the right name" but "never returns empty", on every
 // path including the ones where the project lookup gives it nothing to work

@@ -9,8 +9,7 @@ import (
 // Boundary markers for untrusted free text — content this server stored on
 // behalf of an LLM and later reads back into an LLM context.
 //
-// Two mechanisms, always used together (backend-security-design.md §2.1 — LLM
-// tool input is adversarial):
+// Two mechanisms, always used together (LLM tool input is adversarial):
 //
 //   - FENCE: a marker pair wrapped around a field, so a reader can tell the
 //     span is stored data rather than instructions addressed to it.
@@ -181,8 +180,8 @@ func fenceArchSummary(s string) string {
 }
 
 // neutralizePtr is neutralizeBoundaryMarkers over an optional string pointer;
-// nil becomes "". Moved here from resources.go (U13, 2026-08-20-mcp-surface-
-// spec.md) so every stored-data reader added under Phase B has a single
+// nil becomes "". Moved here from resources.go (U13) so every stored-data
+// reader added under Phase B has a single
 // shared home for this helper instead of each file growing its own
 // nil-pointer-neutralise wrapper — this file is already the registry every
 // other neutralisation helper in the package lives in.

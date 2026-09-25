@@ -47,9 +47,9 @@ func TestIsVersionArg(t *testing.T) {
 	}
 }
 
-// TestPrintVersion_Format verifies the version line matches the install
-// scripts' parser expectation: "<binary> <version> (<commit>)".
-// Install.sh extracts the version with `awk '{print $2}'`.
+// TestPrintVersion_Format verifies the version line matches external
+// parsers' expectation: "<binary> <version> (<commit>)", extracted via
+// `awk '{print $2}'`.
 func TestPrintVersion_Format(t *testing.T) {
 	// Save & restore process-global state mutated by this test.
 	origArgs := os.Args
@@ -95,7 +95,7 @@ func TestPrintVersion_Format(t *testing.T) {
 		t.Errorf("printVersion stdout = %q, want %q", got, want)
 	}
 
-	// Simulate install.sh awk parser to make sure the second whitespace
+	// Simulate an awk-style parser to make sure the second whitespace
 	// token is the version (regression guard for R-M1).
 	fields := strings.Fields(strings.SplitN(got, "\n", 2)[0])
 	if len(fields) < 2 || fields[1] != "1.2.3" {

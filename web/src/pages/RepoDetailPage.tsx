@@ -4,6 +4,7 @@ import { ArrowLeft, GitBranch } from 'lucide-react'
 import { useRepoOverview } from '../hooks/useRepoOverview'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { kindColor } from '../components/calendar/eventStyles'
+import { safeHref } from '../lib/safeHref'
 import type {
   RepoOverviewActivity,
   RepoOverviewCompletedTask,
@@ -13,10 +14,11 @@ import type {
   RepoOverviewSummary,
 } from '../types/api'
 
+// [F0925-25]
 const languageBadgeColors: Record<string, { bg: string; color: string }> = {
-  Go: { bg: '#00ADD8', color: '#fff' },
-  TypeScript: { bg: '#3178C6', color: '#fff' },
-  Java: { bg: '#B07219', color: '#fff' },
+  Go: { bg: 'var(--color-lang-go)', color: 'var(--color-white)' },
+  TypeScript: { bg: 'var(--color-lang-typescript)', color: 'var(--color-white)' },
+  Java: { bg: 'var(--color-lang-java)', color: 'var(--color-white)' },
 }
 
 function fmtDate(iso?: string): string {
@@ -222,16 +224,23 @@ function CompletedSection({ tasks }: { tasks: RepoOverviewCompletedTask[] }) {
                     style={{ borderTop: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }}
                   >
                     <span className="flex-1">{task.title}</span>
+                    {/* [F0925-22] non-allowlisted schemes render inert */}
                     {task.artifact && (
-                      <a
-                        href={task.artifact}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-caption font-mono"
-                        style={{ color: 'var(--color-accent-blue)' }}
-                      >
-                        ↗
-                      </a>
+                      safeHref(task.artifact) === '#' ? (
+                        <span className="text-caption font-mono" style={{ color: 'var(--color-text-disabled)' }}>
+                          ↗
+                        </span>
+                      ) : (
+                        <a
+                          href={safeHref(task.artifact)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-caption font-mono"
+                          style={{ color: 'var(--color-accent-blue)' }}
+                        >
+                          ↗
+                        </a>
+                      )
                     )}
                     <span className="text-caption shrink-0" style={{ color: 'var(--color-text-muted)' }}>
                       {fmtDate(task.completed_at)}
@@ -372,7 +381,7 @@ function HandoffsSection({ handoffs }: { handoffs: RepoOverviewHandoff[] }) {
                 className="text-caption px-1.5 rounded-full font-mono shrink-0 mt-0.5"
                 style={{
                   background: h.status === 'open' ? 'var(--color-warning)' : 'var(--color-success)',
-                  color: '#fff',
+                  color: 'var(--color-white)', // [F0925-25]
                 }}
               >
                 {h.status === 'open'
@@ -403,9 +412,10 @@ export function RepoDetailPage() {
     return (
       <div className="p-6 max-w-[1200px] mx-auto">
         <BackButton onClick={() => navigate('/workspace')} label={t('workspace.repoDetail.back')} />
+        {/* [F0925-25] */}
         <div
           className="rounded-md p-3 text-body-sm"
-          style={{ background: '#2e0a0a', border: '1px solid var(--color-error)', color: 'var(--color-error)' }}
+          style={{ background: 'var(--color-error-bg)', border: '1px solid var(--color-error)', color: 'var(--color-error)' }}
         >
           {t('error.loadFailed')}
         </div>

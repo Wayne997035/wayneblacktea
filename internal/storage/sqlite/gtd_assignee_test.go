@@ -13,6 +13,7 @@ import (
 // domain-layer gate (sunk from the MCP-only guard in p6-6) rejects an
 // unrecognized assignee value at CreateTask, regardless of caller.
 func TestGTDStore_CreateTask_InvalidAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -29,6 +30,7 @@ func TestGTDStore_CreateTask_InvalidAssignee_SQLite(t *testing.T) {
 // spelling ("claude-code") is normalized to its canonical form ("claude")
 // before persisting, matching the MCP-layer behaviour.
 func TestGTDStore_CreateTask_ValidAssigneeNormalized_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -45,6 +47,7 @@ func TestGTDStore_CreateTask_ValidAssigneeNormalized_SQLite(t *testing.T) {
 // (empty) assignee is still permitted — new tasks always insert as pending,
 // so the in_progress guard never applies at creation time.
 func TestGTDStore_CreateTask_EmptyAssigneeAllowed_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -61,6 +64,7 @@ func TestGTDStore_CreateTask_EmptyAssigneeAllowed_SQLite(t *testing.T) {
 // task with no existing assignee — the domain-layer gate applied to a path
 // that has no assignee argument of its own.
 func TestGTDStore_BeginTask_RequiresAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -90,6 +94,7 @@ func TestGTDStore_BeginTask_RequiresAssignee_SQLite(t *testing.T) {
 // TestGTDStore_BeginTask_ExistingAssigneeNotBlocked_SQLite verifies a task
 // that already has an assignee begins normally with no extra plumbing.
 func TestGTDStore_BeginTask_ExistingAssigneeNotBlocked_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -112,6 +117,7 @@ func TestGTDStore_BeginTask_ExistingAssigneeNotBlocked_SQLite(t *testing.T) {
 // has no assignee — the same guard applied to a second no-assignee-argument
 // path.
 func TestGTDStore_UpdateTaskStatus_RequiresAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -133,6 +139,7 @@ func TestGTDStore_UpdateTaskStatus_RequiresAssignee_SQLite(t *testing.T) {
 // verifies the guard is scoped to in_progress only — cancelling an unowned
 // task must not require an assignee.
 func TestGTDStore_UpdateTaskStatus_NonInProgress_NoAssigneeNeeded_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -153,6 +160,7 @@ func TestGTDStore_UpdateTaskStatus_NonInProgress_NoAssigneeNeeded_SQLite(t *test
 // TestGTDStore_UpdateTask_InvalidAssignee_SQLite verifies UpdateTask rejects
 // an unrecognized assignee value supplied on the call.
 func TestGTDStore_UpdateTask_InvalidAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -180,6 +188,7 @@ func TestGTDStore_UpdateTask_InvalidAssignee_SQLite(t *testing.T) {
 // rejects a status=in_progress patch that leaves the merged assignee empty
 // (no existing assignee, none supplied this call).
 func TestGTDStore_UpdateTask_InProgressNoAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -203,6 +212,7 @@ func TestGTDStore_UpdateTask_InProgressNoAssignee_SQLite(t *testing.T) {
 // EXISTING assignee to empty — the merged result (not just the two fields in
 // isolation) drives the guard.
 func TestGTDStore_UpdateTask_InProgressClearingAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -225,6 +235,7 @@ func TestGTDStore_UpdateTask_InProgressClearingAssignee_SQLite(t *testing.T) {
 // TestGTDStore_UpdateTask_InProgressWithNewAssignee_SQLite verifies UpdateTask
 // succeeds when assignee is supplied on the SAME call that sets in_progress.
 func TestGTDStore_UpdateTask_InProgressWithNewAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 
@@ -251,6 +262,7 @@ func TestGTDStore_UpdateTask_InProgressWithNewAssignee_SQLite(t *testing.T) {
 // UpdateTask succeeds when the task already has an assignee and this call
 // only changes status.
 func TestGTDStore_UpdateTask_InProgressWithExistingAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
 	ctx := context.Background()
 

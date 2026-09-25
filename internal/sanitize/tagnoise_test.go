@@ -118,9 +118,9 @@ func TestValidateNoTagNoise_ReportsExcerpt(t *testing.T) {
 
 // TestValidateNoTagNoise_ExcerptIsBounded verifies the excerpt window does
 // not echo an entire large payload back into the error message — only a
-// bounded run of runes around the matched fragment (backend-security-design.md
-// §5.4 — self-check item 4: the fix for a bad error message must not become
-// its own information-disclosure/amplification surface).
+// bounded run of runes around the matched fragment — the fix for a bad
+// error message must not become its own information-disclosure/
+// amplification surface.
 func TestValidateNoTagNoise_ExcerptIsBounded(t *testing.T) {
 	payload := strings.Repeat("x", 5000) + "</invoke>" + strings.Repeat("y", 5000)
 	err := sanitize.ValidateNoTagNoise(payload)

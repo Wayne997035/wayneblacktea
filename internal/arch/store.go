@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,10 @@ var _ StoreIface = (*Store)(nil)
 
 // UpsertSnapshot inserts or updates the architecture snapshot for the given slug.
 func (s *Store) UpsertSnapshot(ctx context.Context, p UpsertParams) (*Snapshot, error) {
+	// [F0925-29] Store-layer backstop for the slug rule the MCP entry applies.
+	if !validator.ValidRepoPathMax(p.Slug, SlugMaxLen) {
+		return nil, fmt.Errorf("arch: upserting snapshot: %w", validator.ErrInvalidSlug)
+	}
 	// summaryArg/fileMapArg carry UpsertParams' patch semantics into SQL:
 	// nil flows through as a bound SQL NULL, and the query below checks the
 	// raw parameter (`$N IS NULL`), not EXCLUDED.<col> (which is never NULL

@@ -23,7 +23,7 @@ var _ scheduler.CognitiveSQLiteStore = (*sqlite.CognitiveJobsStore)(nil)
 // CognitiveJobsStore under test.
 func openCognitiveJobsDB(t *testing.T, wsID string) (*sqlite.DB, *sqlite.CognitiveJobsStore) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", wsID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", wsID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -141,6 +141,7 @@ func pendingProposalStatus(t *testing.T, d *sqlite.DB, id uuid.UUID) (status str
 // ---------------------------------------------------------------------------
 
 func TestCognitiveJobsStore_StuckTasks(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	now := time.Now().UTC()
@@ -177,6 +178,7 @@ func TestCognitiveJobsStore_StuckTasks(t *testing.T) {
 // Mirrors TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup (job 3)
 // above.
 func TestCognitiveJobsStore_StuckTasks_Dedup(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	old := time.Now().UTC().AddDate(0, 0, -10)
@@ -208,6 +210,7 @@ func TestCognitiveJobsStore_StuckTasks_Dedup(t *testing.T) {
 // GTD 80cf80b6: the dedup predicate is scoped by proposed_by AND type AND
 // status, not by source_entity_id alone.
 func TestCognitiveJobsStore_StuckTasks_DedupIgnoresOtherJobsProposals(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	old := time.Now().UTC().AddDate(0, 0, -10)
@@ -228,6 +231,7 @@ func TestCognitiveJobsStore_StuckTasks_DedupIgnoresOtherJobsProposals(t *testing
 }
 
 func TestCognitiveJobsStore_StuckTasks_EmptyNoPanic(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	_, store := openCognitiveJobsDB(t, wsID.String())
 	got, err := store.StuckTasks(context.Background(), 7*24*time.Hour)
@@ -248,6 +252,7 @@ func TestCognitiveJobsStore_StuckTasks_EmptyNoPanic(t *testing.T) {
 // pending scheduler:decision_outcome_review proposal referencing it via
 // payload.source_entity_id must NOT be returned again.
 func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	old := time.Now().UTC().AddDate(0, 0, -45)
@@ -276,6 +281,7 @@ func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup(t *testing.T) {
 // internal/scheduler/decision_outcome_review_pg_test.go) — same fixture
 // shape, SQLite backend.
 func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_ExcludesWithOutcome(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	old := time.Now().UTC().AddDate(0, 0, -45)
@@ -303,6 +309,7 @@ func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_ExcludesWithOutcome(t 
 }
 
 func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_RespectsLimit(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	old := time.Now().UTC().AddDate(0, 0, -45)
@@ -339,6 +346,7 @@ func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_RespectsLimit(t *testi
 // ---------------------------------------------------------------------------
 
 func TestCognitiveJobsStore_HighRecallKnowledgeItems(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 
@@ -369,6 +377,7 @@ func TestCognitiveJobsStore_HighRecallKnowledgeItems(t *testing.T) {
 // scheduler:knowledge_to_skill proposal referencing it via
 // payload.source_entity_id must NOT be returned again.
 func TestCognitiveJobsStore_HighRecallKnowledgeItems_Dedup(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 
@@ -400,6 +409,7 @@ func TestCognitiveJobsStore_HighRecallKnowledgeItems_Dedup(t *testing.T) {
 // boundary — a user-submitted proposal older than the cutoff must NEVER be
 // touched, even though it matches every other predicate.
 func TestCognitiveJobsStore_ExpireStaleScheduledProposals_SchedulerOnlyGuard(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 	old := time.Now().UTC().AddDate(0, 0, -35)
@@ -436,6 +446,7 @@ func TestCognitiveJobsStore_ExpireStaleScheduledProposals_SchedulerOnlyGuard(t *
 }
 
 func TestCognitiveJobsStore_ExpireStaleScheduledProposals_RespectsRetentionWindow(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	d, store := openCognitiveJobsDB(t, wsID.String())
 
@@ -459,6 +470,7 @@ func TestCognitiveJobsStore_ExpireStaleScheduledProposals_RespectsRetentionWindo
 }
 
 func TestCognitiveJobsStore_ExpireStaleScheduledProposals_EmptyTableNoPanic(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	wsID := uuid.New()
 	_, store := openCognitiveJobsDB(t, wsID.String())
 	n, err := store.ExpireStaleScheduledProposals(context.Background(), 30*24*time.Hour, "expired by scheduler")

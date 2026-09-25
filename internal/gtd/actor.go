@@ -61,7 +61,7 @@ var ErrInvalidAssignee = errors.New("assignee is not a recognized actor")
 // NormalizeActor case/whitespace-normalizes raw and resolves it to a
 // canonical actor value from actorRegistry. Callers MUST reject the write on
 // error rather than store the raw value — LLM tool input AND HTTP request
-// bodies are both adversarial (backend-security-design.md §2.1), and an
+// bodies are both treated as adversarial, and an
 // unvalidated assignee corrupts the "who is working on what" audit trail
 // multi-AI collaboration depends on. Whitelist match, not blacklist: anything
 // not explicitly registered is refused.
@@ -74,8 +74,7 @@ var ErrInvalidAssignee = errors.New("assignee is not a recognized actor")
 // bypasses the StoreIface entirely (e.g. WithTx transactional callers).
 //
 // The error message intentionally never echoes raw back to the caller
-// (backend-security-design.md §5.4 reason-sanitisation principle applied
-// here too: untrusted input must not round-trip into a string that may be
+// (untrusted input must not round-trip into a string that may be
 // logged or displayed) — it only lists the allowlist.
 func NormalizeActor(raw string) (string, error) {
 	key := strings.ToLower(strings.TrimSpace(raw))

@@ -62,6 +62,7 @@ func seedRawSchemaMigrationsRow(t *testing.T, path string, version int, dirty bo
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_ConnectionIsTrulyReadOnly(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dbPath := seedCurrentSchemaDB(t)
 
 	roDB, err := OpenReadOnly(context.Background(), dbPath, "")
@@ -98,6 +99,7 @@ func TestOpenReadOnly_ConnectionIsTrulyReadOnly(t *testing.T) {
 // mode concrete and pre-verified, not to protect production code directly —
 // dsnReadOnly itself is already exercised for real by OpenReadOnly above.
 func TestOpenReadOnly_MutationSelfProof_WithoutFilePrefixWriteSucceeds(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dbPath := seedCurrentSchemaDB(t)
 
 	brokenDSN := dbPath + "?mode=ro" // deliberately missing the "file:" prefix dsnReadOnly always adds
@@ -123,6 +125,7 @@ func TestOpenReadOnly_MutationSelfProof_WithoutFilePrefixWriteSucceeds(t *testin
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_StaleVersionRefused(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	path := filepath.Join(t.TempDir(), "stale.db")
 	seedRawSchemaMigrationsRow(t, path, latestSQLiteSchemaVersion-1, false)
 
@@ -140,6 +143,7 @@ func TestOpenReadOnly_StaleVersionRefused(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_DirtySchemaRefused(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	path := filepath.Join(t.TempDir(), "dirty.db")
 	seedRawSchemaMigrationsRow(t, path, latestSQLiteSchemaVersion, true)
 
@@ -157,6 +161,7 @@ func TestOpenReadOnly_DirtySchemaRefused(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_RefusesSymlink(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	realPath := seedCurrentSchemaDB(t)
 	linkPath := filepath.Join(filepath.Dir(realPath), "readonly-symlink.db")
 	if err := os.Symlink(realPath, linkPath); err != nil {
@@ -177,6 +182,7 @@ func TestOpenReadOnly_RefusesSymlink(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_MissingFileNeverCreatesIt(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	path := filepath.Join(t.TempDir(), "does-not-exist.db")
 
 	_, err := OpenReadOnly(context.Background(), path, "")
@@ -193,6 +199,7 @@ func TestOpenReadOnly_MissingFileNeverCreatesIt(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_RejectsQueryAndFragmentCharsInPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	for _, path := range []string{
 		"weird?mode=rw.db",
 		"weird#frag.db",
@@ -219,6 +226,7 @@ func TestOpenReadOnly_RejectsQueryAndFragmentCharsInPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_SideCarPermissionsMatchMainFile(t *testing.T) {
+	t.Parallel() // [F0925-10] os.Chmod below only ever targets this test's own t.TempDir() path
 	dbPath := seedCurrentSchemaDB(t)
 
 	// Deliberately set the main file to a non-default mode (0400, still
@@ -266,6 +274,7 @@ func TestOpenReadOnly_SideCarPermissionsMatchMainFile(t *testing.T) {
 // by this code path) and requires that assertion to fail, proving the
 // perm-comparison in the test above is not a vacuously-true check.
 func TestOpenReadOnly_SideCarPermissionsMatchMainFile_MutationSelfProof(t *testing.T) {
+	t.Parallel() // [F0925-10] os.Chmod below only ever targets this test's own t.TempDir() path
 	dbPath := seedCurrentSchemaDB(t)
 	if err := os.Chmod(dbPath, 0o400); err != nil {
 		t.Fatalf("Chmod main file: %v", err)
@@ -312,6 +321,7 @@ func TestOpenReadOnly_SideCarPermissionsMatchMainFile_MutationSelfProof(t *testi
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_RejectsPercentInPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	for _, path := range []string{
 		"weird%2fescape.db",
 		"weird%00null.db",
@@ -336,6 +346,7 @@ func TestOpenReadOnly_RejectsPercentInPath(t *testing.T) {
 // the decoded path — and asserts OpenReadOnly refuses the literal path
 // outright rather than silently opening the decoded target.
 func TestOpenReadOnly_PercentEncodingCannotRedirectToADifferentFile(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	base := t.TempDir()
 	sub := filepath.Join(base, "sub")
 	if err := os.MkdirAll(sub, 0o700); err != nil {
@@ -394,6 +405,7 @@ func TestOpenReadOnly_PercentEncodingCannotRedirectToADifferentFile(t *testing.T
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_ReadsThroughIntermediateSymlinkedDirectory(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	root := t.TempDir()
 	realDir := filepath.Join(root, "real-dir")
 	if err := os.MkdirAll(realDir, 0o700); err != nil {
@@ -454,6 +466,7 @@ func TestOpenReadOnly_ReadsThroughIntermediateSymlinkedDirectory(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenReadOnly_ReadsExistingData(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	dbPath := seedCurrentSchemaDB(t)
 
 	// Write a row via a normal read-write Open, close it, then read it back

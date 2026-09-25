@@ -114,7 +114,7 @@ func splitKnowledgeTags(raw string) []string {
 
 // Read-time bounds for db.KnowledgeItem/atom.Atom free-text fields, applied
 // by wrapUntrustedKnowledgeItem(s)/wrapUntrustedAtom(s) before jsonText —
-// U13 (2026-08-20-mcp-surface-spec.md). sanitizeKnowledgeText below only
+// U13. sanitizeKnowledgeText below only
 // rejects control characters at write time, never neutralises a forged
 // boundary marker — these exist purely to close that read-side gap, sized
 // like wrapUntrustedTask's gtdTitleMaxRunes/gtdBodyMaxRunes (tools_gtd.go).
@@ -191,8 +191,7 @@ func wrapUntrustedKnowledgeItems(items []db.KnowledgeItem) []db.KnowledgeItem {
 // sanitizeKnowledgeText rejects control characters in title (short,
 // single-line, rendered in lists) and content (long-form, may be markdown so
 // newlines are semantic content and stay allowed). Neither field is silently
-// modified — bad input is a hard error, not a stripped write. Per
-// backend-security-design.md §5.4.
+// modified — bad input is a hard error, not a stripped write.
 func sanitizeKnowledgeText(title, content string) (string, string, error) {
 	cleanTitle, err := sanitize.RejectControlChars(title, mcpKnowledgeMaxTitleLen, false)
 	if err != nil {

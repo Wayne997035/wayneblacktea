@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -22,8 +23,7 @@ const disciplineRecordTimeout = 10 * time.Second
 
 // Audit-text caps for fields persisted into discipline_events. These bound
 // LLM-influenced strings (tool name + repo_name argument) before the row hits
-// the DB. See backend-security-design.md §5.4 (control-char strip + length
-// cap) and CWE-117 (log/audit injection).
+// the DB (control-char strip + length cap; see CWE-117, log/audit injection).
 const (
 	maxToolNameRunes = 128
 	maxRepoNameRunes = 256
@@ -32,7 +32,7 @@ const (
 // sanitizeAuditText strips ASCII control bytes (< 0x20 except \t) and caps
 // the result at maxRunes runes. Any value with multi-byte runes counts by
 // rune (so a 256-rune cap is at most ~1 KB on UTF-8). Empty input returns
-// empty output. Matches backend-security-design.md §5.4.
+// empty output — the audit-text sanitisation rule applied package-wide.
 //
 // Notes:
 //   - \x1b (ANSI ESC) is < 0x20 and therefore stripped, so terminal escape
@@ -69,8 +69,8 @@ func sanitizeAuditText(s string, maxRunes int) string {
 // how often does it fail, how large is each response" (spec 1f4c7b7f).
 //
 // Errors writing the event MUST NOT fail the tool call — they are logged via
-// slog.Warn and we move on (per backend-security-design.md §5.1: hook
-// binaries / observability sinks must never break the user-facing path).
+// slog.Warn and we move on (observability sinks must never break the
+// user-facing path).
 func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
@@ -93,7 +93,7 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			ok := err == nil && res != nil && !res.IsError
 
 			// [F184-05] error_class: 2-way split only this ticket (decision
-			// D-05, docs/p1p2-sweep/decisions.md). Every failure — Go-level
+			// D-05). Every failure — Go-level
 			// err != nil or res.IsError — classifies "internal"; empty
 			// string (NULL) when ok. See discipline.ErrorClass's doc for why
 			// a finer split isn't implemented here.
@@ -126,15 +126,18 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			durationMs := int(time.Since(start).Milliseconds())
 
 			// LLM-supplied tool name + repo_name arg flow into the DB
-			// audit row; sanitise both BEFORE persist (see CWE-117 +
-			// backend-security-design.md §5.4). The original `tool` value
+			// audit row; sanitise both BEFORE persist (see CWE-117; control
+			// chars must be stripped and length capped). The original `tool` value
 			// (still available via req.Params.Name) drives behaviour like
 			// IsMutating; the sanitised `toolName` is what we persist.
 			rawTool := req.Params.Name
 			args := req.GetArguments()
 
 			toolName := sanitizeAuditText(rawTool, maxToolNameRunes)
-			repoName := sanitizeAuditText(stringArg(args, "repo_name"), maxRepoNameRunes)
+			// [F0925-29] This row is written before the tool validates its
+			// own arguments, so a repo_name breaking the workspace repo name
+			// rule is audited as empty rather than persisted.
+			repoName := sanitizeAuditText(validator.RepoNameOrEmpty(stringArg(args, "repo_name")), maxRepoNameRunes)
 			// Captured from the request ctx BEFORE the goroutine below
 			// switches to context.Background() — server.ClientSessionFromContext
 			// only resolves off the live request context (U15).

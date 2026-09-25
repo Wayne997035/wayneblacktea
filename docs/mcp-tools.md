@@ -825,6 +825,6 @@ Unified cross-type memory search. Searches episodic (recent session handoffs), s
 
 **Classify middleware:** After each significant tool call, a background goroutine may auto-log implicit decisions or follow-up tasks (AI-powered, rate-limited to 60 calls/rolling window).
 
-**Stop hook:** `scripts/wbt-stop-hook.sh` calls `POST /api/auto-handoff` and `POST /api/activity` when Claude Code exits.
+**Stop hook:** the Claude Code Stop hook calls `POST /api/auto-handoff` and `POST /api/activity` when Claude Code exits.
 
 **Session start:** `UserPromptSubmit` hook calls `get_today_context` automatically at the start of each conversation.

@@ -10,8 +10,8 @@ import (
 // written but never landed — ToTextPtr (pgconv.go:28) had zero test coverage
 // on the integration branch before this file.
 
-// TestF160_09_ToTextPtr pins ToTextPtr's presence semantics (Ω6,
-// 2026-08-20-mcp-surface-spec.md): this is the conversion at the exact
+// TestF160_09_ToTextPtr pins ToTextPtr's presence semantics: this is the
+// conversion at the exact
 // boundary where "caller omitted the field" and "caller explicitly passed
 // an empty string" must NOT collapse into the same pgtype.Text — if they
 // did, every Ω6 clobber-on-omit fix built on top of this function would

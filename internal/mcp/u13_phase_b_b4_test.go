@@ -38,8 +38,8 @@ import (
 // This file is U13 Phase B, group 4 (dispatch: tools_knowledge.go,
 // tools_behaviorrule.go, tools_knowledge_nav.go, tools_context.go,
 // tools_learning.go, tools_closeout.go, tools_contextpack.go,
-// tools_playbook.go, tools_status.go, tools_health.go —
-// .specs/2026-08-20-u13-inventory.md §3/§4). Every test below is a
+// tools_playbook.go, tools_status.go, tools_health.go).
+// Every test below is a
 // behavioural proof, not a structural one: TestAllStoredDataReaders_
 // PassThroughBoundaryRenderer (u13_stored_data_inventory_test.go) cannot
 // tell a real conversion from a call site that merely LOOKS converted — only

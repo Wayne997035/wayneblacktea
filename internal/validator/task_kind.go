@@ -28,9 +28,9 @@ func IsValidKind(kind string) bool {
 
 // maxKindWarningRunes bounds the kind value embedded in ResolveTaskKind's
 // warning text. Valid kinds are short tokens (max 7 chars) — this exists to
-// stop a hostile/malformed suggested_kind (no length cap anywhere upstream,
-// see backend-security-design.md §2.1/§3.1 — proposal payloads are
-// attacker-influenceable LLM tool input) from inflating the warning text
+// stop a hostile/malformed suggested_kind (no length cap anywhere upstream;
+// proposal payloads are attacker-influenceable LLM tool input) from
+// inflating the warning text
 // landing in an HTTP/MCP response. [F0902-54]
 const maxKindWarningRunes = 80
 

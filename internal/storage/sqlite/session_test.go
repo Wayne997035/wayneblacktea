@@ -15,7 +15,7 @@ import (
 // tests can execute raw SQL for fixture setup (e.g. custom timestamps).
 func openSessionStoreWithDB(t *testing.T, workspaceID string) (*sqlite.DB, *sqlite.SessionStore) {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -25,7 +25,7 @@ func openSessionStoreWithDB(t *testing.T, workspaceID string) (*sqlite.DB, *sqli
 
 func openSessionStore(t *testing.T, workspaceID string) *sqlite.SessionStore {
 	t.Helper()
-	d, err := sqlite.Open(context.Background(), ":memory:", workspaceID)
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", workspaceID) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -34,6 +34,7 @@ func openSessionStore(t *testing.T, workspaceID string) *sqlite.SessionStore {
 }
 
 func TestSessionStore_SetAndLatestHandoff(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -68,6 +69,7 @@ func TestSessionStore_SetAndLatestHandoff(t *testing.T) {
 }
 
 func TestSessionStore_LatestHandoffReturnsNotFoundWhenEmpty(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -78,6 +80,7 @@ func TestSessionStore_LatestHandoffReturnsNotFoundWhenEmpty(t *testing.T) {
 }
 
 func TestSessionStore_ResolveMakesHandoffInvisibleToLatest(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -96,6 +99,7 @@ func TestSessionStore_ResolveMakesHandoffInvisibleToLatest(t *testing.T) {
 }
 
 func TestSessionStore_ResolveTwiceReturnsNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -112,6 +116,7 @@ func TestSessionStore_ResolveTwiceReturnsNotFound(t *testing.T) {
 }
 
 func TestSessionStore_ResolveUnknownIDReturnsNotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -121,6 +126,7 @@ func TestSessionStore_ResolveUnknownIDReturnsNotFound(t *testing.T) {
 }
 
 func TestSessionStore_LatestHandoffOrdersByCreatedAtDesc(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -143,6 +149,7 @@ func TestSessionStore_LatestHandoffOrdersByCreatedAtDesc(t *testing.T) {
 }
 
 func TestSessionStore_UpdateSummary_WritesToLatestHandoff(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -170,6 +177,7 @@ func TestSessionStore_UpdateSummary_WritesToLatestHandoff(t *testing.T) {
 }
 
 func TestSessionStore_UpdateSummary_NoOpWhenNoHandoff(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -180,6 +188,7 @@ func TestSessionStore_UpdateSummary_NoOpWhenNoHandoff(t *testing.T) {
 }
 
 func TestSessionStore_UpdateSummary_NoOpAfterResolve(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -198,6 +207,10 @@ func TestSessionStore_UpdateSummary_NoOpAfterResolve(t *testing.T) {
 }
 
 func TestSessionStore_WorkspaceIsolation(t *testing.T) {
+	// Not parallel: F0925-10 -- uses a fixed-name (not per-test uuid-suffixed)
+	// cache=shared DSN ("wbtest"); SQLite's shared-cache pool is process-wide
+	// and keyed by name, so this stays serial rather than risk sharing state
+	// with a same-named connection elsewhere.
 	ctx := context.Background()
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
@@ -209,12 +222,12 @@ func TestSessionStore_WorkspaceIsolation(t *testing.T) {
 	// checking that wsA cannot see wsB's row by reusing the same backing DSN.
 	dsn := "file:wbtest?mode=memory&cache=shared"
 
-	dA, err := sqlite.Open(ctx, dsn, wsA)
+	dA, err := sqlite.OpenTemplated(t, ctx, dsn, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
 	t.Cleanup(func() { _ = dA.Close() })
-	dB, err := sqlite.Open(ctx, dsn, wsB)
+	dB, err := sqlite.OpenTemplated(t, ctx, dsn, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -247,6 +260,7 @@ func TestSessionStore_WorkspaceIsolation(t *testing.T) {
 // --- UpdateEmbedding + SearchByCosine tests ---
 
 func TestSessionStore_UpdateEmbedding_WritesBytes(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -264,6 +278,7 @@ func TestSessionStore_UpdateEmbedding_WritesBytes(t *testing.T) {
 }
 
 func TestSessionStore_UpdateEmbedding_NoOpWhenNoHandoff(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -274,6 +289,7 @@ func TestSessionStore_UpdateEmbedding_NoOpWhenNoHandoff(t *testing.T) {
 }
 
 func TestSessionStore_SearchByCosine_EmptyTableReturnsNil(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -289,6 +305,7 @@ func TestSessionStore_SearchByCosine_EmptyTableReturnsNil(t *testing.T) {
 }
 
 func TestSessionStore_SearchByCosine_NilVecReturnsNil(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -302,6 +319,7 @@ func TestSessionStore_SearchByCosine_NilVecReturnsNil(t *testing.T) {
 }
 
 func TestSessionStore_SearchByCosine_ZeroLimitReturnsNil(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -317,6 +335,7 @@ func TestSessionStore_SearchByCosine_ZeroLimitReturnsNil(t *testing.T) {
 }
 
 func TestSessionStore_SearchByCosine_FindsHandoffWithEmbedding(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -346,17 +365,21 @@ func TestSessionStore_SearchByCosine_FindsHandoffWithEmbedding(t *testing.T) {
 }
 
 func TestSessionStore_SearchByCosine_WorkspaceIsolation(t *testing.T) {
+	// Not parallel: F0925-10 -- uses a fixed-name (not per-test uuid-suffixed)
+	// cache=shared DSN ("wbtest_cosine"); SQLite's shared-cache pool is
+	// process-wide and keyed by name, so this stays serial rather than risk
+	// sharing state with a same-named connection elsewhere.
 	ctx := context.Background()
 	wsA := uuid.New().String()
 	wsB := uuid.New().String()
 	dsn := "file:wbtest_cosine?mode=memory&cache=shared"
 
-	dA, err := sqlite.Open(ctx, dsn, wsA)
+	dA, err := sqlite.OpenTemplated(t, ctx, dsn, wsA) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
 	}
 	t.Cleanup(func() { _ = dA.Close() })
-	dB, err := sqlite.Open(ctx, dsn, wsB)
+	dB, err := sqlite.OpenTemplated(t, ctx, dsn, wsB) // [F0925-09] semantics-preserving template helper
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
 	}
@@ -395,6 +418,7 @@ func TestSessionStore_SearchByCosine_WorkspaceIsolation(t *testing.T) {
 // already-resolved handoff returns session.ErrNotFound on the second call.
 // This exercises the AND resolved_at IS NULL predicate in the UPDATE query.
 func TestResolveHandoff_AlreadyResolved(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 
@@ -417,6 +441,7 @@ func TestResolveHandoff_AlreadyResolved(t *testing.T) {
 // TestHandoff_ContextCancel verifies that a cancelled context is propagated
 // to all SessionStore operations (SetHandoff, LatestHandoff, Resolve).
 func TestHandoff_ContextCancel(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 
 	// First create a handoff using a live context so we have an ID to resolve.
@@ -467,6 +492,7 @@ func TestHandoff_ContextCancel(t *testing.T) {
 // (e.g. 2025-12-31 vs 2026-01-01). This guards against naive string-sort
 // collation bugs in the ORDER BY created_at DESC clause.
 func TestHandoff_CrossYearOrdering(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	ctx := context.Background()
 	d, s := openSessionStoreWithDB(t, "")
 
@@ -496,6 +522,7 @@ func TestHandoff_CrossYearOrdering(t *testing.T) {
 }
 
 func TestSessionStore_HandoffsByRepo(t *testing.T) {
+	t.Parallel() // [F0925-10]
 	s := openSessionStore(t, "")
 	ctx := context.Background()
 

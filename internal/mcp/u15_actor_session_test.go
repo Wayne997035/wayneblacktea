@@ -9,7 +9,7 @@ import (
 )
 
 // --- U15: MCP audit records get a per-client actor identity, not a shared
-// per-process one (2026-08-20-mcp-surface-spec.md). ---
+// per-process one. ---
 
 // callLogDecisionCtx is callLogDecision (tools_decision_test.go) with a
 // caller-supplied context, mirroring callDeleteTaskCtx
@@ -198,7 +198,7 @@ func TestDecisionLogParamsLiteralsSetActorSessionID(t *testing.T) {
 	if len(violations) > 0 {
 		t.Errorf("%d decision.LogParams{ literal(s) do not set ActorSessionID — every decisions-table "+
 			"write path MUST stamp the calling MCP session via s.auditSessionID(ctx) (U15, "+
-			"backend-security-design.md §2 provenance integrity):", len(violations))
+			"provenance integrity):", len(violations))
 		for _, v := range violations {
 			t.Error("  " + v)
 		}

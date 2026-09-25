@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
 )
@@ -70,7 +71,12 @@ var (
 	// before reaching the store, but this closes the gap for any other
 	// caller (CLI, reconcile, future integrations) that writes projects
 	// directly through the store.
-	ErrInvalidRepoName = errors.New("gtd: repo_name must match [a-zA-Z0-9_.-]{1,100}")
+	//
+	// [F0925-29] It IS validator.ErrInvalidRepoName, not a second sentinel:
+	// every store that validates a repo name returns that one value, so
+	// errors.Is(err, gtd.ErrInvalidRepoName) and the MCP caller-facing table
+	// (tool_errors.go) match a rejection from any domain.
+	ErrInvalidRepoName = validator.ErrInvalidRepoName
 	// ErrNotImplemented is a sentinel used by test fakes to simulate a
 	// storage-layer error that is neither ErrNotFound nor ErrConflict — see
 	// TestRestoreProjectTool_NotImplementedIsAnError, which uses it to prove

@@ -171,9 +171,9 @@ func TestResolveIPExtractor_InvalidCIDR(t *testing.T) {
 	}
 }
 
-// TestRateLimiter_FloodsOneIdentityGets429 is U19's acceptance criterion
-// (F14, 2026-08-20-mcp-surface-spec.md): /mcp previously had no rate limit
-// at all — every other route family in this file (mutationRL, activityRL,
+// TestRateLimiter_FloodsOneIdentityGets429 verifies the /mcp rate limit:
+// /mcp previously had no rate limit at all — every other route family in
+// this file (mutationRL, activityRL,
 // postToolUseRL, etc.) already had one. Exercises newMCPRateLimiter()
 // directly against a minimal Echo instance (mirrors how resolveIPExtractor's
 // tests above exercise their function in isolation, without wiring the full

@@ -79,4 +79,21 @@ describe('YearHeatmap', () => {
     const titles = container.querySelectorAll('rect[data-testid="heatmap-cell"] title')
     expect(titles.length).toBe(365)
   })
+
+  // [F0925-25] Color-token reconciliation step 1 (see StaleBadge.test.tsx).
+  // Step 2 (index.css: --color-heat-2 = the original literal #006d32) is
+  // verified via `grep -n '\-\-color-heat-2:' src/index.css` — see 收工單.
+  it('bucket-2 cell fill references --color-heat-2 (was hardcoded #006d32)', () => {
+    const events: TimelineEvent[] = [
+      evt('task_created',   '2025-05-15T12:00:00Z'),
+      evt('task_completed', '2025-05-15T13:00:00Z'),
+      evt('decision',       '2025-05-15T14:00:00Z'),
+    ]
+    const { container } = render(
+      <YearHeatmap year={2025} events={events} onMonthJump={() => {}} />,
+    )
+    const target = container.querySelector('[data-day="2025-05-15"]')
+    expect(target!.getAttribute('data-bucket')).toBe('2')
+    expect(target!.getAttribute('fill')).toBe('var(--color-heat-2)')
+  })
 })

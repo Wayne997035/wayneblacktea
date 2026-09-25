@@ -113,7 +113,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
         style={{
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border)',
-          boxShadow: '0 24px 48px rgba(0,0,0,0.6)',
+          boxShadow: '0 24px 48px var(--color-overlay-60)', // [F0925-25]
           maxHeight: '60vh',
         }}
         onClick={(e) => e.stopPropagation()}
