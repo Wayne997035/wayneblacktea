@@ -48,6 +48,8 @@ const (
 // non-test callers returns only project create/update (gtd_handler.go:214 and
 // :498, tools_gtd.go:737). log_decision never went through it, on either
 // backend, so the sentence was true of a path this field does not take.
+// Since [F0925-29] log_decision and both decision stores do apply it; the
+// clip stays for rows written before that rule and its cleanup migration.
 //
 // The same sentence, in wrapUntrustedProceduralMemory, exempted that type's
 // RepoName from the U13 coverage walker on the same false premise; both are

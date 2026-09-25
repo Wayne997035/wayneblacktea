@@ -395,8 +395,9 @@ var wrapUntrustedCases = []wrapUntrustedCase{
 		blank:    func() any { return &db.Project{} },
 		invoke:   func(in any) any { return wrapUntrustedProject(in.(*db.Project)) },
 		exemptions: wrapUntrustedFieldExemptions{
-			"Status":   "closed ProjectStatus enum, cast+switch-validated in handleUpdateProjectStatus",
-			"RepoName": "regex-validated at write time (validator.IsValidRepoName, [a-zA-Z0-9_.-]{1,100})",
+			"Status": "closed ProjectStatus enum, cast+switch-validated in handleUpdateProjectStatus",
+			"RepoName": "validated at write time (validator.IsValidRepoName: 1-100 bytes of [A-Za-z0-9._/-] " +
+				"segments, no '=', '[' or whitespace, so no boundary marker fits)",
 		},
 	},
 	{

@@ -644,8 +644,9 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 // (u13_wrap_field_coverage_test.go), not noticed by hand. Status and
 // RepoName are the two OTHER db.Project string fields and remain
 // intentionally untouched — Status is a closed ProjectStatus enum
-// (validated in handleUpdateProjectStatus) and RepoName is regex-validated
-// (validator.IsValidRepoName) — see that test's exemption list for both.
+// (validated in handleUpdateProjectStatus) and RepoName is validated at write
+// time (validator.IsValidRepoName, whose [A-Za-z0-9._/-] charset admits no
+// boundary-marker character) — see that test's exemption list for both.
 func wrapUntrustedProject(p *db.Project) *db.Project {
 	if p == nil {
 		return nil
