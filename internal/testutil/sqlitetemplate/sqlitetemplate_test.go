@@ -43,7 +43,7 @@ func TestPath_SameKeyMigratesOnce(t *testing.T) {
 	var calls atomic.Int32
 	migrate := func(_ context.Context, path string) error {
 		calls.Add(1)
-		return os.WriteFile(path, []byte("template"), 0o600) //nolint:gosec // G306: test fixture file, not a credential
+		return os.WriteFile(path, []byte("template"), 0o600)
 	}
 
 	const goroutines = 8
@@ -78,11 +78,11 @@ func TestPath_DistinctKeysIsolated(t *testing.T) {
 	var callsA, callsB atomic.Int32
 	migrateA := func(_ context.Context, path string) error {
 		callsA.Add(1)
-		return os.WriteFile(path, []byte("content-a"), 0o600) //nolint:gosec // G306: test fixture file, not a credential
+		return os.WriteFile(path, []byte("content-a"), 0o600)
 	}
 	migrateB := func(_ context.Context, path string) error {
 		callsB.Add(1)
-		return os.WriteFile(path, []byte("content-b"), 0o600) //nolint:gosec // G306: test fixture file, not a credential
+		return os.WriteFile(path, []byte("content-b"), 0o600)
 	}
 
 	pathA := sqlitetemplate.Path(t, keyA, migrateA, "a.db")
@@ -111,7 +111,7 @@ func TestPath_CopiesAreIndependent(t *testing.T) {
 	t.Parallel()
 	key := uniqueKey(t)
 	migrate := func(_ context.Context, path string) error {
-		return os.WriteFile(path, []byte("template"), 0o600) //nolint:gosec // G306: test fixture file, not a credential
+		return os.WriteFile(path, []byte("template"), 0o600)
 	}
 
 	copy1 := sqlitetemplate.Path(t, key, migrate, "copy1.db")
@@ -120,7 +120,7 @@ func TestPath_CopiesAreIndependent(t *testing.T) {
 	if copy1 == copy2 {
 		t.Fatalf("both callers got the same path %q", copy1)
 	}
-	if err := os.WriteFile(copy1, []byte("mutated"), 0o600); err != nil { //nolint:gosec // G306: test fixture file, not a credential
+	if err := os.WriteFile(copy1, []byte("mutated"), 0o600); err != nil {
 		t.Fatalf("write %s: %v", copy1, err)
 	}
 	content2, err := os.ReadFile(copy2) //nolint:gosec // G304: copy2 is sqlitetemplate.Path's own t.TempDir() output
@@ -198,10 +198,10 @@ func TestPath_CopiesWALSibling(t *testing.T) {
 	t.Parallel()
 	key := uniqueKey(t)
 	migrate := func(_ context.Context, path string) error {
-		if err := os.WriteFile(path, []byte("main"), 0o600); err != nil { //nolint:gosec // G306: test fixture file, not a credential
+		if err := os.WriteFile(path, []byte("main"), 0o600); err != nil {
 			return err
 		}
-		return os.WriteFile(path+"-wal", []byte("wal"), 0o600) //nolint:gosec // G306: test fixture file, not a credential
+		return os.WriteFile(path+"-wal", []byte("wal"), 0o600)
 	}
 
 	copyPath := sqlitetemplate.Path(t, key, migrate, "copy.db")

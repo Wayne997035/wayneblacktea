@@ -182,7 +182,7 @@ func TestFakeBinaryBuild_DoesNotWriteUnderTestHOME(t *testing.T) {
 		// t.TempDir()'s own cleanup fail.
 		_ = filepath.WalkDir(home, func(path string, _ fs.DirEntry, walkErr error) error {
 			if walkErr == nil {
-				_ = os.Chmod(path, 0o700)
+				_ = os.Chmod(path, 0o700) //nolint:gosec // G302: directories need the owner exec bit for TempDir cleanup to traverse them
 			}
 			return nil
 		})
