@@ -45,18 +45,29 @@ export function ReviewCard({ review }: ReviewCardProps) {
   const { t } = useTranslation()
   const { mutate: submitReview, isPending, variables } = useSubmitReview()
   const [rated, setRated] = useState<{ nextDays: number } | null>(null)
+  const [error, setError] = useState(false)
 
   const isPendingForThis = isPending && variables?.scheduleId === review.schedule_id
 
+  // [F0925-20] "已記錄" must only render after the backend confirms the
+  // write — setRated moves into onSuccess so a failed submit stays on the
+  // rating buttons with a visible, retryable error instead of a false
+  // success state.
   function handleRating(rating: 1 | 2 | 3 | 4) {
-    submitReview({
-      scheduleId: review.schedule_id,
-      rating,
-      stability: review.stability,
-      difficulty: review.difficulty,
-      review_count: review.review_count,
-    })
-    setRated({ nextDays: estimateNextDays(rating, review.review_count) })
+    setError(false)
+    submitReview(
+      {
+        scheduleId: review.schedule_id,
+        rating,
+        stability: review.stability,
+        difficulty: review.difficulty,
+        review_count: review.review_count,
+      },
+      {
+        onSuccess: () => setRated({ nextDays: estimateNextDays(rating, review.review_count) }),
+        onError: () => setError(true),
+      },
+    )
   }
 
   if (rated) {
@@ -161,6 +172,13 @@ export function ReviewCard({ review }: ReviewCardProps) {
           </button>
         ))}
       </div>
+
+      {/* [F0925-20] Visible, retryable error when the API rejects the rating */}
+      {error && (
+        <p role="alert" className="text-body-sm" style={{ color: 'var(--color-error)' }}>
+          {t('reviews.submitError')}
+        </p>
+      )}
     </article>
   )
 }

@@ -323,7 +323,8 @@
       "hard": "Hard",
       "good": "Good",
       "easy": "Easy"
-    }
+    },
+    "submitError": "Failed to save your rating. Try again."
   },
   "comingSoon": {
     "title": "Coming Soon",

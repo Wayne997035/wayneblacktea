@@ -323,7 +323,8 @@
       "hard": "困難",
       "good": "良好",
       "easy": "簡單"
-    }
+    },
+    "submitError": "儲存評分失敗，請重試。"
   },
   "comingSoon": {
     "title": "即將推出",
