@@ -484,7 +484,8 @@
       "finish_work_gap": "完工差距偵測",
       "artifact_evidence": "成果證據",
       "completion_signal": "完工訊號",
-      "pr_merged_fuzzy": "PR 已合併（模糊比對）"
+      "pr_merged_fuzzy": "PR 已合併（模糊比對）",
+      "pr_merged_repo_unverified": "PR 已合併（branch 相符、repo 未驗證）"
     },
     "confidence": {
       "high": "高",

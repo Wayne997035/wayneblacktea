@@ -486,7 +486,8 @@
       "finish_work_gap": "Finish work gap",
       "artifact_evidence": "Artifact evidence",
       "completion_signal": "Completion signal",
-      "pr_merged_fuzzy": "PR merged (fuzzy match)"
+      "pr_merged_fuzzy": "PR merged (fuzzy match)",
+      "pr_merged_repo_unverified": "PR merged (branch match, repo unverified)"
     },
     "confidence": {
       "high": "High",

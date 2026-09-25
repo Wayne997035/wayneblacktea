@@ -42,6 +42,8 @@ const REASON_ALLOWLIST: ReadonlySet<CandidateReason> = new Set<CandidateReason>(
   'artifact_evidence',
   'completion_signal',
   'pr_merged_fuzzy',
+  // F0925-32: branch matched exactly but the task's repo could not be verified.
+  'pr_merged_repo_unverified',
 ])
 
 const CONFIDENCE_ALLOWLIST: ReadonlySet<CandidateConfidence> = new Set<CandidateConfidence>([
@@ -63,7 +65,7 @@ const STATUS_ALLOWLIST: ReadonlySet<CandidateStatus> = new Set<CandidateStatus>(
  * of rendering with an invalid type — defence in depth in case the backend
  * adds new enum variants the UI hasn't been updated for yet.
  */
-function toFrontend(row: CandidateJSON): CompletionCandidate | null {
+export function toFrontend(row: CandidateJSON): CompletionCandidate | null {
   if (!REASON_ALLOWLIST.has(row.reason as CandidateReason)) return null
   if (!CONFIDENCE_ALLOWLIST.has(row.confidence as CandidateConfidence)) return null
   if (!STATUS_ALLOWLIST.has(row.status as CandidateStatus)) return null
