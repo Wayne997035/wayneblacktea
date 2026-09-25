@@ -15,7 +15,7 @@
 // This file is dialect-agnostic. The matcher reads tasks via gtd.StoreIface
 // and writes completion via the BatchCompleteTasksByPRMatch method on the
 // same store interface; both Postgres and SQLite backends MUST implement that
-// method (backend-security-design §6.3 dual-backend parity).
+// method (dual-backend parity).
 package gtd
 
 import (
@@ -89,8 +89,8 @@ type MatchResult struct {
 // avoiding multi-megabyte rows.
 const bodyExcerptMaxLen = 500
 
-// sanitiseBodyExcerpt strips control characters (per backend-security-design
-// §5.4) and caps the result at bodyExcerptMaxLen runes.
+// sanitiseBodyExcerpt strips control characters and caps the result at
+// bodyExcerptMaxLen runes.
 func sanitiseBodyExcerpt(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

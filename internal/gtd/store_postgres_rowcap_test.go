@@ -10,9 +10,9 @@ import (
 )
 
 // [F170-04]/[F170-05] — Postgres half of the row-cap contract, on
-// testcontainers (backend-security-design.md §6.5: a dual-backend project
-// needs BOTH backends tested for the same logic; "identical logic" is the
-// claim the second test exists to check, not a reason to skip it).
+// testcontainers (a dual-backend project needs BOTH backends tested for
+// the same logic; "identical logic" is the claim the second test exists
+// to check, not a reason to skip it).
 //
 // The dialects genuinely differ here: SQLite tolerates a negative OFFSET by
 // treating it as 0, while Postgres rejects it outright. db.ClampRowOffset is

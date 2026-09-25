@@ -11,9 +11,9 @@ import (
 
 // DeliveryGoal is a single row in the doctor JSON's goals_due array: an
 // active goal with a valid due date, reduced to title + deadline only. No
-// goal UUID, description, or area is exposed — data minimisation
-// (backend-security-design.md §3.2); `wbt doctor` output is a local
-// operator-facing JSON blob and MUST NOT leak internal identifiers.
+// goal UUID, description, or area is exposed — data minimisation;
+// `wbt doctor` output is a local operator-facing JSON blob and MUST NOT
+// leak internal identifiers.
 type DeliveryGoal struct {
 	Title    string    `json:"title"`
 	DueDate  time.Time `json:"due_date"`

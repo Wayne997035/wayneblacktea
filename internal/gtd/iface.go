@@ -145,7 +145,7 @@ type StoreIface interface {
 	ListActivityLogsSince(ctx context.Context, since time.Time, maxRows int32) ([]db.ActivityLog, error)
 	// PruneOlderThan hard-deletes activity_log rows created before cutoff.
 	// Global cleanup (no workspace filter) — called daily by the scheduler to
-	// enforce the 365-day TTL per backend-security-design.md §1.3.
+	// enforce the 365-day TTL.
 	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 	ActiveGoals(ctx context.Context) ([]db.Goal, error)
 	// ActiveGoalsPage is ActiveGoals with a row cap — [F170-05]. Same

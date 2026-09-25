@@ -18,9 +18,8 @@ import (
 // materializeFromPayloadPg) reuses the SAME validated CreateProject method
 // via WithTx(tx) — see internal/gtd/store.go's WithTx doc comment — so this
 // pins that the tx-scoped path was never actually missing validation on the
-// PG side; the asymmetry was SQLite-only. Uses testcontainers Postgres per
-// backend-security-design.md §6.5 (openTestPgPool — TestMain-managed
-// singleton container, never mocked).
+// PG side; the asymmetry was SQLite-only. Uses testcontainers Postgres
+// (openTestPgPool — TestMain-managed singleton container, never mocked).
 func TestStore_WithTxCreateProject_PG_InvalidRepoName(t *testing.T) {
 	pool := openTestPgPool(t)
 	ctx := context.Background()

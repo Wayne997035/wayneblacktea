@@ -364,8 +364,8 @@ func TestStore_TopPendingTask(t *testing.T) {
 // TestStore_TasksByProjectAllStatuses_ReturnsPendingAndCompleted exercises
 // the new all-statuses query against real Postgres so the SQL parses, the
 // COALESCE ordering is honoured by the Postgres planner, and the default
-// Tasks path stays active-only. Counterpart to the SQLite test — required by
-// backend-security-design.md §6.5 (dual-backend integration parity).
+// Tasks path stays active-only. Counterpart to the SQLite test — dual-backend
+// integration parity requires both.
 // TestStore_CreateProject_DuplicateName_ErrConflict proves CreateProject maps
 // projects_name_key's UNIQUE violation (pg 23505) to gtd.ErrConflict. This is
 // a regression test for a bug found while fixing round-2 security review
@@ -509,7 +509,7 @@ func TestStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
 
 // TestStore_RecentCompletedTasks_PG verifies recently-completed task ordering
 // + workspace scoping on the actual Postgres backend (testcontainers, no mock).
-// Per backend-security-design.md §6.5, dual-backend stores require BOTH the
+// Dual-backend stores require BOTH the
 // SQLite test (in storage/sqlite/gtd_test.go) AND this PG testcontainers test.
 func TestStore_RecentCompletedTasks_PG(t *testing.T) {
 	pool := openTestPgPool(t)
@@ -641,8 +641,8 @@ func pgMustQueryDueRange(t *testing.T, store *gtd.Store, from, to time.Time) []d
 
 // TestStore_TasksByDueDateRange exercises the calendar-planning query on
 // real Postgres (testcontainers). Mirrors the SQLite-side
-// TestGTDStore_TasksByDueDateRange — keeping both in sync per
-// backend-security-design.md §6.5 (dual-backend integration parity).
+// TestGTDStore_TasksByDueDateRange — keeping both in sync (dual-backend
+// integration parity).
 func TestStore_TasksByDueDateRange(t *testing.T) {
 	pool := openTestPgPool(t)
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
@@ -733,8 +733,8 @@ func TestStore_TasksByDueDateRange(t *testing.T) {
 }
 
 // TestStore_ProjectsByRepoName_PG pins the new repo↔project lookup against
-// real Postgres (testcontainers). Required by backend-security-design §6.5:
-// any new dialect-specific store query MUST have a PG testcontainers test
+// real Postgres (testcontainers). Any new dialect-specific store query
+// MUST have a PG testcontainers test
 // in addition to the handler-level fake-store test in
 // workspace_overview_handler_test.go. Sprint #92 (PR #92) added this query
 // without a PG test; this case closes the gap.
@@ -1148,7 +1148,7 @@ func TestGTDStore_UpdateTask_PG_PartialPatch(t *testing.T) {
 }
 
 // TestGTDStore_UpdateTask_PG_AllFields verifies all mutable fields are written
-// correctly in a single UpdateTask call. Required by backend-security-design.md §6.5.
+// correctly in a single UpdateTask call.
 func TestGTDStore_UpdateTask_PG_AllFields(t *testing.T) {
 	pool := openTestPgPool(t)
 	ctx := context.Background()
@@ -1223,7 +1223,7 @@ func TestGTDStore_UpdateTask_PG_NotFound(t *testing.T) {
 // TestGTDStore_UpdateTask_PG_Kind_AllValidValues verifies that every kind in
 // validator.ValidTaskKinds round-trips through UpdateTask on the Postgres
 // backend (GTD c282cc04 item #1). Paired with
-// TestGTDStore_UpdateTask_Kind_AllValidValues per backend-security-design.md §6.5.
+// TestGTDStore_UpdateTask_Kind_AllValidValues (dual-backend integration parity).
 func TestGTDStore_UpdateTask_PG_Kind_AllValidValues(t *testing.T) {
 	pool := openTestPgPool(t)
 	ctx := context.Background()
@@ -2043,8 +2043,7 @@ func assertPgProjectRepoNameFreshRead(t *testing.T, ctx context.Context, store *
 // repo_name so the MCP response shape matches a subsequent fresh read
 // (GetProjectByID / list_projects), for all three RepoName pointer states.
 // Mirrors TestGTDStore_UpdateProject's repo_name subtests in
-// storage/sqlite/gtd_test.go — required by backend-security-design.md §6.5
-// (dual-backend integration parity).
+// storage/sqlite/gtd_test.go (dual-backend integration parity).
 func TestGTDStore_PG_UpdateProject_RepoName(t *testing.T) {
 	t.Run("repo_name omitted (nil pointer) → preserves existing value", func(t *testing.T) {
 		pool := openTestPgPool(t)
