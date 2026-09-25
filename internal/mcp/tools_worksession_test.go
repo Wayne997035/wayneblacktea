@@ -65,8 +65,13 @@ func newTestWorkSessionServerWithDB(t *testing.T) (*Server, *wbtsqlite.DB) {
 		t.Fatalf("New: %v", err)
 	}
 	// [F0925-31] The reconcile tests built on this server test token,
-	// session and TOCTOU behaviour, not repo verification; that has its own
-	// tests (tools_reconcile_repo_test.go) that clear this override.
+	// session and TOCTOU behaviour, not repo verification; repo verification
+	// is covered separately by TestMCPReconcileMergedPRs_RepoAware
+	// (tools_reconcile_repo_test.go, this package — clears this override to
+	// exercise the real reconcileRepoResolver path) and its domain/HTTP
+	// counterparts TestMatchMergedPRs_RepoAware
+	// (internal/gtd/reconcile_repo_test.go) and
+	// TestReconcileMergedPRs_RepoAware (internal/handler/reconcile_repo_test.go).
 	srv.reconcileResolverOverride = gtd.AssumeSameRepo
 	// MCPServer() registers every tool (including deriving+caching each
 	// toolSpec via addTool/registerToolSpec — see toolspec.go). Tests below
