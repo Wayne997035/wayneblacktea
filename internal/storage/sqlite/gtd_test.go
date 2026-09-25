@@ -1796,6 +1796,39 @@ func TestGTDStore_CreateProject_InvalidRepoName(t *testing.T) {
 	}
 }
 
+// TestGTDStore_UpdateProject_InvalidRepoName pins the SQLite UpdateProject
+// backstop that mirrors the Postgres store (internal/gtd/store.go
+// UpdateProject). Before [F0925-29] only the PG side checked, so a direct
+// store caller could write an invalid repo_name on SQLite.
+func TestGTDStore_UpdateProject_InvalidRepoName(t *testing.T) {
+	t.Parallel() // [F0925-29]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	p, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "update-repo-name-proj", Title: "t", Area: "a", RepoName: "Flare-Go/auth",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject with a path-shaped repo_name: %v", err)
+	}
+
+	bad := "bad repo name!"
+	_, err = s.UpdateProject(ctx, p.ID, gtd.UpdateProjectParams{
+		Title: "t", Status: gtd.ProjectStatusActive, RepoName: &bad,
+	})
+	if !errors.Is(err, gtd.ErrInvalidRepoName) {
+		t.Fatalf("expected gtd.ErrInvalidRepoName, got: %v", err)
+	}
+
+	got, err := s.GetProjectByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetProjectByID: %v", err)
+	}
+	if got.RepoName.String != "Flare-Go/auth" {
+		t.Errorf("rejected update must not change repo_name, got %q", got.RepoName.String)
+	}
+}
+
 // TestGTDStore_CreateProject_ValidRepoName_StillWorks is the mutation-proof
 // counterpart to TestGTDStore_CreateProject_InvalidRepoName: a well-formed
 // repo_name must still be accepted after the store-layer validation was

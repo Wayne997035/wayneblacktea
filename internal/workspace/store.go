@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -122,6 +123,11 @@ func (s *Store) UpsertModelPreference(ctx context.Context, model string) error {
 // workspaceID must be non-nil: after migration 000028 the unique constraint is
 // (workspace_id, name), so ON CONFLICT does not fire for NULL workspace_id.
 func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (*db.Repo, error) {
+	// [F0925-29] Store-layer backstop for repos.name: cmd/seed writes here
+	// directly, bypassing the HTTP and MCP checks.
+	if !validator.ValidRepoPath(p.Name) {
+		return nil, fmt.Errorf("upserting repo: %w", validator.ErrInvalidRepoName)
+	}
 	if !s.workspaceID.Valid {
 		return nil, fmt.Errorf("UpsertRepo requires a non-nil workspaceID after migration 000028")
 	}

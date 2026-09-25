@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
@@ -1906,9 +1907,10 @@ func TestWorkspaceHandler_PatchSettings(t *testing.T) {
 
 // TestUpsertRepo_RejectsBadSlug verifies the write-boundary defence added in
 // M-1 round-2 fix: the canonical POST /api/workspace/repos path must reject
-// any name that does not match validator.RepoSlugRe, so that downstream
-// readers (reconcile handler / MCP / wbt reconcile CLI) never see a hostile
-// slug even though they each also validate read-time.
+// a hostile name before it reaches the store. [F0925-29] The rule is now
+// validator.ValidRepoPath (the workspace repo name rule), not RepoSlugRe:
+// production repo names are directory names, not GitHub owner/repo slugs, and
+// the slug that reaches `gh -R` is validated at the reconcile boundary.
 func TestUpsertRepo_RejectsBadSlug(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1920,25 +1922,31 @@ func TestUpsertRepo_RejectsBadSlug(t *testing.T) {
 			name:     "path traversal segment",
 			body:     `{"name":"../etc/passwd"}`,
 			wantCode: http.StatusBadRequest,
-			wantBody: "owner/repo slug pattern",
+			wantBody: "name must be a repo path",
 		},
 		{
 			name:     "shell metacharacter semicolon",
 			body:     `{"name":"owner;rm -rf"}`,
 			wantCode: http.StatusBadRequest,
-			wantBody: "owner/repo slug pattern",
+			wantBody: "name must be a repo path",
 		},
 		{
 			name:     "embedded newline",
 			body:     `{"name":"owner\nrepo"}`,
 			wantCode: http.StatusBadRequest,
-			wantBody: "owner/repo slug pattern",
+			wantBody: "name must be a repo path",
 		},
 		{
-			name:     "no slash separator",
-			body:     `{"name":"wayneblacktea"}`,
+			name:     "segment starting with a dash",
+			body:     `{"name":"-x/y"}`,
 			wantCode: http.StatusBadRequest,
-			wantBody: "owner/repo slug pattern",
+			wantBody: "name must be a repo path",
+		},
+		{
+			name:     "empty segment",
+			body:     `{"name":"a//b"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: "name must be a repo path",
 		},
 		{
 			name:     "empty string still 400 (preserves existing behaviour)",
@@ -1964,6 +1972,38 @@ func TestUpsertRepo_RejectsBadSlug(t *testing.T) {
 				t.Errorf("body = %q, want it to contain %q", rec.Body.String(), tc.wantBody)
 			}
 		})
+	}
+}
+
+// TestUpsertRepo_AcceptsRepoPaths pins the shapes production actually stores.
+// Before [F0925-29] the handler demanded an owner/repo slug and rejected all
+// sixteen production repo names ("wayneblacktea" was the old "no slash
+// separator" reject case).
+func TestUpsertRepo_AcceptsRepoPaths(t *testing.T) {
+	for _, name := range []string{"wayneblacktea", "Flare-Go/auth", "owner/repo", "_project"} {
+		t.Run(name, func(t *testing.T) {
+			e := newEcho()
+			h := handler.NewWorkspaceHandler(&fakeWorkspaceStore{repo: &db.Repo{ID: uuid.New(), Name: name}})
+			e.POST("/api/workspace/repos", h.UpsertRepo)
+			rec := performRequest(e, http.MethodPost, "/api/workspace/repos", `{"name":"`+name+`"}`)
+			if rec.Code != http.StatusOK {
+				t.Errorf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestUpsertRepo_StoreRejectionIs400 covers the store backstop: a store that
+// rejects the name with validator.ErrInvalidRepoName is a caller error (400),
+// not an internal error (500).
+func TestUpsertRepo_StoreRejectionIs400(t *testing.T) {
+	e := newEcho()
+	storeErr := fmt.Errorf("upserting repo: %w", validator.ErrInvalidRepoName)
+	h := handler.NewWorkspaceHandler(&fakeWorkspaceStore{err: storeErr})
+	e.POST("/api/workspace/repos", h.UpsertRepo)
+	rec := performRequest(e, http.MethodPost, "/api/workspace/repos", `{"name":"wayneblacktea"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
 

@@ -212,7 +212,7 @@ func (h *GTDHandler) CreateProject(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errResp("name and title are required"))
 	}
 	if !validator.IsValidRepoName(req.RepoName) {
-		return c.JSON(http.StatusBadRequest, errResp("repo_name must match [a-zA-Z0-9_.-]{1,100}"))
+		return c.JSON(http.StatusBadRequest, errResp(validator.RepoNameMessage))
 	}
 
 	project, err := h.store.CreateProject(c.Request().Context(), gtd.CreateProjectParams{
@@ -496,7 +496,7 @@ func (h *GTDHandler) UpdateProject(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, errResp("priority must be between 1 and 5"))
 	}
 	if req.RepoName != nil && !validator.IsValidRepoName(*req.RepoName) {
-		return c.JSON(http.StatusBadRequest, errResp("repo_name must match [a-zA-Z0-9_.-]{1,100}"))
+		return c.JSON(http.StatusBadRequest, errResp(validator.RepoNameMessage))
 	}
 
 	project, err := h.store.UpdateProject(c.Request().Context(), id, gtd.UpdateProjectParams{

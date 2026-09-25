@@ -1858,6 +1858,12 @@ func (s *GTDStore) UpdateGoal(ctx context.Context, id uuid.UUID, p gtd.UpdateGoa
 // (empty string clears to NULL). Two query branches avoid a gap in parameter
 // positions that would confuse SQLite's positional binding.
 func (s *GTDStore) UpdateProject(ctx context.Context, id uuid.UUID, p gtd.UpdateProjectParams) (*db.Project, error) {
+	// [F0925-29] Store-layer backstop, symmetric with the Postgres store's
+	// UpdateProject: ErrInvalidRepoName's contract covers CreateProject AND
+	// UpdateProject on both backends, and this side was missing the check.
+	if p.RepoName != nil && !validator.IsValidRepoName(*p.RepoName) {
+		return nil, fmt.Errorf("updating project %s: %w", id, gtd.ErrInvalidRepoName)
+	}
 	area := p.Area
 	if area == "" {
 		area = defaultProjectArea

@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 )
@@ -187,6 +188,11 @@ func (s *WorkspaceStore) UpsertModelPreference(ctx context.Context, model string
 // (known_issues was already COALESCE-preserved on PG but unconditionally
 // overwritten here).
 func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoParams) (*db.Repo, error) {
+	// [F0925-29] Store-layer backstop for repos.name: cmd/seed writes here
+	// directly, bypassing the HTTP and MCP checks.
+	if !validator.ValidRepoPath(p.Name) {
+		return nil, fmt.Errorf("upserting repo: %w", validator.ErrInvalidRepoName)
+	}
 	id := uuid.New()
 	var issuesArg any
 	if p.KnownIssues != nil {

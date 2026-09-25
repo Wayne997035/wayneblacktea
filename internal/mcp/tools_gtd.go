@@ -789,7 +789,7 @@ func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) 
 
 func (s *Server) handleCreateProject(ctx context.Context, args CreateProjectArgs) (*mcp.CallToolResult, error) {
 	if !validator.IsValidRepoName(args.RepoName) {
-		return mcp.NewToolResultError("repo_name must match [a-zA-Z0-9_.-]{1,100}"), nil
+		return mcp.NewToolResultError(validator.RepoNameMessage), nil
 	}
 	p := gtd.CreateProjectParams{
 		Name:        args.Name,
@@ -885,7 +885,7 @@ func buildUpdateProjectParams(args UpdateProjectArgs, existing *db.Project) (gtd
 	// repo_name: explicitly passed → overwrite (nil pointer = preserve existing).
 	if args.RepoName != nil {
 		if !validator.IsValidRepoName(*args.RepoName) {
-			return gtd.UpdateProjectParams{}, "repo_name must match [a-zA-Z0-9_.-]{1,100}"
+			return gtd.UpdateProjectParams{}, validator.RepoNameMessage
 		}
 		p.RepoName = args.RepoName
 	}

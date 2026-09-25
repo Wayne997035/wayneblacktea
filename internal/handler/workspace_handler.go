@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -55,8 +56,12 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, errResp("name is required"))
 	}
-	if !validator.RepoSlugRe.MatchString(req.Name) {
-		return c.JSON(http.StatusBadRequest, errResp("name must match owner/repo slug pattern"))
+	// [F0925-29] The workspace repo name rule, not the GitHub owner/repo slug
+	// rule: repos.name holds directory names ("wayneblacktea",
+	// "Flare-Go/auth"). The slug that reaches `gh -R` is validated with
+	// RepoSlugRe at the reconcile boundary, independently of this check.
+	if !validator.ValidRepoPath(req.Name) {
+		return c.JSON(http.StatusBadRequest, errResp(repoPathMessage))
 	}
 
 	repo, err := h.store.UpsertRepo(c.Request().Context(), workspace.UpsertRepoParams{
@@ -69,11 +74,18 @@ func (h *WorkspaceHandler) UpsertRepo(c echo.Context) error {
 		NextPlannedStep: req.NextPlannedStep,
 	})
 	if err != nil {
+		if errors.Is(err, validator.ErrInvalidRepoName) {
+			return c.JSON(http.StatusBadRequest, errResp(repoPathMessage))
+		}
 		c.Logger().Errorf("UpsertRepo: %v", err)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))
 	}
 	return c.JSON(http.StatusOK, repo)
 }
+
+// repoPathMessage is the 400 text for a repos.name that fails the workspace
+// repo name rule. Constant — no request value is echoed back.
+const repoPathMessage = "name must be a repo path: " + validator.RepoNameRule
 
 // workspaceSettings is the GET/PATCH /api/workspace/settings response/request body.
 type workspaceSettings struct {
