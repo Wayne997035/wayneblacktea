@@ -24,7 +24,8 @@ import (
 // [F186-01] 78 -> 79 for migrations/sqlite/000079_task_area.
 // [F191-03] 79 -> 80 for migrations/sqlite/000080_deletion_tombstones.
 // [F0925-11] 80 -> 81 for migrations/sqlite/000081_query_indexes.
-const latestSQLiteSchemaVersion = 81
+// [F0925-15] 81 -> 82 for migrations/sqlite/000082_index_parity.
+const latestSQLiteSchemaVersion = 82
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

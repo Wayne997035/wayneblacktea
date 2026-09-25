@@ -14,7 +14,7 @@ index|idx_concepts_workspace_id|CREATE INDEX idx_concepts_workspace_id ON concep
 index|idx_decisions_created_at|CREATE INDEX idx_decisions_created_at ON decisions(created_at DESC)
 index|idx_decisions_project_id|CREATE INDEX idx_decisions_project_id ON decisions(project_id)
 index|idx_decisions_repo_name|CREATE INDEX idx_decisions_repo_name ON decisions(repo_name)
-index|idx_decisions_task_id|CREATE INDEX idx_decisions_task_id ON decisions(task_id)
+index|idx_decisions_task_id|CREATE INDEX idx_decisions_task_id ON decisions(task_id) WHERE task_id IS NOT NULL
 index|idx_decisions_workspace_id|CREATE INDEX idx_decisions_workspace_id ON decisions(workspace_id) WHERE workspace_id IS NOT NULL
 index|idx_decisions_workspace_repo_created|CREATE INDEX idx_decisions_workspace_repo_created ON decisions(workspace_id, repo_name, created_at DESC)
 index|idx_discipline_events_m8_created_at|CREATE INDEX idx_discipline_events_m8_created_at ON discipline_events_m8 (created_at)
@@ -96,9 +96,9 @@ index|idx_work_session_tasks_session_id|CREATE INDEX idx_work_session_tasks_sess
 index|idx_work_session_tasks_task_id|CREATE INDEX idx_work_session_tasks_task_id ON work_session_tasks(task_id)
 index|idx_work_sessions_one_active|CREATE UNIQUE INDEX idx_work_sessions_one_active ON work_sessions(workspace_id, repo_name) WHERE status = 'in_progress'
 index|idx_work_sessions_outcome_id|CREATE INDEX idx_work_sessions_outcome_id ON work_sessions(outcome_id) WHERE outcome_id IS NOT NULL
-index|idx_work_sessions_repo_name|CREATE INDEX idx_work_sessions_repo_name ON work_sessions(workspace_id, repo_name, created_at)
+index|idx_work_sessions_repo_name|CREATE INDEX idx_work_sessions_repo_name ON work_sessions(workspace_id, repo_name, created_at DESC)
 index|idx_work_sessions_status|CREATE INDEX idx_work_sessions_status ON work_sessions(workspace_id, status)
-index|idx_work_sessions_workspace_id|CREATE INDEX idx_work_sessions_workspace_id ON work_sessions(workspace_id) WHERE workspace_id IS NOT NULL
+index|idx_work_sessions_workspace_id|CREATE INDEX idx_work_sessions_workspace_id ON work_sessions(workspace_id)
 table|activity_log|CREATE TABLE activity_log ( id TEXT PRIMARY KEY, workspace_id TEXT, actor TEXT NOT NULL, project_id TEXT, action TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) )
 table|ai_cost_ledger|CREATE TABLE ai_cost_ledger ( id TEXT PRIMARY KEY, workspace_id TEXT, caller TEXT NOT NULL, model TEXT NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0, cost_usd_micro INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) )
 table|behavior_rules|CREATE TABLE behavior_rules ( id TEXT PRIMARY KEY, workspace_id TEXT, condition TEXT NOT NULL, action TEXT NOT NULL, source_type TEXT NOT NULL CHECK (source_type IN ('reflection','outcome','manual')), source_id TEXT, confidence REAL NOT NULL DEFAULT 0.50 CHECK (confidence BETWEEN 0.00 AND 1.00), status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','active','rejected','deprecated')), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) )

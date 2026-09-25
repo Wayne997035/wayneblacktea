@@ -417,6 +417,23 @@ var expectedNewEntries = map[string]bool{
 	"index|idx_memory_atoms_created_at":           true,
 }
 
+// migrations/sqlite/000082_index_parity.up.sql (F0925-15) realigns 3
+// existing SQLite indexes to be textually identical to their Postgres
+// counterpart (idx_decisions_task_id gains a partial WHERE, idx_work_sessions_workspace_id
+// loses its partial WHERE, idx_work_sessions_repo_name gains DESC on
+// created_at). Same shape as 000076's/000078's column-hand-edit precedents
+// above: all 3 keys already exist in the golden baseline (from migrations
+// 000048 and 000021), so this is NOT a new expectedNewEntries case — the 3
+// existing golden lines are hand-edited in place to the new content, rather
+// than routed through this map (which is reserved for net-new schema
+// objects). Same KNOWN LIMITATION as those precedents: this hand-edit is not
+// itself derived from a replay or generator, so it could in principle drift
+// from what the real migration produces. The independent check against that
+// is TestMigration000082_IndexParityWithPG (index_parity_migration_test.go)
+// — it applies 000082's real up.sql via golang-migrate and asserts the exact
+// sqlite_master.sql text for all 3 indexes, so it cannot be fooled by a
+// wrong hand-edit here.
+
 // migrations/sqlite/000076_decision_actor_provenance.up.sql (U15 contract
 // layer) adds two new columns — actor_session_id and confirmed_by_human — to
 // the decisions table. Unlike idx_outcomes_one_open_draft above, this is NOT
