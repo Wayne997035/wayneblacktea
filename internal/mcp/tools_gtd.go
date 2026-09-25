@@ -623,6 +623,10 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	if len(t.CommitSHAs) > 0 {
 		out.CommitSHAs = clipSafeSlice(t.CommitSHAs, commitSHAMaxRunes)
 	}
+	// Area is clipped too, same rationale as wrapUntrustedProject's Area
+	// clip (F160-06): it is a plain, unvalidated field and "write-time
+	// validation already constrains it" has been wrong before (SEC171-09).
+	out.Area = clipSafe(t.Area, gtdTitleMaxRunes)
 	return &out
 }
 

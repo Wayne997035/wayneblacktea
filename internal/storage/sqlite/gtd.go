@@ -49,7 +49,7 @@ var _ gtd.StoreIface = (*GTDStore)(nil)
 
 const tasksSelectCols = `id, workspace_id, project_id, title, description, status,
 	priority, importance, context, assignee, due_date, artifact,
-	created_at, updated_at, kind, branch_name, pr_url, commit_shas`
+	created_at, updated_at, kind, branch_name, pr_url, commit_shas, area`
 
 // scanTask reads a row in tasksSelectCols order into db.Task, converting
 // SQLite TEXT columns to the pgtype values the Postgres stores already use.
@@ -64,11 +64,12 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		kindStr                                                                string
 		branchNameNS, prURLNS                                                  sql.NullString
 		commitSHAsStr                                                          sql.NullString
+		areaStr                                                                string
 	)
 
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &t.Title, &descNS, &statusStr,
 		&t.Priority, &importanceNI, &contextNS, &assigneeNS, &dueDateNS, &artifactNS,
-		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr)
+		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr, &areaStr)
 	if err != nil {
 		return db.Task{}, err
 	}
@@ -104,6 +105,7 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 			t.CommitSHAs = shas
 		}
 	}
+	t.Area = areaStr
 	return t, nil
 }
 
@@ -486,11 +488,15 @@ func (s *GTDStore) ImportTask(ctx context.Context, t db.Task) error {
 	if len(t.Checklist) > 0 {
 		checklistJSON = string(t.Checklist)
 	}
+	area := t.Area
+	if area == "" {
+		area = "unsorted"
+	}
 	const q = `INSERT INTO tasks
 		(id, workspace_id, project_id, title, description, status, priority, importance,
 		 context, assignee, due_date, artifact, kind, branch_name, pr_url, commit_shas,
-		 checklist, vision_item_id, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)`
+		 checklist, vision_item_id, created_at, updated_at, area)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		t.ID.String(), pgUUIDToNullString(t.WorkspaceID), pgUUIDToNullString(t.ProjectID),
 		t.Title, pgTextToNullString(t.Description), t.Status, t.Priority, importance,
@@ -498,7 +504,7 @@ func (s *GTDStore) ImportTask(ctx context.Context, t db.Task) error {
 		pgTimestamptzToNullString(t.DueDate), pgTextToNullString(t.Artifact),
 		kind, pgTextToNullString(t.BranchName), pgTextToNullString(t.PRUrl), commitSHAsJSON,
 		checklistJSON, pgUUIDToNullString(t.VisionItemID),
-		pgTimestamptzToString(t.CreatedAt), pgTimestamptzToString(t.UpdatedAt))
+		pgTimestamptzToString(t.CreatedAt), pgTimestamptzToString(t.UpdatedAt), area)
 	if err != nil {
 		return errWrap("ImportTask", err)
 	}
