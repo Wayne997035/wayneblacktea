@@ -4,6 +4,7 @@ import { ArrowLeft, GitBranch } from 'lucide-react'
 import { useRepoOverview } from '../hooks/useRepoOverview'
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton'
 import { kindColor } from '../components/calendar/eventStyles'
+import { safeHref } from '../lib/safeHref'
 import type {
   RepoOverviewActivity,
   RepoOverviewCompletedTask,
@@ -222,16 +223,23 @@ function CompletedSection({ tasks }: { tasks: RepoOverviewCompletedTask[] }) {
                     style={{ borderTop: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }}
                   >
                     <span className="flex-1">{task.title}</span>
+                    {/* [F0925-22] non-allowlisted schemes render inert */}
                     {task.artifact && (
-                      <a
-                        href={task.artifact}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-caption font-mono"
-                        style={{ color: 'var(--color-accent-blue)' }}
-                      >
-                        ↗
-                      </a>
+                      safeHref(task.artifact) === '#' ? (
+                        <span className="text-caption font-mono" style={{ color: 'var(--color-text-disabled)' }}>
+                          ↗
+                        </span>
+                      ) : (
+                        <a
+                          href={safeHref(task.artifact)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-caption font-mono"
+                          style={{ color: 'var(--color-accent-blue)' }}
+                        >
+                          ↗
+                        </a>
+                      )
                     )}
                     <span className="text-caption shrink-0" style={{ color: 'var(--color-text-muted)' }}>
                       {fmtDate(task.completed_at)}

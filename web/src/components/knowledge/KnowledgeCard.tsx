@@ -3,6 +3,7 @@ import { ExternalLink } from 'lucide-react'
 import type { KnowledgeItem } from '../../types/api'
 import { useCreateConceptFromKnowledge } from '../../hooks/useReviews'
 import { useUpdateKnowledge } from '../../hooks/useKnowledge'
+import { safeHref } from '../../lib/safeHref'
 
 interface KnowledgeCardProps {
   item: KnowledgeItem;
@@ -95,6 +96,9 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
 export function KnowledgeCard({ item }: KnowledgeCardProps) {
   const addToLearning = useCreateConceptFromKnowledge()
   const [added, setAdded] = useState(false)
+  // [F0925-22] Guard item.url through the scheme allowlist before it can
+  // become a clickable href — see lib/safeHref.ts.
+  const href = safeHref(item.url ?? undefined)
 
   function handleAddToLearning() {
     addToLearning.mutate(
@@ -211,18 +215,28 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
             {added ? '已加入' : addToLearning.isPending ? '加入中…' : '加入學習'}
           </button>
 
-          {/* URL link */}
+          {/* URL link — [F0925-22] non-allowlisted schemes render inert */}
           {item.url !== null && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`Open link for ${item.title}`}
-              className="transition-colors"
-              style={{ color: 'var(--color-accent-blue)' }}
-            >
-              <ExternalLink size={14} aria-hidden="true" />
-            </a>
+            href === '#' ? (
+              <span
+                aria-label={`Open link for ${item.title}`}
+                className="transition-colors"
+                style={{ color: 'var(--color-text-disabled)' }}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+              </span>
+            ) : (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Open link for ${item.title}`}
+                className="transition-colors"
+                style={{ color: 'var(--color-accent-blue)' }}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+              </a>
+            )
           )}
         </div>
       </div>
