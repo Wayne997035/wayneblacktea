@@ -25,24 +25,6 @@ func TestExtractPRNumber(t *testing.T) {
 	}
 }
 
-func TestDeriveRepoSlug(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"https://github.com/owner/repo.git", "owner/repo"},
-		{"https://github.com/owner/repo", "owner/repo"},
-		{"git@github.com:owner/repo.git", "owner/repo"},
-		{"git@github.com:owner/repo", "owner/repo"},
-		{"ssh://git@github.com/owner/repo.git", "owner/repo"},
-		{"https://gitlab.com/owner/repo.git", ""},
-		{"", ""},
-		{"not a url", ""},
-	}
-	for _, c := range cases {
-		if got := deriveRepoSlug(c.in); got != c.want {
-			t.Errorf("deriveRepoSlug(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
 func TestBuildGitHubPRURL(t *testing.T) {
 	if got := buildGitHubPRURL("owner/repo", "42"); got != "https://github.com/owner/repo/pull/42" {
 		t.Errorf("unexpected url: %q", got)

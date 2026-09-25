@@ -65,7 +65,7 @@ func TestRunReconcile_HappyPath(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/workspace/repos":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"name": "owner/repo"},
+				{"name": "repo", "github_slug": "owner/repo"},
 			})
 		case "/api/tasks/reconcile-merged-prs":
 			posted = true
@@ -142,10 +142,10 @@ func TestRunReconcile_RejectsHostileSlug(t *testing.T) {
 			// missing-slash. The fix-under-test rejects all of these
 			// before they reach gh argv.
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"name": "evil;rm/repo"},
-				{"name": "../etc/passwd"},
-				{"name": "owner\nrepo"},
-				{"name": "no-slash-here"},
+				{"name": "e1", "github_slug": "evil;rm/repo"},
+				{"name": "e2", "github_slug": "../etc/passwd"},
+				{"name": "e3", "github_slug": "owner\nrepo"},
+				{"name": "e4", "github_slug": "no-slash-here"},
 			})
 		case "/api/tasks/reconcile-merged-prs":
 			// Any POST means the validator failed.
