@@ -31,10 +31,9 @@ func (stubDisciplineChecker) RequiresVerification(toolName string) bool {
 }
 
 // destructiveNamePatterns are tool-name substrings that always carry
-// elevated risk regardless of prior decisions, per
-// backend-security-design.md §2.3's pattern-based heuristic for
-// mcp__*-style tool names (delete_*, revoke_*, force_*, drop_*, _destroy ->
-// highest tier). A tool matching one of these must be freshly re-verified
+// elevated risk regardless of prior decisions — a pattern-based heuristic
+// for mcp__*-style tool names (delete_*, revoke_*, force_*, drop_*,
+// _destroy -> highest tier). A tool matching one of these must be freshly re-verified
 // on every call; an earlier decision never "covers" it for future calls.
 var destructiveNamePatterns = []string{"force", "delete", "drop", "revoke", "destroy"}
 

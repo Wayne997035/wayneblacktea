@@ -43,8 +43,7 @@ func TestOutcomeLearning_SuccessThreshold(t *testing.T) {
 		}
 	})
 
-	// auto-seed non-contamination (backend-security-design.md §3.2 data
-	// minimisation posture applies analogously here: don't let an
+	// auto-seed non-contamination (don't let an
 	// operational side effect masquerade as evidence). complete_task
 	// auto-seeds a Result: "unknown" outcome per completed task
 	// (internal/mcp/tools_gtd.go seedDraftOutcome). ShouldProposeSkill only

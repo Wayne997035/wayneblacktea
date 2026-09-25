@@ -12,7 +12,7 @@ import (
 // validateFixtureName rejects any fixture name that could escape the
 // testdata/ directory: path separators, ".." segments, or an empty name.
 // Split out from LoadFixtures so the guard is unit-testable on its own
-// without needing to trigger t.Fatalf (backend-security-design.md §2.2).
+// without needing to trigger t.Fatalf.
 func validateFixtureName(name string) error {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
 		return fmt.Errorf("fixture name %q must be a bare filename with no path separators", name)
@@ -23,7 +23,7 @@ func validateFixtureName(name string) error {
 // LoadFixtures reads and JSON-decodes a fixture file from internal/evals/testdata
 // into a slice of T. name MUST be a bare filename with no path separators or
 // ".." segments — this guards against a fixture name turning into a
-// path-traversal read of arbitrary files on disk (backend-security-design.md §2.2).
+// path-traversal read of arbitrary files on disk.
 func LoadFixtures[T any](t *testing.T, name string) []T {
 	t.Helper()
 

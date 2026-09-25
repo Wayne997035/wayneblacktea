@@ -9,8 +9,7 @@
 // CLI) gets identical drift signals.
 //
 // TTL is 30 days, enforced via `task discipline-prune` (build/Taskfile.yml).
-// Per backend-security-design.md §1.3, this retention policy is mandatory
-// for any "every observation" table.
+// This retention policy is mandatory for any "every observation" table.
 package discipline
 
 import (
