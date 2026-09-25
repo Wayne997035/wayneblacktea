@@ -17,8 +17,8 @@ import (
 // applied by wbtsqlite.Open itself — see internal/storage/sqlite/db.go),
 // wires the 4 concrete stores wbtsqlite.AcceptDeps needs, and returns a
 // ProposalHandler with WithGoalProjectAccept wired to a real
-// sqlite.NewAcceptAdapter factory (no mocks — backend-security-design.md
-// §6.5's SQLite exception: real file/:memory: DB, not testcontainers).
+// sqlite.NewAcceptAdapter factory (no mocks — SQLite has no container,
+// so real file/:memory: DB stands in for testcontainers).
 func openGoalProjectSQLiteHandler(t *testing.T) (*handler.ProposalHandler, *wbtsqlite.ProposalStore, *wbtsqlite.DB) {
 	t.Helper()
 	ctx := context.Background()

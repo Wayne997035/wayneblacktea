@@ -34,8 +34,7 @@ const (
 	// ActionSuperseded: the entity's latest outcome already had a terminal
 	// result different from this call's — a NEW row was created with
 	// SupersedesID pointing at the prior row, which is left unmodified
-	// (explicit supersession, never a silent overwrite — see
-	// backend-security-design.md's threat model on audit-trail loss). This
+	// (explicit supersession, never a silent overwrite). This
 	// new row's own Notes (params.Notes, whatever this call supplied — may
 	// be byte-identical to the prior row's Notes, e.g. a re-evaluation that
 	// keeps the same summary but reaches a different Result) has NEVER been

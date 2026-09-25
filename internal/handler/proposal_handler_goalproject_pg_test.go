@@ -118,7 +118,7 @@ func openGoalProjectTestPgPool(t *testing.T) *pgxpool.Pool {
 
 // newGoalProjectPGHandler wires a ProposalHandler with WithGoalProjectAccept
 // pointed at a real proposal.NewPgAcceptAdapter factory over the shared
-// testcontainers pool (no mocks — backend-security-design.md §6.5).
+// testcontainers pool (no mocks).
 func newGoalProjectPGHandler(pool *pgxpool.Pool) (*handler.ProposalHandler, *proposal.Store) {
 	propStore := proposal.NewStore(pool, nil)
 	gtdStore := gtd.NewStore(pool, nil)

@@ -55,7 +55,7 @@ func fixedTestEmbeddingVector() []float32 {
 // newKnowledgeAcceptPGHandler mirrors newGoalProjectPGHandler
 // (proposal_handler_goalproject_pg_test.go, same package) but also wires a
 // knowledge.Store into PgAcceptDeps.Knowledge — real testcontainers pool, no
-// mocks (backend-security-design.md §6.5). embed may be nil (matches
+// mocks. embed may be nil (matches
 // production when no embed client is configured: dedup is skipped, prep.Vec
 // stays nil, per knowledge.PreparedItem.Vec's doc comment).
 func newKnowledgeAcceptPGHandler(pool *pgxpool.Pool, embed ai.ContextEmbeddingProvider) (*handler.ProposalHandler, *proposal.Store) {

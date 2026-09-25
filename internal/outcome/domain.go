@@ -95,9 +95,8 @@ const MaxRelatedRuleIDsTotal = 100
 // MaxNotesTotalRunes caps the CUMULATIVE size (in runes) of a single outcome
 // row's Notes field across its entire append-only enrich lifetime
 // (FinalizeDraft's "\n\n"-joined append, migration 000075) — a different
-// guarantee from sanitize.Notes's per-call 500-rune cap
-// (backend-security-design.md §5.4), which only bounds what ONE
-// record_outcome/finish_work call may contribute. Without this cap, N
+// guarantee from sanitize.Notes's per-call 500-rune cap, which only bounds
+// what ONE record_outcome/finish_work call may contribute. Without this cap, N
 // enrich calls against the same draft (each carrying up to 500 runes) grow
 // the stored Notes column by up to 500*N runes with no upper bound — the
 // same unbounded-accumulation shape as MaxRelatedRuleIDsTotal above, and

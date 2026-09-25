@@ -21,7 +21,7 @@ import (
 // openKnowledgeAcceptSQLiteHandler mirrors openGoalProjectSQLiteHandler
 // (proposal_handler_goalproject_sqlite_test.go, same package) but also wires
 // a wbtsqlite.KnowledgeStore into AcceptDeps.Knowledge — real :memory: DB, no
-// mocks (backend-security-design.md §6.5's SQLite exception).
+// mocks (SQLite has no container, so :memory: stands in for testcontainers).
 func openKnowledgeAcceptSQLiteHandler(t *testing.T) (*handler.ProposalHandler, *wbtsqlite.ProposalStore, *wbtsqlite.DB) {
 	t.Helper()
 	ctx := context.Background()
