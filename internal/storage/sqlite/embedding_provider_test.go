@@ -4,7 +4,7 @@ package sqlite_test
 // embedding_dim columns on session_handoffs, decisions, project_status_snapshots).
 //
 // These complement the testcontainers PG integration tests in internal/ai/.
-// Per backend-security-design.md §6.5: dual-backend projects MUST have BOTH
+// Dual-backend projects MUST have BOTH
 // the SQLite integration test AND the testcontainers PG test.
 
 import (

@@ -8,7 +8,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
-// SQLite parity for the reconcile flow (backend-security-design §6.3 dual-backend).
+// SQLite parity for the reconcile flow (dual-backend).
 // Mirrors the PG tests in internal/gtd/reconcile_test.go.
 
 const (

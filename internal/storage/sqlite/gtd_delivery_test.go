@@ -9,7 +9,7 @@ import (
 )
 
 // TestGTDStore_BuildGoalsDue_SQLite verifies gtd.BuildGoalsDue against a
-// real SQLite-backed GTDStore (backend-security-design.md §6.5: SQLite is
+// real SQLite-backed GTDStore (SQLite is
 // the no-container exception, still a real file/:memory: DB, never mocked),
 // mirroring TestStore_BuildGoalsDue_Postgres so both backends are proven to
 // produce identical delivery-visibility output shapes.

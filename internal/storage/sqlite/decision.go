@@ -175,8 +175,7 @@ func (s *DecisionStore) LogTx(ctx context.Context, tx *sql.Tx, p decision.LogPar
 // callers MUST import into a fresh database. d.Source is validated before
 // write, same as Log/LogTx — the source-of-truth Postgres row is expected to
 // already be valid, but this guard doesn't delegate that assumption to the
-// DB CHECK constraint (backend-security-design.md §5.2; security review
-// round 2, m-1).
+// DB CHECK constraint (security review round 2, m-1).
 func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error {
 	if !decision.Source(d.Source).Valid() {
 		return decision.ErrInvalidSource

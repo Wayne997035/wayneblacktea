@@ -145,8 +145,8 @@ func TestDecisionStore_List_RejectsLimitOutOfRange(t *testing.T) {
 }
 
 // TestDecisionStore_List_SourceFilterAppliedBeforeLimit mirrors the PG test
-// of the same name (internal/decision/list_test.go) — dual-backend parity
-// (backend-security-design.md §6.5). 3 newer 'auto' rows are seeded above 2
+// of the same name (internal/decision/list_test.go) — dual-backend parity.
+// 3 newer 'auto' rows are seeded above 2
 // older 'manual' rows; if LIMIT 2 were applied before excluding 'auto' rows,
 // zero manual rows would ever surface.
 func TestDecisionStore_List_SourceFilterAppliedBeforeLimit(t *testing.T) {

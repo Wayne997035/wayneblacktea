@@ -96,8 +96,7 @@ func TestDecisionStore_SearchByCosine_NoSQLIssued(t *testing.T) {
 
 // TestDecisionStore_SearchByCosine_ErrorDoesNotLeakInternals verifies the
 // error message stays generic — no DSN, file path, or schema/column detail
-// (backend-security-design.md §2 threat surface note in the dispatch: a
-// capability error must not leak storage internals).
+// (a capability error must not leak storage internals).
 func TestDecisionStore_SearchByCosine_ErrorDoesNotLeakInternals(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	_, s := openDecisionDB(t, ":memory:", "")

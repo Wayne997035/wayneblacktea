@@ -82,7 +82,7 @@ func insertLegacyDecision(t *testing.T, conn *sql.DB, title, decCtx, rationale, 
 
 // TestMigration000073_Backfill_SQLite mirrors the Postgres backfill fixture
 // coverage (internal/decision's testcontainers test) on the real SQLite twin
-// — backend-security-design.md §6.5 dual-backend parity requires the same
+// — dual-backend parity requires the same
 // predicate logic to be independently verified on both engines, not asserted
 // "identical SQL shape so one suffices". Exact legacy positives (byte-for-
 // byte match) backfill to 'auto'; case-variant, extra-whitespace, and
