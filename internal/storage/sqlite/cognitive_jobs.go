@@ -15,8 +15,8 @@ import (
 // (internal/scheduler/cognitive_jobs.go). Kept in its own file — separate
 // from GTDStore/DecisionStore/KnowledgeStore/ProposalStore — because these 4
 // methods are scheduler-local plumbing, NOT part of
-// gtd/decision/knowledge/proposal.StoreIface (backend-security-design.md
-// domain-ownership rule). GTD decision G4 (6ea0b014): jobs whose proposals
+// gtd/decision/knowledge/proposal.StoreIface (each domain's Store interface
+// exposes only that domain's operations). GTD decision G4 (6ea0b014): jobs whose proposals
 // are user-observable get SQLite parity; jobs that only prune
 // disk-growth-only observability tables stay Postgres-only (see
 // internal/scheduler/scheduler.go's pgOnlyJobs capability contract — that's

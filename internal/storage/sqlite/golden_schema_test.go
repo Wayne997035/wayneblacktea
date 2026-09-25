@@ -477,7 +477,7 @@ var expectedNewEntries = map[string]bool{
 // accepted instead of "fixed" via a risky rebuild migration.
 var acceptedDifferences = map[string]string{
 	// table|procedural_memories: migrations/sqlite/000032_procedural_memories.up.sql
-	// (merged, immutable per backend-security-design.md §6.4) differs from
+	// (merged, and merged migrations are immutable) differs from
 	// schema.sql in two specific, itemized ways:
 	//   1. `id` has DEFAULT (lower(hex(randomblob(4)))||...) — an
 	//      auto-generating UUID fallback schema.sql's version lacks. Dead
@@ -513,8 +513,8 @@ var runnerBookkeepingObjects = map[string]bool{
 // against a fresh :memory: DB MUST match the schema previously produced by
 // schema.sql (captured in testdata/schema_golden.sql), except for the
 // documented additions in expectedNewEntries and the documented, itemized
-// content differences in acceptedDifferences (see backend-security-design.md
-// §6.3/§6.4 and the team-lead ruling cited on each entry).
+// content differences in acceptedDifferences (each entry documents why the
+// difference is accepted).
 func TestGoldenSchemaEquivalence(t *testing.T) {
 	// Not parallel: F0925-10 -- reads testdata/schema_golden.sql, the same
 	// shared fixed path TestGenerateGoldenSchema writes.
