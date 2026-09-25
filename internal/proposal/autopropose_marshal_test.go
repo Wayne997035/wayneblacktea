@@ -18,8 +18,8 @@ import (
 // convention (package proposal_test, testcontainers PG via
 // openBatchTestPgPool defined in batch_confirm_postgres_test.go) and covers
 // the density-regression and payload-cap tests for
-// proposal.MarshalConceptCandidate — backend-security-design.md §2.1 ("LLM
-// tool input is hostile"): a knowledge item's Content field is user/LLM
+// proposal.MarshalConceptCandidate — LLM tool input is treated as hostile:
+// a knowledge item's Content field is user/LLM
 // controlled and up to 1 MiB; before [F0902-51] its HTML-density alone
 // could push a legitimate item's concept proposal past MaxPayloadBytes.
 //

@@ -349,7 +349,7 @@ func TestProposal_Accept_TypeDecision_Roundtrip_SQLite(t *testing.T) {
 // production uses. Reuses openBatchTestPgPool from
 // batch_confirm_postgres_test.go (same package; same skipMigrations map).
 //
-// Per backend-security-design.md §6.5 dual-backend rule: when SQLite + PG
+// When SQLite + PG
 // integration tests both exist for the same flow, BOTH must run — testcontainers
 // PG covers dialect-specific behaviour (CHECK constraint, transaction
 // isolation, ROW count) that the SQLite path can't.

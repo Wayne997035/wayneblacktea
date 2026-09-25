@@ -616,8 +616,8 @@ func TestStore_RelatedRuleIDs(t *testing.T) {
 // GetLatestForEntity / FinalizeDraft / SeedDraft / RecordExecutionResult
 // (migration 000074, decision 80c1e8ae — outcome lifecycle convergence,
 // arch-r2 A13). Mirrors internal/storage/sqlite/outcome_test.go's coverage
-// against a real Postgres backend (backend-security-design.md §6.5: dual-
-// backend logic MUST have both a SQLite test AND a testcontainers PG test).
+// against a real Postgres backend (dual-backend logic MUST have both a
+// SQLite test AND a testcontainers PG test).
 // ---------------------------------------------------------------------------
 
 // TestStore_GetLatestForEntity verifies not-found, found (most recent of
@@ -1559,9 +1559,9 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 // complementing the fast fake-backed unit test (lifecycle_test.go) and the
 // SQLite-backed MCP-handler end-to-end test
 // (internal/mcp/tools_outcome_lifecycle_test.go). RecordExecutionResult is
-// dialect-agnostic orchestration with no SQL of its own, so this isn't
-// required by backend-security-design.md §6.5 (logic doesn't differ between
-// backends) — added anyway as belt-and-suspenders proof that the fix
+// dialect-agnostic orchestration with no SQL of its own, so a PG test isn't
+// strictly required (logic doesn't differ between backends) — added anyway
+// as belt-and-suspenders proof that the fix
 // behaves identically against the real FinalizeDraft SQL on both engines,
 // not just the fake spy.
 func TestRecordExecutionResult_PG_M1_UnknownAgainstDraftPreservesContent(t *testing.T) {
@@ -1828,8 +1828,8 @@ func insertLegacyUnknownOutcomeTx(
 // result='unknown' rows for the same (workspace, entity_type, entity_id)
 // must not abort CREATE UNIQUE INDEX. Mirrors the SQLite twin coverage
 // (internal/storage/sqlite's TestMigration000074_Dedup_SQLite) —
-// backend-security-design.md §6.5 dual-backend parity requires the same
-// dedup SQL to be independently verified on both engines.
+// dual-backend parity requires the same dedup SQL to be independently
+// verified on both engines.
 func TestMigration000074_Dedup_Postgres(t *testing.T) {
 	pool := openTestPgPool(t)
 	ctx := context.Background()

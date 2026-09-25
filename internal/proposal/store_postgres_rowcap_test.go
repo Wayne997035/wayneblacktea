@@ -10,7 +10,7 @@ import (
 )
 
 // [F170-06] — Postgres half of list_pending_proposals' row cap, on
-// testcontainers (backend-security-design.md §6.5).
+// testcontainers.
 //
 // Beyond the LIMIT itself, this pins a real pre-existing divergence the change
 // closed: the SQLite store already ordered by `created_at DESC, id DESC` while

@@ -7,8 +7,8 @@ import (
 )
 
 // TestDecodeGoalParams_LengthCaps guards against unbounded Title/Description
-// bytes reaching gtd.CreateGoalParams — see backend-security-design.md §2.1
-// ("LLM tool input is hostile"): a prompt-injected agent controls
+// bytes reaching gtd.CreateGoalParams — LLM tool input is treated as
+// hostile: a prompt-injected agent controls
 // pending_proposals.payload via propose_goal, and this decoder is reachable
 // from POST /api/proposals/:id/confirm (and, after the ConfirmBatch fix,
 // /api/proposals/confirm-batch too).
@@ -142,8 +142,7 @@ func TestDecodeProjectParams_LengthCaps(t *testing.T) {
 			// Minor 1 (round-2 security review): projects.priority has a
 			// CHECK (priority BETWEEN 1 AND 5); an out-of-range value must be
 			// rejected here (400) rather than reaching the DB and raising pg
-			// 23514 inside the accept transaction (500) — see
-			// backend-security-design.md §2.1.
+			// 23514 inside the accept transaction (500).
 			name:       "priority out of range → rejected",
 			payload:    map[string]any{"name": "ok", "title": "ok", "priority": 99},
 			wantErr:    true,
@@ -195,7 +194,7 @@ func TestDecodeProjectParams_LengthCaps(t *testing.T) {
 // upper bound — decision is the highest-volume proposal type in production
 // (838 rows at time of writing), and Alternatives is concatenated into
 // Rationale before the row is written, so an unbounded Alternatives slice
-// amplifies the final Rationale size (see backend-security-design.md §2.1).
+// amplifies the final Rationale size.
 func TestDecodeDecisionParams_LengthCaps(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -272,8 +271,8 @@ func TestDecodeDecisionParams_LengthCaps(t *testing.T) {
 // Title/Content/Tags bytes reaching knowledge.AddItemParams via the A1-seam
 // TypeKnowledge accept path — proposal_handler.go's acceptGoalOrProject
 // calls validateGoalProjectPayload → DecodeKnowledgePayload before opening a
-// tx (mirrors TestDecodeGoalParams_LengthCaps's threat model,
-// backend-security-design.md §2.1: a prompt-injected agent controls
+// tx (mirrors TestDecodeGoalParams_LengthCaps's threat model — a
+// prompt-injected agent controls
 // pending_proposals.payload via propose_knowledge, reachable from POST
 // /api/proposals/:id/confirm). [F184-01][F184-02][F184-03]
 func TestDecodeKnowledgePayload_LengthCaps(t *testing.T) {
