@@ -61,9 +61,10 @@ export function ProjectDetailPage() {
           <ArrowLeft size={16} aria-hidden="true" />
           {t('project.back')}
         </button>
+        {/* [F0925-25] */}
         <div
           className="rounded-md p-3 text-body-sm"
-          style={{ background: '#2e0a0a', border: '1px solid var(--color-error)', color: 'var(--color-error)' }}
+          style={{ background: 'var(--color-error-bg)', border: '1px solid var(--color-error)', color: 'var(--color-error)' }}
         >
           {t('error.loadFailed')}
         </div>

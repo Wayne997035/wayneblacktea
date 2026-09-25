@@ -20,7 +20,7 @@ const STATUS_LABELS: Record<VisionStatus, string> = {
 const STATUS_STYLE: Record<VisionStatus, { bg: string; text: string }> = {
   open:       { bg: 'var(--color-status-active-bg)',    text: 'var(--color-status-active-text)' },
   discussing: { bg: 'var(--color-status-on-hold-bg)',   text: 'var(--color-status-on-hold-text)' },
-  maturing:   { bg: 'var(--color-accent-blue-bg, rgba(88,166,255,.15))', text: 'var(--color-accent-blue)' },
+  maturing:   { bg: 'var(--color-accent-blue-bg)', text: 'var(--color-accent-blue)' }, // [F0925-25] fallback dropped, now defined in @theme
   promoted:   { bg: 'var(--color-status-completed-bg)', text: 'var(--color-status-completed-text)' },
   dismissed:  { bg: 'var(--color-status-archived-bg)',  text: 'var(--color-status-archived-text)' },
 }
@@ -176,10 +176,11 @@ function CreateVisionForm({ onClose }: CreateVisionFormProps) {
     color: 'var(--color-text-primary)',
   }
 
+  // [F0925-25]
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
+      style={{ background: 'var(--color-overlay-50)' }}
       role="dialog"
       aria-modal="true"
       aria-label="Create vision item"
@@ -362,7 +363,7 @@ export function VisionPage() {
         <div
           className="rounded-md p-3 mb-6 text-body-sm"
           style={{
-            background: 'var(--color-error-bg, #2e0a0a)',
+            background: 'var(--color-error-bg)', // [F0925-25]
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}

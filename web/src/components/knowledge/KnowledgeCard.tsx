@@ -171,7 +171,7 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
           <span
             className="text-label rounded-full px-2 py-0.5"
             style={{
-              background: item.source === 'discord' ? 'rgba(79, 195, 247, 0.1)' : 'var(--color-bg-hover)',
+              background: item.source === 'discord' ? 'var(--color-accent-blue-tint)' : 'var(--color-bg-hover)', // [F0925-25]
               color: item.source === 'discord' ? 'var(--color-accent-blue)' : 'var(--color-text-muted)',
               border: `1px solid ${item.source === 'discord' ? 'var(--color-accent-blue)' : 'var(--color-border)'}`,
             }}
@@ -208,9 +208,10 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
             className="text-label rounded px-2 py-0.5 transition-opacity"
             style={{
               minHeight: '28px',
-              background: added ? 'rgba(34,197,94,0.1)' : 'var(--color-bg-hover)',
-              color: added ? '#22c55e' : 'var(--color-accent-blue)',
-              border: `1px solid ${added ? '#22c55e' : 'var(--color-accent-blue)'}`,
+              // [F0925-25]
+              background: added ? 'var(--color-accent-green-bg)' : 'var(--color-bg-hover)',
+              color: added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)',
+              border: `1px solid ${added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)'}`,
               cursor: addToLearning.isPending || added ? 'not-allowed' : 'pointer',
               opacity: addToLearning.isPending ? 0.5 : 1,
               whiteSpace: 'nowrap',

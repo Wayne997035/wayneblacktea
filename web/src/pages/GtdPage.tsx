@@ -194,10 +194,10 @@ export function GtdPage() {
           background: 'var(--color-accent-blue)',
           border: 'none',
           cursor: 'pointer',
-          boxShadow: '0 4px 16px rgba(79, 195, 247, 0.3)',
+          boxShadow: '0 4px 16px var(--color-blue-glow)', // [F0925-25]
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.background = '#81d4fa'
+          e.currentTarget.style.background = 'var(--color-blue-hover)' // [F0925-25]
           e.currentTarget.style.transform = 'scale(1.05)'
         }}
         onMouseLeave={(e) => {

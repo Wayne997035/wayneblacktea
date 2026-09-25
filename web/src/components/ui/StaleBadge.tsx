@@ -14,7 +14,7 @@ export function StaleBadge({ stale }: StaleBadgeProps) {
     <span
       className="inline-flex items-center rounded-full px-2 py-0.5 text-caption font-medium"
       style={{
-        background: '#3d1f00',
+        background: 'var(--color-warning-bg)', // [F0925-25]
         color: 'var(--color-warning)',
         border: '1px solid var(--color-warning)',
       }}

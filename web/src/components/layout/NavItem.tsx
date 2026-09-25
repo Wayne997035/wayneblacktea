@@ -33,7 +33,7 @@ export function NavItem({ icon: Icon, labelKey, to, phase = 1, collapsed = false
               className="text-label rounded-full px-2 py-0.5 shrink-0"
               style={{
                 color: 'var(--color-warning)',
-                background: '#2e1f00',
+                background: 'var(--color-status-on-hold-bg)', // [F0925-25]
               }}
             >
               SOON

@@ -149,7 +149,7 @@ export function DayDrawer({ day, events, kindFilter, onClose }: DayDrawerProps) 
         className="fixed inset-0 z-40 transition-opacity"
         aria-hidden="true"
         style={{
-          background: 'rgba(0,0,0,0.4)',
+          background: 'var(--color-overlay-40)', // [F0925-25]
           opacity: open ? 1 : 0,
           pointerEvents: open ? 'auto' : 'none',
         }}

@@ -6,9 +6,10 @@ interface ToastItemProps {
   toast: Toast;
 }
 
+// [F0925-25]
 const typeStyles: Record<Toast['type'], { bg: string; color: string }> = {
-  error:   { bg: 'var(--color-error)',   color: '#fff' },
-  success: { bg: 'var(--color-success)', color: '#fff' },
+  error:   { bg: 'var(--color-error)',   color: 'var(--color-white)' },
+  success: { bg: 'var(--color-success)', color: 'var(--color-white)' },
   info:    { bg: 'var(--color-info)',    color: 'var(--color-bg-base)' },
 }
 

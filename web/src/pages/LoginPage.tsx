@@ -78,7 +78,7 @@ export function LoginPage() {
             className="w-full py-2 rounded-lg text-sm font-medium transition-opacity disabled:opacity-50"
             style={{
               background: 'var(--color-accent-blue)',
-              color: '#0a1628',
+              color: 'var(--color-bg-base)', // [F0925-25]
             }}
           >
             {loading ? 'Signing in…' : 'Sign in'}

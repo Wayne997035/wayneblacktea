@@ -55,9 +55,10 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
       <span
         className="text-label rounded px-1.5 py-0.5 shrink-0"
         style={{
-          background: kind === 'knowledge' ? 'rgba(79,195,247,0.1)' : 'rgba(167,139,250,0.1)',
-          color: kind === 'knowledge' ? 'var(--color-accent-blue)' : '#a78bfa',
-          border: `1px solid ${kind === 'knowledge' ? 'var(--color-accent-blue)' : '#a78bfa'}`,
+          // [F0925-25]
+          background: kind === 'knowledge' ? 'var(--color-accent-blue-tint)' : 'var(--color-accent-violet-bg)',
+          color: kind === 'knowledge' ? 'var(--color-accent-blue)' : 'var(--color-accent-violet)',
+          border: `1px solid ${kind === 'knowledge' ? 'var(--color-accent-blue)' : 'var(--color-accent-violet)'}`,
           fontSize: '0.7rem',
         }}
       >
@@ -79,9 +80,10 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
         className="text-label rounded px-2 py-0.5 shrink-0 transition-opacity"
         style={{
           minHeight: '28px',
-          background: added ? 'rgba(34,197,94,0.1)' : 'transparent',
-          color: added ? '#22c55e' : 'var(--color-accent-blue)',
-          border: `1px solid ${added ? '#22c55e' : 'var(--color-accent-blue)'}`,
+          // [F0925-25]
+          background: added ? 'var(--color-accent-green-bg)' : 'transparent',
+          color: added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)',
+          border: `1px solid ${added ? 'var(--color-accent-green)' : 'var(--color-accent-blue)'}`,
           cursor: isPending || added ? 'not-allowed' : 'pointer',
           opacity: isPending ? 0.5 : 1,
           whiteSpace: 'nowrap',
@@ -444,7 +446,7 @@ export function ReviewsPage() {
         <div
           className="rounded-md p-3 mb-4 text-body-sm"
           style={{
-            background: '#2e0a0a',
+            background: 'var(--color-error-bg)', // [F0925-25]
             border: '1px solid var(--color-error)',
             color: 'var(--color-error)',
           }}

@@ -45,6 +45,55 @@
   --color-priority-4: #f44336;
   --color-priority-5: #ff1744;
 
+  /* === [F0925-25] Hardcoded literals promoted to tokens === */
+  --color-white: #ffffff;
+  --color-accent-green: #22c55e;
+  --color-accent-green-bg: rgba(34,197,94,0.1);
+  --color-accent-blue-bg: rgba(88,166,255,.15);
+  --color-accent-blue-tint: rgba(79, 195, 247, 0.1);
+  --color-accent-orange: #f97316;
+  --color-accent-violet: #a78bfa;
+  --color-accent-violet-bg: rgba(167,139,250,0.1);
+  --color-accent-teal: #0d9488;
+  --color-accent-teal-bg: #0a2e2e;
+  --color-accent-amber: #f59e0b;
+  --color-accent-purple-bg: #1a0a35;
+  --color-lang-go: #00ADD8;
+  --color-lang-typescript: #3178C6;
+  --color-lang-java: #B07219;
+  --color-overlay-20: rgba(0,0,0,0.2);
+  --color-overlay-40: rgba(0,0,0,0.4);
+  --color-overlay-50: rgba(0,0,0,0.5);
+  --color-overlay-55: rgba(0, 0, 0, 0.55);
+  --color-overlay-60: rgba(0,0,0,0.6);
+  --color-rating-again: #ef4444;
+  --color-rating-easy: #3b82f6;
+  --color-warning-bg: #3d1f00;
+  --color-blue-glow: rgba(79, 195, 247, 0.3);
+  --color-blue-hover: #81d4fa;
+  --color-heat-1: #0e4429;
+  --color-heat-2: #006d32;
+  --color-heat-3: #26a641;
+  --color-heat-4: #39d353;
+  --color-heat-b1: #1b4332;
+  --color-heat-b2: #2d6a4f;
+  --color-heat-b3: #40916c;
+  --color-heat-b4: #52b788;
+  --color-source-article-bg: rgba(21, 101, 192, 0.15);
+  --color-source-article-border: rgba(79, 195, 247, 0.4);
+  --color-source-til-bg: rgba(46, 125, 50, 0.15);
+  --color-source-til-text: #66bb6a;
+  --color-source-til-border: rgba(102, 187, 106, 0.4);
+  --color-source-bookmark-bg: rgba(81, 45, 168, 0.15);
+  --color-source-bookmark-text: #ba68c8;
+  --color-source-bookmark-border: rgba(186, 104, 200, 0.4);
+  --color-source-note-bg: rgba(230, 81, 0, 0.15);
+  --color-source-note-text: #ffb74d;
+  --color-source-note-border: rgba(255, 183, 77, 0.4);
+  --color-source-agent-bg: rgba(96, 96, 96, 0.15);
+  --color-source-agent-text: #9e9e9e;
+  --color-source-agent-border: rgba(158, 158, 158, 0.4);
+
   /* === Spacing === */
   --spacing-sidebar: 240px;
   --spacing-sidebar-collapsed: 56px;

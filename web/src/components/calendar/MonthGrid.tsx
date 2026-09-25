@@ -139,7 +139,7 @@ export function MonthGrid({ anchor, events, kindFilter, onDayClick }: MonthGridP
                       className={`flex items-center gap-1 px-1 py-0.5 rounded text-caption truncate ${planned ? 'border border-dashed' : ''}`}
                       style={{
                         background: planned ? 'transparent' : 'var(--color-bg-base)',
-                        borderColor: planned ? 'var(--color-accent-orange, #f97316)' : undefined,
+                        borderColor: planned ? 'var(--color-accent-orange)' : undefined, // [F0925-25]
                         color: 'var(--color-text-primary)',
                       }}
                       role="note"

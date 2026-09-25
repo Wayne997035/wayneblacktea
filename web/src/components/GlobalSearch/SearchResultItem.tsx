@@ -12,7 +12,7 @@ function TypeBadge({ type }: TypeBadgeProps) {
     knowledge: 'var(--color-accent-blue)',
     decision: 'var(--color-accent-purple)',
     task: 'var(--color-success)',
-    project: 'var(--color-accent-amber, #f59e0b)',
+    project: 'var(--color-accent-amber)', // [F0925-25]
   }
 
   return (
