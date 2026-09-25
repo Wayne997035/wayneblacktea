@@ -15,8 +15,8 @@ type Querier interface {
 	// already in_progress, preventing duplicate activity_log rows on concurrent calls.
 	// Returns pgx.ErrNoRows when the task is already in_progress or not found.
 	BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams) (Task, error)
-	// artifact is presence-aware (Ω4, 2026-08-20-mcp-surface-spec.md): omitting
-	// it (sqlc.narg → SQL NULL) preserves whatever is already stored, matching
+	// artifact is presence-aware: omitting it (sqlc.narg → SQL NULL) preserves
+	// whatever is already stored, matching
 	// upsert_project_arch.summary/file_map's established convention. Without
 	// COALESCE, re-completing a reopened task without re-supplying artifact
 	// silently wiped an already-recorded PR/commit link.
@@ -105,7 +105,7 @@ type Querier interface {
 	UpdateReviewSchedule(ctx context.Context, arg UpdateReviewScheduleParams) (ReviewSchedule, error)
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)
 	// path/description/language/current_branch/next_planned_step are
-	// presence-aware (Ω6, 2026-08-20-mcp-surface-spec.md): the CASE checks the
+	// presence-aware: the CASE checks the
 	// bound PARAMETER ($2/$3/$4/$5/$7), not EXCLUDED.<col> (which post-INSERT is
 	// never NULL — it's whatever the VALUES clause carried). NULL means the
 	// caller omitted the field (preserve stored value); a non-NULL value

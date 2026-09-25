@@ -113,7 +113,7 @@ type UpsertRepoParams struct {
 }
 
 // path/description/language/current_branch/next_planned_step are
-// presence-aware (Ω6, 2026-08-20-mcp-surface-spec.md): the CASE checks the
+// presence-aware: the CASE checks the
 // bound PARAMETER ($2/$3/$4/$5/$7), not EXCLUDED.<col> (which post-INSERT is
 // never NULL — it's whatever the VALUES clause carried). NULL means the
 // caller omitted the field (preserve stored value); a non-NULL value

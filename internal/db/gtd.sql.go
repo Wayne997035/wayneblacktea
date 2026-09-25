@@ -69,8 +69,8 @@ type CompleteTaskParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// artifact is presence-aware (Ω4, 2026-08-20-mcp-surface-spec.md): omitting
-// it (sqlc.narg → SQL NULL) preserves whatever is already stored, matching
+// artifact is presence-aware: omitting it (sqlc.narg → SQL NULL) preserves
+// whatever is already stored, matching
 // upsert_project_arch.summary/file_map's established convention. Without
 // COALESCE, re-completing a reopened task without re-supplying artifact
 // silently wiped an already-recorded PR/commit link.
