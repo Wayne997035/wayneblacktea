@@ -59,10 +59,11 @@ describe('ReviewsPage — AI suggestions add flow', () => {
     const user = userEvent.setup()
     render(<ReviewsPage />)
 
-    const button = await screen.findByRole('button', { name: `加入學習：${suggestion.title}` })
+    const button = await screen.findByRole('button', { name: `Add to learning: ${suggestion.title}` })
     await user.click(button)
 
-    await waitFor(() => expect(screen.getByText('已加入')).toBeInTheDocument())
+    // [F0925-24] Chinese literal replaced by i18n; en.json's translated value asserted here.
+    await waitFor(() => expect(screen.getByText('Added')).toBeInTheDocument())
   })
 
   it('does NOT show "已加入" and shows a retryable error when the add mutation rejects', async () => {
@@ -70,11 +71,12 @@ describe('ReviewsPage — AI suggestions add flow', () => {
     const user = userEvent.setup()
     render(<ReviewsPage />)
 
-    const button = await screen.findByRole('button', { name: `加入學習：${suggestion.title}` })
+    const button = await screen.findByRole('button', { name: `Add to learning: ${suggestion.title}` })
     await user.click(button)
 
     await waitFor(() => expect(screen.getByText('Failed to add. Try again.')).toBeInTheDocument())
-    expect(screen.queryByText('已加入')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: `加入學習：${suggestion.title}` })).not.toBeDisabled()
+    // [F0925-24] Chinese literal replaced by i18n; en.json's translated value asserted here.
+    expect(screen.queryByText('Added')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Add to learning: ${suggestion.title}` })).not.toBeDisabled()
   })
 })

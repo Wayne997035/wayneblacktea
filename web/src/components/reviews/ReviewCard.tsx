@@ -85,9 +85,10 @@ export function ReviewCard({ review }: ReviewCardProps) {
         role="status"
         aria-live="polite"
       >
-        <span style={{ color: '#22c55e', fontWeight: 600 }}>✓ 已記錄</span>
+        {/* [F0925-24] */}
+        <span style={{ color: '#22c55e', fontWeight: 600 }}>✓ {t('reviews.card.recorded')}</span>
         <span style={{ color: 'var(--color-text-muted)' }}>
-          · 下次複習：{rated.nextDays}天後
+          · {t('reviews.card.nextReviewIn', { days: rated.nextDays })}
         </span>
       </div>
     )

@@ -302,6 +302,13 @@
       "contentPlaceholder": "在此寫下筆記...",
       "url": "URL（選填）",
       "urlPlaceholder": "https://..."
+    },
+    "card": {
+      "rateLabel": "評個分？",
+      "addToLearning": "加入學習",
+      "addingToLearning": "加入中…",
+      "addedToLearning": "已加入",
+      "addToLearningAria": "加入學習：{{title}}"
     }
   },
   "reviews": {
@@ -325,7 +332,21 @@
       "easy": "簡單"
     },
     "submitError": "儲存評分失敗，請重試。",
-    "addError": "加入失敗，請重試。"
+    "addError": "加入失敗，請重試。",
+    "card": {
+      "recorded": "已記錄",
+      "nextReviewIn": "下次複習：{{days}}天後"
+    },
+    "suggestions": {
+      "title": "AI 推薦",
+      "itemCount": "{{count}} 項",
+      "collapse": "收起",
+      "showAll": "顯示全部 {{count}} 項",
+      "add": "加入學習",
+      "adding": "加入中…",
+      "added": "已加入",
+      "addAria": "加入學習：{{title}}"
+    }
   },
   "comingSoon": {
     "title": "即將推出",

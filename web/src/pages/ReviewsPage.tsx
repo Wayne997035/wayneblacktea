@@ -70,11 +70,12 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
       >
         {suggestion.title}
       </span>
+      {/* [F0925-24] */}
       <button
         type="button"
         onClick={() => void handleAdd()}
         disabled={isPending || added}
-        aria-label={`加入學習：${suggestion.title}`}
+        aria-label={t('reviews.suggestions.addAria', { title: suggestion.title })}
         className="text-label rounded px-2 py-0.5 shrink-0 transition-opacity"
         style={{
           minHeight: '28px',
@@ -86,7 +87,11 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
           whiteSpace: 'nowrap',
         }}
       >
-        {added ? '已加入' : isPending ? '加入中…' : '加入學習'}
+        {added
+          ? t('reviews.suggestions.added')
+          : isPending
+            ? t('reviews.suggestions.adding')
+            : t('reviews.suggestions.add')}
       </button>
       {/* [F0925-21] Visible, retryable error when onAdd's promise rejects */}
       {error && (
@@ -99,6 +104,7 @@ function SuggestionItem({ suggestion, kind, onAdd, isPending }: SuggestionItemPr
 }
 
 function SuggestionsPanel() {
+  const { t } = useTranslation()
   const { data: suggestions, isLoading, isError } = useLearningSuggestions()
   const addFromKnowledge = useCreateConceptFromKnowledge()
   const createConcept = useCreateConcept()
@@ -126,8 +132,9 @@ function SuggestionsPanel() {
     >
       <div className="flex items-center gap-2 mb-3">
         <Sparkles size={15} aria-hidden="true" style={{ color: 'var(--color-accent-blue)' }} />
+        {/* [F0925-24] */}
         <h2 className="text-card-title" style={{ color: 'var(--color-text-primary)' }}>
-          AI 推薦
+          {t('reviews.suggestions.title')}
         </h2>
         <span
           className="text-label rounded-full px-2 py-0.5 ml-auto"
@@ -137,7 +144,7 @@ function SuggestionsPanel() {
             border: '1px solid var(--color-border)',
           }}
         >
-          {allItems.length} 項
+          {t('reviews.suggestions.itemCount', { count: allItems.length })}
         </span>
       </div>
 
@@ -178,7 +185,9 @@ function SuggestionsPanel() {
             padding: '4px 0',
           }}
         >
-          {expanded ? '收起' : `顯示全部 ${allItems.length} 項`}
+          {expanded
+            ? t('reviews.suggestions.collapse')
+            : t('reviews.suggestions.showAll', { count: allItems.length })}
         </button>
       )}
     </div>

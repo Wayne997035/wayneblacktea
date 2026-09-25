@@ -48,7 +48,8 @@ describe('ReviewCard', () => {
 
     await user.click(screen.getByRole('button', { name: 'Good' }))
 
-    await waitFor(() => expect(screen.getByText(/已記錄/)).toBeInTheDocument())
+    // [F0925-24] Chinese literal replaced by i18n; en.json's translated value asserted here.
+    await waitFor(() => expect(screen.getByText(/Recorded/)).toBeInTheDocument())
   })
 
   it('does NOT show "已記錄" and shows a retryable error when the API fails', async () => {
@@ -61,7 +62,8 @@ describe('ReviewCard', () => {
     await user.click(screen.getByRole('button', { name: 'Good' }))
 
     await waitFor(() => expect(screen.getByText('Failed to save your rating. Try again.')).toBeInTheDocument())
-    expect(screen.queryByText(/已記錄/)).not.toBeInTheDocument()
+    // [F0925-24] Chinese literal replaced by i18n; en.json's translated value asserted here.
+    expect(screen.queryByText(/Recorded/)).not.toBeInTheDocument()
     // Rating buttons remain so the user can retry.
     expect(screen.getByRole('button', { name: 'Good' })).toBeInTheDocument()
   })

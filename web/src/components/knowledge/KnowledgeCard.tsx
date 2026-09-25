@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ExternalLink } from 'lucide-react'
 import type { KnowledgeItem } from '../../types/api'
 import { useCreateConceptFromKnowledge } from '../../hooks/useReviews'
@@ -30,6 +31,7 @@ interface InteractiveStarRatingProps {
 }
 
 function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
+  const { t } = useTranslation()
   const [hovered, setHovered] = useState<number | null>(null)
   const updateKnowledge = useUpdateKnowledge()
 
@@ -49,7 +51,8 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
         onMouseEnter={() => setHovered(1)}
         aria-label="Rate this item"
       >
-        評個分？
+        {/* [F0925-24] */}
+        {t('knowledge.card.rateLabel')}
       </span>
     )
   }
@@ -94,6 +97,7 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
 }
 
 export function KnowledgeCard({ item }: KnowledgeCardProps) {
+  const { t } = useTranslation()
   const addToLearning = useCreateConceptFromKnowledge()
   const [added, setAdded] = useState(false)
   // [F0925-22] Guard item.url through the scheme allowlist before it can
@@ -195,12 +199,12 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
           {/* Interactive learning value stars */}
           <InteractiveStarRating value={item.learning_value} itemId={item.id} />
 
-          {/* Add to learning button */}
+          {/* Add to learning button — [F0925-24] */}
           <button
             type="button"
             onClick={handleAddToLearning}
             disabled={addToLearning.isPending || added}
-            aria-label={`加入學習：${item.title}`}
+            aria-label={t('knowledge.card.addToLearningAria', { title: item.title })}
             className="text-label rounded px-2 py-0.5 transition-opacity"
             style={{
               minHeight: '28px',
@@ -212,7 +216,11 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
               whiteSpace: 'nowrap',
             }}
           >
-            {added ? '已加入' : addToLearning.isPending ? '加入中…' : '加入學習'}
+            {added
+              ? t('knowledge.card.addedToLearning')
+              : addToLearning.isPending
+                ? t('knowledge.card.addingToLearning')
+                : t('knowledge.card.addToLearning')}
           </button>
 
           {/* URL link — [F0925-22] non-allowlisted schemes render inert */}
