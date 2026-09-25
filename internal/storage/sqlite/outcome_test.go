@@ -1440,8 +1440,8 @@ func TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt(t *testing.T) {
 
 // TestSQLiteOutcomeStore_SeedDraft_FinalizeDraft_RelatedRuleIDs_ProductionPath
 // mirrors the PG production-path test (TestStore_SeedDraft_FinalizeDraft_
-// RelatedRuleIDs_ProductionPath) for backend-security-design.md §6.5 parity:
-// the actual complete_task -> record_outcome call sequence, starting from
+// RelatedRuleIDs_ProductionPath) for dual-backend parity: the actual
+// complete_task -> record_outcome call sequence, starting from
 // SeedDraft rather than CreateOutcome, must round-trip related_rule_ids
 // correctly. SQLite never had F1's bug, but every other FinalizeDraft test
 // in this file also happens to seed via CreateOutcome, so this closes the

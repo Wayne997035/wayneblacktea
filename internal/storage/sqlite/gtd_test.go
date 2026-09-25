@@ -1243,8 +1243,8 @@ func assertSqliteProjectRepoNameFreshRead(t *testing.T, ctx context.Context, s *
 // response (and the shared projectsSelectCols/scanProject read path) MUST
 // carry repo_name with the same shape a subsequent fresh read (GetProjectByID)
 // returns, for all three RepoName pointer states (nil/non-empty/empty).
-// Mirrors TestGTDStore_PG_UpdateProject_RepoName in store_postgres_test.go —
-// required by backend-security-design.md §6.5 (dual-backend integration parity).
+// Mirrors TestGTDStore_PG_UpdateProject_RepoName in store_postgres_test.go
+// (dual-backend integration parity).
 func TestGTDStore_UpdateProject_RepoName(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	t.Run("repo_name omitted (nil pointer) → preserves existing value", func(t *testing.T) {
@@ -1656,7 +1656,7 @@ func TestGTDStore_UpdateTask_PartialPatch(t *testing.T) {
 }
 
 // TestGTDStore_UpdateTask_AllFields verifies all mutable fields are written correctly.
-// Paired with TestGTDStore_UpdateTask_PG_AllFields per backend-security-design.md §6.5.
+// Paired with TestGTDStore_UpdateTask_PG_AllFields (dual-backend integration parity).
 func TestGTDStore_UpdateTask_AllFields(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	s := openMem(t, "")
@@ -1727,7 +1727,7 @@ func TestGTDStore_UpdateTask_NotFound(t *testing.T) {
 // TestGTDStore_UpdateTask_Kind_AllValidValues verifies that every kind in
 // validator.ValidTaskKinds round-trips through UpdateTask on the SQLite
 // backend (GTD c282cc04 item #1). Paired with
-// TestGTDStore_UpdateTask_PG_Kind_AllValidValues per backend-security-design.md §6.5.
+// TestGTDStore_UpdateTask_PG_Kind_AllValidValues (dual-backend integration parity).
 func TestGTDStore_UpdateTask_Kind_AllValidValues(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	s := openMem(t, "")

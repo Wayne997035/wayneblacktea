@@ -97,8 +97,7 @@ func TestDecisionStore_ImportDecision_DuplicateIDFails(t *testing.T) {
 // TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows verifies
 // ImportDecision has its own Source.Valid() guard, matching Log/LogTx,
 // instead of delegating that validation to the decisions.source CHECK
-// constraint (backend-security-design.md §5.2; security review round 2,
-// m-1). Asserts both the sentinel error and that no row lands in the table.
+// constraint (security review round 2, m-1). Asserts both the sentinel error and that no row lands in the table.
 func TestDecisionStore_ImportDecision_InvalidSourceWritesZeroRows(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	raw, s := openDecisionDB(t, ":memory:", "")

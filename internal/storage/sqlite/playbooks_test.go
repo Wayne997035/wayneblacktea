@@ -110,7 +110,7 @@ func TestSQLitePlaybookStore_List(t *testing.T) {
 	// Seed two playbooks.
 	_, err := store.Create(ctx, playbook.CreateParams{
 		TriggerPattern: "Before adding a migration",
-		ActionTemplate: "Read backend-security-design.md §6",
+		ActionTemplate: "Read the migration conventions",
 		Confidence:     0.90,
 	})
 	if err != nil {

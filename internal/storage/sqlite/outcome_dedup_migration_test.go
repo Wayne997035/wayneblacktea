@@ -77,8 +77,8 @@ func insertLegacyUnknownOutcome(t *testing.T, conn *sql.DB, wsID, entityType, en
 // code path (pre-decision-80c1e8ae) unconditionally INSERTed with no
 // uniqueness rule at all — must not abort CREATE UNIQUE INDEX. Mirrors the
 // Postgres coverage (internal/outcome's testcontainers test) —
-// backend-security-design.md §6.5 dual-backend parity requires the same
-// dedup SQL to be independently verified on both engines, since the two
+// dual-backend parity requires the same dedup SQL to be independently
+// verified on both engines, since the two
 // migration files use different window-function/COALESCE dialect syntax
 // even though the semantics are meant to be identical.
 func TestMigration000074_Dedup_SQLite(t *testing.T) {

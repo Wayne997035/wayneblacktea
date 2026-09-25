@@ -344,8 +344,7 @@ func TestKnowledgeStore_UpdateLearningValue(t *testing.T) {
 // Search, the mutating counterpart, is exercised in the same test as a
 // contrast: it DOES bump recall, proving the assertions below aren't
 // vacuously true. Mirrors
-// internal/knowledge/store_search_readonly_pg_test.go (PG+SQLite parity,
-// backend-security-design.md §6.5).
+// internal/knowledge/store_search_readonly_pg_test.go (PG+SQLite parity).
 func TestKnowledgeStore_SearchReadOnlyDoesNotBumpRecall(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	ctx := context.Background()

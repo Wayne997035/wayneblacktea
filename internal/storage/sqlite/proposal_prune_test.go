@@ -7,9 +7,8 @@ package sqlite_test
 // integration coverage in internal/scheduler/pending_proposals_prune_pg_test.go
 // (TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows /
 // TestRunDailyPendingProposalsPrune_TypeTaskTTL) against a real SQLite
-// :memory: DB instead of a testcontainer — SQLite is the documented
-// testcontainers exception (backend-security-design.md §6.5): no container
-// image exists for it, so a real :memory: DB is the "not mocked" bar here.
+// :memory: DB instead of a testcontainer — SQLite has no container
+// image, so a real :memory: DB is the "not mocked" bar here.
 
 import (
 	"context"
@@ -213,7 +212,7 @@ func TestProposalStore_MarkAndDeleteStaleProposals_TypeTaskTTL(t *testing.T) {
 // TestProposalStore_MarkAndDeleteStaleProposals_EmptyTableNoPanic verifies
 // the mark+delete pair is safe to run against an empty table — production
 // may go days with no rows to touch. Regression guard for the "MUST have a
-// working retention policy" requirement (backend-security-design.md §1.3):
+// working retention policy" requirement:
 // a panic here would take the whole scheduler job down, not just skip a
 // no-op prune.
 func TestProposalStore_MarkAndDeleteStaleProposals_EmptyTableNoPanic(t *testing.T) {
