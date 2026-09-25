@@ -1331,6 +1331,19 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 		return nil, 0, errWrap("RestoreProject insert project", err)
 	}
 
+	// [F0925-30] Same repo_name clean-up as the Postgres store: a restored
+	// value breaking the workspace repo name rule is cleared to NULL, NULL
+	// stays NULL, and the restore still succeeds.
+	var restoredRepo sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT repo_name FROM projects WHERE id = ?1`, id.String()).Scan(&restoredRepo); err != nil {
+		return nil, 0, errWrap("RestoreProject read repo_name", err)
+	}
+	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET repo_name = NULL WHERE id = ?1`, id.String()); err != nil {
+			return nil, 0, errWrap("RestoreProject clear repo_name", err)
+		}
+	}
+
 	//nolint:unqueryvet // sqliteTaskRestoreInsertQ: same rationale as
 	// sqliteProjectRestoreInsertQ above (built once from
 	// sqliteTaskRestoreColumns, a hardcoded Go string slice).

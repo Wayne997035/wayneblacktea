@@ -2159,6 +2159,20 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 		return nil, 0, fmt.Errorf("restoring project row %s: %w", id, err)
 	}
 
+	// [F0925-30] The tombstone payload predates the workspace repo name rule
+	// (the cleanup migration clears table columns, not tombstone JSON), so a
+	// restored repo_name breaking it is cleared to NULL — the restore itself
+	// still succeeds. NULL (a project with no linked repo) stays NULL.
+	var restoredRepo pgtype.Text
+	if err := tx.QueryRow(ctx, `SELECT repo_name FROM projects WHERE id = $1`, id).Scan(&restoredRepo); err != nil {
+		return nil, 0, fmt.Errorf("reading restored repo_name for project %s: %w", id, err)
+	}
+	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
+		if _, err := tx.Exec(ctx, `UPDATE projects SET repo_name = NULL WHERE id = $1`, id); err != nil {
+			return nil, 0, fmt.Errorf("clearing restored repo_name for project %s: %w", id, err)
+		}
+	}
+
 	taskTag, err := tx.Exec(
 		ctx,
 		`INSERT INTO tasks
