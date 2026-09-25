@@ -345,8 +345,8 @@ const wantStoredDataReaderTotal = 95
 func TestStoredDataReaderInventory_TotalMatchesDocumentedCount(t *testing.T) {
 	t.Parallel()
 	if got := len(storedDataReaders); got != wantStoredDataReaderTotal {
-		t.Errorf("len(storedDataReaders) = %d, want %d (.specs/2026-08-20-u13-inventory.md) — "+
-			"table and doc have drifted apart", got, wantStoredDataReaderTotal)
+		t.Errorf("len(storedDataReaders) = %d, want %d (the stored-data inventory table) — "+
+			"table and inventory have drifted apart", got, wantStoredDataReaderTotal)
 	}
 }
 
