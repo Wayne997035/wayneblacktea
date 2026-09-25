@@ -111,7 +111,8 @@ type Querier interface {
 	// caller omitted the field (preserve stored value); a non-NULL value
 	// (including "") means an explicit set. Without this, every sync_repo call
 	// that didn't re-specify a field silently wiped it. known_issues already had
-	// this protection.
+	// this protection. github_slug ($10, [F0925-31]) follows the same
+	// presence-aware rule.
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error)
 }
 

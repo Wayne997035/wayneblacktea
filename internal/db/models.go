@@ -395,6 +395,7 @@ type Repo struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	GithubSlug      pgtype.Text        `json:"github_slug"`
 }
 
 type ReviewSchedule struct {

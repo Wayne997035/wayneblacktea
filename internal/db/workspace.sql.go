@@ -12,7 +12,7 @@ import (
 )
 
 const getRepoByName = `-- name: GetRepoByName :one
-SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id FROM repos
+SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id, github_slug FROM repos
 WHERE name = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
 LIMIT 1
@@ -40,12 +40,13 @@ func (q *Queries) GetRepoByName(ctx context.Context, arg GetRepoByNameParams) (R
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.GithubSlug,
 	)
 	return i, err
 }
 
 const listActiveRepos = `-- name: ListActiveRepos :many
-SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id FROM repos
+SELECT id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id, github_slug FROM repos
 WHERE status = 'active'
   AND ($1::uuid IS NULL OR workspace_id = $1)
 ORDER BY last_activity DESC NULLS LAST, name ASC
@@ -74,6 +75,7 @@ func (q *Queries) ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.WorkspaceID,
+			&i.GithubSlug,
 		); err != nil {
 			return nil, err
 		}
@@ -86,8 +88,8 @@ func (q *Queries) ListActiveRepos(ctx context.Context, workspaceID pgtype.UUID) 
 }
 
 const upsertRepo = `-- name: UpsertRepo :one
-INSERT INTO repos (name, path, description, language, current_branch, known_issues, next_planned_step, last_activity, workspace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO repos (name, path, description, language, current_branch, known_issues, next_planned_step, last_activity, workspace_id, github_slug)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (workspace_id, name) DO UPDATE SET
     path = CASE WHEN $2 IS NULL THEN repos.path ELSE EXCLUDED.path END,
     description = CASE WHEN $3 IS NULL THEN repos.description ELSE EXCLUDED.description END,
@@ -95,9 +97,10 @@ ON CONFLICT (workspace_id, name) DO UPDATE SET
     current_branch = CASE WHEN $5 IS NULL THEN repos.current_branch ELSE EXCLUDED.current_branch END,
     known_issues = COALESCE(EXCLUDED.known_issues, repos.known_issues),
     next_planned_step = CASE WHEN $7 IS NULL THEN repos.next_planned_step ELSE EXCLUDED.next_planned_step END,
+    github_slug = CASE WHEN $10 IS NULL THEN repos.github_slug ELSE EXCLUDED.github_slug END,
     last_activity = EXCLUDED.last_activity,
     updated_at = NOW()
-RETURNING id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id
+RETURNING id, name, path, description, language, status, current_branch, known_issues, next_planned_step, last_activity, created_at, updated_at, workspace_id, github_slug
 `
 
 type UpsertRepoParams struct {
@@ -110,6 +113,7 @@ type UpsertRepoParams struct {
 	NextPlannedStep pgtype.Text        `json:"next_planned_step"`
 	LastActivity    pgtype.Timestamptz `json:"last_activity"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	GithubSlug      pgtype.Text        `json:"github_slug"`
 }
 
 // path/description/language/current_branch/next_planned_step are
@@ -119,7 +123,8 @@ type UpsertRepoParams struct {
 // caller omitted the field (preserve stored value); a non-NULL value
 // (including "") means an explicit set. Without this, every sync_repo call
 // that didn't re-specify a field silently wiped it. known_issues already had
-// this protection.
+// this protection. github_slug ($10, [F0925-31]) follows the same
+// presence-aware rule.
 func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error) {
 	row := q.db.QueryRow(ctx, upsertRepo,
 		arg.Name,
@@ -131,6 +136,7 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, e
 		arg.NextPlannedStep,
 		arg.LastActivity,
 		arg.WorkspaceID,
+		arg.GithubSlug,
 	)
 	var i Repo
 	err := row.Scan(
@@ -147,6 +153,7 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.WorkspaceID,
+		&i.GithubSlug,
 	)
 	return i, err
 }

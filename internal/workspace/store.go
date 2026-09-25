@@ -61,7 +61,7 @@ func (s *Store) RepoByName(ctx context.Context, name string) (*db.Repo, error) {
 func (s *Store) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error) {
 	const q = `SELECT id, name, path, description, language, status,
 		current_branch, known_issues, next_planned_step, last_activity,
-		created_at, updated_at, workspace_id
+		created_at, updated_at, workspace_id, github_slug
 		FROM repos
 		WHERE id = $1
 		  AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -71,7 +71,7 @@ func (s *Store) RepoByID(ctx context.Context, id uuid.UUID) (*db.Repo, error) {
 	if err := row.Scan(
 		&r.ID, &r.Name, &r.Path, &r.Description, &r.Language, &r.Status,
 		&r.CurrentBranch, &r.KnownIssues, &r.NextPlannedStep, &r.LastActivity,
-		&r.CreatedAt, &r.UpdatedAt, &r.WorkspaceID,
+		&r.CreatedAt, &r.UpdatedAt, &r.WorkspaceID, &r.GithubSlug,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -128,6 +128,9 @@ func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (*db.Repo, e
 	if !validator.ValidRepoPath(p.Name) {
 		return nil, fmt.Errorf("upserting repo: %w", validator.ErrInvalidRepoName)
 	}
+	if p.GitHubSlug != nil && *p.GitHubSlug != "" && !validator.ValidGitHubSlug(*p.GitHubSlug) {
+		return nil, fmt.Errorf("upserting repo: %w", validator.ErrInvalidGitHubSlug)
+	}
 	if !s.workspaceID.Valid {
 		return nil, fmt.Errorf("UpsertRepo requires a non-nil workspaceID after migration 000028")
 	}
@@ -145,6 +148,7 @@ func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (*db.Repo, e
 		KnownIssues:     p.KnownIssues,
 		NextPlannedStep: pgconv.ToTextPtr(p.NextPlannedStep),
 		WorkspaceID:     s.workspaceID,
+		GithubSlug:      pgconv.ToTextPtr(p.GitHubSlug),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("upserting repo %q: %w", p.Name, err)

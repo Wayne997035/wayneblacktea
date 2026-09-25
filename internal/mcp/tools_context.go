@@ -782,6 +782,11 @@ func wrapUntrustedRepo(r *db.Repo) *db.Repo {
 	if r.NextPlannedStep.Valid {
 		out.NextPlannedStep.String = clipSafe(r.NextPlannedStep.String, repoLongFieldMaxRunes)
 	}
+	// [F0925-31] github_slug is validated at write time, but RepoSlugRe has
+	// no length cap, so it is clipped like the other short fields.
+	if r.GithubSlug.Valid {
+		out.GithubSlug.String = clipSafe(r.GithubSlug.String, repoShortFieldMaxRunes)
+	}
 	if len(r.KnownIssues) > 0 {
 		issues := make([]string, len(r.KnownIssues))
 		for i, iss := range r.KnownIssues {

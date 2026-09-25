@@ -23,4 +23,8 @@ type UpsertRepoParams struct {
 	CurrentBranch   *string
 	KnownIssues     []string // nil → preserve; non-nil (incl. empty slice) → replace
 	NextPlannedStep *string
+	// GitHubSlug is the repo's owner/repo on GitHub ([F0925-31]); same
+	// presence semantics as the fields above. A non-empty value must pass
+	// validator.ValidGitHubSlug.
+	GitHubSlug *string
 }

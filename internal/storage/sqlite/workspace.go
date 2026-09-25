@@ -27,7 +27,7 @@ var _ workspace.StoreIface = (*WorkspaceStore)(nil)
 
 const reposSelectCols = `id, name, path, description, language, status,
 	current_branch, known_issues, next_planned_step, last_activity, created_at,
-	updated_at, workspace_id`
+	updated_at, workspace_id, github_slug`
 
 func encodeStringSlice(values []string) (string, error) {
 	if values == nil {
@@ -61,10 +61,10 @@ func scanRepo(scan func(...any) error) (db.Repo, error) {
 		pathNS, descNS, langNS     sql.NullString
 		branchNS, issuesNS, stepNS sql.NullString
 		lastNS, createdNS, updNS   sql.NullString
-		wsNS                       sql.NullString
+		wsNS, slugNS               sql.NullString
 	)
 	err := scan(&idStr, &r.Name, &pathNS, &descNS, &langNS, &r.Status,
-		&branchNS, &issuesNS, &stepNS, &lastNS, &createdNS, &updNS, &wsNS)
+		&branchNS, &issuesNS, &stepNS, &lastNS, &createdNS, &updNS, &wsNS, &slugNS)
 	if err != nil {
 		return db.Repo{}, err
 	}
@@ -85,6 +85,7 @@ func scanRepo(scan func(...any) error) (db.Repo, error) {
 	r.CreatedAt = parseTimestamptz(createdNS)
 	r.UpdatedAt = parseTimestamptz(updNS)
 	r.WorkspaceID = pgtypeUUID(nsString(wsNS))
+	r.GithubSlug = pgtypeText(slugNS.String, slugNS.Valid)
 	return r, nil
 }
 
@@ -193,6 +194,10 @@ func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoP
 	if !validator.ValidRepoPath(p.Name) {
 		return nil, fmt.Errorf("upserting repo: %w", validator.ErrInvalidRepoName)
 	}
+	// [F0925-31] github_slug reaches `gh -R`; "" clears it.
+	if p.GitHubSlug != nil && *p.GitHubSlug != "" && !validator.ValidGitHubSlug(*p.GitHubSlug) {
+		return nil, fmt.Errorf("upserting repo: %w", validator.ErrInvalidGitHubSlug)
+	}
 	id := uuid.New()
 	var issuesArg any
 	if p.KnownIssues != nil {
@@ -213,8 +218,8 @@ func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoP
 	// preserve-on-omit for existing rows is unaffected.
 	const q = `INSERT INTO repos
 		(id, workspace_id, name, path, description, language, current_branch,
-		 known_issues, next_planned_step, last_activity, created_at, updated_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, '[]'), ?9, ?10, ?10, ?10)
+		 known_issues, next_planned_step, last_activity, created_at, updated_at, github_slug)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, '[]'), ?9, ?10, ?10, ?10, ?11)
 		ON CONFLICT(COALESCE(workspace_id,''), name) DO UPDATE SET
 			path = CASE WHEN ?4 IS NULL THEN repos.path ELSE excluded.path END,
 			description = CASE WHEN ?5 IS NULL THEN repos.description ELSE excluded.description END,
@@ -222,13 +227,14 @@ func (s *WorkspaceStore) UpsertRepo(ctx context.Context, p workspace.UpsertRepoP
 			current_branch = CASE WHEN ?7 IS NULL THEN repos.current_branch ELSE excluded.current_branch END,
 			known_issues = CASE WHEN ?8 IS NULL THEN repos.known_issues ELSE excluded.known_issues END,
 			next_planned_step = CASE WHEN ?9 IS NULL THEN repos.next_planned_step ELSE excluded.next_planned_step END,
+			github_slug = CASE WHEN ?11 IS NULL THEN repos.github_slug ELSE excluded.github_slug END,
 			last_activity = excluded.last_activity,
 			updated_at = excluded.updated_at`
 	_, err := s.db.conn.ExecContext(ctx, q,
 		id.String(), s.db.workspaceArg(), p.Name, nullStringPtr(p.Path),
 		nullStringPtr(p.Description), nullStringPtr(p.Language),
 		nullStringPtr(p.CurrentBranch), issuesArg,
-		nullStringPtr(p.NextPlannedStep), now)
+		nullStringPtr(p.NextPlannedStep), now, nullStringPtr(p.GitHubSlug))
 	if err != nil {
 		return nil, errWrap("UpsertRepo", err)
 	}
