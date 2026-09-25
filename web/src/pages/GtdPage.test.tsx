@@ -66,6 +66,7 @@ function makeTask(overrides: Partial<Task>): Task {
     id: 't?',
     title: 'a task',
     status: 'pending',
+    area: 'unsorted', // [F0925-23]
     priority: 3,
     created_at: '2026-04-01T00:00:00Z',
     updated_at: '2026-05-01T00:00:00Z',

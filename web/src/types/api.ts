@@ -21,6 +21,9 @@ export interface Task {
   title: string;
   description?: string | null;
   status: TaskStatus;
+  // [F0925-23] Frontend response type must mirror the backend db.Task field
+  // (internal/db/models.go) so callers can't silently read `undefined`.
+  area: string;
   priority: 1 | 2 | 3 | 4 | 5;
   importance?: number | null;
   assignee?: string | null;
