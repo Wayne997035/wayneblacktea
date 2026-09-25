@@ -938,7 +938,7 @@ func wireScheduler(
 		return nil, fmt.Errorf("creating scheduler: %w", err)
 	}
 	if candidateStore != nil {
-		// 30-day TTL, 23:00 Asia/Taipei (backend-security-design.md §1.3).
+		// 30-day TTL, 23:00 Asia/Taipei.
 		if err := sched.WithPruner(scheduler.PrunerSpec{
 			Name:      "candidate",
 			Store:     scheduler.NewCandidatePrunerAdapter(candidateStore),
@@ -993,7 +993,7 @@ func wireScheduler(
 		}
 	}
 	// Wire behavior rule pruner (both backends; 365-day TTL for rejected/deprecated
-	// rows per backend-security-design.md §1.3; active/proposed rows never auto-pruned).
+	// rows; active/proposed rows never auto-pruned).
 	// 04:00 is distinct from the 03:00/03:30/03:45 cluster to avoid gocron
 	// singleton-mode reschedule interference under slow DB conditions.
 	if stores.BehaviorRule() != nil {
@@ -1007,8 +1007,8 @@ func wireScheduler(
 			return nil, fmt.Errorf("wiring behavior rule pruner: %w", err)
 		}
 	}
-	// Wire work_session_evidence pruner (both backends; 90-day TTL per
-	// backend-security-design.md §1.3, wbt-2.0 P2.4). 04:20 avoids overlap
+	// Wire work_session_evidence pruner (both backends; 90-day TTL,
+	// wbt-2.0 P2.4). 04:20 avoids overlap
 	// with the 03:00-04:15 prune cluster (outcome 03:30, reflection 03:45,
 	// discipline-event-m8 03:50, behavior-rule 04:00, ai-cost-ledger 04:15)
 	// and the 04:15/04:30 weekly/daily atom jobs.
@@ -1023,8 +1023,8 @@ func wireScheduler(
 			return nil, fmt.Errorf("wiring work_session_evidence pruner: %w", err)
 		}
 	}
-	// Wire activity_log pruner (both backends; 365-day TTL per
-	// backend-security-design.md §1.3). 04:35 avoids the 03:00-04:30 prune
+	// Wire activity_log pruner (both backends; 365-day TTL). 04:35 avoids
+	// the 03:00-04:30 prune
 	// cluster (pending-proposals/merged-prs 03:00, outcome 03:30, reflection
 	// 03:45, discipline-event-m8 03:50, behavior-rule 04:00, ai-cost-ledger
 	// 04:15, work-session-evidence 04:20, atom-consolidation 04:30).
@@ -1041,7 +1041,7 @@ func wireScheduler(
 	}
 	// Wire project_status_snapshots pruner (Postgres only — snapStore is nil
 	// under SQLite or when CLAUDE_API_KEY is unset; see buildSnapshotDeps).
-	// 180-day TTL per backend-security-design.md §1.3.
+	// 180-day TTL.
 	if snapStore != nil {
 		if err := sched.WithPruner(scheduler.PrunerSpec{
 			Name:      "project_status_snapshot",
@@ -1054,7 +1054,7 @@ func wireScheduler(
 		}
 	}
 	// Wire session_handoffs pruner (both backends; 365-day TTL for resolved
-	// handoffs per backend-security-design.md §1.3; open handoffs never pruned).
+	// handoffs; open handoffs never pruned).
 	if stores.Session() != nil {
 		if err := sched.WithPruner(scheduler.PrunerSpec{
 			Name:      "session_handoff",

@@ -48,8 +48,8 @@ import (
 )
 
 // allowedProviders is the exhaustive client-side allowlist for --provider
-// (backend-security-design.md §5.2: never delegate flag validation to a
-// downstream failure). Only "claude" is wired today; a Phase 6+ provider
+// (flag validation never delegates to a downstream failure). Only "claude"
+// is wired today; a Phase 6+ provider
 // gets added here alongside its llm.JSONClient construction.
 var allowedProviders = []string{"claude"}
 
@@ -58,8 +58,8 @@ func main() {
 }
 
 func run() int {
-	// Route slog to stderr so stdout carries only the JSON result payload
-	// (backend-security-design.md §5.1: slog destination control). Go's
+	// Route slog to stderr so stdout carries only the JSON result payload.
+	// Go's
 	// slog default handler already targets os.Stderr (verified against
 	// log/slog's source: defaultHandler delegates to the standard `log`
 	// package, whose default writer is os.Stderr) — this call makes that
@@ -147,8 +147,8 @@ func writeResults(results []evals.EvalResult, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// validateFlags is the exhaustive client-side validation gate
-// (backend-security-design.md §5.2): every flag value is checked against an
+// validateFlags is the exhaustive client-side validation gate:
+// every flag value is checked against an
 // explicit allowlist here rather than delegated to a downstream failure
 // (e.g. a provider client construction panic or a confusing grader error).
 func validateFlags(provider, model, category string) error {

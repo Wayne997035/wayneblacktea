@@ -311,7 +311,7 @@ golang-migrate records applied migrations in `schema_migrations`. Re-running an 
 
 ## 9. Observability TTL retention policies
 
-Backed by `backend-security-design.md §1.3` — every observability table MUST
+Every observability table MUST
 have a working retention policy in code, not just in design docs. The wayneblacktea
 server runs the cleanup automatically via the embedded scheduler when a
 Postgres pool is wired in; SQLite installs are dev-local single-tenant and do
