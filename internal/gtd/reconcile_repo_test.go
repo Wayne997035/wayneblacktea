@@ -55,63 +55,117 @@ func TestMatchMergedPRs_RepoAware(t *testing.T) {
 
 	t.Run("same repo matches, case-insensitively", func(t *testing.T) {
 		t.Parallel()
-		task := branchTask("feat/x", &pid, now)
-		p := pr
-		p.Repo = "wayne997035/WAYNEBLACKTEA"
-		res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
-		if err != nil || len(res.Matches) != 1 || res.Matches[0].TaskID != task.ID {
-			t.Fatalf("want 1 match on %s, got %+v (err %v)", task.ID, res, err)
-		}
+		assertSameRepoBranchMatches(t, ctx, resolve, pid, pr, now)
 	})
 	t.Run("other repo's same branch is skipped", func(t *testing.T) {
 		t.Parallel()
-		task := branchTask("feat/x", &pid, now)
-		p := pr
-		p.Repo = "someone/else"
-		res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
-		if err != nil || len(res.Matches) != 0 || res.SkippedRepoMismatch != 1 || len(res.UnverifiedRepo) != 0 {
-			t.Fatalf("want 0 matches, 1 skipped, got %+v (err %v)", res, err)
-		}
+		assertOtherRepoBranchSkipped(t, ctx, resolve, pid, pr, now)
 	})
 	t.Run("unknown repo becomes an unverified candidate", func(t *testing.T) {
 		t.Parallel()
-		task := branchTask("feat/x", nil, now)
-		p := pr
-		p.Repo = "Wayne997035/wayneblacktea"
-		res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
-		if err != nil || len(res.Matches) != 0 || len(res.UnverifiedRepo) != 1 || res.UnverifiedRepo[0].TaskID != task.ID {
-			t.Fatalf("want 1 unverified, 0 matches, got %+v (err %v)", res, err)
-		}
+		assertUnknownRepoBecomesUnverified(t, ctx, resolve, pr, now)
 	})
 	t.Run("winner comes from verified, unknown sibling is unverified", func(t *testing.T) {
 		t.Parallel()
-		verified := branchTask("feat/x", &pid, now.Add(-time.Hour))
-		unknown := branchTask("feat/x", nil, now) // more recent, but repo unknown
-		p := pr
-		p.Repo = "Wayne997035/wayneblacktea"
-		res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{verified, unknown}}, []gtd.MergedPR{p}, resolve)
-		if err != nil || len(res.Matches) != 1 || res.Matches[0].TaskID != verified.ID ||
-			len(res.UnverifiedRepo) != 1 || res.UnverifiedRepo[0].TaskID != unknown.ID {
-			t.Fatalf("want verified winner + unknown unverified, got %+v (err %v)", res, err)
-		}
+		assertVerifiedWinnerUnknownSiblingUnverified(t, ctx, resolve, pid, pr, now)
 	})
 	t.Run("pr_url_exact ignores repo", func(t *testing.T) {
 		t.Parallel()
-		url := "https://github.com/someone/else/pull/9"
-		task := db.Task{ID: uuid.New(), Status: string(gtd.TaskStatusPending), PRUrl: pgtype.Text{String: url, Valid: true}}
-		p := gtd.MergedPR{URL: url, HeadRef: "whatever", Repo: "someone/else", MergedAt: now}
-		res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
-		if err != nil || len(res.Matches) != 1 || res.Matches[0].Reason != gtd.MatchReasonPRURLExact {
-			t.Fatalf("want pr_url_exact match, got %+v (err %v)", res, err)
-		}
+		assertPRURLExactIgnoresRepo(t, ctx, resolve, now)
 	})
 	t.Run("nil resolver is an error", func(t *testing.T) {
 		t.Parallel()
-		res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{branchTask("feat/x", &pid, now)}}, []gtd.MergedPR{pr}, nil)
-		if err == nil || len(res.Matches) != 0 {
-			t.Fatalf("nil resolver must error with no matches, got %+v (err %v)", res, err)
-		}
+		assertNilResolverErrors(t, ctx, pid, pr, now)
 	})
+}
+
+// assertSameRepoBranchMatches is TestMatchMergedPRs_RepoAware's "same repo
+// matches, case-insensitively" case, extracted to a top-level function only
+// to bring the enclosing test's cyclomatic complexity back under the gocyclo
+// threshold. Assertion content is unchanged from the inline t.Run body.
+func assertSameRepoBranchMatches(
+	t *testing.T, ctx context.Context, resolve gtd.RepoResolver, pid uuid.UUID, pr gtd.MergedPR, now time.Time,
+) {
+	t.Helper()
+	task := branchTask("feat/x", &pid, now)
+	p := pr
+	p.Repo = "wayne997035/WAYNEBLACKTEA"
+	res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
+	if err != nil || len(res.Matches) != 1 || res.Matches[0].TaskID != task.ID {
+		t.Fatalf("want 1 match on %s, got %+v (err %v)", task.ID, res, err)
+	}
+}
+
+// assertOtherRepoBranchSkipped is the "other repo's same branch is skipped"
+// case — see assertSameRepoBranchMatches for why this is a top-level func.
+func assertOtherRepoBranchSkipped(
+	t *testing.T, ctx context.Context, resolve gtd.RepoResolver, pid uuid.UUID, pr gtd.MergedPR, now time.Time,
+) {
+	t.Helper()
+	task := branchTask("feat/x", &pid, now)
+	p := pr
+	p.Repo = "someone/else"
+	res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
+	if err != nil || len(res.Matches) != 0 || res.SkippedRepoMismatch != 1 || len(res.UnverifiedRepo) != 0 {
+		t.Fatalf("want 0 matches, 1 skipped, got %+v (err %v)", res, err)
+	}
+}
+
+// assertUnknownRepoBecomesUnverified is the "unknown repo becomes an
+// unverified candidate" case — see assertSameRepoBranchMatches for why this
+// is a top-level func.
+func assertUnknownRepoBecomesUnverified(
+	t *testing.T, ctx context.Context, resolve gtd.RepoResolver, pr gtd.MergedPR, now time.Time,
+) {
+	t.Helper()
+	task := branchTask("feat/x", nil, now)
+	p := pr
+	p.Repo = "Wayne997035/wayneblacktea"
+	res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
+	if err != nil || len(res.Matches) != 0 || len(res.UnverifiedRepo) != 1 || res.UnverifiedRepo[0].TaskID != task.ID {
+		t.Fatalf("want 1 unverified, 0 matches, got %+v (err %v)", res, err)
+	}
+}
+
+// assertVerifiedWinnerUnknownSiblingUnverified is the "winner comes from
+// verified, unknown sibling is unverified" case — see
+// assertSameRepoBranchMatches for why this is a top-level func.
+func assertVerifiedWinnerUnknownSiblingUnverified(
+	t *testing.T, ctx context.Context, resolve gtd.RepoResolver, pid uuid.UUID, pr gtd.MergedPR, now time.Time,
+) {
+	t.Helper()
+	verified := branchTask("feat/x", &pid, now.Add(-time.Hour))
+	unknown := branchTask("feat/x", nil, now) // more recent, but repo unknown
+	p := pr
+	p.Repo = "Wayne997035/wayneblacktea"
+	res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{verified, unknown}}, []gtd.MergedPR{p}, resolve)
+	if err != nil || len(res.Matches) != 1 || res.Matches[0].TaskID != verified.ID ||
+		len(res.UnverifiedRepo) != 1 || res.UnverifiedRepo[0].TaskID != unknown.ID {
+		t.Fatalf("want verified winner + unknown unverified, got %+v (err %v)", res, err)
+	}
+}
+
+// assertPRURLExactIgnoresRepo is the "pr_url_exact ignores repo" case — see
+// assertSameRepoBranchMatches for why this is a top-level func.
+func assertPRURLExactIgnoresRepo(t *testing.T, ctx context.Context, resolve gtd.RepoResolver, now time.Time) {
+	t.Helper()
+	url := "https://github.com/someone/else/pull/9"
+	task := db.Task{ID: uuid.New(), Status: string(gtd.TaskStatusPending), PRUrl: pgtype.Text{String: url, Valid: true}}
+	p := gtd.MergedPR{URL: url, HeadRef: "whatever", Repo: "someone/else", MergedAt: now}
+	res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{task}}, []gtd.MergedPR{p}, resolve)
+	if err != nil || len(res.Matches) != 1 || res.Matches[0].Reason != gtd.MatchReasonPRURLExact {
+		t.Fatalf("want pr_url_exact match, got %+v (err %v)", res, err)
+	}
+}
+
+// assertNilResolverErrors is the "nil resolver is an error" case — see
+// assertSameRepoBranchMatches for why this is a top-level func.
+func assertNilResolverErrors(t *testing.T, ctx context.Context, pid uuid.UUID, pr gtd.MergedPR, now time.Time) {
+	t.Helper()
+	res, err := gtd.MatchMergedPRs(ctx, tasksOnlyStore{tasks: []db.Task{branchTask("feat/x", &pid, now)}}, []gtd.MergedPR{pr}, nil)
+	if err == nil || len(res.Matches) != 0 {
+		t.Fatalf("nil resolver must error with no matches, got %+v (err %v)", res, err)
+	}
 }
 
 // TestMatchPendingTasksFuzzy_RepoAware pins the fuzzy path's exclusion at

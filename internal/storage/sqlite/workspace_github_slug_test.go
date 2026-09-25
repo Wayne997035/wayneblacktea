@@ -54,7 +54,8 @@ func TestWorkspaceStore_GitHubSlugPresence(t *testing.T) {
 	}
 
 	for _, bad := range []string{"evil;x/y", "../x", "noslash", "a/b/c"} {
-		if _, err := s.UpsertRepo(ctx, workspace.UpsertRepoParams{Name: "wayneblacktea", GitHubSlug: strp(bad)}); !errors.Is(err, validator.ErrInvalidGitHubSlug) {
+		_, err := s.UpsertRepo(ctx, workspace.UpsertRepoParams{Name: "wayneblacktea", GitHubSlug: strp(bad)})
+		if !errors.Is(err, validator.ErrInvalidGitHubSlug) {
 			t.Errorf("UpsertRepo github_slug %q: want ErrInvalidGitHubSlug, got %v", bad, err)
 		}
 	}

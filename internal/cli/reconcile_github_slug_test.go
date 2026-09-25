@@ -17,11 +17,21 @@ import (
 // TestRunReconcile_UsesGitHubSlug pins [F0925-31]: reconcile queries gh with
 // repos.github_slug, never repos.name, and skips a repo without one with a
 // stderr line naming it. Before the fix the CLI passed name "a" to gh.
+// testAPIWorkspaceReposPath and testAPIReconcileMergedPRsPath name the two
+// stub endpoints this file's fake server implements — pulled into constants
+// only to satisfy goconst (min-occurrences 3 within package cli_test); the
+// same literals in reconcile_test.go are left untouched, they're a separate
+// stub server with no shared type to reference these from.
+const (
+	testAPIWorkspaceReposPath     = "/api/workspace/repos"
+	testAPIReconcileMergedPRsPath = "/api/tasks/reconcile-merged-prs"
+)
+
 func TestRunReconcile_UsesGitHubSlug(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == osWindowsName {
 		t.Skip("requires POSIX shell-script stub for gh")
 	}
-	apiKey := "test-key-slug" //nolint:gosec // G101: test fixture, not a real credential
+	apiKey := "test-key-slug"
 	t.Setenv("API_KEY", apiKey)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,12 +40,12 @@ func TestRunReconcile_UsesGitHubSlug(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/api/workspace/repos":
+		case testAPIWorkspaceReposPath:
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"name": "a", "github_slug": "Wayne997035/a"},
 				{"name": "b"},
 			})
-		case "/api/tasks/reconcile-merged-prs":
+		case testAPIReconcileMergedPRsPath:
 			_ = json.NewEncoder(w).Encode(map[string]any{})
 		default:
 			http.NotFound(w, r)
@@ -49,7 +59,8 @@ func TestRunReconcile_UsesGitHubSlug(t *testing.T) {
 		"case \"$1\" in\n  auth) exit 0 ;;\nesac\n" +
 		"printf '%s\\n' \"$*\" >> " + markerPath + "\n" +
 		"echo '[]'\n"
-	if err := os.WriteFile(filepath.Join(stubDir, "gh"), []byte(stubScript), 0o755); err != nil { //nolint:gosec // test fixture, intentional exec perm
+	//nolint:gosec // test fixture, intentional exec perm
+	if err := os.WriteFile(filepath.Join(stubDir, "gh"), []byte(stubScript), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
 	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))

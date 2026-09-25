@@ -13,7 +13,8 @@ func fakeGit(t *testing.T, url string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\necho '" + url + "'\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil { //nolint:gosec // test fixture, intentional exec perm
+	//nolint:gosec // test fixture, intentional exec perm
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

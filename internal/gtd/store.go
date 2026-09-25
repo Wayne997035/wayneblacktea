@@ -2159,18 +2159,8 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 		return nil, 0, fmt.Errorf("restoring project row %s: %w", id, err)
 	}
 
-	// [F0925-30] The tombstone payload predates the workspace repo name rule
-	// (the cleanup migration clears table columns, not tombstone JSON), so a
-	// restored repo_name breaking it is cleared to NULL — the restore itself
-	// still succeeds. NULL (a project with no linked repo) stays NULL.
-	var restoredRepo pgtype.Text
-	if err := tx.QueryRow(ctx, `SELECT repo_name FROM projects WHERE id = $1`, id).Scan(&restoredRepo); err != nil {
-		return nil, 0, fmt.Errorf("reading restored repo_name for project %s: %w", id, err)
-	}
-	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
-		if _, err := tx.Exec(ctx, `UPDATE projects SET repo_name = NULL WHERE id = $1`, id); err != nil {
-			return nil, 0, fmt.Errorf("clearing restored repo_name for project %s: %w", id, err)
-		}
+	if err := clearInvalidRestoredRepoName(ctx, tx, id); err != nil {
+		return nil, 0, err
 	}
 
 	taskTag, err := tx.Exec(
@@ -2230,6 +2220,28 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 		return nil, 0, fmt.Errorf("committing restore of project %s: %w", id, err)
 	}
 	return &restored, tasksRestored, nil
+}
+
+// clearInvalidRestoredRepoName is RestoreProject's [F0925-30] step, extracted
+// only to bring RestoreProject's cyclomatic complexity back under the
+// gocyclo threshold — behaviour and error wrapping are unchanged. The
+// tombstone payload predates the workspace repo name rule (the cleanup
+// migration clears table columns, not tombstone JSON), so a restored
+// repo_name breaking it is cleared to NULL — the restore itself still
+// succeeds. NULL (a project with no linked repo) stays NULL. Runs on the
+// same tx as the rest of RestoreProject, so it shares that transaction's
+// commit/rollback boundary.
+func clearInvalidRestoredRepoName(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	var restoredRepo pgtype.Text
+	if err := tx.QueryRow(ctx, `SELECT repo_name FROM projects WHERE id = $1`, id).Scan(&restoredRepo); err != nil {
+		return fmt.Errorf("reading restored repo_name for project %s: %w", id, err)
+	}
+	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
+		if _, err := tx.Exec(ctx, `UPDATE projects SET repo_name = NULL WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("clearing restored repo_name for project %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // PruneDeletionTombstones hard-deletes deletion_tombstones rows older than

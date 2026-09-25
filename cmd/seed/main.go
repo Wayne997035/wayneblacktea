@@ -529,6 +529,7 @@ func parseGitHubOwners(csv string) map[string]bool {
 // ([F0925-31]). nil — never overwrite a stored slug — when git fails, the
 // remote is not on github.com, or the owner is not in owners.
 func resolveGitHubSlug(ctx context.Context, dir string, owners map[string]bool) *string {
+	//nolint:gosec // G204: fixed git argv, no shell; dir is seed's own registered repo directory, not caller input
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
 	if err != nil {
 		return nil

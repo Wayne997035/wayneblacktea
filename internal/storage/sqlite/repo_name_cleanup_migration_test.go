@@ -57,6 +57,7 @@ func openMigratorAt83(t *testing.T) (*sql.DB, *migrate.Migrate) {
 // fails the test on error.
 func execRepoRow(t *testing.T, conn *sql.DB, query string, args ...any) {
 	t.Helper()
+	//nolint:unqueryvet // query is always one of this file's literal INSERT strings, never caller/tool input
 	if _, err := conn.ExecContext(context.Background(), query, args...); err != nil {
 		t.Fatalf("insert: %v (query=%s args=%v)", err, query, args)
 	}
@@ -67,7 +68,9 @@ func execRepoRow(t *testing.T, conn *sql.DB, query string, args ...any) {
 func readRepoName(t *testing.T, conn *sql.DB, table, id string) sql.NullString {
 	t.Helper()
 	var v sql.NullString
-	query := fmt.Sprintf(`SELECT repo_name FROM %s WHERE id = ?`, table) //nolint:gosec // table is a hardcoded literal from cleanupTableSpecs, never caller input
+	//nolint:gosec // table is a hardcoded literal from cleanupTableSpecs, never caller input
+	query := fmt.Sprintf(`SELECT repo_name FROM %s WHERE id = ?`, table)
+	//nolint:unqueryvet // query is built above only from the hardcoded table literal, never caller/tool input
 	if err := conn.QueryRowContext(context.Background(), query, id).Scan(&v); err != nil {
 		t.Fatalf("read %s id=%s: %v", table, id, err)
 	}
@@ -132,8 +135,9 @@ var cleanupTableSpecs = []cleanupTableSpec{
 		// exercises idx_work_sessions_one_active — that collision has its
 		// own dedicated test below. workspace_id doubles as id so every row
 		// is in its own workspace regardless.
-		insert: `INSERT INTO work_sessions (id, repo_name, workspace_id, title, goal, status, source) VALUES (?, ?, ?, 't', 'g', 'planned', 'manual')`,
-		args:   func(id string, repoName any) []any { return []any{id, repoName, id} },
+		insert: `INSERT INTO work_sessions (id, repo_name, workspace_id, title, goal, status, source)
+			VALUES (?, ?, ?, 't', 'g', 'planned', 'manual')`,
+		args: func(id string, repoName any) []any { return []any{id, repoName, id} },
 	},
 }
 
@@ -344,10 +348,12 @@ func TestMigration000084_WorkSessionsUniqueCollision(t *testing.T) {
 		`INSERT INTO decisions (id, repo_name, title, context, decision, rationale) VALUES (?, ?, 't','c','d','r')`,
 		"collision-decision", "../bad")
 	execRepoRow(t, conn,
-		`INSERT INTO work_sessions (id, repo_name, workspace_id, title, goal, status, source) VALUES (?, ?, 'ws-collision', 't', 'g', 'in_progress', 'manual')`,
+		`INSERT INTO work_sessions (id, repo_name, workspace_id, title, goal, status, source)
+			VALUES (?, ?, 'ws-collision', 't', 'g', 'in_progress', 'manual')`,
 		"collision-ws-1", "../bad1")
 	execRepoRow(t, conn,
-		`INSERT INTO work_sessions (id, repo_name, workspace_id, title, goal, status, source) VALUES (?, ?, 'ws-collision', 't', 'g', 'in_progress', 'manual')`,
+		`INSERT INTO work_sessions (id, repo_name, workspace_id, title, goal, status, source)
+			VALUES (?, ?, 'ws-collision', 't', 'g', 'in_progress', 'manual')`,
 		"collision-ws-2", "../bad2")
 
 	err := m.Migrate(84)

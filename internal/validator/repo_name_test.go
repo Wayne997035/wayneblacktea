@@ -31,6 +31,8 @@ var productionRepoNames = []string{
 
 // rejectedRepoPaths must fail ValidRepoPath. Each entry names the property
 // that disqualifies it.
+//
+//nolint:gosec // G101: false positive — these are adversarial path strings for a validator test, not credentials
 var rejectedRepoPaths = map[string]string{
 	"":                 "empty",
 	"../etc/passwd":    "dot-dot segment",
