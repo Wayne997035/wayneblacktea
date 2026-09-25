@@ -38,8 +38,8 @@ jobs:
           WBT_API_KEY: ${{ secrets.WBT_API_KEY }}
           # [F0925-35] github.repository is "owner/repo" (RepoSlugRe format).
           # The previous context field carried only the bare repo name, which
-          # reconcile_handler.go:303's RepoSlugRe rejects (400) since it
-          # requires exactly one '/'.
+          # the RepoSlugRe check in internal/handler/reconcile_handler.go
+          # rejects (400) since it requires exactly one '/'.
           REPO_NAME: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
