@@ -10,7 +10,7 @@ var (
 // UpsertRepoParams holds parameters for creating or updating a repo entry.
 //
 // Path, Description, Language, CurrentBranch, NextPlannedStep are
-// presence-aware (Ω6, 2026-08-20-mcp-surface-spec.md): nil preserves the
+// presence-aware: nil preserves the
 // stored value; a non-nil pointer — even to "" — explicitly replaces it,
 // matching upsert_project_arch.summary/file_map's established convention.
 // Previously these were plain strings and every field a caller didn't

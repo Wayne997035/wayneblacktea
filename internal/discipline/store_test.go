@@ -230,7 +230,7 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 
 	// Four rows persisted; mutating+ok filter pulls only the two
 	// successful mutating ones, scoped to the test workspace (the failed
-	// mutating call is excluded — see decisions.md D-05).
+	// mutating call is excluded).
 	got, err := store.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
 	if err != nil {
 		t.Fatalf("RecentMutating: %v", err)
@@ -263,7 +263,7 @@ func TestPgStore_RecentDecisionTimes(t *testing.T) {
 		{SessionID: "alpha", ToolName: "add_task", IsMutating: true, Ok: true},
 		{SessionID: "beta", ToolName: "log_decision", IsMutating: true, Ok: true},
 		// [F184-05] a failed log_decision must not suppress a real drift
-		// signal — see decisions.md D-05, Acceptance criteria row 6.
+		// signal — Acceptance criteria row 6.
 		// Verified: dropping `AND ok = TRUE` from RecentDecisionTimes'
 		// WHERE clause (internal/discipline/store_pg.go) makes both
 		// subtests below fail (3 events instead of 2) — see the implement

@@ -74,7 +74,7 @@ func (s Source) Valid() bool {
 type LogParams struct {
 	ProjectID *uuid.UUID
 	// TaskID links this decision to a specific task (migration 000048).
-	// No FK constraint (CLAUDE.md red-line §9); referential integrity in code.
+	// No FK constraint by design; referential integrity is enforced in code.
 	TaskID       *uuid.UUID
 	RepoName     string
 	Title        string

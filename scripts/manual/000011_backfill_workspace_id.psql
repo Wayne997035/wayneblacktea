@@ -13,7 +13,7 @@
 --   2. Replace the literal '00000000-0000-0000-0000-000000000000' below
 --      with that UUID.
 --   3. Run this file manually:
---        psql "$DATABASE_URL" -f migrations/000011_backfill_workspace_id.up.sql
+--        psql "$DATABASE_URL" -f scripts/manual/000011_backfill_workspace_id.psql
 --   4. Set WORKSPACE_ID in .env, restart the MCP / server process.
 --
 -- The down migration sets every row back to NULL workspace_id only for rows

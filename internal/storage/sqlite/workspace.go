@@ -179,8 +179,8 @@ func (s *WorkspaceStore) UpsertModelPreference(ctx context.Context, model string
 }
 
 // UpsertRepo creates or updates a repo entry. path/description/language/
-// current_branch/known_issues/next_planned_step are presence-aware (Ω6,
-// 2026-08-20-mcp-surface-spec.md): the ON CONFLICT CASE branches check the
+// current_branch/known_issues/next_planned_step are presence-aware: the
+// ON CONFLICT CASE branches check the
 // bound PARAMETER (?4-?8), not excluded.<col> (which is never NULL — it's
 // whatever the VALUES clause carried), so a nil pointer preserves the stored
 // value instead of wiping it. This closes the PG/SQLite divergence

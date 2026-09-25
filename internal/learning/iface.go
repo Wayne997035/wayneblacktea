@@ -55,8 +55,8 @@ type StoreIface interface {
 	DueReviews(ctx context.Context, limit int) ([]DueReview, error)
 	// GetScheduleState returns the current CardState for scheduleID, scoped
 	// to the store's configured workspace. Returns ErrNotFound when no
-	// review_schedule row matches. Ω7 fix (mcp-surface spec, backend-
-	// security-design.md §2.1 — LLM tool input is adversarial): submit_review
+	// review_schedule row matches. Ω7 fix (LLM tool input must be treated as
+	// adversarial): submit_review
 	// used to accept stability/difficulty/review_count as caller-supplied
 	// "current state" params instead of the MCP handler reading them from
 	// here; an omitted/zero review_count silently routed a mature schedule

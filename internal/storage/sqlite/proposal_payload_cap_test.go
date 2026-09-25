@@ -12,8 +12,8 @@ import (
 
 // [F981-05] TestProposalStore_Create_RejectsPayloadOverLimit is the SQLite
 // twin of internal/proposal's testcontainers-backed
-// TestProposalStore_Create_RejectsPayloadOverLimit — backend-security-
-// design.md §6.5: the SQLite ProposalStore is a separate Create
+// TestProposalStore_Create_RejectsPayloadOverLimit — dual-backend parity:
+// the SQLite ProposalStore is a separate Create
 // implementation (internal/storage/sqlite/proposal.go), not a wrapper
 // around the Postgres one, so it needs its own test proving the guard is
 // actually wired here too, not just on the Postgres side. Uses a real

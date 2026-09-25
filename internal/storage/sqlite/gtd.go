@@ -1126,8 +1126,8 @@ func (s *GTDStore) BatchCompleteTasksByPRMatch(ctx context.Context, matches []gt
 }
 
 // CompleteTask marks a task completed and records the optional artifact URL.
-// CompleteTask marks a task completed. artifact is presence-aware (Ω4,
-// 2026-08-20-mcp-surface-spec.md): nil preserves whatever is already stored
+// CompleteTask marks a task completed. artifact is presence-aware: nil
+// preserves whatever is already stored
 // (COALESCE), matching the Postgres-side fix and upsert_project_arch's
 // established summary/file_map convention. Without COALESCE here,
 // re-completing a reopened task without re-supplying artifact silently

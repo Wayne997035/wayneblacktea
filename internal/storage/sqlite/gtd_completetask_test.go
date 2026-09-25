@@ -7,8 +7,9 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
-// TestCompleteTask_OmittedArtifactPreservesExisting is U7's SQLite bad-case
-// red test for Ω4 (2026-08-20-mcp-surface-spec.md), mirroring the PG test in
+// TestCompleteTask_OmittedArtifactPreservesExisting is the SQLite bad-case
+// regression test for CompleteTask's presence-aware artifact handling,
+// mirroring the PG test in
 // internal/gtd. Before this fix, CompleteTask's SQL unconditionally
 // overwrote the artifact column (`artifact = ?2` with no COALESCE) —
 // completing a task WITH an artifact, reopening it, then re-completing it

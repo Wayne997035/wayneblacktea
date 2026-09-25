@@ -402,9 +402,9 @@ func run() error {
 	return nil
 }
 
-// mcpRateLimit is the /mcp requests-per-second budget (U19, F14,
-// 2026-08-20-mcp-surface-spec.md): every single MCP tool call from every
-// transport-HTTP client goes through this one route, with Burst defaulting
+// mcpRateLimit is the /mcp requests-per-second budget: every single MCP
+// tool call from every transport-HTTP client goes through this one route,
+// with Burst defaulting
 // to the rounded-down rate (echo's NewRateLimiterMemoryStore doc comment) —
 // the same convention every other rate limiter in this file already uses
 // (mutationRL=30, activityRL=30, postToolUseRL=120). Set to parity with

@@ -328,7 +328,7 @@ func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UU
 // needs to happen.
 //
 // Hand-rolled query (rather than sqlc-generated) keeps the timeline
-// feature self-contained without churning the queries.sql codegen surface.
+// feature self-contained without churning the sql/queries/ codegen surface.
 func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
@@ -372,7 +372,7 @@ func (s *Store) TasksByDueDateRange(ctx context.Context, from, to time.Time) ([]
 // COUNT query.
 //
 // Hand-rolled (not sqlc) to keep this feature self-contained without
-// churning the queries.sql codegen surface.
+// churning the sql/queries/ codegen surface.
 func (s *Store) TasksFiltered(ctx context.Context, f TaskFilter) ([]db.Task, error) {
 	const selectCols = `id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,
@@ -513,7 +513,7 @@ func (s *Store) TaskAreaExists(ctx context.Context, area string) (bool, error) {
 // every active task in the workspace.
 //
 // Hand-rolled query (not sqlc) to keep the timeline feature self-contained
-// without churning the queries.sql codegen surface.
+// without churning the sql/queries/ codegen surface.
 func (s *Store) TasksForTimeline(ctx context.Context, from, to time.Time) ([]db.Task, error) {
 	const q = `SELECT id, project_id, title, description, status, priority, assignee,
 		due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind,

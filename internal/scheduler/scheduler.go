@@ -1151,9 +1151,9 @@ func (s *Scheduler) runDailyPendingProposalsPrune() {
 //     found that left the table unboundedly growable for exactly these 5
 //     types, so the exemption is now dry-run-gated instead of absolute.
 //
-// Backend-security-design.md §1.3 mandates a working retention policy in the
-// same PR that introduces the auto-proposer (which can write unbounded
-// pending rows); this job is that policy. Runs at 03:00 Asia/Taipei,
+// A working retention policy is mandatory in the same PR that introduces
+// the auto-proposer (which can write unbounded pending rows); this job is
+// that policy. Runs at 03:00 Asia/Taipei,
 // offset from the 23:00 decay/discipline cluster to spread DB load.
 //
 // Errors are logged at warn level — the scheduler MUST keep running other

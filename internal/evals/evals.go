@@ -1,7 +1,7 @@
 // Package evals is a deterministic, network-free evaluation harness for
 // wayneblacktea's memory/learning behavior. Graders assert behavior against
 // fixed fixtures under testdata/ and MUST NOT call an LLM provider or make
-// any network request — see Phase 6 of docs/internal/wayneblacktea-2.0-development-prompt.md.
+// any network request.
 package evals
 
 import (

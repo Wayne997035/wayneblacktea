@@ -70,7 +70,7 @@ func Open(ctx context.Context, dsn, workspaceID string) (*DB, error) {
 		return nil, fmt.Errorf("sqlite restrict file permissions %q: %w", mainPath, err)
 	}
 	// Foreign keys are off by default in SQLite. We keep this PRAGMA ON as
-	// defence-in-depth in case migration 000026.down.sql is rolled back at
+	// defence-in-depth in case migration 000026's rollback is applied at
 	// runtime and historical FK declarations resurface; the app itself no
 	// longer relies on FK behaviour (red line #9 — referential integrity in
 	// code, not in the DB; see sql/queries/gtd.sql DeleteTask comment and

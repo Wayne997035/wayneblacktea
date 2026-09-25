@@ -33,7 +33,7 @@ type AddItemParams struct {
 	HeadingLevel int
 
 	// Cross-domain reference fields (migration 000049).
-	// No FK constraint (CLAUDE.md red-line §9); referential integrity in code.
+	// No FK constraint by design; referential integrity is enforced in code.
 	ProjectID  *[16]byte // nil → NULL
 	TaskID     *[16]byte // nil → NULL
 	DecisionID *[16]byte // nil → NULL

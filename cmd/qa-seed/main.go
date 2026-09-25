@@ -399,8 +399,9 @@ type proposalReader interface {
 // active-only project listing missed (see projectByIDReader). Order matters
 // for human-readability of the summary log and because the backfill step
 // needs the task/decision project_id references already collected — there
-// are no FK constraints (CLAUDE.md red-line #9), so SQLite itself does not
-// require parents to exist before children reference them.
+// are no FK constraints by design (referential integrity is enforced in
+// Go), so SQLite itself does not require parents to exist before children
+// reference them.
 func seedAll(
 	ctx context.Context,
 	srcGoals goalReader, srcProjects projectReader, srcProjectByID projectByIDReader, srcTasks taskReader,

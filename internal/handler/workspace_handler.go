@@ -31,8 +31,8 @@ func (h *WorkspaceHandler) ListRepos(c echo.Context) error {
 // upsertRepoRequest's optional fields are *string (not string) so
 // encoding/json's standard pointer-unmarshal behaviour distinguishes "key
 // absent from the JSON body" (nil, preserve stored value) from "key present
-// with an empty string" (non-nil *string pointing at "", explicit clear) —
-// Ω6, 2026-08-20-mcp-surface-spec.md. A plain string field folds both into
+// with an empty string" (non-nil *string pointing at "", explicit clear).
+// A plain string field folds both into
 // "", which is the omission-clobber bug this type change closes on the HTTP
 // path (workspace.UpsertRepoParams already required this type on the Go
 // side once its fields became presence-aware).

@@ -188,8 +188,8 @@ func TestConfirmProposal_TypeKnowledge_PG_EmptyTitle_BadRequest(t *testing.T) {
 // "先算後寫") when an embed client is configured and finds a near-duplicate:
 // no new knowledge_items row is written and the proposal stays pending.
 // errors.As(err, &knowledge.ErrDuplicate{}) -> 409 mapping is explicitly out
-// of scope this round (spec g1-seam-2026-09-15.md ambiguity #2 / GTD D-08
-// decisions.md) — acceptGoalOrProject's generic error branch surfaces this
+// of scope this round (spec ambiguity #2, GTD D-08) —
+// acceptGoalOrProject's generic error branch surfaces this
 // as 500, which is asserted here, not treated as a bug.
 func TestConfirmProposal_TypeKnowledge_PG_DuplicateContent_NoRowWritten(t *testing.T) {
 	pool := openGoalProjectTestPgPool(t)

@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestCompleteTask_OmittedArtifactPreservesExisting is U7's PG bad-case red
-// test for Ω4 (2026-08-20-mcp-surface-spec.md): before this fix,
-// CompleteTask's SQL unconditionally overwrote the artifact column
+// TestCompleteTask_OmittedArtifactPreservesExisting is the PG bad-case
+// regression test for CompleteTask's presence-aware artifact handling:
+// before this fix, CompleteTask's SQL unconditionally overwrote the artifact column
 // (`artifact = $1` with no COALESCE) — completing a task WITH an artifact,
 // reopening it, then re-completing it WITHOUT re-supplying artifact silently
 // wiped the already-recorded PR/commit link. artifact is now presence-aware

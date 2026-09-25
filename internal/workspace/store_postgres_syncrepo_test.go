@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestSyncRepo_OmittedKnownIssuesPreserved is U7's PG bad-case red test for
-// Ω6 (2026-08-20-mcp-surface-spec.md), mirroring the SQLite test in
+// TestSyncRepo_OmittedKnownIssuesPreserved is the PG bad-case regression
+// test for UpsertRepo's presence-aware known_issues handling, mirroring the SQLite test in
 // internal/storage/sqlite. Postgres already COALESCE-preserved known_issues
 // by accident (sync_repo never sends that field, so EXCLUDED.known_issues
 // was always NULL), but path/description/language/current_branch/

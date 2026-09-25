@@ -10,8 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestCompleteTask_ConcurrentArtifactAppend_Postgres is U5's PG bad-case red
-// test (P7, 2026-08-20-mcp-surface-spec.md). Before this fix, UpdateTask
+// TestCompleteTask_ConcurrentArtifactAppend_Postgres is the PG bad-case
+// regression test for the concurrent commit_shas append race. Before this
+// fix, UpdateTask
 // merged commit_shas by reading the existing array in Go and writing the
 // whole array back — two concurrent callers both read the same pre-update
 // array, and whichever write committed last silently discarded the other's

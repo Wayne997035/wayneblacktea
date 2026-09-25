@@ -480,8 +480,8 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 // TypeGoal/TypeProject discard AcceptOrchestration's created value (no
 // dedicated confirmResponse field exists for either). TypeKnowledge does
 // NOT discard it — confirmResponse.KnowledgeItem is an existing API field
-// callers depend on (see spec g1-seam-2026-09-15.md's D4 response-shape risk
-// flag); silently dropping it here would be a response-shape regression.
+// callers depend on; silently dropping it here would be a response-shape
+// regression.
 //
 // h.goalProjectAdapter nil → legacy resolve-only fallback (matches the prior
 // default-branch behaviour, and keeps existing callers that don't wire
@@ -556,8 +556,8 @@ func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 		// DecodeKnowledgePayload's own error text is already specific
 		// ("knowledge payload missing title", "knowledge title exceeds 512
 		// bytes", ...) so it is surfaced verbatim rather than collapsed to a
-		// generic "malformed" message — matches the acceptance criteria in
-		// spec g1-seam-2026-09-15.md's Section B.
+		// generic "malformed" message — matches this handler's acceptance
+		// criteria for knowledge payload decode errors.
 		if _, err := proposal.DecodeKnowledgePayload(payload); err != nil {
 			return err.Error()
 		}

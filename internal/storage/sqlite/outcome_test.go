@@ -1405,8 +1405,7 @@ func TestSeedDraftOutcome_ConcurrentSeedDraft_NoDuplicateDraft(t *testing.T) {
 // declares `related_rule_ids TEXT NOT NULL DEFAULT '[]'`, unlike PG's
 // nullable UUID[] with no DEFAULT — so this backend structurally cannot
 // reproduce F1. F3 (SeedDraft leaving updated_at unset) and F6 (dedup
-// coverage) DO apply here and are pinned below for backend-security-
-// design.md §6.5 parity.
+// coverage) DO apply here and are pinned below for dual-backend parity.
 // ---------------------------------------------------------------------------
 
 // TestSQLiteOutcomeStore_SeedDraft_UpdatedAtEqualsCreatedAt is F3's fix

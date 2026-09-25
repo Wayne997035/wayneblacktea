@@ -44,10 +44,9 @@ const recentWindow = 180 * 24 * time.Hour
 const maxSummaryRunes = 500
 
 // includeTypesMap maps the assemble_context "include_types" API vocabulary
-// (docs/wayneblacktea-2.0-development-prompt.md:260, tools_contextpack.go
-// knownContextPackTypes) to the internal Item.Type values retrieve() emits.
-// "semantic" and "episodic" are doc-level category names (Current Ground
-// Truth section of the same doc) that fan out to more than one internal
+// (tools_contextpack.go knownContextPackTypes) to the internal Item.Type
+// values retrieve() emits. "semantic" and "episodic" are doc-level
+// category names that fan out to more than one internal
 // Type; "procedural"/"rules"/"skills"/"atoms"/"outcomes" map 1:1.
 var includeTypesMap = map[string][]string{
 	"semantic":   {TypeKnowledge, TypeDecision},

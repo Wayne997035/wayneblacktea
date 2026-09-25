@@ -9,8 +9,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 )
 
-// TestCompleteTask_ConcurrentArtifactAppend_SQLite is U5's SQLite bad-case
-// red test (P7, 2026-08-20-mcp-surface-spec.md), mirroring
+// TestCompleteTask_ConcurrentArtifactAppend_SQLite is the SQLite bad-case
+// regression test for the concurrent commit_shas append race, mirroring
 // TestCompleteTask_ConcurrentArtifactAppend_Postgres (internal/gtd package).
 // Before this fix, UpdateTask merged commit_shas by reading the existing
 // array in Go and writing the whole array back — two concurrent callers both

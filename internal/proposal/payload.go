@@ -30,9 +30,10 @@ type KnowledgePayload struct {
 	Content string   `json:"content"`
 	Tags    []string `json:"tags,omitempty"`
 	// SourceEntityID is an opaque foreign entity UUID (as string; NEVER a real
-	// FK per CLAUDE.md red-line #9) that scheduler jobs stamp so a follow-up
-	// run can SQL-dedup against it via payload->>'source_entity_id' instead of
-	// re-scanning application-side. Mirrors TaskPayload.SourceEntityID's same
+	// FK — referential integrity is enforced in Go) that scheduler jobs
+	// stamp so a follow-up run can SQL-dedup against it via
+	// payload->>'source_entity_id' instead of re-scanning application-side.
+	// Mirrors TaskPayload.SourceEntityID's same
 	// rationale — see its doc comment. Written by
 	// scheduler.runKnowledgeToSkillCandidate (keyed on knowledge_items.id) to
 	// prevent the job from re-proposing the same high-recall item every run.
@@ -65,9 +66,10 @@ type TaskPayload struct {
 	SuggestedKind       string `json:"suggested_kind,omitempty"`
 	Description         string `json:"description,omitempty"`
 	// SourceEntityID is an opaque foreign entity UUID (as string; NEVER a real
-	// FK per CLAUDE.md red-line #9) that scheduler jobs stamp so a follow-up
-	// run can SQL-dedup against it via payload->>'source_entity_id' instead of
-	// re-scanning application-side. Currently written by
+	// FK — referential integrity is enforced in Go) that scheduler jobs
+	// stamp so a follow-up run can SQL-dedup against it via
+	// payload->>'source_entity_id' instead of re-scanning application-side.
+	// Currently written by
 	// scheduler.runDecisionOutcomeReview (keyed on decisions.id) to prevent the
 	// daily job from re-proposing the same decision every run. Empty for
 	// non-scheduler producers (MCP auto-capture, handler autolog).

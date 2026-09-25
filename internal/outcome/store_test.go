@@ -1944,9 +1944,9 @@ func insertLegacyUnknownOutcomeWithIDTx(
 // winner — the migration's dedup step (migrations/000074_outcomes_
 // supersession.up.sql) resolves this with a second ORDER BY key, id DESC,
 // which this test pins down directly. Mirrors the SQLite twin
-// (TestMigration000074_Dedup_SQLite_CreatedAtTieBreak) — backend-security-
-// design.md §6.5 dual-backend parity requires the same tie-break rule to be
-// independently verified on both engines. The expected survivor (the row
+// (TestMigration000074_Dedup_SQLite_CreatedAtTieBreak) — dual-backend
+// parity requires the same tie-break rule to be independently verified on
+// both engines. The expected survivor (the row
 // with the greater id, compared the same way Postgres's uuid type orders —
 // byte-for-byte on the 16-byte value, which a lowercase-hex String()
 // comparison reproduces because every character position is either a fixed

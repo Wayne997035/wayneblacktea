@@ -254,7 +254,7 @@ func (s *KnowledgeStore) insertItemRow(ctx context.Context, execer rowExecer, p 
 	}
 
 	// Cross-domain reference fields (migration 000049).
-	// No FK constraint (CLAUDE.md red-line §9); nil → NULL.
+	// No FK constraint by design; nil → NULL.
 	projectIDArg, taskIDArg, decisionIDArg := crossDomainArgs(p.ProjectID, p.TaskID, p.DecisionID)
 
 	const q = `INSERT INTO knowledge_items
@@ -825,7 +825,7 @@ func (s *KnowledgeStore) ListChildren(ctx context.Context, parentID uuid.UUID) (
 }
 
 // ListByProjectID returns knowledge items associated with a project UUID.
-// Added in migration 000049; no FK constraint (CLAUDE.md red-line §9).
+// Added in migration 000049; no FK constraint by design.
 // SECURITY: workspace-scoped.
 func (s *KnowledgeStore) ListByProjectID(ctx context.Context, projectID uuid.UUID, limit int) ([]db.KnowledgeItem, error) {
 	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items
@@ -837,7 +837,7 @@ func (s *KnowledgeStore) ListByProjectID(ctx context.Context, projectID uuid.UUI
 }
 
 // ListByTaskID returns knowledge items associated with a task UUID.
-// Added in migration 000049; no FK constraint (CLAUDE.md red-line §9).
+// Added in migration 000049; no FK constraint by design.
 // SECURITY: workspace-scoped.
 func (s *KnowledgeStore) ListByTaskID(ctx context.Context, taskID uuid.UUID, limit int) ([]db.KnowledgeItem, error) {
 	const q = `SELECT ` + knowledgeSelectCols + ` FROM knowledge_items

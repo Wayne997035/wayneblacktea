@@ -56,8 +56,8 @@ const (
 // So: evidence of a working path is what earns 200, and only the loss of
 // every path earns 503.
 //
-// "unknown" is fail-closed on purpose (CLAUDE.md red line #12: unparseable /
-// n/a / skipped are never read as pass). The cost is real and worth stating:
+// "unknown" is fail-closed on purpose: unparseable / n/a / skipped are
+// never read as pass. The cost is real and worth stating:
 // after every restart this answers 503 until the first LLM call lands, and
 // calls can be half an hour apart. That window is noise. It is accepted
 // because the alternative — reporting "ok" with no evidence — is the exact

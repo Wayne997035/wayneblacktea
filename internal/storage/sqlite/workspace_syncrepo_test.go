@@ -76,8 +76,9 @@ func assertKnownIssuesPreserved(t *testing.T, label string, got []string) {
 	}
 }
 
-// TestSyncRepo_OmittedKnownIssuesPreserved is U7's SQLite bad-case red test
-// for Ω6 (2026-08-20-mcp-surface-spec.md): before this fix, UpsertRepo's SQL
+// TestSyncRepo_OmittedKnownIssuesPreserved is the SQLite bad-case
+// regression test for UpsertRepo's presence-aware known_issues handling:
+// before this fix, UpsertRepo's SQL
 // unconditionally overwrote known_issues (`known_issues = excluded.known_issues`,
 // with sync_repo never sending that field) — every sync_repo call silently
 // wiped known_issues to []. Postgres already COALESCE-preserved known_issues

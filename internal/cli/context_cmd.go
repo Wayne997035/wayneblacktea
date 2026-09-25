@@ -3,8 +3,8 @@
 // "systemMessage" field that Claude Code injects into the first user
 // message of a new session.
 //
-// A5a (architecture-review-wbt-20260724-full.html item 13): this hook no
-// longer hand-rolls its own PG-only retrieval/ranking/budget logic. It is a
+// A5a: this hook no longer hand-rolls its own PG-only retrieval/ranking/
+// budget logic. It is a
 // thin CLI adapter around contextpack.Assemble() — the same engine the
 // assemble_context MCP tool uses — wired to whichever backend
 // storage.BackendFor resolves (Postgres or SQLite), so both backends share
