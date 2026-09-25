@@ -16,6 +16,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/snapshot"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -86,7 +87,7 @@ func (s *Server) registerContextTools(ms *server.MCPServer) {
 		mcp.WithDescription("Creates or updates a repository entry with current state. All params "+
 			"except name are optional and preserve their stored value when omitted — pass an "+
 			"empty string to explicitly clear one."),
-		mcp.WithString("name", mcp.Description("Repository name (unique key)"), mcp.Required()),
+		mcp.WithString("name", mcp.Description("Repository name (unique key): "+validator.RepoNameRule), mcp.Required()),
 		mcp.WithString("path", mcp.Description("Local filesystem path")),
 		mcp.WithString("description", mcp.Description("Short description")),
 		mcp.WithString("language", mcp.Description("Primary programming language")),
@@ -1100,6 +1101,11 @@ func (s *Server) handleSyncRepo(ctx context.Context, req mcp.CallToolRequest) (*
 	name := stringArg(args, "name")
 	if name == "" {
 		return mcp.NewToolResultError("name is required"), nil
+	}
+	// [F0925-29] Same workspace repo name rule as the HTTP path and both
+	// stores; rejected before the store so the error names the rule.
+	if !validator.ValidRepoPath(name) {
+		return mcp.NewToolResultError(validator.RepoNameMessage), nil
 	}
 
 	opt, errResult := parseSyncRepoOptionalArgs(args)
