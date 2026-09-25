@@ -89,8 +89,8 @@ var decisionOutcomeReviewDailyCap = 200
 // wired against a SQLite backend. nil under Postgres — disciplinePool raw
 // SQL covers that path instead (unchanged from before this parity work).
 //
-// Deliberately NOT part of gtd/decision/knowledge/proposal.StoreIface
-// (backend-security-design.md domain-ownership rule): these 4 methods are
+// Deliberately NOT part of gtd/decision/knowledge/proposal.StoreIface —
+// domain ownership stays narrow: these 4 methods are
 // scheduler-local plumbing that only the jobs in this file need a symmetric
 // SQLite counterpart for — mirroring the existing narrow-interface pattern
 // already used in scheduler.go (PrunerStore, candidateRetentionStore, etc.)
