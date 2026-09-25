@@ -283,29 +283,36 @@ func (s *Server) assembleStartWorkContext(
 	return pack
 }
 
-func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if s.workSession == nil {
-		return mcp.NewToolResultError("work session store not configured"), nil
-	}
-	args := req.GetArguments()
+// startWorkArgs holds handleStartWork's validated required fields.
+type startWorkArgs struct {
+	repoName string
+	title    string
+	goal     string
+	source   string
+}
 
+// validateStartWorkArgs applies handleStartWork's required-field, length,
+// and source guards. Extracted only to bring handleStartWork's cyclomatic
+// complexity back under the gocyclo threshold — the checks and their error
+// messages are unchanged, just relocated.
+func validateStartWorkArgs(args map[string]any) (startWorkArgs, *mcp.CallToolResult) {
 	repoName := stringArg(args, "repo_name")
 	title := stringArg(args, "title")
 	goal := stringArg(args, "goal")
 	if repoName == "" || title == "" || goal == "" {
-		return mcp.NewToolResultError("repo_name, title, and goal are required"), nil
+		return startWorkArgs{}, mcp.NewToolResultError("repo_name, title, and goal are required")
 	}
 	if errResult := repoNameArgError(repoName); errResult != nil {
-		return errResult, nil
+		return startWorkArgs{}, errResult
 	}
 
 	// Server-side length guards: mcp.MaxLength() is client-side advisory only
 	// and is not enforced by the mcp-go server runtime.
 	if len(title) > 200 {
-		return mcp.NewToolResultError("title exceeds 200 character limit"), nil
+		return startWorkArgs{}, mcp.NewToolResultError("title exceeds 200 character limit")
 	}
 	if len(goal) > 2000 {
-		return mcp.NewToolResultError("goal exceeds 2000 character limit"), nil
+		return startWorkArgs{}, mcp.NewToolResultError("goal exceeds 2000 character limit")
 	}
 
 	source := stringArg(args, "source")
@@ -313,9 +320,22 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		source = "manual"
 	}
 	if !validWorkSessionSources[source] {
-		return mcp.NewToolResultError(
+		return startWorkArgs{}, mcp.NewToolResultError(
 			fmt.Sprintf("invalid source %q: must be one of manual, confirm_plan, hook, other", source),
-		), nil
+		)
+	}
+	return startWorkArgs{repoName: repoName, title: title, goal: goal, source: source}, nil
+}
+
+func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.workSession == nil {
+		return mcp.NewToolResultError("work session store not configured"), nil
+	}
+	args := req.GetArguments()
+
+	swArgs, errResult := validateStartWorkArgs(args)
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	projectID, errRes := parseOptionalUUID(args, "project_id")
@@ -344,11 +364,11 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 
 	sess, err := s.workSession.Create(ctx, worksession.CreateParams{
 		WorkspaceID: s.workspaceUUIDVal(),
-		RepoName:    repoName,
+		RepoName:    swArgs.repoName,
 		ProjectID:   projectID,
-		Title:       title,
-		Goal:        goal,
-		Source:      source,
+		Title:       swArgs.title,
+		Goal:        swArgs.goal,
+		Source:      swArgs.source,
 		TaskIDs:     taskIDs,
 		BranchName:  branchNamePtr,
 		Assignee:    assignee,
@@ -362,9 +382,9 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 		return storeErrorResult("start_work failed", err), nil
 	}
 
-	slog.Info("start_work", "session_id", sess.ID, "workspace_id", s.workspaceUUIDVal(), "repo_name", repoName)
+	slog.Info("start_work", "session_id", sess.ID, "workspace_id", s.workspaceUUIDVal(), "repo_name", swArgs.repoName)
 
-	pack := s.assembleStartWorkContext(ctx, sess.ID, goal, repoName, taskIDs)
+	pack := s.assembleStartWorkContext(ctx, sess.ID, swArgs.goal, swArgs.repoName, taskIDs)
 
 	// U13 Phase B (tools_worksession.go:365): title/goal/repo_name are this
 	// same call's own just-supplied arguments (same-turn echo, exempt — see

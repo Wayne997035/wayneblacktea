@@ -1325,23 +1325,11 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 	// gtd.go above) — never from a request/tool argument; the only bound
 	// value here is deletionID via ?1.
 	if _, err := tx.ExecContext(ctx, sqliteProjectRestoreInsertQ, deletionID); err != nil {
-		if isUniqueViolationSQLite(err) {
-			return nil, 0, gtd.ErrConflict
-		}
-		return nil, 0, errWrap("RestoreProject insert project", err)
+		return nil, 0, mapRestoreInsertErrSQLite(err, "RestoreProject insert project")
 	}
 
-	// [F0925-30] Same repo_name clean-up as the Postgres store: a restored
-	// value breaking the workspace repo name rule is cleared to NULL, NULL
-	// stays NULL, and the restore still succeeds.
-	var restoredRepo sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT repo_name FROM projects WHERE id = ?1`, id.String()).Scan(&restoredRepo); err != nil {
-		return nil, 0, errWrap("RestoreProject read repo_name", err)
-	}
-	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
-		if _, err := tx.ExecContext(ctx, `UPDATE projects SET repo_name = NULL WHERE id = ?1`, id.String()); err != nil {
-			return nil, 0, errWrap("RestoreProject clear repo_name", err)
-		}
+	if err := clearInvalidRestoredRepoNameSQLite(ctx, tx, id); err != nil {
+		return nil, 0, err
 	}
 
 	//nolint:unqueryvet // sqliteTaskRestoreInsertQ: same rationale as
@@ -1349,10 +1337,7 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 	// sqliteTaskRestoreColumns, a hardcoded Go string slice).
 	res, err := tx.ExecContext(ctx, sqliteTaskRestoreInsertQ, deletionID)
 	if err != nil {
-		if isUniqueViolationSQLite(err) {
-			return nil, 0, gtd.ErrConflict
-		}
-		return nil, 0, errWrap("RestoreProject insert tasks", err)
+		return nil, 0, mapRestoreInsertErrSQLite(err, "RestoreProject insert tasks")
 	}
 	tasksRestoredI64, err := res.RowsAffected()
 	if err != nil {
@@ -1390,6 +1375,38 @@ func (s *GTDStore) RestoreProject(ctx context.Context, id uuid.UUID, actor strin
 		return nil, 0, errWrap("RestoreProject commit", err)
 	}
 	return &restored, tasksRestored, nil
+}
+
+// mapRestoreInsertErrSQLite maps a RestoreProject INSERT error to
+// gtd.ErrConflict (unique-constraint violation) or a wrapped error — shared
+// by both the project and task INSERT call sites. Extracted only to bring
+// RestoreProject's cyclomatic complexity back under the gocyclo threshold;
+// the conflict detection and error wrapping are unchanged.
+func mapRestoreInsertErrSQLite(err error, wrapMsg string) error {
+	if isUniqueViolationSQLite(err) {
+		return gtd.ErrConflict
+	}
+	return errWrap(wrapMsg, err)
+}
+
+// clearInvalidRestoredRepoNameSQLite is RestoreProject's [F0925-30] step —
+// the SQLite twin of gtd.Store's clearInvalidRestoredRepoName, extracted for
+// the same reason: bring RestoreProject's cyclomatic complexity back under
+// the gocyclo threshold without changing behaviour. Same repo_name clean-up
+// as the Postgres store: a restored value breaking the workspace repo name
+// rule is cleared to NULL, NULL stays NULL, and the restore still succeeds.
+// Runs on the same *sql.Tx as the rest of RestoreProject.
+func clearInvalidRestoredRepoNameSQLite(ctx context.Context, tx *sql.Tx, id uuid.UUID) error {
+	var restoredRepo sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT repo_name FROM projects WHERE id = ?1`, id.String()).Scan(&restoredRepo); err != nil {
+		return errWrap("RestoreProject read repo_name", err)
+	}
+	if restoredRepo.Valid && !validator.IsValidRepoName(restoredRepo.String) {
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET repo_name = NULL WHERE id = ?1`, id.String()); err != nil {
+			return errWrap("RestoreProject clear repo_name", err)
+		}
+	}
+	return nil
 }
 
 // PruneDeletionTombstones hard-deletes deletion_tombstones rows older than
