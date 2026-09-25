@@ -431,6 +431,11 @@ func (s *GTDStore) CreateProject(ctx context.Context, p gtd.CreateProjectParams)
 // MUST import into a fresh database, never re-import into one that already
 // has the row.
 func (s *GTDStore) ImportProject(ctx context.Context, p db.Project) error {
+	// [F0925-29] qa-seed is an automatic writer: a production repo_name that
+	// breaks the workspace repo name rule is imported as NULL.
+	if p.RepoName.Valid && !validator.IsValidRepoName(p.RepoName.String) {
+		p.RepoName = pgtype.Text{}
+	}
 	const q = `INSERT INTO projects
 		(id, workspace_id, goal_id, name, title, description, status, area, priority, repo_name, created_at, updated_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`

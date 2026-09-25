@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -133,7 +134,10 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			args := req.GetArguments()
 
 			toolName := sanitizeAuditText(rawTool, maxToolNameRunes)
-			repoName := sanitizeAuditText(stringArg(args, "repo_name"), maxRepoNameRunes)
+			// [F0925-29] This row is written before the tool validates its
+			// own arguments, so a repo_name breaking the workspace repo name
+			// rule is audited as empty rather than persisted.
+			repoName := sanitizeAuditText(validator.RepoNameOrEmpty(stringArg(args, "repo_name")), maxRepoNameRunes)
 			// Captured from the request ctx BEFORE the goroutine below
 			// switches to context.Background() — server.ClientSessionFromContext
 			// only resolves off the live request context (U15).
