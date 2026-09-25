@@ -72,7 +72,7 @@ func TestListDecisions_DoesNotLeakOtherSessionActorSessionID(t *testing.T) {
 	// Positive control: the write-side audit trail is untouched — the row
 	// itself still records sessionA via the Go store read path (raw-SQL
 	// read-back is covered separately by internal/decision's testcontainers
-	// PG + SQLite tests, backend-security-design.md §6.5).
+	// PG + SQLite tests).
 	rows, err := s.decision.All(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("decision.All: %v", err)

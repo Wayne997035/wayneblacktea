@@ -16,8 +16,8 @@ import (
 // MCP length caps for add_vision_item — mirror the HTTP boundary
 // (internal/handler/vision_handler.go:45-66) exactly. The MCP path had no
 // caps at all before this change (unbounded write), which is the reverse of
-// the usual "MCP is stricter than HTTP" framing for this repo — see
-// backend-security-design.md §2.
+// the usual "MCP is stricter than HTTP" framing for this repo — LLM tool
+// input is adversarial and must be bounded regardless of transport.
 const (
 	mcpVisionMaxTitleRunes      = 255
 	mcpVisionMaxWhyBlockedRunes = 2000

@@ -98,8 +98,8 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	repoName := stringArg(args, "repo_name")
 
 	// P6.8: assignee is optional but, when present, MUST resolve through
-	// gtd.NormalizeActor's whitelist (backend-security-design.md §2.1 — LLM
-	// tool input is adversarial). Same resolveAssigneeArg helper start_work
+	// gtd.NormalizeActor's whitelist (LLM tool input is adversarial). Same
+	// resolveAssigneeArg helper start_work
 	// and add_task/update_task already use.
 	assignee, assigneeErrMsg := resolveAssigneeArg(args)
 	if assigneeErrMsg != "" {

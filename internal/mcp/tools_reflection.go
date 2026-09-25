@@ -34,8 +34,7 @@ const (
 //
 // generate_reflection is explicitly an AI-generated record — the dispatch
 // for this file calls that out by name: "LLM 生成的文字要當成對抗性輸入
-// ... 不因為「是我們自己的模型寫的」就豁免" (backend-security-design.md
-// §2.1). Insights/PatternsDetected/SuggestedActions are json.RawMessage
+// ... 不因為「是我們自己的模型寫的」就豁免". Insights/PatternsDetected/SuggestedActions are json.RawMessage
 // (caller-chosen shape, validated only for JSON-well-formedness by
 // parseOptionalJSON), the same "JSON-inside-a-field" pattern flagged for
 // tools_proposal.go's Payload / tools_watchdog.go's Detail in the U13

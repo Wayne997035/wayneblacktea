@@ -285,9 +285,9 @@ func TestResourceBuildInfo_ProtocolVersionAndBackend(t *testing.T) {
 }
 
 // TestResourceBuildInfo_PostgresBackend is backendKind's Postgres half
-// (backend-security-design.md §6.5 — every PG-vs-SQLite-differing bit of
-// logic gets both a SQLite test and a real testcontainers Postgres test, not
-// "logic is trivial so one suffices"). Reuses the package's existing
+// (every PG-vs-SQLite-differing bit of logic gets both a SQLite test and a
+// real testcontainers Postgres test, not "logic is trivial so one
+// suffices"). Reuses the package's existing
 // Postgres testcontainer (tools_plan_pg_test.go's TestMain / mcpPlanTestPgPool)
 // rather than starting a second one — handleResourceBuildInfo only touches
 // s.pool and s.now (both safe on a bare &Server{}), so no store bundle is

@@ -215,7 +215,7 @@ func atomizeAndPersist(
 	text string,
 ) {
 	// Scrub credentials from skill text before sending to the Haiku API
-	// (backend-security-design.md §3.1 — raw LLM tool input redaction).
+	// (raw LLM tool input must go through redaction before use/persist).
 	text = redact.ForLLM(text)
 	result, err := atomizer.Atomize(ctx, text)
 	if errors.Is(err, ai.ErrEmptyAtomizeResponse) {

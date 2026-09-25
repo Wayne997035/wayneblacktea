@@ -113,8 +113,8 @@ type wrapUntrustedCase struct {
 // could have authored: adding pgtype.JSONB or a new struct here would be a
 // reviewable, visible act, whereas a `strings.HasPrefix(t.String(), "pgtype.")`
 // rule would silently absorb the next text-bearing member of that package.
-// This is backend-security-design.md §2.3's default-deny rule applied to
-// types instead of tool names.
+// This is the same default-deny-for-unknown rule applied to types instead
+// of tool names.
 var (
 	pgTextType = reflect.TypeOf(pgtype.Text{})
 

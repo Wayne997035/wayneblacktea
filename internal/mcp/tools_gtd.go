@@ -30,9 +30,8 @@ var (
 // resolveAssignee resolves a raw "assignee" value to a canonical actor via
 // gtd.NormalizeActor. Empty input is allowed (many tasks start unowned) and
 // resolves to "". Returns a non-empty error message on validation failure —
-// whitelist, not blacklist (backend-security-design.md §2.1: LLM tool input
-// is adversarial; an unvalidated assignee corrupts the "who is working on
-// what" audit trail).
+// whitelist, not blacklist (LLM tool input is adversarial; an unvalidated
+// assignee corrupts the "who is working on what" audit trail).
 func resolveAssignee(raw string) (string, string) {
 	if raw == "" {
 		return "", ""
@@ -225,8 +224,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("project_id", mcp.Description("Parent project UUID")),
 			mcp.WithString("description", mcp.Description("Task details")),
 			// mcp.MaxLength(100) is a defensive client-side upper bound
-			// (backend-security-design.md §2: LLM tool input is hostile) against
-			// an unbounded assignee string reaching this handler. It is NOT the
+			// (LLM tool input is hostile) against an unbounded assignee string
+			// reaching this handler. It is NOT the
 			// validation authority: gtd.NormalizeActor's canonical-actor
 			// allowlist (handleAddTask below) still rejects any raw value that
 			// isn't a known actor/alias regardless of length, so an
@@ -1605,8 +1604,8 @@ func currentSessionID(ctx context.Context) string {
 // comment for why that one call site needs the raw "" instead.
 //
 // MUST only ever be called with ctx, never with a caller-supplied session_id
-// argument — a tool payload is adversarial input (backend-security-design.md
-// §2) and could otherwise forge an actor identity.
+// argument — a tool payload is adversarial input and could otherwise forge
+// an actor identity.
 func (s *Server) auditSessionID(ctx context.Context) string {
 	if id := currentSessionID(ctx); id != "" {
 		return id

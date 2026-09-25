@@ -195,8 +195,7 @@ func filterKnownContextPackTypes(types []string) []string {
 // that are actually strings. maxCount caps the number of elements kept (0 =
 // unlimited); maxRunes drops any single element longer than that many runes
 // (0 = unlimited) rather than failing the whole request. Bounds adversarial
-// LLM-supplied array input before it reaches the Assembler
-// (backend-security-design.md §2.1).
+// LLM-supplied array input before it reaches the Assembler.
 func stringArrayArg(args map[string]any, key string, maxCount, maxRunes int) []string {
 	raw, ok := args[key].([]any)
 	if !ok {
@@ -221,7 +220,7 @@ func stringArrayArg(args map[string]any, key string, maxCount, maxRunes int) []s
 
 // stripControlChars removes NUL and other C0 control characters (except tab
 // and newline, which are legitimate in a free-text objective) before length
-// validation, per backend-security-design.md §2.1 adversarial-input handling.
+// validation — LLM tool input is adversarial input.
 func stripControlChars(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

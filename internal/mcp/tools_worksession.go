@@ -47,8 +47,8 @@ const (
 )
 
 // maxEvidenceItems caps the number of items accepted per finish_work's
-// evidence array (backend-security-design.md §2.1 — resource guard against
-// an LLM-emitted unbounded array). Mirrors maxRelatedRuleIDs
+// evidence array (resource guard against an LLM-emitted unbounded array).
+// Mirrors maxRelatedRuleIDs
 // (internal/mcp/tools_outcome.go) in spirit; evidence rows carry heavier text
 // payloads (up to maxVerificationOutputExcerptLen each) so the cap is smaller
 // than task_ids/completed_task_ids' 50.
@@ -331,8 +331,8 @@ func (s *Server) handleStartWork(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	// P6.8: assignee is optional but, when present, MUST resolve through
-	// gtd.NormalizeActor's whitelist (backend-security-design.md §2.1 — LLM
-	// tool input is adversarial). resolveAssigneeArg is the same helper
+	// gtd.NormalizeActor's whitelist (LLM tool input is adversarial).
+	// resolveAssigneeArg is the same helper
 	// add_task/update_task already use (internal/mcp/tools_gtd.go).
 	assignee, assigneeErrMsg := resolveAssigneeArg(args)
 	if assigneeErrMsg != "" {
@@ -475,8 +475,9 @@ type finishWorkEvidenceParams struct {
 // parseFinishWorkEvidenceParams validates the optional evidence-chain fields
 // on finish_work. Enum values are checked against worksession's allowed sets
 // so invalid input returns a tool error instead of a raw DB CHECK-constraint
-// violation (backend-security-design.md §5.2 — never delegate validation
-// solely to the DB constraint). Length limits are enforced here because
+// violation (never delegate validation solely to the DB constraint — bad
+// UX and silent acceptance of combinations the constraint can't catch).
+// Length limits are enforced here because
 // mcp.MaxLength() on the tool schema is client-side advisory only.
 func parseFinishWorkEvidenceParams(args map[string]any) (finishWorkEvidenceParams, *mcp.CallToolResult) {
 	var p finishWorkEvidenceParams
@@ -530,16 +531,16 @@ type finishWorkEvidenceItem struct {
 // array on finish_work (wbt-2.0 P2 review F1 — the schema previously had no
 // input path for evidence rows even though the store layer supported them
 // end to end). Each item's evidence_type/status are checked against
-// worksession's allowed sets, mirroring the DB CHECK constraints
-// (backend-security-design.md §5.2 — never delegate validation solely to the
-// DB constraint: a raw `pq: violates check constraint` is unhelpful and,
+// worksession's allowed sets, mirroring the DB CHECK constraints (never
+// delegate validation solely to the DB constraint: a raw `pq: violates
+// check constraint` is unhelpful and,
 // since AddEvidence's insertion inside Finish is intentionally best-effort/
 // non-fatal, a constraint violation there would silently drop the evidence
 // row instead of surfacing an error to the caller).
 //
 // command/artifact are single-line reference fields validated with
-// worksession.CheckControlChars (backend-security-design.md §2.1 — LLM tool
-// input is adversarial; a prompt-injected agent must not be able to smuggle
+// worksession.CheckControlChars (LLM tool input is adversarial; a
+// prompt-injected agent must not be able to smuggle
 // a second shell instruction via an embedded newline) and length-capped.
 // output_excerpt is length-capped here too (defence in depth) but is
 // intentionally NOT CheckControlChars'd — it holds multi-line command output
@@ -887,9 +888,9 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 		completedIDs = []uuid.UUID{}
 	}
 
-	// Log new_decisions only after Finish has succeeded (U20 fix —
-	// backend-security-design.md §5.2: logging decisions BEFORE Finish
-	// validated the session left orphaned manual-source decision rows behind
+	// Log new_decisions only after Finish has succeeded (U20 fix: logging
+	// decisions BEFORE Finish validated the session left orphaned
+	// manual-source decision rows behind
 	// whenever Finish then failed — e.g. a bad/already-completed session_id
 	// — since decisions were already committed with nothing to attach them
 	// to. Finish's own session-exists + status check now doubles as the
@@ -1027,7 +1028,7 @@ const (
 // evidenceOutputExcerptBoundaryStart / evidenceOutputExcerptBoundaryEnd wrap
 // evidence.output_excerpt so a payload recorded via finish_work's evidence
 // array (LLM-controlled free text, redacted/capped but not otherwise
-// sanitised — backend-security-design.md §2.1) cannot be mistaken for
+// sanitised) cannot be mistaken for
 // instructions when this trace is read back into an LLM context. One instance
 // of the package-wide fence pattern registered in boundary_markers.go.
 const (
@@ -1091,9 +1092,8 @@ const (
 // response: a payload placed in, say, verification_output_excerpt that forges
 // a SESSION SUMMARY or EVIDENCE OUTPUT marker would otherwise survive and
 // could make injected text appear to sit outside whichever real fence wraps
-// it (backend-security-design.md §2.1 — LLM tool input, including
-// finish_work's evidence, verification_output_excerpt and summary, is
-// adversarial).
+// it (LLM tool input, including finish_work's evidence,
+// verification_output_excerpt and summary, is adversarial).
 
 // wrapUntrustedOutputExcerpts returns a copy of items with each evidence
 // row's free-text fields neutralised against forged boundary markers (see
@@ -1322,8 +1322,8 @@ func (s *Server) workspaceUUIDVal() uuid.UUID {
 }
 
 // finishWorkDecisionResult summarizes what logFinishWorkDecisions actually
-// did (U20 fix — backend-security-design.md §2.1/§5.2: hitting the 50-item
-// cap, or a malformed/noisy title, used to be reported only via slog.Warn on
+// did (U20 fix: hitting the 50-item cap, or a malformed/noisy title, used
+// to be reported only via slog.Warn on
 // the server, with finish_work's response giving the caller no signal at
 // all that some decisions were silently dropped). Logged counts successful
 // decision.Log calls; Skipped carries one short human-readable entry per
@@ -1336,7 +1336,7 @@ type finishWorkDecisionResult struct {
 
 // truncateForFinishWorkLog caps s at 80 runes for safe inclusion in a slog
 // field or the finish_work response's Skipped list — the raw title is
-// LLM-controlled free text (backend-security-design.md §2.1) and may itself
+// LLM-controlled free text and may itself
 // be the noisy/oversized value being reported on.
 func truncateForFinishWorkLog(s string) string {
 	if runes := []rune(s); len(runes) > 80 {

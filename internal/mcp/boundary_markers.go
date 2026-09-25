@@ -9,8 +9,7 @@ import (
 // Boundary markers for untrusted free text — content this server stored on
 // behalf of an LLM and later reads back into an LLM context.
 //
-// Two mechanisms, always used together (backend-security-design.md §2.1 — LLM
-// tool input is adversarial):
+// Two mechanisms, always used together (LLM tool input is adversarial):
 //
 //   - FENCE: a marker pair wrapped around a field, so a reader can tell the
 //     span is stored data rather than instructions addressed to it.

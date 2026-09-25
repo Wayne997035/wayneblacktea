@@ -325,7 +325,7 @@ func validateNotes(notes string) string {
 
 // hasBoolArg reports whether key is present in args and holds a JSON boolean
 // value (true or false) — distinguishes "omitted" from "explicitly false".
-// Ω8 fix (mcp-surface spec, backend-security-design.md §2.1): boolArg's
+// Ω8 fix (mcp-surface spec — LLM tool input is adversarial): boolArg's
 // missing-key default of false made an omitted update_skill_from_outcome
 // `success` argument silently record a FAILURE outcome — the opposite of
 // "caller forgot to say" being a no-op or an error. mcp.Required() on the

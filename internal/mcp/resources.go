@@ -120,8 +120,8 @@ func (s *Server) registerResources(ms *server.MCPServer) {
 // repo_name and next_actions.* (handoffResource type doc comment) and relies
 // on StoredDataNotice as the compensating control — a description that claims
 // stronger protection than the code applies is itself a finding
-// (backend-security-design.md §2.1: text sent to an LLM is part of the prompt
-// surface, not documentation). This wording states fencing only for the
+// (text sent to an LLM is part of the prompt surface, not documentation).
+// This wording states fencing only for the
 // fields that are actually fenced (intent, context_summary), names repo_name
 // explicitly in the field list (the prior text omitted it even though it
 // rides in every non-empty response), and points the neutralised fields at
@@ -166,8 +166,8 @@ func marshalResource(uri string, v any) ([]mcp.ResourceContents, error) {
 // ─── wayneblacktea://dashboard/overview ───────────────────────────────────
 
 // dashboardOverviewResource is the JSON shape for the overview resource.
-// Raw arch snapshot text is intentionally excluded (prompt-injection risk,
-// see backend-security-design.md §2). Only a boolean presence flag is surfaced.
+// Raw arch snapshot text is intentionally excluded (prompt-injection risk —
+// LLM tool input/output is adversarial). Only a boolean presence flag is surfaced.
 //
 // Goals/Projects are typed (not `any`) so the U13 boundary-marker treatment
 // applied when the handler builds this struct — wrapUntrustedGoals /

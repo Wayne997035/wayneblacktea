@@ -311,8 +311,9 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 
 	// session_id is optional. When present it MUST be a well-formed UUID —
 	// validate the format up front so malformed input is rejected outright,
-	// even though an unknown-but-valid UUID is tolerated below (no-FK design;
-	// backend-security-design.md §6 migration comment on work_session_id).
+	// even though an unknown-but-valid UUID is tolerated below (no FK
+	// constraints by design; referential integrity is enforced in code, not
+	// by the DB).
 	if raw := stringArg(args, "session_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {

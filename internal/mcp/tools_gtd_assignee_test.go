@@ -30,9 +30,9 @@ func seedTaskWithAssignee(t *testing.T, s *Server, assignee string) uuid.UUID {
 // TestAddTaskSchema_AssigneeMaxLength verifies the registered add_task tool
 // exposes assignee's client-side length hint (mcp.MaxLength(100),
 // tools_gtd.go) in its InputSchema — this is a defensive upper bound only
-// (backend-security-design.md §2: runtime discipline.NormalizeActor's
-// canonical-actor allowlist remains the sole validation authority; this
-// schema hint never replaces it). A regression here (the option dropped, or
+// (runtime discipline.NormalizeActor's canonical-actor allowlist remains
+// the sole validation authority; this schema hint never replaces it). A
+// regression here (the option dropped, or
 // applied to the wrong property) would only be caught by a client-side
 // schema inspector, never by a server-side test that only calls the handler
 // — hence testing the registered *mcp.Tool directly instead of exercising

@@ -9,10 +9,9 @@ import (
 // TestDecodeGoalParams_LengthCaps mirrors
 // internal/proposal/accept_decode_length_test.go's TestDecodeGoalParams_LengthCaps
 // for this package's private decodeGoalParams (byte-identical caps, string
-// error-message return convention instead of error — see
-// backend-security-design.md §2.1: this decoder is reachable from any MCP
-// client calling propose_goal → confirm_proposal, which a prompt-injected
-// agent controls).
+// error-message return convention instead of error — this decoder is
+// reachable from any MCP client calling propose_goal → confirm_proposal,
+// which a prompt-injected agent controls).
 func TestDecodeGoalParams_LengthCaps(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

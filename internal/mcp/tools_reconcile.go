@@ -279,9 +279,8 @@ func (s *Server) handleReconcileMergedPRsPreview(
 	// [F170-12] issuedBySession is captured from ctx ONLY — never from an
 	// argument. A session id read out of the tool payload would let the
 	// caller nominate whose token this is, which is the forgery this binding
-	// exists to prevent (backend-security-design.md §2.1: LLM tool input is
-	// adversarial; auditSessionID's doc comment, tools_gtd.go, states the same
-	// rule for the audit path).
+	// exists to prevent (LLM tool input is adversarial; auditSessionID's doc
+	// comment, tools_gtd.go, states the same rule for the audit path).
 	s.reconcileTokens.Store(token, reconcileConfirmation{
 		matches:         result.Matches,
 		ambiguous:       result.Ambiguous,

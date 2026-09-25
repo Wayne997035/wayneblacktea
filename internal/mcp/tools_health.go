@@ -624,7 +624,7 @@ func detectCompletionDrift(tasks []db.Task, repoRoot string) []DriftCandidate {
 		}
 		if len(evidence) > 0 {
 			// Strip ASCII control characters from the title before surfacing
-			// it (per backend-security-design.md §5.4). Tabs are preserved.
+			// it (audit/stored-text hygiene). Tabs are preserved.
 			title := strings.Map(func(r rune) rune {
 				if r < 0x20 && r != '\t' {
 					return -1

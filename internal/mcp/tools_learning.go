@@ -119,7 +119,7 @@ func (s *Server) handleSubmitReview(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("rating must be between 1 and 4"), nil
 	}
 
-	// Ω7 fix (mcp-surface spec, backend-security-design.md §2.1): the
+	// Ω7 fix (mcp-surface spec — LLM tool input is adversarial): the
 	// current CardState is read from the DB, never trusted from the caller.
 	// submit_review used to accept stability/difficulty/review_count as
 	// LLM-supplied "current state" params; an omitted or wrong review_count

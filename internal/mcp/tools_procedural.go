@@ -29,8 +29,7 @@ import (
 // add_procedural/query_procedural/mark_procedural_used store literal
 // step-by-step approach text (ApproachMD is explicitly "Markdown-formatted
 // step-by-step approach") — exactly the shape a forged marker plus
-// injected instruction would want to hide inside
-// (backend-security-design.md §2.1).
+// injected instruction would want to hide inside.
 const (
 	proceduralTitleMaxRunes     = 200
 	proceduralWhenToUseMaxRunes = 2000

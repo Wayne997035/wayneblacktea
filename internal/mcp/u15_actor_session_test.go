@@ -198,7 +198,7 @@ func TestDecisionLogParamsLiteralsSetActorSessionID(t *testing.T) {
 	if len(violations) > 0 {
 		t.Errorf("%d decision.LogParams{ literal(s) do not set ActorSessionID — every decisions-table "+
 			"write path MUST stamp the calling MCP session via s.auditSessionID(ctx) (U15, "+
-			"backend-security-design.md §2 provenance integrity):", len(violations))
+			"provenance integrity):", len(violations))
 		for _, v := range violations {
 			t.Error("  " + v)
 		}
