@@ -159,7 +159,7 @@ var repoNameCleanupSamples = []string{
 	// deliberately excluded here — see
 	// TestMigration000084_EmbeddedNULByteResidualRisk for why the GLOB
 	// predicate cannot detect it and why that gap is accepted, not a bug.
-	"../etc/passwd", "a/../b", "./a", ".x", "_project/.claude", "-x", "a/-b", "--help",
+	"../etc/passwd", "a/../b", "./a", ".x", "workspace/.hidden", "-x", "a/-b", "--help",
 	"a//b", "/a", "a/", "a b", "a;b", "a\nb", "repo\n", "repo\t",
 	"repo$(cmd)", "repo`cmd`", "中文", "bad repo name!",
 	// length boundary (TestValidRepoPath_LengthBoundary)

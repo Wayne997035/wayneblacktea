@@ -15,7 +15,7 @@ import (
 // while a compliant one is kept.
 func TestDisciplineMiddleware_RepoNameStoredEmptyWhenInvalid(t *testing.T) {
 	t.Parallel()
-	for arg, want := range map[string]string{"../x": "", "_project/.claude": "", "Flare-Go/auth": "Flare-Go/auth"} {
+	for arg, want := range map[string]string{"../x": "", "workspace/.hidden": "", "Flare-Go/auth": "Flare-Go/auth"} {
 		disc := &captureDisciplineStore{}
 		srv := &Server{discipline: disc, sessionID: "test-session-repo"}
 		handler := srv.disciplineMiddleware()(func(context.Context, mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {

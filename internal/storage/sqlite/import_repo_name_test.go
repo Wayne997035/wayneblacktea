@@ -22,7 +22,7 @@ func TestImport_RepoNameStoredEmptyWhenInvalid(t *testing.T) {
 	for _, tc := range []struct {
 		repo      string
 		wantValid bool
-	}{{"../x", false}, {"_project/.claude", false}, {"Flare-Go/auth", true}} {
+	}{{"../x", false}, {"workspace/.hidden", false}, {"Flare-Go/auth", true}} {
 		d, gs := openGTDDB(t)
 		pid := uuid.New()
 		if err := gs.ImportProject(ctx, db.Project{

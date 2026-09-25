@@ -218,7 +218,7 @@ var repoNameCleanupSamples = []string{
 	"skcloud-admin-portal/skcloud-advertisement-image", "skcloud-uid-udid-server/skcloud-uid-udid",
 	"wayneblacktea",
 	// reject
-	"../etc/passwd", "a/../b", "./a", ".x", "_project/.claude", "-x", "a/-b", "--help",
+	"../etc/passwd", "a/../b", "./a", ".x", "workspace/.hidden", "-x", "a/-b", "--help",
 	"a//b", "/a", "a/", "a b", "a;b", "a\nb", "repo\n", "repo\t",
 	"repo$(cmd)", "repo`cmd`", "中文", "bad repo name!",
 	// length boundary

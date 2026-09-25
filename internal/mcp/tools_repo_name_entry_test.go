@@ -50,7 +50,7 @@ func newUnreachableStoreServer() *Server {
 // states the rule, before any store call.
 func TestRepoNameEntryChecks(t *testing.T) {
 	t.Parallel() // [F0925-29]
-	const bad = "_project/.claude"
+	const bad = "workspace/.hidden"
 	cases := []struct {
 		name    string
 		handler func(*Server, context.Context, mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error)

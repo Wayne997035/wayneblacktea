@@ -34,28 +34,28 @@ var productionRepoNames = []string{
 //
 //nolint:gosec // G101: false positive — these are adversarial path strings for a validator test, not credentials
 var rejectedRepoPaths = map[string]string{
-	"":                 "empty",
-	"../etc/passwd":    "dot-dot segment",
-	"a/../b":           "dot-dot segment in the middle",
-	"./a":              "dot segment",
-	".x":               "segment starts with a dot",
-	"_project/.claude": "second segment starts with a dot",
-	"-x":               "segment starts with a dash",
-	"a/-b":             "second segment starts with a dash",
-	"--help":           "looks like a command-line flag",
-	"a//b":             "empty segment",
-	"/a":               "leading slash",
-	"a/":               "trailing slash",
-	"a b":              "space",
-	"a;b":              "shell separator",
-	"a\nb":             "newline",
-	"repo\n":           "trailing newline",
-	"repo\t":           "tab",
-	"repo\x00":         "null byte",
-	"repo$(cmd)":       "command substitution",
-	"repo`cmd`":        "backticks",
-	"中文":               "non-ASCII",
-	"bad repo name!":   "space and bang",
+	"":                  "empty",
+	"../etc/passwd":     "dot-dot segment",
+	"a/../b":            "dot-dot segment in the middle",
+	"./a":               "dot segment",
+	".x":                "segment starts with a dot",
+	"workspace/.hidden": "second segment starts with a dot",
+	"-x":                "segment starts with a dash",
+	"a/-b":              "second segment starts with a dash",
+	"--help":            "looks like a command-line flag",
+	"a//b":              "empty segment",
+	"/a":                "leading slash",
+	"a/":                "trailing slash",
+	"a b":               "space",
+	"a;b":               "shell separator",
+	"a\nb":              "newline",
+	"repo\n":            "trailing newline",
+	"repo\t":            "tab",
+	"repo\x00":          "null byte",
+	"repo$(cmd)":        "command substitution",
+	"repo`cmd`":         "backticks",
+	"中文":                "non-ASCII",
+	"bad repo name!":    "space and bang",
 }
 
 // [F0925-29] ValidRepoPath is the single workspace repo name rule.
@@ -164,13 +164,13 @@ func TestRepoNameOrEmpty(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"wayneblacktea":    "wayneblacktea",
-		"Flare-Go/auth":    "Flare-Go/auth",
-		"":                 "",
-		".claude":          "",
-		"_project/.claude": "",
-		"../x":             "",
-		"中文":               "",
+		"wayneblacktea":     "wayneblacktea",
+		"Flare-Go/auth":     "Flare-Go/auth",
+		"":                  "",
+		".claude":           "",
+		"workspace/.hidden": "",
+		"../x":              "",
+		"中文":                "",
 	}
 	for in, want := range cases {
 		if got := RepoNameOrEmpty(in); got != want {

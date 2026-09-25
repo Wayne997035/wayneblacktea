@@ -10,7 +10,7 @@ func TestRepoNameFromCwd(t *testing.T) {
 	cases := map[string]string{
 		"/Users/me/_project/wayneblacktea": "wayneblacktea",
 		"/Users/me/_project":               "_project",
-		"/Users/me/_project/.claude":       "",
+		"/Users/me/workspace/.hidden":      "",
 		"/Users/me/-rf":                    "",
 		"/Users/me/a b":                    "",
 	}

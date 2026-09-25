@@ -36,7 +36,7 @@ func (c *countingVisionStore) Update(context.Context, uuid.UUID, vision.UpdateVi
 	return nil, nil
 }
 
-const badRepoNameBody = `"repo_name":"_project/.claude"`
+const badRepoNameBody = `"repo_name":"workspace/.hidden"`
 
 // TestLogDecision_RepoNameEntryCheck pins [F0925-29] on POST /api/decisions:
 // a repo_name breaking the workspace repo name rule is a 400 naming the rule

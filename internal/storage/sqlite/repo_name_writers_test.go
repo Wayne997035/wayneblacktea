@@ -16,9 +16,10 @@ import (
 )
 
 // badRepoName is the canonical rejected value for the store-layer repo_name
-// backstops below: a real value an LLM once sent through log_decision, and
-// one the workspace repo name rule rejects (segment starts with '.').
-const badRepoName = "_project/.claude"
+// backstops below — the workspace repo name rule rejects it (segment starts
+// with '.'), standing in for the shape of value an LLM has been observed
+// sending through log_decision.
+const badRepoName = "workspace/.hidden"
 
 func openRepoNameDB(t *testing.T) *sqlite.DB {
 	t.Helper()
