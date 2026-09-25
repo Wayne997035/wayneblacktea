@@ -54,7 +54,7 @@ var ErrInvalidBackend = errors.New("STORAGE_BACKEND must be 'postgres' or 'sqlit
 // Callers that read from process env directly should prefer BackendFromEnv;
 // BackendFor exists so callers with an explicit DSN (e.g. a fallback-file
 // value that was never written to os.Environ) can resolve the same way
-// without mutating env first. See backend-security-design.md §4.2.
+// without mutating env first.
 func BackendFor(rawBackend, dsn string) (Backend, error) {
 	raw := strings.TrimSpace(rawBackend)
 	if raw == "" {

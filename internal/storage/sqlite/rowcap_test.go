@@ -22,7 +22,7 @@ import (
 //
 // The Postgres twins live in internal/gtd/store_postgres_rowcap_test.go and
 // internal/proposal/store_postgres_rowcap_test.go
-// (backend-security-design.md §6.5: a dual-backend project needs both, and
+// (a dual-backend project needs both, and
 // "the logic is identical" is the claim testcontainers exists to check).
 
 // rowCapStoreSeed is deliberately larger than any page these tests request, so

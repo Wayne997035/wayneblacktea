@@ -46,10 +46,9 @@ var ErrSchemaNotCurrent = errors.New("sqlite: database schema is not current (re
 //
 // Intended for hook binaries (wbt context session-start) that must read an
 // existing, possibly-untrusted-directory SQLite file without ever mutating
-// its CONTENT — see backend-security-design.md §2.2/§5.1/§5.3 and the A5a
-// dispatch's M-1 threat model (a repo-shipped .db file must never be a
+// its CONTENT — a repo-shipped .db file must never be a
 // write vector, and a hook process must never be the thing that migrates a
-// shared DB out from under a longer-lived process).
+// shared DB out from under a longer-lived process.
 //
 // path MUST be a plain filesystem path, not a "file:" URI or any DSN with a
 // query string or fragment — OpenReadOnly builds the URI form itself (see
@@ -128,7 +127,7 @@ func OpenReadOnly(ctx context.Context, path, workspaceID string) (*DB, error) {
 //     rejection and accepts the same trade-off: a legitimate filename
 //     containing a literal "%" can no longer be opened via OpenReadOnly.
 //   - "\x00", "\r", "\n" are rejected because they break path semantics
-//     differently across OS layers (backend-security-design.md §2.2) — a
+//     differently across OS layers — a
 //     defence-in-depth check alongside the existing OS-level rejection of
 //     embedded NUL bytes.
 //   - The directory portion of path is resolved with filepath.EvalSymlinks
@@ -154,8 +153,7 @@ func OpenReadOnly(ctx context.Context, path, workspaceID string) (*DB, error) {
 //   - os.Lstat (not os.Stat, which follows symlinks) on the resolved
 //     directory + the ORIGINAL final path component still rejects a path
 //     whose final component is itself a symlink, so a malicious repo cannot
-//     point SQLITE_PATH directly at an arbitrary symlinked target
-//     (backend-security-design.md §2.2).
+//     point SQLITE_PATH directly at an arbitrary symlinked target.
 //
 // This narrows, but does NOT eliminate, the TOCTOU window between this
 // validation and the sql.Open call in OpenReadOnly: an attacker who can

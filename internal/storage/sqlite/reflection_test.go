@@ -316,7 +316,7 @@ func TestSQLiteReflectionStore_RecentWithPatterns(t *testing.T) {
 
 // TestSQLiteReflectionStore_PruneOlderThan verifies that PruneOlderThan removes
 // old reflections but leaves newer rows untouched. Mirrors the PG integration
-// test to ensure dual-backend parity per backend-security-design.md §6.5.
+// test to ensure dual-backend parity.
 func TestSQLiteReflectionStore_PruneOlderThan(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	db := openReflectionDB(t)
