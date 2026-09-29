@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -104,36 +105,52 @@ func errTextFromResult(res *mcp.CallToolResult) string {
 const maxErrTextRunes = 512
 
 // sanitizeErrText strips control and invisible-formatting characters from a
-// caller-controlled error string before it enters the watchdog ring buffer
-// (and, downstream, system_health's recent_calls[].err). It is not shared
-// with internal/mcp's sanitizeAuditText: that package imports watchdog (for
-// watchdog.ToolCall), so importing it back here would create an import
-// cycle, and the set stripped here is larger — it also removes U+2028/
-// U+2029 line/paragraph separators and Unicode bidi-control characters,
-// neither of which sanitizeAuditText touches.
+// caller-controlled error string, neutralises any prompt-boundary marker
+// text it contains, and caps the result before it enters the watchdog ring
+// buffer (and, downstream, system_health's recent_calls[].err). It is not
+// shared with internal/mcp's sanitizeAuditText: that package imports
+// watchdog (for watchdog.ToolCall), so importing it back here would create
+// an import cycle, and the set stripped here is larger — it also removes
+// U+2028/U+2029 line/paragraph separators, Unicode format characters
+// (category Cf — a superset of bidi-control that also covers the Tag
+// block, zero-width characters, and BOM), and variation selectors, none of
+// which sanitizeAuditText touches.
+//
+// It DOES share the marker-neutralisation step with internal/mcp's
+// clipSafe (both call safetext.NeutralizeBoundaryMarkers, the shared
+// registry with zero internal/ dependencies), so ErrText gets the same
+// boundary-marker defence as its sibling system_health fields (e.g.
+// tools_health.go's clipSafe(ev.RepoName, ...)).
+//
+// The three passes run in this fixed order — strip, then neutralise, then
+// truncate — because a marker can be split across a rune the strip pass
+// removes, so the text must be reassembled into a matchable shape before
+// neutralisation runs; and NeutralizeBoundaryMarkers's placeholder can be
+// longer than the marker it replaces, so truncating first could let a
+// post-neutralisation string exceed the cap again.
 func sanitizeErrText(s string) string {
 	if s == "" {
 		return ""
 	}
 	var b strings.Builder
 	b.Grow(len(s))
-	n := 0
 	for _, r := range s {
 		switch {
 		case r == '\n' || r == '\r':
 			r = ' '
 		case r == '\t':
 			// preserved as-is; not stripped by the IsControl case below
-		case unicode.IsControl(r), r == '\u2028', r == '\u2029', unicode.Is(unicode.Bidi_Control, r):
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029', unicode.Is(unicode.Cf, r), unicode.Is(unicode.Variation_Selector, r):
 			continue
-		}
-		n++
-		if n > maxErrTextRunes { // [F0929-30]
-			return b.String() + "…[truncated]"
 		}
 		b.WriteRune(r)
 	}
-	return b.String()
+	neutralized := safetext.NeutralizeBoundaryMarkers(b.String())
+	runes := []rune(neutralized)
+	if len(runes) > maxErrTextRunes { // [F0929-30]
+		return string(runes[:maxErrTextRunes]) + "…[truncated]"
+	}
+	return neutralized
 }
 
 // Recent returns the last n recorded calls, newest last (chronological order).

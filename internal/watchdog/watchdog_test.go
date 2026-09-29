@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/watchdog"
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -167,6 +168,32 @@ func TestWatchdog_SanitizesErrTextSeparators(t *testing.T) {
 	}
 }
 
+// TestWatchdog_StripsFormatAndVariationSelectors verifies sanitizeErrText
+// strips Unicode format characters (category Cf) and variation selectors —
+// invisible carriers used by ASCII-smuggling and variation-selector-
+// smuggling techniques. Covers the Tag block, a zero-width space, BOM, and
+// two variation selectors from different blocks.
+func TestWatchdog_StripsFormatAndVariationSelectors(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	raw := "a" + string(rune(0xE0041)) + "b" + string(rune(0x200B)) + "c" + string(rune(0xFEFF)) +
+		"d" + string(rune(0xFE0F)) + "e" + string(rune(0xE0100)) + "f" + string(rune(0x00AD)) + "g"
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(raw)
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	want := "abcdefg"
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != want {
+		t.Fatalf("expected sanitized ErrText %q, got %+v", want, recent)
+	}
+}
+
 // TestWatchdog_TruncatesLongErrText verifies record() caps ErrText at
 // maxErrTextRunes and marks the cut with a literal "…[truncated]" suffix,
 // and that the boundary case (exactly the cap, no more) is left untouched.
@@ -202,6 +229,84 @@ func TestWatchdog_TruncatesLongErrText(t *testing.T) {
 	recent2 := w2.Recent(0)
 	if len(recent2) != 1 || recent2[0].ErrText != exact {
 		t.Fatalf("expected exact-boundary ErrText untouched (512 runes, no marker), got %q", recent2[0].ErrText)
+	}
+}
+
+// TestWatchdog_NeutralizesBoundaryMarkers verifies sanitizeErrText replaces
+// every marker in safetext.BoundaryMarkers() with BoundaryMarkerPlaceholder,
+// looping over the full registry rather than a hand-picked subset.
+func TestWatchdog_NeutralizesBoundaryMarkers(t *testing.T) {
+	for _, marker := range safetext.BoundaryMarkers() {
+		marker := marker
+		t.Run(marker, func(t *testing.T) {
+			w := watchdog.New(10)
+			mw := w.Middleware()
+
+			raw := "pre " + marker + " post"
+			handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, errors.New(raw)
+			})
+
+			_, _ = handler(context.Background(), mcp.CallToolRequest{
+				Params: mcp.CallToolParams{Name: "complete_task"},
+			})
+
+			want := "pre " + safetext.BoundaryMarkerPlaceholder + " post"
+			recent := w.Recent(0)
+			if len(recent) != 1 || recent[0].ErrText != want {
+				t.Fatalf("expected sanitized ErrText %q, got %+v", want, recent)
+			}
+		})
+	}
+}
+
+// TestWatchdog_NeutralizesMarkerSplitByStrippedRune verifies a marker that
+// arrives split by a rune sanitizeErrText strips (here, ESC) still gets
+// neutralized — because the strip pass runs BEFORE neutralization, so the
+// marker is reassembled into a matchable shape first.
+func TestWatchdog_NeutralizesMarkerSplitByStrippedRune(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	marker := safetext.StoredContextMarkerEnd
+	raw := marker[:3] + string(rune(0x1b)) + marker[3:]
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(raw)
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	want := safetext.BoundaryMarkerPlaceholder
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != want {
+		t.Fatalf("expected sanitized ErrText %q, got %+v", want, recent)
+	}
+}
+
+// TestWatchdog_TruncatesAfterNeutralize verifies truncation runs AFTER
+// neutralization, so the 512-rune cap bounds the post-placeholder text —
+// not the pre-neutralization text, which could be shorter than its
+// placeholder expansion.
+func TestWatchdog_TruncatesAfterNeutralize(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	raw := strings.Repeat(safetext.StoredContextMarkerEnd, 40)
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(raw)
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	neutralizedFull := strings.Repeat(safetext.BoundaryMarkerPlaceholder, 40)
+	want := string([]rune(neutralizedFull)[:512]) + "…[truncated]"
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != want {
+		t.Fatalf("expected sanitized ErrText %q, got %q", want, recent[0].ErrText)
 	}
 }
 
