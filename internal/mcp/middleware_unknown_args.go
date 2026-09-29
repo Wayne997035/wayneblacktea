@@ -43,6 +43,9 @@ import (
 // argument names, but never echoes any argument VALUE: values are
 // LLM-agent-supplied and may carry content that should not be reflected
 // back into a tool-error string (e.g. into a log downstream of the caller).
+// Each key name IS caller-controlled, though, so it goes through
+// sanitizeAuditText and %q-quoting (and a count cap) before it is shown —
+// see unknownArgMaxListed's doc comment below.
 func (s *Server) unknownArgsMiddleware() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
@@ -99,11 +102,47 @@ func (s *Server) unknownArgsMiddleware() server.ToolHandlerMiddleware {
 				validList = strings.Join(validNames, ", ")
 			}
 
+			// [SEC-194-01] Each unknown key is sanitised (control bytes
+			// stripped, length-capped by unknownArgKeyMaxRunes) and then
+			// %q-quoted before it enters the message. %q additionally
+			// escapes any remaining non-printable rune (e.g. U+2028 LINE
+			// SEPARATOR, which sanitizeAuditText does not strip because it
+			// is not an ASCII control byte). At most unknownArgMaxListed
+			// keys are shown; the rest collapse into a "(+N more)" suffix.
+			listed := unknown
+			truncatedBy := 0
+			if len(listed) > unknownArgMaxListed {
+				truncatedBy = len(listed) - unknownArgMaxListed
+				listed = listed[:unknownArgMaxListed]
+			}
+			quotedKeys := make([]string, 0, len(listed))
+			for _, key := range listed {
+				quotedKeys = append(quotedKeys, fmt.Sprintf("%q", sanitizeAuditText(key, unknownArgKeyMaxRunes)))
+			}
+			unknownList := strings.Join(quotedKeys, ", ")
+			if truncatedBy > 0 {
+				unknownList += fmt.Sprintf(" (+%d more)", truncatedBy)
+			}
+
 			msg := fmt.Sprintf(
 				"unknown argument(s): %s; valid arguments: %s",
-				strings.Join(unknown, ", "), validList,
+				unknownList, validList,
 			)
 			return mcpmsg.NewToolResultError(msg), nil
 		}
 	}
 }
+
+// unknownArgMaxListed caps how many unknown argument names are shown in the
+// rejection message; unknownArgKeyMaxRunes caps each individual key's
+// length before that. [SEC-194-01]: an unknown key reaches this middleware
+// straight from req.GetArguments(), before any validation, so it is
+// caller-controlled — and the resulting message is persisted verbatim by
+// disciplineMiddleware (into discipline_events) and returned verbatim by
+// system_health (tools_health.go). Without these caps a caller could
+// smuggle unbounded or control-character content through what looks like
+// an ordinary rejected tool call.
+const (
+	unknownArgMaxListed   = 10
+	unknownArgKeyMaxRunes = 64
+)

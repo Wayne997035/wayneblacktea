@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -13,16 +14,18 @@ import (
 // wantCompleteTaskUnknownArgText is the exact rejection text
 // unknownArgsMiddleware produces for a complete_task call whose only
 // unknown key is artifact_url: the dispatch ticket fixes the format as
-// "unknown argument(s): <sorted,joined>; valid arguments: <sorted,joined>",
-// and complete_task declares exactly {artifact, task_id} (tools_gtd.go),
-// sorted alphabetically.
+// `unknown argument(s): <%q-quoted,sorted,joined>[ (+N more)]; valid
+// arguments: <sorted,joined>` ([SEC-194-01]; the unknown half is %q-quoted,
+// the valid half is not — valid argument names come from the server's own
+// registered schema, never from caller input). complete_task declares
+// exactly {artifact, task_id} (tools_gtd.go), sorted alphabetically.
 //
 // Asserted with an EXACT match below, not strings.Contains: "artifact_url"
 // itself contains the substring "artifact", so a Contains(text, "artifact")
 // check passes trivially the moment Contains(text, "artifact_url") already
 // passed — it never actually verifies the valid-arguments half of the
 // message is present.
-const wantCompleteTaskUnknownArgText = "unknown argument(s): artifact_url; valid arguments: artifact, task_id"
+const wantCompleteTaskUnknownArgText = `unknown argument(s): "artifact_url"; valid arguments: artifact, task_id`
 
 // unknownArgsRPCResult issues a real tools/call over ms.HandleMessage (same
 // JSON-RPC entry point every transport uses) and returns the tool-level
@@ -225,5 +228,193 @@ func TestUnknownArgsMiddleware_EndToEnd(t *testing.T) {
 	}
 	if text != wantCompleteTaskUnknownArgText {
 		t.Errorf("error text = %q, want exact %q", text, wantCompleteTaskUnknownArgText)
+	}
+}
+
+// TestUnknownArgsMiddleware_SanitizesControlCharsInKey [SEC-194-01]: an
+// unknown key is caller-controlled and this middleware's rejection message
+// is later persisted verbatim by disciplineMiddleware and returned verbatim
+// by system_health — so a key carrying a newline or an ANSI escape must not
+// reach the message unsanitised. sanitizeAuditText strips bytes < 0x20
+// (except \t) before %q-quoting.
+func TestUnknownArgsMiddleware_SanitizesControlCharsInKey(t *testing.T) {
+	t.Parallel()
+	srv, _ := newTestMCPServer(t)
+
+	var nextCalled bool
+	next := func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+		nextCalled = true
+		return mcpmsg.NewToolResultText("handler reached"), nil
+	}
+	handler := srv.unknownArgsMiddleware()(next)
+
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Name = toolCompleteTask
+	req.Params.Arguments = map[string]any{
+		"task_id":          "11111111-1111-1111-1111-111111111111",
+		"bad\nkey\x1b[31m": "x",
+	}
+
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unknownArgsMiddleware returned a Go error: %v", err)
+	}
+	if nextCalled {
+		t.Fatal("next was called despite an undeclared top-level argument")
+	}
+	text := extractResultText(res, 2000)
+	if strings.ContainsAny(text, "\n\x1b") {
+		t.Errorf("error text %q still contains a raw control byte", text)
+	}
+	const wantQuoted = `"badkey[31m"`
+	if !strings.Contains(text, wantQuoted) {
+		t.Errorf("error text %q does not contain the sanitised+quoted key %s", text, wantQuoted)
+	}
+}
+
+// TestUnknownArgsMiddleware_TruncatesLongKey [SEC-194-01]: a 1000-byte
+// unknown key must be capped at unknownArgKeyMaxRunes before it enters the
+// message, so a caller cannot use a rejected call to smuggle an
+// unboundedly large string into discipline_events / system_health.
+func TestUnknownArgsMiddleware_TruncatesLongKey(t *testing.T) {
+	t.Parallel()
+	srv, _ := newTestMCPServer(t)
+
+	longKey := strings.Repeat("a", 1000)
+
+	var nextCalled bool
+	next := func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+		nextCalled = true
+		return mcpmsg.NewToolResultText("handler reached"), nil
+	}
+	handler := srv.unknownArgsMiddleware()(next)
+
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Name = toolCompleteTask
+	req.Params.Arguments = map[string]any{
+		"task_id": "11111111-1111-1111-1111-111111111111",
+		longKey:   "x",
+	}
+
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unknownArgsMiddleware returned a Go error: %v", err)
+	}
+	if nextCalled {
+		t.Fatal("next was called despite an undeclared top-level argument")
+	}
+	text := extractResultText(res, 2000)
+
+	wantQuoted := `"` + strings.Repeat("a", unknownArgKeyMaxRunes) + `"`
+	if !strings.Contains(text, wantQuoted) {
+		t.Errorf("error text does not contain the key capped at exactly %d runes: %q", unknownArgKeyMaxRunes, text)
+	}
+	if strings.Contains(text, strings.Repeat("a", unknownArgKeyMaxRunes+1)) {
+		t.Errorf("error text contains more than %d consecutive a's — the cap did not truncate: %q", unknownArgKeyMaxRunes, text)
+	}
+	if len(text) >= 500 {
+		t.Errorf("error text is %d bytes, want < 500: %q", len(text), text)
+	}
+}
+
+// TestUnknownArgsMiddleware_CapsListedCount [SEC-194-01]: 30 unknown keys
+// must not all be echoed — only the first unknownArgMaxListed (sorted),
+// with the remainder collapsed into a "(+N more)" suffix, so a caller
+// cannot use a rejected call to inflate the message with an arbitrary
+// number of keys.
+func TestUnknownArgsMiddleware_CapsListedCount(t *testing.T) {
+	t.Parallel()
+	srv, _ := newTestMCPServer(t)
+
+	args := map[string]any{
+		"task_id": "11111111-1111-1111-1111-111111111111",
+	}
+	const totalUnknown = 30
+	for i := 0; i < totalUnknown; i++ {
+		args[fmt.Sprintf("k%02d", i)] = "x"
+	}
+
+	var nextCalled bool
+	next := func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+		nextCalled = true
+		return mcpmsg.NewToolResultText("handler reached"), nil
+	}
+	handler := srv.unknownArgsMiddleware()(next)
+
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Name = toolCompleteTask
+	req.Params.Arguments = args
+
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unknownArgsMiddleware returned a Go error: %v", err)
+	}
+	if nextCalled {
+		t.Fatal("next was called despite 30 undeclared top-level arguments")
+	}
+	text := extractResultText(res, 2000)
+
+	for i := 0; i < unknownArgMaxListed; i++ {
+		want := fmt.Sprintf("%q", fmt.Sprintf("k%02d", i))
+		if !strings.Contains(text, want) {
+			t.Errorf("error text missing listed key %s: %q", want, text)
+		}
+	}
+	for i := unknownArgMaxListed; i < totalUnknown; i++ {
+		want := fmt.Sprintf("%q", fmt.Sprintf("k%02d", i))
+		if strings.Contains(text, want) {
+			t.Errorf("error text lists key %s beyond the %d-key cap: %q", want, unknownArgMaxListed, text)
+		}
+	}
+	wantSuffix := fmt.Sprintf("(+%d more)", totalUnknown-unknownArgMaxListed)
+	if !strings.Contains(text, wantSuffix) {
+		t.Errorf("error text does not contain the %q suffix: %q", wantSuffix, text)
+	}
+}
+
+// TestUnknownArgsMiddleware_EscapesNonControlUnprintableRune [SEC-194-01]:
+// U+2028 LINE SEPARATOR is not an ASCII control byte, so sanitizeAuditText
+// does not strip it — %q-quoting is what must catch it. strconv.Quote (the
+// semantics of %q) escapes any rune unicode.IsPrint rejects, and U+2028
+// (category Zl) is one of them.
+func TestUnknownArgsMiddleware_EscapesNonControlUnprintableRune(t *testing.T) {
+	t.Parallel()
+	srv, _ := newTestMCPServer(t)
+
+	const key = "a b"
+
+	var nextCalled bool
+	next := func(ctx context.Context, req mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+		nextCalled = true
+		return mcpmsg.NewToolResultText("handler reached"), nil
+	}
+	handler := srv.unknownArgsMiddleware()(next)
+
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Name = toolCompleteTask
+	req.Params.Arguments = map[string]any{
+		"task_id": "11111111-1111-1111-1111-111111111111",
+		key:       "x",
+	}
+
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unknownArgsMiddleware returned a Go error: %v", err)
+	}
+	if nextCalled {
+		t.Fatal("next was called despite an undeclared top-level argument")
+	}
+	text := extractResultText(res, 2000)
+
+	// wantEscape is built via concatenation, not a literal escape sequence in
+	// source: a bare backslash-u-2028 text run in this file has been observed
+	// to get pre-decoded into the raw U+2028 rune somewhere upstream of the
+	// Go compiler, which would defeat the point of this assertion.
+	wantEscape := `\` + "u2028"
+	if !strings.Contains(text, wantEscape) {
+		t.Errorf("error text does not contain the escaped %s sequence: %q", wantEscape, text)
+	}
+	if strings.ContainsRune(text, ' ') {
+		t.Errorf("error text still contains the raw U+2028 rune: %q", text)
 	}
 }
