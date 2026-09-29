@@ -668,3 +668,135 @@ func TestDetectStaleHandoffs_ResolvedOrRecentSkipped(t *testing.T) {
 		t.Errorf("want 0 findings (resolved + recent both filtered out), got %d: %+v", len(findings), findings)
 	}
 }
+
+// TestWatchdogRoundTrip_DetectUnclosedLoopsThenMarkResolved is F0929-62's D4
+// round-trip #1 (Risk flags, HIGH must-test): detect_unclosed_loops' []id is
+// the value a client is expected to pass as mark_loop_resolved's event_id
+// argument (per that tool's own description: "Call this after you have
+// addressed the underlying issue surfaced by analyze_agent_behavior"). Uses
+// the REAL SQLite-backed watchdog store (newTestWorkSessionServer), not the
+// stubDisciplineEventStore above — MarkResolved's effect must be genuinely
+// visible on a follow-up detect_unclosed_loops call, which a stub that
+// doesn't mutate its own listReturn cannot prove.
+func TestWatchdogRoundTrip_DetectUnclosedLoopsThenMarkResolved(t *testing.T) {
+	t.Parallel()
+	s, dbHandle := newTestWorkSessionServerWithDB(t)
+	dbConn := dbHandle.SqlConn()
+	ctx := context.Background()
+
+	task, err := s.gtd.CreateTask(ctx, gtdPkg.CreateTaskParams{
+		Title: "stuck task " + uuid.NewString(), Assignee: "claude",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := s.gtd.UpdateTaskStatus(ctx, task.ID, gtdPkg.TaskStatusInProgress); err != nil {
+		t.Fatalf("UpdateTaskStatus in_progress: %v", err)
+	}
+	cutoff := time.Now().UTC().Add(-10 * time.Hour).Format(time.RFC3339)
+	if _, err := dbConn.ExecContext(ctx, `UPDATE tasks SET updated_at = ? WHERE id = ?`, cutoff, task.ID.String()); err != nil {
+		t.Fatalf("backdate task: %v", err)
+	}
+
+	// analyze_agent_behavior (default stuck_threshold_hours=4) inserts a
+	// discipline_events_m8 row for the stuck task.
+	analyzeRes := callAnalyzeAgentBehavior(t, s, map[string]any{})
+	if analyzeRes.IsError {
+		t.Fatalf("analyze_agent_behavior: %s", resultText(analyzeRes))
+	}
+
+	// detect_unclosed_loops must list it — response is a raw JSON array.
+	var loops []struct {
+		ID string `json:"id"`
+	}
+	loopsRes := callDetectUnclosedLoops(t, s)
+	if loopsRes.IsError {
+		t.Fatalf("detect_unclosed_loops: %s", resultText(loopsRes))
+	}
+	if err := json.Unmarshal([]byte(resultText(loopsRes)), &loops); err != nil {
+		t.Fatalf("unmarshal detect_unclosed_loops: %v\nraw=%s", err, resultText(loopsRes))
+	}
+	if len(loops) != 1 {
+		t.Fatalf("expected exactly 1 unclosed loop, got %d: %s", len(loops), resultText(loopsRes))
+	}
+	eventID := loops[0].ID
+
+	// The round-trip: mark_loop_resolved(event_id=<id from detect_unclosed_loops>).
+	resolveRes := callMarkLoopResolved(t, s, map[string]any{"event_id": eventID})
+	if resolveRes.IsError {
+		t.Fatalf("mark_loop_resolved: %s", resultText(resolveRes))
+	}
+
+	// A second detect_unclosed_loops call must no longer list it.
+	var loops2 []struct {
+		ID string `json:"id"`
+	}
+	loopsRes2 := callDetectUnclosedLoops(t, s)
+	if loopsRes2.IsError {
+		t.Fatalf("detect_unclosed_loops (2nd): %s", resultText(loopsRes2))
+	}
+	if err := json.Unmarshal([]byte(resultText(loopsRes2)), &loops2); err != nil {
+		t.Fatalf("unmarshal 2nd detect_unclosed_loops: %v\nraw=%s", err, resultText(loopsRes2))
+	}
+	if len(loops2) != 0 {
+		t.Errorf("resolved event still listed as unclosed: %+v", loops2)
+	}
+}
+
+// TestSystemHealthAndDetectUnclosedLoops_ZeroNonAuditWrites is F0929-62's
+// acceptance row for the two UNCHANGED DeliberatelyExcludedTools members:
+// system_health and detect_unclosed_loops must cause zero writes to any
+// table this test can observe. Both stay read-only after this task's map
+// move (only the 3 reclassified tools moved).
+func TestSystemHealthAndDetectUnclosedLoops_ZeroNonAuditWrites(t *testing.T) {
+	t.Parallel()
+	s, dbHandle := newTestWorkSessionServerWithDB(t)
+	dbConn := dbHandle.SqlConn()
+	ctx := context.Background()
+
+	// Fixed literal queries, not string concatenation — table names never come
+	// from a variable (gosec G201: even though these 5 names are hardcoded
+	// below, not caller input, a helper taking a table-name string and
+	// concatenating it still trips static SQL-injection detection).
+	countQueries := map[string]string{
+		"tasks":                 `SELECT COUNT(*) FROM tasks`,
+		"pending_proposals":     `SELECT COUNT(*) FROM pending_proposals`,
+		"discipline_events_m8":  `SELECT COUNT(*) FROM discipline_events_m8`,
+		"completion_candidates": `SELECT COUNT(*) FROM completion_candidates`,
+		"activity_log":          `SELECT COUNT(*) FROM activity_log`,
+	}
+	countRows := func(table string) int {
+		t.Helper()
+		var n int
+		if err := dbConn.QueryRowContext(ctx, countQueries[table]).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		return n
+	}
+	tables := []string{"tasks", "pending_proposals", "discipline_events_m8", "completion_candidates", "activity_log"}
+	before := make(map[string]int, len(tables))
+	for _, tbl := range tables {
+		before[tbl] = countRows(tbl)
+	}
+
+	r1 := callDetectUnclosedLoops(t, s)
+	if r1.IsError {
+		t.Fatalf("detect_unclosed_loops: %s", resultText(r1))
+	}
+	req := mcpmsg.CallToolRequest{}
+	req.Params.Arguments = map[string]any{}
+	r2, err := s.handleSystemHealth(ctx, req)
+	if err != nil {
+		t.Fatalf("handleSystemHealth: %v", err)
+	}
+	if r2.IsError {
+		t.Fatalf("system_health: %s", resultText(r2))
+	}
+
+	for _, tbl := range tables {
+		if got := countRows(tbl); got != before[tbl] {
+			t.Errorf("table %s row count changed: %d -> %d (system_health/detect_unclosed_loops must cause zero writes)",
+				tbl, before[tbl], got)
+		}
+	}
+}

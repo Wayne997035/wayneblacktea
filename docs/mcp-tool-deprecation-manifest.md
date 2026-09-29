@@ -253,6 +253,17 @@ removal work begins.
 None of the three have been touched by this PR. Any future removal must go through a
 dedicated H4 dispatch with production telemetry confirmation, not this read-only pass.
 
+### 3.1 H2 status (F0929-61) — of the 4 original candidates, 2 qualify for a description-only deprecation pass
+
+| Tool | Status | Successor |
+|---|---|---|
+| `task_checklist_complete` | **DEPRECATED** (description-only change, this PR) | `task_checklist_toggle(item_id, done=true)` |
+| `outline_knowledge` | **DEPRECATED** (description-only change, this PR) | `navigate_knowledge(parent_id=item_id)` |
+| `search_atoms` | NOT deprecated | `recall`'s atoms branch hardcodes `limit=5`, swallows `atom.Store` errors into an empty slice, forces response nesting under `result["atoms"]` with no `types=` opt-out, and only neutralises `Content` (not `Keywords`/`Tags`) — real divergence on 4 axes, not a byte-identical alias. |
+| `confirm_proposal` | NOT deprecated | Reject-path parity with `confirm_proposals` unmet — `tools_proposal.go:539` (`BatchConfirm`, `BatchConfirmResult`) vs `:627` (`Resolve`, `confirmResult`) — different store method, different response shape. |
+
+Handler bodies, schemas, response shapes, classification-map membership (`discipline.MutatingTools`/`DeliberatelyExcludedTools`), and group membership are unchanged for both deprecated tools — only the static `mcp.WithDescription()` string gained a `DEPRECATED:` prefix naming the successor.
+
 ---
 
 ## 4. UNREACHABLE(P4) — preserved, not removal candidates

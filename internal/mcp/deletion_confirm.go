@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -24,26 +25,55 @@ import (
 func taskDeletionKey(id string) string    { return id }
 func projectDeletionKey(id string) string { return "project:" + id }
 
+// deletionKind identifies which entity namespace a pending-deletion key
+// belongs to — makes maxPendingDeletions a per-kind cap (one
+// budget per kind) instead of one shared budget, so filling one kind's
+// slots (e.g. with legitimate delete_task previews) cannot block the
+// other's step 1.
+type deletionKind int
+
+const (
+	deletionKindTask deletionKind = iota
+	deletionKindProject
+)
+
+// deletionKeyKind classifies a deleteTokens key by namespace, mirroring
+// taskDeletionKey/projectDeletionKey's own "project:" prefix shape.
+func deletionKeyKind(key string) deletionKind {
+	if strings.HasPrefix(key, "project:") {
+		return deletionKindProject
+	}
+	return deletionKindTask
+}
+
 // issuePendingDeletion is step 1 for both delete tools: prune expired
-// tokens, refuse if too many are already in flight, then store a fresh token
-// under key. A non-nil result is the caller's refusal to return as-is.
+// tokens, refuse if too many SAME-KIND tokens are already in flight, then
+// store a fresh token under key. A non-nil result is the caller's refusal
+// to return as-is.
 //
 // The token is always a bare random UUID — U9's session binding lives in the
 // separate deletionToken.issuedBySession field, never encoded into the token
 // string, so that a token appearing in a log or an error message does not
 // also disclose which session issued it (see issueDeletionToken).
-func (s *Server) issuePendingDeletion(ctx context.Context, key string) (string, time.Time, *mcp.CallToolResult) {
+func (s *Server) issuePendingDeletion(
+	ctx context.Context, key string, kind deletionKind,
+) (string, time.Time, *mcp.CallToolResult) {
 	var count int
 	s.deleteTokens.Range(func(k, v any) bool {
 		rec := v.(deletionToken)
 		if s.now().After(rec.expiresAt) {
 			s.deleteTokens.Delete(k)
-		} else {
+			return true
+		}
+		// Only count entries in the SAME namespace as the key
+		// about to be issued — a full task-kind quota must never block a
+		// project-kind (or vice versa) step 1.
+		if deletionKeyKind(k.(string)) == kind {
 			count++
 		}
 		return true
 	})
-	if count >= maxPendingDeletions {
+	if count >= maxPendingDeletions { // [F0929-56] per-kind cap, not combined
 		return "", time.Time{}, mcp.NewToolResultError("too many pending deletions in flight; retry later")
 	}
 

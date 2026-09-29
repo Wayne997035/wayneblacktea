@@ -76,6 +76,14 @@ WHERE project_id = sqlc.arg('project_id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 ORDER BY COALESCE(updated_at, created_at) DESC;
 
+-- name: CountTasksByProjectAllStatuses :one
+-- COUNT-only twin of ListProjectTasksAllStatuses, same WHERE
+-- clause — delete_project's step-1 preview only ever needed len(tasks), not
+-- the full rows.
+SELECT COUNT(*) FROM tasks
+WHERE project_id = sqlc.arg('project_id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'));
+
 -- name: GetAllPendingTasks :many
 SELECT * FROM tasks
 WHERE status IN ('pending', 'in_progress')
@@ -113,6 +121,19 @@ WHERE status = 'completed'
 -- name: UpdateTaskStatus :one
 UPDATE tasks SET status = sqlc.arg('status'), updated_at = NOW()
 WHERE id = sqlc.arg('id')
+  AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
+RETURNING *;
+
+-- name: UpdateTaskStatusGuarded :one
+-- Conditional UPDATE closing the TOCTOU window between a caller's
+-- read and this write (e7468e5d sub-item 2): only writes when the row's
+-- CURRENT status still equals expected_status. Returns pgx.ErrNoRows both
+-- when no row matches id at all AND when a row matches id but its status
+-- has since diverged from expected_status — the caller (UpdateTaskStatusGuarded
+-- in store.go) re-reads to distinguish "not found" from "conflict".
+UPDATE tasks SET status = sqlc.arg('status'), updated_at = NOW()
+WHERE id = sqlc.arg('id')
+  AND status = sqlc.arg('expected_status')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 RETURNING *;
 

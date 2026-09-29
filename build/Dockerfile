@@ -1,5 +1,10 @@
 # Stage 1: Build the React/Vite frontend
-FROM node:22-alpine AS frontend
+# [F0929-69] Base images pinned by digest (not tag alone) so a tag repoint
+# upstream (accidental or malicious) can't silently change what Railway
+# builds from. Digests are manifest-list (index) digests, verified fresh via
+# `docker buildx imagetools inspect <image>@<digest>` at implementation time
+# -- re-verify before bumping a base image version.
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
@@ -19,7 +24,7 @@ RUN npm run test
 RUN npm run build
 
 # Stage 2: Build the Go binary (with embedded frontend)
-FROM golang:1.26.8-alpine AS builder
+FROM golang:1.26.8-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 
 # Build identity for internal/buildinfo (GTD 61838147 — the MCP server's
 # serverInfo.version and the wayneblacktea://system/build-info resource read
@@ -98,7 +103,7 @@ RUN set -eu; \
     -o /app/server ./cmd/server/
 
 # Stage 3: Minimal runtime image
-FROM alpine:3.21
+FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
 
 RUN apk --no-cache add ca-certificates && \
     addgroup -S appgroup && \

@@ -370,3 +370,26 @@ func TestWatchdog_LastSuccessful(t *testing.T) {
 		t.Error("expected non-zero time after a successful call")
 	}
 }
+
+// TestWatchdog_SanitizesEmptyErrText covers sanitizeErrText's empty-string
+// early return (watchdog.go's `if s == "" { return "" }`), exercised via the
+// only path an external test package can reach it: a tool call that fails
+// with a valid-but-empty error.Error() (errors.New("")). Every sibling
+// sanitize test above drives a non-empty error string. [F0929-67]
+func TestWatchdog_SanitizesEmptyErrText(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New("")
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != "" {
+		t.Fatalf("expected empty ErrText, got %+v", recent)
+	}
+}

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -57,6 +58,12 @@ func (s *stubGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID)
 	return nil, nil
 }
 
+// CountTasksByProjectAllStatuses stub — gtd.StoreIface gained this method in
+// this change; this scheduler package's tests never call it.
+func (s *stubGTDStore) CountTasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, nil
+}
+
 func (s *stubGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
 	return nil, nil
 }
@@ -82,6 +89,15 @@ func (s *stubGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*d
 }
 
 func (s *stubGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.TaskStatus) (*db.Task, error) {
+	return nil, nil
+}
+
+// UpdateTaskStatusGuarded stub — gtd.StoreIface gained this method in this
+// change; this scheduler package's tests never exercise the TOCTOU path, so a
+// trivial stub is correct here, not a shortcut.
+func (s *stubGTDStore) UpdateTaskStatusGuarded(
+	_ context.Context, _ uuid.UUID, _ gtd.TaskStatus, _ gtd.TaskStatus,
+) (*db.Task, error) {
 	return nil, nil
 }
 
@@ -455,6 +471,85 @@ func TestBuildReflectionSummary_IncludesActorAndAction(t *testing.T) {
 	}
 	if !containsStr(summary, "Switch to Redis") {
 		t.Error("summary should include decision title")
+	}
+}
+
+// TestRunReflection_PayloadFieldMapping is a characterization test written
+// BEFORE refactoring runReflection's propose+log tail to use runProposalTail
+// (F0929-71) — it asserts the exact Title/Content/Tags 1:1 mapping (all 3
+// fields individually, not just non-empty) so it must stay green unchanged
+// both before and after the refactor, and would catch a field swap that a
+// non-empty-only check would miss.
+func TestRunReflection_PayloadFieldMapping(t *testing.T) {
+	gtdStore := &stubGTDStore{
+		activities: []db.ActivityLog{
+			{ID: uuid.New(), Actor: "wayne", Action: "merged PR #1"},
+		},
+	}
+	decStore := &stubDecisionStore{}
+	propStore := &stubProposalStore{}
+	reflector := &stubReflector{
+		proposals: []ai.KnowledgeProposal{
+			{Title: "T1", Content: "C1", Tags: []string{"a", "b"}},
+		},
+	}
+
+	deps := makeReflectionDeps(gtdStore, decStore, propStore, reflector)
+	runReflection(deps)
+
+	if len(propStore.created) != 1 {
+		t.Fatalf("expected 1 proposal created, got %d", len(propStore.created))
+	}
+	var payload proposal.KnowledgePayload
+	if err := json.Unmarshal(propStore.created[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Title != "T1" {
+		t.Errorf("payload.Title = %q, want %q", payload.Title, "T1")
+	}
+	if payload.Content != "C1" {
+		t.Errorf("payload.Content = %q, want %q", payload.Content, "C1")
+	}
+	wantTags := []string{"a", "b"}
+	if len(payload.Tags) != len(wantTags) || payload.Tags[0] != wantTags[0] || payload.Tags[1] != wantTags[1] {
+		t.Errorf("payload.Tags = %v, want %v", payload.Tags, wantTags)
+	}
+}
+
+// TestRunReflection_WarnLogFieldsPreserved verifies that a Create failure
+// logs runReflection's own pre-refactor message/field shape ("title", not
+// "item_id") — no existing Create-error test covers this file (proploop
+// spec Acceptance criteria). If the refactor accidentally routed this file
+// through runProposalLoop's hooks instead of its own, "item_id=" would
+// appear in the captured output and the negative assertion below would fail.
+func TestRunReflection_WarnLogFieldsPreserved(t *testing.T) {
+	buf := captureSlogWarn(t)
+
+	gtdStore := &stubGTDStore{
+		activities: []db.ActivityLog{
+			{ID: uuid.New(), Actor: "wayne", Action: "merged PR #1"},
+		},
+	}
+	decStore := &stubDecisionStore{}
+	propStore := &stubProposalStore{createErr: errors.New("db write failed")}
+	reflector := &stubReflector{
+		proposals: []ai.KnowledgeProposal{
+			{Title: "T1", Content: "C1"},
+		},
+	}
+
+	deps := makeReflectionDeps(gtdStore, decStore, propStore, reflector)
+	runReflection(deps)
+
+	out := buf.String()
+	if !containsStr(out, "reflection: creating pending proposal failed") {
+		t.Errorf("warn output missing expected message, got: %s", out)
+	}
+	if !containsStr(out, "title=T1") {
+		t.Errorf("warn output missing title field, got: %s", out)
+	}
+	if containsStr(out, "item_id=") {
+		t.Errorf("warn output must NOT contain item_id= (runProposalLoop's template), got: %s", out)
 	}
 }
 

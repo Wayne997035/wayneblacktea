@@ -1,8 +1,11 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,21 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/reflection"
 	"github.com/google/uuid"
 )
+
+// captureSlogWarn redirects slog default output to a buffer for the duration
+// of the test. The buffer is returned for substring assertions. Restores the
+// previous default handler on cleanup. Pattern from
+// internal/guard/config_test.go:16-24. NEVER used with t.Parallel() — it
+// mutates slog's process-global default handler (proploop spec Constraints).
+func captureSlogWarn(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	buf := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	return buf
+}
 
 // pendingStatus / rejectedStatus are proposal status strings used in test
 // assertions. Declared as constants to satisfy the goconst linter (≥3
@@ -450,5 +468,171 @@ func TestWithCognitiveDeps_DoesNotRegisterDailyReflection(t *testing.T) {
 		if !found {
 			t.Errorf("expected cognitive job %q to be registered, but it was not found", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: runProposalTail (F0929-71 — the shared "build -> marshal -> Create ->
+// warn-and-continue" tail extracted from runProposalLoop; see proploop spec
+// Acceptance criteria's "New unit test TestRunProposalTail_*" row).
+// ---------------------------------------------------------------------------
+
+// unmarshalableTailPayload is a payload type json.Marshal cannot encode —
+// used to force runProposalTail's marshal-fail branch, which none of the 4
+// in-scope jobs' real payload types (plain structs of strings/slices) can
+// trigger through their real entry points (proploop spec Risk flags).
+type unmarshalableTailPayload struct {
+	Fn func()
+}
+
+// TestRunProposalTail_BuildNotOK_SkipsWithoutHooks verifies build returning
+// ok=false skips the item silently: no Create call, neither hook invoked.
+func TestRunProposalTail_BuildNotOK_SkipsWithoutHooks(t *testing.T) {
+	propStore := &stubProposalStore{}
+	marshalFailCalls, createFailCalls := 0, 0
+
+	build := func(_ string) (proposal.Type, any, bool) { return "", nil, false }
+	onMarshalFail := func(_ string, _ error) { marshalFailCalls++ }
+	onCreateFail := func(_ string, _ error) { createFailCalls++ }
+
+	created := runProposalTail(
+		context.Background(), propStore, nil, "test-proposer",
+		[]string{"item-1"}, build, onMarshalFail, onCreateFail,
+	)
+
+	if created != 0 {
+		t.Errorf("created = %d, want 0", created)
+	}
+	if len(propStore.created) != 0 {
+		t.Errorf("Create calls = %d, want 0", len(propStore.created))
+	}
+	if marshalFailCalls != 0 {
+		t.Errorf("onMarshalFail calls = %d, want 0", marshalFailCalls)
+	}
+	if createFailCalls != 0 {
+		t.Errorf("onCreateFail calls = %d, want 0", createFailCalls)
+	}
+}
+
+// TestRunProposalTail_MarshalFailure_InvokesOnMarshalFailOnly verifies a
+// build ok=true whose payload fails json.Marshal invokes onMarshalFail
+// exactly once with the item and the marshal error, never onCreateFail, and
+// never calls Create.
+func TestRunProposalTail_MarshalFailure_InvokesOnMarshalFailOnly(t *testing.T) {
+	propStore := &stubProposalStore{}
+	var marshalFailItem string
+	var marshalFailErr error
+	createFailCalls := 0
+
+	build := func(_ string) (proposal.Type, any, bool) {
+		return proposal.TypeKnowledge, unmarshalableTailPayload{Fn: func() {}}, true
+	}
+	onMarshalFail := func(item string, err error) {
+		marshalFailItem = item
+		marshalFailErr = err
+	}
+	onCreateFail := func(_ string, _ error) { createFailCalls++ }
+
+	created := runProposalTail(
+		context.Background(), propStore, nil, "test-proposer",
+		[]string{"item-1"}, build, onMarshalFail, onCreateFail,
+	)
+
+	if created != 0 {
+		t.Errorf("created = %d, want 0", created)
+	}
+	if len(propStore.created) != 0 {
+		t.Errorf("Create calls = %d, want 0 (marshal must fail before Create)", len(propStore.created))
+	}
+	if marshalFailItem != "item-1" {
+		t.Errorf("onMarshalFail item = %q, want %q", marshalFailItem, "item-1")
+	}
+	if marshalFailErr == nil {
+		t.Error("onMarshalFail err = nil, want non-nil marshal error")
+	}
+	if createFailCalls != 0 {
+		t.Errorf("onCreateFail calls = %d, want 0", createFailCalls)
+	}
+}
+
+// TestRunProposalTail_CreateFailure_InvokesOnCreateFailOnly verifies a
+// proposal.StoreIface.Create error invokes onCreateFail exactly once with
+// the item and the Create error, never onMarshalFail.
+func TestRunProposalTail_CreateFailure_InvokesOnCreateFailOnly(t *testing.T) {
+	propStore := &stubProposalStore{createErr: errors.New("db write failed")}
+	marshalFailCalls := 0
+	var createFailItem string
+	var createFailErr error
+
+	build := func(_ string) (proposal.Type, any, bool) {
+		return proposal.TypeKnowledge, proposal.KnowledgePayload{Title: "t", Content: "c"}, true
+	}
+	onMarshalFail := func(_ string, _ error) { marshalFailCalls++ }
+	onCreateFail := func(item string, err error) {
+		createFailItem = item
+		createFailErr = err
+	}
+
+	created := runProposalTail(
+		context.Background(), propStore, nil, "test-proposer",
+		[]string{"item-1"}, build, onMarshalFail, onCreateFail,
+	)
+
+	if created != 0 {
+		t.Errorf("created = %d, want 0", created)
+	}
+	if marshalFailCalls != 0 {
+		t.Errorf("onMarshalFail calls = %d, want 0", marshalFailCalls)
+	}
+	if createFailItem != "item-1" {
+		t.Errorf("onCreateFail item = %q, want %q", createFailItem, "item-1")
+	}
+	if createFailErr == nil {
+		t.Error("onCreateFail err = nil, want non-nil Create error")
+	}
+}
+
+// TestRunProposalTail_HappyPath_CreatesAndSkipsHooks verifies successful
+// build+marshal+Create for every item: correct created count, no hook calls.
+func TestRunProposalTail_HappyPath_CreatesAndSkipsHooks(t *testing.T) {
+	propStore := &stubProposalStore{}
+	hookCalled := false
+
+	build := func(_ string) (proposal.Type, any, bool) {
+		return proposal.TypeKnowledge, proposal.KnowledgePayload{Title: "t", Content: "c"}, true
+	}
+	onFail := func(_ string, _ error) { hookCalled = true }
+
+	created := runProposalTail(
+		context.Background(), propStore, nil, "test-proposer",
+		[]string{"item-1", "item-2"}, build, onFail, onFail,
+	)
+
+	if created != 2 {
+		t.Errorf("created = %d, want 2", created)
+	}
+	if len(propStore.created) != 2 {
+		t.Errorf("Create calls = %d, want 2", len(propStore.created))
+	}
+	if hookCalled {
+		t.Error("neither hook should fire on the happy path")
+	}
+}
+
+// TestRunProposalTail_NilHooks_DoNotPanic verifies onMarshalFail/onCreateFail
+// are nil-safe (doc comment: "pass nil to skip logging that failure").
+func TestRunProposalTail_NilHooks_DoNotPanic(t *testing.T) {
+	propStore := &stubProposalStore{createErr: errors.New("db write failed")}
+
+	build := func(_ string) (proposal.Type, any, bool) {
+		return proposal.TypeKnowledge, unmarshalableTailPayload{Fn: func() {}}, true
+	}
+
+	created := runProposalTail(
+		context.Background(), propStore, nil, "test-proposer",
+		[]string{"item-1"}, build, nil, nil,
+	)
+	if created != 0 {
+		t.Errorf("created = %d, want 0", created)
 	}
 }

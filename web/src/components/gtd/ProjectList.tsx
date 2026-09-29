@@ -31,40 +31,58 @@ export function ProjectList({ projects, onEdit }: ProjectListProps) {
   return (
     <div>
       {/* Tab bar */}
-      <div className="flex gap-1 mb-4 border-b" style={{ borderColor: 'var(--color-border)' }}>
-        {tabs.map(({ key, labelKey }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setActiveTab(key)}
-            className="px-4 py-2 text-body transition-colors"
-            style={{
-              color: activeTab === key ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
-              borderBottom: activeTab === key ? '2px solid var(--color-accent-blue)' : '2px solid transparent',
-              background: 'transparent',
-              marginBottom: '-1px',
-            }}
-          >
-            {t(labelKey)}
-          </button>
-        ))}
+      <div
+        role="tablist"
+        aria-label={t('gtd.projectsTablistLabel')}
+        className="flex gap-1 mb-4 border-b"
+        style={{ borderColor: 'var(--color-border)' }}
+      >
+        {tabs.map(({ key, labelKey }) => {
+          const selected = activeTab === key // [F0929-52]
+          return (
+            <button
+              key={key}
+              id={`gtd-project-tab-${key}`}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-controls="gtd-project-tabpanel"
+              onClick={() => setActiveTab(key)}
+              className="px-4 py-2 text-body transition-colors"
+              style={{
+                color: selected ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
+                borderBottom: selected ? '2px solid var(--color-accent-blue)' : '2px solid transparent',
+                background: 'transparent',
+                marginBottom: '-1px',
+              }}
+            >
+              {t(labelKey)}
+            </button>
+          )
+        })}
       </div>
 
-      {filtered.length === 0 ? (
-        <EmptyState messageKey="gtd.noProjects" />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {filtered.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              variant="expanded"
-              onClick={() => navigate(`/workspace/projects/${project.id}`)}
-              onEdit={onEdit}
-            />
-          ))}
-        </div>
-      )}
+      <div
+        id="gtd-project-tabpanel"
+        role="tabpanel"
+        aria-labelledby={`gtd-project-tab-${activeTab}`}
+      >
+        {filtered.length === 0 ? (
+          <EmptyState messageKey="gtd.noProjects" />
+        ) : (
+          <div className="flex flex-col gap-3">
+            {filtered.map((project) => (
+              <ProjectCard
+                key={project.id}
+                project={project}
+                variant="expanded"
+                onClick={() => navigate(`/workspace/projects/${project.id}`)}
+                onEdit={onEdit}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

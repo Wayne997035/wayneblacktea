@@ -90,29 +90,27 @@ func runConsolidation(deps consolidationDeps) {
 			continue
 		}
 
-		for _, kp := range proposals {
+		// build skips malformed entries (empty Title/Content), matching the
+		// pre-refactor inline check.
+		build := func(kp ai.KnowledgeProposal) (proposal.Type, any, bool) {
 			if kp.Title == "" || kp.Content == "" {
-				continue
+				return "", nil, false
 			}
-			payload, merr := marshalKnowledgePayload(kp)
-			if merr != nil {
-				slog.Warn("consolidation: marshaling payload failed", "cluster", cl.key, "err", merr)
-				continue
-			}
-			if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-				Type:       proposal.TypeKnowledge,
-				Payload:    payload,
-				ProposedBy: "consolidation-cron",
-			}); cerr != nil {
-				slog.Warn("consolidation: creating pending proposal failed",
-					"cluster", cl.key, "title", kp.Title, "err", cerr)
-				continue
-			}
-			total++
+			return proposal.TypeKnowledge, proposal.KnowledgePayload{Title: kp.Title, Content: kp.Content, Tags: kp.Tags}, true
 		}
+		total += runProposalTail(
+			ctx, deps.proposal, nil, "consolidation-cron", proposals, build,
+			func(kp ai.KnowledgeProposal, err error) {
+				slog.Warn("consolidation: marshaling payload failed", "cluster", cl.key, "err", err)
+			},
+			func(kp ai.KnowledgeProposal, err error) {
+				slog.Warn("consolidation: creating pending proposal failed", "cluster", cl.key, "title", kp.Title, "err", err)
+			},
+		)
 	}
 
-	slog.Info("consolidation: cron completed",
+	slog.Info(
+		"consolidation: cron completed",
 		"activities_scanned", len(activities),
 		"clusters_processed", len(clusters),
 		"proposals_created", total,

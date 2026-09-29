@@ -94,30 +94,29 @@ func runKnowledgeConsolidation(deps knowledgeConsolidationDeps) {
 			continue
 		}
 
-		for _, kp := range proposals {
+		// build skips malformed entries (empty Title/Content), matching the
+		// pre-refactor inline check.
+		build := func(kp ai.KnowledgeProposal) (proposal.Type, any, bool) {
 			if kp.Title == "" || kp.Content == "" {
-				continue
+				return "", nil, false
 			}
-			payload, merr := marshalKnowledgePayload(kp)
-			if merr != nil {
-				slog.Warn("knowledge consolidation: marshaling payload failed",
-					"tags", cl.sharedTags, "err", merr)
-				continue
-			}
-			if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-				Type:       proposal.TypeKnowledge,
-				Payload:    payload,
-				ProposedBy: "knowledge-consolidation-cron",
-			}); cerr != nil {
-				slog.Warn("knowledge consolidation: creating pending proposal failed",
-					"tags", cl.sharedTags, "title", kp.Title, "err", cerr)
-				continue
-			}
-			total++
+			return proposal.TypeKnowledge, proposal.KnowledgePayload{Title: kp.Title, Content: kp.Content, Tags: kp.Tags}, true
 		}
+		total += runProposalTail(
+			ctx, deps.proposal, nil, "knowledge-consolidation-cron", proposals, build,
+			func(kp ai.KnowledgeProposal, err error) {
+				slog.Warn("knowledge consolidation: marshaling payload failed",
+					"tags", cl.sharedTags, "err", err)
+			},
+			func(kp ai.KnowledgeProposal, err error) {
+				slog.Warn("knowledge consolidation: creating pending proposal failed",
+					"tags", cl.sharedTags, "title", kp.Title, "err", err)
+			},
+		)
 	}
 
-	slog.Info("knowledge consolidation: cron completed",
+	slog.Info(
+		"knowledge consolidation: cron completed",
 		"items_scanned", len(recent),
 		"clusters_processed", len(clusters),
 		"proposals_created", total,

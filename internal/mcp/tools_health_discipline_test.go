@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
+	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
 // stubDisciplineStore is an in-memory test double for discipline.Store. It
@@ -407,5 +408,52 @@ func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
 				"(add an explicit entry to one of them): %v",
 			unclassified,
 		)
+	}
+}
+
+// TestF092962_SevenToolsClassification is F0929-62's classification-effect
+// proof for all 7 tools named in the H3 spec's mapping table: the DB-level
+// row-count effect tests elsewhere in this package prove the WRITES are
+// unchanged; this test proves the classification move actually reaches
+// disciplineMiddleware's is_mutating column — using fireDiscipline
+// (middleware_discipline_test.go), the same real-middleware harness
+// TestDisciplineMiddleware_RecordsOkAndSize uses, rather than re-deriving a
+// second copy of that plumbing. A future discipline_events row with
+// is_mutating=true is exactly what RecentMutating (and so
+// system_health.discipline.drift_count_24h) selects on — this is the
+// mechanism-level guarantee that "the classification move took effect, not
+// just the map literal."
+func TestF092962_SevenToolsClassification(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		tool           string
+		wantIsMutating bool
+	}{
+		{"system_health", false},               // unchanged, DeliberatelyExcludedTools
+		{"analyze_agent_behavior", true},       // unchanged, already MutatingTools
+		{"detect_unclosed_loops", false},       // unchanged, DeliberatelyExcludedTools
+		{"mark_loop_resolved", true},           // unchanged, already MutatingTools
+		{"detect_completion_candidates", true}, // [F0929-62] moved to MutatingTools
+		{"reconcile_dashboard", true},          // [F0929-62] moved to MutatingTools
+		{"closeout_session_check", true},       // [F0929-62] moved to MutatingTools
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			store := &captureDisciplineStore{}
+			srv := &Server{discipline: store, sessionID: "test-session"}
+			next := func(_ context.Context, _ mcpmsg.CallToolRequest) (*mcpmsg.CallToolResult, error) {
+				return textResult("ok", false), nil
+			}
+			_, inserted, err := fireDiscipline(t, srv, tc.tool, next)
+			if err != nil {
+				t.Fatalf("fireDiscipline: %v", err)
+			}
+			if len(inserted) != 1 {
+				t.Fatalf("expected exactly 1 discipline_events insert, got %d", len(inserted))
+			}
+			if inserted[0].IsMutating != tc.wantIsMutating {
+				t.Errorf("%s: IsMutating = %v, want %v", tc.tool, inserted[0].IsMutating, tc.wantIsMutating)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -842,6 +843,142 @@ func TestGTDStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty slice, got %+v", got)
+	}
+}
+
+// TestGTDStore_CountTasksByProjectAllStatuses_MatchesLenOfFullRowVariant is
+// F0929-60's decisive cross-check: the new COUNT-only method must agree
+// exactly with len(TasksByProjectAllStatuses(...)) for the same project —
+// silent WHERE-clause drift between the two is the actual risk, not "does
+// COUNT compile".
+func TestGTDStore_CountTasksByProjectAllStatuses_MatchesLenOfFullRowVariant(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	project, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "count-proj", Title: "Count", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+			Title: "task " + uuid.NewString(), Priority: 3, ProjectID: &project.ID,
+		}); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+	}
+
+	full, err := s.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	count, err := s.CountTasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("CountTasksByProjectAllStatuses: %v", err)
+	}
+	if count != len(full) {
+		t.Errorf("CountTasksByProjectAllStatuses = %d, want %d (len of full-row variant)", count, len(full))
+	}
+	if count != 4 {
+		t.Errorf("count = %d, want 4", count)
+	}
+}
+
+// TestGTDStore_CountTasksByProjectAllStatuses_EmptyProject mirrors
+// TestGTDStore_TasksByProjectAllStatuses_EmptyProject above: SELECT COUNT(*)
+// on an empty result set must return 0, not an error.
+func TestGTDStore_CountTasksByProjectAllStatuses_EmptyProject(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	project, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "count-empty-proj", Title: "Count Empty", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	count, err := s.CountTasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("CountTasksByProjectAllStatuses: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+// TestGTDStore_ScanTask_IncludesChecklist is the regression guard for
+// F0929-57: tasksSelectCols/scanTask must surface the real checklist column
+// instead of the Go zero value, on both GetTaskByID and
+// TasksByProjectAllStatuses (both share the same fixed scan code path).
+func TestGTDStore_ScanTask_IncludesChecklist(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	project, err := s.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "checklist-proj", Title: "Checklist", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{
+		Title: "has a checklist", Priority: 3, ProjectID: &project.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// A freshly created task, never touched by any checklist tool, must
+	// decode to [] (the column's NOT NULL DEFAULT '[]'), not null.
+	fresh, err := s.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID (fresh): %v", err)
+	}
+	var freshItems []gtd.ChecklistItem
+	if err := json.Unmarshal(fresh.Checklist, &freshItems); err != nil {
+		t.Fatalf("unmarshal fresh checklist %q: %v", fresh.Checklist, err)
+	}
+	if len(freshItems) != 0 {
+		t.Errorf("fresh task checklist = %q, want a decodable empty array", fresh.Checklist)
+	}
+
+	if _, err := s.AddChecklistItem(ctx, task.ID, uuid.UUID{}, gtd.ChecklistItem{
+		ID: uuid.New(), Title: "verify the fix",
+	}); err != nil {
+		t.Fatalf("AddChecklistItem: %v", err)
+	}
+
+	// get_task's backing call.
+	got, err := s.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	var gotItems []gtd.ChecklistItem
+	if err := json.Unmarshal(got.Checklist, &gotItems); err != nil {
+		t.Fatalf("unmarshal GetTaskByID checklist %q: %v", got.Checklist, err)
+	}
+	if len(gotItems) != 1 || gotItems[0].Title != "verify the fix" {
+		t.Errorf("GetTaskByID checklist = %+v, want 1 item titled %q", gotItems, "verify the fix")
+	}
+
+	// list_tasks(summary=false)'s underlying multi-row path — same
+	// tasksSelectCols/scanTask code path, must agree byte-for-byte. Divergence
+	// here would mean the fix landed in a query-specific place instead of the
+	// shared scan.
+	all, err := s.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(all))
+	}
+	if string(all[0].Checklist) != string(got.Checklist) {
+		t.Errorf("TasksByProjectAllStatuses checklist = %q, want %q (same as GetTaskByID)",
+			all[0].Checklist, got.Checklist)
 	}
 }
 
@@ -2081,6 +2218,75 @@ func TestGTDStore_UpdateTaskStatus_WorkspaceIsolation(t *testing.T) {
 	// Sanity: workspace A can still update its own task.
 	if _, err = storeA.UpdateTaskStatus(ctx, task.ID, gtd.TaskStatusInProgress); err != nil {
 		t.Errorf("owner workspace UpdateTaskStatus must succeed, got %v", err)
+	}
+}
+
+// TestGTDStore_UpdateTaskStatusGuarded_HappyPath is F0929-58's happy-path
+// acceptance row: no concurrent writer, the guard matches, the write applies
+// exactly like the unguarded UpdateTaskStatus.
+func TestGTDStore_UpdateTaskStatusGuarded_HappyPath(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "guarded happy path", Priority: 3, Assignee: "claude"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	updated, err := s.UpdateTaskStatusGuarded(ctx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+	if err != nil {
+		t.Fatalf("UpdateTaskStatusGuarded: %v", err)
+	}
+	if updated.Status != string(gtd.TaskStatusInProgress) {
+		t.Errorf("status = %q, want in_progress", updated.Status)
+	}
+}
+
+// TestGTDStore_UpdateTaskStatusGuarded_StaleReadRejected is F0929-58's
+// conflict acceptance row: the guard clause must actually be in the SQL —
+// a caller whose expectedCurrentStatus no longer matches the DB row's real
+// status must be rejected with ErrConflict, and the DB row must be
+// unchanged (still whatever it really was), not silently overwritten.
+func TestGTDStore_UpdateTaskStatusGuarded_StaleReadRejected(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "guarded stale read", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	// Real status is "pending"; simulate a stale read by asserting the
+	// caller (wrongly) believes it is "cancelled". newStatus is "completed",
+	// not "in_progress", so this isolates the guard from the unrelated P6.7
+	// assignee gate (which only applies to in_progress transitions).
+	_, err = s.UpdateTaskStatusGuarded(ctx, task.ID, gtd.TaskStatusCompleted, gtd.TaskStatusCancelled)
+	if !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("expected gtd.ErrConflict on stale read, got %v", err)
+	}
+
+	got, err := s.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != string(gtd.TaskStatusPending) {
+		t.Errorf("status = %q, want unchanged %q — the guard must not have flipped it", got.Status, gtd.TaskStatusPending)
+	}
+}
+
+// TestGTDStore_UpdateTaskStatusGuarded_NotFound is F0929-58's not-found
+// acceptance row: a task_id that does not exist must return ErrNotFound,
+// distinguishable from ErrConflict — callers need the distinction to write
+// correct retry logic.
+func TestGTDStore_UpdateTaskStatusGuarded_NotFound(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	_, err := s.UpdateTaskStatusGuarded(ctx, uuid.New(), gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected gtd.ErrNotFound for a missing task_id, got %v", err)
 	}
 }
 

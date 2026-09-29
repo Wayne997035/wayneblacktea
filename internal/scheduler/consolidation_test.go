@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -191,8 +192,12 @@ func TestSaturdayReflection_NilDeps(t *testing.T) {
 }
 
 // TestRunConsolidation_ProposalStoreError verifies that a DB write failure for
-// one proposal is logged and skipped without aborting the whole job.
+// one proposal is logged (own message/field shape — "cluster"/"title", not
+// runProposalLoop's "item_id" template, proploop spec Acceptance criteria)
+// and skipped without aborting the whole job.
 func TestRunConsolidation_ProposalStoreError(t *testing.T) {
+	buf := captureSlogWarn(t)
+
 	activities := makeActivities("wayne/repo-a", 6)
 	gtdStore := &stubGTDStore{activities: activities}
 	propStore := &stubProposalStore{createErr: errors.New("DB write failed")}
@@ -207,6 +212,56 @@ func TestRunConsolidation_ProposalStoreError(t *testing.T) {
 
 	if len(propStore.created) != 0 {
 		t.Errorf("expected 0 proposals on DB write error, got %d", len(propStore.created))
+	}
+
+	out := buf.String()
+	if !containsStr(out, "consolidation: creating pending proposal failed") {
+		t.Errorf("warn output missing expected message, got: %s", out)
+	}
+	if !containsStr(out, "cluster=wayne") {
+		t.Errorf("warn output missing cluster field, got: %s", out)
+	}
+	if !containsStr(out, "title=t") {
+		t.Errorf("warn output missing title field, got: %s", out)
+	}
+	if containsStr(out, "item_id=") {
+		t.Errorf("warn output must NOT contain item_id= (runProposalLoop's template), got: %s", out)
+	}
+}
+
+// TestRunConsolidation_PayloadFieldMapping is a characterization test
+// written BEFORE refactoring runConsolidation's inner propose+log tail to
+// use runProposalTail (F0929-71) — asserts the exact Title/Content/Tags 1:1
+// mapping (all 3 fields individually) so a field swap would be caught.
+func TestRunConsolidation_PayloadFieldMapping(t *testing.T) {
+	activities := makeActivities("wayne/repo-a", 6)
+	gtdStore := &stubGTDStore{activities: activities}
+	propStore := &stubProposalStore{}
+	reflector := &stubReflector{
+		proposals: []ai.KnowledgeProposal{
+			{Title: "T2", Content: "C2", Tags: []string{"x"}},
+		},
+	}
+
+	deps := makeConsolidationDeps(gtdStore, propStore, reflector)
+	runConsolidation(deps)
+
+	if len(propStore.created) != 1 {
+		t.Fatalf("expected 1 proposal created, got %d", len(propStore.created))
+	}
+	var payload proposal.KnowledgePayload
+	if err := json.Unmarshal(propStore.created[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Title != "T2" {
+		t.Errorf("payload.Title = %q, want %q", payload.Title, "T2")
+	}
+	if payload.Content != "C2" {
+		t.Errorf("payload.Content = %q, want %q", payload.Content, "C2")
+	}
+	wantTags := []string{"x"}
+	if len(payload.Tags) != len(wantTags) || payload.Tags[0] != wantTags[0] {
+		t.Errorf("payload.Tags = %v, want %v", payload.Tags, wantTags)
 	}
 }
 

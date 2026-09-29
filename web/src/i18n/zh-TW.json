@@ -92,7 +92,8 @@
     "projectNotFound": "找不到專案",
     "branch": "分支",
     "pullRequest": "Pull Request",
-    "commits": "Commits"
+    "commits": "Commits",
+    "projectsTablistLabel": "專案狀態篩選"
   },
   "project": {
     "back": "返回",
@@ -308,7 +309,9 @@
       "addToLearning": "加入學習",
       "addingToLearning": "加入中…",
       "addedToLearning": "已加入",
-      "addToLearningAria": "加入學習：{{title}}"
+      "addToLearningAria": "加入學習：{{title}}",
+      "rateError": "儲存評分失敗，請重試。",
+      "addToLearningError": "加入失敗，請重試。"
     }
   },
   "reviews": {

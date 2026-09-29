@@ -110,6 +110,16 @@ var MutatingTools = map[string]bool{
 	"extract_skill":             true, // tools_skill.go:16/138/183 — Add
 	"use_skill":                 true, // tools_skill.go:52/225/238 — IncrementSuccess
 	"update_skill_from_outcome": true, // tools_skill.go:62/249/276 — UpdateFromOutcome
+
+	// Dashboard / closeout writes — previously in
+	// DeliberatelyExcludedTools' "system-generated cache/candidate writes"
+	// category, moved here so their writes are visible to
+	// system_health.discipline.drift_count_24h (RecentMutating only walks
+	// this map). Tool names, registration, arguments, and JSON response
+	// shapes are unchanged — classification-only move.
+	"detect_completion_candidates": true, // [F0929-62] tools_dashboard.go — completion_candidates upsert
+	"reconcile_dashboard":          true, // tools_dashboard.go — same upsert + activity_log via autoLogEntry
+	"closeout_session_check":       true, // tools_closeout.go — activity_log write
 }
 
 // DeliberatelyExcludedTools is the explicit, documented allowlist of MCP tool
@@ -134,10 +144,11 @@ var MutatingTools = map[string]bool{
 //     calls a Store write method.
 var DeliberatelyExcludedTools = map[string]bool{
 	// System-generated cache/candidate writes.
-	"detect_completion_candidates": true,
-	"reconcile_dashboard":          true,
-	"generate_project_status":      true,
-	"closeout_session_check":       true,
+	// detect_completion_candidates/reconcile_dashboard/closeout_session_check
+	// moved to MutatingTools above — generate_project_status is the same
+	// category but NOT named by that task's question/success-criteria list,
+	// so it stays here unmoved.
+	"generate_project_status": true,
 
 	// External-only side effects (no local Store row of record).
 	"sync_to_notion": true,

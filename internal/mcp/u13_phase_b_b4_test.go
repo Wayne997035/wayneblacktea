@@ -33,6 +33,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 // This file is U13 Phase B, group 4 (dispatch: tools_knowledge.go,
@@ -493,6 +494,70 @@ func TestHandleOutlineKnowledge_NeutralizesForgedMarker(t *testing.T) {
 	}
 	if !strings.Contains(got, boundaryMarkerPlaceholder) {
 		t.Errorf("forged marker removed without placeholder: %s", got)
+	}
+}
+
+// TestOutlineKnowledge_MatchesNavigateEquivalence is H2's (F0929-61)
+// successor-equivalence proof: outline_knowledge(item_id=X) and
+// navigate_knowledge(parent_id=X) must return byte-identical JSON, since
+// both route through the same s.knowledge.ListChildren -> navItemFromDB
+// code path — confirming the DEPRECATED description change carries no
+// behavior change.
+func TestOutlineKnowledge_MatchesNavigateEquivalence(t *testing.T) {
+	t.Parallel()
+	itemID := uuid.New()
+	childStore := &forgingKnowledgeNavStore{
+		children: []*db.KnowledgeItem{
+			{ID: uuid.New(), Title: "child A", Type: "til"},
+			{ID: uuid.New(), Title: "child B", Type: "til"},
+		},
+	}
+	s := &Server{knowledge: childStore}
+
+	outlineReq := mcpmsg.CallToolRequest{}
+	outlineReq.Params.Arguments = map[string]any{"item_id": itemID.String()}
+	outlineRes, err := s.handleOutlineKnowledge(context.Background(), outlineReq)
+	if err != nil {
+		t.Fatalf("handleOutlineKnowledge: %v", err)
+	}
+	if outlineRes.IsError {
+		t.Fatalf("handleOutlineKnowledge returned a tool error: %s", resultText(outlineRes))
+	}
+
+	navReq := mcpmsg.CallToolRequest{}
+	navReq.Params.Arguments = map[string]any{"parent_id": itemID.String()}
+	navRes, err := s.handleNavigateKnowledge(context.Background(), navReq)
+	if err != nil {
+		t.Fatalf("handleNavigateKnowledge: %v", err)
+	}
+	if navRes.IsError {
+		t.Fatalf("handleNavigateKnowledge returned a tool error: %s", resultText(navRes))
+	}
+
+	if resultText(outlineRes) != resultText(navRes) {
+		t.Errorf("outline_knowledge and navigate_knowledge(parent_id=...) diverged:\noutline: %s\nnav:     %s",
+			resultText(outlineRes), resultText(navRes))
+	}
+}
+
+// TestOutlineKnowledge_DescriptionIsDeprecated is H2's (F0929-61)
+// description-prefix proof: the registered tool's description must start
+// with "DEPRECATED:" and name navigate_knowledge as successor.
+func TestOutlineKnowledge_DescriptionIsDeprecated(t *testing.T) {
+	t.Parallel()
+	ms := server.NewMCPServer("test", "0.0.0")
+	(&Server{}).registerKnowledgeNavTools(ms)
+
+	entry, ok := ms.ListTools()["outline_knowledge"]
+	if !ok {
+		t.Fatal("outline_knowledge is not registered")
+	}
+	desc := entry.Tool.Description
+	if !strings.HasPrefix(desc, "DEPRECATED:") {
+		t.Errorf("description does not start with DEPRECATED:, got %q", desc)
+	}
+	if !strings.Contains(desc, "navigate_knowledge") {
+		t.Errorf("description does not name successor navigate_knowledge, got %q", desc)
 	}
 }
 

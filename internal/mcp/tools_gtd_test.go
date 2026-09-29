@@ -812,6 +812,71 @@ func TestSetTaskStatus_MissingTaskID(t *testing.T) {
 	}
 }
 
+// raceInjectingGTDStore wraps a real gtd.StoreIface and runs a hook
+// immediately after GetTaskByID returns, so a test can simulate a
+// concurrent writer racing between handleSetTaskStatus's internal read and
+// its guarded write — exactly the TOCTOU window F0929-58 closes.
+type raceInjectingGTDStore struct {
+	gtd.StoreIface
+	afterGetTaskByID func()
+}
+
+func (r *raceInjectingGTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
+	task, err := r.StoreIface.GetTaskByID(ctx, id)
+	if r.afterGetTaskByID != nil {
+		r.afterGetTaskByID()
+	}
+	return task, err
+}
+
+// TestSetTaskStatus_ConcurrentChangeReturnsConflictError is F0929-58's
+// MCP-layer acceptance row: a concurrent status change in the window between
+// handleSetTaskStatus's read and its guarded write must surface as a
+// distinct error naming the concurrency — NOT the bare "task not found" the
+// store layer's ErrNotFound path already produces for a genuinely-missing
+// id. Simulation technique: a store wrapper fires the concurrent write from
+// inside GetTaskByID's own return path, which is the exact point
+// handleSetTaskStatus's real read-then-write gap sits around.
+func TestSetTaskStatus_ConcurrentChangeReturnsConflictError(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	id := seedTaskWithDueDate(t, s, "pending")
+
+	real := s.gtd
+	s.gtd = &raceInjectingGTDStore{
+		StoreIface: real,
+		afterGetTaskByID: func() {
+			// Concurrent writer flips the task to cancelled between
+			// handleSetTaskStatus's read (sees "pending") and its guarded
+			// write (still expecting "pending").
+			if _, err := real.UpdateTaskStatus(context.Background(), id, gtd.TaskStatusCancelled); err != nil {
+				t.Fatalf("simulated concurrent UpdateTaskStatus: %v", err)
+			}
+		},
+	}
+
+	r := callSetTaskStatus(t, s, map[string]any{"task_id": id.String(), "status": "completed"})
+	if !r.IsError {
+		t.Fatalf("concurrent status change must be rejected, got success: %s", resultText(r))
+	}
+	if strings.Contains(resultText(r), "task not found") {
+		t.Errorf("error collapsed to bare 'task not found' — the concurrency distinction was thrown away, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "changed since it was read") {
+		t.Errorf("error should name the concurrent change, got: %s", resultText(r))
+	}
+
+	// The concurrent writer's outcome ("cancelled") must be intact — the
+	// rejected write must not have overwritten it.
+	task, err := real.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if task.Status != "cancelled" {
+		t.Errorf("status = %q, want %q (the concurrent writer's value, untouched by the rejected write)", task.Status, "cancelled")
+	}
+}
+
 // ---- handleCompleteTask draft-outcome seeding tests ----
 
 // TestHandleCompleteTask_SeedsOutcome verifies complete_task on a pending

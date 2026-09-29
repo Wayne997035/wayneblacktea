@@ -489,3 +489,46 @@ func TestStartDiscordBotIfConfigured_StartFailureNoLongerFatal(t *testing.T) {
 		stop()
 	}
 }
+
+// TestWireDiscordBot_NewFailurePropagates verifies wireDiscordBot (F0929-63,
+// the run()-facing wrapper extracted from the inline guard at run()'s
+// startDiscordBotIfConfigured call site) still propagates a discordbot.New()
+// construction failure as a non-nil error — same D1 fail-closed guard as
+// TestStartDiscordBotIfConfigured_NewFailureStaysFatal, but exercised through
+// the extracted wrapper so the propagation itself (not just
+// startDiscordBotIfConfigured's own return value) is independently tested.
+func TestWireDiscordBot_NewFailurePropagates(t *testing.T) {
+	t.Setenv("DISCORD_ENV", "")
+	t.Setenv("DISCORD_BOT_TOKEN", "fake-token-value-not-a-real-secret")
+	t.Setenv("DISCORD_ALLOWED_USER_IDS", "") // empty allowlist -> New()'s fail-closed guard errors, no network touched
+	health := handler.NewDiscordHealthHandler()
+
+	stop, err := wireDiscordBot("8420", "dummy-api-key-not-a-real-secret", nil, health)
+	if err == nil {
+		t.Fatal("err = nil, want non-nil — wireDiscordBot must propagate New()'s fail-closed misconfiguration guard (D1)")
+	}
+	if stop != nil {
+		t.Error("stop = non-nil, want nil on the error path")
+	}
+}
+
+// TestWireDiscordBot_NoTokenReturnsCallableStop verifies wireDiscordBot's
+// nil-error path hands back a callable stop func (not nil) when Discord is
+// simply unconfigured (no token) — the second half of the acceptance table's
+// mutation proof: the same `if err == nil {` mutation that turns
+// TestWireDiscordBot_NewFailurePropagates red also turns this test red, by
+// wrongly taking the error-return branch here (err is nil for this input).
+func TestWireDiscordBot_NoTokenReturnsCallableStop(t *testing.T) {
+	t.Setenv("DISCORD_ENV", "")
+	t.Setenv("DISCORD_BOT_TOKEN", "")
+	health := handler.NewDiscordHealthHandler()
+
+	stop, err := wireDiscordBot("8420", "dummy-api-key-not-a-real-secret", nil, health)
+	if err != nil {
+		t.Fatalf("err = %v, want nil when no token is configured", err)
+	}
+	if stop == nil {
+		t.Fatal("stop = nil, want a callable stop func")
+	}
+	stop()
+}

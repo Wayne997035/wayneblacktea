@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -87,28 +86,26 @@ func runReflection(deps reflectionDeps) {
 		return
 	}
 
-	created := 0
-	for _, kp := range proposals {
+	// build skips malformed entries (empty Title/Content) without creating a
+	// proposal, matching the pre-refactor inline check.
+	build := func(kp ai.KnowledgeProposal) (proposal.Type, any, bool) {
 		if kp.Title == "" || kp.Content == "" {
-			continue // skip malformed entries
+			return "", nil, false
 		}
-		payload, merr := marshalKnowledgePayload(kp)
-		if merr != nil {
-			slog.Warn("reflection: marshaling proposal payload failed", "err", merr)
-			continue
-		}
-		if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-			Type:       proposal.TypeKnowledge,
-			Payload:    payload,
-			ProposedBy: "reflection-cron",
-		}); cerr != nil {
-			slog.Warn("reflection: creating pending proposal failed", "title", kp.Title, "err", cerr)
-			continue
-		}
-		created++
+		return proposal.TypeKnowledge, proposal.KnowledgePayload{Title: kp.Title, Content: kp.Content, Tags: kp.Tags}, true
 	}
+	created := runProposalTail(
+		ctx, deps.proposal, nil, "reflection-cron", proposals, build,
+		func(kp ai.KnowledgeProposal, err error) {
+			slog.Warn("reflection: marshaling proposal payload failed", "err", err)
+		},
+		func(kp ai.KnowledgeProposal, err error) {
+			slog.Warn("reflection: creating pending proposal failed", "title", kp.Title, "err", err)
+		},
+	)
 
-	slog.Info("reflection: cron completed",
+	slog.Info(
+		"reflection: cron completed",
 		"activities_scanned", len(activities),
 		"decisions_scanned", len(decisions),
 		"proposals_from_ai", len(proposals),
@@ -153,20 +150,4 @@ func buildReflectionSummary(activities []db.ActivityLog, decisions []db.Decision
 	}
 
 	return sb.String()
-}
-
-// marshalKnowledgePayload encodes a KnowledgeProposal into the JSONB payload
-// expected by the pending_proposals table. Uses proposal.KnowledgePayload as
-// the canonical wire format (internal/proposal/payload.go).
-func marshalKnowledgePayload(kp ai.KnowledgeProposal) ([]byte, error) {
-	p := proposal.KnowledgePayload{
-		Title:   kp.Title,
-		Content: kp.Content,
-		Tags:    kp.Tags,
-	}
-	b, err := json.Marshal(p)
-	if err != nil {
-		return nil, fmt.Errorf("marshal knowledge payload: %w", err)
-	}
-	return b, nil
 }

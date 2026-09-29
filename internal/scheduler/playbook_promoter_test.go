@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -242,22 +244,110 @@ func TestRunPlaybookPromoter_DecisionListError(t *testing.T) {
 	}
 }
 
-func TestMarshalPlaybookPayload(t *testing.T) {
-	ids := []uuid.UUID{uuid.New(), uuid.New()}
-	payload, err := marshalPlaybookPayload("trigger", "action", ids)
-	if err != nil {
-		t.Fatalf("marshalPlaybookPayload: %v", err)
-	}
-	if len(payload) == 0 {
-		t.Error("payload should not be empty")
+// TestRunPlaybookPromoter_PayloadFieldMapping is a characterization test
+// written BEFORE refactoring processPlaybookProposals's tail to use
+// runProposalTail (F0929-71). Replaces TestMarshalPlaybookPayload (deleted
+// alongside marshalPlaybookPayload/createPlaybookProposal — see proploop
+// spec Target behaviour); also covers the srcIDs==nil -> []uuid.UUID{}
+// nil-normalization case the deleted test covered.
+func TestRunPlaybookPromoter_PayloadFieldMapping(t *testing.T) {
+	decisions := []db.Decision{
+		makeDecision("D1"), makeDecision("D2"), makeDecision("D3"),
 	}
 
-	// Verify nil IDs does not panic.
-	payload2, err := marshalPlaybookPayload("trigger", "action", nil)
-	if err != nil {
-		t.Fatalf("marshalPlaybookPayload nil ids: %v", err)
+	t.Run("MixedValidAndInvalidTags", func(t *testing.T) {
+		id1, id2 := uuid.New(), uuid.New()
+		propStore := &stubProposalStore{}
+		pbStore := &stubPlaybookStore{}
+		reflector := &stubReflector{proposals: []ai.KnowledgeProposal{
+			{Title: "Trigger1", Content: "Action1", Tags: []string{id1.String(), id2.String(), "not-a-uuid"}},
+		}}
+		decStore := &stubDecisionStore{decisions: decisions}
+
+		deps := playbookDeps{decision: decStore, playbook: pbStore, proposal: propStore, reflector: reflector}
+		runPlaybookPromoter(deps)
+
+		if len(propStore.created) != 1 {
+			t.Fatalf("expected 1 proposal created, got %d", len(propStore.created))
+		}
+		var payload PlaybookProposalPayload
+		if err := json.Unmarshal(propStore.created[0].Payload, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if payload.TriggerPattern != "Trigger1" {
+			t.Errorf("payload.TriggerPattern = %q, want %q", payload.TriggerPattern, "Trigger1")
+		}
+		if payload.ActionTemplate != "Action1" {
+			t.Errorf("payload.ActionTemplate = %q, want %q", payload.ActionTemplate, "Action1")
+		}
+		wantIDs := []uuid.UUID{id1, id2}
+		if len(payload.SourceDecisionIDs) != len(wantIDs) ||
+			payload.SourceDecisionIDs[0] != wantIDs[0] || payload.SourceDecisionIDs[1] != wantIDs[1] {
+			t.Errorf("payload.SourceDecisionIDs = %v, want %v (the non-UUID tag must be silently dropped)", payload.SourceDecisionIDs, wantIDs)
+		}
+	})
+
+	t.Run("AllTagsInvalid_EmptySliceNotNil", func(t *testing.T) {
+		propStore := &stubProposalStore{}
+		pbStore := &stubPlaybookStore{}
+		reflector := &stubReflector{proposals: []ai.KnowledgeProposal{
+			{Title: "Trigger2", Content: "Action2", Tags: []string{"not-a-uuid-1", "not-a-uuid-2"}},
+		}}
+		decStore := &stubDecisionStore{decisions: decisions}
+
+		deps := playbookDeps{decision: decStore, playbook: pbStore, proposal: propStore, reflector: reflector}
+		runPlaybookPromoter(deps)
+
+		if len(propStore.created) != 1 {
+			t.Fatalf("expected 1 proposal created, got %d", len(propStore.created))
+		}
+		var payload PlaybookProposalPayload
+		if err := json.Unmarshal(propStore.created[0].Payload, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		// A JSON `null` (Go nil slice) unmarshals back to nil; a JSON `[]`
+		// (Go []uuid.UUID{}) unmarshals back to a non-nil empty slice — this
+		// distinguishes the two on the wire, matching marshalPlaybookPayload's
+		// pre-refactor nil-normalization.
+		if payload.SourceDecisionIDs == nil {
+			t.Error("payload.SourceDecisionIDs = nil, want non-nil []uuid.UUID{}")
+		}
+		if len(payload.SourceDecisionIDs) != 0 {
+			t.Errorf("payload.SourceDecisionIDs = %v, want empty", payload.SourceDecisionIDs)
+		}
+	})
+}
+
+// TestRunPlaybookPromoter_WarnLogFieldsPreserved verifies that a Create
+// failure logs processPlaybookProposals's own pre-refactor message/field
+// shape ("trigger_pattern", not "item_id") — no existing Create-error test
+// covers this file (proploop spec Acceptance criteria). marshal-fail and
+// Create-fail intentionally share one message/hook (Target behaviour), so
+// the negative case is the same as reflection.go's row: item_id= absent.
+func TestRunPlaybookPromoter_WarnLogFieldsPreserved(t *testing.T) {
+	buf := captureSlogWarn(t)
+
+	decisions := []db.Decision{
+		makeDecision("D1"), makeDecision("D2"), makeDecision("D3"),
 	}
-	if len(payload2) == 0 {
-		t.Error("payload2 should not be empty")
+	propStore := &stubProposalStore{createErr: errors.New("db write failed")}
+	pbStore := &stubPlaybookStore{}
+	reflector := &stubReflector{proposals: []ai.KnowledgeProposal{
+		{Title: "Trigger1", Content: "Action1"},
+	}}
+	decStore := &stubDecisionStore{decisions: decisions}
+
+	deps := playbookDeps{decision: decStore, playbook: pbStore, proposal: propStore, reflector: reflector}
+	runPlaybookPromoter(deps)
+
+	out := buf.String()
+	if !containsStr(out, "playbook promoter: creating pending proposal failed") {
+		t.Errorf("warn output missing expected message, got: %s", out)
+	}
+	if !containsStr(out, "trigger_pattern=Trigger1") {
+		t.Errorf("warn output missing trigger_pattern field, got: %s", out)
+	}
+	if containsStr(out, "item_id=") {
+		t.Errorf("warn output must NOT contain item_id= (runProposalLoop's template), got: %s", out)
 	}
 }

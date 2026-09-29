@@ -321,6 +321,21 @@ func (s *Store) TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UU
 	return rows, nil
 }
 
+// CountTasksByProjectAllStatuses returns the same row count
+// TasksByProjectAllStatuses would return (same WHERE clause) without
+// loading full task rows. Used by delete_project's step-1 preview,
+// which only ever needed len(tasks).
+func (s *Store) CountTasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) (int, error) {
+	count, err := s.q.CountTasksByProjectAllStatuses(ctx, db.CountTasksByProjectAllStatusesParams{
+		ProjectID:   pgconv.ToUUID(&projectID),
+		WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("counting all-status tasks for project %s: %w", projectID, err)
+	}
+	return int(count), nil
+}
+
 // TasksByDueDateRange returns pending / in_progress tasks whose due_date
 // falls inside [from, to] (inclusive on both ends), scoped to the
 // configured workspace. The status filter intentionally excludes
@@ -1047,6 +1062,57 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("updating task %s status: %w", id, err)
+	}
+	return &row, nil
+}
+
+// UpdateTaskStatusGuarded sets the status of a task by ID, but only when the
+// row's current status still equals expectedCurrentStatus — a conditional
+// UPDATE closing the TOCTOU window between a caller's own read and this
+// write (e7468e5d sub-item 2). Mirrors BeginTaskStatus's guarded-UPDATE
+// shape (pgBeginTaskAdapter.GuardedUpdate above); unlike BeginTask this is a
+// plain conditional UPDATE with no transaction/activity-log, so it does not
+// meet ADR 0003's bar for a shared orchestration seam and is implemented
+// plainly per-backend instead.
+func (s *Store) UpdateTaskStatusGuarded(
+	ctx context.Context, id uuid.UUID, newStatus TaskStatus, expectedCurrentStatus TaskStatus,
+) (*db.Task, error) {
+	// Domain-layer gate (P6.7), same as UpdateTaskStatus above — this method
+	// also takes no assignee argument, so it needs the identical existing-row
+	// read to check "does this task have an owner" before allowing the
+	// in_progress transition.
+	if newStatus == TaskStatusInProgress {
+		existing, err := s.getTaskByID(ctx, id)
+		if err != nil {
+			return nil, err // ErrNotFound already wrapped
+		}
+		existingAssignee := ""
+		if existing.Assignee.Valid {
+			existingAssignee = existing.Assignee.String
+		}
+		if err := RequireAssigneeForInProgress(existingAssignee, newStatus); err != nil {
+			return nil, fmt.Errorf("updating task %s status (guarded): %w", id, err)
+		}
+	}
+
+	row, err := s.q.UpdateTaskStatusGuarded(ctx, db.UpdateTaskStatusGuardedParams{
+		ID:             id,
+		Status:         string(newStatus),
+		ExpectedStatus: string(expectedCurrentStatus),
+		WorkspaceID:    s.workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) { // [F0929-58] no row was updated by the guarded UPDATE
+			// Either the row doesn't exist at all, or it exists but its status
+			// has already moved away from expectedCurrentStatus — the guarded
+			// UPDATE itself cannot distinguish the two, it can only report
+			// "nothing matched." Re-read to tell them apart.
+			if _, rereadErr := s.getTaskByID(ctx, id); rereadErr != nil {
+				return nil, rereadErr // ErrNotFound already wrapped by getTaskByID
+			}
+			return nil, ErrConflict
+		}
+		return nil, fmt.Errorf("updating task %s status (guarded): %w", id, err)
 	}
 	return &row, nil
 }
@@ -2159,7 +2225,7 @@ func (s *Store) RestoreProject(ctx context.Context, id uuid.UUID, actor string) 
 		return nil, 0, fmt.Errorf("restoring project row %s: %w", id, err)
 	}
 
-	if err := clearInvalidRestoredRepoName(ctx, tx, id); err != nil {
+	if err := clearInvalidRestoredRepoName(ctx, tx, id); err != nil { // [F0925-37]
 		return nil, 0, err
 	}
 

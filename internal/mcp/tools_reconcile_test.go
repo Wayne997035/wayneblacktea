@@ -137,8 +137,9 @@ type reconcilePreviewEnvelope struct {
 	ReconcileToken  string `json:"reconcile_token"`
 	ExpiresAt       string `json:"expires_at"`
 	Matches         []struct {
-		TaskID string `json:"task_id"`
-		Reason string `json:"reason"`
+		TaskID  string `json:"task_id"`
+		Reason  string `json:"reason"`
+		Applied bool   `json:"applied"` // [F0929-59]
 	} `json:"matches"`
 }
 
@@ -150,8 +151,9 @@ type reconcileAppliedEnvelope struct {
 	NoMatch         int    `json:"no_match"`
 	CandidateWrites int    `json:"candidate_writes"`
 	Matches         []struct {
-		TaskID string `json:"task_id"`
-		Reason string `json:"reason"`
+		TaskID  string `json:"task_id"`
+		Reason  string `json:"reason"`
+		Applied bool   `json:"applied"` // [F0929-59]
 	} `json:"matches"`
 }
 
@@ -899,6 +901,127 @@ func TestMCPReconcileMergedPRs_ConfirmDoesNotOverwriteCancelledTask(t *testing.T
 		t.Errorf("task status = %q, want %q — must not be silently re-completed by a stale confirm",
 			got.Status, gtd.TaskStatusCancelled)
 	}
+}
+
+// assertAllMatchesUnapplied is TestMCPReconcileConfirm_
+// PerMatchAppliedFieldMatchesOutcome's preview-side check, extracted to keep
+// that test's own cyclomatic complexity within the gocyclo budget: nothing
+// has been applied at preview time, so every match must report
+// applied=false.
+func assertAllMatchesUnapplied(t *testing.T, matches []struct {
+	TaskID  string `json:"task_id"`
+	Reason  string `json:"reason"`
+	Applied bool   `json:"applied"`
+},
+) {
+	t.Helper()
+	for _, m := range matches {
+		if m.Applied {
+			t.Errorf("preview match %s reports applied=true; nothing has been applied yet", m.TaskID)
+		}
+	}
+}
+
+// assertPerMatchAppliedOutcome is TestMCPReconcileConfirm_
+// PerMatchAppliedFieldMatchesOutcome's confirm-side check, extracted for the
+// same gocyclo reason as assertAllMatchesUnapplied above: asserts the
+// genuinely-applied task shows applied=true, the guard-skipped task shows
+// applied=false, and the count of applied=true entries matches the
+// response's own aggregate "applied" int.
+func assertPerMatchAppliedOutcome(
+	t *testing.T, matches []struct {
+		TaskID  string `json:"task_id"`
+		Reason  string `json:"reason"`
+		Applied bool   `json:"applied"`
+	},
+	appliedTaskID, skippedTaskID string, wantAggregateApplied int,
+) {
+	t.Helper()
+	var gotApplied, gotSkipped bool
+	appliedTrueCount := 0
+	for _, m := range matches {
+		if m.Applied {
+			appliedTrueCount++
+		}
+		switch m.TaskID {
+		case appliedTaskID:
+			gotApplied = m.Applied
+		case skippedTaskID:
+			gotSkipped = m.Applied
+		}
+	}
+	if !gotApplied {
+		t.Errorf("task %s (never cancelled) must show applied=true", appliedTaskID)
+	}
+	if gotSkipped {
+		t.Errorf("task %s (cancelled before confirm) must show applied=false — guard-skipped task must not lie", skippedTaskID)
+	}
+	// Cross-check the acceptance criteria explicitly calls out: count of
+	// applied=true per-match entries must equal the aggregate "applied" int
+	// in the same response — a copy-paste map mismatch would disagree here
+	// even if each individual assertion above happened to pass.
+	if appliedTrueCount != wantAggregateApplied {
+		t.Errorf("count of applied=true matches (%d) != aggregate applied count (%d)", appliedTrueCount, wantAggregateApplied)
+	}
+}
+
+// TestMCPReconcileConfirm_PerMatchAppliedFieldMatchesOutcome is F0929-59's
+// core acceptance row: within ONE confirm response, one matched task's
+// guarded UPDATE succeeds while a sibling match is skipped by the TOCTOU
+// guard (cancelled between preview and confirm, same technique
+// TestMCPReconcileMergedPRs_ConfirmDoesNotOverwriteCancelledTask uses) — the
+// per-match applied field must show DIFFERING values, not the same value
+// everywhere (which would pass even with the bug half-fixed).
+func TestMCPReconcileConfirm_PerMatchAppliedFieldMatchesOutcome(t *testing.T) {
+	// Not parallel: this file's :memory: SQLite pool has no SetMaxOpenConns(1); a second connection sees an empty DB.
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+
+	branchApplied := "feature/applied-branch"
+	branchSkipped := "feature/skipped-branch"
+	taskApplied := seedBranchedTask(t, s, "applied-task", branchApplied)
+	taskSkipped := seedBranchedTask(t, s, "skipped-task", branchSkipped)
+
+	previewRes := callReconcile(t, s, map[string]any{
+		"merged_prs": []map[string]any{
+			{"url": "https://github.com/o/r/pull/201", "head_ref": branchApplied, "repo": "o/r"},
+			{"url": "https://github.com/o/r/pull/202", "head_ref": branchSkipped, "repo": "o/r"},
+		},
+	})
+	preview := extractReconcileToken(t, previewRes)
+	if len(preview.Matches) != 2 {
+		t.Fatalf("preview must match exactly 2 tasks, got: %+v", preview.Matches)
+	}
+	// Preview acceptance row: nothing has been applied yet, every match must
+	// report applied=false.
+	assertAllMatchesUnapplied(t, preview.Matches)
+
+	// The user cancels ONE of the two matched tasks in the window between
+	// preview and confirm (e.g. via set_task_status) — the other is left
+	// alone and must genuinely apply.
+	if _, err := s.gtd.UpdateTaskStatus(ctx, taskSkipped.ID, gtd.TaskStatusCancelled); err != nil {
+		t.Fatalf("UpdateTaskStatus cancel: %v", err)
+	}
+
+	confirmRes := callReconcileWithArgs(t, s, nil, map[string]any{
+		"confirm":         true,
+		"reconcile_token": preview.ReconcileToken,
+	})
+	if confirmRes.IsError {
+		t.Fatalf("confirm must succeed, got: %s", resultText(confirmRes))
+	}
+	var applied reconcileAppliedEnvelope
+	if err := json.Unmarshal([]byte(resultText(confirmRes)), &applied); err != nil {
+		t.Fatalf("unmarshal confirm envelope: %v\nbody=%s", err, resultText(confirmRes))
+	}
+	if applied.Applied != 1 {
+		t.Fatalf("aggregate applied = %d, want 1", applied.Applied)
+	}
+	if len(applied.Matches) != 2 {
+		t.Fatalf("confirm matches count = %d, want 2", len(applied.Matches))
+	}
+
+	assertPerMatchAppliedOutcome(t, applied.Matches, taskApplied.ID.String(), taskSkipped.ID.String(), applied.Applied)
 }
 
 // TestMCPReconcileMergedPRs_NonMatchingPayloadNeverConsumesTokenCap is the

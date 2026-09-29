@@ -2,6 +2,7 @@
 // a non-allowlisted scheme must not become a clickable link.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { KnowledgeCard } from './KnowledgeCard'
 import type { KnowledgeItem } from '../../types/api'
 
@@ -67,5 +68,73 @@ describe('KnowledgeCard link safety', () => {
   it('positive control: dangerous scheme never gets role=link', () => {
     render(<KnowledgeCard item={{ ...baseItem, url: 'data:text/html,<script>alert(1)</script>' }} />)
     expect(screen.queryByRole('link')).toBeNull()
+  })
+})
+
+// [F0929-51] Rating and add-to-learning must surface visible, retryable
+// errors instead of silently swallowing a failed mutation — same contract
+// as ReviewCard.tsx (F0925-20).
+describe('KnowledgeCard rating error handling', () => {
+  it('shows an alert when rating fails', async () => {
+    useUpdateKnowledgeMock.mockReturnValue({
+      mutate: vi.fn((_vars, { onError }: { onError: () => void }) => onError()),
+      isPending: false,
+    })
+    const user = userEvent.setup()
+    render(<KnowledgeCard item={{ ...baseItem, learning_value: 3 }} />)
+
+    await user.click(screen.getByRole('button', { name: 'Rate 4 out of 5' }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to save your rating. Try again.')
+    // Retryable: the star buttons stay enabled after the error.
+    expect(screen.getByRole('button', { name: 'Rate 4 out of 5' })).not.toBeDisabled()
+  })
+
+  it('shows no alert when rating succeeds', async () => {
+    useUpdateKnowledgeMock.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    })
+    const user = userEvent.setup()
+    render(<KnowledgeCard item={{ ...baseItem, learning_value: 3 }} />)
+
+    await user.click(screen.getByRole('button', { name: 'Rate 4 out of 5' }))
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('KnowledgeCard add-to-learning error handling', () => {
+  it('shows an alert and keeps add-to-learning retryable when it fails', async () => {
+    useCreateConceptFromKnowledgeMock.mockReturnValue({
+      mutate: vi.fn((_vars, { onError }: { onError: () => void }) => onError()),
+      isPending: false,
+    })
+    const user = userEvent.setup()
+    render(<KnowledgeCard item={baseItem} />)
+
+    const addButton = screen.getByRole('button', { name: `Add to learning: ${baseItem.title}` })
+    await user.click(addButton)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to add. Try again.')
+    // Retryable: button returns to enabled default state, not stuck pending.
+    expect(addButton).not.toBeDisabled()
+    // `added` never flips true on the error path.
+    expect(addButton).toHaveTextContent('Add to learning')
+  })
+
+  it('shows added state and no alert when add-to-learning succeeds', async () => {
+    useCreateConceptFromKnowledgeMock.mockReturnValue({
+      mutate: vi.fn((_vars, { onSuccess }: { onSuccess: () => void }) => onSuccess()),
+      isPending: false,
+    })
+    const user = userEvent.setup()
+    render(<KnowledgeCard item={baseItem} />)
+
+    const addButton = screen.getByRole('button', { name: `Add to learning: ${baseItem.title}` })
+    await user.click(addButton)
+
+    expect(await screen.findByText('Added')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

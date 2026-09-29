@@ -88,6 +88,60 @@ func TestDeleteTask_FirstCallIssuesToken(t *testing.T) {
 	}
 }
 
+// TestDeleteTask_FirstCallIncludesTaskTitleAndStatus is F0929-55's response-
+// shape acceptance row: a caller must be able to visually confirm what it is
+// about to delete before calling confirm=true.
+func TestDeleteTask_FirstCallIncludesTaskTitleAndStatus(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+
+	seeded, err := s.gtd.GetTaskByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+
+	r := callDeleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r.IsError {
+		t.Fatalf("first call must succeed, got: %s", resultText(r))
+	}
+	var payload struct {
+		TaskTitle  string `json:"task_title"`
+		TaskStatus string `json:"task_status"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &payload); err != nil {
+		t.Fatalf("unmarshal: %v\nraw=%s", err, resultText(r))
+	}
+	if payload.TaskTitle != seeded.Title {
+		t.Errorf("task_title = %q, want %q", payload.TaskTitle, seeded.Title)
+	}
+	if payload.TaskStatus != seeded.Status {
+		t.Errorf("task_status = %q, want %q", payload.TaskStatus, seeded.Status)
+	}
+}
+
+// TestDeleteTask_UnknownTaskIsRejectedBeforeAnyTokenIsIssued is F0929-55's
+// core acceptance row. Positive-control note: this test MUST fail (red)
+// against pre-fix handleDeleteTask, which issued a token for ANY task_id,
+// including nonexistent ones — asserted red-then-green during
+// implementation (see done record).
+func TestDeleteTask_UnknownTaskIsRejectedBeforeAnyTokenIsIssued(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+
+	missing := uuid.New()
+	r := callDeleteTask(t, s, map[string]any{"task_id": missing.String()})
+	if !r.IsError {
+		t.Fatalf("expected an error for an unknown task, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "task not found") {
+		t.Errorf("want 'task not found', got: %s", resultText(r))
+	}
+	if _, ok := s.deleteTokens.Load(taskDeletionKey(missing.String())); ok {
+		t.Error("a token was issued for a task that does not exist")
+	}
+}
+
 func TestDeleteTask_SecondCallWithValidTokenSucceeds(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
@@ -290,6 +344,60 @@ func TestDeleteTask_TokenMapBounded(t *testing.T) {
 	}
 	if !strings.Contains(resultText(r), "too many pending deletions") {
 		t.Errorf("expected 'too many pending deletions', got: %s", resultText(r))
+	}
+}
+
+// TestDeleteProject_NotBlockedByFullDeleteTaskQuota is F0929-56's core
+// acceptance row: a full task-namespace quota (256 live delete_task tokens)
+// must not block delete_project step 1 — the two kinds have separate
+// budgets. Positive-control note: before the fix (a single shared counter),
+// this test is red — the 257th request, regardless of kind, was refused.
+func TestDeleteProject_NotBlockedByFullDeleteTaskQuota(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+
+	base := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
+	s.nowFn = func() time.Time { return base }
+
+	// Fill the task-namespace quota with bare-UUID keys (taskDeletionKey's
+	// own shape — mirrors TestDeleteTask_TokenMapBounded's priming pattern).
+	for i := 0; i < maxPendingDeletions; i++ {
+		s.deleteTokens.Store(uuid.NewString(), deletionToken{
+			token:     uuid.NewString(),
+			expiresAt: base.Add(deleteTokenTTL),
+		})
+	}
+
+	id, _ := seedProjectWithTasks(t, s, 1)
+	r := callDeleteProject(t, s, map[string]any{"project_id": id.String()})
+	if r.IsError {
+		t.Fatalf("delete_project step 1 must succeed despite a full task-namespace quota, got: %s", resultText(r))
+	}
+}
+
+// TestDeleteTask_NotBlockedByFullDeleteProjectQuota is F0929-56's symmetric
+// acceptance row: a full project-namespace quota must not block delete_task
+// step 1.
+func TestDeleteTask_NotBlockedByFullDeleteProjectQuota(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+
+	base := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
+	s.nowFn = func() time.Time { return base }
+
+	// Fill the project-namespace quota with "project:"-prefixed keys
+	// (projectDeletionKey's own shape).
+	for i := 0; i < maxPendingDeletions; i++ {
+		s.deleteTokens.Store(projectDeletionKey(uuid.NewString()), deletionToken{
+			token:     uuid.NewString(),
+			expiresAt: base.Add(deleteTokenTTL),
+		})
+	}
+
+	id := seedTask(t, s)
+	r := callDeleteTask(t, s, map[string]any{"task_id": id.String()})
+	if r.IsError {
+		t.Fatalf("delete_task step 1 must succeed despite a full project-namespace quota, got: %s", resultText(r))
 	}
 }
 

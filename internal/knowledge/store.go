@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/ai"
@@ -16,6 +17,47 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgvector "github.com/pgvector/pgvector-go"
 )
+
+// contextPackEmbedMaxPerWindow/contextPackEmbedWindow bound how many live
+// embedding-API calls assemble_context (via SearchReadOnly) can drive per
+// process-wide time window, so a looping/prompt-injected agent calling
+// assemble_context in a tight loop cannot cause unbounded embedding spend
+// (OWASP LLM04). Same 60/min value already used twice in this codebase for
+// the identical concern: internal/mcp/middleware_decision_proposer.go
+// (mcpDecisionProposerBudget) and internal/mcp/middleware_classify.go
+// (mcpClassifyBudget, tryAcquireClassifyToken).
+const (
+	contextPackEmbedMaxPerWindow = 60
+	contextPackEmbedWindow       = time.Minute
+)
+
+// contextPackEmbedBudget is a simple token-bucket rate limiter that refills
+// the full quota at the start of each window — same shape as
+// mcpClassifyBudget (internal/mcp/middleware_classify.go), deliberately not
+// golang.org/x/time/rate for this exact problem class (see that file's
+// comment for the rationale).
+var contextPackEmbedBudget = struct {
+	mu      sync.Mutex
+	tokens  int
+	resetAt time.Time
+}{tokens: contextPackEmbedMaxPerWindow}
+
+// tryAcquireContextPackEmbedToken returns true if budget remains in the
+// current window. It refills the bucket when the window has elapsed.
+// Concurrency-safe.
+func tryAcquireContextPackEmbedToken(now time.Time) bool {
+	contextPackEmbedBudget.mu.Lock()
+	defer contextPackEmbedBudget.mu.Unlock()
+	if now.After(contextPackEmbedBudget.resetAt) {
+		contextPackEmbedBudget.tokens = contextPackEmbedMaxPerWindow
+		contextPackEmbedBudget.resetAt = now.Add(contextPackEmbedWindow)
+	}
+	if contextPackEmbedBudget.tokens <= 0 {
+		return false
+	}
+	contextPackEmbedBudget.tokens--
+	return true
+}
 
 // Store handles all database operations for the Knowledge bounded context.
 type Store struct {
@@ -381,8 +423,13 @@ func (s *Store) findSimilarAtLevel(ctx context.Context, vec []float32, level int
 // merged in via Reciprocal Rank Fusion. Results are ordered by strength ×
 // similarity DESC (Ebbinghaus decay weighting). It performs no writes; it
 // returns the merged result plus the raw FTS/vector hit sets so the caller
-// decides whether to bump recall.
-func (s *Store) searchCore(ctx context.Context, query string, limit int) (merged, ftsItems, vecItems []db.KnowledgeItem, err error) {
+// decides whether to bump recall. throttleEmbed gates the live embedding
+// call against contextPackEmbedBudget — only SearchReadOnly's assemble_context
+// path sets this true; Search (search_knowledge, recall-bumping) stays
+// unthrottled.
+func (s *Store) searchCore(
+	ctx context.Context, query string, limit int, throttleEmbed bool,
+) (merged, ftsItems, vecItems []db.KnowledgeItem, err error) {
 	// strength formula inline: importance * exp(-base_lambda*(1-importance*0.8)*age_days) * (1+recall_count*0.2)
 	// ts_rank is the similarity signal for FTS. Combined: ORDER BY strength * ts_rank DESC.
 	// Subquery wrapper required: Postgres does not allow ORDER BY to reference SELECT-list
@@ -427,6 +474,11 @@ func (s *Store) searchCore(ctx context.Context, query string, limit int) (merged
 		return ftsItems, ftsItems, nil, nil
 	}
 
+	if throttleEmbed && !tryAcquireContextPackEmbedToken(time.Now()) { // [F0929-74]
+		slog.Debug("searchCore: embed budget exhausted this window, returning FTS-only", "window", contextPackEmbedWindow)
+		return ftsItems, ftsItems, nil, nil
+	}
+
 	vec, err := s.embed.Embed(ctx, query)
 	if err != nil {
 		slog.Warn("vector search embedding failed, returning FTS results only", "err", err)
@@ -452,7 +504,7 @@ func (s *Store) searchCore(ctx context.Context, query string, limit int) (merged
 // (Ebbinghaus decay weighting). On each hit, recall_count is incremented and
 // last_recalled_at is set atomically.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	merged, ftsItems, vecItems, err := s.searchCore(ctx, query, limit)
+	merged, ftsItems, vecItems, err := s.searchCore(ctx, query, limit, false)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +522,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]db.Knowl
 // contextpack.Assembler.retrieveKnowledge so assemble_context stays genuinely
 // read-only (internal/discipline/discipline.go DeliberatelyExcludedTools).
 func (s *Store) SearchReadOnly(ctx context.Context, query string, limit int) ([]db.KnowledgeItem, error) {
-	merged, _, _, err := s.searchCore(ctx, query, limit)
+	merged, _, _, err := s.searchCore(ctx, query, limit, true)
 	if err != nil {
 		return nil, err
 	}

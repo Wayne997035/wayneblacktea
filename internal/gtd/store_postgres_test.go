@@ -507,6 +507,72 @@ func TestStore_TasksByProjectAllStatuses_EmptyProject(t *testing.T) {
 	}
 }
 
+// TestStore_CountTasksByProjectAllStatuses_PG_MatchesLenOfFullRowVariant is
+// F0929-60's PG decisive cross-check: the new COUNT-only method must agree
+// exactly with len(TasksByProjectAllStatuses(...)) for the same project —
+// silent WHERE-clause drift between the two is the actual risk, not "does
+// COUNT compile".
+func TestStore_CountTasksByProjectAllStatuses_PG_MatchesLenOfFullRowVariant(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	project, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "count-pg", Title: "Count PG", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := store.CreateTask(ctx, gtd.CreateTaskParams{
+			Title: "task " + uuid.NewString(), Priority: 3, ProjectID: &project.ID,
+		}); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+	}
+
+	full, err := store.TasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("TasksByProjectAllStatuses: %v", err)
+	}
+	count, err := store.CountTasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("CountTasksByProjectAllStatuses: %v", err)
+	}
+	if count != len(full) {
+		t.Errorf("CountTasksByProjectAllStatuses = %d, want %d (len of full-row variant)", count, len(full))
+	}
+	if count != 4 {
+		t.Errorf("count = %d, want 4", count)
+	}
+}
+
+// TestStore_CountTasksByProjectAllStatuses_PG_EmptyProject mirrors
+// TestStore_TasksByProjectAllStatuses_EmptyProject above: SELECT COUNT(*) on
+// an empty result set must return 0, not an error.
+func TestStore_CountTasksByProjectAllStatuses_PG_EmptyProject(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	project, err := store.CreateProject(ctx, gtd.CreateProjectParams{
+		Name: "count-empty-pg", Title: "Count Empty PG", Area: "engineering",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	count, err := store.CountTasksByProjectAllStatuses(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("CountTasksByProjectAllStatuses: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
 // TestStore_RecentCompletedTasks_PG verifies recently-completed task ordering
 // + workspace scoping on the actual Postgres backend (testcontainers, no mock).
 // Dual-backend stores require BOTH the
@@ -1217,6 +1283,77 @@ func TestGTDStore_UpdateTask_PG_NotFound(t *testing.T) {
 	_, err := store.UpdateTask(ctx, uuid.New(), gtd.UpdateTaskParams{Title: &newTitle})
 	if !errors.Is(err, gtd.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+// TestStore_UpdateTaskStatusGuarded_PG_HappyPath is F0929-58's PG happy-path
+// acceptance row: no concurrent writer, the guard matches, the write applies
+// exactly like the unguarded UpdateTaskStatus.
+func TestStore_UpdateTaskStatusGuarded_PG_HappyPath(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "guarded happy path", Priority: 3, Assignee: "claude"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	updated, err := store.UpdateTaskStatusGuarded(ctx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+	if err != nil {
+		t.Fatalf("UpdateTaskStatusGuarded: %v", err)
+	}
+	if updated.Status != string(gtd.TaskStatusInProgress) {
+		t.Errorf("status = %q, want in_progress", updated.Status)
+	}
+}
+
+// TestStore_UpdateTaskStatusGuarded_PG_StaleReadRejected is F0929-58's PG
+// conflict acceptance row: the guard clause must actually be in the SQL — a
+// caller whose expectedCurrentStatus no longer matches the DB row's real
+// status must be rejected with ErrConflict, and the DB row must be
+// unchanged, not silently overwritten.
+func TestStore_UpdateTaskStatusGuarded_PG_StaleReadRejected(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "guarded stale read", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	// Real status is "pending"; simulate a stale read by asserting the
+	// caller (wrongly) believes it is "cancelled". newStatus is "completed",
+	// not "in_progress", so this isolates the guard from the unrelated P6.7
+	// assignee gate (which only applies to in_progress transitions).
+	_, err = store.UpdateTaskStatusGuarded(ctx, task.ID, gtd.TaskStatusCompleted, gtd.TaskStatusCancelled)
+	if !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("expected gtd.ErrConflict on stale read, got %v", err)
+	}
+
+	got, err := store.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != string(gtd.TaskStatusPending) {
+		t.Errorf("status = %q, want unchanged %q — the guard must not have flipped it", got.Status, gtd.TaskStatusPending)
+	}
+}
+
+// TestStore_UpdateTaskStatusGuarded_PG_NotFound is F0929-58's PG not-found
+// acceptance row: a task_id that does not exist must return ErrNotFound,
+// distinguishable from ErrConflict.
+func TestStore_UpdateTaskStatusGuarded_PG_NotFound(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	_, err := store.UpdateTaskStatusGuarded(ctx, uuid.New(), gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+	if !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("expected gtd.ErrNotFound for a missing task_id, got %v", err)
 	}
 }
 

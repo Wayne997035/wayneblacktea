@@ -96,6 +96,13 @@ func (m *mockGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uuid.UUID)
 	return nil, errMockNotImpl
 }
 
+// CountTasksByProjectAllStatuses stub — gtd.StoreIface gained this method in
+// this change; this file's autolog tests never call it. Also covers
+// mockGTDStoreWithTaskLookup, which embeds *mockGTDStore.
+func (m *mockGTDStore) CountTasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, errMockNotImpl
+}
+
 func (m *mockGTDStore) CreateTask(_ context.Context, _ gtd.CreateTaskParams) (*db.Task, error) {
 	return nil, errMockNotImpl
 }
@@ -113,6 +120,15 @@ func (m *mockGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalParams) (*d
 }
 
 func (m *mockGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.TaskStatus) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
+// UpdateTaskStatusGuarded stub — gtd.StoreIface gained this method in this
+// change; this file's autolog tests never exercise the TOCTOU path. Also covers
+// mockGTDStoreWithTaskLookup, which embeds *mockGTDStore.
+func (m *mockGTDStore) UpdateTaskStatusGuarded(
+	_ context.Context, _ uuid.UUID, _ gtd.TaskStatus, _ gtd.TaskStatus,
+) (*db.Task, error) {
 	return nil, errMockNotImpl
 }
 

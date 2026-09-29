@@ -74,6 +74,12 @@ type StoreIface interface {
 	// to render the "completed" section alongside open tasks. The active-only
 	// Tasks variant remains the default for GTD list pages.
 	TasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]db.Task, error)
+	// CountTasksByProjectAllStatuses returns the same row count
+	// TasksByProjectAllStatuses would return (same WHERE clause, all
+	// statuses, same workspace scoping) without loading full task rows.
+	// Used by delete_project's step-1 preview, which only ever needed
+	// len(tasks), not the tasks themselves.
+	CountTasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) (int, error)
 	// TasksByDueDateRange returns pending or in_progress tasks whose
 	// due_date falls inside [from, to] (inclusive on both ends), scoped to
 	// the configured workspace. Used by the calendar timeline to surface
@@ -153,6 +159,24 @@ type StoreIface interface {
 	ActiveGoalsPage(ctx context.Context, limit, offset int32) ([]db.Goal, error)
 	CreateGoal(ctx context.Context, p CreateGoalParams) (*db.Goal, error)
 	UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskStatus) (*db.Task, error)
+	// UpdateTaskStatusGuarded performs the same status write as
+	// UpdateTaskStatus, but only when the row's CURRENT status still equals
+	// expectedCurrentStatus at write time — a conditional UPDATE closing the
+	// TOCTOU window between a caller's read (GetTaskByID) and this write
+	// (e7468e5d sub-item 2). Mirrors BeginTaskStatus's guarded-UPDATE shape
+	// (store.go's pgBeginTaskAdapter.GuardedUpdate).
+	//
+	// Returns ErrNotFound when no row matches id at all (same as
+	// UpdateTaskStatus). Returns ErrConflict when a row exists but its
+	// current status no longer equals expectedCurrentStatus — the guard
+	// blocked a stale write, and the DB row is left untouched.
+	//
+	// UpdateTaskStatus itself is UNCHANGED and kept for its ~20 existing
+	// non-TOCTOU test call sites; this is an additive method, not a
+	// signature change.
+	UpdateTaskStatusGuarded(
+		ctx context.Context, id uuid.UUID, newStatus TaskStatus, expectedCurrentStatus TaskStatus,
+	) (*db.Task, error)
 	// UpdateTask performs a partial update of a task, replacing only the fields
 	// that are non-nil in p. Nil fields are preserved from the existing row.
 	// Returns ErrNotFound when no row matching id exists in the configured workspace.

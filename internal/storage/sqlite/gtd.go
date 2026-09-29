@@ -49,7 +49,7 @@ var _ gtd.StoreIface = (*GTDStore)(nil)
 
 const tasksSelectCols = `id, workspace_id, project_id, title, description, status,
 	priority, importance, context, assignee, due_date, artifact,
-	created_at, updated_at, kind, branch_name, pr_url, commit_shas, area`
+	created_at, updated_at, kind, branch_name, pr_url, commit_shas, area, checklist`
 
 // scanTask reads a row in tasksSelectCols order into db.Task, converting
 // SQLite TEXT columns to the pgtype values the Postgres stores already use.
@@ -65,11 +65,12 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		branchNameNS, prURLNS                                                  sql.NullString
 		commitSHAsStr                                                          sql.NullString
 		areaStr                                                                string
+		checklistNS                                                            sql.NullString
 	)
 
 	err := scan(&idStr, &workspaceIDNS, &projectIDNS, &t.Title, &descNS, &statusStr,
 		&t.Priority, &importanceNI, &contextNS, &assigneeNS, &dueDateNS, &artifactNS,
-		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr, &areaStr)
+		&createdNS, &updNS, &kindStr, &branchNameNS, &prURLNS, &commitSHAsStr, &areaStr, &checklistNS)
 	if err != nil {
 		return db.Task{}, err
 	}
@@ -106,6 +107,13 @@ func scanTask(scan func(...any) error) (db.Task, error) {
 		}
 	}
 	t.Area = areaStr
+	// checklist is NOT NULL DEFAULT '[]' in the schema (migration 000043), so
+	// an invalid/empty scan still round-trips as valid empty-array JSON rather
+	// than nil — matching what a genuinely-present '[]' row would decode to.
+	t.Checklist = []byte("[]") // [F0929-57]
+	if checklistNS.Valid && checklistNS.String != "" {
+		t.Checklist = []byte(checklistNS.String)
+	}
 	return t, nil
 }
 
@@ -914,6 +922,20 @@ func (s *GTDStore) TasksByProjectAllStatuses(ctx context.Context, projectID uuid
 	return out, errWrap("TasksByProjectAllStatuses iter", rows.Err())
 }
 
+// CountTasksByProjectAllStatuses returns the same row count
+// TasksByProjectAllStatuses would return (same WHERE clause) without
+// loading full task rows.
+func (s *GTDStore) CountTasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) (int, error) {
+	const q = `SELECT COUNT(*) FROM tasks
+		WHERE project_id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)`
+	var count int
+	if err := s.db.conn.QueryRowContext(ctx, q, projectID.String(), s.db.workspaceArg()).Scan(&count); err != nil {
+		return 0, errWrap("CountTasksByProjectAllStatuses", err)
+	}
+	return count, nil
+}
+
 // CreateTask inserts a new task with all Phase A/B fields supported.
 // Hand-rolled INSERT (instead of sqlc CreateTask) so that branch_name, pr_url,
 // and commit_shas columns added in migration 000047 are included without
@@ -1551,6 +1573,57 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
 		return nil, gtd.ErrNotFound
+	}
+	return s.taskByID(ctx, id)
+}
+
+// UpdateTaskStatusGuarded sets the status of a task, but only when the row's
+// current status still equals expectedCurrentStatus — a conditional UPDATE
+// closing the TOCTOU window between a caller's own read and this write
+// (e7468e5d sub-item 2). Mirrors UpdateTaskStatus's SQL shape with one added
+// guard clause.
+func (s *GTDStore) UpdateTaskStatusGuarded(
+	ctx context.Context, id uuid.UUID, newStatus gtd.TaskStatus, expectedCurrentStatus gtd.TaskStatus,
+) (*db.Task, error) {
+	// Domain-layer gate (P6.7), same as UpdateTaskStatus above — this method
+	// also takes no assignee argument, so it needs the identical
+	// existing-row read to check "does this task have an owner" before
+	// allowing the in_progress transition.
+	if newStatus == gtd.TaskStatusInProgress {
+		existing, err := s.taskByID(ctx, id)
+		if err != nil {
+			return nil, err // gtd.ErrNotFound already wrapped
+		}
+		existingAssignee := ""
+		if existing.Assignee.Valid {
+			existingAssignee = existing.Assignee.String
+		}
+		if rerr := gtd.RequireAssigneeForInProgress(existingAssignee, newStatus); rerr != nil {
+			return nil, fmt.Errorf("updating task %s status (guarded): %w", id, rerr)
+		}
+	}
+
+	const q = `UPDATE tasks
+		SET status = ?2, updated_at = ?3
+		WHERE id = ?1
+		  AND status = ?5
+		  AND (?4 IS NULL OR workspace_id = ?4)`
+	now := nowRFC3339()
+	res, err := s.db.conn.ExecContext(ctx, q,
+		id.String(), string(newStatus), now, s.db.workspaceArg(), string(expectedCurrentStatus))
+	if err != nil {
+		return nil, errWrap("UpdateTaskStatusGuarded", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Either the row doesn't exist at all, or it exists but its status
+		// has already moved away from expectedCurrentStatus. Re-read to tell
+		// the two apart — the guarded UPDATE itself can only report "nothing
+		// matched."
+		if _, rerr := s.taskByID(ctx, id); rerr != nil {
+			return nil, rerr // gtd.ErrNotFound already wrapped
+		}
+		return nil, gtd.ErrConflict
 	}
 	return s.taskByID(ctx, id)
 }
