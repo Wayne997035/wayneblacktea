@@ -255,11 +255,20 @@ func resetContextPackEmbedBudget() {
 // results — never a hard failure. Also covers acceptance row 3 (short
 // queries don't consume a token): a batch of <=3-word calls runs first and
 // must not eat into the budget the 60 long-query calls below need.
+//
+// F196-R1-02: both budget assertions report the observed budget state, so a
+// failure can tell a bucket that was already empty from one that never
+// reached the throttle check.
 func TestSearchReadOnly_BudgetExhausted_ReturnsFTSWithoutError(t *testing.T) {
 	// Not parallel: drains the global contextPackEmbedBudget; a parallel
 	// sibling test would interfere.
 	pool := openKnowledgePgPool(t)
 	resetContextPackEmbedBudget()
+	tokens0, resetAt0 := knowledge.ContextPackEmbedBudgetStateForTest()
+	if tokens0 != knowledge.ContextPackEmbedMaxPerWindowForTest {
+		t.Fatalf("budget reset did not take effect: tokens=%d resetAt=%v now=%v",
+			tokens0, resetAt0, time.Now())
+	}
 
 	wsID := uuid.New()
 	embed := &countingEmbedder{}
@@ -286,8 +295,11 @@ func TestSearchReadOnly_BudgetExhausted_ReturnsFTSWithoutError(t *testing.T) {
 		}
 	}
 	if got := embed.callCount(); got != knowledge.ContextPackEmbedMaxPerWindowForTest {
-		t.Fatalf("after %d long-query calls, embed call count = %d, want %d (short queries must not have consumed budget)",
-			knowledge.ContextPackEmbedMaxPerWindowForTest, got, knowledge.ContextPackEmbedMaxPerWindowForTest)
+		tokensNow, resetAtNow := knowledge.ContextPackEmbedBudgetStateForTest()
+		t.Fatalf("after %d long-query calls, embed call count = %d, want %d (short queries must not have consumed budget); "+
+			"budget after reset: tokens=%d resetAt=%v; budget now: tokens=%d resetAt=%v; now=%v",
+			knowledge.ContextPackEmbedMaxPerWindowForTest, got, knowledge.ContextPackEmbedMaxPerWindowForTest,
+			tokens0, resetAt0, tokensNow, resetAtNow, time.Now())
 	}
 
 	// The 61st long-query call: budget exhausted, must degrade silently —

@@ -32,3 +32,12 @@ func ResetContextPackEmbedBudgetForTest(tokens int, resetAt time.Time) {
 func TryAcquireContextPackEmbedTokenForTest(now time.Time) bool {
 	return tryAcquireContextPackEmbedToken(now)
 }
+
+// ContextPackEmbedBudgetStateForTest reads the process-global budget's
+// current token count and reset time under its lock, so a failing test can
+// report the state it observed instead of only a derived call count.
+func ContextPackEmbedBudgetStateForTest() (tokens int, resetAt time.Time) {
+	contextPackEmbedBudget.mu.Lock()
+	defer contextPackEmbedBudget.mu.Unlock()
+	return contextPackEmbedBudget.tokens, contextPackEmbedBudget.resetAt
+}
