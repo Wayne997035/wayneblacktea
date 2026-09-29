@@ -124,7 +124,7 @@ func sanitizeErrText(s string) string {
 			r = ' '
 		case r == '\t':
 			// preserved as-is; not stripped by the IsControl case below
-		case unicode.IsControl(r), r == ' ', r == ' ', unicode.Is(unicode.Bidi_Control, r):
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029', unicode.Is(unicode.Bidi_Control, r):
 			continue
 		}
 		n++
