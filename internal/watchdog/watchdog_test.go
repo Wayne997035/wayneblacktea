@@ -142,6 +142,31 @@ func TestWatchdog_SanitizesErrText(t *testing.T) {
 	}
 }
 
+// TestWatchdog_SanitizesErrTextSeparators covers three sanitizeErrText
+// branches TestWatchdog_SanitizesErrText does not exercise: \r collapsing to
+// a space (only \n was tested there), U+2029 PARAGRAPH SEPARATOR (only
+// U+2028 was tested there), and a C1 control byte (only the C0 ESC and DEL
+// were tested there).
+func TestWatchdog_SanitizesErrTextSeparators(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	raw := "x" + string(rune(0x0d)) + "y" + string(rune(0x2029)) + "z" + string(rune(0x85)) + "w"
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(raw)
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	want := "x yzw"
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != want {
+		t.Fatalf("expected sanitized ErrText %q, got %+v", want, recent)
+	}
+}
+
 // TestWatchdog_TruncatesLongErrText verifies record() caps ErrText at
 // maxErrTextRunes and marks the cut with a literal "…[truncated]" suffix,
 // and that the boundary case (exactly the cap, no more) is left untouched.
