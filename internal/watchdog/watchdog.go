@@ -16,9 +16,12 @@ package watchdog
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -69,9 +72,9 @@ func (w *Watchdog) record(toolName string, start time.Time, res *mcp.CallToolRes
 		Success:   err == nil && (res == nil || !res.IsError),
 	}
 	if err != nil {
-		call.ErrText = err.Error()
+		call.ErrText = sanitizeErrText(err.Error())
 	} else if res != nil && res.IsError {
-		call.ErrText = errTextFromResult(res)
+		call.ErrText = sanitizeErrText(errTextFromResult(res))
 	}
 
 	w.mu.Lock()
@@ -91,6 +94,63 @@ func errTextFromResult(res *mcp.CallToolResult) string {
 		}
 	}
 	return "tool returned IsError without text content"
+}
+
+// maxErrTextRunes caps the sanitized copy of a caller-controlled error
+// string kept in the watchdog ring buffer. This is a design cap, not a
+// measured one: Middleware() already returned the full, unsanitized error
+// to the caller before record() runs, so truncating the watchdog's copy
+// loses only tail context visible through system_health, never anything the
+// caller itself depends on.
+const maxErrTextRunes = 512
+
+// sanitizeErrText strips control and invisible-formatting characters from a
+// caller-controlled error string, neutralises any prompt-boundary marker
+// text it contains, and caps the result before it enters the watchdog ring
+// buffer (and, downstream, system_health's recent_calls[].err). It is not
+// shared with internal/mcp's sanitizeAuditText: that package imports
+// watchdog (for watchdog.ToolCall), so importing it back here would create
+// an import cycle, and the set stripped here is larger — it also removes
+// U+2028/U+2029 line/paragraph separators, Unicode format characters
+// (category Cf — a superset of bidi-control that also covers the Tag
+// block, zero-width characters, and BOM), and variation selectors, none of
+// which sanitizeAuditText touches.
+//
+// It DOES share the marker-neutralisation step with internal/mcp's
+// clipSafe (both call safetext.NeutralizeBoundaryMarkers, the shared
+// registry with zero internal/ dependencies), so ErrText gets the same
+// boundary-marker defence as its sibling system_health fields (e.g.
+// tools_health.go's clipSafe(ev.RepoName, ...)).
+//
+// The three passes run in this fixed order — strip, then neutralise, then
+// truncate — because a marker can be split across a rune the strip pass
+// removes, so the text must be reassembled into a matchable shape before
+// neutralisation runs; and NeutralizeBoundaryMarkers's placeholder can be
+// longer than the marker it replaces, so truncating first could let a
+// post-neutralisation string exceed the cap again.
+func sanitizeErrText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r':
+			r = ' '
+		case r == '\t':
+			// preserved as-is; not stripped by the IsControl case below
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029', unicode.Is(unicode.Cf, r), unicode.Is(unicode.Variation_Selector, r):
+			continue
+		}
+		b.WriteRune(r)
+	}
+	neutralized := safetext.NeutralizeBoundaryMarkers(b.String())
+	runes := []rune(neutralized)
+	if len(runes) > maxErrTextRunes { // [F0929-30]
+		return string(runes[:maxErrTextRunes]) + "…[truncated]"
+	}
+	return neutralized
 }
 
 // Recent returns the last n recorded calls, newest last (chronological order).
