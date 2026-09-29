@@ -134,7 +134,14 @@ func (s *Server) shouldRunDecisionProposer(res *mcpmsg.CallToolResult, err error
 	// singular counterpart: both are in discipline.MutatingTools, and both
 	// would otherwise trigger a redundant auto-decision draft in response
 	// to a proposal confirmation.
-	if tool == "log_decision" || tool == "confirm_plan" || tool == "confirm_proposal" || tool == "confirm_proposals" {
+	//
+	// detect_completion_candidates, reconcile_dashboard and
+	// closeout_session_check are also in discipline.MutatingTools, but only
+	// so their writes count toward drift_count_24h visibility — that
+	// classification is not a signal that a user decision happened, so they
+	// must not trigger an auto-decision draft either.
+	if tool == "log_decision" || tool == "confirm_plan" || tool == "confirm_proposal" || tool == "confirm_proposals" ||
+		tool == "detect_completion_candidates" || tool == "reconcile_dashboard" || tool == "closeout_session_check" { // [SEC-196-01]
 		return false
 	}
 	if !decisionProposerEnabled() {
