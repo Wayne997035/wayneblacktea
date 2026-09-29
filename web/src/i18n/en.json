@@ -92,7 +92,8 @@
     "projectNotFound": "Project not found",
     "branch": "Branch",
     "pullRequest": "Pull Request",
-    "commits": "Commits"
+    "commits": "Commits",
+    "projectsTablistLabel": "Project status filter"
   },
   "project": {
     "back": "Back",
@@ -308,7 +309,9 @@
       "addToLearning": "Add to learning",
       "addingToLearning": "Adding…",
       "addedToLearning": "Added",
-      "addToLearningAria": "Add to learning: {{title}}"
+      "addToLearningAria": "Add to learning: {{title}}",
+      "rateError": "Failed to save your rating. Try again.",
+      "addToLearningError": "Failed to add. Try again."
     }
   },
   "reviews": {

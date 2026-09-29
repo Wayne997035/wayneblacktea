@@ -89,6 +89,12 @@ type reconcileMCPMatch struct {
 	Reason    string `json:"reason"`
 	PRUrl     string `json:"pr_url"`
 	PRHeadRef string `json:"pr_head_ref"`
+	// Applied is parity with the HTTP twin's matchSummary.Applied
+	// (internal/handler/reconcile_handler.go) — lets a caller distinguish
+	// "matched and applied" from "matched but TOCTOU-skipped" per task,
+	// instead of only seeing the aggregate "applied":N count. No omitempty,
+	// matching the HTTP twin's plain-bool convention exactly.
+	Applied bool `json:"applied"`
 }
 
 type reconcileMCPAmbiguous struct {
@@ -110,12 +116,18 @@ type reconcileMCPAmbiguous struct {
 // it verbatim. neutralizeBoundaryMarkers here matches the same defence-in-
 // depth judgement neutralizeSessionMetadataFields (tools_worksession.go)
 // already applies to its own single-line-enforced fields.
-func reconcileMatchesOut(matches []gtd.Match) []reconcileMCPMatch {
+//
+// appliedIDs supplies the per-task Applied value; a nil map
+// (the preview call site) makes every entry read Applied:false via Go's
+// zero-value-on-nil-map-read semantics — accurate at preview time, since
+// nothing has been applied yet, and needs no special-casing.
+func reconcileMatchesOut(matches []gtd.Match, appliedIDs map[uuid.UUID]bool) []reconcileMCPMatch {
 	out := make([]reconcileMCPMatch, 0, len(matches))
 	for _, m := range matches {
 		out = append(out, reconcileMCPMatch{
 			TaskID: m.TaskID.String(), Reason: string(m.Reason),
 			PRUrl: m.PRUrl, PRHeadRef: neutralizeBoundaryMarkers(m.PRHeadRef),
+			Applied: appliedIDs[m.TaskID], // [F0929-59]
 		})
 	}
 	return out
@@ -300,7 +312,7 @@ func (s *Server) handleReconcileMergedPRsPreview(
 
 	return jsonText(map[string]any{
 		"status":           "confirmation_required",
-		"matches":          reconcileMatchesOut(result.Matches),
+		"matches":          reconcileMatchesOut(result.Matches, nil), // preview: nothing applied yet
 		"ambiguous":        reconcileAmbiguousOut(result.Ambiguous),
 		"applied":          0,
 		"no_match":         result.NoMatch,
@@ -489,7 +501,7 @@ func (s *Server) handleReconcileMergedPRsConfirm(
 	return jsonText(map[string]any{
 		"status":           "applied",
 		"applied":          len(appliedIDs),
-		"matches":          reconcileMatchesOut(rec.matches),
+		"matches":          reconcileMatchesOut(rec.matches, appliedIDs),
 		"ambiguous":        reconcileAmbiguousOut(rec.ambiguous),
 		"no_match":         rec.noMatch,
 		"candidate_writes": candidateWrites,

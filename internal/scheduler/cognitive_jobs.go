@@ -78,10 +78,13 @@ const knowledgeToSkillMinRecallCount = 3
 // ORDER BY d.created_at ASC guarantees the backlog drains forward across
 // consecutive daily runs instead of reprocessing the same head-of-queue rows.
 //
-// var (not const) so integration tests can shrink it to exercise the cap
-// path without seeding hundreds of rows — matches the pendingProposalsPruneTimeout
-// override pattern used elsewhere in this package.
-var decisionOutcomeReviewDailyCap = 200
+// const (not var, closing a security-review 🔵 suggestion about shared
+// mutable global state) — the runtime value lives on
+// cognitiveDeps.decisionOutcomeReviewDailyCap, set to this constant by
+// NewCognitiveDeps. Tests that need a smaller cap construct their own
+// cognitiveDeps literal with a different value instead of overwriting a
+// process-wide global — see TestDecisionOutcomeReview_DailyCap_LimitsCreatedCount.
+const decisionOutcomeReviewDailyCap = 200
 
 // CognitiveSQLiteStore is the narrow SQLite-only query surface backing jobs
 // 2/3/4/5 (stuck_task_detection, decision_outcome_review,
@@ -137,6 +140,10 @@ type cognitiveDeps struct {
 	// through to an explicit "no backend configured" skip in that case
 	// rather than silently doing nothing.
 	sqlite CognitiveSQLiteStore
+	// decisionOutcomeReviewDailyCap carries the runtime value of the
+	// package-level const of the same name (job 3). A struct field, not a
+	// mutable package var — see the const's own doc comment.
+	decisionOutcomeReviewDailyCap int // [F0929-72]
 }
 
 // NewCognitiveDeps builds a cognitiveDeps bundle from the flat parameters
@@ -151,11 +158,12 @@ func NewCognitiveDeps(
 	sqliteStore CognitiveSQLiteStore,
 ) *cognitiveDeps {
 	return &cognitiveDeps{
-		reflection:  reflStore,
-		gtd:         gtdStore,
-		proposal:    propStore,
-		workspaceID: workspaceID,
-		sqlite:      sqliteStore,
+		reflection:                    reflStore,
+		gtd:                           gtdStore,
+		proposal:                      propStore,
+		workspaceID:                   workspaceID,
+		sqlite:                        sqliteStore,
+		decisionOutcomeReviewDailyCap: decisionOutcomeReviewDailyCap,
 	}
 }
 
@@ -233,14 +241,63 @@ func (sc *Scheduler) WithCognitiveDeps(deps *cognitiveDeps) error {
 // Shared helper: detect -> propose -> log runner
 // ---------------------------------------------------------------------------
 
+// runProposalTail is the per-item "build -> marshal -> Create -> warn-and-continue"
+// body shared by runProposalLoop and by jobs whose completion log needs more
+// than runProposalLoop's fixed item-count + created-count shape, and/or whose
+// per-item failure log must keep its own message/field shape instead of
+// runProposalLoop's "item_id" template. onMarshalFail/onCreateFail replace a
+// hardcoded slog.Warn call — pass nil to skip logging that failure (neither
+// existing caller needs to; kept nil-safe for future callers). Unlike
+// runProposalLoop it does NOT log a completion line — callers keep their
+// existing multi-field slog.Info call after summing the returned count.
+func runProposalTail[T any](
+	ctx context.Context,
+	prop proposal.StoreIface,
+	wsID *uuid.UUID,
+	proposedBy string,
+	items []T,
+	build func(item T) (proposal.Type, any, bool),
+	onMarshalFail func(item T, err error),
+	onCreateFail func(item T, err error),
+) int {
+	created := 0
+	for _, item := range items {
+		ptype, payloadVal, ok := build(item)
+		if !ok { // [F0929-71]
+			continue
+		}
+		payload, merr := json.Marshal(payloadVal)
+		if merr != nil {
+			if onMarshalFail != nil {
+				onMarshalFail(item, merr)
+			}
+			continue
+		}
+		if _, cerr := prop.Create(ctx, proposal.CreateParams{
+			WorkspaceID: wsID,
+			Type:        ptype,
+			Payload:     payload,
+			ProposedBy:  proposedBy,
+		}); cerr != nil {
+			if onCreateFail != nil {
+				onCreateFail(item, cerr)
+			}
+			continue
+		}
+		created++
+	}
+	return created
+}
+
 // runProposalLoop is the common "detect -> propose -> log" tail shared by the
 // 5 cognitive jobs that create one pending_proposal per detected item
 // (weekly_goal_review, stuck_task_detection, decision_outcome_review,
 // knowledge_to_skill_candidate, behavior_rule_candidate). Each job still owns
 // its own detect query + empty-check; only the identical loop body — build
-// payload, marshal, Create, log — is collapsed here. Go methods can't be
-// generic, so this is a free function taking the scheduler's proposal store
-// and workspace ID explicitly rather than a *Scheduler receiver.
+// payload, marshal, Create, log — is collapsed here (via runProposalTail).
+// Go methods can't be generic, so this is a free function taking the
+// scheduler's proposal store and workspace ID explicitly rather than a
+// *Scheduler receiver.
 //
 // build(item) returns (proposal.Type, payload value, ok). ok=false skips the
 // item without creating a proposal (used by behavior_rule_candidate to skip
@@ -266,28 +323,15 @@ func runProposalLoop[T any](
 	build func(item T) (proposal.Type, any, bool),
 	idFunc func(item T) string,
 ) int {
-	created := 0
-	for _, item := range items {
-		ptype, payloadVal, ok := build(item)
-		if !ok {
-			continue
-		}
-		payload, merr := json.Marshal(payloadVal)
-		if merr != nil {
-			slog.Warn(fmt.Sprintf("cognitive: %s: marshal payload failed", job), "item_id", idFunc(item), "err", merr)
-			continue
-		}
-		if _, cerr := prop.Create(ctx, proposal.CreateParams{
-			WorkspaceID: wsID,
-			Type:        ptype,
-			Payload:     payload,
-			ProposedBy:  proposedBy,
-		}); cerr != nil {
-			slog.Warn(fmt.Sprintf("cognitive: %s: Create proposal failed", job), "item_id", idFunc(item), "err", cerr)
-			continue
-		}
-		created++
-	}
+	created := runProposalTail(
+		ctx, prop, wsID, proposedBy, items, build,
+		func(item T, err error) {
+			slog.Warn(fmt.Sprintf("cognitive: %s: marshal payload failed", job), "item_id", idFunc(item), "err", err)
+		},
+		func(item T, err error) {
+			slog.Warn(fmt.Sprintf("cognitive: %s: Create proposal failed", job), "item_id", idFunc(item), "err", err)
+		},
+	)
 	slog.Info(fmt.Sprintf("cognitive: %s: completed", job), countLabel, len(items), "proposals_created", created)
 	return created
 }
@@ -513,14 +557,14 @@ func (sc *Scheduler) runDecisionOutcomeReview() {
 	var decisions []decRow
 	switch {
 	case sc.disciplinePool != nil:
-		pgDecisions, err := sc.pgDecisionsPendingOutcomeReview(ctx, deps.workspaceID)
+		pgDecisions, err := sc.pgDecisionsPendingOutcomeReview(ctx, deps.workspaceID, deps.decisionOutcomeReviewDailyCap)
 		if err != nil {
 			slog.Warn("cognitive: decision_outcome_review: query failed", "err", err)
 			return
 		}
 		decisions = pgDecisions
 	case deps.sqlite != nil:
-		rows, err := deps.sqlite.DecisionsPendingOutcomeReview(ctx, decisionOutcomeLookback, decisionOutcomeReviewDailyCap)
+		rows, err := deps.sqlite.DecisionsPendingOutcomeReview(ctx, decisionOutcomeLookback, deps.decisionOutcomeReviewDailyCap)
 		if err != nil {
 			slog.Warn("cognitive: decision_outcome_review: SQLite query failed", "err", err)
 			return
@@ -560,7 +604,7 @@ func (sc *Scheduler) runDecisionOutcomeReview() {
 // + daily-cap guards documented on decisionOutcomeReviewDailyCap. A scan
 // failure or rows.Err logs a warning and does not abort the batch (only a
 // query-level error aborts, via the returned error).
-func (sc *Scheduler) pgDecisionsPendingOutcomeReview(ctx context.Context, workspaceID *uuid.UUID) ([]decRow, error) {
+func (sc *Scheduler) pgDecisionsPendingOutcomeReview(ctx context.Context, workspaceID *uuid.UUID, dailyCap int) ([]decRow, error) {
 	const q = `SELECT d.id, d.title FROM decisions d
 WHERE d.workspace_id = $1
   AND d.created_at < NOW() - INTERVAL '` + decisionOutcomeInterval + `'
@@ -579,7 +623,7 @@ WHERE d.workspace_id = $1
 ORDER BY d.created_at ASC
 LIMIT $2`
 
-	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID, decisionOutcomeReviewDailyCap)
+	rows, err := sc.disciplinePool.Query(ctx, q, workspaceID, dailyCap)
 	if err != nil {
 		return nil, fmt.Errorf("querying decisions pending outcome review: %w", err)
 	}

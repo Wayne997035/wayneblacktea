@@ -25,15 +25,21 @@ import (
 type stubCloseoutGTD struct {
 	gtd.StoreIface // embed so unimplemented methods panic with a clear message
 	tasks          []db.Task
+	tasksErr       error // F0929-62: simulates s.gtd.Tasks erroring — best-effort path must not panic
 	logCalls       []string
+	logActors      []string
 }
 
 func (s *stubCloseoutGTD) Tasks(_ context.Context, _ *uuid.UUID) ([]db.Task, error) {
+	if s.tasksErr != nil {
+		return nil, s.tasksErr
+	}
 	return s.tasks, nil
 }
 
-func (s *stubCloseoutGTD) LogActivity(_ context.Context, _, action string, _ *uuid.UUID, notes string) error {
+func (s *stubCloseoutGTD) LogActivity(_ context.Context, actor, action string, _ *uuid.UUID, notes string) error {
 	s.logCalls = append(s.logCalls, action+": "+notes)
+	s.logActors = append(s.logActors, actor)
 	return nil
 }
 
@@ -388,4 +394,50 @@ func containsAll(s string, substrings ...string) bool {
 		}
 	}
 	return true
+}
+
+// TestCloseoutSessionCheck_WritesExactlyOneActivityLogRow is F0929-62's
+// closeout_session_check effect test: after reclassification to
+// MutatingTools, the tool's own write behavior must be provably unchanged —
+// exactly one activity_log call, action="closeout_session_check",
+// actor="system" (never caller-controlled).
+func TestCloseoutSessionCheck_WritesExactlyOneActivityLogRow(t *testing.T) {
+	t.Parallel()
+	gtdStub := &stubCloseoutGTD{tasks: nil}
+	propStub := &stubCloseoutProposal{}
+	sessStub := &stubCloseoutSession{handoff: makeHandoff("wrapping up")}
+
+	s := newCloseoutTestServer(t, gtdStub, propStub, sessStub)
+	_ = callCloseout(t, s)
+
+	if len(gtdStub.logCalls) != 1 {
+		t.Fatalf("expected exactly 1 activity_log write, got %d: %v", len(gtdStub.logCalls), gtdStub.logCalls)
+	}
+	if !strings.HasPrefix(gtdStub.logCalls[0], "closeout_session_check:") {
+		t.Errorf("action = %q, want prefix %q", gtdStub.logCalls[0], "closeout_session_check:")
+	}
+	if gtdStub.logActors[0] != "system" {
+		t.Errorf("actor = %q, want %q (never caller-controlled)", gtdStub.logActors[0], "system")
+	}
+}
+
+// TestCloseoutSessionCheck_TasksErrorStillLogsBestEffort is F0929-62's
+// negative-case acceptance row: s.gtd.Tasks erroring must not panic and must
+// not skip the best-effort activity_log write — the report still returns
+// 200 with OpenTaskCount=0 (error swallowed, tools_closeout.go).
+func TestCloseoutSessionCheck_TasksErrorStillLogsBestEffort(t *testing.T) {
+	t.Parallel()
+	gtdStub := &stubCloseoutGTD{tasksErr: errors.New("simulated store failure")}
+	propStub := &stubCloseoutProposal{}
+	sessStub := &stubCloseoutSession{handoff: makeHandoff("wrapping up")}
+
+	s := newCloseoutTestServer(t, gtdStub, propStub, sessStub)
+	report := callCloseout(t, s)
+
+	if report.OpenTaskCount != 0 {
+		t.Errorf("OpenTaskCount = %d, want 0 (Tasks() error swallowed)", report.OpenTaskCount)
+	}
+	if len(gtdStub.logCalls) != 1 {
+		t.Fatalf("best-effort LogActivity must still fire despite Tasks() erroring, got %d calls", len(gtdStub.logCalls))
+	}
 }

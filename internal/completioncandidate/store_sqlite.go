@@ -354,7 +354,16 @@ func (s *SQLiteStore) detectStaleInProgress(ctx context.Context, ws any, staleHo
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []Candidate
+	// Scan every matching row into hits first, fully draining and closing
+	// rows before any UpsertCandidate call below. SQLite's pool is capped at
+	// 1 connection (internal/storage/sqlite/db.go SetMaxOpenConns(1)); an
+	// upsert issued while rows is still open would block forever waiting for
+	// the connection its own open Rows is holding.
+	type rule1Hit struct {
+		taskID    uuid.UUID
+		updatedAt string
+	}
+	var hits []rule1Hit
 	for rows.Next() {
 		var taskIDStr, updatedAt string
 		if err := rows.Scan(&taskIDStr, &updatedAt); err != nil {
@@ -364,11 +373,20 @@ func (s *SQLiteStore) detectStaleInProgress(ctx context.Context, ws any, staleHo
 		if err != nil {
 			continue
 		}
+		hits = append(hits, rule1Hit{taskID: taskID, updatedAt: updatedAt})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rule1 iter: %w", err)
+	}
+	_ = rows.Close() // [F0929-75] release the single connection before upserting below
+
+	var out []Candidate
+	for _, h := range hits {
 		up := UpsertParams{
-			TaskID:       taskID,
+			TaskID:       h.taskID,
 			Reason:       ReasonStaleInProgress,
 			Confidence:   ConfidenceMedium,
-			EvidenceRefs: []string{"stale since " + updatedAt},
+			EvidenceRefs: []string{"stale since " + h.updatedAt},
 		}
 		if wsID := wsArgToUUIDPtr(ws); wsID != nil {
 			up.WorkspaceID = wsID
@@ -378,9 +396,6 @@ func (s *SQLiteStore) detectStaleInProgress(ctx context.Context, ws any, staleHo
 			return nil, fmt.Errorf("rule1 upsert: %w", err)
 		}
 		out = append(out, *c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rule1 iter: %w", err)
 	}
 	return out, nil
 }
@@ -403,7 +418,14 @@ func (s *SQLiteStore) detectFinishWorkGap(ctx context.Context, ws any, lookbackD
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []Candidate
+	// Scan every matching row into hits first, fully draining and closing
+	// rows before any UpsertCandidate call below — see detectStaleInProgress
+	// for why (single-connection SQLite pool deadlock).
+	type rule2Hit struct {
+		taskID   uuid.UUID
+		evidence string
+	}
+	var hits []rule2Hit
 	for rows.Next() {
 		var taskIDStr string
 		var completedAtNS sql.NullString
@@ -418,11 +440,20 @@ func (s *SQLiteStore) detectFinishWorkGap(ctx context.Context, ws any, lookbackD
 		if completedAtNS.Valid && completedAtNS.String != "" {
 			evidence = "work_session completed at " + completedAtNS.String
 		}
+		hits = append(hits, rule2Hit{taskID: taskID, evidence: evidence})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rule2 iter: %w", err)
+	}
+	_ = rows.Close()
+
+	var out []Candidate
+	for _, h := range hits {
 		up := UpsertParams{
-			TaskID:       taskID,
+			TaskID:       h.taskID,
 			Reason:       ReasonFinishWorkGap,
 			Confidence:   ConfidenceHigh,
-			EvidenceRefs: []string{evidence},
+			EvidenceRefs: []string{h.evidence},
 		}
 		if wsID := wsArgToUUIDPtr(ws); wsID != nil {
 			up.WorkspaceID = wsID
@@ -432,9 +463,6 @@ func (s *SQLiteStore) detectFinishWorkGap(ctx context.Context, ws any, lookbackD
 			return nil, fmt.Errorf("rule2 upsert: %w", err)
 		}
 		out = append(out, *c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rule2 iter: %w", err)
 	}
 	return out, nil
 }
@@ -458,7 +486,15 @@ func (s *SQLiteStore) detectArtifactEvidence(ctx context.Context, ws any, lookba
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []Candidate
+	// Scan every matching row into hits first, fully draining and closing
+	// rows before any UpsertCandidate call below — see detectStaleInProgress
+	// for why (single-connection SQLite pool deadlock).
+	type rule3Hit struct {
+		alID     string
+		taskID   uuid.UUID
+		artifact string
+	}
+	var hits []rule3Hit
 	for rows.Next() {
 		var alIDStr, taskIDStr string
 		var notesNS sql.NullString
@@ -473,12 +509,21 @@ func (s *SQLiteStore) detectArtifactEvidence(ctx context.Context, ws any, lookba
 		if notesNS.Valid {
 			artifact = extractURLFromNotes(notesNS.String)
 		}
+		hits = append(hits, rule3Hit{alID: alIDStr, taskID: taskID, artifact: artifact})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rule3 iter: %w", err)
+	}
+	_ = rows.Close()
+
+	var out []Candidate
+	for _, h := range hits {
 		up := UpsertParams{
-			TaskID:            taskID,
+			TaskID:            h.taskID,
 			Reason:            ReasonArtifactEvidence,
 			Confidence:        ConfidenceMedium,
-			EvidenceRefs:      []string{"activity_log:" + alIDStr},
-			SuggestedArtifact: artifact,
+			EvidenceRefs:      []string{"activity_log:" + h.alID},
+			SuggestedArtifact: h.artifact,
 		}
 		if wsID := wsArgToUUIDPtr(ws); wsID != nil {
 			up.WorkspaceID = wsID
@@ -488,9 +533,6 @@ func (s *SQLiteStore) detectArtifactEvidence(ctx context.Context, ws any, lookba
 			return nil, fmt.Errorf("rule3 upsert: %w", err)
 		}
 		out = append(out, *c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rule3 iter: %w", err)
 	}
 	return out, nil
 }
@@ -524,7 +566,14 @@ func (s *SQLiteStore) detectCompletionSignal(ctx context.Context, ws any, lookba
 // Extracted from detectCompletionSignal to reduce structural similarity with other
 // detection rules (preventing false-positive dupl alerts).
 func (s *SQLiteStore) detectCompletionSignalRows(ctx context.Context, rows *sql.Rows, ws any) ([]Candidate, error) {
-	var out []Candidate
+	// Scan every matching row into hits first, fully draining and closing
+	// rows before any UpsertCandidate call below — see detectStaleInProgress
+	// for why (single-connection SQLite pool deadlock).
+	type rule4Hit struct {
+		alID   string
+		taskID uuid.UUID
+	}
+	var hits []rule4Hit
 	for rows.Next() {
 		var alIDStr, taskIDStr string
 		if err := rows.Scan(&alIDStr, &taskIDStr); err != nil {
@@ -534,11 +583,20 @@ func (s *SQLiteStore) detectCompletionSignalRows(ctx context.Context, rows *sql.
 		if err != nil {
 			continue
 		}
+		hits = append(hits, rule4Hit{alID: alIDStr, taskID: taskID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rule4 iter: %w", err)
+	}
+	_ = rows.Close()
+
+	var out []Candidate
+	for _, h := range hits {
 		up := UpsertParams{
-			TaskID:       taskID,
+			TaskID:       h.taskID,
 			Reason:       ReasonCompletionSignal,
 			Confidence:   ConfidenceLow,
-			EvidenceRefs: []string{"activity_log:" + alIDStr},
+			EvidenceRefs: []string{"activity_log:" + h.alID},
 		}
 		if wsID := wsArgToUUIDPtr(ws); wsID != nil {
 			up.WorkspaceID = wsID
@@ -548,9 +606,6 @@ func (s *SQLiteStore) detectCompletionSignalRows(ctx context.Context, rows *sql.
 			return nil, fmt.Errorf("rule4 upsert: %w", err)
 		}
 		out = append(out, *c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rule4 iter: %w", err)
 	}
 	return out, nil
 }

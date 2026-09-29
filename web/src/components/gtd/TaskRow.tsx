@@ -6,6 +6,7 @@ import { StatusBadge } from '../ui/StatusBadge'
 import { LoadingSkeleton } from '../ui/LoadingSkeleton'
 import { ImportanceBadge } from './ImportanceBadge'
 import { useDecisions } from '../../hooks/useDecisions'
+import { safeHref } from '../../lib/safeHref'
 import type { Task, Project, ProjectStatus } from '../../types/api'
 
 interface TaskRowProps {
@@ -290,7 +291,7 @@ export function TaskRow({ task, project, expanded, onToggle, onComplete, footer 
                 {t('gtd.pullRequest')}
               </p>
               <a
-                href={task.pr_url.startsWith('https://') ? task.pr_url : '#'}
+                href={safeHref(task.pr_url ?? undefined)} // [F0929-53]
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-body-sm underline"

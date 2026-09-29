@@ -125,7 +125,13 @@ func applyBranchAndPRUpdate(branchName, prURL *string, p *gtd.UpdateTaskParams) 
 }
 
 // maxPendingDeletions caps the number of valid (non-expired) delete tokens
-// held simultaneously. This prevents a loop caller from growing the sync.Map
+// held simultaneously PER KIND — task and project pending
+// deletions are counted separately, so filling one kind's 256 slots (e.g.
+// with legitimate delete_task previews, every MCP caller has list_tasks
+// access) cannot block the other kind's step 1. Combined live entries can
+// therefore reach up to 512 (256 task + 256 project) — an accepted
+// tradeoff for an in-memory sync.Map of small structs, not a
+// memory-constrained resource. Prevents a loop caller from growing the map
 // without bound if tokens are issued faster than they expire.
 const maxPendingDeletions = 256
 
@@ -461,8 +467,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		ms, mcp.NewTool(
 			"task_checklist_complete",
 			mcp.WithDescription(
-				"Shorthand for marking a checklist item done=true and recording completed_at=now. "+
-					"Returns the full updated checklist.",
+				"DEPRECATED: prefer task_checklist_toggle(item_id, done=true) — same effect, kept "+ // [F0929-61]
+					"for compatibility. Shorthand for marking a checklist item done=true and recording "+
+					"completed_at=now. Returns the full updated checklist.",
 			),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
@@ -1117,9 +1124,18 @@ func (s *Server) handleSetTaskStatus(ctx context.Context, args SetTaskStatusArgs
 		)), nil
 	}
 
-	updated, err := s.gtd.UpdateTaskStatus(ctx, id, gtd.TaskStatus(rawStatus))
+	// Guarded write: only applies when the row's current status
+	// still equals cur.Status (the value just validated above) — closes the
+	// TOCTOU window between the GetTaskByID read and this write.
+	updated, err := s.gtd.UpdateTaskStatusGuarded(ctx, id, gtd.TaskStatus(rawStatus), gtd.TaskStatus(cur.Status))
 	if errors.Is(err, gtd.ErrNotFound) {
 		return mcp.NewToolResultError("task not found"), nil
+	}
+	if errors.Is(err, gtd.ErrConflict) {
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"task status changed since it was read (expected %s); call get_task and retry set_task_status",
+			cur.Status,
+		)), nil
 	}
 	if err != nil {
 		return storeErrorResult("updating task status", err), nil
@@ -1694,13 +1710,31 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 
 	if !confirm {
 		// Step 1 — issue token, do NOT delete.
-		token, expires, refusal := s.issuePendingDeletion(ctx, key)
+		//
+		// The existence check runs first so a mistyped id fails
+		// with "task not found" instead of handing back a token that can
+		// only ever confirm a no-op — mirrors handleDeleteProject's
+		// already-correct step 1.
+		task, err := s.gtd.GetTaskByID(ctx, id)
+		if errors.Is(err, gtd.ErrNotFound) { // [F0929-55]
+			return mcp.NewToolResultError("task not found"), nil
+		}
+		if err != nil {
+			return storeErrorResult("loading task", err), nil
+		}
+
+		token, expires, refusal := s.issuePendingDeletion(ctx, key, deletionKindTask)
 		if refusal != nil {
 			return refusal, nil
 		}
 		return jsonText(map[string]any{
-			"status":         "confirmation_required",
-			"task_id":        id.String(),
+			"status":  "confirmation_required",
+			"task_id": id.String(),
+			// clipSafe: task_title is caller-supplied stored text read back
+			// to an LLM, same U13 treatment handleDeleteProject already
+			// applies to project_name/project_title.
+			"task_title":     clipSafe(task.Title, gtdTitleMaxRunes),
+			"task_status":    task.Status,
 			"deletion_token": token,
 			"expires_at":     expires.UTC().Format(time.RFC3339),
 			"message":        "Call delete_task again with confirm=true and the deletion_token to delete this task. Token expires in 60s.",
@@ -1750,12 +1784,13 @@ func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs
 		if err != nil {
 			return storeErrorResult("loading project", err), nil
 		}
-		tasks, err := s.gtd.TasksByProjectAllStatuses(ctx, id)
+		// COUNT-only — step 1 only ever needed len(tasks), not the full rows.
+		taskCount, err := s.gtd.CountTasksByProjectAllStatuses(ctx, id) // [F0929-60]
 		if err != nil {
 			return storeErrorResult("counting tasks under project", err), nil
 		}
 
-		token, expires, refusal := s.issuePendingDeletion(ctx, key)
+		token, expires, refusal := s.issuePendingDeletion(ctx, key, deletionKindProject)
 		if refusal != nil {
 			return refusal, nil
 		}
@@ -1767,13 +1802,13 @@ func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs
 			// read back to an LLM (U13), exactly as wrapUntrustedProject does.
 			"project_name":    clipSafe(project.Name, gtdTitleMaxRunes),
 			"project_title":   clipSafe(project.Title, gtdTitleMaxRunes),
-			"tasks_to_delete": len(tasks),
+			"tasks_to_delete": taskCount,
 			"deletion_token":  token,
 			"expires_at":      expires.UTC().Format(time.RFC3339),
 			"message": fmt.Sprintf(
 				"Call delete_project again with confirm=true and the deletion_token to "+
 					"permanently delete this project and its %d task(s). Token expires in 60s.",
-				len(tasks),
+				taskCount,
 			),
 		})
 	}

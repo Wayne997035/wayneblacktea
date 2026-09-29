@@ -9,6 +9,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 // This file covers the 11 tools_gtd.go handlers that had zero direct test
@@ -868,5 +869,100 @@ func TestChecklistComplete_TaskOrItemNotFound(t *testing.T) {
 	})
 	if !r.IsError || resultText(r) != "task or item not found" {
 		t.Errorf("got %q, want %q", resultText(r), "task or item not found")
+	}
+}
+
+// checklistItemJSON mirrors gtd.ChecklistItem's JSON shape for parsing
+// task_checklist_complete/task_checklist_toggle responses in tests below.
+type checklistItemJSON struct {
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	Done        bool    `json:"done"`
+	EvidenceURL string  `json:"evidence_url,omitempty"`
+	CompletedAt *string `json:"completed_at,omitempty"`
+}
+
+// findChecklistItem returns the entry matching id, failing the test if absent.
+func findChecklistItem(t *testing.T, items []checklistItemJSON, id string) checklistItemJSON {
+	t.Helper()
+	for _, it := range items {
+		if it.ID == id {
+			return it
+		}
+	}
+	t.Fatalf("item %s not found in response: %+v", id, items)
+	return checklistItemJSON{}
+}
+
+// TestChecklistComplete_MatchesToggleEquivalence is H2's (F0929-61)
+// successor-equivalence proof: task_checklist_complete(task_id, item_id) and
+// task_checklist_toggle(task_id, item_id, done=true) (no evidence_url) must
+// produce byte-identical per-item shape — done=true, completed_at set, no
+// evidence_url — confirming the DEPRECATED description change carries no
+// behavior change.
+func TestChecklistComplete_MatchesToggleEquivalence(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	taskID := seedTask(t, s)
+	itemA := seedChecklistItem(t, s, taskID)
+	itemB := seedChecklistItem(t, s, taskID)
+
+	completeRes := callChecklistComplete(t, s, map[string]any{
+		"task_id": taskID.String(), "item_id": itemA.String(),
+	})
+	if completeRes.IsError {
+		t.Fatalf("task_checklist_complete should succeed, got: %s", resultText(completeRes))
+	}
+	var completeItems []checklistItemJSON
+	if err := json.Unmarshal([]byte(resultText(completeRes)), &completeItems); err != nil {
+		t.Fatalf("unmarshal task_checklist_complete response: %v\nraw=%s", err, resultText(completeRes))
+	}
+	gotA := findChecklistItem(t, completeItems, itemA.String())
+
+	toggleRes := callChecklistToggle(t, s, map[string]any{
+		"task_id": taskID.String(), "item_id": itemB.String(), "done": true,
+	})
+	if toggleRes.IsError {
+		t.Fatalf("task_checklist_toggle should succeed, got: %s", resultText(toggleRes))
+	}
+	var toggleItems []checklistItemJSON
+	if err := json.Unmarshal([]byte(resultText(toggleRes)), &toggleItems); err != nil {
+		t.Fatalf("unmarshal task_checklist_toggle response: %v\nraw=%s", err, resultText(toggleRes))
+	}
+	gotB := findChecklistItem(t, toggleItems, itemB.String())
+
+	if gotA.Done != true || gotB.Done != true {
+		t.Errorf("both items must be done=true, got A.Done=%v B.Done=%v", gotA.Done, gotB.Done)
+	}
+	if gotA.CompletedAt == nil || *gotA.CompletedAt == "" {
+		t.Error("task_checklist_complete's item must have completed_at set")
+	}
+	if gotB.CompletedAt == nil || *gotB.CompletedAt == "" {
+		t.Error("task_checklist_toggle(done=true)'s item must have completed_at set")
+	}
+	if gotA.EvidenceURL != "" || gotB.EvidenceURL != "" {
+		t.Errorf("neither call supplied evidence_url, both must be empty, got A=%q B=%q",
+			gotA.EvidenceURL, gotB.EvidenceURL)
+	}
+}
+
+// TestChecklistComplete_DescriptionIsDeprecated is H2's (F0929-61)
+// description-prefix proof: the registered tool's description must start
+// with "DEPRECATED:" and name task_checklist_toggle as successor.
+func TestChecklistComplete_DescriptionIsDeprecated(t *testing.T) {
+	t.Parallel()
+	ms := server.NewMCPServer("test", "0.0.0")
+	(&Server{}).registerGTDTools(ms)
+
+	entry, ok := ms.ListTools()["task_checklist_complete"]
+	if !ok {
+		t.Fatal("task_checklist_complete is not registered")
+	}
+	desc := entry.Tool.Description
+	if !strings.HasPrefix(desc, "DEPRECATED:") {
+		t.Errorf("description does not start with DEPRECATED:, got %q", desc)
+	}
+	if !strings.Contains(desc, "task_checklist_toggle") {
+		t.Errorf("description does not name successor task_checklist_toggle, got %q", desc)
 	}
 }

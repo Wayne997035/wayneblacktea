@@ -13,6 +13,7 @@ import (
 // SQLite TestRestoreProject_RepoNameRule ([F0925-30]): a restored repo_name
 // breaking the workspace repo name rule is cleared to NULL, NULL stays NULL,
 // and a compliant value is kept.
+// [F0925-37] guards clearInvalidRestoredRepoName (internal/gtd/store.go).
 func TestRestoreProject_RepoNameRule_Postgres(t *testing.T) {
 	pool := openTestPgPool(t)
 	for _, tc := range []struct {

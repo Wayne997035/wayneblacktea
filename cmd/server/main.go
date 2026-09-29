@@ -375,11 +375,7 @@ func run() error {
 	sched.Start()
 	defer sched.Stop()
 
-	// [F185-05] startDiscordBotIfConfigured no longer returns a fatal error
-	// for a bot.Start() failure — only discordbot.New() construction
-	// failures (a fixable env mistake) still propagate here. handlers is
-	// already in scope (built at wireHandlers above, well before this call).
-	stopBot, err := startDiscordBotIfConfigured(port, apiKey, aiw.chain, handlers.discordHealth)
+	stopBot, err := wireDiscordBot(port, apiKey, aiw.chain, handlers.discordHealth)
 	if err != nil {
 		return err
 	}
@@ -634,6 +630,21 @@ func startBotAndHealth(bot discordStarter, health *handler.DiscordHealthHandler,
 			slog.Warn("discord bot: stop called before Start() returned — skipping Stop() to avoid blocking shutdown")
 		}
 	}
+}
+
+// wireDiscordBot wraps startDiscordBotIfConfigured's result the way run()
+// consumes it: propagate a construction failure as a fatal error, otherwise
+// hand back the stop func. Extracted from run() (F185-05) so this
+// propagation — not just startDiscordBotIfConfigured's own return value,
+// already covered by TestStartDiscordBotIfConfigured_* — is independently
+// testable; run() itself can't be unit-tested directly (it blocks on
+// e.Start() and needs a live storage backend).
+func wireDiscordBot(port, apiKey string, llmClient llm.JSONClient, health *handler.DiscordHealthHandler) (func(), error) {
+	stopBot, err := startDiscordBotIfConfigured(port, apiKey, llmClient, health)
+	if err != nil { // [F0929-63]
+		return nil, err
+	}
+	return stopBot, nil
 }
 
 // startDiscordBotIfConfigured starts the Discord bot if configured, and

@@ -110,8 +110,9 @@ func TestDecisionOutcomeReview_Dedup_SecondRunCreatesZero(t *testing.T) {
 	sc := &Scheduler{
 		disciplinePool: pool,
 		cognitiveDeps: &cognitiveDeps{
-			proposal:    propStore,
-			workspaceID: &wsID,
+			proposal:                      propStore,
+			workspaceID:                   &wsID,
+			decisionOutcomeReviewDailyCap: decisionOutcomeReviewDailyCap,
 		},
 	}
 
@@ -171,8 +172,9 @@ func TestDecisionOutcomeReview_Dedup_ExcludesDecisionsWithOutcome(t *testing.T) 
 	sc := &Scheduler{
 		disciplinePool: pool,
 		cognitiveDeps: &cognitiveDeps{
-			proposal:    propStore,
-			workspaceID: &wsID,
+			proposal:                      propStore,
+			workspaceID:                   &wsID,
+			decisionOutcomeReviewDailyCap: decisionOutcomeReviewDailyCap,
 		},
 	}
 	sc.runDecisionOutcomeReview()
@@ -199,10 +201,7 @@ func TestDecisionOutcomeReview_DailyCap_LimitsCreatedCount(t *testing.T) {
 	wsID := uuid.New()
 	cleanupDecisionOutcomeProposals(t, ctx, wsID)
 
-	prevCap := decisionOutcomeReviewDailyCap
 	const testCap = 3
-	decisionOutcomeReviewDailyCap = testCap
-	t.Cleanup(func() { decisionOutcomeReviewDailyCap = prevCap })
 
 	old := time.Now().UTC().AddDate(0, 0, -45)
 	// Seed 5 qualifying decisions — more than testCap(3) — with strictly
@@ -218,8 +217,9 @@ func TestDecisionOutcomeReview_DailyCap_LimitsCreatedCount(t *testing.T) {
 	sc := &Scheduler{
 		disciplinePool: pool,
 		cognitiveDeps: &cognitiveDeps{
-			proposal:    propStore,
-			workspaceID: &wsID,
+			proposal:                      propStore,
+			workspaceID:                   &wsID,
+			decisionOutcomeReviewDailyCap: testCap,
 		},
 	}
 	sc.runDecisionOutcomeReview()
@@ -257,8 +257,9 @@ func TestDecisionOutcomeReview_EmptyBacklog_NoPanic(t *testing.T) {
 	sc := &Scheduler{
 		disciplinePool: pool,
 		cognitiveDeps: &cognitiveDeps{
-			proposal:    propStore,
-			workspaceID: &wsID,
+			proposal:                      propStore,
+			workspaceID:                   &wsID,
+			decisionOutcomeReviewDailyCap: decisionOutcomeReviewDailyCap,
 		},
 	}
 	// Must not panic on zero-row result.

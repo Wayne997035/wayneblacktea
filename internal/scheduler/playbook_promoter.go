@@ -79,35 +79,6 @@ func buildDecisionSummaries(decisions []db.Decision) ([]byte, error) {
 	return b, nil
 }
 
-// createPlaybookProposal converts a KnowledgeProposal from the AI into a
-// pending_proposals row. Tags are expected to be UUID strings for
-// source_decision_ids.
-func createPlaybookProposal(
-	ctx context.Context,
-	deps playbookDeps,
-	kp ai.KnowledgeProposal,
-) error {
-	var srcIDs []uuid.UUID
-	for _, tag := range kp.Tags {
-		if id, err := uuid.Parse(tag); err == nil {
-			srcIDs = append(srcIDs, id)
-		}
-	}
-
-	payload, err := marshalPlaybookPayload(kp.Title, kp.Content, srcIDs)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-	if _, cerr := deps.proposal.Create(ctx, proposal.CreateParams{
-		Type:       proposal.TypePlaybook,
-		Payload:    payload,
-		ProposedBy: "playbook-promoter-cron",
-	}); cerr != nil {
-		return fmt.Errorf("create playbook proposal: %w", cerr)
-	}
-	return nil
-}
-
 // runPlaybookPromoter is the core logic of the Sunday 03:00 playbook promoter job.
 //
 // It:
@@ -158,7 +129,8 @@ func runPlaybookPromoter(deps playbookDeps) {
 
 	created := processPlaybookProposals(ctx, deps, adaptedProposals)
 
-	slog.Info("playbook promoter: cron completed",
+	slog.Info(
+		"playbook promoter: cron completed",
 		"decisions_scanned", len(recent),
 		"proposals_from_ai", len(adaptedProposals),
 		"proposals_created", created,
@@ -172,44 +144,65 @@ const (
 
 // processPlaybookProposals iterates KnowledgeProposals from the AI, validates,
 // and creates pending_proposals rows. Returns the count of created proposals.
+//
+// build inlines all 4 pre-refactor validation checks (each keeping its own
+// slog.Warn message, order pinned: title-empty/content-empty ->
+// title-too-long -> content-too-long -> title-tag-noise -> content-tag-noise,
+// per proploop spec Risk flags) plus the tag->srcIDs uuid.Parse loop and the
+// srcIDs==nil -> []uuid.UUID{} nil-normalization, both formerly in
+// createPlaybookProposal/marshalPlaybookPayload (both deleted, no longer needed).
+// marshal-fail and Create-fail intentionally share one message/hook, matching
+// createPlaybookProposal's pre-refactor single wrapped-error behaviour.
 func processPlaybookProposals(
 	ctx context.Context,
 	deps playbookDeps,
 	proposals []ai.KnowledgeProposal,
 ) int {
-	created := 0
-	for _, kp := range proposals {
+	build := func(kp ai.KnowledgeProposal) (proposal.Type, any, bool) {
 		if kp.Title == "" || kp.Content == "" {
-			continue
+			return "", nil, false
 		}
 		if len([]rune(kp.Title)) > maxTriggerLen {
 			slog.Warn("playbook promoter: AI proposal trigger too long, skipping",
 				"trigger_len", len([]rune(kp.Title)))
-			continue
+			return "", nil, false
 		}
 		if len([]rune(kp.Content)) > maxContentLen {
 			slog.Warn("playbook promoter: AI proposal content too long, skipping",
 				"content_len", len([]rune(kp.Content)))
-			continue
+			return "", nil, false
 		}
 		if err := sanitize.ValidateNoTagNoise(kp.Title); err != nil {
 			slog.Warn("playbook promoter: tag noise in AI title, skipping", "err", err)
-			continue
+			return "", nil, false
 		}
 		if err := sanitize.ValidateNoTagNoise(kp.Content); err != nil {
 			slog.Warn("playbook promoter: tag noise in AI content, skipping", "err", err)
-			continue
+			return "", nil, false
 		}
-		if err := createPlaybookProposal(ctx, deps, kp); err != nil {
-			slog.Warn("playbook promoter: creating pending proposal failed",
-				"trigger_pattern", kp.Title,
-				"err", err,
-			)
-			continue
+		var srcIDs []uuid.UUID
+		for _, tag := range kp.Tags {
+			if id, err := uuid.Parse(tag); err == nil {
+				srcIDs = append(srcIDs, id)
+			}
 		}
-		created++
+		if srcIDs == nil {
+			srcIDs = []uuid.UUID{}
+		}
+		return proposal.TypePlaybook, PlaybookProposalPayload{
+			TriggerPattern:    kp.Title,
+			ActionTemplate:    kp.Content,
+			SourceDecisionIDs: srcIDs,
+		}, true
 	}
-	return created
+	logCreateFail := func(kp ai.KnowledgeProposal, err error) {
+		slog.Warn(
+			"playbook promoter: creating pending proposal failed",
+			"trigger_pattern", kp.Title,
+			"err", err,
+		)
+	}
+	return runProposalTail(ctx, deps.proposal, nil, "playbook-promoter-cron", proposals, build, logCreateFail, logCreateFail)
 }
 
 // PlaybookProposalPayload is the JSON shape stored in pending_proposals.payload
@@ -218,22 +211,4 @@ type PlaybookProposalPayload struct {
 	TriggerPattern    string      `json:"trigger_pattern"`
 	ActionTemplate    string      `json:"action_template"`
 	SourceDecisionIDs []uuid.UUID `json:"source_decision_ids"`
-}
-
-// marshalPlaybookPayload encodes a playbook candidate into the JSONB payload
-// expected by the pending_proposals table.
-func marshalPlaybookPayload(triggerPattern, actionTemplate string, srcIDs []uuid.UUID) ([]byte, error) {
-	if srcIDs == nil {
-		srcIDs = []uuid.UUID{}
-	}
-	p := PlaybookProposalPayload{
-		TriggerPattern:    triggerPattern,
-		ActionTemplate:    actionTemplate,
-		SourceDecisionIDs: srcIDs,
-	}
-	b, err := json.Marshal(p)
-	if err != nil {
-		return nil, fmt.Errorf("marshal playbook payload: %w", err)
-	}
-	return b, nil
 }

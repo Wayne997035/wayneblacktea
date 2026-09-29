@@ -33,6 +33,7 @@ interface InteractiveStarRatingProps {
 function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
   const { t } = useTranslation()
   const [hovered, setHovered] = useState<number | null>(null)
+  const [error, setError] = useState(false)
   const updateKnowledge = useUpdateKnowledge()
 
   const displayValue = hovered ?? value
@@ -40,59 +41,77 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
   function handleClick(star: number) {
     // Clicking the same star again resets to null
     const newValue = value === star ? null : star
-    updateKnowledge.mutate({ id: itemId, learning_value: newValue })
+    setError(false)
+    updateKnowledge.mutate(
+      { id: itemId, learning_value: newValue },
+      { onError: () => setError(true) }, // [F0929-51]
+    )
   }
+
+  // Rendered from both returns below so a failed mutation stays visible
+  // even when the pointer has left and the item was never rated.
+  const errorBlock = error && (
+    <span role="alert" className="text-caption" style={{ color: 'var(--color-error)' }}>
+      {t('knowledge.card.rateError')}
+    </span>
+  )
 
   if (value === null && hovered === null) {
     return (
-      <span
-        className="text-caption"
-        style={{ color: 'var(--color-text-disabled)', cursor: 'pointer' }}
-        onMouseEnter={() => setHovered(1)}
-        aria-label="Rate this item"
-      >
-        {/* [F0925-24] */}
-        {t('knowledge.card.rateLabel')}
-      </span>
+      <>
+        <span
+          className="text-caption"
+          style={{ color: 'var(--color-text-disabled)', cursor: 'pointer' }}
+          onMouseEnter={() => setHovered(1)}
+          aria-label="Rate this item"
+        >
+          {/* [F0925-24] */}
+          {t('knowledge.card.rateLabel')}
+        </span>
+        {errorBlock}
+      </>
     )
   }
 
   return (
-    <span
-      aria-label={`Learning value: ${displayValue ?? 0} out of 5`}
-      className="text-caption inline-flex"
-      style={{ cursor: 'pointer' }}
-      onMouseLeave={() => setHovered(null)}
-    >
-      {Array.from({ length: 5 }, (_, i) => {
-        const starNum = i + 1
-        return (
-          <button
-            key={i}
-            type="button"
-            aria-label={`Rate ${starNum} out of 5`}
-            onClick={() => handleClick(starNum)}
-            onMouseEnter={() => setHovered(starNum)}
-            className="transition-colors"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              padding: '0 1px',
-              cursor: updateKnowledge.isPending ? 'not-allowed' : 'pointer',
-              color:
-                displayValue !== null && i < displayValue
-                  ? 'var(--color-warning)'
-                  : 'var(--color-text-disabled)',
-              fontSize: '0.875rem',
-              lineHeight: 1,
-            }}
-            disabled={updateKnowledge.isPending}
-          >
-            ★
-          </button>
-        )
-      })}
-    </span>
+    <>
+      <span
+        aria-label={`Learning value: ${displayValue ?? 0} out of 5`}
+        className="text-caption inline-flex"
+        style={{ cursor: 'pointer' }}
+        onMouseLeave={() => setHovered(null)}
+      >
+        {Array.from({ length: 5 }, (_, i) => {
+          const starNum = i + 1
+          return (
+            <button
+              key={i}
+              type="button"
+              aria-label={`Rate ${starNum} out of 5`}
+              onClick={() => handleClick(starNum)}
+              onMouseEnter={() => setHovered(starNum)}
+              className="transition-colors"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                padding: '0 1px',
+                cursor: updateKnowledge.isPending ? 'not-allowed' : 'pointer',
+                color:
+                  displayValue !== null && i < displayValue
+                    ? 'var(--color-warning)'
+                    : 'var(--color-text-disabled)',
+                fontSize: '0.875rem',
+                lineHeight: 1,
+              }}
+              disabled={updateKnowledge.isPending}
+            >
+              ★
+            </button>
+          )
+        })}
+      </span>
+      {errorBlock}
+    </>
   )
 }
 
@@ -100,11 +119,13 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
   const { t } = useTranslation()
   const addToLearning = useCreateConceptFromKnowledge()
   const [added, setAdded] = useState(false)
+  const [addError, setAddError] = useState(false)
   // [F0925-22] Guard item.url through the scheme allowlist before it can
   // become a clickable href — see lib/safeHref.ts.
   const href = safeHref(item.url ?? undefined)
 
   function handleAddToLearning() {
+    setAddError(false)
     addToLearning.mutate(
       { knowledge_id: item.id },
       {
@@ -112,6 +133,7 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
           setAdded(true)
           setTimeout(() => setAdded(false), 1000)
         },
+        onError: () => setAddError(true),
       },
     )
   }
@@ -223,6 +245,12 @@ export function KnowledgeCard({ item }: KnowledgeCardProps) {
                 ? t('knowledge.card.addingToLearning')
                 : t('knowledge.card.addToLearning')}
           </button>
+
+          {addError && (
+            <span role="alert" className="text-caption" style={{ color: 'var(--color-error)' }}>
+              {t('knowledge.card.addToLearningError')}
+            </span>
+          )}
 
           {/* URL link — [F0925-22] non-allowlisted schemes render inert */}
           {item.url !== null && (

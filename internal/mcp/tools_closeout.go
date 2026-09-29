@@ -77,15 +77,16 @@ func (s *Server) handleCloseoutSessionCheck(ctx context.Context, _ mcp.CallToolR
 		report.OpenTaskCount, len(report.StuckTasks), report.PendingProposals,
 		report.HandoffSet, report.CompletionCandidates, report.Clean,
 	)
-	// This LogActivity call uses the same Store method that makes the
-	// standalone log_activity tool mutating, but closeout_session_check
-	// itself is intentionally NOT in discipline.MutatingTools — it's listed
-	// under discipline.DeliberatelyExcludedTools' "System-generated
-	// cache/candidate writes" category (internal/discipline/discipline.go):
-	// the actor is hardcoded to "system", the summary is entirely
-	// server-computed from prior read-only aggregation above, and there is
-	// no caller-controlled field, so flagging this write as drift would be
-	// noise rather than signal.
+	// This LogActivity call uses the same Store method that makes
+	// the standalone log_activity tool mutating, and — unlike before this
+	// change — closeout_session_check IS now in discipline.MutatingTools
+	// (internal/discipline/discipline.go): its writes were previously
+	// invisible to system_health's discipline.drift_count_24h signal, which
+	// only walks MutatingTools-classified calls. The actor is still
+	// hardcoded to "system" and the summary is still entirely
+	// server-computed from prior read-only aggregation above — no
+	// caller-controlled field — but that no longer exempts it from drift
+	// visibility; it exempts it from nothing else.
 	_ = s.gtd.LogActivity(ctx, "system", "closeout_session_check", nil, summary)
 
 	return jsonText(report)

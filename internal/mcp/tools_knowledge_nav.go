@@ -61,9 +61,10 @@ func (s *Server) registerKnowledgeNavTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(
 		"outline_knowledge",
 		mcp.WithDescription(
-			"Returns the heading tree for a root document. Fetches all children of the given "+
-				"item_id ordered by heading level — useful as a lightweight table of contents "+
-				"before deciding which section to read. Returns no content, only headings.",
+			"DEPRECATED: prefer navigate_knowledge(parent_id=item_id) — same effect, kept for "+
+				"compatibility. Returns the heading tree for a root document. Fetches all children "+
+				"of the given item_id ordered by heading level — useful as a lightweight table of "+
+				"contents before deciding which section to read. Returns no content, only headings.",
 		),
 		mcp.WithString("item_id", mcp.Description("UUID of the root knowledge item to outline"), mcp.Required()),
 	), s.handleOutlineKnowledge)

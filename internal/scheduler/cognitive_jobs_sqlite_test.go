@@ -128,7 +128,11 @@ func TestDecisionOutcomeReview_CrossBackend_SameFixture(t *testing.T) {
 	pgProps := &stubProposalStore{}
 	pgSc := &Scheduler{
 		disciplinePool: pool,
-		cognitiveDeps:  &cognitiveDeps{proposal: pgProps, workspaceID: &pgWsID},
+		cognitiveDeps: &cognitiveDeps{
+			proposal:                      pgProps,
+			workspaceID:                   &pgWsID,
+			decisionOutcomeReviewDailyCap: decisionOutcomeReviewDailyCap,
+		},
 	}
 	pgSc.runDecisionOutcomeReview()
 
@@ -146,9 +150,10 @@ func TestDecisionOutcomeReview_CrossBackend_SameFixture(t *testing.T) {
 	sqProps := &stubProposalStore{}
 	sqSc := &Scheduler{
 		cognitiveDeps: &cognitiveDeps{
-			proposal:    sqProps,
-			workspaceID: &sqWsID,
-			sqlite:      sqlite.NewCognitiveJobsStore(sqDB),
+			proposal:                      sqProps,
+			workspaceID:                   &sqWsID,
+			sqlite:                        sqlite.NewCognitiveJobsStore(sqDB),
+			decisionOutcomeReviewDailyCap: decisionOutcomeReviewDailyCap,
 		},
 	}
 	sqSc.runDecisionOutcomeReview()
@@ -172,6 +177,69 @@ func TestDecisionOutcomeReview_CrossBackend_SameFixture(t *testing.T) {
 	}
 	if sqPayload.SourceEntityID != sqDecisionID.String() {
 		t.Errorf("SQLite source_entity_id = %q, want %q", sqPayload.SourceEntityID, sqDecisionID.String())
+	}
+}
+
+// TestDecisionOutcomeReview_DailyCap_SQLite_LimitsCreatedCount is the SQLite
+// counterpart to TestDecisionOutcomeReview_DailyCap_LimitsCreatedCount
+// (decision_outcome_review_pg_test.go) — pins that the cap now flows through
+// cognitiveDeps.decisionOutcomeReviewDailyCap on the SQLite read site
+// (internal/storage/sqlite.CognitiveJobsStore.DecisionsPendingOutcomeReview's
+// LIMIT parameter) rather than the const default. Injects a cap of 3, seeds 5
+// qualifying decisions with strictly increasing created_at, and asserts
+// exactly the oldest 3 get proposals.
+func TestDecisionOutcomeReview_DailyCap_SQLite_LimitsCreatedCount(t *testing.T) {
+	ctx := context.Background()
+	const testCap = 3
+	const total = 5
+
+	sqWsID := uuid.New()
+	sqDB := openCrossBackendSQLiteDB(t, sqWsID)
+
+	old := time.Now().UTC().AddDate(0, 0, -45)
+	decisionIDs := make([]uuid.UUID, total)
+	for i := 0; i < total; i++ {
+		decisionIDs[i] = uuid.New()
+		if err := sqDB.ExecContext(ctx, `INSERT INTO decisions
+			(id, workspace_id, title, context, decision, rationale, created_at)
+			VALUES (?1,?2,'cap-test','ctx','dec','rationale',?3)`,
+			decisionIDs[i].String(), sqWsID.String(), sqliteTimeArg(old.Add(time.Duration(i)*time.Hour))); err != nil {
+			t.Fatalf("seed SQLite decision[%d]: %v", i, err)
+		}
+	}
+
+	sqProps := &stubProposalStore{}
+	sqSc := &Scheduler{
+		cognitiveDeps: &cognitiveDeps{
+			proposal:                      sqProps,
+			workspaceID:                   &sqWsID,
+			sqlite:                        sqlite.NewCognitiveJobsStore(sqDB),
+			decisionOutcomeReviewDailyCap: testCap,
+		},
+	}
+	sqSc.runDecisionOutcomeReview()
+
+	if len(sqProps.created) != testCap {
+		t.Fatalf("expected exactly %d proposals (daily cap), got %d", testCap, len(sqProps.created))
+	}
+
+	seen := map[string]int{}
+	for _, p := range sqProps.created {
+		var payload proposal.TaskPayload
+		if err := json.Unmarshal(p.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		seen[payload.SourceEntityID]++
+	}
+	for i := 0; i < testCap; i++ {
+		if seen[decisionIDs[i].String()] != 1 {
+			t.Errorf("expected oldest decision[%d]=%s to have a proposal, got count=%d", i, decisionIDs[i], seen[decisionIDs[i].String()])
+		}
+	}
+	for i := testCap; i < total; i++ {
+		if seen[decisionIDs[i].String()] != 0 {
+			t.Errorf("expected newest decision[%d]=%s to be skipped this run (cap), got count=%d", i, decisionIDs[i], seen[decisionIDs[i].String()])
+		}
 	}
 }
 

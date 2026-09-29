@@ -17,8 +17,10 @@ MCP 設定裡寫的是 `http://127.0.0.1:<port>/mcp`,很容易看到就一路追
 
 代價是**那個故障現在是安靜的**:以前 Discord 掛會讓部署 FAILED,現在只會變成一個欄位。那個欄位是唯一的替代訊號:
 
+`$RAILWAY_PUBLIC_DOMAIN` 取值(唯讀,不會誤觸發新網域):`railway variables --json | jq -r '.RAILWAY_PUBLIC_DOMAIN'`
+
 ```bash
-curl -s -H "X-API-Key: $API_KEY" https://wayneblacktea-production.up.railway.app/api/health/discord
+curl -s -H "X-API-Key: $API_KEY" https://$RAILWAY_PUBLIC_DOMAIN/api/health/discord
 ```
 
 路由註冊在 `cmd/server/main.go:304`,四態 `starting` / `ok` / `degraded` / `unconfigured`,**一律回 200** —— 所以不能用 HTTP 狀態碼判,要讀 body 的 `status` 欄位。它在 `api` group 內,不帶 `X-API-Key` 回 401。

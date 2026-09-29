@@ -119,6 +119,27 @@ func (q *Queries) CountCompletedTasksThisWeek(ctx context.Context, workspaceID p
 	return count, err
 }
 
+const countTasksByProjectAllStatuses = `-- name: CountTasksByProjectAllStatuses :one
+SELECT COUNT(*) FROM tasks
+WHERE project_id = $1
+  AND ($2::uuid IS NULL OR workspace_id = $2)
+`
+
+type CountTasksByProjectAllStatusesParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// COUNT-only twin of ListProjectTasksAllStatuses, same WHERE
+// clause — delete_project's step-1 preview only ever needed len(tasks), not
+// the full rows.
+func (q *Queries) CountTasksByProjectAllStatuses(ctx context.Context, arg CountTasksByProjectAllStatusesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTasksByProjectAllStatuses, arg.ProjectID, arg.WorkspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countWeeklyRelevantTasks = `-- name: CountWeeklyRelevantTasks :one
 SELECT COUNT(*) FROM tasks
 WHERE ($1::uuid IS NULL OR workspace_id = $1)
@@ -825,6 +846,71 @@ type UpdateTaskStatusParams struct {
 
 func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error) {
 	row := q.db.QueryRow(ctx, updateTaskStatus, arg.Status, arg.ID, arg.WorkspaceID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.Assignee,
+		&i.DueDate,
+		&i.Artifact,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+		&i.Importance,
+		&i.Context,
+		&i.Checklist,
+		&i.Kind,
+		&i.BranchName,
+		&i.PRUrl,
+		&i.CommitSHAs,
+		&i.VisionItemID,
+		&i.Area,
+	)
+	return i, err
+}
+
+const updateTaskStatusGuarded = `-- name: UpdateTaskStatusGuarded :one
+UPDATE tasks SET status = $1, updated_at = NOW()
+WHERE id = $2
+  AND status = $3
+  AND ($1::text <> 'in_progress' OR btrim(COALESCE(assignee, ''), $4::text) <> '')
+  AND ($5::uuid IS NULL OR workspace_id = $5)
+RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id, area
+`
+
+type UpdateTaskStatusGuardedParams struct {
+	Status         string      `json:"status"`
+	ID             uuid.UUID   `json:"id"`
+	ExpectedStatus string      `json:"expected_status"`
+	SpaceChars     string      `json:"space_chars"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+}
+
+// Conditional UPDATE closing the TOCTOU window between a caller's
+// read and this write (e7468e5d sub-item 2): only writes when the row's
+// CURRENT status still equals expected_status. Returns pgx.ErrNoRows both
+// when no row matches id at all AND when a row matches id but its status
+// has since diverged from expected_status — the caller (UpdateTaskStatusGuarded
+// in store.go) re-reads to distinguish "not found" from "conflict".
+//
+// The assignee clause closes a second TOCTOU window: the caller's Go-layer
+// assignee pre-read (RequireAssigneeForInProgress) only sees the row as of
+// the read, not as of this write. sqlc.arg('space_chars') is
+// gtd.AssigneeSpaceChars, so btrim's blank definition matches Go's
+// strings.TrimSpace character-for-character (plain, no-argument TRIM only
+// strips ASCII space).
+func (q *Queries) UpdateTaskStatusGuarded(ctx context.Context, arg UpdateTaskStatusGuardedParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskStatusGuarded,
+		arg.Status,
+		arg.ID,
+		arg.ExpectedStatus,
+		arg.SpaceChars,
+		arg.WorkspaceID,
+	)
 	var i Task
 	err := row.Scan(
 		&i.ID,

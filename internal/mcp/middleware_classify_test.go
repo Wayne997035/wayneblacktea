@@ -176,6 +176,15 @@ func (m *mockClassifyGTDStore) TasksByProjectAllStatuses(_ context.Context, _ uu
 	return out, nil
 }
 
+// CountTasksByProjectAllStatuses stub — gtd.StoreIface gained this method in
+// this change; mirrors TasksByProjectAllStatuses's fixture above (same
+// "not exercised by these tests" rationale), just returning the count.
+func (m *mockClassifyGTDStore) CountTasksByProjectAllStatuses(_ context.Context, _ uuid.UUID) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.activeTasks), nil
+}
+
 func (m *mockClassifyGTDStore) CreateTask(_ context.Context, p gtd.CreateTaskParams) (*db.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -245,6 +254,14 @@ func (m *mockClassifyGTDStore) CreateGoal(_ context.Context, _ gtd.CreateGoalPar
 }
 
 func (m *mockClassifyGTDStore) UpdateTaskStatus(_ context.Context, _ uuid.UUID, _ gtd.TaskStatus) (*db.Task, error) {
+	return nil, errMockNotImpl
+}
+
+// UpdateTaskStatusGuarded stub — gtd.StoreIface gained this method in this
+// change; this file's classification tests never exercise the TOCTOU path.
+func (m *mockClassifyGTDStore) UpdateTaskStatusGuarded(
+	_ context.Context, _ uuid.UUID, _ gtd.TaskStatus, _ gtd.TaskStatus,
+) (*db.Task, error) {
 	return nil, errMockNotImpl
 }
 

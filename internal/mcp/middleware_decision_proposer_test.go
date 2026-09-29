@@ -321,6 +321,35 @@ func TestDecisionProposer_ConfirmProposalTrigger_NoInsert(t *testing.T) {
 	}
 }
 
+// TestDecisionProposer_ReclassifiedDashboardTools_NoInsert covers the three
+// tools F0929-62 moved into discipline.MutatingTools for drift-visibility
+// purposes only (detect_completion_candidates, reconcile_dashboard,
+// closeout_session_check). They MUST still be excluded from the decision
+// proposer: reclassifying a tool as "mutating" for drift counting is not the
+// same as wanting it to trigger an auto-decision draft. [SEC-196-01]
+func TestDecisionProposer_ReclassifiedDashboardTools_NoInsert(t *testing.T) {
+	tools := []string{"detect_completion_candidates", "reconcile_dashboard", "closeout_session_check"}
+	for _, tool := range tools {
+		t.Run(tool, func(t *testing.T) {
+			t.Parallel()
+			disc := &stubProposerDisciplineStore{}
+			prop := &stubProposalStore{}
+			client := &stubDrafterClient{out: `{"title":"x"}`}
+			drafter := ai.NewDecisionDrafter(client)
+			srv := newProposerServer(disc, prop, drafter)
+
+			got := fireProposer(t, srv, tool)
+
+			if len(got) != 0 {
+				t.Errorf("expected 0 proposals (reclassified dashboard tool %q self-trigger), got %d", tool, len(got))
+			}
+			if requests := client.snapshotRequests(); len(requests) != 0 {
+				t.Errorf("expected drafter not called for %q, got %d requests", tool, len(requests))
+			}
+		})
+	}
+}
+
 func TestDecisionProposer_DisciplineError_NoInsert_NoCrash(t *testing.T) {
 	t.Parallel()
 	disc := &stubProposerDisciplineStore{err: errors.New("db down")}

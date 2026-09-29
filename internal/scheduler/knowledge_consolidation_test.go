@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -209,8 +210,12 @@ func TestRunKnowledgeConsolidation_ReflectorError(t *testing.T) {
 }
 
 // TestRunKnowledgeConsolidation_ProposalStoreError verifies that a DB write
-// failure for one proposal is logged and skipped without aborting.
+// failure for one proposal is logged (own message/field shape —
+// "tags"/"title", not runProposalLoop's "item_id" template, proploop spec
+// Acceptance criteria) and skipped without aborting.
 func TestRunKnowledgeConsolidation_ProposalStoreError(t *testing.T) {
+	buf := captureSlogWarn(t)
+
 	items := makeKnowledgeItems([]string{"go", "testing"}, 3)
 	ks := &stubKnowledgeStore{items: items}
 	ps := &stubProposalStore{createErr: errors.New("DB write failed")}
@@ -225,6 +230,62 @@ func TestRunKnowledgeConsolidation_ProposalStoreError(t *testing.T) {
 
 	if len(ps.created) != 0 {
 		t.Errorf("expected 0 proposals on DB write error, got %d", len(ps.created))
+	}
+
+	// sharedTags order is map-iteration-derived (non-deterministic) — assert
+	// substrings independent of tag order.
+	out := buf.String()
+	if !containsStr(out, "knowledge consolidation: creating pending proposal failed") {
+		t.Errorf("warn output missing expected message, got: %s", out)
+	}
+	if !containsStr(out, "tags=") {
+		t.Errorf("warn output missing tags field, got: %s", out)
+	}
+	if !containsStr(out, "go") || !containsStr(out, "testing") {
+		t.Errorf("warn output missing shared tag values, got: %s", out)
+	}
+	if !containsStr(out, "title=t") {
+		t.Errorf("warn output missing title field, got: %s", out)
+	}
+	if containsStr(out, "item_id=") {
+		t.Errorf("warn output must NOT contain item_id= (runProposalLoop's template), got: %s", out)
+	}
+}
+
+// TestRunKnowledgeConsolidation_PayloadFieldMapping is a characterization
+// test written BEFORE refactoring runKnowledgeConsolidation's inner
+// propose+log tail to use runProposalTail (F0929-71) — asserts the exact
+// Title/Content/Tags 1:1 mapping (all 3 fields individually) so a field swap
+// would be caught.
+func TestRunKnowledgeConsolidation_PayloadFieldMapping(t *testing.T) {
+	items := makeKnowledgeItems([]string{"go", "testing", "ci"}, 3)
+	ks := &stubKnowledgeStore{items: items}
+	ps := &stubProposalStore{}
+	reflector := &stubReflector{
+		proposals: []ai.KnowledgeProposal{
+			{Title: "T3", Content: "C3", Tags: []string{"y"}},
+		},
+	}
+
+	deps := makeKnowledgeConsolidationDeps(ks, ps, reflector)
+	runKnowledgeConsolidation(deps)
+
+	if len(ps.created) == 0 {
+		t.Fatal("expected at least 1 proposal created, got 0")
+	}
+	var payload proposal.KnowledgePayload
+	if err := json.Unmarshal(ps.created[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Title != "T3" {
+		t.Errorf("payload.Title = %q, want %q", payload.Title, "T3")
+	}
+	if payload.Content != "C3" {
+		t.Errorf("payload.Content = %q, want %q", payload.Content, "C3")
+	}
+	wantTags := []string{"y"}
+	if len(payload.Tags) != len(wantTags) || payload.Tags[0] != wantTags[0] {
+		t.Errorf("payload.Tags = %v, want %v", payload.Tags, wantTags)
 	}
 }
 

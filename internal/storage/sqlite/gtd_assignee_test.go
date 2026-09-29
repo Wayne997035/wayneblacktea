@@ -3,10 +3,12 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/storage/sqlite"
 )
 
 // TestGTDStore_CreateTask_InvalidAssignee_SQLite verifies the p6-7
@@ -282,4 +284,144 @@ func TestGTDStore_UpdateTask_InProgressWithExistingAssignee_SQLite(t *testing.T)
 	if !updated.Assignee.Valid || updated.Assignee.String != "human" {
 		t.Errorf("assignee = %+v, want preserved \"human\"", updated.Assignee)
 	}
+}
+
+// assertGuardedUpdateRejectsBlankSQLite seeds title as a pending task with
+// the given raw assignee via CreateTask (which stores blank/whitespace-only
+// values unchanged — TrimSpace-empty skips NormalizeActor, see CreateTask's
+// assignee handling — the same way a concurrent writer could produce them),
+// then asserts the guarded UPDATE's own WHERE clause alone rejects it:
+// sqlite.ExecUpdateTaskStatusGuardedSQLForTest affects 0 rows and the row
+// stays pending. Shared by
+// TestGTDStore_UpdateTaskStatusGuarded_SQLRejectsBlankAssignee_SQLite's
+// fixed case table and its full-AssigneeSpaceChars-charset sweep so gocyclo
+// counts one function instead of two duplicated branch chains.
+func assertGuardedUpdateRejectsBlankSQLite(t *testing.T, s *sqlite.GTDStore, ctx context.Context, title, assignee string) {
+	t.Helper()
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: title, Assignee: assignee})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected, err := sqlite.ExecUpdateTaskStatusGuardedSQLForTest(s, ctx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+	if err != nil {
+		t.Fatalf("ExecUpdateTaskStatusGuardedSQLForTest: %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("rowsAffected = %d, want 0 (blank assignee must not reach in_progress)", affected)
+	}
+
+	reread, rerr := s.GetTaskByID(ctx, task.ID)
+	if rerr != nil {
+		t.Fatalf("GetTaskByID: %v", rerr)
+	}
+	if reread.Status != taskStatusPending {
+		t.Errorf("status = %q, want pending", reread.Status)
+	}
+}
+
+// TestGTDStore_UpdateTaskStatusGuarded_SQLRejectsBlankAssignee_SQLite
+// verifies the guarded UPDATE's own WHERE clause — not just the Go pre-read
+// in UpdateTaskStatusGuarded — rejects every blank-assignee variant
+// RequireAssigneeForInProgress rejects, plus (in the full-charset sweep
+// below) every single rune in AssigneeSpaceChars individually, since SV r3
+// only verified the charset against the system sqlite3 CLI, not the actual
+// modernc.org/sqlite driver this backend runs in production.
+func TestGTDStore_UpdateTaskStatusGuarded_SQLRejectsBlankAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	tab := string(rune(0x09))
+	asciiSpace := " "
+	ideographicSpace := string(rune(0x3000)) // U+3000, CJK fullwidth space
+
+	cases := []struct {
+		name     string
+		assignee string // "" seeds NULL/empty (CreateTask collapses both)
+	}{
+		{name: "null/empty", assignee: ""},
+		{name: "tab", assignee: tab},
+		{name: "ascii space", assignee: asciiSpace},
+		{name: "ideographic space U+3000", assignee: ideographicSpace},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertGuardedUpdateRejectsBlankSQLite(t, s, ctx, "blank assignee sql "+tc.name, tc.assignee)
+		})
+	}
+
+	t.Run("legit actor succeeds", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "legit assignee sql", Assignee: "claude"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		affected, err := sqlite.ExecUpdateTaskStatusGuardedSQLForTest(s, ctx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+		if err != nil {
+			t.Fatalf("ExecUpdateTaskStatusGuardedSQLForTest: %v", err)
+		}
+		if affected != 1 {
+			t.Fatalf("rowsAffected = %d, want 1", affected)
+		}
+	})
+
+	// Full-charset sweep: SV r3 verified all 25 unicode.IsSpace runes trim
+	// correctly against the system sqlite3 CLI, but production runs
+	// modernc.org/sqlite, which had never been exercised against the full
+	// AssigneeSpaceChars set. One rune at a time so a single divergent rune
+	// fails its own subtest instead of being masked by the others.
+	t.Run("full AssigneeSpaceChars charset", func(t *testing.T) {
+		for _, r := range gtd.AssigneeSpaceChars {
+			t.Run(fmt.Sprintf("U+%04X", r), func(t *testing.T) {
+				assertGuardedUpdateRejectsBlankSQLite(t, s, ctx, fmt.Sprintf("charset sweep U+%04X", r), string(r))
+			})
+		}
+	})
+}
+
+// TestGTDStore_UpdateTaskStatusGuarded_RequiresAssignee_SQLite verifies the
+// method itself (Go pre-read + SQL layer together) rejects a
+// pending->in_progress transition when the task has no assignee, and
+// succeeds when it does.
+func TestGTDStore_UpdateTaskStatusGuarded_RequiresAssignee_SQLite(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	t.Run("no assignee rejected", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "guarded unowned"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		_, err = s.UpdateTaskStatusGuarded(ctx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+		if !errors.Is(err, gtd.ErrAssigneeRequiredForInProgress) {
+			t.Fatalf("UpdateTaskStatusGuarded err = %v, want gtd.ErrAssigneeRequiredForInProgress", err)
+		}
+
+		reread, rerr := s.GetTaskByID(ctx, task.ID)
+		if rerr != nil {
+			t.Fatalf("GetTaskByID: %v", rerr)
+		}
+		if reread.Status != taskStatusPending {
+			t.Errorf("status = %q, want pending", reread.Status)
+		}
+	})
+
+	t.Run("with assignee succeeds", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "guarded owned", Assignee: "human"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		got, err := s.UpdateTaskStatusGuarded(ctx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+		if err != nil {
+			t.Fatalf("UpdateTaskStatusGuarded: %v", err)
+		}
+		if got.Status != statusInProgress {
+			t.Errorf("status = %q, want in_progress", got.Status)
+		}
+	})
 }

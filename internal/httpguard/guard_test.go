@@ -304,3 +304,84 @@ func TestNewSafeHTTPClient_RedirectBlocked(t *testing.T) {
 		t.Error("expected nil response when SSRF-blocked, got non-nil")
 	}
 }
+
+// TestIsBlockedIP_CGNAT verifies RFC 6598 carrier-grade NAT shared address
+// space (100.64.0.0/10) is blocked, with a boundary check just outside the
+// range to prove the match isn't overbroad. [F0929-68]
+func TestIsBlockedIP_CGNAT(t *testing.T) {
+	t.Parallel()
+
+	t.Run("100.64.0.1", func(t *testing.T) {
+		t.Parallel()
+		ip := net.ParseIP("100.64.0.1")
+		blocked, reason := httpguard.IsBlockedIP(ip)
+		if !blocked {
+			t.Fatalf("IsBlockedIP(100.64.0.1) = false, want true")
+		}
+		if reason != "RFC 6598 shared address space (carrier-grade NAT)" {
+			t.Errorf("reason = %q, want %q", reason, "RFC 6598 shared address space (carrier-grade NAT)")
+		}
+	})
+	t.Run("100.63.255.255_just_outside_range", func(t *testing.T) {
+		t.Parallel()
+		ip := net.ParseIP("100.63.255.255")
+		blocked, reason := httpguard.IsBlockedIP(ip)
+		if blocked {
+			t.Errorf("IsBlockedIP(100.63.255.255) = true (reason=%q), want false — just outside /10", reason)
+		}
+	})
+}
+
+// TestIsBlockedIP_BenchmarkRange verifies the RFC 2544 benchmark testing
+// range (198.18.0.0/15) is blocked, with a boundary check just outside it.
+// [F0929-68]
+func TestIsBlockedIP_BenchmarkRange(t *testing.T) {
+	t.Parallel()
+
+	t.Run("198.18.0.1", func(t *testing.T) {
+		t.Parallel()
+		ip := net.ParseIP("198.18.0.1")
+		blocked, reason := httpguard.IsBlockedIP(ip)
+		if !blocked {
+			t.Fatalf("IsBlockedIP(198.18.0.1) = false, want true")
+		}
+		if reason != "RFC 2544 benchmark testing range" {
+			t.Errorf("reason = %q, want %q", reason, "RFC 2544 benchmark testing range")
+		}
+	})
+	t.Run("198.17.255.255_just_outside_range", func(t *testing.T) {
+		t.Parallel()
+		ip := net.ParseIP("198.17.255.255")
+		blocked, reason := httpguard.IsBlockedIP(ip)
+		if blocked {
+			t.Errorf("IsBlockedIP(198.17.255.255) = true (reason=%q), want false — just outside /15", reason)
+		}
+	})
+}
+
+// TestIsBlockedIP_NAT64Prefix verifies the RFC 6052 NAT64 well-known prefix
+// (64:ff9b::/96, IPv4-embedded IPv6) is blocked regardless of the embedded
+// IPv4 address, with a boundary check one bit outside the /96. [F0929-68]
+func TestIsBlockedIP_NAT64Prefix(t *testing.T) {
+	t.Parallel()
+
+	t.Run("64:ff9b::7f00:1_embeds_127.0.0.1", func(t *testing.T) {
+		t.Parallel()
+		ip := net.ParseIP("64:ff9b::7f00:1")
+		blocked, reason := httpguard.IsBlockedIP(ip)
+		if !blocked {
+			t.Fatalf("IsBlockedIP(64:ff9b::7f00:1) = false, want true")
+		}
+		if reason != "RFC 6052 NAT64 well-known prefix (IPv4-embedded IPv6)" {
+			t.Errorf("reason = %q, want %q", reason, "RFC 6052 NAT64 well-known prefix (IPv4-embedded IPv6)")
+		}
+	})
+	t.Run("64:ff9c::7f00:1_one_bit_outside_prefix", func(t *testing.T) {
+		t.Parallel()
+		ip := net.ParseIP("64:ff9c::7f00:1")
+		blocked, reason := httpguard.IsBlockedIP(ip)
+		if blocked {
+			t.Errorf("IsBlockedIP(64:ff9c::7f00:1) = true (reason=%q), want false — outside the /96", reason)
+		}
+	})
+}

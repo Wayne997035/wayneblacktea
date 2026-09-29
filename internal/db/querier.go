@@ -22,6 +22,10 @@ type Querier interface {
 	// silently wiped an already-recorded PR/commit link.
 	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
 	CountCompletedTasksThisWeek(ctx context.Context, workspaceID pgtype.UUID) (int64, error)
+	// COUNT-only twin of ListProjectTasksAllStatuses, same WHERE
+	// clause — delete_project's step-1 preview only ever needed len(tasks), not
+	// the full rows.
+	CountTasksByProjectAllStatuses(ctx context.Context, arg CountTasksByProjectAllStatusesParams) (int64, error)
 	// Returns count of tasks that are "relevant to this week":
 	// (1) completed this week, OR
 	// (2) pending/in_progress AND (due_date this week OR created this week)
@@ -104,6 +108,20 @@ type Querier interface {
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)
 	UpdateReviewSchedule(ctx context.Context, arg UpdateReviewScheduleParams) (ReviewSchedule, error)
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)
+	// Conditional UPDATE closing the TOCTOU window between a caller's
+	// read and this write (e7468e5d sub-item 2): only writes when the row's
+	// CURRENT status still equals expected_status. Returns pgx.ErrNoRows both
+	// when no row matches id at all AND when a row matches id but its status
+	// has since diverged from expected_status — the caller (UpdateTaskStatusGuarded
+	// in store.go) re-reads to distinguish "not found" from "conflict".
+	//
+	// The assignee clause closes a second TOCTOU window: the caller's Go-layer
+	// assignee pre-read (RequireAssigneeForInProgress) only sees the row as of
+	// the read, not as of this write. sqlc.arg('space_chars') is
+	// gtd.AssigneeSpaceChars, so btrim's blank definition matches Go's
+	// strings.TrimSpace character-for-character (plain, no-argument TRIM only
+	// strips ASCII space).
+	UpdateTaskStatusGuarded(ctx context.Context, arg UpdateTaskStatusGuardedParams) (Task, error)
 	// path/description/language/current_branch/next_planned_step are
 	// presence-aware: the CASE checks the
 	// bound PARAMETER ($2/$3/$4/$5/$7), not EXCLUDED.<col> (which post-INSERT is

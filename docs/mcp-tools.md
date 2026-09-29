@@ -210,6 +210,8 @@ No args. Returns up to 50 due concepts with FSRS state fields.
 ### `system_health`
 Optional: `recent_calls` (default 20), `stuck_threshold_hours` (default 4). Returns counts, stuck tasks, forgotten signals.
 
+Read-only: causes zero DB writes. In `discipline.DeliberatelyExcludedTools` — does not count toward `discipline.drift_count_24h`.
+
 ---
 
 ### `sync_repo`
@@ -445,6 +447,8 @@ Optional `parent_id` (UUID).
 
 ### `outline_knowledge`
 
+**DEPRECATED**: prefer `navigate_knowledge(parent_id=item_id)` — same effect, kept for compatibility.
+
 Returns the full heading tree for a root knowledge document — useful as a table of contents before choosing which section to read. Returns no content, only headings ordered by level.
 
 `item_id` (UUID of the root knowledge item) required.
@@ -489,6 +493,8 @@ Partially updates a checklist item (done flag, title, notes, evidence_url). Retu
 `task_id`, `item_id`, and `done` (boolean) required. Optional `evidence_url` (max 2000 chars) — URL or note proving the item is done.
 
 ### `task_checklist_complete`
+
+**DEPRECATED**: prefer `task_checklist_toggle(item_id, done=true)` — same effect, kept for compatibility.
 
 Shorthand for marking a checklist item `done=true` and recording `completed_at=now`. Returns the full updated checklist.
 
@@ -595,17 +601,23 @@ Runs 8 persisted + 1 live self-monitoring detections against live store data (st
 
 Optional `stuck_threshold_hours` (default 4) — tasks in_progress longer than this are flagged stuck.
 
+Writes `discipline_events_m8` rows. In `discipline.MutatingTools` — counts toward `discipline.drift_count_24h`.
+
 ### `detect_unclosed_loops`
 
 Returns all open `discipline_events_m8` rows (`resolved_at IS NULL`) scoped to the current workspace. Each entry is a self-monitoring signal that has not yet been acknowledged.
 
 No args.
 
+Read-only: causes zero DB writes. In `discipline.DeliberatelyExcludedTools` — does not count toward `discipline.drift_count_24h`.
+
 ### `mark_loop_resolved`
 
 Marks a discipline event as resolved by its UUID. Call this after you have addressed the underlying issue surfaced by `analyze_agent_behavior`.
 
 `event_id` required.
+
+Writes `discipline_events_m8.resolved_at`. In `discipline.MutatingTools` — counts toward `discipline.drift_count_24h`.
 
 ---
 
@@ -662,6 +674,8 @@ Aggregates session-end checks into one actionable closeout report: open in_progr
 
 No args. Read-heavy aggregation that also performs one best-effort `activity_log` write per call (`_ = s.gtd.LogActivity(...)` — errors ignored).
 
+[F0929-62] In `discipline.MutatingTools` (moved from `DeliberatelyExcludedTools`) — counts toward `discipline.drift_count_24h`.
+
 ---
 
 ### `detect_completion_candidates`
@@ -670,11 +684,15 @@ Scans tasks and activity_log to surface tasks that appear done but GTD status is
 
 Optional `stale_threshold_hours` (default 24, range 1-168). Optional `lookback_days` (default 7, max 30).
 
+[F0929-62] In `discipline.MutatingTools` (moved from `DeliberatelyExcludedTools`) — counts toward `discipline.drift_count_24h`.
+
 ### `reconcile_dashboard`
 
 Runs all completion-candidate detection rules and returns a full automation-health snapshot including stale tasks, candidates, proposal backlog, and missing-handoff status. Does NOT mutate tasks.
 
-No args. Note: it still writes `completion_candidates` rows via the same `DetectAndUpsert` call used by `detect_completion_candidates` — "does not mutate tasks" refers only to the GTD `tasks` table.
+No args. Note: it still writes `completion_candidates` rows via the same `DetectAndUpsert` call used by `detect_completion_candidates`, plus one `activity_log` row (`action="dashboard:reconciled"`) on success — "does not mutate tasks" refers only to the GTD `tasks` table.
+
+[F0929-62] In `discipline.MutatingTools` (moved from `DeliberatelyExcludedTools`) — counts toward `discipline.drift_count_24h`.
 
 ---
 

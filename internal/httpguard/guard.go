@@ -269,6 +269,9 @@ func init() {
 		{"::/128", "IPv6 unspecified address"},
 		{"fc00::/7", "IPv6 unique-local (RFC 4193)"},
 		{"fe80::/10", "IPv6 link-local"},
+		{"100.64.0.0/10", "RFC 6598 shared address space (carrier-grade NAT)"}, // [F0929-68]
+		{"198.18.0.0/15", "RFC 2544 benchmark testing range"},
+		{"64:ff9b::/96", "RFC 6052 NAT64 well-known prefix (IPv4-embedded IPv6)"},
 		// NOTE: do NOT add `::ffff:0:0/96` here. Go's net.ParseIP normalizes
 		// IPv4-mapped IPv6 addresses to their plain IPv4 form before reaching
 		// IsBlockedIP, so legitimate IPv4-mapped inputs are already caught by

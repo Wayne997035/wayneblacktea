@@ -246,23 +246,26 @@ func (p *postgresServerStores) DisciplineEventStore() watchdog.DisciplineEventSt
 	return p.disciplineEventM8Store
 }
 
-// KnowledgePruner / LearningPruner implement the decay.PrunerStore assertion
-// once, here, so cmd/server never type-asserts a backend-specific store.
-// *knowledge.Store and *learning.Store both implement decay.PrunerStore via
-// SoftPruneDecayed (see internal/knowledge/store.go, internal/learning/store.go).
-func (p *postgresServerStores) KnowledgePruner() decay.PrunerStore {
-	if ps, ok := p.Knowledge().(decay.PrunerStore); ok {
+// prunerOrNil narrows s to decay.PrunerStore via a checked type assertion,
+// returning nil instead of panicking when the underlying store doesn't
+// implement SoftPruneDecayed. Shared by both backends' KnowledgePruner/
+// LearningPruner so the ok==false branch — unreachable for either real
+// backend today, since *knowledge.Store and *learning.Store both implement
+// decay.PrunerStore — is unit-testable in isolation via a fake StoreIface.
+func prunerOrNil(s any) decay.PrunerStore {
+	if ps, ok := s.(decay.PrunerStore); ok { // [F0929-65]
 		return ps
 	}
 	return nil
 }
 
-func (p *postgresServerStores) LearningPruner() decay.PrunerStore {
-	if ps, ok := p.Learning().(decay.PrunerStore); ok {
-		return ps
-	}
-	return nil
-}
+// KnowledgePruner / LearningPruner implement the decay.PrunerStore assertion
+// once, here, so cmd/server never type-asserts a backend-specific store.
+// *knowledge.Store and *learning.Store both implement decay.PrunerStore via
+// SoftPruneDecayed (see internal/knowledge/store.go, internal/learning/store.go).
+func (p *postgresServerStores) KnowledgePruner() decay.PrunerStore { return prunerOrNil(p.Knowledge()) }
+
+func (p *postgresServerStores) LearningPruner() decay.PrunerStore { return prunerOrNil(p.Learning()) }
 
 func (p *postgresServerStores) WorkspaceID() *uuid.UUID                    { return p.workspaceID }
 func (p *postgresServerStores) PgxPool() *pgxpool.Pool                     { return p.pool }
@@ -524,19 +527,9 @@ func (s *sqliteServerStores) DisciplineEventStore() watchdog.DisciplineEventStor
 // KnowledgePruner / LearningPruner: see the postgresServerStores doc comment
 // above — same assertion, SQLite-backed. *wbtsqlite.KnowledgeStore and
 // *wbtsqlite.LearningStore implement decay.PrunerStore via SoftPruneDecayed.
-func (s *sqliteServerStores) KnowledgePruner() decay.PrunerStore {
-	if ps, ok := s.Knowledge().(decay.PrunerStore); ok {
-		return ps
-	}
-	return nil
-}
+func (s *sqliteServerStores) KnowledgePruner() decay.PrunerStore { return prunerOrNil(s.Knowledge()) }
 
-func (s *sqliteServerStores) LearningPruner() decay.PrunerStore {
-	if ps, ok := s.Learning().(decay.PrunerStore); ok {
-		return ps
-	}
-	return nil
-}
+func (s *sqliteServerStores) LearningPruner() decay.PrunerStore { return prunerOrNil(s.Learning()) }
 
 func (s *sqliteServerStores) WorkspaceID() *uuid.UUID                    { return s.workspaceID }
 func (s *sqliteServerStores) PgxPool() *pgxpool.Pool                     { return nil }

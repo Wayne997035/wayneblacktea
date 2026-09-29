@@ -132,6 +132,17 @@ flowchart TD
 
 One process serves MCP stdio, HTTP REST, and HTTP MCP — no separate components to run.
 
+SQLite is a functional subset of Postgres, not a parity target: new features land
+Postgres-only, and SQLite exposes whatever functionality already exists there. Where
+SQLite genuinely cannot support an operation (e.g. semantic decision search — the
+`decisions` table has no `embedding` column on SQLite), the store returns an explicit
+sentinel error (`decision.ErrCosineUnsupported`) that callers check with `errors.Is`,
+rather than silently returning an empty result or degrading in a way that looks like
+"no data found." `internal/testutil/conformance` pins the shared behaviours both
+backends DO support — including that specific "PG succeeds, SQLite refuses"
+divergence — so a future change that breaks parity fails a test instead of relying on
+human review.
+
 ## What you get
 
 Once Claude Code is connected to `wbt mcp`, every MCP-capable agent reads and writes the same store:

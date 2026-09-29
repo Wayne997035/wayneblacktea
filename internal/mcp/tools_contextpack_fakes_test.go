@@ -107,6 +107,12 @@ func (noopGTDStore) TasksByProjectAllStatuses(context.Context, uuid.UUID) ([]db.
 	return nil, nil
 }
 
+// CountTasksByProjectAllStatuses stub — gtd.StoreIface gained this method in
+// this change; this fake's own tests never call it.
+func (noopGTDStore) CountTasksByProjectAllStatuses(context.Context, uuid.UUID) (int, error) {
+	return 0, nil
+}
+
 func (noopGTDStore) TasksByDueDateRange(context.Context, time.Time, time.Time) ([]db.Task, error) {
 	return nil, nil
 }
@@ -152,6 +158,14 @@ func (noopGTDStore) CreateGoal(context.Context, gtd.CreateGoalParams) (*db.Goal,
 }
 
 func (noopGTDStore) UpdateTaskStatus(context.Context, uuid.UUID, gtd.TaskStatus) (*db.Task, error) {
+	return nil, nil
+}
+
+// UpdateTaskStatusGuarded stub — gtd.StoreIface gained this method in this
+// change; this fake's own tests never exercise the TOCTOU path.
+func (noopGTDStore) UpdateTaskStatusGuarded(
+	context.Context, uuid.UUID, gtd.TaskStatus, gtd.TaskStatus,
+) (*db.Task, error) {
 	return nil, nil
 }
 
