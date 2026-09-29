@@ -80,11 +80,11 @@ func (s *Server) unknownArgsMiddleware() server.ToolHandlerMiddleware {
 			valid := tool.Tool.InputSchema.Properties
 			var unknown []string
 			for key := range args {
-				if _, ok := valid[key]; !ok { // [F0929-01]
+				if _, ok := valid[key]; !ok {
 					unknown = append(unknown, key)
 				}
 			}
-			if len(unknown) == 0 {
+			if len(unknown) == 0 { // [F0929-01]
 				return next(ctx, req)
 			}
 			sort.Strings(unknown)
