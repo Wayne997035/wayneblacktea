@@ -48,17 +48,28 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
     )
   }
 
+  // Rendered from both returns below so a failed mutation stays visible
+  // even when the pointer has left and the item was never rated.
+  const errorBlock = error && (
+    <span role="alert" className="text-caption" style={{ color: 'var(--color-error)' }}>
+      {t('knowledge.card.rateError')}
+    </span>
+  )
+
   if (value === null && hovered === null) {
     return (
-      <span
-        className="text-caption"
-        style={{ color: 'var(--color-text-disabled)', cursor: 'pointer' }}
-        onMouseEnter={() => setHovered(1)}
-        aria-label="Rate this item"
-      >
-        {/* [F0925-24] */}
-        {t('knowledge.card.rateLabel')}
-      </span>
+      <>
+        <span
+          className="text-caption"
+          style={{ color: 'var(--color-text-disabled)', cursor: 'pointer' }}
+          onMouseEnter={() => setHovered(1)}
+          aria-label="Rate this item"
+        >
+          {/* [F0925-24] */}
+          {t('knowledge.card.rateLabel')}
+        </span>
+        {errorBlock}
+      </>
     )
   }
 
@@ -99,11 +110,7 @@ function InteractiveStarRating({ value, itemId }: InteractiveStarRatingProps) {
           )
         })}
       </span>
-      {error && (
-        <span role="alert" className="text-caption" style={{ color: 'var(--color-error)' }}>
-          {t('knowledge.card.rateError')}
-        </span>
-      )}
+      {errorBlock}
     </>
   )
 }

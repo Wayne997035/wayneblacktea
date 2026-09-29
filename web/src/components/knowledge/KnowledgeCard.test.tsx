@@ -1,7 +1,7 @@
 // [F0925-22] KnowledgeCard's URL link must be guarded through safeHref —
 // a non-allowlisted scheme must not become a clickable link.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { KnowledgeCard } from './KnowledgeCard'
 import type { KnowledgeItem } from '../../types/api'
@@ -101,6 +101,30 @@ describe('KnowledgeCard rating error handling', () => {
     await user.click(screen.getByRole('button', { name: 'Rate 4 out of 5' }))
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows the rating error even when the item was never rated and the pointer has left', async () => {
+    useUpdateKnowledgeMock.mockReturnValue({
+      mutate: vi.fn((_vars, { onError }: { onError: () => void }) => onError()),
+      isPending: false,
+    })
+    const user = userEvent.setup()
+    // Never rated: learning_value is null, so InteractiveStarRating starts
+    // in its early-return branch (just the "Rate this item?" placeholder).
+    render(<KnowledgeCard item={baseItem} />)
+
+    // Hover reveals the star buttons. Fired via fireEvent (not
+    // userEvent.hover) so the branch swap under the cursor doesn't confuse
+    // userEvent's own pointer-position tracking for the click that follows.
+    fireEvent.mouseEnter(screen.getByLabelText('Rate this item'))
+    await user.click(screen.getByRole('button', { name: 'Rate 3 out of 5' }))
+    // Mutation failed, so the rollback leaves learning_value at null. Once
+    // the pointer leaves the star row, hovered also goes back to null, so
+    // the component falls back to the early-return branch.
+    fireEvent.mouseLeave(screen.getByLabelText(/^Learning value:/))
+
+    expect(screen.getByLabelText('Rate this item')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to save your rating. Try again.')
   })
 })
 
