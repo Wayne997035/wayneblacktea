@@ -1582,13 +1582,35 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 // closing the TOCTOU window between a caller's own read and this write
 // (e7468e5d sub-item 2). Mirrors UpdateTaskStatus's SQL shape with one added
 // guard clause.
+// updateTaskStatusGuardedSQL is the conditional UPDATE used by
+// UpdateTaskStatusGuarded below. Package-level (not inline) so
+// export_test.go can run it directly, bypassing the Go pre-read, to prove
+// the assignee clause is load-bearing on its own — see
+// ExecUpdateTaskStatusGuardedSQLForTest.
+//
+// The assignee clause closes the same write-time TOCTOU window as the PG
+// twin (sql/queries/gtd.sql's UpdateTaskStatusGuarded): ?6 is
+// gtd.AssigneeSpaceChars, passed as a parameter so SQLite's two-argument
+// TRIM(X, Y) strips exactly the runes strings.TrimSpace strips — the
+// zero-argument TRIM() only strips ASCII space and would let a
+// tab/NBSP/ideographic-space assignee through.
+const updateTaskStatusGuardedSQL = `UPDATE tasks
+		SET status = ?2, updated_at = ?3
+		WHERE id = ?1
+		  AND status = ?5
+		  AND (?2 <> 'in_progress' OR TRIM(COALESCE(assignee, ''), ?6) <> '')
+		  AND (?4 IS NULL OR workspace_id = ?4)`
+
 func (s *GTDStore) UpdateTaskStatusGuarded(
 	ctx context.Context, id uuid.UUID, newStatus gtd.TaskStatus, expectedCurrentStatus gtd.TaskStatus,
 ) (*db.Task, error) {
 	// Domain-layer gate (P6.7), same as UpdateTaskStatus above — this method
 	// also takes no assignee argument, so it needs the identical
 	// existing-row read to check "does this task have an owner" before
-	// allowing the in_progress transition.
+	// allowing the in_progress transition. This pre-read is a fast-fail
+	// only: the guarded UPDATE's WHERE clause re-checks assignee blankness
+	// (with the same AssigneeSpaceChars charset) at write time, so a
+	// concurrent clear between this read and the UPDATE cannot slip through.
 	if newStatus == gtd.TaskStatusInProgress {
 		existing, err := s.taskByID(ctx, id)
 		if err != nil {
@@ -1603,25 +1625,34 @@ func (s *GTDStore) UpdateTaskStatusGuarded(
 		}
 	}
 
-	const q = `UPDATE tasks
-		SET status = ?2, updated_at = ?3
-		WHERE id = ?1
-		  AND status = ?5
-		  AND (?4 IS NULL OR workspace_id = ?4)`
 	now := nowRFC3339()
-	res, err := s.db.conn.ExecContext(ctx, q,
-		id.String(), string(newStatus), now, s.db.workspaceArg(), string(expectedCurrentStatus))
+	res, err := s.db.conn.ExecContext(ctx, updateTaskStatusGuardedSQL,
+		id.String(), string(newStatus), now, s.db.workspaceArg(), string(expectedCurrentStatus), gtd.AssigneeSpaceChars)
 	if err != nil {
 		return nil, errWrap("UpdateTaskStatusGuarded", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		// Either the row doesn't exist at all, or it exists but its status
-		// has already moved away from expectedCurrentStatus. Re-read to tell
-		// the two apart — the guarded UPDATE itself can only report "nothing
-		// matched."
-		if _, rerr := s.taskByID(ctx, id); rerr != nil {
+		// Zero rows matched for one of three reasons — re-read to tell them
+		// apart:
+		//  1. the row doesn't exist at all -> gtd.ErrNotFound;
+		//  2. it exists, is still expectedCurrentStatus, but assignee is
+		//     blank (the write-time TOCTOU window this method closes) -> the
+		//     same wrapped RequireAssigneeForInProgress error the pre-read
+		//     above returns;
+		//  3. anything else (status already moved) -> gtd.ErrConflict.
+		reread, rerr := s.taskByID(ctx, id)
+		if rerr != nil {
 			return nil, rerr // gtd.ErrNotFound already wrapped
+		}
+		if newStatus == gtd.TaskStatusInProgress {
+			rereadAssignee := ""
+			if reread.Assignee.Valid {
+				rereadAssignee = reread.Assignee.String
+			}
+			if assigneeErr := gtd.RequireAssigneeForInProgress(rereadAssignee, newStatus); assigneeErr != nil {
+				return nil, fmt.Errorf("updating task %s status (guarded): %w", id, assigneeErr)
+			}
 		}
 		return nil, gtd.ErrConflict
 	}

@@ -131,9 +131,17 @@ RETURNING *;
 -- when no row matches id at all AND when a row matches id but its status
 -- has since diverged from expected_status — the caller (UpdateTaskStatusGuarded
 -- in store.go) re-reads to distinguish "not found" from "conflict".
+--
+-- The assignee clause closes a second TOCTOU window: the caller's Go-layer
+-- assignee pre-read (RequireAssigneeForInProgress) only sees the row as of
+-- the read, not as of this write. sqlc.arg('space_chars') is
+-- gtd.AssigneeSpaceChars, so btrim's blank definition matches Go's
+-- strings.TrimSpace character-for-character (plain, no-argument TRIM only
+-- strips ASCII space).
 UPDATE tasks SET status = sqlc.arg('status'), updated_at = NOW()
 WHERE id = sqlc.arg('id')
   AND status = sqlc.arg('expected_status')
+  AND (sqlc.arg('status')::text <> 'in_progress' OR btrim(COALESCE(assignee, ''), sqlc.arg('space_chars')::text) <> '')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
 RETURNING *;
 

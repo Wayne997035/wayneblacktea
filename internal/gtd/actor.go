@@ -92,6 +92,17 @@ var ErrAssigneeRequiredForInProgress = errors.New(
 	"assignee is required when moving a task to in_progress; set assignee on this call or beforehand",
 )
 
+// AssigneeSpaceChars is every rune for which unicode.IsSpace reports true,
+// listed literally (not generated at init) so the guarded-UPDATE SQL can bind
+// it as a plain string parameter to a trim-with-charset function (PG btrim,
+// SQLite TRIM(X,Y)) and match RequireAssigneeForInProgress's
+// strings.TrimSpace check character-for-character — a plain, no-argument SQL
+// TRIM() only strips ASCII space and does not agree with Go's definition.
+// MUST equal the full unicode.IsSpace set; internal/gtd/actor_space_test.go
+// pins this by enumerating 0..unicode.MaxRune and diffing against it.
+const AssigneeSpaceChars = "\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003" +
+	"\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+
 // RequireAssigneeForInProgress enforces that a task cannot be in in_progress
 // status without a non-empty assignee — the domain-layer sink (P6.7) of the
 // guarantee P6.6 first enforced only inside the update_task MCP tool

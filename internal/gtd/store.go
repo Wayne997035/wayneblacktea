@@ -1080,7 +1080,10 @@ func (s *Store) UpdateTaskStatusGuarded(
 	// Domain-layer gate (P6.7), same as UpdateTaskStatus above — this method
 	// also takes no assignee argument, so it needs the identical existing-row
 	// read to check "does this task have an owner" before allowing the
-	// in_progress transition.
+	// in_progress transition. This pre-read is a fast-fail only: the guarded
+	// UPDATE's WHERE clause re-checks assignee blankness (with the same
+	// AssigneeSpaceChars charset) at write time, so a concurrent clear
+	// between this read and the UPDATE cannot slip through.
 	if newStatus == TaskStatusInProgress {
 		existing, err := s.getTaskByID(ctx, id)
 		if err != nil {
@@ -1099,16 +1102,32 @@ func (s *Store) UpdateTaskStatusGuarded(
 		ID:             id,
 		Status:         string(newStatus),
 		ExpectedStatus: string(expectedCurrentStatus),
+		SpaceChars:     AssigneeSpaceChars,
 		WorkspaceID:    s.workspaceID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) { // [F0929-58] no row was updated by the guarded UPDATE
-			// Either the row doesn't exist at all, or it exists but its status
-			// has already moved away from expectedCurrentStatus — the guarded
-			// UPDATE itself cannot distinguish the two, it can only report
-			// "nothing matched." Re-read to tell them apart.
-			if _, rereadErr := s.getTaskByID(ctx, id); rereadErr != nil {
+			// Zero rows matched for one of three reasons — re-read to tell
+			// them apart:
+			//  1. the row doesn't exist at all -> ErrNotFound;
+			//  2. it exists, is still expectedCurrentStatus, but assignee is
+			//     blank (the write-time TOCTOU window this method closes) ->
+			//     the same wrapped RequireAssigneeForInProgress error the
+			//     pre-read above returns, so tools_gtd.go's error mapping is
+			//     unchanged regardless of which check caught it;
+			//  3. anything else (status already moved) -> ErrConflict.
+			reread, rereadErr := s.getTaskByID(ctx, id)
+			if rereadErr != nil {
 				return nil, rereadErr // ErrNotFound already wrapped by getTaskByID
+			}
+			if newStatus == TaskStatusInProgress {
+				rereadAssignee := ""
+				if reread.Assignee.Valid {
+					rereadAssignee = reread.Assignee.String
+				}
+				if assigneeErr := RequireAssigneeForInProgress(rereadAssignee, newStatus); assigneeErr != nil { // [SEC-196-02]
+					return nil, fmt.Errorf("updating task %s status (guarded): %w", id, assigneeErr)
+				}
 			}
 			return nil, ErrConflict
 		}

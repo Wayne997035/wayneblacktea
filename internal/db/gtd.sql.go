@@ -877,7 +877,8 @@ const updateTaskStatusGuarded = `-- name: UpdateTaskStatusGuarded :one
 UPDATE tasks SET status = $1, updated_at = NOW()
 WHERE id = $2
   AND status = $3
-  AND ($4::uuid IS NULL OR workspace_id = $4)
+  AND ($1::text <> 'in_progress' OR btrim(COALESCE(assignee, ''), $4::text) <> '')
+  AND ($5::uuid IS NULL OR workspace_id = $5)
 RETURNING id, project_id, title, description, status, priority, assignee, due_date, artifact, created_at, updated_at, workspace_id, importance, context, checklist, kind, branch_name, pr_url, commit_shas, vision_item_id, area
 `
 
@@ -885,6 +886,7 @@ type UpdateTaskStatusGuardedParams struct {
 	Status         string      `json:"status"`
 	ID             uuid.UUID   `json:"id"`
 	ExpectedStatus string      `json:"expected_status"`
+	SpaceChars     string      `json:"space_chars"`
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 }
 
@@ -894,11 +896,19 @@ type UpdateTaskStatusGuardedParams struct {
 // when no row matches id at all AND when a row matches id but its status
 // has since diverged from expected_status — the caller (UpdateTaskStatusGuarded
 // in store.go) re-reads to distinguish "not found" from "conflict".
+//
+// The assignee clause closes a second TOCTOU window: the caller's Go-layer
+// assignee pre-read (RequireAssigneeForInProgress) only sees the row as of
+// the read, not as of this write. sqlc.arg('space_chars') is
+// gtd.AssigneeSpaceChars, so btrim's blank definition matches Go's
+// strings.TrimSpace character-for-character (plain, no-argument TRIM only
+// strips ASCII space).
 func (q *Queries) UpdateTaskStatusGuarded(ctx context.Context, arg UpdateTaskStatusGuardedParams) (Task, error) {
 	row := q.db.QueryRow(ctx, updateTaskStatusGuarded,
 		arg.Status,
 		arg.ID,
 		arg.ExpectedStatus,
+		arg.SpaceChars,
 		arg.WorkspaceID,
 	)
 	var i Task

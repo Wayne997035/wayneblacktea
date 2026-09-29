@@ -114,6 +114,13 @@ type Querier interface {
 	// when no row matches id at all AND when a row matches id but its status
 	// has since diverged from expected_status — the caller (UpdateTaskStatusGuarded
 	// in store.go) re-reads to distinguish "not found" from "conflict".
+	//
+	// The assignee clause closes a second TOCTOU window: the caller's Go-layer
+	// assignee pre-read (RequireAssigneeForInProgress) only sees the row as of
+	// the read, not as of this write. sqlc.arg('space_chars') is
+	// gtd.AssigneeSpaceChars, so btrim's blank definition matches Go's
+	// strings.TrimSpace character-for-character (plain, no-argument TRIM only
+	// strips ASCII space).
 	UpdateTaskStatusGuarded(ctx context.Context, arg UpdateTaskStatusGuardedParams) (Task, error)
 	// path/description/language/current_branch/next_planned_step are
 	// presence-aware: the CASE checks the
