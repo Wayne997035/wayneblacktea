@@ -113,7 +113,7 @@ func TestWatchdog_CountByTool(t *testing.T) {
 
 // TestWatchdog_SanitizesErrText verifies record() strips control and
 // invisible-formatting characters from a Go-level error before it enters
-// the ring buffer. [F0929-30]
+// the ring buffer.
 func TestWatchdog_SanitizesErrText(t *testing.T) {
 	w := watchdog.New(10)
 	mw := w.Middleware()
@@ -182,7 +182,7 @@ func TestWatchdog_TruncatesLongErrText(t *testing.T) {
 
 // TestWatchdog_SanitizesToolResultErrText verifies the errTextFromResult
 // path (mcp.NewToolResultError) is sanitized identically to the Go-error
-// path. [F0929-30]
+// path.
 func TestWatchdog_SanitizesToolResultErrText(t *testing.T) {
 	w := watchdog.New(10)
 	mw := w.Middleware()
@@ -205,7 +205,7 @@ func TestWatchdog_SanitizesToolResultErrText(t *testing.T) {
 
 // TestWatchdog_CallerReceivesOriginalError verifies Middleware() still
 // returns the unsanitized, untruncated error to the caller — only the
-// watchdog's own copy is sanitized. [F0929-30]
+// watchdog's own copy is sanitized.
 func TestWatchdog_CallerReceivesOriginalError(t *testing.T) {
 	w := watchdog.New(10)
 	mw := w.Middleware()
