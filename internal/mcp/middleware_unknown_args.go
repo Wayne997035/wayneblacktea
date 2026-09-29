@@ -137,11 +137,12 @@ func (s *Server) unknownArgsMiddleware() server.ToolHandlerMiddleware {
 // rejection message; unknownArgKeyMaxRunes caps each individual key's
 // length before that. [SEC-194-01]: an unknown key reaches this middleware
 // straight from req.GetArguments(), before any validation, so it is
-// caller-controlled — and the resulting message is persisted verbatim by
-// disciplineMiddleware (into discipline_events) and returned verbatim by
-// system_health (tools_health.go). Without these caps a caller could
-// smuggle unbounded or control-character content through what looks like
-// an ordinary rejected tool call.
+// caller-controlled — and the resulting message is a rejected CallToolResult
+// whose text watchdog's record() stores verbatim (ErrText, in its
+// recent-calls ring buffer) and system_health (tools_health.go) later
+// returns verbatim as part of that buffer. Without these caps a caller
+// could smuggle unbounded or control-character content through what looks
+// like an ordinary rejected tool call.
 const (
 	unknownArgMaxListed   = 10
 	unknownArgKeyMaxRunes = 64
