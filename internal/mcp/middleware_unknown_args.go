@@ -13,16 +13,16 @@ import (
 
 // unknownArgsMiddleware rejects a tools/call whose top-level arguments
 // contain any key the target tool never declared in its InputSchema.
-// [F0929-01] closes a silent-drop bug: complete_task called with
-// artifact_url instead of the declared artifact used to report success with
-// artifact left empty, because neither decodeToolArgs (toolspec.go) nor the
-// ~72 legacy handlers reading req.GetArguments() directly ever look at keys
-// they were not told to read. A misspelled argument therefore behaved
-// exactly like an omitted one — silently, not as a rejected call.
+// Closes a silent-drop bug: complete_task called with artifact_url instead
+// of the declared artifact used to report success with artifact left empty,
+// because neither decodeToolArgs (toolspec.go) nor the ~72 legacy handlers
+// reading req.GetArguments() directly ever look at keys they were not told
+// to read. A misspelled argument therefore behaved exactly like an omitted
+// one — silently, not as a rejected call.
 //
-// mcp-go applies server.ToolHandlerMiddleware in reverse registration order
-// (server/server.go handleToolCall: `for i := len(mw) - 1; i >= 0; i--`),
-// so the LAST middleware appended in MCPServer() ends up wrapped directly
+// mcp-go's handleToolCall applies server.ToolHandlerMiddleware in reverse
+// registration order (`for i := len(mw) - 1; i >= 0; i--`), so the LAST
+// middleware appended in MCPServer() ends up wrapped directly
 // around the tool's own handler — the innermost layer, run right before the
 // real handler and right after every outer middleware has already run its
 // "before next()" half. unknownArgsMiddleware is registered last (server.go,
@@ -80,7 +80,7 @@ func (s *Server) unknownArgsMiddleware() server.ToolHandlerMiddleware {
 			valid := tool.Tool.InputSchema.Properties
 			var unknown []string
 			for key := range args {
-				if _, ok := valid[key]; !ok {
+				if _, ok := valid[key]; !ok { // [F0929-01]
 					unknown = append(unknown, key)
 				}
 			}
