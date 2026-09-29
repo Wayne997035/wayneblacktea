@@ -4,12 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// wantCompleteTaskUnknownArgText is the exact rejection text
+// unknownArgsMiddleware produces for a complete_task call whose only
+// unknown key is artifact_url: the dispatch ticket fixes the format as
+// "unknown argument(s): <sorted,joined>; valid arguments: <sorted,joined>",
+// and complete_task declares exactly {artifact, task_id} (tools_gtd.go),
+// sorted alphabetically.
+//
+// Asserted with an EXACT match below, not strings.Contains: "artifact_url"
+// itself contains the substring "artifact", so a Contains(text, "artifact")
+// check passes trivially the moment Contains(text, "artifact_url") already
+// passed — it never actually verifies the valid-arguments half of the
+// message is present.
+const wantCompleteTaskUnknownArgText = "unknown argument(s): artifact_url; valid arguments: artifact, task_id"
 
 // unknownArgsRPCResult issues a real tools/call over ms.HandleMessage (same
 // JSON-RPC entry point every transport uses) and returns the tool-level
@@ -90,11 +103,8 @@ func TestUnknownArgsMiddleware_RejectsMisspelledArg(t *testing.T) {
 		t.Fatalf("want a tool error (IsError=true), got %+v", res)
 	}
 	text := extractResultText(res, 2000)
-	if !strings.Contains(text, "artifact_url") {
-		t.Errorf("error text %q does not name the unknown argument artifact_url", text)
-	}
-	if !strings.Contains(text, "artifact") {
-		t.Errorf("error text %q does not name the valid argument artifact", text)
+	if text != wantCompleteTaskUnknownArgText {
+		t.Errorf("error text = %q, want exact %q", text, wantCompleteTaskUnknownArgText)
 	}
 }
 
@@ -213,7 +223,7 @@ func TestUnknownArgsMiddleware_EndToEnd(t *testing.T) {
 	if !isError {
 		t.Fatalf("complete_task with a misspelled artifact_url succeeded through the real MCPServer() wiring: %s", text)
 	}
-	if !strings.Contains(text, "artifact_url") || !strings.Contains(text, "artifact") {
-		t.Errorf("error text %q does not name both artifact_url and artifact", text)
+	if text != wantCompleteTaskUnknownArgText {
+		t.Errorf("error text = %q, want exact %q", text, wantCompleteTaskUnknownArgText)
 	}
 }

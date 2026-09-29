@@ -198,9 +198,11 @@ type Server struct {
 	// ms.GetTool(name) — the middleware closure is constructed before ms
 	// exists (it is one of the ServerOptions passed to
 	// server.NewMCPServer), so it cannot capture ms directly and instead
-	// loads it from this field on every call. atomic.Pointer rather than a
-	// plain field because a hand-constructed &Server{} in a test never calls
-	// MCPServer() and must see a nil Load() rather than a data race.
+	// loads it from this field on every call. The field is written exactly
+	// once (MCPServer(), right after construction) and then read
+	// concurrently by every subsequent tool call the server handles;
+	// atomic.Pointer gives that single-writer/many-concurrent-readers access
+	// pattern a safe Store/Load without a separate mutex.
 	mcpServer atomic.Pointer[server.MCPServer]
 }
 
@@ -532,11 +534,14 @@ func (s *Server) MCPServer() *server.MCPServer {
 		// unknownArgsMiddleware [F0929-01]: innermost middleware, appended
 		// last so it sits directly next to the tool's own handler (mcp-go
 		// wraps middlewares in reverse-registration order — see its doc
-		// comment in middleware_unknown_args.go). Placed innermost so a
-		// rejection here is invisible to the outer middlewares above: both
-		// autoLogMiddleware and decisionProposerMiddleware already skip on
-		// res.IsError, so they do not misrecord a rejected call as a
-		// successful one.
+		// comment in middleware_unknown_args.go). Every middleware registered
+		// above still runs and still sees a rejection on the way back out —
+		// disciplineMiddleware records it as a (mutating, not-ok) event, the
+		// same as it would a real handler failure, which is part of why this
+		// sits innermost rather than outermost. autoLogMiddleware and
+		// decisionProposerMiddleware, also registered above, gate their own
+		// post-next() work on res.IsError being false, so neither of those
+		// two misrecords a rejected call as a successful one.
 		server.WithToolHandlerMiddleware(s.unknownArgsMiddleware()),
 		// Declare resource and prompt capabilities (subscribe=false,
 		// listChanged=false — static read-only resources/prompts only).
@@ -551,11 +556,11 @@ func (s *Server) MCPServer() *server.MCPServer {
 	}
 	ms := server.NewMCPServer("wayneblacktea", buildinfo.EffectiveVersion(), opts...)
 	// Store ms so unknownArgsMiddleware (registered above, evaluated lazily
-	// per call) can look up live tool schemas via ms.GetTool. Must happen
-	// before any tool registration below only in the sense that it must
-	// happen before this function returns — MCPServer() is synchronous and
-	// no tool call can reach the middleware until the returned ms is handed
-	// to a transport by the caller.
+	// per call) can look up live tool schemas via ms.GetTool. This only has
+	// to happen before this function returns, not before the registrations
+	// below: MCPServer() is synchronous, and no tool call can reach the
+	// middleware until the ms it returns is handed to a transport by the
+	// caller.
 	s.mcpServer.Store(ms)
 	s.registerOnboardingTools(ms)
 	s.registerExpandTools(ms)
