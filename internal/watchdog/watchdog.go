@@ -16,8 +16,10 @@ package watchdog
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -69,9 +71,9 @@ func (w *Watchdog) record(toolName string, start time.Time, res *mcp.CallToolRes
 		Success:   err == nil && (res == nil || !res.IsError),
 	}
 	if err != nil {
-		call.ErrText = err.Error()
+		call.ErrText = sanitizeErrText(err.Error())
 	} else if res != nil && res.IsError {
-		call.ErrText = errTextFromResult(res)
+		call.ErrText = sanitizeErrText(errTextFromResult(res))
 	}
 
 	w.mu.Lock()
@@ -91,6 +93,47 @@ func errTextFromResult(res *mcp.CallToolResult) string {
 		}
 	}
 	return "tool returned IsError without text content"
+}
+
+// maxErrTextRunes caps the sanitized copy of a caller-controlled error
+// string kept in the watchdog ring buffer. This is a design cap, not a
+// measured one: Middleware() already returned the full, unsanitized error
+// to the caller before record() runs, so truncating the watchdog's copy
+// loses only tail context visible through system_health, never anything the
+// caller itself depends on.
+const maxErrTextRunes = 512
+
+// sanitizeErrText strips control and invisible-formatting characters from a
+// caller-controlled error string before it enters the watchdog ring buffer
+// (and, downstream, system_health's recent_calls[].err). It is not shared
+// with internal/mcp's sanitizeAuditText: that package imports watchdog (for
+// watchdog.ToolCall), so importing it back here would create an import
+// cycle, and the set stripped here is larger — it also removes U+2028/
+// U+2029 line/paragraph separators and Unicode bidi-control characters,
+// neither of which sanitizeAuditText touches.
+func sanitizeErrText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	n := 0
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r':
+			r = ' '
+		case r == '\t':
+			// preserved as-is; not stripped by the IsControl case below
+		case unicode.IsControl(r), r == ' ', r == ' ', unicode.Is(unicode.Bidi_Control, r):
+			continue
+		}
+		n++
+		if n > maxErrTextRunes { // [F0929-30]
+			return b.String() + "…[truncated]"
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // Recent returns the last n recorded calls, newest last (chronological order).

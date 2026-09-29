@@ -3,6 +3,7 @@ package watchdog_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,118 @@ func TestWatchdog_CountByTool(t *testing.T) {
 	counts := w.CountByTool()
 	if counts["add_task"] != 3 || counts["complete_task"] != 1 {
 		t.Errorf("unexpected counts %v", counts)
+	}
+}
+
+// TestWatchdog_SanitizesErrText verifies record() strips control and
+// invisible-formatting characters from a Go-level error before it enters
+// the ring buffer. [F0929-30]
+func TestWatchdog_SanitizesErrText(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	// Built from runes rather than embedding literal control/invisible
+	// characters in source, per dispatch: an escaped literal is easy to
+	// miss on read.
+	raw := "a" + "\n" + "b" +
+		string(rune(0x1b)) + "[31mc" +
+		string(rune(0x7f)) + "d" +
+		string(rune(0x2028)) + "e" +
+		string(rune(0x202e)) + "f" +
+		"\t" + "g"
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(raw)
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	want := "a b[31mcdef" + "\t" + "g"
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != want {
+		t.Fatalf("expected sanitized ErrText %q, got %+v", want, recent)
+	}
+}
+
+// TestWatchdog_TruncatesLongErrText verifies record() caps ErrText at
+// maxErrTextRunes and marks the cut with a literal "…[truncated]" suffix,
+// and that the boundary case (exactly the cap, no more) is left untouched.
+// [F0929-30]
+func TestWatchdog_TruncatesLongErrText(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	over := strings.Repeat("a", 1000)
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(over)
+	})
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+
+	wantOver := strings.Repeat("a", 512) + "…[truncated]"
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != wantOver {
+		t.Fatalf("expected truncated ErrText %q, got %q", wantOver, recent[0].ErrText)
+	}
+
+	// Boundary: exactly 512 runes, no truncation marker.
+	w2 := watchdog.New(10)
+	mw2 := w2.Middleware()
+	exact := strings.Repeat("a", 512)
+	handler2 := mw2(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(exact)
+	})
+	_, _ = handler2(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+	recent2 := w2.Recent(0)
+	if len(recent2) != 1 || recent2[0].ErrText != exact {
+		t.Fatalf("expected exact-boundary ErrText untouched (512 runes, no marker), got %q", recent2[0].ErrText)
+	}
+}
+
+// TestWatchdog_SanitizesToolResultErrText verifies the errTextFromResult
+// path (mcp.NewToolResultError) is sanitized identically to the Go-error
+// path. [F0929-30]
+func TestWatchdog_SanitizesToolResultErrText(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	raw := "bad" + "\n" + "input" + string(rune(0x1b)) + "[0m"
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultError(raw), nil
+	})
+
+	_, _ = handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "log_decision"},
+	})
+
+	want := "bad input[0m"
+	recent := w.Recent(0)
+	if len(recent) != 1 || recent[0].ErrText != want {
+		t.Fatalf("expected sanitized ErrText %q, got %+v", want, recent)
+	}
+}
+
+// TestWatchdog_CallerReceivesOriginalError verifies Middleware() still
+// returns the unsanitized, untruncated error to the caller — only the
+// watchdog's own copy is sanitized. [F0929-30]
+func TestWatchdog_CallerReceivesOriginalError(t *testing.T) {
+	w := watchdog.New(10)
+	mw := w.Middleware()
+
+	raw := "line one" + "\n" + "line two" + string(rune(0x1b)) + "[31m"
+	handler := mw(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(raw)
+	})
+
+	_, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "complete_task"},
+	})
+	if err == nil || err.Error() != raw {
+		t.Fatalf("expected caller to receive original error %q, got %v", raw, err)
 	}
 }
 
