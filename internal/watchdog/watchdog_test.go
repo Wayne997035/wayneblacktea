@@ -237,7 +237,6 @@ func TestWatchdog_TruncatesLongErrText(t *testing.T) {
 // looping over the full registry rather than a hand-picked subset.
 func TestWatchdog_NeutralizesBoundaryMarkers(t *testing.T) {
 	for _, marker := range safetext.BoundaryMarkers() {
-		marker := marker
 		t.Run(marker, func(t *testing.T) {
 			w := watchdog.New(10)
 			mw := w.Middleware()
