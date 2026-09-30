@@ -8,6 +8,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // stubDisciplineStore is an in-memory test double for discipline.Store. It
@@ -410,12 +411,24 @@ func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
 		)
 	}
 
-	// [F0930-02][F0930-03] Annotation parity: every tool in discipline.ReadOnlyTools
-	// MUST carry readOnlyHint=true/destructiveHint=false on the real,
-	// registered *server.MCPServer (applyReadOnlyAnnotations' actual effect,
-	// not just the source map); every tool outside that set MUST NOT have
-	// readOnlyHint=true (mcp-go's default is false, so a stray true means the
-	// annotation leaked outside its intended set).
+	// [F0930-02][F0930-03] Annotation parity check — extracted to
+	// checkReadOnlyAnnotations below to keep this test's cyclomatic
+	// complexity under the linter's threshold; assertions unchanged.
+	checkReadOnlyAnnotations(t, tools)
+}
+
+// checkReadOnlyAnnotations is [F0930-02][F0930-03]'s annotation-parity
+// check: every tool in discipline.ReadOnlyTools MUST carry
+// readOnlyHint=true/destructiveHint=false on the real, registered
+// *server.MCPServer (applyReadOnlyAnnotations' actual effect, not just the
+// source map); every tool outside that set MUST NOT have readOnlyHint=true
+// (mcp-go's default is false, so a stray true means the annotation leaked
+// outside its intended set). Extracted out of
+// TestMCPServer_AllRegisteredToolsClassified so that test's gocyclo score
+// stays under the linter's threshold — the extraction is structural only,
+// every assertion below is byte-identical to what used to run inline.
+func checkReadOnlyAnnotations(t *testing.T, tools map[string]*mcpserver.ServerTool) {
+	t.Helper()
 	for name, entry := range tools {
 		ro := entry.Tool.Annotations.ReadOnlyHint
 		dh := entry.Tool.Annotations.DestructiveHint
