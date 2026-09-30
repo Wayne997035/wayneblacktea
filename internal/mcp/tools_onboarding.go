@@ -87,10 +87,18 @@ the phase tasks is created separately,
 best-effort, AFTER the transaction commits — a work-session failure never rolls
 back the already-committed tasks/decisions. ALWAYS read the
 response text / is_error instead of assuming success: a success response lists
-every task and decision actually created, and a failure response states exactly
-what was written. A failure whose message says OUTCOME UNKNOWN means the plan
-MAY already be stored — do NOT re-send it; call list_tasks / list_decisions
-first and retry only what is genuinely missing.
+every task and decision actually created, WITH ITS ID (each bullet line reads
+"<title> (id: <uuid>)") — use it directly for update_task/get_task instead of
+a separate list_tasks/list_decisions round trip. A failure response states
+exactly what was written, ids included. A failure whose message says OUTCOME
+UNKNOWN means the plan MAY already be stored — do NOT re-send it; call
+list_tasks / list_decisions first and retry only what is genuinely missing.
+If the work session specifically could not be created (e.g. another session
+is already active for the same repo_name) — as opposed to not being attempted
+at all (no repo_name given, or no work-session store wired) — the response
+carries an additional "Work session not started (...)" line; the tasks/
+decisions above it were still created successfully, they just stay
+pending/unassigned instead of flipping to in_progress.
   - phases: JSON array, each {"title":"...","description":"...","priority":2}
   - decisions: JSON array, each
     {"title":"...","context":"...","decision":"...","rationale":"...","alternatives":""}

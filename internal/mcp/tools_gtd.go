@@ -144,7 +144,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		// looking for the rest.
 		mcp.WithDescription("Returns one page of active projects, highest priority first. "+
 			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
-			"Read-only."),
+			"description is projected to 500 runes with description_truncated=true when cut — "+
+			"call get_project for the full text before writing it back; NEVER pass a "+
+			"truncated list value into update_project (it REPLACES the stored value entirely). "+
+			"truncated_by_budget=true means this page also stopped early due to response size, "+
+			"independent of has_more — re-call with a smaller limit to keep paging. Read-only."),
 		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), seam("list_projects", s.handleListProjects))
@@ -194,13 +198,17 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"list_tasks",
 			mcp.WithDescription("Lists tasks, optionally filtered by project and status. "+
 				"Supports pagination via limit and offset. "+
-				"Set summary=false to receive full task objects instead of compact summaries."),
+				"Set summary=false to receive full task objects instead of compact summaries. "+
+				"Response also carries a truncated_by_budget flag, independent of has_more: "+
+				"true means this page stopped early due to response size — re-call with a "+
+				"smaller limit (same offset) to keep paging; do not assume the returned rows "+
+				"are the complete result."),
 			mcp.WithString("project_id", mcp.Description("Filter by project UUID")),
 			mcp.WithBoolean("summary", mcp.Description("Return compact task summaries (default true); false → full task objects")),
 			mcp.WithString("status",
 				mcp.Description("Filter by status (default: active = pending + in_progress; all = every status)"),
 				mcp.Enum("active", "all", "pending", "in_progress", "completed", "cancelled")),
-			mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+			mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 100)")),
 			mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 			// No mcp.Enum here: the vocabulary lives in the task_areas table
 			// so that adding one costs an INSERT rather than a redeploy
@@ -279,7 +287,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		// [F170-05] See list_projects above for why "all" had to go.
 		mcp.WithDescription("Returns one page of active goals ordered by due date. "+
 			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
-			"Read-only."),
+			"description is projected to 500 runes with description_truncated=true when cut — "+
+			"this is currently the only way to read a goal's description, so a truncated value "+
+			"is NOT the full stored text. "+
+			"truncated_by_budget=true means this page also stopped early due to response size, "+
+			"independent of has_more — re-call with a smaller limit to keep paging. Read-only."),
 		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), seam("list_goals", s.handleListGoals))
@@ -767,6 +779,51 @@ func listPageBounds(rawLimit, rawOffset int32) (limit, offset int32) {
 // now an OBJECT rather than a bare array — the page is only honest if the
 // caller can see limit/offset/returned/has_more, and a truncated bare array
 // looks exactly like a complete one.
+// projectListItem is list_projects' wire row — [F0930-14]. Every db.Project
+// field is spelled out rather than embedding db.Project, mirroring
+// repoListItem's (tools_context.go) reasoning: an embedded struct that later
+// grows its own MarshalJSON would promote that method here and silently drop
+// description_truncated from the wire.
+type projectListItem struct {
+	ID                   uuid.UUID          `json:"id"`
+	GoalID               pgtype.UUID        `json:"goal_id"`
+	Name                 string             `json:"name"`
+	Title                string             `json:"title"`
+	Description          pgtype.Text        `json:"description"`
+	DescriptionTruncated bool               `json:"description_truncated,omitempty"`
+	Status               string             `json:"status"`
+	Area                 string             `json:"area"`
+	Priority             int32              `json:"priority"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	RepoName             pgtype.Text        `json:"repo_name"`
+}
+
+// toProjectListItem projects a wrapUntrustedProject'd row into the list_projects
+// wire shape, clipping Description a second time down to listDescriptionMaxRunes
+// — [F0930-14]. list_projects has no summary mode (unlike list_tasks), so this
+// is the only defense against one long-but-legitimate Description eating most
+// of listRuneBudget on its own (list-rune-budget.md Risk flags).
+func toProjectListItem(p *db.Project) projectListItem {
+	desc, truncated := clipListDescription(p.Description)
+	return projectListItem{
+		ID:                   p.ID,
+		GoalID:               p.GoalID,
+		Name:                 p.Name,
+		Title:                p.Title,
+		Description:          desc,
+		DescriptionTruncated: truncated,
+		Status:               p.Status,
+		Area:                 p.Area,
+		Priority:             p.Priority,
+		CreatedAt:            p.CreatedAt,
+		UpdatedAt:            p.UpdatedAt,
+		WorkspaceID:          p.WorkspaceID,
+		RepoName:             p.RepoName,
+	}
+}
+
 func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) (*mcp.CallToolResult, error) {
 	limit, offset := listPageBounds(args.Limit, args.Offset)
 
@@ -782,16 +839,20 @@ func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) 
 	}
 	// make() with an explicit length: a nil slice marshals to JSON null, and
 	// list tools MUST return [].
-	out := make([]db.Project, len(projects))
+	out := make([]projectListItem, len(projects))
 	for i := range projects {
-		out[i] = *wrapUntrustedProject(&projects[i])
+		out[i] = toProjectListItem(wrapUntrustedProject(&projects[i]))
 	}
+	// [F0930-11] Rune-budget pass, same as list_tasks.
+	kept, truncatedByBudget := truncateListByRuneBudget(out, listRuneBudget)
+	hasMore = hasMore || truncatedByBudget
 	return jsonText(map[string]any{
-		"projects": out,
-		"returned": len(out),
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": hasMore,
+		"projects":            kept,
+		"returned":            len(kept),
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
 	})
 }
 
@@ -976,13 +1037,17 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		rawStatus = "active"
 	}
 
-	// limit: <=0 → 50; clamp to 200
+	// limit: <=0 → 50; clamp to 100 — [F0930-12] tightened from 200 (D5): a
+	// 200-row page of full-size rows was the measured repro for the
+	// rune-budget bug this dispatch fixes (list-rune-budget.md), so the
+	// row-count cap moved down alongside the new budget rather than relying
+	// on the budget alone to catch it.
 	limit := int(args.Limit)
 	if limit <= 0 {
 		limit = 50
 	}
-	if limit > 200 {
-		limit = 200
+	if limit > 100 {
+		limit = 100
 	}
 
 	// offset: <0 → 0
@@ -1036,13 +1101,21 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		rows = rows[:limit]
 	}
 
+	// [F0930-11] The row-count page is further trimmed to fit
+	// listRuneBudget; truncatedByBudget folds into has_more (a caller that
+	// only checks has_more still knows to re-page) but is also reported
+	// separately so a caller can tell "there's a next page" apart from "this
+	// page itself was too big, lower limit".
 	var tasks any
+	var returned int
+	var truncatedByBudget bool
 	if summaryMode {
 		summaries := make([]taskSummary, 0, len(rows))
 		for _, t := range rows {
 			summaries = append(summaries, toTaskSummary(t))
 		}
-		tasks = summaries
+		kept, truncated := truncateListByRuneBudget(summaries, listRuneBudget)
+		tasks, returned, truncatedByBudget = kept, len(kept), truncated
 	} else {
 		if rows == nil {
 			rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
@@ -1054,17 +1127,20 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		for i := range rows {
 			wrapped[i] = *wrapUntrustedTask(&rows[i])
 		}
-		tasks = wrapped
+		kept, truncated := truncateListByRuneBudget(wrapped, listRuneBudget)
+		tasks, returned, truncatedByBudget = kept, len(kept), truncated
 	}
+	hasMore = hasMore || truncatedByBudget
 
 	return jsonText(map[string]any{
-		"tasks":    tasks,
-		"returned": len(rows),
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": hasMore,
-		"status":   rawStatus,
-		"summary":  summaryMode,
+		"tasks":               tasks,
+		"returned":            returned,
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
+		"status":              rawStatus,
+		"summary":             summaryMode,
 	})
 }
 
@@ -1336,6 +1412,38 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, art
 	return updated
 }
 
+// goalListItem is list_goals' wire row — [F0930-14]. Same "spell out every
+// field, never embed" reasoning as projectListItem above.
+type goalListItem struct {
+	ID                   uuid.UUID          `json:"id"`
+	Title                string             `json:"title"`
+	Description          pgtype.Text        `json:"description"`
+	DescriptionTruncated bool               `json:"description_truncated,omitempty"`
+	Status               string             `json:"status"`
+	Area                 pgtype.Text        `json:"area"`
+	DueDate              pgtype.Timestamptz `json:"due_date"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+}
+
+// toGoalListItem is toProjectListItem's sibling for db.Goal — [F0930-14].
+func toGoalListItem(g *db.Goal) goalListItem {
+	desc, truncated := clipListDescription(g.Description)
+	return goalListItem{
+		ID:                   g.ID,
+		Title:                g.Title,
+		Description:          desc,
+		DescriptionTruncated: truncated,
+		Status:               g.Status,
+		Area:                 g.Area,
+		DueDate:              g.DueDate,
+		CreatedAt:            g.CreatedAt,
+		UpdatedAt:            g.UpdatedAt,
+		WorkspaceID:          g.WorkspaceID,
+	}
+}
+
 // handleListGoals returns one page of active goals — [F170-05], same shape and
 // same reasoning as handleListProjects above.
 func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.CallToolResult, error) {
@@ -1351,12 +1459,21 @@ func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.
 	}
 	// wrapUntrustedGoals is nil-safe and always returns a non-nil slice
 	// ([F160-03]), so the [] -not-null contract holds without a guard here.
+	wrapped := wrapUntrustedGoals(goals) // U13 Phase B (tools_gtd.go:1026)
+	out := make([]goalListItem, len(wrapped))
+	for i := range wrapped {
+		out[i] = toGoalListItem(&wrapped[i])
+	}
+	// [F0930-11] Rune-budget pass, same as list_tasks/list_projects.
+	kept, truncatedByBudget := truncateListByRuneBudget(out, listRuneBudget)
+	hasMore = hasMore || truncatedByBudget
 	return jsonText(map[string]any{
-		"goals":    wrapUntrustedGoals(goals), // U13 Phase B (tools_gtd.go:1026)
-		"returned": len(goals),
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": hasMore,
+		"goals":               kept,
+		"returned":            len(kept),
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
 	})
 }
 

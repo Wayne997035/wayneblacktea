@@ -124,9 +124,13 @@ func TestEmptyListContract_MCP_SQLite(t *testing.T) {
 			wantField: "projects",
 		},
 		{
-			name:          "list_decisions",
-			run:           func(t *testing.T, s *Server) *mcpmsg.CallToolResult { return callListDecisions(t, s, map[string]any{}) },
-			wantBareArray: true,
+			// [F0930-13] Nested field since list_decisions started paging: the
+			// response is {"decisions": [...], "returned":..., "has_more":...,
+			// "truncated_by_budget":...}. The contract itself is unchanged —
+			// the field must be [] and never null.
+			name:      "list_decisions",
+			run:       func(t *testing.T, s *Server) *mcpmsg.CallToolResult { return callListDecisions(t, s, map[string]any{}) },
+			wantField: "decisions",
 		},
 		{
 			name: "list_knowledge",

@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -223,6 +224,59 @@ func TestDecisionStore_List_OrderingTiebreaksOnID(t *testing.T) {
 	if rows[0].ID != wantFirst || rows[1].ID != wantSecond {
 		t.Errorf("id DESC tiebreak on equal created_at failed: got [%s, %s], want [%s, %s]",
 			rows[0].ID, rows[1].ID, wantFirst, wantSecond)
+	}
+}
+
+// TestDecisionStore_List_OffsetPaginatesResults is [F0930-13]'s SQLite
+// offset test, mirroring the PG twin
+// (TestStore_List_OffsetPaginatesResults, internal/decision/list_test.go) —
+// dual-backend parity per backend-security-design.md §6.5. Before this,
+// decision.ListParams had no Offset field at all and neither backend's SQL
+// accepted one; this pins that Offset actually pages the real SQLite List
+// query (internal/storage/sqlite/decision.go), not just that the Go-side
+// field exists.
+func TestDecisionStore_List_OffsetPaginatesResults(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	d, s := openDecisionDB(t, ":memory:", "")
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var seeded []*db.Decision
+	for i := range 5 {
+		row := logSQLiteDecision(t, s, fmt.Sprintf("sqlite-offset-page-%d", i), decision.SourceManual)
+		at := base.Add(time.Duration(i) * time.Second).Format(sqliteBackdateLayout)
+		if err := d.ExecContext(ctx, "UPDATE decisions SET created_at = ?1 WHERE id = ?2", at, row.ID.String()); err != nil {
+			t.Fatalf("backdate %d: %v", i, err)
+		}
+		seeded = append(seeded, row)
+	}
+	// created_at DESC, id DESC -> seeded[4] first, seeded[0] last.
+
+	firstPage, err := s.List(ctx, decision.ListParams{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatalf("List offset=0: %v", err)
+	}
+	if len(firstPage) != 2 || firstPage[0].ID != seeded[4].ID || firstPage[1].ID != seeded[3].ID {
+		t.Fatalf("offset=0 page = %+v, want [seeded[4], seeded[3]]", firstPage)
+	}
+
+	secondPage, err := s.List(ctx, decision.ListParams{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("List offset=2: %v", err)
+	}
+	if len(secondPage) != 2 || secondPage[0].ID != seeded[2].ID || secondPage[1].ID != seeded[1].ID {
+		t.Fatalf("offset=2 page = %+v, want [seeded[2], seeded[1]]", secondPage)
+	}
+	if firstPage[0].ID == secondPage[0].ID || firstPage[1].ID == secondPage[0].ID {
+		t.Error("offset=0 and offset=2 pages overlap — OFFSET is not actually paginating")
+	}
+
+	lastPage, err := s.List(ctx, decision.ListParams{Limit: 2, Offset: 4})
+	if err != nil {
+		t.Fatalf("List offset=4: %v", err)
+	}
+	if len(lastPage) != 1 || lastPage[0].ID != seeded[0].ID {
+		t.Fatalf("offset=4 page = %+v, want [seeded[0]] (1 row, the tail)", lastPage)
 	}
 }
 

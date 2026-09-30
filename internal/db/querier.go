@@ -90,6 +90,10 @@ type Querier interface {
 	// one is a no-op filter, but callers never pass both non-nil.
 	// Source is filtered BEFORE ORDER/LIMIT so the limit isn't consumed by rows
 	// that get excluded.
+	// OFFSET added [F0930-13]: list_decisions previously had no pagination path
+	// at all (has_more with no way to fetch the next page); offset_n defaults to
+	// 0 at the Go layer (decision.ListParams zero value) so existing callers are
+	// unaffected.
 	ListDecisionsFiltered(ctx context.Context, arg ListDecisionsFilteredParams) ([]Decision, error)
 	ListDueReviews(ctx context.Context, arg ListDueReviewsParams) ([]ListDueReviewsRow, error)
 	// [F170-06] row_limit/row_offset — same reasoning as gtd.sql's

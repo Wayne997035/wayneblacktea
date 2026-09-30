@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
+	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -365,6 +369,13 @@ func TestHandleConfirmPlan_SequentialFallback_PartialTaskFailure_CreatedTasksSur
 	if !strings.Contains(text, "Do A") {
 		t.Errorf("already-created task title must be surfaced on partial failure, got: %s", text)
 	}
+	// [F0930-15] id must be present even on the partial-failure branch — the
+	// task was actually created (materializePlanSequential preserves
+	// whatever was written before the mid-loop failure), so the caller needs
+	// its id the same as on the success path, not just its title.
+	if !regexp.MustCompile(`Do A \(id: [0-9a-fA-F-]{36}\)`).MatchString(text) {
+		t.Errorf("partial-failure response must include Do A's id, got: %s", text)
+	}
 	// U14 moved this count out of the wrapped store error and into the
 	// response body. materializePlan's error used to be rendered verbatim
 	// ("creating task \"Do B\" (1 already created): sqlite CreateTask: CHECK
@@ -386,12 +397,15 @@ func TestLogPlanDecisions_PartialFailure_ReturnsAlreadyLogged(t *testing.T) {
 		{Title: "Decision 1", Decision: "Use X"},
 		{Title: "Decision 2", Decision: "Use Y"},
 	}
-	logged, err := s.logPlanDecisions(context.Background(), decisions, nil, "")
+	logged, ids, err := s.logPlanDecisions(context.Background(), decisions, nil, "")
 	if err == nil {
 		t.Fatal("expected error on second decision")
 	}
 	if len(logged) != 1 || logged[0] != "Decision 1" {
 		t.Errorf("expected first decision preserved in partial result, got: %v", logged)
+	}
+	if len(ids) != 1 {
+		t.Errorf("expected 1 decision id preserved in partial result (parallel-indexed to logged), got: %v", ids)
 	}
 	if !strings.Contains(err.Error(), "1 already logged") {
 		t.Errorf("error should note 1 decision was already logged before the failure, got: %v", err)
@@ -712,4 +726,170 @@ func isClipSafeTitleCall(arg ast.Expr) bool {
 	}
 	capIdent, ok := call.Args[1].(*ast.Ident)
 	return ok && capIdent.Name == "planErrorTitleMaxRunes"
+}
+
+// ---- [F0930-15] confirm_plan response carries task/decision ids ----
+
+// TestHandleConfirmPlan_ResponseIncludesTaskAndDecisionIDs is [F0930-15]'s
+// primary acceptance test: every created task and logged decision bullet
+// line carries "(id: <uuid>)", and each id actually resolves to the row it
+// claims to — not just a well-formed UUID shape. Runs through
+// newTestWorkSessionServerWithDB (materializePlanSQLite, the real
+// transactional path), not the sequential-fallback stub other tests in this
+// file use for partial-failure coverage.
+func TestHandleConfirmPlan_ResponseIncludesTaskAndDecisionIDs(t *testing.T) {
+	t.Parallel()
+	s, sdb := newTestWorkSessionServerWithDB(t)
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases": `[
+			{"title":"ID Phase A","description":"A","priority":1},
+			{"title":"ID Phase B","description":"B","priority":2}
+		]`,
+		"decisions": `[{"title":"ID Decision 1","context":"ctx","decision":"dec","rationale":"rat"}]`,
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	text := resultText(r)
+
+	extractID := func(title string) string {
+		t.Helper()
+		re := regexp.MustCompile(regexp.QuoteMeta(title) + ` \(id: ([0-9a-fA-F-]{36})\)`)
+		m := re.FindStringSubmatch(text)
+		if m == nil {
+			t.Fatalf("no id found for %q in response: %s", title, text)
+		}
+		return m[1]
+	}
+
+	taskAID := extractID("ID Phase A")
+	taskBID := extractID("ID Phase B")
+	decID := extractID("ID Decision 1")
+	for _, id := range []string{taskAID, taskBID, decID} {
+		if _, err := uuid.Parse(id); err != nil {
+			t.Errorf("id %q does not parse as a UUID: %v", id, err)
+		}
+	}
+
+	ctx := context.Background()
+	var gotTitle string
+	if err := sdb.QueryRowContext(ctx, `SELECT title FROM tasks WHERE id = ?1`, taskAID).Scan(&gotTitle); err != nil {
+		t.Fatalf("query task A by response id: %v", err)
+	}
+	if gotTitle != "ID Phase A" {
+		t.Errorf("task A id %s resolves to title %q, want %q", taskAID, gotTitle, "ID Phase A")
+	}
+	if err := sdb.QueryRowContext(ctx, `SELECT title FROM tasks WHERE id = ?1`, taskBID).Scan(&gotTitle); err != nil {
+		t.Fatalf("query task B by response id: %v", err)
+	}
+	if gotTitle != "ID Phase B" {
+		t.Errorf("task B id %s resolves to title %q, want %q", taskBID, gotTitle, "ID Phase B")
+	}
+	if err := sdb.QueryRowContext(ctx, `SELECT title FROM decisions WHERE id = ?1`, decID).Scan(&gotTitle); err != nil {
+		t.Fatalf("query decision by response id: %v", err)
+	}
+	if gotTitle != "ID Decision 1" {
+		t.Errorf("decision id %s resolves to title %q, want %q", decID, gotTitle, "ID Decision 1")
+	}
+}
+
+// ---- [F0930-16] confirm_plan surfaces an attempted-and-failed work session ----
+
+// failingWorkSessionStore is a minimal worksession.StoreIface stub used to
+// force a deterministic Create failure that is NOT worksession.ErrAlreadyActive
+// — [F0930-16]. Embeds the nil interface so only Create needs implementing;
+// no code path under test calls any other method (mirrors
+// failingDecisionStore's embedding pattern above).
+type failingWorkSessionStore struct {
+	worksession.StoreIface
+	err error
+}
+
+func (f *failingWorkSessionStore) Create(_ context.Context, _ worksession.CreateParams) (*worksession.Session, error) {
+	return nil, f.err
+}
+
+// TestHandleConfirmPlan_WorkSessionCreateError_ReportsNotStarted pins the
+// "any error, not just ErrAlreadyActive" half of [F0930-16]: an arbitrary
+// store failure from worksession.Store.Create must surface as a
+// "Work session not started" line, and the raw error text must NOT leak into
+// the caller-facing response (U14) — createWorkSessionForPlan's own
+// sanitizeWorkSessionErrorReason collapses anything that isn't
+// ErrAlreadyActive to a generic reason.
+func TestHandleConfirmPlan_WorkSessionCreateError_ReportsNotStarted(t *testing.T) {
+	t.Parallel()
+	s := newMinimalPlanServer(t)
+	s.workSession = &failingWorkSessionStore{err: errors.New("unexpected failure: connection reset by peer")}
+
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"Do A","description":"A","priority":1}]`,
+		"repo_name": "work-session-error-repo",
+	})
+	if r.IsError {
+		t.Fatalf("confirm_plan's overall success must not be blocked by a work-session failure, got error: %s", resultText(r))
+	}
+	text := resultText(r)
+	if !strings.Contains(text, "Plan confirmed") || !strings.Contains(text, "Do A") {
+		t.Errorf("the task itself was created and must still be reported: %s", text)
+	}
+	if !strings.Contains(text, "Work session not started") {
+		t.Errorf("an attempted-and-failed Create must be surfaced, not silent (the pre-F0930-16 defect): %s", text)
+	}
+	if strings.Contains(text, "connection reset by peer") {
+		t.Errorf("raw store error text must not leak into the caller-facing response (U14): %s", text)
+	}
+}
+
+// TestHandleConfirmPlan_WorkSessionAlreadyActive_ReportsNotStarted is
+// [F0930-16]'s ErrAlreadyActive-specific case, forced through two real,
+// sequential confirm_plan calls against the same repo_name (not a stub) —
+// the second Create genuinely collides with the first call's still-active
+// session. Also pins the DB-observable consequence: the second call's task
+// stays pending, not in_progress, since its work session was never created.
+func TestHandleConfirmPlan_WorkSessionAlreadyActive_ReportsNotStarted(t *testing.T) {
+	t.Parallel()
+	s, sdb := newTestWorkSessionServerWithDB(t)
+	const repo = "already-active-plan-repo"
+
+	first := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"First Session Task","description":"A","priority":1}]`,
+		"repo_name": repo,
+		"assignee":  "human",
+	})
+	if first.IsError {
+		t.Fatalf("first call should succeed, got: %s", resultText(first))
+	}
+	if !strings.Contains(resultText(first), "Work session started") {
+		t.Fatalf("first call must create the work session: %s", resultText(first))
+	}
+
+	second := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"Second Session Task","description":"B","priority":1}]`,
+		"repo_name": repo,
+		"assignee":  "human",
+	})
+	if second.IsError {
+		t.Fatalf("second call's task creation succeeded independently of the work session and must "+
+			"still report overall success, got: %s", resultText(second))
+	}
+	text := resultText(second)
+	if !strings.Contains(text, "Second Session Task") {
+		t.Errorf("second call's task must still be reported as created: %s", text)
+	}
+	if !strings.Contains(text, "Work session not started") {
+		t.Errorf("ErrAlreadyActive must be surfaced as an attempted-and-failed case, not silent "+
+			"like the two legitimate skips: %s", text)
+	}
+	if strings.Contains(text, "\nWork session started") {
+		t.Errorf("second call must not also claim a session started: %s", text)
+	}
+
+	var taskID string
+	if err := sdb.QueryRowContext(context.Background(), `SELECT id FROM tasks WHERE title = ?1`, "Second Session Task").Scan(&taskID); err != nil {
+		t.Fatalf("query second task: %v", err)
+	}
+	if got := queryMCPTaskStatus(t, sdb, taskID); got != taskStatusPending {
+		t.Errorf("second call's task status: got %q, want pending — its work session was never "+
+			"created, so P6.8's in_progress stamp never ran", got)
+	}
 }

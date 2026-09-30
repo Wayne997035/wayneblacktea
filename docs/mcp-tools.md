@@ -185,16 +185,22 @@ Returns an **object**, not a bare array: `repos`, `returned`, `limit`, `offset`,
 
 List-view free-text fields are projected down — `description` and `next_planned_step` to 500 runes; `name`, `path`, `language`, `current_branch` and each `known_issues` element to 120 runes; at most 5 `known_issues` entries. Every shortened field carries its own `<field>_truncated: true` flag, so truncation is never silent. To read a row in full, go through `sync_repo` — but note `sync_repo` is a **write** and re-stamps that row's `last_activity`.
 
+`list_tasks` / `list_goals` / `list_projects` / `list_decisions` share one 18,000-rune response-size budget on top of their row-count `limit`: the array is truncated (whole trailing rows dropped, never a partial row) before its marshaled JSON would exceed that budget, and the response carries `truncated_by_budget: true` when that happened. This is independent of `has_more` — a normal-sized page can still trip the budget if its rows are large (long CJK text, long descriptions), so `truncated_by_budget=true` can fire even when `has_more` alone would not have. Re-call with a smaller `limit` (or the same `offset`) to keep paging; never assume the returned rows are the complete result just because `has_more=false`.
+
 ### `list_projects` / `list_goals`
 Read-only. Optional: `limit` (default 50, max 200), `offset` (default 0).
 
-Return an **object**, not a bare array: `projects` / `goals`, plus `returned`, `limit`, `offset`, `has_more`.
+Return an **object**, not a bare array: `projects` / `goals`, plus `returned`, `limit`, `offset`, `has_more`, `truncated_by_budget`.
+
+`description` is projected down to 500 runes on the list view, with `description_truncated: true` on any row that was cut. `list_goals` has no single-goal read tool today, so a truncated `description` there is NOT recoverable in full elsewhere; `list_projects`' full text is available via `get_project`. Never write a truncated list-view `description` back through `update_project` — it REPLACES the stored value entirely.
 
 ### `list_tasks`
-Optional `project_id` (UUID) filter.
+Optional `project_id` (UUID) filter. `limit` default 50, max 100. `truncated_by_budget` (see below).
 
 ### `list_decisions`
-Optional: `repo_name` (string), `project_id` (UUID), `limit` (default 20). Call before scanning code.
+Optional: `repo_name` (string), `project_id` (UUID), `limit` (default 10, max 40), `offset` (default 0). Call before scanning code.
+
+Returns an **object**, not a bare array: `decisions`, `returned`, `limit`, `offset`, `has_more`, `truncated_by_budget`.
 
 ### `list_knowledge`
 Optional: `limit` (default 20), `offset`.
@@ -370,6 +376,8 @@ Call when user says tomorrow / later. `intent` required. Optional `repo_name`, `
 ### `confirm_plan`
 
 Call when user confirms a plan ("可以" "好" "go" "開始"). Atomically creates tasks + logs decisions (Postgres/SQLite: one transaction, all-or-nothing). The linked `work_session` is created separately, best-effort, after the transaction commits — a work-session failure never rolls back the tasks/decisions. Always check the response for `is_error` / what was actually created rather than assuming success.
+
+Every created task and logged decision bullet line carries its id (`<title> (id: <uuid>)`) — use it directly for `update_task`/`get_task` instead of a separate `list_tasks`/`list_decisions` call. If the work session specifically failed to create (e.g. another session already active for the same `repo_name`) rather than simply not being attempted (no `repo_name`, or no work-session store wired), the response also carries a `Work session not started (...)` line; the tasks/decisions above it were still created, they just stay pending/unassigned.
 
 `phases` (JSON array, required): `[{"title":"...","description":"...","priority":2}]`
 

@@ -3,6 +3,7 @@ package decision_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -31,6 +32,10 @@ func TestListParams_Validate(t *testing.T) {
 		{"limit over 100 rejected", decision.ListParams{Limit: 101}, decision.ErrInvalidListLimit},
 		{"limit exactly 1 accepted", decision.ListParams{Limit: 1}, nil},
 		{"limit exactly 100 accepted", decision.ListParams{Limit: 100}, nil},
+		// [F0930-13] Offset cases.
+		{"offset zero accepted", decision.ListParams{Limit: 20, Offset: 0}, nil},
+		{"offset positive accepted", decision.ListParams{Limit: 20, Offset: 40}, nil},
+		{"offset negative rejected", decision.ListParams{Limit: 20, Offset: -1}, decision.ErrInvalidListOffset},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,6 +284,59 @@ func TestStore_List_OrderingTiebreaksOnID(t *testing.T) {
 	if rows[0].ID != wantFirst || rows[1].ID != wantSecond {
 		t.Errorf("id DESC tiebreak on equal created_at failed: got [%s, %s], want [%s, %s]",
 			rows[0].ID, rows[1].ID, wantFirst, wantSecond)
+	}
+}
+
+// TestStore_List_OffsetPaginatesResults is [F0930-13]'s PG offset test:
+// list_decisions previously had no way to fetch a second page at all
+// (ListParams had no Offset field, neither backend's SQL accepted one). This
+// pins that Offset actually pages past the first N rows on the real
+// ListDecisionsFiltered query (sql/queries/decision.sql), not just that the
+// Go-side field exists.
+func TestStore_List_OffsetPaginatesResults(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	store, _ := newIsolatedListStore(t, pool)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var seeded []*db.Decision
+	for i := range 5 {
+		d := logTestDecision(t, store, fmt.Sprintf("offset-page-%d", i), decision.SourceManual)
+		at := base.Add(time.Duration(i) * time.Second)
+		if _, err := pool.Exec(ctx, "UPDATE decisions SET created_at = $1 WHERE id = $2", at, d.ID); err != nil {
+			t.Fatalf("backdate %d: %v", i, err)
+		}
+		seeded = append(seeded, d)
+	}
+	// created_at DESC, id DESC -> seeded[4] first, seeded[0] last.
+
+	firstPage, err := store.List(ctx, decision.ListParams{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatalf("List offset=0: %v", err)
+	}
+	if len(firstPage) != 2 || firstPage[0].ID != seeded[4].ID || firstPage[1].ID != seeded[3].ID {
+		t.Fatalf("offset=0 page = %+v, want [seeded[4], seeded[3]]", firstPage)
+	}
+
+	secondPage, err := store.List(ctx, decision.ListParams{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("List offset=2: %v", err)
+	}
+	if len(secondPage) != 2 || secondPage[0].ID != seeded[2].ID || secondPage[1].ID != seeded[1].ID {
+		t.Fatalf("offset=2 page = %+v, want [seeded[2], seeded[1]]", secondPage)
+	}
+	// Pages must not overlap — the exact bug an un-implemented OFFSET (a
+	// silent no-op always returning page 1) would produce.
+	if firstPage[0].ID == secondPage[0].ID || firstPage[1].ID == secondPage[0].ID {
+		t.Error("offset=0 and offset=2 pages overlap — OFFSET is not actually paginating")
+	}
+
+	lastPage, err := store.List(ctx, decision.ListParams{Limit: 2, Offset: 4})
+	if err != nil {
+		t.Fatalf("List offset=4: %v", err)
+	}
+	if len(lastPage) != 1 || lastPage[0].ID != seeded[0].ID {
+		t.Fatalf("offset=4 page = %+v, want [seeded[0]] (1 row, the tail)", lastPage)
 	}
 }
 

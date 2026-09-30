@@ -11,7 +11,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const maxListDecisionsLimit = 100
+// [F0930-13] Tightened default 20->10, max 100->40 (D5/D13) — same
+// row-count-cap reasoning as list_tasks' 200->100 (tools_gtd.go).
+const (
+	defaultListDecisionsLimit = 10
+	maxListDecisionsLimit     = 40
+)
 
 // Read-time bounds for db.Decision's free-text fields, applied by
 // wrapUntrustedDecision before jsonText — U13. log_decision/list_decisions
@@ -114,12 +119,17 @@ func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 		mcp.WithDescription(
 			"CALL BEFORE scanning code — check if the answer is already stored. "+
 				"Returns manual decisions by default; set include_auto=true to also include "+
-				"system-inferred decisions. Filtered by repo_name or project (project wins if both given).",
+				"system-inferred decisions. Filtered by repo_name or project (project wins if both given). "+
+				"Response is an object: decisions, returned, limit, offset, has_more, truncated_by_budget. "+
+				"truncated_by_budget=true means this page stopped early due to response size, "+
+				"independent of has_more — re-call with a smaller limit or the same offset to keep "+
+				"paging; do not assume the returned rows are the complete result.",
 		),
 		mcp.WithString("repo_name", mcp.Description("Filter by repository name")),
 		mcp.WithString("project_id", mcp.Description("Filter by project UUID (wins over repo_name if both given)")),
 		mcp.WithBoolean("include_auto", mcp.Description("Include system-inferred (auto) decisions in addition to manual ones. Default false.")),
-		mcp.WithNumber("limit", mcp.Description("Maximum number of results (default 20, max 100)")),
+		mcp.WithNumber("limit", mcp.Description("Maximum number of results (default 10, max 40)")),
+		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 	), s.handleListDecisions)
 }
 
@@ -192,17 +202,25 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 	args := req.GetArguments()
 	limit := numberArg(args, "limit")
 	if limit <= 0 {
-		limit = 20
+		limit = defaultListDecisionsLimit
 	}
 	if limit > maxListDecisionsLimit {
 		slog.Warn("list_decisions limit clamped", "requested", limit, "max", maxListDecisionsLimit)
 		limit = maxListDecisionsLimit
 	}
+	// [F0930-13] offset: <0 -> 0, mirrors listPageBounds (tools_gtd.go).
+	offset := numberArg(args, "offset")
+	if offset < 0 {
+		offset = 0
+	}
 
+	// limit+1 detects has_more without a second COUNT query — same trick as
+	// handleListTasks/handleListProjects/handleListGoals.
 	p := decision.ListParams{
 		RepoName:    stringArg(args, "repo_name"),
 		IncludeAuto: boolArg(args, "include_auto"),
-		Limit:       limit,
+		Limit:       limit + 1,
+		Offset:      offset,
 	}
 	if raw := stringArg(args, "project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -217,8 +235,22 @@ func (s *Server) handleListDecisions(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return storeErrorResult("loading decisions", err), nil
 	}
+	hasMore := len(decisions) > int(limit)
+	if hasMore {
+		decisions = decisions[:limit]
+	}
 	if decisions == nil {
 		decisions = []db.Decision{} // list tools MUST return [] not null — a nil slice serializes to JSON null
 	}
-	return jsonText(wrapUntrustedDecisions(decisions))
+	// [F0930-11] Rune-budget pass, same as the other three list tools.
+	kept, truncatedByBudget := truncateListByRuneBudget(wrapUntrustedDecisions(decisions), listRuneBudget)
+	hasMore = hasMore || truncatedByBudget
+	return jsonText(map[string]any{
+		"decisions":           kept,
+		"returned":            len(kept),
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
+	})
 }

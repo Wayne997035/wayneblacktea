@@ -19,9 +19,19 @@ var ErrInvalidSource = errors.New("decision: invalid source")
 var ErrConflictingListFilter = errors.New("decision: project_id and repo_name are mutually exclusive")
 
 // ErrInvalidListLimit is returned when ListParams.Limit falls outside the
-// 1..100 range. Handlers are expected to normalize (default 20, cap 100)
-// before calling List; this is defence-in-depth for direct callers.
+// 1..100 range. This store-layer bound stays 100 as defence-in-depth for any
+// direct (non-MCP) caller of List, independent of the MCP handler's tighter
+// clamp — [F0930-13] tightened handleListDecisions' own default/max to 10/40
+// (tools_decision.go:14), but that is a handler-layer policy choice on top
+// of this store-layer ceiling, not a replacement for it.
 var ErrInvalidListLimit = errors.New("decision: limit must be between 1 and 100")
+
+// ErrInvalidListOffset is returned when ListParams.Offset is negative —
+// [F0930-13]. Unlike Limit there is no upper bound to enforce: an
+// offset past the end of the result set is a normal "no more rows" case,
+// not a validation error (mirrors listPageBounds' offset handling,
+// internal/mcp/tools_gtd.go).
+var ErrInvalidListOffset = errors.New("decision: offset must be non-negative")
 
 // ErrCosineUnsupported is returned by SearchByCosine on backends that have
 // no embedding storage for decisions. The SQLite decisions table lost its
@@ -123,19 +133,30 @@ type ListParams struct {
 	// Source=manual only. When true, both manual and auto decisions are
 	// returned. Fail-closed: zero value is false.
 	IncludeAuto bool
-	// Limit MUST be in 1..100. Callers normalize (default 20, cap 100)
-	// before calling List; List itself enforces the range via Validate.
+	// Limit MUST be in 1..maxListDecisionsLimit (40 — tools_decision.go:14).
+	// Callers normalize (default 10, cap 40 — [F0930-13]) before calling
+	// List; List itself enforces the range via Validate.
 	Limit int32
+	// Offset pages past the first Limit rows — [F0930-13]. Negative values
+	// are invalid the same way Limit's out-of-range values are; callers
+	// normalize (<0 -> 0) before calling List, same convention as
+	// listPageBounds (internal/mcp/tools_gtd.go).
+	Offset int32
 }
 
 // Validate reports whether p is a well-formed filter: ProjectID and
-// RepoName cannot both be set, and Limit must be in 1..100.
+// RepoName cannot both be set, Limit must be in 1..maxListDecisionsLimit
+// (checked by the caller-supplied value, not hardcoded here — see
+// ErrInvalidListLimit's doc comment), and Offset must be non-negative.
 func (p ListParams) Validate() error {
 	if p.ProjectID != nil && p.RepoName != "" {
 		return ErrConflictingListFilter
 	}
 	if p.Limit < 1 || p.Limit > 100 {
 		return ErrInvalidListLimit
+	}
+	if p.Offset < 0 {
+		return ErrInvalidListOffset
 	}
 	return nil
 }

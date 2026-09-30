@@ -114,7 +114,7 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	// Create phase tasks + log decisions. materializePlan dispatches to a
 	// real-transaction path on both shipped backends (PG/SQLite) — see its
 	// doc comment for the two documented exceptions to the atomicity claim.
-	createdTasks, taskIDs, loggedDecisions, err := s.materializePlan(ctx, phases, decisions, projectID, repoName)
+	createdTasks, taskIDs, loggedDecisions, decisionIDs, err := s.materializePlan(ctx, phases, decisions, projectID, repoName)
 	if err != nil {
 		// U14: the failure text must NOT carry err — materializePlan wraps
 		// store and transaction errors, so %v here handed the caller pgx
@@ -130,15 +130,30 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 		// confirm_plan has zero front-gate calls, so this is the only place
 		// that can tell it. Every other error class passes through unchanged.
 		logToolError("confirming plan", err)
-		text := withTagNoiseDetail(planResultText(createdTasks, loggedDecisions, nil, true), err)
+		text := withTagNoiseDetail(planResultText(createdTasks, taskIDs, loggedDecisions, decisionIDs, nil, true), err)
 		return mcp.NewToolResultError(text), nil
 	}
 
 	// Always create an in_progress work session (D2: no bool flag).
-	// Best-effort: work session failure must not block the tasks/decisions result.
-	sessionID := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs, assignee)
+	// Best-effort for legitimate skips (no store wired / no repo_name); an
+	// ATTEMPTED-and-failed Create (e.g. ErrAlreadyActive) is surfaced in the
+	// response text instead of being silently indistinguishable from those
+	// two skips — [F0930-16].
+	sessionID, sessionErr := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs, assignee)
 
-	return mcp.NewToolResultText(planResultText(createdTasks, loggedDecisions, sessionID, false)), nil
+	text := planResultText(createdTasks, taskIDs, loggedDecisions, decisionIDs, sessionID, false)
+	if sessionErr != nil {
+		// [F0930-16] Purely informational — no retry suggestion. Retrying
+		// confirm_plan here would attempt to re-create the phase tasks it
+		// already created above (same double-submission hazard the
+		// OUTCOME UNKNOWN text a few lines up already goes out of its way to
+		// avoid for a different failure class). The reason text is
+		// sanitized (U14): sessionErr may wrap a store/pgx error, never
+		// surfaced verbatim to the caller.
+		text += "\nWork session not started (" + sanitizeWorkSessionErrorReason(sessionErr) +
+			"); phase tasks remain pending/unassigned.\n"
+	}
+	return mcp.NewToolResultText(text), nil
 }
 
 // planFailedHeadline is the client-facing text for a confirm_plan failure.
@@ -175,7 +190,18 @@ const planErrorTitleMaxRunes = 80
 // loggedDecisions both empty — e.g. the very first phase task fails, or an
 // atomic backend rolled the whole transaction back), the plain error message
 // is returned without the empty "already created" headers.
-func planResultText(createdTasks, loggedDecisions []string, sessionID *string, failed bool) string {
+//
+// taskIDs and decisionIDs are parallel-indexed to createdTasks/loggedDecisions
+// by construction — every append to a title slice in materializePlan's three
+// backend variants is paired with an append to the matching ID slice on the
+// same loop iteration — [F0930-15]. Each bullet line gains a trailing
+// "(id: <uuid>)" so a caller (in particular the mcpInstructions rule
+// requiring update_task(task_id, status="in_progress") for every task
+// worked) has the id without a separate list_tasks/list_decisions round
+// trip. The existing "  • %s\n" prefix and title text are unchanged —
+// additive suffix only, so every pre-existing strings.Contains assertion on
+// those substrings still holds.
+func planResultText(createdTasks []string, taskIDs []uuid.UUID, loggedDecisions []string, decisionIDs []uuid.UUID, sessionID *string, failed bool) string {
 	if failed && len(createdTasks) == 0 && len(loggedDecisions) == 0 {
 		return planFailedHeadline
 	}
@@ -186,8 +212,16 @@ func planResultText(createdTasks, loggedDecisions []string, sessionID *string, f
 	} else {
 		fmt.Fprintf(&sb, "Plan confirmed. Tasks created (%d):\n", len(createdTasks))
 	}
-	for _, t := range createdTasks {
-		fmt.Fprintf(&sb, "  • %s\n", t)
+	for i, t := range createdTasks {
+		if i < len(taskIDs) {
+			fmt.Fprintf(&sb, "  • %s (id: %s)\n", t, taskIDs[i])
+		} else {
+			// Defensive only: materializePlan's three variants always append
+			// title and id together, so this branch is unreachable in
+			// practice — but a bullet line must never be silently dropped
+			// just because an id happened to be missing.
+			fmt.Fprintf(&sb, "  • %s\n", t)
+		}
 	}
 	if len(loggedDecisions) > 0 {
 		label := "Decisions logged"
@@ -195,8 +229,12 @@ func planResultText(createdTasks, loggedDecisions []string, sessionID *string, f
 			label = "Decisions logged before the failure"
 		}
 		fmt.Fprintf(&sb, "\n%s (%d):\n", label, len(loggedDecisions))
-		for _, d := range loggedDecisions {
-			fmt.Fprintf(&sb, "  • %s\n", d)
+		for i, d := range loggedDecisions {
+			if i < len(decisionIDs) {
+				fmt.Fprintf(&sb, "  • %s (id: %s)\n", d, decisionIDs[i])
+			} else {
+				fmt.Fprintf(&sb, "  • %s\n", d)
+			}
 		}
 	}
 	if sessionID != nil {
@@ -209,17 +247,19 @@ func planResultText(createdTasks, loggedDecisions []string, sessionID *string, f
 // to a real-transaction path on whichever backend is wired (mirrors the
 // s.pool != nil / s.sqliteGTD != nil / else pattern in acceptProposal,
 // tools_proposal.go:337-345). Returns (created task titles, created task
-// UUIDs, logged decision titles, error).
+// UUIDs, logged decision titles, logged decision UUIDs, error) — [F0930-15]
+// added the decision UUID slice, parallel-indexed to the title slice the
+// same way the task UUID slice always has been.
 //
-// On the PG and SQLite paths a mid-loop failure returns nil/nil/nil — the
-// whole transaction rolled back, so there is nothing "already created" to
-// report; the error text itself says so. On the sequential fallback path
+// On the PG and SQLite paths a mid-loop failure returns nil/nil/nil/nil —
+// the whole transaction rolled back, so there is nothing "already created"
+// to report; the error text itself says so. On the sequential fallback path
 // (neither backend wired — not a real deployment) a mid-loop failure returns
 // whatever was actually written, matching materializePlanSequential's
 // non-transactional semantics.
 func (s *Server) materializePlan(
 	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
-) ([]string, []uuid.UUID, []string, error) {
+) ([]string, []uuid.UUID, []string, []uuid.UUID, error) {
 	if s.pool != nil {
 		return s.materializePlanPg(ctx, phases, decisions, projectID, repoName)
 	}
@@ -235,10 +275,10 @@ func (s *Server) materializePlan(
 // Mirrors acceptProposalPg's tx shape (tools_proposal.go:350-382).
 func (s *Server) materializePlanPg(
 	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
-) ([]string, []uuid.UUID, []string, error) {
+) ([]string, []uuid.UUID, []string, []uuid.UUID, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("beginning plan transaction: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("beginning plan transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // safe: no-op if already committed
 
@@ -260,7 +300,7 @@ func (s *Server) materializePlanPg(
 			Priority:    priority,
 		})
 		if terr != nil {
-			return nil, nil, nil, fmt.Errorf("creating task %q (transaction rolled back, no changes made): %w", phase.Title, terr)
+			return nil, nil, nil, nil, fmt.Errorf("creating task %q (transaction rolled back, no changes made): %w", phase.Title, terr)
 		}
 		created = append(created, task.Title)
 		ids = append(ids, task.ID)
@@ -268,6 +308,7 @@ func (s *Server) materializePlanPg(
 
 	decTx := s.pgDecision.WithTx(tx)
 	var logged []string
+	var decIDs []uuid.UUID
 	for _, d := range decisions {
 		if d.Title == "" || d.Decision == "" {
 			continue
@@ -284,21 +325,22 @@ func (s *Server) materializePlanPg(
 			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if derr != nil {
-			return nil, nil, nil, fmt.Errorf(
+			return nil, nil, nil, nil, fmt.Errorf(
 				"logging decision %q (transaction rolled back, no changes made): %w",
 				clipSafe(d.Title, planErrorTitleMaxRunes), derr,
 			)
 		}
 		logged = append(logged, dec.Title)
+		decIDs = append(decIDs, dec.ID) // [F0930-15] dec.ID was already available here, previously unread.
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, nil, fmt.Errorf(
+		return nil, nil, nil, nil, fmt.Errorf(
 			"committing plan transaction (OUTCOME UNKNOWN: the commit may or may not have been "+
 				"applied by the database; verify with list_tasks/list_decisions before retrying): %w", err,
 		)
 	}
-	return created, ids, logged, nil
+	return created, ids, logged, decIDs, nil
 }
 
 // materializePlanSQLite is the SQLite counterpart of materializePlanPg. It
@@ -310,10 +352,10 @@ func (s *Server) materializePlanPg(
 // comment for the same constraint on a different call path).
 func (s *Server) materializePlanSQLite(
 	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
-) ([]string, []uuid.UUID, []string, error) {
+) ([]string, []uuid.UUID, []string, []uuid.UUID, error) {
 	tx, err := s.sqliteGTD.DB().BeginTx(ctx)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("beginning plan transaction: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("beginning plan transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 
@@ -334,21 +376,25 @@ func (s *Server) materializePlanSQLite(
 			Priority:    priority,
 		})
 		if terr != nil {
-			return nil, nil, nil, fmt.Errorf("creating task %q (transaction rolled back, no changes made): %w", phase.Title, terr)
+			return nil, nil, nil, nil, fmt.Errorf("creating task %q (transaction rolled back, no changes made): %w", phase.Title, terr)
 		}
 		created = append(created, phase.Title)
 		ids = append(ids, taskID)
 	}
 
 	if len(decisions) > 0 && s.sqliteDecision == nil {
-		return nil, nil, nil, fmt.Errorf("logging decisions (transaction rolled back, no changes made): sqlite decision store not wired")
+		return nil, nil, nil, nil, fmt.Errorf("logging decisions (transaction rolled back, no changes made): sqlite decision store not wired")
 	}
 	var logged []string
+	var decIDs []uuid.UUID
 	for _, d := range decisions {
 		if d.Title == "" || d.Decision == "" {
 			continue
 		}
-		if _, derr := s.sqliteDecision.LogTx(ctx, tx, decision.LogParams{
+		// [F0930-15] Capture LogTx's returned uuid.UUID — the ID is the only
+		// thing it returns besides the error, and this used to be discarded
+		// via `if _, derr := ...`.
+		decID, derr := s.sqliteDecision.LogTx(ctx, tx, decision.LogParams{
 			ProjectID:      projectID,
 			RepoName:       repoName,
 			Title:          d.Title,
@@ -358,22 +404,24 @@ func (s *Server) materializePlanSQLite(
 			Alternatives:   d.Alternatives,
 			Source:         decision.SourceManual,
 			ActorSessionID: s.auditSessionID(ctx),
-		}); derr != nil {
-			return nil, nil, nil, fmt.Errorf(
+		})
+		if derr != nil {
+			return nil, nil, nil, nil, fmt.Errorf(
 				"logging decision %q (transaction rolled back, no changes made): %w",
 				clipSafe(d.Title, planErrorTitleMaxRunes), derr,
 			)
 		}
 		logged = append(logged, d.Title)
+		decIDs = append(decIDs, decID)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, nil, nil, fmt.Errorf(
+		return nil, nil, nil, nil, fmt.Errorf(
 			"committing plan transaction (OUTCOME UNKNOWN: the commit may or may not have been "+
 				"applied by the database; verify with list_tasks/list_decisions before retrying): %w", err,
 		)
 	}
-	return created, ids, logged, nil
+	return created, ids, logged, decIDs, nil
 }
 
 // materializePlanSequential is the non-atomic fallback used only when the
@@ -384,16 +432,16 @@ func (s *Server) materializePlanSQLite(
 // failure instead of discarding them.
 func (s *Server) materializePlanSequential(
 	ctx context.Context, phases []phaseInput, decisions []decisionInput, projectID *uuid.UUID, repoName string,
-) ([]string, []uuid.UUID, []string, error) {
+) ([]string, []uuid.UUID, []string, []uuid.UUID, error) {
 	created, ids, err := s.createPhaseTasksWithIDs(ctx, phases, projectID)
 	if err != nil {
-		return created, ids, nil, err
+		return created, ids, nil, nil, err
 	}
-	logged, err := s.logPlanDecisions(ctx, decisions, projectID, repoName)
+	logged, decIDs, err := s.logPlanDecisions(ctx, decisions, projectID, repoName)
 	if err != nil {
-		return created, ids, logged, err
+		return created, ids, logged, decIDs, err
 	}
-	return created, ids, logged, nil
+	return created, ids, logged, decIDs, nil
 }
 
 // createPhaseTasksWithIDs creates tasks for each phase and returns both the
@@ -430,9 +478,13 @@ func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInpu
 
 // logPlanDecisions returns whatever was logged BEFORE a mid-loop failure
 // (not nil) — see planResultText's doc comment. Used only by
-// materializePlanSequential (the non-atomic fallback path).
-func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput, projectID *uuid.UUID, repoName string) ([]string, error) {
+// materializePlanSequential (the non-atomic fallback path). Returns
+// (logged decision titles, logged decision UUIDs, error) — [F0930-15] added
+// the UUID slice, parallel-indexed to titles by the same append-together
+// pattern as createPhaseTasksWithIDs.
+func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput, projectID *uuid.UUID, repoName string) ([]string, []uuid.UUID, error) {
 	var logged []string
+	var ids []uuid.UUID
 	for _, d := range decisions {
 		if d.Title == "" || d.Decision == "" {
 			continue
@@ -449,19 +501,26 @@ func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput
 			ActorSessionID: s.auditSessionID(ctx),
 		})
 		if err != nil {
-			return logged, fmt.Errorf(
+			return logged, ids, fmt.Errorf(
 				"logging decision %q (%d already logged): %w",
 				clipSafe(d.Title, planErrorTitleMaxRunes), len(logged), err,
 			)
 		}
 		logged = append(logged, dec.Title)
+		ids = append(ids, dec.ID)
 	}
-	return logged, nil
+	return logged, ids, nil
 }
 
 // createWorkSessionForPlan creates an in_progress work_session linking all
-// phase tasks. It is best-effort: any error is logged at Warn level and
-// returns nil so the caller can still surface the tasks/decisions result.
+// phase tasks. It is best-effort for the two legitimate skip cases — no
+// workSession store wired, no repo_name — which return (nil, nil): the
+// caller (handleConfirmPlan) must not treat those as a failure to surface.
+// An ATTEMPTED call to s.workSession.Create that returns any error (not just
+// ErrAlreadyActive) is a THIRD, distinct case — [F0930-16]: it returns
+// (nil, err) so the caller can tell "not attempted" apart from
+// "attempted and failed" and only surface the latter, instead of the
+// previous behaviour where all three produced byte-identical silence.
 //
 // SECURITY: workspace_id is taken from the store (env-configured), never from
 // tool input. task_ids verification (all tasks belong to same workspace) is
@@ -474,13 +533,13 @@ func (s *Server) createWorkSessionForPlan(
 	phases []phaseInput,
 	taskIDs []uuid.UUID,
 	assignee string,
-) *string {
+) (*string, error) {
 	if s.workSession == nil {
-		return nil
+		return nil, nil
 	}
 	if repoName == "" {
 		// No repo context — skip silently (non-repo sessions require start_work).
-		return nil
+		return nil, nil
 	}
 
 	// Build a title from the first phase title.
@@ -513,16 +572,20 @@ func (s *Server) createWorkSessionForPlan(
 		Assignee:    assignee,
 	})
 	if err != nil {
-		// ErrAlreadyActive: a session is already in_progress for this repo.
-		// Log a warning; do not block confirm_plan.
+		// [F0930-16] This IS an attempted-and-failed case (ErrAlreadyActive
+		// or otherwise) — distinct from the two legitimate skips above, which
+		// return before ever calling Create. Still does not block
+		// confirm_plan's overall success (the tasks/decisions already
+		// committed independently of this call); the caller surfaces this
+		// error in the response text instead of only logging it.
 		slog.Warn(
 			"confirm_plan: could not create work session",
 			"repo_name", repoName,
 			"err", err,
 		)
-		return nil
+		return nil, err
 	}
 
 	id := sess.ID.String()
-	return &id
+	return &id, nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -265,7 +266,11 @@ func TestListTasks_LimitNegativeDefaultsTo50(t *testing.T) {
 	}
 }
 
-func TestListTasks_LimitClampsTo200(t *testing.T) {
+// TestListTasks_LimitClampedTo100 replaces TestListTasks_LimitClampsTo200 —
+// [F0930-12] tightened list_tasks' max from 200 to 100 (D5); the old test
+// asserted the exact value this dispatch changes, so it is renamed and its
+// assertion updated rather than kept alongside a second, contradictory test.
+func TestListTasks_LimitClampedTo100(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callListTasks(t, s, map[string]any{"limit": float64(999)})
@@ -276,8 +281,8 @@ func TestListTasks_LimitClampsTo200(t *testing.T) {
 		Limit int `json:"limit"`
 	}
 	_ = json.Unmarshal([]byte(resultText(r)), &out)
-	if out.Limit != 200 {
-		t.Errorf("limit=999 should clamp to 200, got %d", out.Limit)
+	if out.Limit != 100 {
+		t.Errorf("limit=999 should clamp to 100, got %d", out.Limit)
 	}
 }
 
@@ -296,6 +301,96 @@ func TestListTasks_OffsetPastEnd_EmptyHasMoreFalse(t *testing.T) {
 	_ = json.Unmarshal([]byte(resultText(r)), &out)
 	if out.Returned != 0 || out.HasMore {
 		t.Errorf("offset past end: returned=%d has_more=%v, want 0/false", out.Returned, out.HasMore)
+	}
+}
+
+// TestListTasks_RuneBudgetCJKWorstCase is [F0930-11]'s named CJK worst-case
+// acceptance test: a full page of gtdTitleMaxRunes-length CJK titles (1 rune
+// per glyph, up to 3 UTF-8 bytes each) must be cut by the shared
+// listRuneBudget well before the row-count clamp (100, post-[F0930-12])
+// would otherwise stop it — this is the exact failure mode
+// list-rune-budget.md measured (list_tasks limit=200 returning 51,765 chars
+// and getting silently dropped whole by the calling client).
+func TestListTasks_RuneBudgetCJKWorstCase(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	cjkTitle := strings.Repeat("測", gtdTitleMaxRunes) // every row at the title cap
+	for i := 0; i < 100; i++ {
+		if _, err := s.gtd.CreateTask(ctx, gtd.CreateTaskParams{Title: cjkTitle, Assignee: "claude"}); err != nil {
+			t.Fatalf("CreateTask %d: %v", i, err)
+		}
+	}
+
+	r := callListTasks(t, s, map[string]any{"limit": float64(100)})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var out struct {
+		Tasks             json.RawMessage `json:"tasks"`
+		Returned          int             `json:"returned"`
+		HasMore           bool            `json:"has_more"`
+		TruncatedByBudget bool            `json:"truncated_by_budget"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("unmarshal response: %v (%s)", err, resultText(r))
+	}
+	if out.Returned >= 100 {
+		t.Errorf("returned = %d, want fewer than the requested 100 — a 100-row page of "+
+			"%d-rune CJK titles must not fit in the %d-rune budget", out.Returned, gtdTitleMaxRunes, listRuneBudget)
+	}
+	if !out.HasMore {
+		t.Error("has_more = false — 100 rows were seeded, fewer must have been returned")
+	}
+	if !out.TruncatedByBudget {
+		t.Error("truncated_by_budget = false — a page smaller than the row-count clamp must say why")
+	}
+	if runes := utf8.RuneCountInString(string(out.Tasks)); runes > listRuneBudget {
+		t.Errorf("tasks array is %d runes, want at most the %d-rune budget "+
+			"(mutation: remove the budget check and this goes red)", runes, listRuneBudget)
+	}
+}
+
+// TestListTasks_SingleRowExceedsBudget is [F0930-11]'s zero-row edge case:
+// one row's Description alone (gtdBodyMaxRunes=20,000) already exceeds
+// listRuneBudget (18,000). This must be a SUCCESSFUL, empty page — never a
+// tool error — per truncateListByRuneBudget's "only whole trailing rows
+// dropped" contract taken to its limit.
+func TestListTasks_SingleRowExceedsBudget(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	hugeDescription := strings.Repeat("測", gtdBodyMaxRunes) // alone exceeds listRuneBudget
+	if _, err := s.gtd.CreateTask(ctx, gtd.CreateTaskParams{
+		Title:       "single oversized row",
+		Description: hugeDescription,
+		Assignee:    "claude",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	r := callListTasks(t, s, map[string]any{"summary": false, "limit": float64(100)})
+	if r.IsError {
+		t.Fatalf("a single oversized row must be a successful, empty page, got error: %s", resultText(r))
+	}
+	var out struct {
+		Tasks             []json.RawMessage `json:"tasks"`
+		Returned          int               `json:"returned"`
+		HasMore           bool              `json:"has_more"`
+		TruncatedByBudget bool              `json:"truncated_by_budget"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("unmarshal response: %v (%s)", err, resultText(r))
+	}
+	if out.Returned != 0 || len(out.Tasks) != 0 {
+		t.Errorf("returned = %d (tasks len %d), want 0 — a single row over budget must be "+
+			"dropped whole, not returned partially", out.Returned, len(out.Tasks))
+	}
+	if !out.HasMore {
+		t.Error("has_more = false — the oversized row still exists past this (empty) page")
+	}
+	if !out.TruncatedByBudget {
+		t.Error("truncated_by_budget = false for a page that dropped its only row")
 	}
 }
 
