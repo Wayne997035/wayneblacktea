@@ -232,6 +232,12 @@ func (m *mockGTDStore) GetTaskByID(_ context.Context, _ uuid.UUID) (*db.Task, er
 	return nil, errMockNotImpl
 }
 
+// FindTaskIDsByPrefix stub — gtd.StoreIface gained this method [F0930-17];
+// this fake's own tests never exercise the prefix-resolution path.
+func (m *mockGTDStore) FindTaskIDsByPrefix(_ context.Context, _ string, _ int) ([]gtd.TaskIDTitle, error) {
+	return nil, errMockNotImpl
+}
+
 func (m *mockGTDStore) TasksFiltered(_ context.Context, _ gtd.TaskFilter) ([]db.Task, error) {
 	return nil, errMockNotImpl
 }

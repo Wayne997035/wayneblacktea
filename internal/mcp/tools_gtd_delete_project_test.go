@@ -18,7 +18,7 @@ const statusConfirmationRequired = "confirmation_required"
 // callDeleteProject invokes delete_project (seam + handleDeleteProject).
 func callDeleteProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "delete_project", args, s.handleDeleteProject)
+	return callTool(t, s, "delete_project", args, s.handleDeleteProject)
 }
 
 // seedProjectWithTasks creates a project with n tasks under it.

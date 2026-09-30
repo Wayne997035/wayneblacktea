@@ -368,6 +368,23 @@ type TaskFilter struct {
 	// post-LIMIT filtering silently drops matching rows once one area grows
 	// past the page size.
 	Area string
+
+	// Q, when non-empty, restricts results to tasks whose title contains it
+	// as a case-insensitive substring [F0930-20]. Empty means "no filter"
+	// and preserves prior behaviour for existing callers. Both backends
+	// escape Q via internal/likeescape.Escape before binding it into the
+	// LIKE/ILIKE pattern, so a literal %, _ or \ in the caller's query text
+	// never acts as a wildcard.
+	Q string
+}
+
+// TaskIDTitle is FindTaskIDsByPrefix's row projection [F0930-17]: a
+// candidate task's id + title, nothing else. Not persisted, not DB-mapped —
+// exists purely so the prefix resolver (internal/mcp/task_id_resolver.go)
+// and its ambiguous-match error message never need a full db.Task.
+type TaskIDTitle struct {
+	ID    uuid.UUID
+	Title string
 }
 
 // AreaCount is one row of the area breakdown: how many tasks sit in a single

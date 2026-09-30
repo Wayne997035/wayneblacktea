@@ -37,7 +37,7 @@ func seedTaskInArea(t *testing.T, s *Server, area string) uuid.UUID {
 
 func updateTaskText(t *testing.T, s *Server, args map[string]any) string {
 	t.Helper()
-	r := callTool(t, "update_task", args, s.handleUpdateTask)
+	r := callTool(t, s, "update_task", args, s.handleUpdateTask)
 	if r.IsError {
 		return "ERROR: " + resultText(r)
 	}

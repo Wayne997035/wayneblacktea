@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
@@ -151,7 +152,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"independent of has_more — re-call with a smaller limit to keep paging. Read-only."),
 		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
-	), seam("list_projects", s.handleListProjects))
+	), seam(s, "list_projects", s.handleListProjects))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -164,7 +165,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("goal_id", mcp.Description("Parent goal UUID")),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
 			mcp.WithString("repo_name", mcp.Description("VCS repository slug to link this project (e.g. wayneblacktea)")),
-		), seam("create_project", s.handleCreateProject),
+		), seam(s, "create_project", s.handleCreateProject),
 		requiredMsg("name", "name, title and area are required"),
 		requiredMsg("title", "name, title and area are required"),
 		requiredMsg("area", "name, title and area are required"),
@@ -189,7 +190,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				mcp.Enum("active", "completed", "archived", "on_hold")),
 			mcp.WithString("goal_id", mcp.Description("Parent goal UUID (empty string clears the link)")),
 			mcp.WithString("repo_name", mcp.Description("VCS repository slug (empty string clears the link)")),
-		), seam("update_project", s.handleUpdateProject),
+		), seam(s, "update_project", s.handleUpdateProject),
 		uuidArgs("project_id"),
 	)
 
@@ -215,7 +216,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			// (migration 000079). An enum baked into the schema would put the
 			// redeploy straight back.
 			mcp.WithString("area", mcp.Description("Filter by area slug; read wayneblacktea://gtd/areas for the list and counts")),
-		), seam("list_tasks", s.handleListTasks),
+			mcp.WithString("q",
+				mcp.Description("Case-insensitive title substring 2-200 chars"),
+				mcp.MinLength(2), mcp.MaxLength(200)),
+		), seam(s, "list_tasks", s.handleListTasks),
 		uuidArgs("project_id"),
 	)
 
@@ -263,7 +267,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			// cannot answer "how many are left", which is the only reason this
 			// column exists.
 			mcp.WithString("area", mcp.Description("Area slug; read wayneblacktea://gtd/areas for the list"), mcp.Required()),
-		), seam("add_task", s.handleAddTask),
+		), seam(s, "add_task", s.handleAddTask),
 		uuidArgs("project_id"),
 		noMaxLength("assignee"),
 	)
@@ -278,7 +282,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			),
 			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
 			mcp.WithString("artifact", mcp.Description("Link or note for the output (PR URL or commit SHA auto-detected)")),
-		), seam("complete_task", s.handleCompleteTask),
+		), seam(s, "complete_task", s.handleCompleteTask),
 		uuidArgs("task_id"),
 	)
 
@@ -294,7 +298,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"independent of has_more — re-call with a smaller limit to keep paging. Read-only."),
 		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
-	), seam("list_goals", s.handleListGoals))
+	), seam(s, "list_goals", s.handleListGoals))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -304,7 +308,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("area", mcp.Description("Life area (e.g. career, health, personal)"), mcp.Required()),
 			mcp.WithString("description", mcp.Description("Detailed description")),
 			mcp.WithString("due_date", mcp.Description("Target date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
-		), seam("create_goal", s.handleCreateGoal),
+		), seam(s, "create_goal", s.handleCreateGoal),
 		requiredMsg("title", "title and area are required"),
 		requiredMsg("area", "title and area are required"),
 	)
@@ -342,7 +346,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("area", mcp.Description(
 				"Reclassify the task. Must name an area from wayneblacktea://gtd/areas; omit to keep it.",
 			)),
-		), seam("update_task", s.handleUpdateTask),
+		), seam(s, "update_task", s.handleUpdateTask),
 		uuidArgs("task_id"),
 		// assignee's MaxLength(200) is advisory-only (see add_task's
 		// identical rationale above) — gtd.NormalizeActor's allowlist is the
@@ -356,7 +360,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithDescription("Updates the status of a project."),
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 			mcp.WithString("status", mcp.Description("New status: active, completed, archived, or on_hold"), mcp.Required()),
-		), seam("update_project_status", s.handleUpdateProjectStatus),
+		), seam(s, "update_project_status", s.handleUpdateProjectStatus),
 		uuidArgs("project_id"),
 	)
 
@@ -364,7 +368,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		"get_project",
 		mcp.WithDescription("Returns a project by name with its recent decisions."),
 		mcp.WithString("name", mcp.Description("Project slug name"), mcp.Required()),
-	), seam("get_project", s.handleGetProject))
+	), seam(s, "get_project", s.handleGetProject))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -374,7 +378,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("action", mcp.Description("What was done"), mcp.Required()),
 			mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 			mcp.WithString("notes", mcp.Description("Additional notes")),
-		), seam("log_activity", s.handleLogActivity),
+		), seam(s, "log_activity", s.handleLogActivity),
 		requiredMsg("actor", "actor and action are required"),
 		requiredMsg("action", "actor and action are required"),
 		uuidArgs("project_id"),
@@ -388,7 +392,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"session or surface high-importance tasks that have no due date.",
 		),
 		mcp.WithNumber("days", mcp.Description("How many days ahead to include (1-14, default 7)")),
-	), seam("get_upcoming_work", s.handleGetUpcomingWork))
+	), seam(s, "get_upcoming_work", s.handleGetUpcomingWork))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -401,10 +405,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"that issued them — a token cannot be handed off to a different "+
 					"session/connection to complete the delete.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
 			mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
-		), seam("delete_task", s.handleDeleteTask),
+		), seam(s, "delete_task", s.handleDeleteTask),
 		uuidArgs("task_id"),
 	)
 
@@ -424,7 +428,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
 			mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
-		), seam("delete_project", s.handleDeleteProject),
+		), seam(s, "delete_project", s.handleDeleteProject),
 		uuidArgs("project_id"),
 	)
 
@@ -441,7 +445,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"handoffs, work sessions, vision items) — only the project and task rows.",
 			),
 			mcp.WithString("project_id", mcp.Description("Project UUID to restore"), mcp.Required()),
-		), seam("restore_project", s.handleRestoreProject),
+		), seam(s, "restore_project", s.handleRestoreProject),
 		uuidArgs("project_id"),
 	)
 
@@ -452,11 +456,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Appends a new checklist item to a task. Returns the full updated checklist. "+
 					"Use to track sub-steps or acceptance criteria for a task.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("title", mcp.Description("Item title (max 500 chars)"), mcp.Required(), mcp.MaxLength(500)),
 			mcp.WithString("file_ref", mcp.Description("Optional file path reference (max 2000 chars)"), mcp.MaxLength(2000)),
 			mcp.WithString("notes", mcp.Description("Optional notes (max 2000 chars)"), mcp.MaxLength(2000)),
-		), seam("task_checklist_add_item", s.handleChecklistAddItem),
+		), seam(s, "task_checklist_add_item", s.handleChecklistAddItem),
 		uuidArgs("task_id"),
 	)
 
@@ -467,11 +471,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Partially updates a checklist item (done flag, title, notes, evidence_url). "+
 					"Returns the full updated checklist.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
 			mcp.WithBoolean("done", mcp.Description("Mark item done (true) or undone (false)"), mcp.Required()),
 			mcp.WithString("evidence_url", mcp.Description("Optional URL or note proving the item is done"), mcp.MaxLength(2000)),
-		), seam("task_checklist_toggle", s.handleChecklistToggle),
+		), seam(s, "task_checklist_toggle", s.handleChecklistToggle),
 		uuidArgs("task_id", "item_id"),
 	)
 
@@ -483,9 +487,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"for compatibility. Shorthand for marking a checklist item done=true and recording "+
 					"completed_at=now. Returns the full updated checklist.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
-		), seam("task_checklist_complete", s.handleChecklistComplete),
+		), seam(s, "task_checklist_complete", s.handleChecklistComplete),
 		uuidArgs("task_id", "item_id"),
 	)
 
@@ -497,8 +501,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"in_progress, completed, and cancelled tasks. Use list_tasks for "+
 					"filtered bulk retrieval.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
-		), seam("get_task", s.handleGetTask),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
+		), seam(s, "get_task", s.handleGetTask),
 		uuidArgs("task_id"),
 	)
 
@@ -513,12 +517,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"IMPORTANT: This tool MUST NOT call record_outcome or evaluate_outcome — "+
 					"outcome recording stays exclusively in those tools. Reopen→re-complete records no outcome.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("status",
 				mcp.Description("New status"),
 				mcp.Required(),
 				mcp.Enum("pending", "in_progress", "completed", "cancelled")),
-		), seam("set_task_status", s.handleSetTaskStatus),
+		), seam(s, "set_task_status", s.handleSetTaskStatus),
 		uuidArgs("task_id"),
 	)
 
@@ -532,7 +536,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"reconcile_merged_prs can auto-close the task on PR merge "+
 				"(sprint feature/gtd-enforce-server-side GTD-fix 8/12).",
 		),
-		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 		mcp.WithString("branch_name",
 			mcp.Description("Optional git branch name to persist on the task (e.g. feature/my-feature). "+
 				"Pass this when you already know the branch so the task can be linked for auto-close.")),
@@ -550,7 +554,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	// reject a wholly-missing/empty task_id with "task_id is required" before
 	// the handler runs; only a malformed-but-non-empty task_id now reaches the
 	// hand-written uuid.Parse and its dynamic message.
-	), seam("begin_task", s.handleBeginTask))
+	), seam(s, "begin_task", s.handleBeginTask))
 }
 
 // Read-time bounds for db.Task/db.Project's free-text fields, applied by
@@ -1115,12 +1119,29 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		}
 	}
 
+	// [F0930-20] q: trim, then 0 < len < 2 -> reject ("too short"); empty
+	// after trim -> no filter (byte-identical to today for existing
+	// callers); non-empty -> tag-noise screen, same pattern as
+	// checkDecisionNoise/record_outcome's notes. Passed through AS-IS
+	// (not lowercased here) — case-folding happens in SQL (PG ILIKE,
+	// SQLite's driver-default case-insensitive LIKE).
+	q := strings.TrimSpace(args.Q)
+	if q != "" {
+		if len([]rune(q)) < 2 {
+			return mcp.NewToolResultError("q must be at least 2 characters"), nil
+		}
+		if err := sanitize.ValidateNoTagNoise(q); err != nil {
+			return inputErrorResult("invalid q", err), nil
+		}
+	}
+
 	f := gtd.TaskFilter{
 		ProjectID: args.ProjectID,
 		Status:    rawStatus,
 		Limit:     effLimit,
 		Offset:    offset,
 		Area:      args.Area,
+		Q:         q,
 	}
 	rows, err := s.gtd.TasksFiltered(ctx, f)
 	if err != nil {

@@ -23,57 +23,57 @@ import (
 
 func callListProjects(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "list_projects", args, s.handleListProjects)
+	return callTool(t, s, "list_projects", args, s.handleListProjects)
 }
 
 func callCreateProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "create_project", args, s.handleCreateProject)
+	return callTool(t, s, "create_project", args, s.handleCreateProject)
 }
 
 func callUpdateProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "update_project", args, s.handleUpdateProject)
+	return callTool(t, s, "update_project", args, s.handleUpdateProject)
 }
 
 func callListGoals(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "list_goals", args, s.handleListGoals)
+	return callTool(t, s, "list_goals", args, s.handleListGoals)
 }
 
 func callCreateGoal(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "create_goal", args, s.handleCreateGoal)
+	return callTool(t, s, "create_goal", args, s.handleCreateGoal)
 }
 
 func callUpdateProjectStatus(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "update_project_status", args, s.handleUpdateProjectStatus)
+	return callTool(t, s, "update_project_status", args, s.handleUpdateProjectStatus)
 }
 
 func callGetProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "get_project", args, s.handleGetProject)
+	return callTool(t, s, "get_project", args, s.handleGetProject)
 }
 
 func callLogActivity(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "log_activity", args, s.handleLogActivity)
+	return callTool(t, s, "log_activity", args, s.handleLogActivity)
 }
 
 func callChecklistAddItem(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "task_checklist_add_item", args, s.handleChecklistAddItem)
+	return callTool(t, s, "task_checklist_add_item", args, s.handleChecklistAddItem)
 }
 
 func callChecklistToggle(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "task_checklist_toggle", args, s.handleChecklistToggle)
+	return callTool(t, s, "task_checklist_toggle", args, s.handleChecklistToggle)
 }
 
 func callChecklistComplete(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "task_checklist_complete", args, s.handleChecklistComplete)
+	return callTool(t, s, "task_checklist_complete", args, s.handleChecklistComplete)
 }
 
 // seedProject creates a project via the store and returns it.

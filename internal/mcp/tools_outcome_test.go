@@ -16,8 +16,11 @@ import (
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
 )
 
-// entityTypeTask is the repeated "task" string used across outcome test cases.
-const entityTypeTask = "task"
+// entityTypeTask (tools_outcome.go) is the repeated "task" string used
+// across outcome test cases — moved to the production file [F0930-19] so
+// parseRecordOutcomeArgs' own entity_type=="task" gate can share it too
+// (goconst: a literal duplicating a test-only constant is still a literal
+// from production's point of view).
 
 // nullStr is the "null" literal used in nil-safe JSON response assertions.
 const nullStr = "null"

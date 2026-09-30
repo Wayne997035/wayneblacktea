@@ -56,7 +56,7 @@ func confirmReconcileRaw(ctx context.Context, s *Server, token string) (*mcpmsg.
 func callDeleteRaw(ctx context.Context, s *Server, args map[string]any) (*mcpmsg.CallToolResult, error) {
 	req := mcpmsg.CallToolRequest{}
 	req.Params.Arguments = args
-	return seam("delete_task", s.handleDeleteTask)(ctx, req)
+	return seam(s, "delete_task", s.handleDeleteTask)(ctx, req)
 }
 
 // wins counts how many of the supplied results represent a successful

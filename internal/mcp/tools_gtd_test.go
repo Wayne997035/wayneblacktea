@@ -133,14 +133,19 @@ func TestStrictVagueness_ParseBool(t *testing.T) {
 // toolName before invoking fn, exactly as MCPServer() wires the real tool.
 // Used by every callXxx helper below so tests exercise the same validation
 // path a real MCP client hits, not just the handler's business logic.
+//
+// s MUST be the same *Server whose handler method fn is bound to — seam()'s
+// task_id-prefix pass-0 (F0930-18) resolves against s.gtd, so passing the
+// wrong Server here would validate against one database and run fn against
+// another.
 func callTool[T any](
-	t *testing.T, toolName string, args map[string]any,
+	t *testing.T, s *Server, toolName string, args map[string]any,
 	fn func(context.Context, T) (*mcpmsg.CallToolResult, error),
 ) *mcpmsg.CallToolResult {
 	t.Helper()
 	req := mcpmsg.CallToolRequest{}
 	req.Params.Arguments = args
-	res, err := seam(toolName, fn)(context.Background(), req)
+	res, err := seam(s, toolName, fn)(context.Background(), req)
 	if err != nil {
 		t.Fatalf("%s error: %v", toolName, err)
 	}
@@ -150,25 +155,25 @@ func callTool[T any](
 // callListTasks invokes list_tasks (seam + handleListTasks) with the given args.
 func callListTasks(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "list_tasks", args, s.handleListTasks)
+	return callTool(t, s, "list_tasks", args, s.handleListTasks)
 }
 
 // callGetTask invokes get_task (seam + handleGetTask) with the given args.
 func callGetTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "get_task", args, s.handleGetTask)
+	return callTool(t, s, "get_task", args, s.handleGetTask)
 }
 
 // callSetTaskStatus invokes set_task_status (seam + handleSetTaskStatus) with the given args.
 func callSetTaskStatus(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "set_task_status", args, s.handleSetTaskStatus)
+	return callTool(t, s, "set_task_status", args, s.handleSetTaskStatus)
 }
 
 // callCompleteTask invokes complete_task (seam + handleCompleteTask) with the given args.
 func callCompleteTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "complete_task", args, s.handleCompleteTask)
+	return callTool(t, s, "complete_task", args, s.handleCompleteTask)
 }
 
 // seedTaskWithDueDate creates a task via the store (bypasses MCP handler due_date check).

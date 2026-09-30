@@ -22,6 +22,10 @@ const mcpProtocolFull = mcpInstructions + "\n\n" + mcpProtocolAppendix
 // rows, trigger vocabularies and per-tool guidance that do not fit the
 // initialize-path budget. Rules here are NOT optional — they are the same
 // protocol, just paid for only by clients that ask.
+//
+// [F0930-21] The GTD-discipline triggers and the update_task per-tool-detail
+// bullet below both got a task_id-prefix-acceptance note synced into their
+// prose when D3/D14 shipped — see task_id_resolver.go.
 const mcpProtocolAppendix = `## APPENDIX — full routing table
 
 Memory / knowledge routing (not in the injected core protocol):
@@ -35,10 +39,10 @@ Memory / knowledge routing (not in the injected core protocol):
 ## MANDATORY GTD DISCIPLINE — triggers
 
 Before dispatching any engineer/agent OR starting any Lead-direct implementation:
--> MUST call update_task(task_id, status="in_progress") for EVERY task being worked.
+-> MUST call update_task(task_id, status="in_progress") for EVERY task being worked. task_id accepts an 8+ char unique prefix.
 
 When a task is done (build passes, PR merged, or Lead-direct commit pushed):
--> MUST call complete_task(task_id, artifact="<PR URL or commit SHA>") immediately.
+-> MUST call complete_task(task_id, artifact="<PR URL or commit SHA>") immediately. task_id accepts an 8+ char unique prefix.
 
 NEVER ask "should I update the GTD?" — just do it. Missing these calls = process bug.
 - "dispatch engineer" -> update_task in_progress first
@@ -139,6 +143,8 @@ update_task — updates one or more mutable fields; everything except task_id is
 optional and omitted fields keep their existing value. Use complete_task, not
 update_task, to mark a task completed. status accepts pending, in_progress or
 cancelled. branch_name and pr_url accept an empty string to clear the field.
+task_id (and every other tool's task_id argument) accepts either a full UUID
+or an 8+ char unique prefix; an ambiguous prefix errors listing candidates.
 
 complete_task — if artifact is a GitHub PR URL (https://github.com/.../pull/N)
 it is also stored as pr_url; if it is a 40-character hex SHA it is appended to

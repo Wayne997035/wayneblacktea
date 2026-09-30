@@ -174,11 +174,19 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 		p.ProjectID = &id
 	}
 	if raw := stringArg(args, "task_id"); raw != "" {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return mcp.NewToolResultError(errMsgInvalidTaskIDUUID), nil
+		id, errResult := s.resolveTaskID(ctx, raw)
+		if errResult != nil {
+			return errResult, nil
 		}
 		p.TaskID = &id
+		// [F0930-19] Write the resolved full UUID back into args, same D14
+		// in-place-mutation contract the seam's pass-0 uses (toolspec.go),
+		// applied here by hand: log_decision is a raw ms.AddTool
+		// registration and never enters the seam. Without this,
+		// autoLogMiddleware's project_id enrichment (middleware_autolog.go,
+		// reads args["task_id"] after this handler returns) would still see
+		// the caller's raw prefix and silently fail to resolve it.
+		args["task_id"] = id.String()
 	}
 
 	d, err := s.decision.Log(ctx, p)

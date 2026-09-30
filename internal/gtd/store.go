@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -403,11 +404,23 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 	if f.UpdatedSince != nil {
 		updatedSinceArg = *f.UpdatedSince
 	}
+	// [F0930-20] likePattern is built once in Go (empty Q → empty pattern,
+	// the "$N::text = '' OR ..." guard below then no-ops exactly like area's
+	// existing empty-string convention) and bound as one parameter — never
+	// string-concatenated into the SQL text itself. likeescape.Escape (D15,
+	// the same shared helper skill/atom already use on both backends) backslash-
+	// escapes \, % and _ in Q so a caller's literal wildcard character can
+	// never act as one.
+	var likePattern string
+	if f.Q != "" {
+		likePattern = "%" + likeescape.Escape(f.Q) + "%"
+	}
 	// The area predicate is appended as the LAST positional parameter of each
 	// branch rather than renumbering the existing ones — renumbering three
 	// near-identical queries by hand is exactly the edit that silently swaps
 	// two placeholders. Empty string means "every area", so existing callers
-	// are unaffected without needing a nil-able type.
+	// are unaffected without needing a nil-able type. Q follows the same
+	// append-only convention, one slot after area.
 	//
 	// area is selected so every task object carries its classification,
 	// consistent across all read paths.
@@ -420,9 +433,10 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
 			  AND ($6::text = '' OR area = $6)
+			  AND ($7::text = '' OR title ILIKE $7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	case "all":
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -430,9 +444,10 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
 			  AND ($6::text = '' OR area = $6)
+			  AND ($7::text = '' OR title ILIKE $7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -441,9 +456,11 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($3::uuid IS NULL OR workspace_id = $3)
 			  AND ($6::timestamptz IS NULL OR updated_at >= $6)
 			  AND ($7::text = '' OR area = $7)
+			  AND ($8::text = '' OR title ILIKE $8 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $4 OFFSET $5`
-		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
+		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID,
+			f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing filtered tasks: %w", err)
@@ -1240,6 +1257,37 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 		return nil, fmt.Errorf("scanning task %s: %w", id, err)
 	}
 	return &t, nil
+}
+
+// FindTaskIDsByPrefix returns up to limit tasks whose id starts with prefix,
+// scoped to the configured workspace, ordered by id for a deterministic
+// candidate set across repeat calls and across backends [F0930-17]. Hand-rolled
+// (not sqlc) like getTaskByID/TasksFiltered above, over the same table.
+//
+// prefix is assumed pre-validated by the caller (task_id_resolver.go) against
+// ^[0-9a-f]{8,}$ — hex-only, so no LIKE-escaping is needed here (unlike Q
+// above, prefix can never contain a % or _ wildcard character).
+func (s *Store) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]TaskIDTitle, error) {
+	const q = `SELECT id, title FROM tasks
+		WHERE id::text LIKE $1 || '%' AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY id LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, prefix, s.workspaceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("finding tasks by id prefix %q: %w", prefix, err)
+	}
+	defer rows.Close()
+	var out []TaskIDTitle
+	for rows.Next() {
+		var t TaskIDTitle
+		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+			return nil, fmt.Errorf("scanning task id prefix candidate: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task id prefix candidates: %w", err)
+	}
+	return out, nil
 }
 
 // coalesceString returns ptr if non-nil, otherwise fallback.

@@ -109,7 +109,7 @@ func TestRegisterToolSpec_ConcurrentSeamSeesCompleteSpec(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			ts := specFor(toolName)
-			if r := ts.validate(map[string]any{"task_id": "not-a-uuid"}); r == nil || !r.IsError {
+			if r := ts.validate(context.Background(), nil, map[string]any{"task_id": "not-a-uuid"}); r == nil || !r.IsError {
 				failures <- "malformed task_id UUID was accepted — opts had not been applied when seam read the spec"
 			}
 		}()
@@ -128,7 +128,7 @@ func TestValidate_RequiredMissing_DefaultMessage(t *testing.T) {
 	tool := mcp.NewTool("spec_val_required", mcp.WithString("title", mcp.Required()))
 	ts := registerToolSpec(tool)
 
-	r := ts.validate(map[string]any{})
+	r := ts.validate(context.Background(), nil, map[string]any{})
 	if r == nil || !r.IsError {
 		t.Fatal("missing required field must error")
 	}
@@ -142,7 +142,7 @@ func TestValidate_RequiredEmptyString_TreatedAsMissing(t *testing.T) {
 	tool := mcp.NewTool("spec_val_required_empty", mcp.WithString("title", mcp.Required()))
 	ts := registerToolSpec(tool)
 
-	r := ts.validate(map[string]any{"title": ""})
+	r := ts.validate(context.Background(), nil, map[string]any{"title": ""})
 	if r == nil || !r.IsError {
 		t.Fatal("empty required string must error")
 	}
@@ -156,7 +156,7 @@ func TestValidate_RequiredWrongType_TypeMismatchError(t *testing.T) {
 	tool := mcp.NewTool("spec_val_wrong_type", mcp.WithString("title", mcp.Required()))
 	ts := registerToolSpec(tool)
 
-	r := ts.validate(map[string]any{"title": float64(5)})
+	r := ts.validate(context.Background(), nil, map[string]any{"title": float64(5)})
 	if r == nil || !r.IsError {
 		t.Fatal("wrong JSON type for required string must error")
 	}
@@ -177,7 +177,7 @@ func TestValidate_RequiredMessageOverride(t *testing.T) {
 	requiredMsg("name", combined)(ts)
 	requiredMsg("title", combined)(ts)
 
-	r := ts.validate(map[string]any{"title": "x"})
+	r := ts.validate(context.Background(), nil, map[string]any{"title": "x"})
 	if r == nil || !r.IsError {
 		t.Fatal("missing name must error")
 	}
@@ -193,19 +193,19 @@ func TestValidate_RequiredUUID_DelegatesToRequireUUIDArg(t *testing.T) {
 	uuidArgs("task_id")(ts)
 
 	// Missing → "task_id is required" (requireUUIDArg's own default).
-	r := ts.validate(map[string]any{})
+	r := ts.validate(context.Background(), nil, map[string]any{})
 	if r == nil || !r.IsError || resultText(r) != "task_id is required" {
 		t.Errorf("missing uuid required = %q, want %q", resultText(r), "task_id is required")
 	}
 
 	// Malformed → default "invalid task_id UUID".
-	r = ts.validate(map[string]any{"task_id": "not-a-uuid"})
+	r = ts.validate(context.Background(), nil, map[string]any{"task_id": "not-a-uuid"})
 	if r == nil || !r.IsError || resultText(r) != "invalid task_id UUID" {
 		t.Errorf("malformed uuid required = %q, want %q", resultText(r), "invalid task_id UUID")
 	}
 
 	// Valid → nil.
-	if r := ts.validate(map[string]any{"task_id": uuid.NewString()}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{"task_id": uuid.NewString()}); r != nil {
 		t.Errorf("valid required uuid should pass, got: %s", resultText(r))
 	}
 }
@@ -217,7 +217,7 @@ func TestValidate_RequiredUUID_CustomInvalidMessage(t *testing.T) {
 	uuidArgs("project_id")(ts)
 	ts.args["project_id"].uuidMsg = "custom invalid project_id message"
 
-	r := ts.validate(map[string]any{"project_id": "bad"})
+	r := ts.validate(context.Background(), nil, map[string]any{"project_id": "bad"})
 	if r == nil || resultText(r) != "custom invalid project_id message" {
 		t.Errorf("message = %q, want override", resultText(r))
 	}
@@ -229,10 +229,10 @@ func TestValidate_OptionalUUID_EmptySkipsFormatCheck(t *testing.T) {
 	ts := registerToolSpec(tool)
 	uuidArgs("project_id")(ts)
 
-	if r := ts.validate(map[string]any{}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{}); r != nil {
 		t.Errorf("absent optional uuid should pass, got: %s", resultText(r))
 	}
-	if r := ts.validate(map[string]any{"project_id": ""}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{"project_id": ""}); r != nil {
 		t.Errorf("empty optional uuid should pass, got: %s", resultText(r))
 	}
 }
@@ -243,7 +243,7 @@ func TestValidate_OptionalUUID_MalformedErrors(t *testing.T) {
 	ts := registerToolSpec(tool)
 	uuidArgs("project_id")(ts)
 
-	r := ts.validate(map[string]any{"project_id": "not-a-uuid"})
+	r := ts.validate(context.Background(), nil, map[string]any{"project_id": "not-a-uuid"})
 	if r == nil || resultText(r) != errMsgInvalidProjectIDUUID {
 		t.Errorf("message = %q, want %q", resultText(r), errMsgInvalidProjectIDUUID)
 	}
@@ -254,10 +254,10 @@ func TestValidate_Enum_ValidAndInvalid(t *testing.T) {
 	tool := mcp.NewTool("spec_val_enum", mcp.WithString("status", mcp.Enum("active", "done")))
 	ts := registerToolSpec(tool)
 
-	if r := ts.validate(map[string]any{"status": "active"}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{"status": "active"}); r != nil {
 		t.Errorf("valid enum value should pass, got: %s", resultText(r))
 	}
-	r := ts.validate(map[string]any{"status": "bogus"})
+	r := ts.validate(context.Background(), nil, map[string]any{"status": "bogus"})
 	want := "status must be one of: active, done"
 	if r == nil || resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
@@ -270,7 +270,7 @@ func TestValidate_Enum_MessageOverride(t *testing.T) {
 	ts := registerToolSpec(tool)
 	ts.args["status"].enumMsg = "custom enum message"
 
-	r := ts.validate(map[string]any{"status": "bogus"})
+	r := ts.validate(context.Background(), nil, map[string]any{"status": "bogus"})
 	if r == nil || resultText(r) != "custom enum message" {
 		t.Errorf("message = %q, want override", resultText(r))
 	}
@@ -281,10 +281,10 @@ func TestValidate_MaxLength_WithinAndExceeding(t *testing.T) {
 	tool := mcp.NewTool("spec_val_maxlen", mcp.WithString("title", mcp.MaxLength(5)))
 	ts := registerToolSpec(tool)
 
-	if r := ts.validate(map[string]any{"title": "abcde"}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{"title": "abcde"}); r != nil {
 		t.Errorf("exactly-at-limit should pass, got: %s", resultText(r))
 	}
-	r := ts.validate(map[string]any{"title": "abcdef"})
+	r := ts.validate(context.Background(), nil, map[string]any{"title": "abcdef"})
 	want := "title exceeds 5 characters"
 	if r == nil || resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
@@ -297,7 +297,7 @@ func TestValidate_NoMaxLength_SuppressesEnforcement(t *testing.T) {
 	ts := registerToolSpec(tool)
 	noMaxLength("assignee")(ts)
 
-	if r := ts.validate(map[string]any{"assignee": "way-over-five-chars"}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{"assignee": "way-over-five-chars"}); r != nil {
 		t.Errorf("suppressed maxLength should not fire, got: %s", resultText(r))
 	}
 }
@@ -310,7 +310,7 @@ func TestValidate_OptionalFieldAbsent_NoError(t *testing.T) {
 		mcp.WithString("description"),
 	)
 	ts := registerToolSpec(tool)
-	if r := ts.validate(map[string]any{"title": "x"}); r != nil {
+	if r := ts.validate(context.Background(), nil, map[string]any{"title": "x"}); r != nil {
 		t.Errorf("absent optional field should not error, got: %s", resultText(r))
 	}
 }
@@ -569,7 +569,7 @@ func TestSeam_ValidationFailureShortCircuitsHandler(t *testing.T) {
 	uuidArgs("task_id")(ts)
 
 	called := false
-	handler := seam("spec_seam_valfail", func(_ context.Context, _ seamTestArgs) (*mcp.CallToolResult, error) {
+	handler := seam(nil, "spec_seam_valfail", func(_ context.Context, _ seamTestArgs) (*mcp.CallToolResult, error) {
 		called = true
 		return mcp.NewToolResultText("should not reach here"), nil
 	})
@@ -600,7 +600,7 @@ func TestSeam_ValidAndDecodedArgsReachHandler(t *testing.T) {
 
 	id := uuid.New()
 	var gotArgs seamTestArgs
-	handler := seam("spec_seam_ok", func(_ context.Context, args seamTestArgs) (*mcp.CallToolResult, error) {
+	handler := seam(nil, "spec_seam_ok", func(_ context.Context, args seamTestArgs) (*mcp.CallToolResult, error) {
 		gotArgs = args
 		return mcp.NewToolResultText("ok"), nil
 	})

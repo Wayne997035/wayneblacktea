@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
@@ -633,10 +634,19 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 		err  error
 	)
 	updatedSinceArg := nullTimeArg(f.UpdatedSince)
+	// [F0930-20] Same likePattern construction as the Postgres twin
+	// (internal/gtd/store.go queryFilteredTasks): built once in Go, bound as
+	// one parameter, escaped via the same shared likeescape.Escape (D15) so
+	// the two backends cannot drift on what counts as a wildcard.
+	var likePattern string
+	if f.Q != "" {
+		likePattern = "%" + likeescape.Escape(f.Q) + "%"
+	}
 	// Area is appended as the last positional parameter in every branch, and
 	// empty string means "every area" — kept identical to the Postgres twin
 	// (internal/gtd/store.go queryFilteredTasks) so the two backends cannot
-	// drift on which rows a filter returns.
+	// drift on which rows a filter returns. Q follows the same convention,
+	// one slot after area.
 	switch f.Status {
 	case "", "active":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
@@ -645,20 +655,22 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 			  AND (?2 IS NULL OR workspace_id = ?2)
 			  AND (?5 IS NULL OR updated_at >= ?5)
 			  AND (?6 = '' OR area = ?6)
+			  AND (?7 = '' OR title LIKE ?7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	case "all":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE (?1 IS NULL OR project_id = ?1)
 			  AND (?2 IS NULL OR workspace_id = ?2)
 			  AND (?5 IS NULL OR updated_at >= ?5)
 			  AND (?6 = '' OR area = ?6)
+			  AND (?7 = '' OR title LIKE ?7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	default:
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE status = ?1
@@ -666,10 +678,11 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 			  AND (?3 IS NULL OR workspace_id = ?3)
 			  AND (?6 IS NULL OR updated_at >= ?6)
 			  AND (?7 = '' OR area = ?7)
+			  AND (?8 = '' OR title LIKE ?8 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?4 OFFSET ?5`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
+			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	}
 	if err != nil {
 		return nil, errWrap("TasksFiltered", err)
@@ -1085,6 +1098,41 @@ func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 // Returns ErrNotFound when no matching row exists. Satisfies gtd.StoreIface.
 func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	return s.taskByID(ctx, id)
+}
+
+// FindTaskIDsByPrefix returns up to limit tasks whose id starts with prefix,
+// scoped to the configured workspace, ordered by id — SQLite twin of
+// internal/gtd/store.go's FindTaskIDsByPrefix [F0930-17]. id is stored as
+// canonical lowercase TEXT with no dashes stripped (dialect note,
+// migrations/sqlite/000012_sqlite_baseline.up.sql), so no cast is needed
+// before the LIKE, unlike the Postgres twin's id::text.
+//
+// prefix is assumed pre-validated by the caller against ^[0-9a-f]{8,}$ — no
+// LIKE-escaping needed (hex-only input has no wildcard characters).
+func (s *GTDStore) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]gtd.TaskIDTitle, error) {
+	const q = `SELECT id, title FROM tasks
+		WHERE id LIKE ?1 || '%' AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY id LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, prefix, s.db.workspaceArg(), limit)
+	if err != nil {
+		return nil, errWrap("FindTaskIDsByPrefix", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []gtd.TaskIDTitle
+	for rows.Next() {
+		var t gtd.TaskIDTitle
+		var idStr string
+		if err := rows.Scan(&idStr, &t.Title); err != nil {
+			return nil, errWrap("FindTaskIDsByPrefix scan", err)
+		}
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			return nil, errWrap("FindTaskIDsByPrefix parse id", err)
+		}
+		t.ID = id
+		out = append(out, t)
+	}
+	return out, errWrap("FindTaskIDsByPrefix iter", rows.Err())
 }
 
 // BatchCompleteTasksByPRMatch implements gtd.StoreIface.BatchCompleteTasksByPRMatch

@@ -26,7 +26,7 @@ func callAddTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolR
 	if _, ok := args["area"]; !ok {
 		args["area"] = "unsorted"
 	}
-	return callTool(t, "add_task", args, s.handleAddTask)
+	return callTool(t, s, "add_task", args, s.handleAddTask)
 }
 
 // callUpdateTask invokes update_task (seam + handleUpdateTask) with the given
@@ -34,14 +34,14 @@ func callAddTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolR
 // CallToolResult.IsError.
 func callUpdateTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "update_task", args, s.handleUpdateTask)
+	return callTool(t, s, "update_task", args, s.handleUpdateTask)
 }
 
 // callGetUpcomingWork invokes get_upcoming_work (seam + handleGetUpcomingWork)
 // with the given args.
 func callGetUpcomingWork(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "get_upcoming_work", args, s.handleGetUpcomingWork)
+	return callTool(t, s, "get_upcoming_work", args, s.handleGetUpcomingWork)
 }
 
 // --- parseUpdateTaskArgs validation ---

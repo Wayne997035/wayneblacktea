@@ -18,7 +18,7 @@ import (
 // (tool errors surface via CallToolResult.IsError = true).
 func callDeleteTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "delete_task", args, s.handleDeleteTask)
+	return callTool(t, s, "delete_task", args, s.handleDeleteTask)
 }
 
 // seedTask creates a single GTD task and returns its UUID for delete tests.
@@ -465,7 +465,7 @@ func callDeleteTaskCtx(t *testing.T, ctx context.Context, s *Server, args map[st
 	t.Helper()
 	req := mcpmsg.CallToolRequest{}
 	req.Params.Arguments = args
-	res, err := seam("delete_task", s.handleDeleteTask)(ctx, req)
+	res, err := seam(s, "delete_task", s.handleDeleteTask)(ctx, req)
 	if err != nil {
 		t.Fatalf("delete_task error: %v", err)
 	}

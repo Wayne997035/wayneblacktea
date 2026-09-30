@@ -76,6 +76,12 @@ type ListTasksArgs struct {
 	// baked-in enum would reintroduce the redeploy it was built to avoid.
 	// An unknown value is rejected at the handler, not silently ignored.
 	Area string `mcp:"area"`
+	// Q is a case-insensitive substring match on task title [F0930-20].
+	// MaxLength(200) is seam-enforced (registration); the 2-char MINIMUM is
+	// schema-advisory only (registerToolSpec never reads minLength) and is
+	// hand-enforced in handleListTasks, same "schema hint != server
+	// enforcement" pattern as assignee's noMaxLength.
+	Q string `mcp:"q"`
 }
 
 // AddTaskArgs — add_task. Kind, BranchName and PRUrl stay plain strings: kind
