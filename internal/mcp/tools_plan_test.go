@@ -885,7 +885,8 @@ func TestHandleConfirmPlan_WorkSessionAlreadyActive_ReportsNotStarted(t *testing
 	}
 
 	var taskID string
-	if err := sdb.QueryRowContext(context.Background(), `SELECT id FROM tasks WHERE title = ?1`, "Second Session Task").Scan(&taskID); err != nil {
+	row := sdb.QueryRowContext(context.Background(), `SELECT id FROM tasks WHERE title = ?1`, "Second Session Task")
+	if err := row.Scan(&taskID); err != nil {
 		t.Fatalf("query second task: %v", err)
 	}
 	if got := queryMCPTaskStatus(t, sdb, taskID); got != taskStatusPending {

@@ -235,6 +235,30 @@ func TestDecisionStore_List_OrderingTiebreaksOnID(t *testing.T) {
 // accepted one; this pins that Offset actually pages the real SQLite List
 // query (internal/storage/sqlite/decision.go), not just that the Go-side
 // field exists.
+// assertSQLiteOffsetPage is decision_list_test.go's (PG twin, this package
+// mirrors it) helper: fetches one page via store.List(limit, offset) and
+// fails the test unless it exactly matches want — same length, same IDs in
+// order. Extracted from TestDecisionStore_List_OffsetPaginatesResults purely
+// to keep that test's cyclomatic complexity under the lint gate's threshold.
+func assertSQLiteOffsetPage(
+	t *testing.T, s *sqlite.DecisionStore, ctx context.Context, limit, offset int32, want []*db.Decision,
+) []db.Decision {
+	t.Helper()
+	page, err := s.List(ctx, decision.ListParams{Limit: limit, Offset: offset})
+	if err != nil {
+		t.Fatalf("List offset=%d: %v", offset, err)
+	}
+	if len(page) != len(want) {
+		t.Fatalf("offset=%d page has %d rows, want %d: %+v", offset, len(page), len(want), page)
+	}
+	for i, w := range want {
+		if page[i].ID != w.ID {
+			t.Fatalf("offset=%d page[%d] = %s, want %s (full page: %+v)", offset, i, page[i].ID, w.ID, page)
+		}
+	}
+	return page
+}
+
 func TestDecisionStore_List_OffsetPaginatesResults(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	d, s := openDecisionDB(t, ":memory:", "")
@@ -252,32 +276,12 @@ func TestDecisionStore_List_OffsetPaginatesResults(t *testing.T) {
 	}
 	// created_at DESC, id DESC -> seeded[4] first, seeded[0] last.
 
-	firstPage, err := s.List(ctx, decision.ListParams{Limit: 2, Offset: 0})
-	if err != nil {
-		t.Fatalf("List offset=0: %v", err)
-	}
-	if len(firstPage) != 2 || firstPage[0].ID != seeded[4].ID || firstPage[1].ID != seeded[3].ID {
-		t.Fatalf("offset=0 page = %+v, want [seeded[4], seeded[3]]", firstPage)
-	}
-
-	secondPage, err := s.List(ctx, decision.ListParams{Limit: 2, Offset: 2})
-	if err != nil {
-		t.Fatalf("List offset=2: %v", err)
-	}
-	if len(secondPage) != 2 || secondPage[0].ID != seeded[2].ID || secondPage[1].ID != seeded[1].ID {
-		t.Fatalf("offset=2 page = %+v, want [seeded[2], seeded[1]]", secondPage)
-	}
+	firstPage := assertSQLiteOffsetPage(t, s, ctx, 2, 0, []*db.Decision{seeded[4], seeded[3]})
+	secondPage := assertSQLiteOffsetPage(t, s, ctx, 2, 2, []*db.Decision{seeded[2], seeded[1]})
 	if firstPage[0].ID == secondPage[0].ID || firstPage[1].ID == secondPage[0].ID {
 		t.Error("offset=0 and offset=2 pages overlap — OFFSET is not actually paginating")
 	}
-
-	lastPage, err := s.List(ctx, decision.ListParams{Limit: 2, Offset: 4})
-	if err != nil {
-		t.Fatalf("List offset=4: %v", err)
-	}
-	if len(lastPage) != 1 || lastPage[0].ID != seeded[0].ID {
-		t.Fatalf("offset=4 page = %+v, want [seeded[0]] (1 row, the tail)", lastPage)
-	}
+	assertSQLiteOffsetPage(t, s, ctx, 2, 4, []*db.Decision{seeded[0]})
 }
 
 // TestDecisionStore_List_WorkspaceIsolation verifies List never crosses the

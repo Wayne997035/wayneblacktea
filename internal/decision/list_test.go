@@ -287,6 +287,30 @@ func TestStore_List_OrderingTiebreaksOnID(t *testing.T) {
 	}
 }
 
+// assertOffsetPage fetches one page via store.List(limit, offset) and fails
+// the test unless it exactly matches want — same length, same IDs in the
+// same order. Extracted from TestStore_List_OffsetPaginatesResults (and
+// reused by nothing else) purely to keep that test's cyclomatic complexity
+// under the lint gate's threshold; the three per-page checks it replaces
+// (length + each element's ID) are unchanged, just no longer inlined three
+// times as one large compound condition each.
+func assertOffsetPage(t *testing.T, store *decision.Store, ctx context.Context, limit, offset int32, want []*db.Decision) []db.Decision {
+	t.Helper()
+	page, err := store.List(ctx, decision.ListParams{Limit: limit, Offset: offset})
+	if err != nil {
+		t.Fatalf("List offset=%d: %v", offset, err)
+	}
+	if len(page) != len(want) {
+		t.Fatalf("offset=%d page has %d rows, want %d: %+v", offset, len(page), len(want), page)
+	}
+	for i, w := range want {
+		if page[i].ID != w.ID {
+			t.Fatalf("offset=%d page[%d] = %s, want %s (full page: %+v)", offset, i, page[i].ID, w.ID, page)
+		}
+	}
+	return page
+}
+
 // TestStore_List_OffsetPaginatesResults is [F0930-13]'s PG offset test:
 // list_decisions previously had no way to fetch a second page at all
 // (ListParams had no Offset field, neither backend's SQL accepted one). This
@@ -310,34 +334,14 @@ func TestStore_List_OffsetPaginatesResults(t *testing.T) {
 	}
 	// created_at DESC, id DESC -> seeded[4] first, seeded[0] last.
 
-	firstPage, err := store.List(ctx, decision.ListParams{Limit: 2, Offset: 0})
-	if err != nil {
-		t.Fatalf("List offset=0: %v", err)
-	}
-	if len(firstPage) != 2 || firstPage[0].ID != seeded[4].ID || firstPage[1].ID != seeded[3].ID {
-		t.Fatalf("offset=0 page = %+v, want [seeded[4], seeded[3]]", firstPage)
-	}
-
-	secondPage, err := store.List(ctx, decision.ListParams{Limit: 2, Offset: 2})
-	if err != nil {
-		t.Fatalf("List offset=2: %v", err)
-	}
-	if len(secondPage) != 2 || secondPage[0].ID != seeded[2].ID || secondPage[1].ID != seeded[1].ID {
-		t.Fatalf("offset=2 page = %+v, want [seeded[2], seeded[1]]", secondPage)
-	}
+	firstPage := assertOffsetPage(t, store, ctx, 2, 0, []*db.Decision{seeded[4], seeded[3]})
+	secondPage := assertOffsetPage(t, store, ctx, 2, 2, []*db.Decision{seeded[2], seeded[1]})
 	// Pages must not overlap — the exact bug an un-implemented OFFSET (a
 	// silent no-op always returning page 1) would produce.
 	if firstPage[0].ID == secondPage[0].ID || firstPage[1].ID == secondPage[0].ID {
 		t.Error("offset=0 and offset=2 pages overlap — OFFSET is not actually paginating")
 	}
-
-	lastPage, err := store.List(ctx, decision.ListParams{Limit: 2, Offset: 4})
-	if err != nil {
-		t.Fatalf("List offset=4: %v", err)
-	}
-	if len(lastPage) != 1 || lastPage[0].ID != seeded[0].ID {
-		t.Fatalf("offset=4 page = %+v, want [seeded[0]] (1 row, the tail)", lastPage)
-	}
+	assertOffsetPage(t, store, ctx, 2, 4, []*db.Decision{seeded[0]})
 }
 
 // TestStore_List_WorkspaceIsolation verifies List never crosses the

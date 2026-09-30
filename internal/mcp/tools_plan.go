@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,19 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// errWorkSessionNotAttempted is createWorkSessionForPlan's sentinel for its
+// two legitimate skip cases — no work-session store wired, no repo_name —
+// as opposed to an attempted-and-failed worksession.Store.Create call
+// ([F0930-16]). A (*string, error) function returning (nil, nil) for "not
+// applicable" is ambiguous to callers (golangci-lint's nilnil rule: nothing
+// distinguishes it from "succeeded with a nil value"); a named sentinel
+// makes the three-way outcome (skip / attempted-and-failed / succeeded)
+// explicit in the type instead of relying on callers remembering the
+// convention. handleConfirmPlan errors.Is-checks for this sentinel and
+// treats it exactly like the old (nil, nil) — silent, no response-text line
+// — so the two legitimate-skip tests' behavior is unchanged.
+var errWorkSessionNotAttempted = errors.New("mcp: work session creation not attempted")
 
 func (s *Server) registerPlanTools(ms *server.MCPServer) {
 	// Description budget: confirm_plan is in the always-visible core tool set
@@ -142,7 +156,12 @@ func (s *Server) handleConfirmPlan(ctx context.Context, req mcp.CallToolRequest)
 	sessionID, sessionErr := s.createWorkSessionForPlan(ctx, repoName, projectID, phases, taskIDs, assignee)
 
 	text := planResultText(createdTasks, taskIDs, loggedDecisions, decisionIDs, sessionID, false)
-	if sessionErr != nil {
+	if sessionErr != nil && !errors.Is(sessionErr, errWorkSessionNotAttempted) {
+		// errWorkSessionNotAttempted: one of the two legitimate skips (no
+		// store wired / no repo_name) — stays silent, same as the old
+		// (nil, nil) contract. Every other non-nil sessionErr is an
+		// attempted-and-failed Create and IS surfaced below.
+		//
 		// [F0930-16] Purely informational — no retry suggestion. Retrying
 		// confirm_plan here would attempt to re-create the phase tasks it
 		// already created above (same double-submission hazard the
@@ -201,7 +220,11 @@ const planErrorTitleMaxRunes = 80
 // trip. The existing "  • %s\n" prefix and title text are unchanged —
 // additive suffix only, so every pre-existing strings.Contains assertion on
 // those substrings still holds.
-func planResultText(createdTasks []string, taskIDs []uuid.UUID, loggedDecisions []string, decisionIDs []uuid.UUID, sessionID *string, failed bool) string {
+func planResultText(
+	createdTasks []string, taskIDs []uuid.UUID,
+	loggedDecisions []string, decisionIDs []uuid.UUID,
+	sessionID *string, failed bool,
+) string {
 	if failed && len(createdTasks) == 0 && len(loggedDecisions) == 0 {
 		return planFailedHeadline
 	}
@@ -482,7 +505,9 @@ func (s *Server) createPhaseTasksWithIDs(ctx context.Context, phases []phaseInpu
 // (logged decision titles, logged decision UUIDs, error) — [F0930-15] added
 // the UUID slice, parallel-indexed to titles by the same append-together
 // pattern as createPhaseTasksWithIDs.
-func (s *Server) logPlanDecisions(ctx context.Context, decisions []decisionInput, projectID *uuid.UUID, repoName string) ([]string, []uuid.UUID, error) {
+func (s *Server) logPlanDecisions(
+	ctx context.Context, decisions []decisionInput, projectID *uuid.UUID, repoName string,
+) ([]string, []uuid.UUID, error) {
 	var logged []string
 	var ids []uuid.UUID
 	for _, d := range decisions {
@@ -535,11 +560,11 @@ func (s *Server) createWorkSessionForPlan(
 	assignee string,
 ) (*string, error) {
 	if s.workSession == nil {
-		return nil, nil
+		return nil, errWorkSessionNotAttempted
 	}
 	if repoName == "" {
 		// No repo context — skip silently (non-repo sessions require start_work).
-		return nil, nil
+		return nil, errWorkSessionNotAttempted
 	}
 
 	// Build a title from the first phase title.
@@ -583,7 +608,13 @@ func (s *Server) createWorkSessionForPlan(
 			"repo_name", repoName,
 			"err", err,
 		)
-		return nil, err
+		// %w (not raw err): wrapcheck wants an external-package error
+		// (worksession.Store.Create's) wrapped with local call-site context
+		// before it crosses this function's boundary. %w still preserves the
+		// chain for sanitizeWorkSessionErrorReason's
+		// errors.Is(sessionErr, worksession.ErrAlreadyActive) check — only
+		// the wrap's own added text is new, nothing is lost.
+		return nil, fmt.Errorf("creating work session: %w", err)
 	}
 
 	id := sess.ID.String()

@@ -1028,6 +1028,37 @@ func toTaskSummary(t db.Task) taskSummary {
 	return ts
 }
 
+// projectTaskListRows converts a fetched page of db.Task rows into
+// list_tasks' wire representation — compact taskSummary when summaryMode is
+// true, full (wrapUntrustedTask'd) db.Task otherwise — and applies the
+// shared rune budget ([F0930-11]). Split out of handleListTasks purely to
+// keep that function's cyclomatic complexity under the lint gate's
+// threshold; the projection logic and its ordering (summary branch first,
+// rune-budget pass last) are unchanged from what handleListTasks inlined
+// before this split.
+func projectTaskListRows(rows []db.Task, summaryMode bool) (tasks any, returned int, truncatedByBudget bool) {
+	if summaryMode {
+		summaries := make([]taskSummary, 0, len(rows))
+		for _, t := range rows {
+			summaries = append(summaries, toTaskSummary(t))
+		}
+		kept, truncated := truncateListByRuneBudget(summaries, listRuneBudget)
+		return kept, len(kept), truncated
+	}
+	if rows == nil {
+		rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	}
+	// U13 Phase B (tools_gtd.go:772): summary=false returns full db.Task
+	// rows, so each one goes through wrapUntrustedTask the same as
+	// get_task's single-record read (line ~793).
+	wrapped := make([]db.Task, len(rows))
+	for i := range rows {
+		wrapped[i] = *wrapUntrustedTask(&rows[i])
+	}
+	kept, truncated := truncateListByRuneBudget(wrapped, listRuneBudget)
+	return kept, len(kept), truncated
+}
+
 func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.CallToolResult, error) {
 	// status: enum-membership (when present) already enforced by the seam
 	// (list_tasks' status arg declares mcp.Enum(...) at registration);
@@ -1105,31 +1136,10 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 	// listRuneBudget; truncatedByBudget folds into has_more (a caller that
 	// only checks has_more still knows to re-page) but is also reported
 	// separately so a caller can tell "there's a next page" apart from "this
-	// page itself was too big, lower limit".
-	var tasks any
-	var returned int
-	var truncatedByBudget bool
-	if summaryMode {
-		summaries := make([]taskSummary, 0, len(rows))
-		for _, t := range rows {
-			summaries = append(summaries, toTaskSummary(t))
-		}
-		kept, truncated := truncateListByRuneBudget(summaries, listRuneBudget)
-		tasks, returned, truncatedByBudget = kept, len(kept), truncated
-	} else {
-		if rows == nil {
-			rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
-		}
-		// U13 Phase B (tools_gtd.go:772): summary=false returns full db.Task
-		// rows, so each one goes through wrapUntrustedTask the same as
-		// get_task's single-record read (line ~793).
-		wrapped := make([]db.Task, len(rows))
-		for i := range rows {
-			wrapped[i] = *wrapUntrustedTask(&rows[i])
-		}
-		kept, truncated := truncateListByRuneBudget(wrapped, listRuneBudget)
-		tasks, returned, truncatedByBudget = kept, len(kept), truncated
-	}
+	// page itself was too big, lower limit". Projection split into
+	// projectTaskListRows to keep this function's cyclomatic complexity under
+	// the lint gate's threshold — behavior unchanged.
+	tasks, returned, truncatedByBudget := projectTaskListRows(rows, summaryMode)
 	hasMore = hasMore || truncatedByBudget
 
 	return jsonText(map[string]any{
