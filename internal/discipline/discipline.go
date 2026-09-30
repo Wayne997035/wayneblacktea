@@ -122,8 +122,8 @@ var MutatingTools = map[string]bool{
 	"closeout_session_check":       true, // tools_closeout.go — activity_log write
 }
 
-// ReadOnlyTools is the set of MCP tool names that only read state — carved
-// out of DeliberatelyExcludedTools' former inline "Read-only tools" category
+// ReadOnlyTools is [F0930-01]'s set of MCP tool names that only read state —
+// carved out of DeliberatelyExcludedTools' former inline "Read-only tools" category
 // (sprint-0930 D1) so MCPServer() can auto-set readOnlyHint=true /
 // destructiveHint=false for exactly this set with no second hand-maintained
 // list at the registration site (internal/mcp/tools_readonly_annotations.go).

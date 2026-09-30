@@ -410,7 +410,7 @@ func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
 		)
 	}
 
-	// [F0930-03] Annotation parity: every tool in discipline.ReadOnlyTools
+	// [F0930-02][F0930-03] Annotation parity: every tool in discipline.ReadOnlyTools
 	// MUST carry readOnlyHint=true/destructiveHint=false on the real,
 	// registered *server.MCPServer (applyReadOnlyAnnotations' actual effect,
 	// not just the source map); every tool outside that set MUST NOT have
@@ -434,7 +434,7 @@ func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
 	}
 }
 
-// TestReadOnlyTools_DisjointFromMutating is the structural guard for
+// TestReadOnlyTools_DisjointFromMutating is [F0930-01]'s structural guard for
 // sprint-0930 D1: discipline.ReadOnlyTools MUST contain exactly the 37 tools
 // D1 named, MUST NOT contain expand_tools (deliberately excluded — see its
 // comment on discipline.DeliberatelyExcludedTools), and MUST be disjoint from
