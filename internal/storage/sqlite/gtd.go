@@ -1821,7 +1821,7 @@ func (a *sqliteBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.T
 		rereadAssignee = task.Assignee.String
 	}
 	if assigneeErr := gtd.RequireAssigneeForInProgress(rereadAssignee, gtd.TaskStatusInProgress); assigneeErr != nil {
-		return nil, assigneeErr
+		return nil, fmt.Errorf("%w", assigneeErr) // context added one level up by BeginTaskOrchestration
 	}
 	return nil, gtd.ErrNotFound
 }
