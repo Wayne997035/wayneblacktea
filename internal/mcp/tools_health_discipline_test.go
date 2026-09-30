@@ -409,6 +409,50 @@ func TestMCPServer_AllRegisteredToolsClassified(t *testing.T) {
 			unclassified,
 		)
 	}
+
+	// [F0930-03] Annotation parity: every tool in discipline.ReadOnlyTools
+	// MUST carry readOnlyHint=true/destructiveHint=false on the real,
+	// registered *server.MCPServer (applyReadOnlyAnnotations' actual effect,
+	// not just the source map); every tool outside that set MUST NOT have
+	// readOnlyHint=true (mcp-go's default is false, so a stray true means the
+	// annotation leaked outside its intended set).
+	for name, entry := range tools {
+		ro := entry.Tool.Annotations.ReadOnlyHint
+		dh := entry.Tool.Annotations.DestructiveHint
+		if discipline.ReadOnlyTools[name] {
+			if ro == nil || !*ro {
+				t.Errorf("%q: expected readOnlyHint=true, got %v", name, ro)
+			}
+			if dh == nil || *dh {
+				t.Errorf("%q: expected destructiveHint=false, got %v", name, dh)
+			}
+			continue
+		}
+		if ro != nil && *ro {
+			t.Errorf("%q: unexpected readOnlyHint=true outside discipline.ReadOnlyTools", name)
+		}
+	}
+}
+
+// TestReadOnlyTools_DisjointFromMutating is the structural guard for
+// sprint-0930 D1: discipline.ReadOnlyTools MUST contain exactly the 37 tools
+// D1 named, MUST NOT contain expand_tools (deliberately excluded — see its
+// comment on discipline.DeliberatelyExcludedTools), and MUST be disjoint from
+// discipline.MutatingTools. Pure map comparison — no SQLite server needed,
+// unlike TestMCPServer_AllRegisteredToolsClassified above.
+func TestReadOnlyTools_DisjointFromMutating(t *testing.T) {
+	t.Parallel()
+	if len(discipline.ReadOnlyTools) != 37 {
+		t.Errorf("expected 37 read-only tools, got %d", len(discipline.ReadOnlyTools))
+	}
+	if discipline.ReadOnlyTools["expand_tools"] {
+		t.Error("expand_tools MUST NOT be in ReadOnlyTools (sprint-0930 D1)")
+	}
+	for name := range discipline.ReadOnlyTools {
+		if discipline.MutatingTools[name] {
+			t.Errorf("%q is in both ReadOnlyTools and MutatingTools", name)
+		}
+	}
 }
 
 // TestF092962_SevenToolsClassification is F0929-62's classification-effect

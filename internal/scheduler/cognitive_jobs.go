@@ -599,14 +599,22 @@ func (sc *Scheduler) runDecisionOutcomeReview() {
 	)
 }
 
-// pgDecisionsPendingOutcomeReview runs the Postgres raw-SQL query, unchanged
-// from the pre-parity implementation including the 2026-07-19-incident dedup
-// + daily-cap guards documented on decisionOutcomeReviewDailyCap. A scan
+// pgDecisionsPendingOutcomeReview runs the Postgres raw-SQL query, including
+// the 2026-07-19-incident dedup + daily-cap guards documented on
+// decisionOutcomeReviewDailyCap, plus two sprint-0930 D2 fixes: [F0930-04]
+// only decisions with source='manual' are candidates (auto decisions never
+// enter the proposal loop), and [F0930-05] the dedup NOT EXISTS no longer
+// filters on p.status — a decision that was ever proposed for, regardless of
+// whether that proposal is now pending/accepted/rejected, is never proposed
+// again. The three-column shape of the dedup predicate (type, proposed_by,
+// payload->>'source_entity_id') is exactly what migration 000085's
+// idx_pending_proposals_type_proposer_source expression index covers. A scan
 // failure or rows.Err logs a warning and does not abort the batch (only a
 // query-level error aborts, via the returned error).
 func (sc *Scheduler) pgDecisionsPendingOutcomeReview(ctx context.Context, workspaceID *uuid.UUID, dailyCap int) ([]decRow, error) {
 	const q = `SELECT d.id, d.title FROM decisions d
 WHERE d.workspace_id = $1
+  AND d.source = 'manual'
   AND d.created_at < NOW() - INTERVAL '` + decisionOutcomeInterval + `'
   AND NOT EXISTS (
       SELECT 1 FROM outcomes o
@@ -617,7 +625,6 @@ WHERE d.workspace_id = $1
       SELECT 1 FROM pending_proposals p
       WHERE p.type = 'task'
         AND p.proposed_by = 'scheduler:decision_outcome_review'
-        AND p.status = 'pending'
         AND p.payload->>'source_entity_id' = d.id::text
   )
 ORDER BY d.created_at ASC

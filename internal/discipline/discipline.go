@@ -122,51 +122,22 @@ var MutatingTools = map[string]bool{
 	"closeout_session_check":       true, // tools_closeout.go — activity_log write
 }
 
-// DeliberatelyExcludedTools is the explicit, documented allowlist of MCP tool
-// names that are registered on the server but intentionally NOT classified as
-// mutating for drift-detection purposes, even though some of them do write to
-// the database. This is the single source of truth referenced by both this
-// package's doc comment and the structural parity test
-// (internal/mcp.TestMCPServer_AllRegisteredToolsClassified) — do NOT maintain
-// a second copy of this list elsewhere.
+// ReadOnlyTools is the set of MCP tool names that only read state — carved
+// out of DeliberatelyExcludedTools' former inline "Read-only tools" category
+// (sprint-0930 D1) so MCPServer() can auto-set readOnlyHint=true /
+// destructiveHint=false for exactly this set with no second hand-maintained
+// list at the registration site (internal/mcp/tools_readonly_annotations.go).
+// expand_tools is deliberately NOT here even though it is also read-only —
+// see its own comment on DeliberatelyExcludedTools below.
 //
-// Categories:
-//   - System-generated cache/candidate writes: these tools persist derived,
-//     re-computable observations (fuzzy match candidates, dashboard snapshots,
-//     project status snapshots, closeout heuristic checks) rather than
-//     authoritative user/agent decisions. A human/agent did not directly
-//     "decide" to mutate state — the write is a caching side effect of a read
-//     operation, so flagging it as drift would generate noise, not signal.
-//   - External-only side effects: tools whose only side effect is calling an
-//     external service (Notion) with no local Store row of authoritative
-//     record; nothing here for local drift-detection to protect.
-//   - Read-only tools: everything else registered on the server that never
-//     calls a Store write method.
-var DeliberatelyExcludedTools = map[string]bool{
-	// System-generated cache/candidate writes.
-	// detect_completion_candidates/reconcile_dashboard/closeout_session_check
-	// moved to MutatingTools above — generate_project_status is the same
-	// category but NOT named by that task's question/success-criteria list,
-	// so it stays here unmoved.
-	"generate_project_status": true,
-
-	// External-only side effects (no local Store row of record).
-	"sync_to_notion": true,
-
-	// Read-only tools — verified (round-2 review remediation) to call only
-	// List/Get/Search/Query-style Store methods, never a write. Kept as an
-	// explicit allowlist (not just "absent from MutatingTools") so the
-	// structural parity test forces a deliberate classification decision for
-	// any newly-registered tool instead of silently passing it through.
-	"analyze_recent_patterns": true,
-	"assemble_context":        true, // tools_contextpack.go — Assembler.Assemble is retrieval-only, no Store writes.
-	"detect_unclosed_loops":   true,
-	// expand_tools mutates only process-local, per-session tools/list
-	// visibility (internal/mcp/tools_expand.go) — no Store, no DB row, nothing
-	// a drift signal could protect. Deliberately NOT in MutatingTools: putting
-	// it there would demand a preceding log_decision/confirm_plan for what is
-	// effectively a catalogue paging call.
-	"expand_tools":              true,
+// Single source of truth (sprint-0930 D1): every tool name below appears as
+// a literal string exactly once in this package. DeliberatelyExcludedTools,
+// the annotation-apply function, and the structural parity test all
+// reference this var — NEVER maintain a second copy.
+var ReadOnlyTools = map[string]bool{
+	"analyze_recent_patterns":   true,
+	"assemble_context":          true, // tools_contextpack.go — Assembler.Assemble is retrieval-only, no Store writes.
+	"detect_unclosed_loops":     true,
 	"find_failed_patterns":      true,
 	"get_active_work":           true,
 	"get_due_reviews":           true,
@@ -202,6 +173,66 @@ var DeliberatelyExcludedTools = map[string]bool{
 	"system_health":             true,
 	"traverse_atoms":            true,
 }
+
+// mergeToolSets returns the union of all given tool-name sets as a new map.
+// Used to build DeliberatelyExcludedTools out of ReadOnlyTools plus the
+// handful of tools excluded for other reasons, so every tool name remains a
+// single literal occurrence across the package (sprint-0930 D1).
+func mergeToolSets(sets ...map[string]bool) map[string]bool {
+	out := make(map[string]bool)
+	for _, s := range sets {
+		for k, v := range s {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// DeliberatelyExcludedTools is the explicit, documented allowlist of MCP tool
+// names that are registered on the server but intentionally NOT classified as
+// mutating for drift-detection purposes, even though some of them do write to
+// the database. This is the single source of truth referenced by both this
+// package's doc comment and the structural parity test
+// (internal/mcp.TestMCPServer_AllRegisteredToolsClassified) — do NOT maintain
+// a second copy of this list elsewhere.
+//
+// Categories:
+//   - System-generated cache/candidate writes: these tools persist derived,
+//     re-computable observations (fuzzy match candidates, dashboard snapshots,
+//     project status snapshots, closeout heuristic checks) rather than
+//     authoritative user/agent decisions. A human/agent did not directly
+//     "decide" to mutate state — the write is a caching side effect of a read
+//     operation, so flagging it as drift would generate noise, not signal.
+//   - External-only side effects: tools whose only side effect is calling an
+//     external service (Notion) with no local Store row of authoritative
+//     record; nothing here for local drift-detection to protect.
+//   - ReadOnlyTools (merged in below): everything else registered on the
+//     server that never calls a Store write method. This is also the exact
+//     set MCPServer() auto-annotates readOnlyHint=true/destructiveHint=false
+//     on (sprint-0930 D1) — the other categories in this map, including
+//     expand_tools right below, deliberately do NOT get that annotation even
+//     where they are also read-only in effect; see each entry's own comment.
+var DeliberatelyExcludedTools = mergeToolSets(
+	ReadOnlyTools,
+	map[string]bool{
+		// System-generated cache/candidate writes.
+		// detect_completion_candidates/reconcile_dashboard/closeout_session_check
+		// moved to MutatingTools above — generate_project_status is the same
+		// category but NOT named by that task's question/success-criteria list,
+		// so it stays here unmoved.
+		"generate_project_status": true,
+
+		// External-only side effects (no local Store row of record).
+		"sync_to_notion": true,
+
+		// expand_tools mutates only process-local, per-session tools/list
+		// visibility (internal/mcp/tools_expand.go) — no Store, no DB row, nothing
+		// a drift signal could protect. Deliberately NOT in MutatingTools: putting
+		// it there would demand a preceding log_decision/confirm_plan for what is
+		// effectively a catalogue paging call.
+		"expand_tools": true,
+	},
+)
 
 // IsMutating returns true when toolName is in the canonical MutatingTools set.
 // Out-of-set tools (queries, lists, gets) are recorded with is_mutating=false.
