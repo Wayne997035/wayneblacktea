@@ -1561,21 +1561,51 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 		}
 	}
 
-	const q = `UPDATE tasks
-		SET status = ?2, updated_at = ?3
-		WHERE id = ?1
-		  AND (?4 IS NULL OR workspace_id = ?4)`
 	now := nowRFC3339()
-	res, err := s.db.conn.ExecContext(ctx, q, id.String(), string(status), now, s.db.workspaceArg())
+	res, err := s.db.conn.ExecContext(ctx, updateTaskStatusSQL,
+		id.String(), string(status), now, s.db.workspaceArg(), gtd.AssigneeSpaceChars)
 	if err != nil {
 		return nil, errWrap("UpdateTaskStatus", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
+		// [F0930-09/7abfae44] Zero rows affected means either "not found" or
+		// (only when status == in_progress, since the SQL clause is a no-op
+		// otherwise) "assignee went blank between the pre-read above and
+		// this write" — the same write-time TOCTOU window SEC-196-02 closed
+		// for UpdateTaskStatusGuarded.
+		if status == gtd.TaskStatusInProgress {
+			reread, rerr := s.taskByID(ctx, id)
+			if rerr != nil {
+				return nil, rerr // gtd.ErrNotFound already wrapped
+			}
+			rereadAssignee := ""
+			if reread.Assignee.Valid {
+				rereadAssignee = reread.Assignee.String
+			}
+			if assigneeErr := gtd.RequireAssigneeForInProgress(rereadAssignee, status); assigneeErr != nil {
+				return nil, fmt.Errorf("updating task %s status: %w", id, assigneeErr)
+			}
+		}
 		return nil, gtd.ErrNotFound
 	}
 	return s.taskByID(ctx, id)
 }
+
+// updateTaskStatusSQL is the UPDATE used by UpdateTaskStatus above.
+// Package-level (not inline) so export_test.go can run it directly,
+// bypassing the Go pre-read, to prove the assignee clause is load-bearing on
+// its own — see ExecUpdateTaskStatusSQLForTest. [F0930-09] The assignee
+// clause is a no-op unless the target status is in_progress (?2 <>
+// 'in_progress'), since this statement also writes every other status,
+// unlike updateTaskStatusGuardedSQL. ?5 is gtd.AssigneeSpaceChars, so
+// SQLite's two-argument TRIM(X, Y) strips exactly the runes
+// strings.TrimSpace strips.
+const updateTaskStatusSQL = `UPDATE tasks
+		SET status = ?2, updated_at = ?3
+		WHERE id = ?1
+		  AND (?2 <> 'in_progress' OR TRIM(COALESCE(assignee, ''), ?5) <> '')
+		  AND (?4 IS NULL OR workspace_id = ?4)`
 
 // UpdateTaskStatusGuarded sets the status of a task, but only when the row's
 // current status still equals expectedCurrentStatus — a conditional UPDATE
@@ -1601,6 +1631,23 @@ const updateTaskStatusGuardedSQL = `UPDATE tasks
 		  AND (?2 <> 'in_progress' OR TRIM(COALESCE(assignee, ''), ?6) <> '')
 		  AND (?4 IS NULL OR workspace_id = ?4)`
 
+// updateTaskStatusGuardedHookKey is a private context key used ONLY by this
+// package's own tests (via WithUpdateTaskStatusGuardedTestHook in
+// export_test.go) to run a synchronous callback between
+// UpdateTaskStatusGuarded's pre-read and its guarded SQL UPDATE. This is the
+// only deterministic way to exercise the reread branch's status-vs-assignee
+// ordering fix ([F0930-07]) in a unit test: the pre-read above already
+// rejects any assignee that is blank AT PRE-READ TIME with the identical
+// wrapped error, so a blank assignee reaching the reread branch below can
+// only happen via a write that lands strictly between the two statements —
+// unreachable from any purely synchronous call without this hook, and a
+// real goroutine race would be inherently flaky given SQLite's single
+// connection. ctx.Value lookup misses (returns nil) on every production
+// code path.
+type updateTaskStatusGuardedHookKeyType struct{}
+
+var updateTaskStatusGuardedHookKey = updateTaskStatusGuardedHookKeyType{}
+
 func (s *GTDStore) UpdateTaskStatusGuarded(
 	ctx context.Context, id uuid.UUID, newStatus gtd.TaskStatus, expectedCurrentStatus gtd.TaskStatus,
 ) (*db.Task, error) {
@@ -1625,6 +1672,10 @@ func (s *GTDStore) UpdateTaskStatusGuarded(
 		}
 	}
 
+	if hook, ok := ctx.Value(updateTaskStatusGuardedHookKey).(func()); ok && hook != nil {
+		hook()
+	}
+
 	now := nowRFC3339()
 	res, err := s.db.conn.ExecContext(ctx, updateTaskStatusGuardedSQL,
 		id.String(), string(newStatus), now, s.db.workspaceArg(), string(expectedCurrentStatus), gtd.AssigneeSpaceChars)
@@ -1644,6 +1695,15 @@ func (s *GTDStore) UpdateTaskStatusGuarded(
 		reread, rerr := s.taskByID(ctx, id)
 		if rerr != nil {
 			return nil, rerr // gtd.ErrNotFound already wrapped
+		}
+		// [F0930-07] Status drift is checked BEFORE assignee: if the row's
+		// real status has already moved away from expectedCurrentStatus,
+		// that is a genuine conflict regardless of assignee state — a
+		// concurrent status change must never be misreported as "assignee
+		// required" just because the row also happens to have a blank
+		// assignee.
+		if reread.Status != string(expectedCurrentStatus) {
+			return nil, gtd.ErrConflict
 		}
 		if newStatus == gtd.TaskStatusInProgress {
 			rereadAssignee := ""
@@ -1702,18 +1762,31 @@ func (a *sqliteBeginTaskAdapter) BeginTx(ctx context.Context) error {
 	return nil
 }
 
-// GuardedUpdate only flips status when status != in_progress, guarding
-// against a TOCTOU race between the idempotency check and this write.
+// beginTaskStatusSQL is the guarded UPDATE used by GuardedUpdate below.
+// Package-level (not inline) so export_test.go can run it directly,
+// bypassing the Go pre-tx assignee check, to prove the assignee clause is
+// load-bearing on its own — see ExecBeginTaskStatusSQLForTest. [F0930-10]
+// The assignee clause closes the same write-time TOCTOU window SEC-196-02
+// closed for UpdateTaskStatusGuarded: BeginTask's pre-tx assignee check
+// (ReadExisting) only sees the row as of the read, not as of this write. ?4
+// is gtd.AssigneeSpaceChars, so SQLite's two-argument TRIM(X, Y) strips
+// exactly the runes strings.TrimSpace strips.
+const beginTaskStatusSQL = `UPDATE tasks
+		    SET status = 'in_progress', updated_at = ?2
+		  WHERE id = ?1
+		    AND (?3 IS NULL OR workspace_id = ?3)
+		    AND status != 'in_progress'
+		    AND TRIM(COALESCE(assignee, ''), ?4) <> ''`
+
+// GuardedUpdate only flips status when status != in_progress AND ([F0930-10]
+// the row's assignee is non-blank), guarding against a TOCTOU race between
+// the idempotency check / pre-tx assignee check and this write.
 func (a *sqliteBeginTaskAdapter) GuardedUpdate(ctx context.Context) (bool, error) {
 	now := nowRFC3339()
 	res, err := a.tx.ExecContext(
 		ctx,
-		`UPDATE tasks
-		    SET status = 'in_progress', updated_at = ?2
-		  WHERE id = ?1
-		    AND (?3 IS NULL OR workspace_id = ?3)
-		    AND status != 'in_progress'`,
-		a.id.String(), now, a.s.db.workspaceArg(),
+		beginTaskStatusSQL,
+		a.id.String(), now, a.s.db.workspaceArg(), gtd.AssigneeSpaceChars,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
@@ -1736,6 +1809,19 @@ func (a *sqliteBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.T
 	}
 	if task.Status == string(gtd.TaskStatusInProgress) {
 		return task, nil // raced to in_progress — idempotent
+	}
+	// [F0930-10] status != in_progress is already established above, so the
+	// only remaining reason GuardedUpdate's WHERE clause could have matched
+	// zero rows for a row that still exists is the assignee clause. Returned
+	// bare (not wrapped) — BeginTaskOrchestration's own wrap
+	// ("resolve guard-blocked: %w") is the only wrap this error gets, per
+	// this adapter's existing not-found-case convention above.
+	rereadAssignee := ""
+	if task.Assignee.Valid {
+		rereadAssignee = task.Assignee.String
+	}
+	if assigneeErr := gtd.RequireAssigneeForInProgress(rereadAssignee, gtd.TaskStatusInProgress); assigneeErr != nil {
+		return nil, assigneeErr
 	}
 	return nil, gtd.ErrNotFound
 }
@@ -1893,15 +1979,25 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 	}
 
 	// Domain-layer gate (P6.7): a NEW assignee value being set THIS call must
-	// resolve through the canonical allowlist before merging in. Empty
-	// string is the explicit-clear case (mergeTaskFields' nullStringIfEmpty
-	// turns it into NULL) and is left untouched — clearing is always allowed.
-	if p.Assignee != nil && strings.TrimSpace(*p.Assignee) != "" {
-		normalized, nerr := gtd.NormalizeActor(*p.Assignee)
-		if nerr != nil {
-			return nil, fmt.Errorf("updating task %s: %w", id, nerr)
+	// resolve through the canonical allowlist before merging in. A
+	// TrimSpace-empty value (literal "" or any whitespace-only string — tab,
+	// NBSP, ideographic space, ...) is the explicit-clear case [F0930-08]:
+	// mergeTaskFields' nullStringIfEmpty turns a literal "" into NULL, so a
+	// whitespace-only value is collapsed to "" here first — clearing is
+	// always allowed, and NormalizeActor is never called on it (it would
+	// reject arbitrary whitespace as an unrecognized actor, the wrong error
+	// for what is semantically a clear request).
+	if p.Assignee != nil {
+		if strings.TrimSpace(*p.Assignee) != "" {
+			normalized, nerr := gtd.NormalizeActor(*p.Assignee)
+			if nerr != nil {
+				return nil, fmt.Errorf("updating task %s: %w", id, nerr)
+			}
+			p.Assignee = &normalized
+		} else {
+			empty := ""
+			p.Assignee = &empty
 		}
-		p.Assignee = &normalized
 	}
 
 	m := mergeTaskFields(existing, p)

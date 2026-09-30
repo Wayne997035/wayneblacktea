@@ -1357,6 +1357,74 @@ func TestStore_UpdateTaskStatusGuarded_PG_NotFound(t *testing.T) {
 	}
 }
 
+// TestUpdateTaskStatusGuarded_StaleStatusBlankAssignee_ReturnsConflict is
+// [F0930-07]'s regression row: a status conflict (real status has already
+// moved away from expectedCurrentStatus) must be reported as ErrConflict,
+// never misreported as ErrAssigneeRequiredForInProgress just because the row
+// also happens to have a blank assignee. Before the fix, the reread branch
+// checked assignee before status and returned the wrong sentinel for this
+// exact combination.
+//
+// The task starts with a non-blank assignee ("claude") so the unrelated,
+// out-of-scope pre-read fast-fail (store.go, above UpdateTaskStatusGuarded)
+// does not itself reject the call before the guarded UPDATE even runs — the
+// pre-read only sees the assignee AS OF the read, and it is non-blank at
+// that point. The gtd.WithUpdateTaskStatusGuardedTestHook hook then
+// simulates a concurrent writer landing strictly between that pre-read and
+// the guarded UPDATE: it both moves the row's status away from
+// expectedCurrentStatus AND clears the assignee, in one UpdateTask call —
+// the exact "stale status + blank assignee" combination the reread branch
+// must resolve. This is the only deterministic way to construct that
+// combination: by the time a purely synchronous test could observe a blank
+// assignee at reread time, the pre-read (checking the identical thing,
+// moments earlier, with no intervening write) would already have rejected
+// the call with the identical wrapped error — a real goroutine race would
+// be flaky instead.
+func TestUpdateTaskStatusGuarded_StaleStatusBlankAssignee_ReturnsConflict(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "stale status blank assignee", Assignee: "claude"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	hookCtx := gtd.WithUpdateTaskStatusGuardedTestHook(ctx, func() {
+		// UpdateTask (not CompleteTask, which never touches assignee) both
+		// moves status away from expectedCurrentStatus AND clears assignee
+		// in one write — CompleteTask alone would leave assignee
+		// non-blank, and the reread branch's assignee check would pass
+		// regardless of ordering, a false pass that would not actually
+		// distinguish buggy from fixed code.
+		completedStatus := string(gtd.TaskStatusCompleted)
+		empty := ""
+		if _, uerr := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Status: &completedStatus, Assignee: &empty}); uerr != nil {
+			t.Fatalf("UpdateTask (simulated concurrent writer): %v", uerr)
+		}
+	})
+
+	// Caller believes the row is still "pending" (stale read) and wants to
+	// move it to "in_progress"; by the time the guarded UPDATE runs, status
+	// has drifted to "completed" AND assignee has been cleared.
+	_, err = store.UpdateTaskStatusGuarded(hookCtx, task.ID, gtd.TaskStatusInProgress, gtd.TaskStatusPending)
+	if !errors.Is(err, gtd.ErrConflict) {
+		t.Fatalf("UpdateTaskStatusGuarded err = %v, want gtd.ErrConflict (status drift is dispositive, regardless of assignee)", err)
+	}
+	if errors.Is(err, gtd.ErrAssigneeRequiredForInProgress) {
+		t.Fatalf("UpdateTaskStatusGuarded must not report the assignee error when status has already drifted, got %v", err)
+	}
+
+	got, err := store.GetTaskByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if got.Status != string(gtd.TaskStatusCompleted) {
+		t.Errorf("status = %q, want unchanged %q", got.Status, gtd.TaskStatusCompleted)
+	}
+}
+
 // TestGTDStore_UpdateTask_PG_Kind_AllValidValues verifies that every kind in
 // validator.ValidTaskKinds round-trips through UpdateTask on the Postgres
 // backend (GTD c282cc04 item #1). Paired with

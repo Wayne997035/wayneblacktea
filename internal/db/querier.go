@@ -13,7 +13,13 @@ import (
 type Querier interface {
 	// Atomically sets status to in_progress only when the current status is not
 	// already in_progress, preventing duplicate activity_log rows on concurrent calls.
-	// Returns pgx.ErrNoRows when the task is already in_progress or not found.
+	// Returns pgx.ErrNoRows when the task is already in_progress, not found, or
+	// (as of [F0930-10]) has a blank assignee — the same write-time TOCTOU
+	// window SEC-196-02 closed for UpdateTaskStatusGuarded, applied here since
+	// BeginTask's pre-tx assignee check (ReadExisting) has the identical gap.
+	// The target is unconditionally in_progress, so unlike UpdateTaskStatus this
+	// clause is unconditional too. sqlc.arg('space_chars') is
+	// gtd.AssigneeSpaceChars.
 	BeginTaskStatus(ctx context.Context, arg BeginTaskStatusParams) (Task, error)
 	// artifact is presence-aware: omitting it (sqlc.narg → SQL NULL) preserves
 	// whatever is already stored, matching
@@ -107,6 +113,15 @@ type Querier interface {
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error)
 	UpdateProjectStatus(ctx context.Context, arg UpdateProjectStatusParams) (Project, error)
 	UpdateReviewSchedule(ctx context.Context, arg UpdateReviewScheduleParams) (ReviewSchedule, error)
+	// [F0930-09] The assignee clause closes the same write-time TOCTOU window
+	// SEC-196-02 closed for UpdateTaskStatusGuarded (sql/queries/gtd.sql's
+	// UpdateTaskStatusGuarded below): the caller's Go-layer assignee pre-read
+	// (RequireAssigneeForInProgress) only sees the row as of the read, not as of
+	// this write. Only applies when the target status is in_progress — this
+	// query also writes every other status, unlike the guarded variant.
+	// sqlc.arg('space_chars') is gtd.AssigneeSpaceChars, so btrim's blank
+	// definition matches Go's strings.TrimSpace character-for-character (plain,
+	// no-argument TRIM only strips ASCII space).
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error)
 	// Conditional UPDATE closing the TOCTOU window between a caller's
 	// read and this write (e7468e5d sub-item 2): only writes when the row's
