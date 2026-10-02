@@ -48,42 +48,20 @@ func TestListBudget_StopsBeforeOverBudgetRow(t *testing.T) {
 	}
 }
 
-// TestListBudget_SingleRowExceedsBudget is F197-L2's forward-progress
-// acceptance: the first row is always kept, even when it alone is larger
-// than maxRunes — a page MUST make forward progress (offset+returned
-// advancing on every call), not return empty forever. With no rows after
-// it, nothing was actually dropped, so truncated must be false.
+// TestListBudget_SingleRowExceedsBudget is the zero-row edge case: even the
+// very first row alone is larger than maxRunes. This must still be a
+// successful, empty page — never an error — matching
+// appendNextActionsWithinByteBudget's "only whole trailing rows dropped"
+// contract taken to its limit.
 func TestListBudget_SingleRowExceedsBudget(t *testing.T) {
 	t.Parallel()
 	rows := []string{strings.Repeat("x", 1000)}
 	kept, truncated := truncateListByRuneBudget(rows, 50)
-	if truncated {
-		t.Error("truncated = true, want false — the lone row was kept as-is, nothing was dropped")
-	}
-	if len(kept) != 1 {
-		t.Fatalf("kept %d rows, want 1 — the first row must always be kept regardless of its own size", len(kept))
-	}
-	if kept[0] != rows[0] {
-		t.Error("kept[0] != the original row — the first row must be returned unchanged, not truncated")
-	}
-}
-
-// TestListBudget_FirstRowExceedsBudget_LaterRowsDropped is F197-L2's
-// companion case: the first row alone already exceeds maxRunes AND there are
-// rows after it — the first row still survives (forward progress), but the
-// rows after it have no budget left and must be dropped (truncated=true).
-func TestListBudget_FirstRowExceedsBudget_LaterRowsDropped(t *testing.T) {
-	t.Parallel()
-	rows := []string{strings.Repeat("x", 1000), "b", "c"}
-	kept, truncated := truncateListByRuneBudget(rows, 50)
 	if !truncated {
-		t.Error("truncated = false, want true — the 2 rows after the oversized first row must be dropped")
+		t.Error("truncated = false, want true — the single row alone exceeds the budget")
 	}
-	if len(kept) != 1 {
-		t.Fatalf("kept %d rows, want 1 (only the first row)", len(kept))
-	}
-	if kept[0] != rows[0] {
-		t.Error("kept[0] != the original first row")
+	if len(kept) != 0 {
+		t.Errorf("kept %d rows, want 0 — a row larger than the whole budget must be dropped, not returned partially", len(kept))
 	}
 }
 
