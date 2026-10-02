@@ -177,7 +177,7 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 			mcp.Description("task | decision | sprint | project"),
 			mcp.Required()),
 		mcp.WithString("entity_id",
-			mcp.Description("UUID of the entity"),
+			mcp.Description("UUID of the entity (when entity_type=task, also accepts an 8+ char unique prefix)"),
 			mcp.Required()),
 		mcp.WithString("result",
 			mcp.Description("success | failure | partial | unknown | regressed"),

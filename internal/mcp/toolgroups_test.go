@@ -260,6 +260,112 @@ func TestCoreToolSet_SerializedBytesWithinBudget(t *testing.T) {
 	}
 }
 
+// coreToolSerializedHeadroomBytes is the minimum slack
+// TestCoreToolSet_KeepsHeadroom requires between the core tool set's actual
+// serialized size and coreToolSerializedMaxBytes [F0930-23]. Before this
+// ticket the two numbers were equal (19294/19294) — the exact state that let
+// a routine, unrelated description edit anywhere in the 18 core tools
+// immediately trip the budget test with no warning beforehand. 200 bytes
+// (~60 tokens) is enough for one more sentence like this ticket's own
+// 35-byte-per-tool addition to land four times over without renegotiating
+// the budget.
+const coreToolSerializedHeadroomBytes = 200
+
+// TestCoreToolSet_KeepsHeadroom is F0930-23's own regression guard against
+// the exact failure mode it fixes: the core tool set serializing right up to
+// coreToolSerializedMaxBytes with zero slack. Logs each core tool's own byte
+// count, descending, so the next person who needs to free up space can see
+// where it went without re-deriving this measurement.
+func TestCoreToolSet_KeepsHeadroom(t *testing.T) {
+	t.Parallel()
+	_, ms := newTestMCPServer(t)
+	registered := ms.ListTools()
+
+	type toolSize struct {
+		name  string
+		bytes int
+	}
+	sizes := make([]toolSize, 0, len(coreToolNames))
+	total := 0
+	for _, name := range coreToolNames {
+		st, ok := registered[name]
+		if !ok {
+			t.Fatalf("core tool %q is not registered on the server", name)
+		}
+		raw, err := json.Marshal(st.Tool)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", name, err)
+		}
+		sizes = append(sizes, toolSize{name, len(raw)})
+		total += len(raw)
+	}
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i].bytes > sizes[j].bytes })
+	for _, s := range sizes {
+		t.Logf("  %-22s %5d bytes", s.name, s.bytes)
+	}
+
+	budget := coreToolSerializedMaxBytes - coreToolSerializedHeadroomBytes
+	t.Logf("core tool set = %d bytes, headroom budget = %d (max %d - %d headroom)",
+		total, budget, coreToolSerializedMaxBytes, coreToolSerializedHeadroomBytes)
+	if total > budget {
+		t.Errorf("core tool set serializes to %d bytes, want <= %d (budget %d minus %d bytes "+
+			"headroom) — trim a description; NEVER touch coreToolSerializedMaxBytes to pass this",
+			total, budget, coreToolSerializedMaxBytes, coreToolSerializedHeadroomBytes)
+	}
+}
+
+// TestCoreWriteTools_TaskIDDescribesPrefix is F0930-22's regression guard:
+// the 4 core write tools whose task_id (or record_outcome's entity_id)
+// argument accepts an 8+ char unique prefix must say so in their advertised
+// schema description — before this ticket the note only lived in
+// mcpProtocolAppendix (tools_onboarding.go), which a caller is never told to
+// read unless some OTHER tool's description points there, and none of these
+// 4 core tools' own descriptions do.
+func TestCoreWriteTools_TaskIDDescribesPrefix(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+
+	cases := []struct {
+		tool  string
+		field string
+	}{
+		{"complete_task", "task_id"},
+		{"update_task", "task_id"},
+		{"log_decision", "task_id"},
+		{"record_outcome", "entity_id"},
+	}
+	for _, tc := range cases {
+		tool := s.MCPServer().GetTool(tc.tool)
+		if tool == nil {
+			t.Fatalf("%s not registered on MCPServer()", tc.tool)
+		}
+		prop, ok := tool.Tool.InputSchema.Properties[tc.field].(map[string]any)
+		if !ok {
+			t.Fatalf("%s InputSchema.Properties[%q] = %#v, want map[string]any",
+				tc.tool, tc.field, tool.Tool.InputSchema.Properties[tc.field])
+		}
+		desc, _ := prop["description"].(string)
+		if !strings.Contains(desc, "8+ char unique prefix") {
+			t.Errorf("%s.%s description = %q, want it to mention accepting an 8+ char unique prefix",
+				tc.tool, tc.field, desc)
+		}
+	}
+
+	// Negative/scoping check: record_outcome's entity_id prefix acceptance is
+	// conditional on entity_type=="task" (parseRecordOutcomeArgs,
+	// tools_outcome.go) — the description MUST say so, not just "accepts a
+	// prefix" unconditionally, or a caller would reasonably try the same
+	// shortcut against a decision/sprint/project entity_id and get a
+	// confusing rejection it had no way to anticipate.
+	tool := s.MCPServer().GetTool("record_outcome")
+	prop, _ := tool.Tool.InputSchema.Properties["entity_id"].(map[string]any)
+	desc, _ := prop["description"].(string)
+	if !strings.Contains(desc, "entity_type=task") {
+		t.Errorf("record_outcome.entity_id description = %q, want it to scope the prefix "+
+			"acceptance to entity_type=task", desc)
+	}
+}
+
 // TestToolGroups_PartitionAllRegisteredTools proves the group table is an
 // exhaustive, duplicate-free partition of everything the server registers
 // (minus expand_tools itself). Without this, a newly registered tool would be
