@@ -32,10 +32,20 @@ const listRuneBudget = 18000
 // utf8.RuneCountInString of the marshaled JSON, not len() bytes: CJK content
 // is 1 rune but up to 3 UTF-8 bytes, so reusing the byte-budget helper
 // directly would let a CJK-heavy page run up to 3x over the stated rune
-// budget. Only whole trailing rows are ever dropped, never a partial field —
-// same "successful, smaller page" contract as appendNextActionsWithinByteBudget,
-// including the zero-row edge case (row 0 alone already exceeds maxRunes ->
-// kept is empty, truncated is true, still a successful result upstream).
+// budget. Only whole trailing rows are ever dropped, never a partial field.
+//
+// The FIRST row is always kept as-is, regardless of its own size —
+// the budget comparison only applies from the second row onward. A page MUST
+// make forward progress: callers advance pagination by offset+returned
+// (e.g. tools_decision.go), and list_decisions has no single-record read to
+// fall back on if a huge first row were dropped — it would stay stuck at the
+// same offset forever. The cost: when a single row's own encoding already
+// exceeds maxRunes, that one page legitimately exceeds the budget — bounded
+// by whatever per-field truncation each caller already applies before
+// calling this function (list_decisions' worst case is 4 untruncated body
+// fields at decisionBodyMaxRunes = 20,000 runes each). truncated is false
+// when the whole input fit in one row (nothing was actually dropped), true
+// when any row after the first was cut.
 func truncateListByRuneBudget[T any](rows []T, maxRunes int) (kept []T, truncated bool) {
 	kept = make([]T, 0, len(rows))
 	totalRunes := 2 // "[" + "]"
@@ -55,12 +65,14 @@ func truncateListByRuneBudget[T any](rows []T, maxRunes int) (kept []T, truncate
 			break
 		}
 		itemRunes := utf8.RuneCountInString(string(encoded))
+		// [F197-L2] Only rows after the first are budget-checked, so every
+		// page makes forward progress (see the doc comment above).
 		if len(kept) > 0 {
 			itemRunes++ // joining comma before this element
-		}
-		if totalRunes+itemRunes > maxRunes {
-			truncated = true
-			break
+			if totalRunes+itemRunes > maxRunes {
+				truncated = true
+				break
+			}
 		}
 		totalRunes += itemRunes
 		kept = append(kept, rows[i])

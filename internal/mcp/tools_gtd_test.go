@@ -361,6 +361,12 @@ func TestListTasks_RuneBudgetCJKWorstCase(t *testing.T) {
 // listRuneBudget (18,000). This must be a SUCCESSFUL, empty page — never a
 // tool error — per truncateListByRuneBudget's "only whole trailing rows
 // dropped" contract taken to its limit.
+// TestListTasks_SingleRowExceedsBudget is F197-L2's list_tasks acceptance:
+// the first (and only) row is always kept even when its own description
+// alone exceeds listRuneBudget — a page MUST make forward progress rather
+// than returning empty forever. Nothing was dropped, so has_more and
+// truncated_by_budget must both be false, and the description must come
+// back at its full gtdBodyMaxRunes length, not further shortened.
 func TestListTasks_SingleRowExceedsBudget(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
@@ -376,7 +382,7 @@ func TestListTasks_SingleRowExceedsBudget(t *testing.T) {
 
 	r := callListTasks(t, s, map[string]any{"summary": false, "limit": float64(100)})
 	if r.IsError {
-		t.Fatalf("a single oversized row must be a successful, empty page, got error: %s", resultText(r))
+		t.Fatalf("a single oversized row must still be a successful page, got error: %s", resultText(r))
 	}
 	var out struct {
 		Tasks             []json.RawMessage `json:"tasks"`
@@ -387,15 +393,24 @@ func TestListTasks_SingleRowExceedsBudget(t *testing.T) {
 	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
 		t.Fatalf("unmarshal response: %v (%s)", err, resultText(r))
 	}
-	if out.Returned != 0 || len(out.Tasks) != 0 {
-		t.Errorf("returned = %d (tasks len %d), want 0 — a single row over budget must be "+
-			"dropped whole, not returned partially", out.Returned, len(out.Tasks))
+	if out.Returned != 1 || len(out.Tasks) != 1 {
+		t.Fatalf("returned = %d (tasks len %d), want 1 — the first row must always be kept, "+
+			"even over budget, so offset+returned pagination can advance", out.Returned, len(out.Tasks))
 	}
-	if !out.HasMore {
-		t.Error("has_more = false — the oversized row still exists past this (empty) page")
+	var task struct {
+		Description string `json:"description"`
 	}
-	if !out.TruncatedByBudget {
-		t.Error("truncated_by_budget = false for a page that dropped its only row")
+	if err := json.Unmarshal(out.Tasks[0], &task); err != nil {
+		t.Fatalf("unmarshal task: %v (%s)", err, out.Tasks[0])
+	}
+	if gotLen := utf8.RuneCountInString(task.Description); gotLen != gtdBodyMaxRunes {
+		t.Errorf("description rune length = %d, want %d — the row must be returned as-is, not further truncated", gotLen, gtdBodyMaxRunes)
+	}
+	if out.HasMore {
+		t.Error("has_more = true, want false — the only row was returned, nothing is left")
+	}
+	if out.TruncatedByBudget {
+		t.Error("truncated_by_budget = true, want false — the only row was kept, nothing was dropped")
 	}
 }
 

@@ -135,6 +135,14 @@ var pendingProposalsGoalFamilyTTLDryRun = true
 //
 //   - 90 days for resolved (accepted / rejected) rows: the user has already
 //     acted on them; we keep ~1 quarter for retrospective audit + then drop.
+//     Exception (F197-L1): rows proposed by 'scheduler:decision_outcome_review'
+//     (cognitive_jobs.go) are retained permanently regardless of resolution —
+//     D2's decision-outcome dedup treats "a proposal row for this decision has
+//     ever existed" as the signal that it was already proposed, so deleting a
+//     resolved row here would let the SAME decision get re-proposed once the
+//     30-day pending→rejected mark plus this 90-day resolved retention have
+//     both elapsed (~120 days total). See runDailyPendingProposalsPrunePG's
+//     DELETE below for the actual exclusion clause.
 //
 //   - 180 days for pending rows of type='decision': the auto-decision
 //     proposer is opt-out enabled by default and can fill the queue; old
@@ -1197,8 +1205,16 @@ WHERE status = 'pending' AND type = 'task'
 	// The OR keeps it a single statement so we don't pay round-trip latency
 	// twice. resolved_at is NULL on still-pending rows, so the first arm
 	// can never match a pending row even if the WHERE were re-ordered.
+	// F197-L1: the first arm excludes 'scheduler:decision_outcome_review'
+	// proposals — see pendingProposalsResolvedRetention's doc comment above
+	// for why those must survive this DELETE indefinitely. F198-R1-01:
+	// COALESCE(proposed_by, '') because proposed_by is nullable and a NOT(...)
+	// wrapped around a plain equality is NULL (not true) when proposed_by IS
+	// NULL, which would make the whole first arm never match a NULL-proposed_by
+	// row — permanently exempting it from this DELETE instead of just this one.
 	const q = `DELETE FROM pending_proposals
-WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` + pendingProposalsResolvedRetention + `')
+WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` + pendingProposalsResolvedRetention + `'
+       AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review'))
    OR (status = 'pending' AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingDecisionRetention + `' AND type = 'decision')`
 	tag, err := s.disciplinePool.Exec(ctx, q)
 	if err != nil {

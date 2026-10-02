@@ -209,6 +209,97 @@ func TestProposalStore_MarkAndDeleteStaleProposals_TypeTaskTTL(t *testing.T) {
 	}
 }
 
+// TestProposalStore_MarkAndDeleteStaleProposals_RetainsDecisionOutcomeReviewProposals
+// is F197-L1's SQLite twin of
+// TestScheduler_DailyPendingProposalsPrune_RetainsDecisionOutcomeReviewProposals
+// (pending_proposals_prune_pg_test.go): a resolved
+// 'scheduler:decision_outcome_review' proposal row older than the resolved
+// retention MUST survive the delete step; the negative-control row (same
+// age/status, different proposed_by) proves the exclusion is scoped to this
+// exact proposed_by value, not the whole type='task' resolved population.
+func TestProposalStore_MarkAndDeleteStaleProposals_RetainsDecisionOutcomeReviewProposals(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openProposalStore(t, ":memory:", "")
+	now := time.Now().UTC()
+	resolved100Days := now.AddDate(0, 0, -100) // outside 90d
+
+	seedWithProposedBy := func(proposedBy string) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		p := db.PendingProposal{
+			ID:         id,
+			Type:       "task",
+			Payload:    []byte(`{}`),
+			Status:     proposalStatusRejected,
+			ProposedBy: pgtype.Text{String: proposedBy, Valid: true},
+			CreatedAt:  pgtype.Timestamptz{Time: resolved100Days, Valid: true},
+			ResolvedAt: pgtype.Timestamptz{Time: resolved100Days, Valid: true},
+		}
+		if err := s.ImportProposal(context.Background(), p); err != nil {
+			t.Fatalf("ImportProposal proposed_by=%q: %v", proposedBy, err)
+		}
+		return id
+	}
+	keptID := seedWithProposedBy("scheduler:decision_outcome_review")
+	deletedID := seedWithProposedBy("api:activity_classifier")
+
+	_, deleted, err := s.MarkAndDeleteStaleProposals(
+		context.Background(), 30*24*time.Hour, 180*24*time.Hour, 90*24*time.Hour, markReasonTTLExpired,
+	)
+	if err != nil {
+		t.Fatalf("MarkAndDeleteStaleProposals: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deletedRows = %d, want 1 (only the non-decision_outcome_review row)", deleted)
+	}
+	if !rowExists(t, s, keptID) {
+		t.Error("decision_outcome_review proposal: row missing, want kept (must survive the resolved-retention delete)")
+	}
+	if rowExists(t, s, deletedID) {
+		t.Error("other proposed_by, same age/status: row still present, want deleted (exclusion must not cover the whole type='task' population)")
+	}
+}
+
+// TestProposalStore_MarkAndDeleteStaleProposals_NullProposedByStillDeleted is
+// F198-R1-01's SQLite regression test: NOT(type = 'task' AND proposed_by =
+// '...') evaluates to NULL (not true) when proposed_by IS NULL, so a
+// NULL-proposed_by resolved row would be permanently exempted from this
+// DELETE unless the comparison is NULL-safe. A standalone test (rather than
+// adding to TestProposalStore_MarkAndDeleteStaleProposals_RetainsDecisionOutcomeReviewProposals
+// above) so that test's existing deletedRows == 1 assertion stays untouched.
+func TestProposalStore_MarkAndDeleteStaleProposals_NullProposedByStillDeleted(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openProposalStore(t, ":memory:", "")
+	resolved100Days := time.Now().UTC().AddDate(0, 0, -100) // outside 90d
+
+	nullProposedByID := uuid.New()
+	if err := s.ImportProposal(context.Background(), db.PendingProposal{
+		ID:         nullProposedByID,
+		Type:       "task",
+		Payload:    []byte(`{}`),
+		Status:     proposalStatusRejected,
+		ProposedBy: pgtype.Text{Valid: false},
+		CreatedAt:  pgtype.Timestamptz{Time: resolved100Days, Valid: true},
+		ResolvedAt: pgtype.Timestamptz{Time: resolved100Days, Valid: true},
+	}); err != nil {
+		t.Fatalf("ImportProposal proposed_by=NULL: %v", err)
+	}
+
+	_, deleted, err := s.MarkAndDeleteStaleProposals(
+		context.Background(), 30*24*time.Hour, 180*24*time.Hour, 90*24*time.Hour, markReasonTTLExpired,
+	)
+	if err != nil {
+		t.Fatalf("MarkAndDeleteStaleProposals: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deletedRows = %d, want 1 (the NULL-proposed_by row)", deleted)
+	}
+	if rowExists(t, s, nullProposedByID) {
+		t.Error("F198-R1-01: proposed_by=NULL, resolved >90d: row still present, want deleted " +
+			"(NULL proposed_by must not be permanently exempted from this DELETE)")
+	}
+}
+
 // TestProposalStore_MarkAndDeleteStaleProposals_EmptyTableNoPanic verifies
 // the mark+delete pair is safe to run against an empty table — production
 // may go days with no rows to touch. Regression guard for the "MUST have a
