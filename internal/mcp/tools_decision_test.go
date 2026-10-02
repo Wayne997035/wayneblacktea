@@ -419,6 +419,57 @@ func TestListDecisions_RuneBudgetCJKWorstCase(t *testing.T) {
 	}
 }
 
+// TestListDecisions_PaginationAdvancesPastOversizedRow is F197-L2's
+// integration acceptance: a decision whose body alone exceeds listRuneBudget
+// must not stall pagination. list_decisions is the only MCP path that reads
+// a decision's full body text (no get_decision), so the row can never be
+// truncated at this layer — walking limit=1 across offset=0,1,2 must return
+// exactly 1 decision per page and collect all 3 seeded decisions, never
+// landing on a returned=0 page stuck at the oversized row's offset.
+func TestListDecisions_PaginationAdvancesPastOversizedRow(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+
+	oversizedBody := strings.Repeat("測", decisionBodyMaxRunes) // alone exceeds listRuneBudget
+	seedTitles := []string{"normal decision one", "oversized decision", "normal decision two"}
+	bodies := []string{"c", oversizedBody, "c"}
+	for i, title := range seedTitles {
+		if _, err := s.decision.Log(ctx, decision.LogParams{
+			Title: title, Context: bodies[i], Decision: "d", Rationale: "r", Source: decision.SourceManual,
+		}); err != nil {
+			t.Fatalf("seed decision %q: %v", title, err)
+		}
+	}
+
+	seenTitles := map[string]bool{}
+	for offset := 0; offset < 3; offset++ {
+		r := callListDecisions(t, s, map[string]any{"limit": float64(1), "offset": float64(offset)})
+		if r.IsError {
+			t.Fatalf("offset=%d: unexpected error: %s", offset, resultText(r))
+		}
+		var out struct {
+			Decisions []struct {
+				Title string `json:"title"`
+			} `json:"decisions"`
+			Returned int `json:"returned"`
+		}
+		if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+			t.Fatalf("offset=%d: unmarshal: %v (%s)", offset, err, resultText(r))
+		}
+		if out.Returned != 1 || len(out.Decisions) != 1 {
+			t.Fatalf("offset=%d: returned = %d, want 1 — pagination must advance past the oversized "+
+				"row, not stall at a returned=0 page", offset, out.Returned)
+		}
+		seenTitles[out.Decisions[0].Title] = true
+	}
+	for _, title := range seedTitles {
+		if !seenTitles[title] {
+			t.Errorf("decision %q was never returned across 3 pages of limit=1 — pagination got stuck", title)
+		}
+	}
+}
+
 // callLogDecision invokes handleLogDecision with the given args.
 func callLogDecision(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
