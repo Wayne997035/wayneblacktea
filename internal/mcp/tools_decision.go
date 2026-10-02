@@ -110,6 +110,8 @@ func (s *Server) registerDecisionTools(ms *server.MCPServer) {
 		mcp.WithString("rationale", mcp.Description("Why this decision was made"), mcp.Required()),
 		mcp.WithString("repo_name", mcp.Description("Repository this decision relates to")),
 		mcp.WithString("project_id", mcp.Description("Project UUID this decision relates to")),
+		// [F0930-22] core-tool description now names the prefix shortcut
+		// directly (used to live only in mcpProtocolAppendix).
 		mcp.WithString("task_id", mcp.Description("Task UUID this decision relates to (accepts an 8+ char unique prefix)")),
 		mcp.WithString("alternatives", mcp.Description("Other options that were considered")),
 	), s.handleLogDecision)

@@ -103,6 +103,11 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 				"field description below.",
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier (unique key)"), mcp.Required()),
+		// [F0930-23] summary/file_map/last_commit_sha descriptions trimmed:
+		// the omit/clear/replace semantics restated here were already stated
+		// in the tool-level description above — freed budget for F0930-22's
+		// 4 core-write-tool prefix notes without raising
+		// coreToolSerializedMaxBytes.
 		mcp.WithString("summary", mcp.Description(
 			`Human-readable architecture description. Omit to leave untouched; `+
 				`pass "" to clear, or any other string to replace it.`,

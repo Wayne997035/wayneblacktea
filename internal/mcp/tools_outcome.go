@@ -176,6 +176,10 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 		mcp.WithString("entity_type",
 			mcp.Description("task | decision | sprint | project"),
 			mcp.Required()),
+		// [F0930-22] core-tool description now names the prefix shortcut
+		// directly (used to live only in mcpProtocolAppendix), scoped to
+		// entity_type=task since record_outcome's prefix resolution only
+		// applies there (parseRecordOutcomeArgs).
 		mcp.WithString("entity_id",
 			mcp.Description("UUID of the entity (when entity_type=task, also accepts an 8+ char unique prefix)"),
 			mcp.Required()),

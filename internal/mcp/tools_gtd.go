@@ -280,6 +280,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"If artifact is a GitHub PR URL (https://github.com/.../pull/N) it is also stored as pr_url. "+
 					"If artifact is a 40-character hex SHA it is appended to commit_shas.",
 			),
+			// [F0930-22] core-tool description now names the prefix shortcut
+			// directly (used to live only in mcpProtocolAppendix).
 			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("artifact", mcp.Description("Link or note for the output (PR URL or commit SHA auto-detected)")),
 		), seam(s, "complete_task", s.handleCompleteTask),
@@ -324,6 +326,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"and omitted ones keep their value. MUST call with status=\"in_progress\" the moment work "+
 				"starts. Use complete_task, NEVER update_task, to mark a task completed. See "+
 				"initial_instructions (Per-tool detail) for the full omission/clear semantics per field."),
+			// [F0930-22] core-tool description now names the prefix shortcut
+			// directly (used to live only in mcpProtocolAppendix).
 			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("status",
 				mcp.Description("pending | in_progress | cancelled"),
