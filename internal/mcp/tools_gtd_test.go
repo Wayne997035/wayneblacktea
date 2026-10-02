@@ -313,8 +313,8 @@ func TestListTasks_OffsetPastEnd_EmptyHasMoreFalse(t *testing.T) {
 // acceptance test: a full page of gtdTitleMaxRunes-length CJK titles (1 rune
 // per glyph, up to 3 UTF-8 bytes each) must be cut by the shared
 // listRuneBudget well before the row-count clamp (100, post-[F0930-12])
-// would otherwise stop it — this is the exact failure mode
-// list-rune-budget.md measured (list_tasks limit=200 returning 51,765 chars
+// would otherwise stop it — this is the exact failure mode previously
+// measured (list_tasks limit=200 returning 51,765 chars
 // and getting silently dropped whole by the calling client).
 func TestListTasks_RuneBudgetCJKWorstCase(t *testing.T) {
 	t.Parallel()

@@ -290,7 +290,7 @@ func TestDecisionOutcomeReview_DailyCap_LimitsCreatedCount(t *testing.T) {
 }
 
 // TestDecisionOutcomeReview_ExcludesAutoSource is the primary regression test
-// for [F0930-04] / sprint-0930 D2: a source='auto' decision must never
+// for [F0930-04] / D2: a source='auto' decision must never
 // generate a proposal, on any run, even when it otherwise qualifies (old
 // enough, no outcome). A source='manual' decision under the same conditions
 // must still be proposed exactly once.
@@ -331,7 +331,7 @@ func TestDecisionOutcomeReview_ExcludesAutoSource(t *testing.T) {
 }
 
 // TestDecisionOutcomeReview_Dedup_ExcludesRejectedProposals is the primary
-// regression test for [F0930-05] / sprint-0930 D2: the dedup NOT EXISTS
+// regression test for [F0930-05] / D2: the dedup NOT EXISTS
 // guard must suppress re-proposing a decision whose existing proposal has
 // status='rejected' or 'accepted' — previously only status='pending' was
 // excluded, so a rejected/expired proposal's decision would be re-proposed

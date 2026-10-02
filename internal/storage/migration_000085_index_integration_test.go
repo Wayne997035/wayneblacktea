@@ -110,7 +110,7 @@ func TestMigration000085_ProposalDedupIndexExists(t *testing.T) {
 }
 
 // TestMigration000085_ProposalDedupIndexUsedByQuery is the EXPLAIN proof
-// (sprint-0930 D10 ambiguity resolution) that
+// (D10 ambiguity resolution) that
 // idx_pending_proposals_type_proposer_source is not just present but
 // actually usable for the dedup predicate shape
 // pgDecisionsPendingOutcomeReview's NOT EXISTS subquery filters on: type,

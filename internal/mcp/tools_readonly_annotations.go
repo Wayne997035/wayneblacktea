@@ -8,7 +8,7 @@ import (
 
 // applyReadOnlyAnnotations is the single post-registration pass that sets
 // readOnlyHint=true/destructiveHint=false for every tool named in
-// discipline.ReadOnlyTools (sprint-0930 D1). It runs once, after all 29
+// discipline.ReadOnlyTools (D1). It runs once, after all 29
 // register*Tools(ms) calls in MCPServer() finish — this is why none of the 99
 // mcp.NewTool() call sites need an individual annotation option.
 //

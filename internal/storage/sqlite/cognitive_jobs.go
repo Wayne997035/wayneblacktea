@@ -95,7 +95,7 @@ func (s *CognitiveJobsStore) StuckTasks(ctx context.Context, olderThan time.Dura
 // Postgres `->>'source_entity_id'` operator — modernc.org/sqlite ships
 // JSON1 built in.
 //
-// Sprint-0930 D2 (mirrors the PG twin, pgDecisionsPendingOutcomeReview):
+// D2 (mirrors the PG twin, pgDecisionsPendingOutcomeReview):
 // [F0930-04] only source='manual' decisions are candidates; [F0930-05] the
 // dedup NOT EXISTS no longer filters on p.status — once a decision has ever
 // been proposed for, it is never proposed again regardless of that

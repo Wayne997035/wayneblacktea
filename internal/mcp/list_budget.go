@@ -22,7 +22,7 @@ import (
 // exactly the failure mode this exists to catch: a page of large rows blew
 // past Claude Code's ~25k-token ingestion ceiling and was silently dropped
 // whole (measured this session: list_tasks limit=200 returned 51,765 chars
-// and was rejected outright — see .specs/sprint-0930/list-rune-budget.md).
+// and was rejected outright).
 const listRuneBudget = 18000
 
 // truncateListByRuneBudget stops before any row whose JSON-encoded rune

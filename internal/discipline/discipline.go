@@ -124,13 +124,13 @@ var MutatingTools = map[string]bool{
 
 // ReadOnlyTools is [F0930-01]'s set of MCP tool names that only read state —
 // carved out of DeliberatelyExcludedTools' former inline "Read-only tools" category
-// (sprint-0930 D1) so MCPServer() can auto-set readOnlyHint=true /
+// (D1) so MCPServer() can auto-set readOnlyHint=true /
 // destructiveHint=false for exactly this set with no second hand-maintained
 // list at the registration site (internal/mcp/tools_readonly_annotations.go).
 // expand_tools is deliberately NOT here even though it is also read-only —
 // see its own comment on DeliberatelyExcludedTools below.
 //
-// Single source of truth (sprint-0930 D1): every tool name below appears as
+// Single source of truth (D1): every tool name below appears as
 // a literal string exactly once in this package. DeliberatelyExcludedTools,
 // the annotation-apply function, and the structural parity test all
 // reference this var — NEVER maintain a second copy.
@@ -177,7 +177,7 @@ var ReadOnlyTools = map[string]bool{
 // mergeToolSets returns the union of all given tool-name sets as a new map.
 // Used to build DeliberatelyExcludedTools out of ReadOnlyTools plus the
 // handful of tools excluded for other reasons, so every tool name remains a
-// single literal occurrence across the package (sprint-0930 D1).
+// single literal occurrence across the package (D1).
 func mergeToolSets(sets ...map[string]bool) map[string]bool {
 	out := make(map[string]bool)
 	for _, s := range sets {
@@ -209,7 +209,7 @@ func mergeToolSets(sets ...map[string]bool) map[string]bool {
 //   - ReadOnlyTools (merged in below): everything else registered on the
 //     server that never calls a Store write method. This is also the exact
 //     set MCPServer() auto-annotates readOnlyHint=true/destructiveHint=false
-//     on (sprint-0930 D1) — the other categories in this map, including
+//     on (D1) — the other categories in this map, including
 //     expand_tools right below, deliberately do NOT get that annotation even
 //     where they are also read-only in effect; see each entry's own comment.
 var DeliberatelyExcludedTools = mergeToolSets(

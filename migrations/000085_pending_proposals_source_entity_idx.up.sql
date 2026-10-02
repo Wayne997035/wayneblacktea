@@ -1,5 +1,5 @@
 -- 000085_pending_proposals_source_entity_idx.up.sql
--- [F0930-06] sprint-0930 D10: supports the dedup NOT EXISTS lookup in
+-- [F0930-06] D10: supports the dedup NOT EXISTS lookup in
 -- pgDecisionsPendingOutcomeReview (internal/scheduler/cognitive_jobs.go,
 -- job 3) after [F0930-05] dropped its `AND p.status = 'pending'` predicate —
 -- the candidate row set that predicate used to narrow (the type='task' +

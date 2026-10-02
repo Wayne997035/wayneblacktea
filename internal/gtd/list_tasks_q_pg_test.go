@@ -50,7 +50,7 @@ func TestListTasksQ_MatchesTitleSubstring_PG(t *testing.T) {
 
 // TestListTasksQ_EscapesLikeWildcards_PG is F0930-20's PG escaping
 // regression guard — the first test in this repo to exercise underscore
-// escaping (list-tasks-q.md's own self-verification checklist note).
+// escaping (flagged during review as needing its own regression coverage).
 func TestListTasksQ_EscapesLikeWildcards_PG(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsID := uuid.New()

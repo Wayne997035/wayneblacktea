@@ -448,7 +448,7 @@ func checkReadOnlyAnnotations(t *testing.T, tools map[string]*mcpserver.ServerTo
 }
 
 // TestReadOnlyTools_DisjointFromMutating is [F0930-01]'s structural guard for
-// sprint-0930 D1: discipline.ReadOnlyTools MUST contain exactly the 37 tools
+// D1: discipline.ReadOnlyTools MUST contain exactly the 37 tools
 // D1 named, MUST NOT contain expand_tools (deliberately excluded — see its
 // comment on discipline.DeliberatelyExcludedTools), and MUST be disjoint from
 // discipline.MutatingTools. Pure map comparison — no SQLite server needed,
@@ -459,7 +459,7 @@ func TestReadOnlyTools_DisjointFromMutating(t *testing.T) {
 		t.Errorf("expected 37 read-only tools, got %d", len(discipline.ReadOnlyTools))
 	}
 	if discipline.ReadOnlyTools["expand_tools"] {
-		t.Error("expand_tools MUST NOT be in ReadOnlyTools (sprint-0930 D1)")
+		t.Error("expand_tools MUST NOT be in ReadOnlyTools (D1)")
 	}
 	for name := range discipline.ReadOnlyTools {
 		if discipline.MutatingTools[name] {

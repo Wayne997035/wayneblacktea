@@ -601,7 +601,7 @@ func (sc *Scheduler) runDecisionOutcomeReview() {
 
 // pgDecisionsPendingOutcomeReview runs the Postgres raw-SQL query, including
 // the 2026-07-19-incident dedup + daily-cap guards documented on
-// decisionOutcomeReviewDailyCap, plus two sprint-0930 D2 fixes: [F0930-04]
+// decisionOutcomeReviewDailyCap, plus two D2 fixes: [F0930-04]
 // only decisions with source='manual' are candidates (auto decisions never
 // enter the proposal loop), and [F0930-05] the dedup NOT EXISTS no longer
 // filters on p.status — a decision that was ever proposed for, regardless of

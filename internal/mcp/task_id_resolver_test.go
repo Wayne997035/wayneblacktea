@@ -183,7 +183,7 @@ func seamPrefixCaseBeginTask(t *testing.T, s *Server) {
 }
 
 // TestBeginTask_MalformedTaskIDMessageUnchanged is begin_task's own
-// regression guard for the acceptance row task-id-prefix.md pins but no
+// regression guard for a case the acceptance criteria require but no
 // pre-existing test covered: begin_task's task_id is deliberately NOT
 // uuidArgs-marked (tools_gtd.go's registration comment), so pass-0
 // (resolveTaskIDPrefix) no-ops on a malformed value and handleBeginTask's own

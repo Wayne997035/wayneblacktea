@@ -812,7 +812,7 @@ type projectListItem struct {
 // wire shape, clipping Description a second time down to listDescriptionMaxRunes
 // — [F0930-14]. list_projects has no summary mode (unlike list_tasks), so this
 // is the only defense against one long-but-legitimate Description eating most
-// of listRuneBudget on its own (list-rune-budget.md Risk flags).
+// of listRuneBudget on its own (a risk flagged when this budget was designed).
 func toProjectListItem(p *db.Project) projectListItem {
 	desc, truncated := clipListDescription(p.Description)
 	return projectListItem{
@@ -1078,7 +1078,7 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 
 	// limit: <=0 → 50; clamp to 100 — [F0930-12] tightened from 200 (D5): a
 	// 200-row page of full-size rows was the measured repro for the
-	// rune-budget bug this dispatch fixes (list-rune-budget.md), so the
+	// rune-budget bug this dispatch fixes, so the
 	// row-count cap moved down alongside the new budget rather than relying
 	// on the budget alone to catch it.
 	limit := int(args.Limit)

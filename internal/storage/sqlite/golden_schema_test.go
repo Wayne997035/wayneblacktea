@@ -417,7 +417,7 @@ var expectedNewEntries = map[string]bool{
 	"index|idx_memory_atoms_created_at":           true,
 
 	// migrations/sqlite/000085_pending_proposals_source_entity_idx.up.sql
-	// (sprint-0930 D10, F0930-06): supports the decision_outcome_review
+	// (D10, F0930-06): supports the decision_outcome_review
 	// dedup NOT EXISTS lookup after F0930-05 dropped its
 	// `AND p.status = 'pending'` predicate. Net-new versus the frozen golden
 	// baseline — see the migration file's own header comment for the full
