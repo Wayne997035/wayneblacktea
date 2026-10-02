@@ -59,6 +59,19 @@ var (
 // options the caller passed to mcp.NewTool) and caches it under tool.Name.
 // This is the single point where validation metadata is read out of the
 // registration — callers never hand-write a parallel declaration.
+//
+// Deliberately carries no *Server reference [F0930-18]: toolSpecRegistry
+// below is a package-level, tool-name-keyed cache shared by every *Server
+// instance in the process. In production exactly one *Server ever exists, so
+// that sharing is harmless; in tests, many *Server instances share the same
+// process (each newTestWorkSessionServer(t) call re-registers every tool),
+// and a *Server stored ON the toolSpec at registration time would silently
+// become whichever test's Server registered "get_task" (etc.) LAST — a
+// different test's seam() call would then resolve a task_id prefix against
+// the wrong (possibly already-closed) database. validate()'s task_id-prefix
+// pass-0 (resolveTaskIDPrefix below) instead takes s as a per-call parameter,
+// sourced from seam[T]'s own s argument — the *Server actually handling THIS
+// request, never a value frozen at some earlier registration.
 func registerToolSpec(tool mcp.Tool, opts ...specOption) *toolSpec {
 	ts := &toolSpec{args: map[string]*argSpec{}}
 
@@ -173,12 +186,19 @@ func (s *Server) addTool(ms *server.MCPServer, tool mcp.Tool, handler server.Too
 // validates the raw MCP arguments against toolName's cached toolSpec, decodes
 // them into a T, and only then calls fn. Validation/decode failures never
 // reach fn — it always receives a fully-populated, already-valid T.
-func seam[T any](toolName string, fn func(ctx context.Context, args T) (*mcp.CallToolResult, error)) server.ToolHandlerFunc {
+//
+// s is the *Server actually handling this request, threaded through to
+// validate()'s task_id-prefix pass-0 (resolveTaskIDPrefix below) as a
+// per-call argument rather than something toolSpec itself stores — see
+// registerToolSpec's doc comment for why storing it on the shared,
+// tool-name-keyed toolSpecRegistry would be wrong. May be nil for direct test
+// callers that never exercise the task_id-prefix path.
+func seam[T any](s *Server, toolName string, fn func(ctx context.Context, args T) (*mcp.CallToolResult, error)) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		ts := specFor(toolName)
 
-		if errResult := ts.validate(args); errResult != nil {
+		if errResult := ts.validate(ctx, s, args); errResult != nil {
 			return errResult, nil
 		}
 		var parsed T
@@ -189,18 +209,73 @@ func seam[T any](toolName string, fn func(ctx context.Context, args T) (*mcp.Cal
 	}
 }
 
-// validate runs the seam's two-pass boilerplate validation over raw MCP args:
-// pass A checks required-field presence (in registration order, delegating
-// UUID-typed required fields to requireUUIDArg so its exact "X is required" /
-// invalidMsg behaviour is reused rather than reimplemented — see ADR 0001);
-// pass B checks enum/maxLength/UUID-format constraints on every present,
-// non-empty string argument (alpha order, deterministic). Returns nil when
-// every constraint passes.
-func (ts *toolSpec) validate(args map[string]any) *mcp.CallToolResult {
+// validate runs the seam's validation passes over raw MCP args: pass 0
+// resolves an 8+-char task_id prefix into a full UUID in place (D3/D14,
+// resolveTaskIDPrefix below) before anything else runs, so passes A and B
+// below see an already-resolved value; pass A checks required-field presence
+// (in registration order, delegating UUID-typed required fields to
+// requireUUIDArg so its exact "X is required" / invalidMsg behaviour is
+// reused rather than reimplemented — see ADR 0001); pass B checks
+// enum/maxLength/UUID-format constraints on every present, non-empty string
+// argument (alpha order, deterministic). Returns nil when every constraint
+// passes.
+func (ts *toolSpec) validate(ctx context.Context, s *Server, args map[string]any) *mcp.CallToolResult {
+	if errResult := ts.resolveTaskIDPrefix(ctx, s, args); errResult != nil {
+		return errResult
+	}
 	if errResult := ts.validateRequired(args); errResult != nil {
 		return errResult
 	}
 	return ts.validateConstraints(args)
+}
+
+// resolveTaskIDPrefix is validate()'s pass 0 [F0930-18]: keyed purely on
+// whether this toolSpec has an argument literally named "task_id" — true for
+// exactly the 9 seam-wrapped tools D3 enumerates (get_task, update_task,
+// complete_task, delete_task, the 3 task_checklist_* tools, set_task_status,
+// begin_task), false for every other seam tool (project_id/goal_id/item_id
+// etc. are never touched — D3 is explicit: only the literal name "task_id").
+//
+// A raw value that already parses as a full UUID, or that doesn't match the
+// 8+-hex-char prefix shape, is left untouched here — validateRequired/
+// validateConstraints' existing UUID checks (pass A/B below) already produce
+// the correct required/invalid message for both of those cases, and
+// duplicating that logic here would risk the two message paths drifting.
+//
+// On a successful resolution this MUTATES args["task_id"] in place (D14) —
+// not a shallow copy — so decodeToolArgs (called right after validate() by
+// seam[T]) and every downstream middleware that later reads
+// req.GetArguments() on the same request (autoLogMiddleware,
+// decisionProposerMiddleware) see the resolved full UUID, never the raw
+// prefix. This relies on req.GetArguments() returning the same map instance
+// across reads within one request — confirmed against mcp-go v0.49.0
+// (mcp/tools.go's GetArguments, no sync.Pool in server/ or mcp/) and pinned
+// by TestSeamTaskIDPrefix_MutationVisibleToDownstreamMiddleware.
+func (ts *toolSpec) resolveTaskIDPrefix(ctx context.Context, s *Server, args map[string]any) *mcp.CallToolResult {
+	if _, ok := ts.args["task_id"]; !ok {
+		return nil
+	}
+	raw, isStr := args["task_id"].(string)
+	if !isStr || raw == "" {
+		return nil
+	}
+	if _, err := uuid.Parse(raw); err == nil {
+		return nil // already a full UUID — nothing to resolve
+	}
+	if !taskIDPrefixRe.MatchString(raw) {
+		return nil // too short / non-hex — let validateRequired/validateConstraints reject it
+	}
+	if s == nil {
+		// [F0930-18] A test called seam(nil, toolName, fn) or ts.validate(ctx,
+		// nil, args) directly — fail cleanly instead of dereferencing nil below.
+		return mcp.NewToolResultError(errMsgInvalidTaskIDUUID)
+	}
+	resolved, errResult := s.resolveTaskID(ctx, raw)
+	if errResult != nil {
+		return errResult
+	}
+	args["task_id"] = resolved.String()
+	return nil
 }
 
 // validateRequired is validate()'s pass A: required-field presence, in

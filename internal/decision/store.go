@@ -213,6 +213,7 @@ func (s *Store) List(ctx context.Context, p ListParams) ([]db.Decision, error) {
 		RepoName:    pgconv.ToText(p.RepoName),
 		IncludeAuto: p.IncludeAuto,
 		LimitN:      p.Limit,
+		OffsetN:     p.Offset, // [F0930-13]
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing filtered decisions: %w", err)

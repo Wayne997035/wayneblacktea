@@ -177,6 +177,12 @@ func (noopGTDStore) GetTaskByID(context.Context, uuid.UUID) (*db.Task, error) {
 	return nil, gtd.ErrNotFound
 }
 
+// FindTaskIDsByPrefix stub — gtd.StoreIface gained this method [F0930-17];
+// this fake's own tests never exercise the prefix-resolution path.
+func (noopGTDStore) FindTaskIDsByPrefix(context.Context, string, int) ([]gtd.TaskIDTitle, error) {
+	return nil, nil
+}
+
 func (noopGTDStore) UpdateProjectStatus(context.Context, uuid.UUID, gtd.ProjectStatus) (*db.Project, error) {
 	return nil, nil
 }

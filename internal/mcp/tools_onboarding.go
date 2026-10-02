@@ -22,6 +22,10 @@ const mcpProtocolFull = mcpInstructions + "\n\n" + mcpProtocolAppendix
 // rows, trigger vocabularies and per-tool guidance that do not fit the
 // initialize-path budget. Rules here are NOT optional — they are the same
 // protocol, just paid for only by clients that ask.
+//
+// [F0930-21] The GTD-discipline triggers and the update_task per-tool-detail
+// bullet below both got a task_id-prefix-acceptance note synced into their
+// prose when D3/D14 shipped — see task_id_resolver.go.
 const mcpProtocolAppendix = `## APPENDIX — full routing table
 
 Memory / knowledge routing (not in the injected core protocol):
@@ -35,10 +39,10 @@ Memory / knowledge routing (not in the injected core protocol):
 ## MANDATORY GTD DISCIPLINE — triggers
 
 Before dispatching any engineer/agent OR starting any Lead-direct implementation:
--> MUST call update_task(task_id, status="in_progress") for EVERY task being worked.
+-> MUST call update_task(task_id, status="in_progress") for EVERY task being worked. task_id accepts an 8+ char unique prefix.
 
 When a task is done (build passes, PR merged, or Lead-direct commit pushed):
--> MUST call complete_task(task_id, artifact="<PR URL or commit SHA>") immediately.
+-> MUST call complete_task(task_id, artifact="<PR URL or commit SHA>") immediately. task_id accepts an 8+ char unique prefix.
 
 NEVER ask "should I update the GTD?" — just do it. Missing these calls = process bug.
 - "dispatch engineer" -> update_task in_progress first
@@ -87,10 +91,18 @@ the phase tasks is created separately,
 best-effort, AFTER the transaction commits — a work-session failure never rolls
 back the already-committed tasks/decisions. ALWAYS read the
 response text / is_error instead of assuming success: a success response lists
-every task and decision actually created, and a failure response states exactly
-what was written. A failure whose message says OUTCOME UNKNOWN means the plan
-MAY already be stored — do NOT re-send it; call list_tasks / list_decisions
-first and retry only what is genuinely missing.
+every task and decision actually created, WITH ITS ID (each bullet line reads
+"<title> (id: <uuid>)") — use it directly for update_task/get_task instead of
+a separate list_tasks/list_decisions round trip. A failure response states
+exactly what was written, ids included. A failure whose message says OUTCOME
+UNKNOWN means the plan MAY already be stored — do NOT re-send it; call
+list_tasks / list_decisions first and retry only what is genuinely missing.
+If the work session specifically could not be created (e.g. another session
+is already active for the same repo_name) — as opposed to not being attempted
+at all (no repo_name given, or no work-session store wired) — the response
+carries an additional "Work session not started (...)" line; the tasks/
+decisions above it were still created successfully, they just stay
+pending/unassigned instead of flipping to in_progress.
   - phases: JSON array, each {"title":"...","description":"...","priority":2}
   - decisions: JSON array, each
     {"title":"...","context":"...","decision":"...","rationale":"...","alternatives":""}
@@ -131,6 +143,8 @@ update_task — updates one or more mutable fields; everything except task_id is
 optional and omitted fields keep their existing value. Use complete_task, not
 update_task, to mark a task completed. status accepts pending, in_progress or
 cancelled. branch_name and pr_url accept an empty string to clear the field.
+task_id (and every other tool's task_id argument) accepts either a full UUID
+or an 8+ char unique prefix; an ambiguous prefix errors listing candidates.
 
 complete_task — if artifact is a GitHub PR URL (https://github.com/.../pull/N)
 it is also stored as pr_url; if it is a 40-character hex SHA it is appended to

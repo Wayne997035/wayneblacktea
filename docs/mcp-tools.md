@@ -185,16 +185,22 @@ Returns an **object**, not a bare array: `repos`, `returned`, `limit`, `offset`,
 
 List-view free-text fields are projected down — `description` and `next_planned_step` to 500 runes; `name`, `path`, `language`, `current_branch` and each `known_issues` element to 120 runes; at most 5 `known_issues` entries. Every shortened field carries its own `<field>_truncated: true` flag, so truncation is never silent. To read a row in full, go through `sync_repo` — but note `sync_repo` is a **write** and re-stamps that row's `last_activity`.
 
+`list_tasks` / `list_goals` / `list_projects` / `list_decisions` share one 18,000-rune response-size budget on top of their row-count `limit`: the array is truncated (whole trailing rows dropped, never a partial row) before its marshaled JSON would exceed that budget, and the response carries `truncated_by_budget: true` when that happened. This is independent of `has_more` — a normal-sized page can still trip the budget if its rows are large (long CJK text, long descriptions), so `truncated_by_budget=true` can fire even when `has_more` alone would not have. Re-call with a smaller `limit` (or the same `offset`) to keep paging; never assume the returned rows are the complete result just because `has_more=false`.
+
 ### `list_projects` / `list_goals`
 Read-only. Optional: `limit` (default 50, max 200), `offset` (default 0).
 
-Return an **object**, not a bare array: `projects` / `goals`, plus `returned`, `limit`, `offset`, `has_more`.
+Return an **object**, not a bare array: `projects` / `goals`, plus `returned`, `limit`, `offset`, `has_more`, `truncated_by_budget`.
+
+`description` is projected down to 500 runes on the list view, with `description_truncated: true` on any row that was cut. `list_goals` has no single-goal read tool today, so a truncated `description` there is NOT recoverable in full elsewhere; `list_projects`' full text is available via `get_project`. Never write a truncated list-view `description` back through `update_project` — it REPLACES the stored value entirely.
 
 ### `list_tasks`
-Optional `project_id` (UUID) filter.
+Optional `project_id` (UUID) filter. `limit` default 50, max 100. `truncated_by_budget` (see below). Optional `q`: case-insensitive substring match on task title (2-200 chars); omit for no filter.
 
 ### `list_decisions`
-Optional: `repo_name` (string), `project_id` (UUID), `limit` (default 20). Call before scanning code.
+Optional: `repo_name` (string), `project_id` (UUID), `limit` (default 10, max 40), `offset` (default 0). Call before scanning code.
+
+Returns an **object**, not a bare array: `decisions`, `returned`, `limit`, `offset`, `has_more`, `truncated_by_budget`.
 
 ### `list_knowledge`
 Optional: `limit` (default 20), `offset`.
@@ -270,12 +276,12 @@ Updates one or more mutable fields of a task. All params except `task_id` are op
 
 | Arg | Required |
 |-----|----------|
-| `task_id` | Yes — Task UUID |
+| `task_id` | Yes — Task UUID (or an 8+ char unique prefix of one) |
 | `status` (`pending`/`in_progress`/`cancelled`) `title` (max 2000) `description` (max 10000) `priority` (1-5) `importance` (1-3) `assignee` (max 200) `due_date` (RFC3339) `context` (max 10000) `branch_name` (empty string clears) `pr_url` (empty string clears) | No |
 
 ### `complete_task`
 
-`task_id` (UUID) required. Optional `artifact` (PR URL / SHA). **Significant.**
+`task_id` (UUID, or an 8+ char unique prefix of one) required. Optional `artifact` (PR URL / SHA). **Significant.**
 
 > "Call `complete_task` with task_id=TASK_UUID, artifact='https://github.com/.../pull/42'."
 
@@ -285,7 +291,7 @@ Permanently deletes a task. TWO-STEP: first call with only `task_id` returns `{d
 
 | Arg | Required |
 |-----|----------|
-| `task_id` | Yes — Task UUID |
+| `task_id` | Yes — Task UUID (or an 8+ char unique prefix of one) |
 | `confirm` `deletion_token` | No — required together on the second (confirming) call |
 
 ---
@@ -370,6 +376,8 @@ Call when user says tomorrow / later. `intent` required. Optional `repo_name`, `
 ### `confirm_plan`
 
 Call when user confirms a plan ("可以" "好" "go" "開始"). Atomically creates tasks + logs decisions (Postgres/SQLite: one transaction, all-or-nothing). The linked `work_session` is created separately, best-effort, after the transaction commits — a work-session failure never rolls back the tasks/decisions. Always check the response for `is_error` / what was actually created rather than assuming success.
+
+Every created task and logged decision bullet line carries its id (`<title> (id: <uuid>)`) — use it directly for `update_task`/`get_task` instead of a separate `list_tasks`/`list_decisions` call. If the work session specifically failed to create (e.g. another session already active for the same `repo_name`) rather than simply not being attempted (no `repo_name`, or no work-session store wired), the response also carries a `Work session not started (...)` line; the tasks/decisions above it were still created, they just stay pending/unassigned.
 
 `phases` (JSON array, required): `[{"title":"...","description":"...","priority":2}]`
 
@@ -470,7 +478,7 @@ Atomically marks a task in_progress, logs a `work_session_started` activity, and
 
 | Arg | Required |
 |-----|----------|
-| `task_id` | Yes — Task UUID |
+| `task_id` | Yes — Task UUID (or an 8+ char unique prefix of one) |
 | `branch_name` | No — git branch name to persist on the task |
 | `pr_url` | No — GitHub PR URL to persist on the task |
 
@@ -484,13 +492,13 @@ Optional `days` (1-14, default 7).
 
 Appends a new checklist item to a task. Returns the full updated checklist. Use to track sub-steps or acceptance criteria for a task.
 
-`task_id` and `title` (max 500 chars) required. Optional `file_ref` (max 2000 chars), `notes` (max 2000 chars).
+`task_id` (or an 8+ char unique prefix of one) and `title` (max 500 chars) required. Optional `file_ref` (max 2000 chars), `notes` (max 2000 chars).
 
 ### `task_checklist_toggle`
 
 Partially updates a checklist item (done flag, title, notes, evidence_url). Returns the full updated checklist.
 
-`task_id`, `item_id`, and `done` (boolean) required. Optional `evidence_url` (max 2000 chars) — URL or note proving the item is done.
+`task_id` (or an 8+ char unique prefix of one), `item_id`, and `done` (boolean) required. Optional `evidence_url` (max 2000 chars) — URL or note proving the item is done.
 
 ### `task_checklist_complete`
 
@@ -498,19 +506,19 @@ Partially updates a checklist item (done flag, title, notes, evidence_url). Retu
 
 Shorthand for marking a checklist item `done=true` and recording `completed_at=now`. Returns the full updated checklist.
 
-`task_id` and `item_id` required.
+`task_id` (or an 8+ char unique prefix of one) and `item_id` required.
 
 ### `get_task`
 
 Returns a single task by UUID. Status-agnostic — retrieves pending, in_progress, completed, and cancelled tasks. Use `list_tasks` for filtered bulk retrieval.
 
-`task_id` (UUID) required.
+`task_id` (UUID, or an 8+ char unique prefix of one) required.
 
 ### `set_task_status`
 
 Transitions a task to a new status, including reopen (completed/cancelled → pending/in_progress). Same-to-same status is an idempotent no-op. Allowed transitions: pending↔in_progress, pending→completed/cancelled, in_progress→completed/cancelled, completed/cancelled→pending/in_progress/completed/cancelled. IMPORTANT: this tool MUST NOT call `record_outcome` or `evaluate_outcome` — outcome recording stays exclusively in those tools. Reopen→re-complete records no outcome.
 
-`task_id` (UUID) and `status` (`pending` `in_progress` `completed` `cancelled`) required.
+`task_id` (UUID, or an 8+ char unique prefix of one) and `status` (`pending` `in_progress` `completed` `cancelled`) required.
 
 ---
 
@@ -702,7 +710,7 @@ Record the result of an executed task, decision, sprint, or project. Closes the 
 
 | Arg | Required |
 |-----|----------|
-| `entity_type` (`task`/`decision`/`sprint`/`project`) `entity_id` (UUID) `result` (`success`/`failure`/`partial`/`unknown`/`regressed`) | Yes |
+| `entity_type` (`task`/`decision`/`sprint`/`project`) `entity_id` (UUID; when `entity_type=task`, also accepts an 8+ char unique prefix) `result` (`success`/`failure`/`partial`/`unknown`/`regressed`) | Yes |
 | `notes` (max 500 runes per call, 5000 cumulative across enrich calls on the same draft) `metrics_json` `related_rule_ids` (JSON array of UUIDs, max 20 per call, 100 cumulative) `session_id` (UUID, best-effort linked via `SetOutcomeLink`) | No |
 
 ### `evaluate_outcome`

@@ -84,7 +84,7 @@ func (s *CognitiveJobsStore) StuckTasks(ctx context.Context, olderThan time.Dura
 }
 
 // DecisionsPendingOutcomeReview returns decisions created before the
-// olderThan cutoff that have no recorded outcome AND no existing pending
+// olderThan cutoff that have no recorded outcome AND no existing
 // scheduler:decision_outcome_review proposal (dedup — mirrors the Postgres
 // NOT EXISTS guard added by the 2026-07-19 incident fix, see
 // decisionOutcomeReviewDailyCap's doc comment in cognitive_jobs.go). Ordered
@@ -94,12 +94,22 @@ func (s *CognitiveJobsStore) StuckTasks(ctx context.Context, olderThan time.Dura
 // Postgres's JSONB), so the dedup match uses json_extract instead of the
 // Postgres `->>'source_entity_id'` operator — modernc.org/sqlite ships
 // JSON1 built in.
+//
+// D2 (mirrors the PG twin, pgDecisionsPendingOutcomeReview):
+// [F0930-04] only source='manual' decisions are candidates; [F0930-05] the
+// dedup NOT EXISTS no longer filters on p.status — once a decision has ever
+// been proposed for, it is never proposed again regardless of that
+// proposal's current pending/accepted/rejected status. The (type,
+// proposed_by, json_extract(payload, '$.source_entity_id')) predicate shape
+// is exactly what migration 000085's idx_pending_proposals_type_proposer_source
+// expression index covers.
 func (s *CognitiveJobsStore) DecisionsPendingOutcomeReview(
 	ctx context.Context, olderThan time.Duration, limit int,
 ) ([]db.Decision, error) {
 	cutoff := time.Now().UTC().Add(-olderThan).Format(sqliteMillisLayout)
 	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions d
 		WHERE (?1 IS NULL OR d.workspace_id = ?1)
+		  AND d.source = 'manual'
 		  AND d.created_at < ?2
 		  AND NOT EXISTS (
 		      SELECT 1 FROM outcomes o
@@ -109,7 +119,6 @@ func (s *CognitiveJobsStore) DecisionsPendingOutcomeReview(
 		      SELECT 1 FROM pending_proposals p
 		      WHERE p.type = 'task'
 		        AND p.proposed_by = 'scheduler:decision_outcome_review'
-		        AND p.status = 'pending'
 		        AND json_extract(p.payload, '$.source_entity_id') = d.id
 		  )
 		ORDER BY d.created_at ASC

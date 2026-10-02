@@ -9,6 +9,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
+	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -176,6 +177,31 @@ func withTagNoiseDetail(text string, err error) string {
 		return text + "\n" + clipRunes(err.Error(), tagNoiseDetailMaxRunes)
 	}
 	return text
+}
+
+// sanitizeWorkSessionErrorReason renders sessionErr for confirm_plan's
+// caller-facing "Work session not started" line — [F0930-16]. U14: never
+// echo a raw store/pgx error verbatim (table/constraint names, connection
+// detail) into a tool response. worksession.ErrAlreadyActive's own message
+// is already a bounded, caller-safe sentence (internal/worksession/iface.go)
+// and is passed through unchanged; every other error class collapses to a
+// generic reason.
+//
+// [F170-08] Declared here (not in tools_plan.go), same reason as
+// withTagNoiseDetail above: this function calls
+// worksession.ErrAlreadyActive.Error() on a fixed package sentinel, which is
+// syntactically indistinguishable to the provenance gate from calling
+// .Error() on a live, driver-sourced error — the gate has no way to know the
+// receiver is a compile-time constant, not sessionErr itself. Declaring the
+// helper in this file's sanctioned exit set (tool_errors_ast_test.go's
+// `inHelpers` walk) is what tells the gate this call was reviewed, the same
+// way it already trusts storeErrorText's own sentinel.Error() call two
+// functions up.
+func sanitizeWorkSessionErrorReason(err error) string {
+	if errors.Is(err, worksession.ErrAlreadyActive) {
+		return worksession.ErrAlreadyActive.Error()
+	}
+	return "an unexpected error occurred creating the work session"
 }
 
 // callerFacingSentinels are domain errors that describe the CALLER's request

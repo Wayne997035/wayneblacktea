@@ -291,7 +291,8 @@ WHERE ($1::uuid IS NULL OR workspace_id = $1)
   AND ($3::text IS NULL OR repo_name = $3)
   AND ($4::bool OR source = 'manual')
 ORDER BY created_at DESC, id DESC
-LIMIT $5
+LIMIT $6
+OFFSET $5
 `
 
 type ListDecisionsFilteredParams struct {
@@ -299,6 +300,7 @@ type ListDecisionsFilteredParams struct {
 	ProjectID   pgtype.UUID `json:"project_id"`
 	RepoName    pgtype.Text `json:"repo_name"`
 	IncludeAuto bool        `json:"include_auto"`
+	OffsetN     int32       `json:"offset_n"`
 	LimitN      int32       `json:"limit_n"`
 }
 
@@ -308,12 +310,17 @@ type ListDecisionsFilteredParams struct {
 // one is a no-op filter, but callers never pass both non-nil.
 // Source is filtered BEFORE ORDER/LIMIT so the limit isn't consumed by rows
 // that get excluded.
+// OFFSET added [F0930-13]: list_decisions previously had no pagination path
+// at all (has_more with no way to fetch the next page); offset_n defaults to
+// 0 at the Go layer (decision.ListParams zero value) so existing callers are
+// unaffected.
 func (q *Queries) ListDecisionsFiltered(ctx context.Context, arg ListDecisionsFilteredParams) ([]Decision, error) {
 	rows, err := q.db.Query(ctx, listDecisionsFiltered,
 		arg.WorkspaceID,
 		arg.ProjectID,
 		arg.RepoName,
 		arg.IncludeAuto,
+		arg.OffsetN,
 		arg.LimitN,
 	)
 	if err != nil {

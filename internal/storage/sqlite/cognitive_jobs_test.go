@@ -57,6 +57,24 @@ func seedCJDecision(t *testing.T, d *sqlite.DB, wsID uuid.UUID, id uuid.UUID, ti
 	}
 }
 
+// seedCJDecisionWithSource is seedCJDecision plus an explicit source column
+// value ('manual' or 'auto') — used by [F0930-04]'s
+// TestCognitiveJobsStore_DecisionsPendingOutcomeReview_ExcludesAutoSource.
+// seedCJDecision itself is left untouched (it omits source, relying on the
+// table's DEFAULT 'manual' — migrations/sqlite/000073_decision_source.up.sql)
+// so every pre-existing caller of seedCJDecision keeps testing 'manual'
+// decisions without change.
+func seedCJDecisionWithSource(t *testing.T, d *sqlite.DB, wsID uuid.UUID, id uuid.UUID, title string, createdAt time.Time, source string) {
+	t.Helper()
+	err := d.ExecContext(context.Background(), `INSERT INTO decisions
+		(id, workspace_id, title, context, decision, rationale, created_at, source)
+		VALUES (?1, ?2, ?3, 'ctx', 'dec', 'rationale', ?4, ?5)`,
+		id.String(), wsID.String(), title, rfc3339Millis(createdAt), source)
+	if err != nil {
+		t.Fatalf("seed decision %s (source=%s): %v", title, source, err)
+	}
+}
+
 func seedCJOutcome(t *testing.T, d *sqlite.DB, wsID, entityID uuid.UUID) {
 	t.Helper()
 	err := d.ExecContext(context.Background(), `INSERT INTO outcomes
@@ -81,6 +99,23 @@ func seedCJPendingTaskProposal(t *testing.T, d *sqlite.DB, wsID uuid.UUID, propo
 		uuid.New().String(), wsID.String(), payload, proposedBy, rfc3339Millis(time.Now()))
 	if err != nil {
 		t.Fatalf("seed pending task proposal: %v", err)
+	}
+}
+
+// seedCJPendingTaskProposalWithStatus is seedCJPendingTaskProposal plus an
+// explicit status ('pending'/'accepted'/'rejected' — the full CHECK enum,
+// migrations/sqlite/000012_sqlite_baseline.up.sql) — used by [F0930-05]'s
+// TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup_ExcludesRejectedProposals
+// to prove the dedup NOT EXISTS guard no longer filters on p.status.
+func seedCJPendingTaskProposalWithStatus(t *testing.T, d *sqlite.DB, wsID uuid.UUID, proposedBy, sourceEntityID, status string) {
+	t.Helper()
+	payload := `{"title":"t","source_tool":"` + proposedBy + `","source_entity_id":"` + sourceEntityID + `"}`
+	err := d.ExecContext(context.Background(), `INSERT INTO pending_proposals
+		(id, workspace_id, type, payload, status, proposed_by, created_at)
+		VALUES (?1, ?2, 'task', ?3, ?4, ?5, ?6)`,
+		uuid.New().String(), wsID.String(), payload, status, proposedBy, rfc3339Millis(time.Now()))
+	if err != nil {
+		t.Fatalf("seed %s task proposal: %v", status, err)
 	}
 }
 
@@ -338,6 +373,72 @@ func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_RespectsLimit(t *testi
 		if !returned[ids[i]] {
 			t.Errorf("expected oldest decision[%d]=%s to be returned", i, ids[i])
 		}
+	}
+}
+
+// TestCognitiveJobsStore_DecisionsPendingOutcomeReview_ExcludesAutoSource is
+// [F0930-04]'s SQLite twin of PG's TestDecisionOutcomeReview_ExcludesAutoSource
+// (internal/scheduler/decision_outcome_review_pg_test.go): a source='auto'
+// decision must never be returned as a review candidate, regardless of how
+// old it is or whether it has an outcome; a source='manual' decision under
+// the same conditions must still be returned.
+func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_ExcludesAutoSource(t *testing.T) {
+	t.Parallel() // [F0930-04]
+	wsID := uuid.New()
+	d, store := openCognitiveJobsDB(t, wsID.String())
+	old := time.Now().UTC().AddDate(0, 0, -45)
+
+	autoID := uuid.New()
+	seedCJDecisionWithSource(t, d, wsID, autoID, "auto decision", old, "auto")
+
+	manualID := uuid.New()
+	seedCJDecisionWithSource(t, d, wsID, manualID, "manual decision", old.Add(time.Minute), "manual")
+
+	got, err := store.DecisionsPendingOutcomeReview(context.Background(), 30*24*time.Hour, 200)
+	if err != nil {
+		t.Fatalf("DecisionsPendingOutcomeReview: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 decision (auto excluded), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != manualID {
+		t.Errorf("expected the manual decision %s, got %s", manualID, got[0].ID)
+	}
+}
+
+// TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup_ExcludesRejectedProposals
+// is [F0930-05]'s SQLite twin of PG's
+// TestDecisionOutcomeReview_Dedup_ExcludesRejectedProposals — proves the
+// dedup NOT EXISTS guard suppresses re-proposing a decision whose existing
+// proposal has status='rejected' (previously only status='pending' was
+// excluded, which let a rejected/expired proposal's decision be re-proposed
+// on the next run).
+func TestCognitiveJobsStore_DecisionsPendingOutcomeReview_Dedup_ExcludesRejectedProposals(t *testing.T) {
+	t.Parallel() // [F0930-05]
+	wsID := uuid.New()
+	d, store := openCognitiveJobsDB(t, wsID.String())
+	old := time.Now().UTC().AddDate(0, 0, -45)
+
+	rejectedID := uuid.New()
+	seedCJDecision(t, d, wsID, rejectedID, "already rejected", old)
+	seedCJPendingTaskProposalWithStatus(t, d, wsID, "scheduler:decision_outcome_review", rejectedID.String(), "rejected")
+
+	acceptedID := uuid.New()
+	seedCJDecision(t, d, wsID, acceptedID, "already accepted", old.Add(time.Minute))
+	seedCJPendingTaskProposalWithStatus(t, d, wsID, "scheduler:decision_outcome_review", acceptedID.String(), "accepted")
+
+	freshID := uuid.New()
+	seedCJDecision(t, d, wsID, freshID, "never proposed", old.Add(2*time.Minute))
+
+	got, err := store.DecisionsPendingOutcomeReview(context.Background(), 30*24*time.Hour, 200)
+	if err != nil {
+		t.Fatalf("DecisionsPendingOutcomeReview: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 decision (rejected/accepted stay excluded), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != freshID {
+		t.Errorf("expected the never-proposed decision %s, got %s", freshID, got[0].ID)
 	}
 }
 

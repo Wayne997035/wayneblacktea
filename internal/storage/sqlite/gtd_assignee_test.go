@@ -425,3 +425,230 @@ func TestGTDStore_UpdateTaskStatusGuarded_RequiresAssignee_SQLite(t *testing.T) 
 		}
 	})
 }
+
+// TestUpdateTask_WhitespaceOnlyAssigneeClears is [F0930-08]'s (D7) regression
+// row: a whitespace-only assignee value (tab, NBSP, ideographic space — any
+// unicode.IsSpace rune, not just literal "") must clear the assignee to
+// NULL, the same as an explicit "". Before the fix, UpdateTask skipped
+// NormalizeActor for a TrimSpace-empty value (correctly) but then stored the
+// raw whitespace string verbatim instead of collapsing it to "".
+func TestUpdateTask_WhitespaceOnlyAssigneeClears(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		assignee string
+	}{
+		{name: "tab", assignee: "\t"},
+		{name: "NBSP", assignee: " "},
+		{name: "ideographic space U+3000", assignee: "　"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "whitespace clear " + tc.name, Assignee: "claude"})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			whitespace := tc.assignee
+			updated, err := s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Assignee: &whitespace})
+			if err != nil {
+				t.Fatalf("UpdateTask with whitespace-only assignee must succeed (clear): %v", err)
+			}
+			if updated.Assignee.Valid {
+				t.Errorf("assignee = %+v, want NULL (whitespace-only must clear, not persist raw)", updated.Assignee)
+			}
+		})
+	}
+
+	// Acceptance row 4: whitespace assignee AND simultaneously requesting
+	// in_progress must still hit the P6.7 gate — the fix must not
+	// accidentally bypass it by, say, treating a TrimSpace-empty value as
+	// "no assignee supplied" (nil) instead of "explicit clear" ("").
+	t.Run("in_progress with whitespace assignee still requires assignee", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "whitespace in_progress"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		status := string(gtd.TaskStatusInProgress)
+		tab := "\t"
+		_, err = s.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Status: &status, Assignee: &tab})
+		if err == nil {
+			t.Fatal("UpdateTask to in_progress with a whitespace-only assignee must error")
+		}
+		if !errors.Is(err, gtd.ErrAssigneeRequiredForInProgress) {
+			t.Errorf("expected gtd.ErrAssigneeRequiredForInProgress, got: %v", err)
+		}
+	})
+}
+
+// assertUpdateTaskStatusRejectsBlankSQLite mirrors
+// assertGuardedUpdateRejectsBlankSQLite but exercises plain (non-guarded)
+// UpdateTaskStatus's [F0930-09] assignee clause: seeds a pending task with
+// the given raw assignee via CreateTask, then asserts the SQL WHERE clause
+// alone — not any Go-layer pre-read — rejects a target status of
+// in_progress when the row's assignee is blank.
+func assertUpdateTaskStatusRejectsBlankSQLite(t *testing.T, s *sqlite.GTDStore, ctx context.Context, title, assignee string) {
+	t.Helper()
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: title, Assignee: assignee})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected, err := sqlite.ExecUpdateTaskStatusSQLForTest(s, ctx, task.ID, gtd.TaskStatusInProgress)
+	if err != nil {
+		t.Fatalf("ExecUpdateTaskStatusSQLForTest: %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("rowsAffected = %d, want 0 (blank assignee must not reach in_progress)", affected)
+	}
+
+	reread, rerr := s.GetTaskByID(ctx, task.ID)
+	if rerr != nil {
+		t.Fatalf("GetTaskByID: %v", rerr)
+	}
+	if reread.Status != taskStatusPending {
+		t.Errorf("status = %q, want pending", reread.Status)
+	}
+}
+
+// TestUpdateTaskStatus_SQLRejectsBlankAssignee is [F0930-09/7abfae44]'s
+// regression row: the plain (non-guarded) UpdateTaskStatus SQL must reject a
+// target status of in_progress when the row's assignee is blank — the same
+// write-time TOCTOU window SEC-196-02 closed for UpdateTaskStatusGuarded,
+// applied here since plain UpdateTaskStatus's own Go-layer pre-read has the
+// identical gap between read and write.
+func TestUpdateTaskStatus_SQLRejectsBlankAssignee(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	tab := string(rune(0x09))
+	ideographicSpace := string(rune(0x3000)) // U+3000, CJK fullwidth space
+
+	cases := []struct {
+		name     string
+		assignee string // "" seeds NULL/empty (CreateTask collapses both)
+	}{
+		{name: "null/empty", assignee: ""},
+		{name: "tab", assignee: tab},
+		{name: "ideographic space U+3000", assignee: ideographicSpace},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertUpdateTaskStatusRejectsBlankSQLite(t, s, ctx, "blank status sql "+tc.name, tc.assignee)
+		})
+	}
+
+	t.Run("legit actor succeeds", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "legit status sql", Assignee: "claude"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		affected, err := sqlite.ExecUpdateTaskStatusSQLForTest(s, ctx, task.ID, gtd.TaskStatusInProgress)
+		if err != nil {
+			t.Fatalf("ExecUpdateTaskStatusSQLForTest: %v", err)
+		}
+		if affected != 1 {
+			t.Fatalf("rowsAffected = %d, want 1", affected)
+		}
+	})
+
+	// The assignee clause is conditional on the target status — every other
+	// status must remain unaffected by a blank assignee (unlike
+	// UpdateTaskStatusGuarded, plain UpdateTaskStatus also writes
+	// non-in_progress targets).
+	t.Run("non-in_progress target ignores assignee clause", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "blank status sql non-in_progress"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		affected, err := sqlite.ExecUpdateTaskStatusSQLForTest(s, ctx, task.ID, gtd.TaskStatusCancelled)
+		if err != nil {
+			t.Fatalf("ExecUpdateTaskStatusSQLForTest: %v", err)
+		}
+		if affected != 1 {
+			t.Fatalf("rowsAffected = %d, want 1 (cancelled target must ignore blank assignee)", affected)
+		}
+	})
+}
+
+// assertBeginTaskStatusRejectsBlankSQLite seeds a pending task with the
+// given raw assignee via CreateTask, then asserts BeginTaskStatus's
+// [F0930-10] assignee clause — not any Go-layer pre-tx check — alone
+// rejects it: 0 rows affected, row stays pending.
+func assertBeginTaskStatusRejectsBlankSQLite(t *testing.T, s *sqlite.GTDStore, ctx context.Context, title, assignee string) {
+	t.Helper()
+	task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: title, Assignee: assignee})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected, err := sqlite.ExecBeginTaskStatusSQLForTest(s, ctx, task.ID)
+	if err != nil {
+		t.Fatalf("ExecBeginTaskStatusSQLForTest: %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("rowsAffected = %d, want 0 (blank assignee must not reach in_progress)", affected)
+	}
+
+	reread, rerr := s.GetTaskByID(ctx, task.ID)
+	if rerr != nil {
+		t.Fatalf("GetTaskByID: %v", rerr)
+	}
+	if reread.Status != taskStatusPending {
+		t.Errorf("status = %q, want pending", reread.Status)
+	}
+}
+
+// TestBeginTaskStatus_SQLRejectsBlankAssignee is [F0930-10/7abfae44]'s
+// regression row: BeginTaskStatus's guarded UPDATE must reject a task whose
+// assignee is blank — the same write-time TOCTOU window SEC-196-02 closed
+// for UpdateTaskStatusGuarded, applied here since BeginTask's pre-tx
+// assignee check (ReadExisting, in gtd.BeginTaskOrchestration) only sees the
+// row as of that read, not as of this write.
+func TestBeginTaskStatus_SQLRejectsBlankAssignee(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	s := openMem(t, "")
+	ctx := context.Background()
+
+	tab := string(rune(0x09))
+	ideographicSpace := string(rune(0x3000)) // U+3000, CJK fullwidth space
+
+	cases := []struct {
+		name     string
+		assignee string // "" seeds NULL/empty (CreateTask collapses both)
+	}{
+		{name: "null/empty", assignee: ""},
+		{name: "tab", assignee: tab},
+		{name: "ideographic space U+3000", assignee: ideographicSpace},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertBeginTaskStatusRejectsBlankSQLite(t, s, ctx, "begin blank sql "+tc.name, tc.assignee)
+		})
+	}
+
+	t.Run("legit actor succeeds", func(t *testing.T) {
+		task, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "begin legit sql", Assignee: "claude"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		affected, err := sqlite.ExecBeginTaskStatusSQLForTest(s, ctx, task.ID)
+		if err != nil {
+			t.Fatalf("ExecBeginTaskStatusSQLForTest: %v", err)
+		}
+		if affected != 1 {
+			t.Fatalf("rowsAffected = %d, want 1", affected)
+		}
+	})
+}

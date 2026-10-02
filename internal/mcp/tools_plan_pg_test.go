@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -215,5 +216,66 @@ func TestHandleConfirmPlan_Postgres_AtomicRollbackAcrossTaskAndDecision(t *testi
 	}
 	if count != 0 {
 		t.Errorf("expected task to be rolled back by the decision-loop failure, got %d rows", count)
+	}
+}
+
+// TestHandleConfirmPlan_Postgres_ResponseIncludesTaskAndDecisionIDs is the
+// Postgres half of TestHandleConfirmPlan_ResponseIncludesTaskAndDecisionIDs
+// (tools_plan_test.go, SQLite-backed) — [F0930-15]. That test only exercises
+// materializePlanSQLite; this one runs through materializePlanPg, proving
+// dec.ID capture (tools_plan.go's materializePlanPg, the id was already
+// available and previously unread) resolves to a real decisions.id row on
+// this backend too, not just that the PG path compiles and doesn't panic
+// (which TestHandleConfirmPlan_Postgres_AtomicRollbackAcrossTaskAndDecision
+// above already covered, without asserting on the id value itself).
+func TestHandleConfirmPlan_Postgres_ResponseIncludesTaskAndDecisionIDs(t *testing.T) {
+	t.Parallel()
+	s, wsID := newPgPlanTestServer(t)
+	ctx := context.Background()
+
+	r := callConfirmPlan(t, s, map[string]any{
+		"phases":    `[{"title":"PG ID Phase A","description":"A","priority":1}]`,
+		"decisions": `[{"title":"PG ID Decision 1","context":"ctx","decision":"dec","rationale":"rat"}]`,
+	})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	text := resultText(r)
+
+	extractID := func(title string) string {
+		t.Helper()
+		re := regexp.MustCompile(regexp.QuoteMeta(title) + ` \(id: ([0-9a-fA-F-]{36})\)`)
+		m := re.FindStringSubmatch(text)
+		if m == nil {
+			t.Fatalf("no id found for %q in response: %s", title, text)
+		}
+		return m[1]
+	}
+
+	taskID := extractID("PG ID Phase A")
+	decID := extractID("PG ID Decision 1")
+	for _, id := range []string{taskID, decID} {
+		if _, err := uuid.Parse(id); err != nil {
+			t.Errorf("id %q does not parse as a UUID: %v", id, err)
+		}
+	}
+
+	var gotTitle string
+	if err := mcpPlanTestPgPool.QueryRow(
+		ctx, `SELECT title FROM tasks WHERE id = $1 AND workspace_id = $2`, taskID, wsID,
+	).Scan(&gotTitle); err != nil {
+		t.Fatalf("query task by response id: %v", err)
+	}
+	if gotTitle != "PG ID Phase A" {
+		t.Errorf("task id %s resolves to title %q, want %q", taskID, gotTitle, "PG ID Phase A")
+	}
+
+	if err := mcpPlanTestPgPool.QueryRow(
+		ctx, `SELECT title FROM decisions WHERE id = $1 AND workspace_id = $2`, decID, wsID,
+	).Scan(&gotTitle); err != nil {
+		t.Fatalf("query decision by response id: %v", err)
+	}
+	if gotTitle != "PG ID Decision 1" {
+		t.Errorf("decision id %s resolves to title %q, want %q", decID, gotTitle, "PG ID Decision 1")
 	}
 }

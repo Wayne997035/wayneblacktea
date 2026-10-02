@@ -111,7 +111,7 @@ MCP tools that list or search memory/knowledge enforce a hard per-tool result ca
 
 Representative examples (grep `maxListDecisionsLimit\|maxOutcomeLimit\|maxKnowledgeListLimit\|maxKnowledgeSearchLimit` to confirm current values):
 
-- `internal/mcp/tools_decision.go:14,94-96` — `list_decisions` defaults to 20, clamps to `maxListDecisionsLimit = 100`, and logs `slog.Warn("list_decisions limit clamped", ...)` when the caller requests more.
+- `internal/mcp/tools_decision.go:17-18,207-209` — `list_decisions` defaults to 10, clamps to `maxListDecisionsLimit = 40`, and logs `slog.Warn("list_decisions limit clamped", ...)` when the caller requests more. `list_tasks`/`list_goals`/`list_projects`/`list_decisions` additionally share an 18,000-rune response-size budget on top of this row-count cap (`internal/mcp/list_budget.go`'s `listRuneBudget`/`truncateListByRuneBudget`) — a page can be cut before it reaches its row-count limit if its rows are large, flagged via `truncated_by_budget` in the response.
 - `internal/mcp/tools_outcome.go:51,250-251,282-283` — outcome-listing tools clamp requested limits to `maxOutcomeLimit = 100`.
 - `internal/mcp/tools_knowledge.go:18,195-197,250-252` — `search_knowledge` clamps to `maxKnowledgeSearchLimit = 200` and `list_knowledge` clamps to `maxKnowledgeListLimit = 200`, the latter also logging a clamp warning.
 

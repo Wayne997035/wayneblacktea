@@ -29,6 +29,13 @@ import (
 // calls that accumulate).
 const maxRelatedRuleIDs = 20
 
+// entityTypeTask is record_outcome's "task" entity_type value — the one
+// outcome.AllowedEntityTypes member that also gates task_id-prefix
+// resolution [F0930-19]. Shared with this file's own tests
+// (tools_outcome_test.go), which previously held a test-local copy of the
+// same literal (goconst).
+const entityTypeTask = "task"
+
 // parseRelatedRuleIDs parses an optional JSON array of UUID strings from the
 // MCP tool arguments. Returns an empty slice when the argument is absent or
 // empty; returns an error when any element is not a valid UUID or when the
@@ -169,8 +176,12 @@ func (s *Server) registerOutcomeTools(ms *server.MCPServer) {
 		mcp.WithString("entity_type",
 			mcp.Description("task | decision | sprint | project"),
 			mcp.Required()),
+		// [F0930-22] core-tool description now names the prefix shortcut
+		// directly (used to live only in mcpProtocolAppendix), scoped to
+		// entity_type=task since record_outcome's prefix resolution only
+		// applies there (parseRecordOutcomeArgs).
 		mcp.WithString("entity_id",
-			mcp.Description("UUID of the entity"),
+			mcp.Description("UUID of the entity (when entity_type=task, also accepts an 8+ char unique prefix)"),
 			mcp.Required()),
 		mcp.WithString("result",
 			mcp.Description("success | failure | partial | unknown | regressed"),
@@ -253,7 +264,15 @@ type recordOutcomeInput struct {
 // success. Split out of handleRecordOutcome to keep cyclomatic complexity
 // under the gocyclo threshold — this function is pure input validation, the
 // caller retains all side-effecting logic.
-func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallToolResult) {
+//
+// [F0930-19] entity_id resolves an 8+-char task_id prefix ONLY when
+// entity_type=="task" — every other entity_type keeps the plain
+// uuid.Parse it always had. Resolving unconditionally would silently
+// misroute sprint/decision/project entity_id values through a query that
+// only ever searches the tasks table, producing false not-found/ambiguous
+// errors for entirely valid non-task entity IDs (Risk flags' named danger
+// for this ticket).
+func parseRecordOutcomeArgs(ctx context.Context, s *Server, args map[string]any) (recordOutcomeInput, *mcp.CallToolResult) {
 	var in recordOutcomeInput
 
 	in.entityType = stringArg(args, "entity_type")
@@ -264,9 +283,19 @@ func parseRecordOutcomeArgs(args map[string]any) (recordOutcomeInput, *mcp.CallT
 	}
 
 	rawEntityID := stringArg(args, "entity_id")
-	entityID, err := uuid.Parse(rawEntityID)
-	if err != nil {
-		return in, mcp.NewToolResultError("invalid entity_id UUID")
+	var entityID uuid.UUID
+	if in.entityType == entityTypeTask {
+		id, errResult := s.resolveTaskIDForEntityID(ctx, rawEntityID)
+		if errResult != nil {
+			return in, errResult
+		}
+		entityID = id
+	} else {
+		id, err := uuid.Parse(rawEntityID)
+		if err != nil {
+			return in, mcp.NewToolResultError("invalid entity_id UUID")
+		}
+		entityID = id
 	}
 	in.entityID = entityID
 
@@ -398,7 +427,7 @@ func buildTruncationNote(notesTruncated, idsTruncated bool) string {
 func (s *Server) handleRecordOutcome(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
-	in, errResult := parseRecordOutcomeArgs(args)
+	in, errResult := parseRecordOutcomeArgs(ctx, s, args)
 	if errResult != nil {
 		return errResult, nil
 	}

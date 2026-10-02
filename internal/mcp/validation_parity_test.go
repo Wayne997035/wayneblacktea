@@ -461,7 +461,7 @@ func updateProjectCall(title, description string) func(t *testing.T, env *parity
 		if description != "" {
 			args["description"] = description
 		}
-		r := callTool(t, "update_project", args, env.srv.handleUpdateProject)
+		r := callTool(t, env.srv, "update_project", args, env.srv.handleUpdateProject)
 		if r.IsError {
 			return parityOutcome{rejected: true}
 		}
@@ -537,7 +537,7 @@ func branchNameMCPCall(branchName string) func(t *testing.T, env *parityEnv) par
 			// while hiding whether the length rule agrees at all.
 			"area": "unsorted",
 		}
-		r := callTool(t, "add_task", args, env.srv.handleAddTask)
+		r := callTool(t, env.srv, "add_task", args, env.srv.handleAddTask)
 		if r.IsError {
 			return parityOutcome{rejected: true}
 		}
@@ -601,7 +601,7 @@ func goalAreaMCPCall(area string) func(t *testing.T, env *parityEnv) parityOutco
 	return func(t *testing.T, env *parityEnv) parityOutcome {
 		t.Helper()
 		args := map[string]any{"title": "f-mcp-goal-" + uuid.NewString()[:8], "area": area}
-		r := callTool(t, "create_goal", args, env.srv.handleCreateGoal)
+		r := callTool(t, env.srv, "create_goal", args, env.srv.handleCreateGoal)
 		if r.IsError {
 			return parityOutcome{rejected: true}
 		}

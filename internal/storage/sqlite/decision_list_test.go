@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -224,6 +225,63 @@ func TestDecisionStore_List_OrderingTiebreaksOnID(t *testing.T) {
 		t.Errorf("id DESC tiebreak on equal created_at failed: got [%s, %s], want [%s, %s]",
 			rows[0].ID, rows[1].ID, wantFirst, wantSecond)
 	}
+}
+
+// TestDecisionStore_List_OffsetPaginatesResults is [F0930-13]'s SQLite
+// offset test, mirroring the PG twin
+// (TestStore_List_OffsetPaginatesResults, internal/decision/list_test.go) —
+// dual-backend parity per backend-security-design.md §6.5. Before this,
+// decision.ListParams had no Offset field at all and neither backend's SQL
+// accepted one; this pins that Offset actually pages the real SQLite List
+// query (internal/storage/sqlite/decision.go), not just that the Go-side
+// field exists.
+// assertSQLiteOffsetPage is decision_list_test.go's (PG twin, this package
+// mirrors it) helper: fetches one page via store.List(limit, offset) and
+// fails the test unless it exactly matches want — same length, same IDs in
+// order. Extracted from TestDecisionStore_List_OffsetPaginatesResults purely
+// to keep that test's cyclomatic complexity under the lint gate's threshold.
+func assertSQLiteOffsetPage(
+	t *testing.T, s *sqlite.DecisionStore, ctx context.Context, limit, offset int32, want []*db.Decision,
+) []db.Decision {
+	t.Helper()
+	page, err := s.List(ctx, decision.ListParams{Limit: limit, Offset: offset})
+	if err != nil {
+		t.Fatalf("List offset=%d: %v", offset, err)
+	}
+	if len(page) != len(want) {
+		t.Fatalf("offset=%d page has %d rows, want %d: %+v", offset, len(page), len(want), page)
+	}
+	for i, w := range want {
+		if page[i].ID != w.ID {
+			t.Fatalf("offset=%d page[%d] = %s, want %s (full page: %+v)", offset, i, page[i].ID, w.ID, page)
+		}
+	}
+	return page
+}
+
+func TestDecisionStore_List_OffsetPaginatesResults(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	d, s := openDecisionDB(t, ":memory:", "")
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var seeded []*db.Decision
+	for i := range 5 {
+		row := logSQLiteDecision(t, s, fmt.Sprintf("sqlite-offset-page-%d", i), decision.SourceManual)
+		at := base.Add(time.Duration(i) * time.Second).Format(sqliteBackdateLayout)
+		if err := d.ExecContext(ctx, "UPDATE decisions SET created_at = ?1 WHERE id = ?2", at, row.ID.String()); err != nil {
+			t.Fatalf("backdate %d: %v", i, err)
+		}
+		seeded = append(seeded, row)
+	}
+	// created_at DESC, id DESC -> seeded[4] first, seeded[0] last.
+
+	firstPage := assertSQLiteOffsetPage(t, s, ctx, 2, 0, []*db.Decision{seeded[4], seeded[3]})
+	secondPage := assertSQLiteOffsetPage(t, s, ctx, 2, 2, []*db.Decision{seeded[2], seeded[1]})
+	if firstPage[0].ID == secondPage[0].ID || firstPage[1].ID == secondPage[0].ID {
+		t.Error("offset=0 and offset=2 pages overlap — OFFSET is not actually paginating")
+	}
+	assertSQLiteOffsetPage(t, s, ctx, 2, 4, []*db.Decision{seeded[0]})
 }
 
 // TestDecisionStore_List_WorkspaceIsolation verifies List never crosses the

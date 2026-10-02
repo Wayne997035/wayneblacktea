@@ -28,7 +28,8 @@ import (
 // [F0925-31] 82 -> 83 for migrations/sqlite/000083_repos_github_slug.
 // [F0925-33] 83 -> 84 for migrations/sqlite/000084_repo_name_cleanup (data
 // cleanup only, no schema object added).
-const latestSQLiteSchemaVersion = 84
+// [F0930-06] 84 -> 85 for migrations/sqlite/000085_pending_proposals_source_entity_idx.
+const latestSQLiteSchemaVersion = 85
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

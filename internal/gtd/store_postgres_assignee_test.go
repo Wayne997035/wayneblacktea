@@ -458,3 +458,261 @@ func TestStore_UpdateTaskStatusGuarded_RequiresAssignee_PG(t *testing.T) {
 		}
 	})
 }
+
+// TestUpdateTask_WhitespaceOnlyAssigneeClears is [F0930-08]'s (D7) regression
+// row: a whitespace-only assignee value (tab, NBSP, ideographic space — any
+// unicode.IsSpace rune, not just literal "") must clear the assignee to
+// NULL, the same as an explicit "". Before the fix, resolveAssigneeForUpdate
+// skipped NormalizeActor for a TrimSpace-empty value (correctly) but then
+// stored the raw whitespace string verbatim instead of collapsing it to "".
+func TestUpdateTask_WhitespaceOnlyAssigneeClears(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		assignee string
+	}{
+		{name: "tab", assignee: "\t"},
+		{name: "NBSP", assignee: " "},
+		{name: "ideographic space U+3000", assignee: "　"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "whitespace clear " + tc.name, Assignee: "claude"})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			whitespace := tc.assignee
+			updated, err := store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Assignee: &whitespace})
+			if err != nil {
+				t.Fatalf("UpdateTask with whitespace-only assignee must succeed (clear): %v", err)
+			}
+			if updated.Assignee.Valid {
+				t.Errorf("assignee = %+v, want NULL (whitespace-only must clear, not persist raw)", updated.Assignee)
+			}
+		})
+	}
+
+	// Acceptance row 4: whitespace assignee AND simultaneously requesting
+	// in_progress must still hit the P6.7 gate — the fix must not
+	// accidentally bypass it by, say, treating a TrimSpace-empty value as
+	// "no assignee supplied" (nil) instead of "explicit clear" ("").
+	t.Run("in_progress with whitespace assignee still requires assignee", func(t *testing.T) {
+		task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "whitespace in_progress"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+
+		status := string(gtd.TaskStatusInProgress)
+		tab := "\t"
+		_, err = store.UpdateTask(ctx, task.ID, gtd.UpdateTaskParams{Status: &status, Assignee: &tab})
+		if err == nil {
+			t.Fatal("UpdateTask to in_progress with a whitespace-only assignee must error")
+		}
+		if !errors.Is(err, gtd.ErrAssigneeRequiredForInProgress) {
+			t.Errorf("expected gtd.ErrAssigneeRequiredForInProgress, got: %v", err)
+		}
+	})
+}
+
+// assertUpdateTaskStatusRejectsBlankPG mirrors assertGuardedUpdateRejectsBlankPG
+// but exercises plain (non-guarded) UpdateTaskStatus's [F0930-09] assignee
+// clause: seeds a pending task, writes assignee via raw SQL (bypassing
+// CreateTask/UpdateTask normalization), then asserts the SQL WHERE clause
+// alone — not any Go-layer pre-read — rejects a target status of
+// in_progress when the row's assignee is blank.
+func assertUpdateTaskStatusRejectsBlankPG(
+	t *testing.T, pool *pgxpool.Pool, store *gtd.Store, ctx context.Context, title string, assignee *string,
+) {
+	t.Helper()
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: title})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET assignee = $1 WHERE id = $2`, assignee, task.ID); err != nil {
+		t.Fatalf("seed raw assignee: %v", err)
+	}
+
+	_, err = db.New(pool).UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+		Status:      statusInProgress,
+		ID:          task.ID,
+		SpaceChars:  gtd.AssigneeSpaceChars,
+		WorkspaceID: store.WorkspaceID(),
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("UpdateTaskStatus err = %v, want pgx.ErrNoRows", err)
+	}
+
+	reread, rerr := store.GetTaskByID(ctx, task.ID)
+	if rerr != nil {
+		t.Fatalf("GetTaskByID: %v", rerr)
+	}
+	if reread.Status != statusPending {
+		t.Errorf("status = %q, want pending (blank assignee must not reach in_progress)", reread.Status)
+	}
+}
+
+// TestUpdateTaskStatus_SQLRejectsBlankAssignee is [F0930-09/7abfae44]'s
+// regression row: the plain (non-guarded) UpdateTaskStatus SQL must reject a
+// target status of in_progress when the row's assignee is blank — the same
+// write-time TOCTOU window SEC-196-02 closed for UpdateTaskStatusGuarded,
+// applied here since plain UpdateTaskStatus's own Go-layer pre-read has the
+// identical gap between read and write.
+func TestUpdateTaskStatus_SQLRejectsBlankAssignee(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	emptyStr := ""
+	tab := string(rune(0x09))
+	ideographicSpace := string(rune(0x3000)) // U+3000, CJK fullwidth space
+
+	cases := []struct {
+		name     string
+		assignee *string // nil = SQL NULL
+	}{
+		{name: "null", assignee: nil},
+		{name: "empty string", assignee: &emptyStr},
+		{name: "tab", assignee: &tab},
+		{name: "ideographic space U+3000", assignee: &ideographicSpace},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertUpdateTaskStatusRejectsBlankPG(t, pool, store, ctx, "blank status sql "+tc.name, tc.assignee)
+		})
+	}
+
+	t.Run("legit actor succeeds", func(t *testing.T) {
+		task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "legit status sql", Assignee: "claude"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		row, err := db.New(pool).UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+			Status:      statusInProgress,
+			ID:          task.ID,
+			SpaceChars:  gtd.AssigneeSpaceChars,
+			WorkspaceID: store.WorkspaceID(),
+		})
+		if err != nil {
+			t.Fatalf("UpdateTaskStatus with legit actor: %v", err)
+		}
+		if row.Status != statusInProgress {
+			t.Errorf("status = %q, want in_progress", row.Status)
+		}
+	})
+
+	// The assignee clause is conditional on the target status — every other
+	// status must remain unaffected by a blank assignee (unlike
+	// UpdateTaskStatusGuarded, plain UpdateTaskStatus also writes
+	// non-in_progress targets).
+	t.Run("non-in_progress target ignores assignee clause", func(t *testing.T) {
+		task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "blank status sql non-in_progress"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		row, err := db.New(pool).UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+			Status:      string(gtd.TaskStatusCancelled),
+			ID:          task.ID,
+			SpaceChars:  gtd.AssigneeSpaceChars,
+			WorkspaceID: store.WorkspaceID(),
+		})
+		if err != nil {
+			t.Fatalf("UpdateTaskStatus to cancelled with blank assignee must succeed: %v", err)
+		}
+		if row.Status != string(gtd.TaskStatusCancelled) {
+			t.Errorf("status = %q, want cancelled", row.Status)
+		}
+	})
+}
+
+// assertBeginTaskStatusRejectsBlankPG seeds a pending task, writes assignee
+// via raw SQL (bypassing CreateTask/UpdateTask normalization), then asserts
+// BeginTaskStatus's [F0930-10] assignee clause — not any Go-layer pre-tx
+// check — alone rejects it: 0 rows affected, row stays pending.
+func assertBeginTaskStatusRejectsBlankPG(
+	t *testing.T, pool *pgxpool.Pool, store *gtd.Store, ctx context.Context, title string, assignee *string,
+) {
+	t.Helper()
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: title})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET assignee = $1 WHERE id = $2`, assignee, task.ID); err != nil {
+		t.Fatalf("seed raw assignee: %v", err)
+	}
+
+	_, err = db.New(pool).BeginTaskStatus(ctx, db.BeginTaskStatusParams{
+		ID:          task.ID,
+		WorkspaceID: uuid.UUID(store.WorkspaceID().Bytes),
+		SpaceChars:  gtd.AssigneeSpaceChars,
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("BeginTaskStatus err = %v, want pgx.ErrNoRows", err)
+	}
+
+	reread, rerr := store.GetTaskByID(ctx, task.ID)
+	if rerr != nil {
+		t.Fatalf("GetTaskByID: %v", rerr)
+	}
+	if reread.Status != statusPending {
+		t.Errorf("status = %q, want pending (blank assignee must not reach in_progress)", reread.Status)
+	}
+}
+
+// TestBeginTaskStatus_SQLRejectsBlankAssignee is [F0930-10/7abfae44]'s
+// regression row: BeginTaskStatus's guarded UPDATE must reject a task whose
+// assignee is blank — the same write-time TOCTOU window SEC-196-02 closed
+// for UpdateTaskStatusGuarded, applied here since BeginTask's pre-tx
+// assignee check (ReadExisting, in begintask_orchestration.go) only sees the
+// row as of that read, not as of this write.
+func TestBeginTaskStatus_SQLRejectsBlankAssignee(t *testing.T) {
+	pool := openTestPgPool(t)
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	ctx := context.Background()
+
+	emptyStr := ""
+	tab := string(rune(0x09))
+	ideographicSpace := string(rune(0x3000)) // U+3000, CJK fullwidth space
+
+	cases := []struct {
+		name     string
+		assignee *string // nil = SQL NULL
+	}{
+		{name: "null", assignee: nil},
+		{name: "empty string", assignee: &emptyStr},
+		{name: "tab", assignee: &tab},
+		{name: "ideographic space U+3000", assignee: &ideographicSpace},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertBeginTaskStatusRejectsBlankPG(t, pool, store, ctx, "begin blank sql "+tc.name, tc.assignee)
+		})
+	}
+
+	t.Run("legit actor succeeds", func(t *testing.T) {
+		task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "begin legit sql", Assignee: "claude"})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		row, err := db.New(pool).BeginTaskStatus(ctx, db.BeginTaskStatusParams{
+			ID:          task.ID,
+			WorkspaceID: uuid.UUID(store.WorkspaceID().Bytes),
+			SpaceChars:  gtd.AssigneeSpaceChars,
+		})
+		if err != nil {
+			t.Fatalf("BeginTaskStatus with legit actor: %v", err)
+		}
+		if row.Status != statusInProgress {
+			t.Errorf("status = %q, want in_progress", row.Status)
+		}
+	})
+}

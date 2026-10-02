@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
@@ -633,10 +634,19 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 		err  error
 	)
 	updatedSinceArg := nullTimeArg(f.UpdatedSince)
+	// [F0930-20] Same likePattern construction as the Postgres twin
+	// (internal/gtd/store.go queryFilteredTasks): built once in Go, bound as
+	// one parameter, escaped via the same shared likeescape.Escape (D15) so
+	// the two backends cannot drift on what counts as a wildcard.
+	var likePattern string
+	if f.Q != "" {
+		likePattern = "%" + likeescape.Escape(f.Q) + "%"
+	}
 	// Area is appended as the last positional parameter in every branch, and
 	// empty string means "every area" — kept identical to the Postgres twin
 	// (internal/gtd/store.go queryFilteredTasks) so the two backends cannot
-	// drift on which rows a filter returns.
+	// drift on which rows a filter returns. Q follows the same convention,
+	// one slot after area.
 	switch f.Status {
 	case "", "active":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
@@ -645,20 +655,22 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 			  AND (?2 IS NULL OR workspace_id = ?2)
 			  AND (?5 IS NULL OR updated_at >= ?5)
 			  AND (?6 = '' OR area = ?6)
+			  AND (?7 = '' OR title LIKE ?7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	case "all":
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE (?1 IS NULL OR project_id = ?1)
 			  AND (?2 IS NULL OR workspace_id = ?2)
 			  AND (?5 IS NULL OR updated_at >= ?5)
 			  AND (?6 = '' OR area = ?6)
+			  AND (?7 = '' OR title LIKE ?7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?3 OFFSET ?4`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
+			nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	default:
 		const q = `SELECT ` + tasksSelectCols + ` FROM tasks
 			WHERE status = ?1
@@ -666,10 +678,11 @@ func (s *GTDStore) TasksFiltered(ctx context.Context, f gtd.TaskFilter) ([]db.Ta
 			  AND (?3 IS NULL OR workspace_id = ?3)
 			  AND (?6 IS NULL OR updated_at >= ?6)
 			  AND (?7 = '' OR area = ?7)
+			  AND (?8 = '' OR title LIKE ?8 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT ?4 OFFSET ?5`
 		rows, err = s.db.conn.QueryContext(ctx, q,
-			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area)
+			f.Status, nullStringFromUUID(f.ProjectID), s.db.workspaceArg(), f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	}
 	if err != nil {
 		return nil, errWrap("TasksFiltered", err)
@@ -1085,6 +1098,42 @@ func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 // Returns ErrNotFound when no matching row exists. Satisfies gtd.StoreIface.
 func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {
 	return s.taskByID(ctx, id)
+}
+
+// FindTaskIDsByPrefix returns up to limit tasks whose id starts with prefix,
+// scoped to the configured workspace, ordered by id — SQLite twin of
+// internal/gtd/store.go's FindTaskIDsByPrefix [F0930-17]. id is stored as
+// canonical lowercase TEXT with no dashes stripped (dialect note,
+// migrations/sqlite/000012_sqlite_baseline.up.sql), so no cast is needed
+// before the LIKE, unlike the Postgres twin's id::text.
+//
+// prefix is the caller's own canonicalized standard id-text prefix (hex
+// digits and dashes) — neither character is a LIKE wildcard, so no
+// LIKE-escaping is needed here.
+func (s *GTDStore) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]gtd.TaskIDTitle, error) {
+	const q = `SELECT id, title FROM tasks
+		WHERE id LIKE ?1 || '%' AND (?2 IS NULL OR workspace_id = ?2)
+		ORDER BY id LIMIT ?3`
+	rows, err := s.db.conn.QueryContext(ctx, q, prefix, s.db.workspaceArg(), limit)
+	if err != nil {
+		return nil, errWrap("FindTaskIDsByPrefix", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []gtd.TaskIDTitle
+	for rows.Next() {
+		var t gtd.TaskIDTitle
+		var idStr string
+		if err := rows.Scan(&idStr, &t.Title); err != nil {
+			return nil, errWrap("FindTaskIDsByPrefix scan", err)
+		}
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			return nil, errWrap("FindTaskIDsByPrefix parse id", err)
+		}
+		t.ID = id
+		out = append(out, t)
+	}
+	return out, errWrap("FindTaskIDsByPrefix iter", rows.Err())
 }
 
 // BatchCompleteTasksByPRMatch implements gtd.StoreIface.BatchCompleteTasksByPRMatch
@@ -1561,21 +1610,51 @@ func (s *GTDStore) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status gt
 		}
 	}
 
-	const q = `UPDATE tasks
-		SET status = ?2, updated_at = ?3
-		WHERE id = ?1
-		  AND (?4 IS NULL OR workspace_id = ?4)`
 	now := nowRFC3339()
-	res, err := s.db.conn.ExecContext(ctx, q, id.String(), string(status), now, s.db.workspaceArg())
+	res, err := s.db.conn.ExecContext(ctx, updateTaskStatusSQL,
+		id.String(), string(status), now, s.db.workspaceArg(), gtd.AssigneeSpaceChars)
 	if err != nil {
 		return nil, errWrap("UpdateTaskStatus", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
+		// [F0930-09/7abfae44] Zero rows affected means either "not found" or
+		// (only when status == in_progress, since the SQL clause is a no-op
+		// otherwise) "assignee went blank between the pre-read above and
+		// this write" — the same write-time TOCTOU window SEC-196-02 closed
+		// for UpdateTaskStatusGuarded.
+		if status == gtd.TaskStatusInProgress {
+			reread, rerr := s.taskByID(ctx, id)
+			if rerr != nil {
+				return nil, rerr // gtd.ErrNotFound already wrapped
+			}
+			rereadAssignee := ""
+			if reread.Assignee.Valid {
+				rereadAssignee = reread.Assignee.String
+			}
+			if assigneeErr := gtd.RequireAssigneeForInProgress(rereadAssignee, status); assigneeErr != nil {
+				return nil, fmt.Errorf("updating task %s status: %w", id, assigneeErr)
+			}
+		}
 		return nil, gtd.ErrNotFound
 	}
 	return s.taskByID(ctx, id)
 }
+
+// updateTaskStatusSQL is the UPDATE used by UpdateTaskStatus above.
+// Package-level (not inline) so export_test.go can run it directly,
+// bypassing the Go pre-read, to prove the assignee clause is load-bearing on
+// its own — see ExecUpdateTaskStatusSQLForTest. [F0930-09] The assignee
+// clause is a no-op unless the target status is in_progress (?2 <>
+// 'in_progress'), since this statement also writes every other status,
+// unlike updateTaskStatusGuardedSQL. ?5 is gtd.AssigneeSpaceChars, so
+// SQLite's two-argument TRIM(X, Y) strips exactly the runes
+// strings.TrimSpace strips.
+const updateTaskStatusSQL = `UPDATE tasks
+		SET status = ?2, updated_at = ?3
+		WHERE id = ?1
+		  AND (?2 <> 'in_progress' OR TRIM(COALESCE(assignee, ''), ?5) <> '')
+		  AND (?4 IS NULL OR workspace_id = ?4)`
 
 // UpdateTaskStatusGuarded sets the status of a task, but only when the row's
 // current status still equals expectedCurrentStatus — a conditional UPDATE
@@ -1601,6 +1680,23 @@ const updateTaskStatusGuardedSQL = `UPDATE tasks
 		  AND (?2 <> 'in_progress' OR TRIM(COALESCE(assignee, ''), ?6) <> '')
 		  AND (?4 IS NULL OR workspace_id = ?4)`
 
+// updateTaskStatusGuardedHookKey is a private context key used ONLY by this
+// package's own tests (via WithUpdateTaskStatusGuardedTestHook in
+// export_test.go) to run a synchronous callback between
+// UpdateTaskStatusGuarded's pre-read and its guarded SQL UPDATE. This is the
+// only deterministic way to exercise the reread branch's status-vs-assignee
+// ordering fix ([F0930-07]) in a unit test: the pre-read above already
+// rejects any assignee that is blank AT PRE-READ TIME with the identical
+// wrapped error, so a blank assignee reaching the reread branch below can
+// only happen via a write that lands strictly between the two statements —
+// unreachable from any purely synchronous call without this hook, and a
+// real goroutine race would be inherently flaky given SQLite's single
+// connection. ctx.Value lookup misses (returns nil) on every production
+// code path.
+type updateTaskStatusGuardedHookKeyType struct{}
+
+var updateTaskStatusGuardedHookKey = updateTaskStatusGuardedHookKeyType{}
+
 func (s *GTDStore) UpdateTaskStatusGuarded(
 	ctx context.Context, id uuid.UUID, newStatus gtd.TaskStatus, expectedCurrentStatus gtd.TaskStatus,
 ) (*db.Task, error) {
@@ -1625,6 +1721,10 @@ func (s *GTDStore) UpdateTaskStatusGuarded(
 		}
 	}
 
+	if hook, ok := ctx.Value(updateTaskStatusGuardedHookKey).(func()); ok && hook != nil {
+		hook()
+	}
+
 	now := nowRFC3339()
 	res, err := s.db.conn.ExecContext(ctx, updateTaskStatusGuardedSQL,
 		id.String(), string(newStatus), now, s.db.workspaceArg(), string(expectedCurrentStatus), gtd.AssigneeSpaceChars)
@@ -1644,6 +1744,15 @@ func (s *GTDStore) UpdateTaskStatusGuarded(
 		reread, rerr := s.taskByID(ctx, id)
 		if rerr != nil {
 			return nil, rerr // gtd.ErrNotFound already wrapped
+		}
+		// [F0930-07] Status drift is checked BEFORE assignee: if the row's
+		// real status has already moved away from expectedCurrentStatus,
+		// that is a genuine conflict regardless of assignee state — a
+		// concurrent status change must never be misreported as "assignee
+		// required" just because the row also happens to have a blank
+		// assignee.
+		if reread.Status != string(expectedCurrentStatus) {
+			return nil, gtd.ErrConflict
 		}
 		if newStatus == gtd.TaskStatusInProgress {
 			rereadAssignee := ""
@@ -1702,18 +1811,31 @@ func (a *sqliteBeginTaskAdapter) BeginTx(ctx context.Context) error {
 	return nil
 }
 
-// GuardedUpdate only flips status when status != in_progress, guarding
-// against a TOCTOU race between the idempotency check and this write.
+// beginTaskStatusSQL is the guarded UPDATE used by GuardedUpdate below.
+// Package-level (not inline) so export_test.go can run it directly,
+// bypassing the Go pre-tx assignee check, to prove the assignee clause is
+// load-bearing on its own — see ExecBeginTaskStatusSQLForTest. [F0930-10]
+// The assignee clause closes the same write-time TOCTOU window SEC-196-02
+// closed for UpdateTaskStatusGuarded: BeginTask's pre-tx assignee check
+// (ReadExisting) only sees the row as of the read, not as of this write. ?4
+// is gtd.AssigneeSpaceChars, so SQLite's two-argument TRIM(X, Y) strips
+// exactly the runes strings.TrimSpace strips.
+const beginTaskStatusSQL = `UPDATE tasks
+		    SET status = 'in_progress', updated_at = ?2
+		  WHERE id = ?1
+		    AND (?3 IS NULL OR workspace_id = ?3)
+		    AND status != 'in_progress'
+		    AND TRIM(COALESCE(assignee, ''), ?4) <> ''`
+
+// GuardedUpdate only flips status when status != in_progress AND ([F0930-10]
+// the row's assignee is non-blank), guarding against a TOCTOU race between
+// the idempotency check / pre-tx assignee check and this write.
 func (a *sqliteBeginTaskAdapter) GuardedUpdate(ctx context.Context) (bool, error) {
 	now := nowRFC3339()
 	res, err := a.tx.ExecContext(
 		ctx,
-		`UPDATE tasks
-		    SET status = 'in_progress', updated_at = ?2
-		  WHERE id = ?1
-		    AND (?3 IS NULL OR workspace_id = ?3)
-		    AND status != 'in_progress'`,
-		a.id.String(), now, a.s.db.workspaceArg(),
+		beginTaskStatusSQL,
+		a.id.String(), now, a.s.db.workspaceArg(), gtd.AssigneeSpaceChars,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
@@ -1736,6 +1858,19 @@ func (a *sqliteBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.T
 	}
 	if task.Status == string(gtd.TaskStatusInProgress) {
 		return task, nil // raced to in_progress — idempotent
+	}
+	// [F0930-10] status != in_progress is already established above, so the
+	// only remaining reason GuardedUpdate's WHERE clause could have matched
+	// zero rows for a row that still exists is the assignee clause. Returned
+	// bare (not wrapped) — BeginTaskOrchestration's own wrap
+	// ("resolve guard-blocked: %w") is the only wrap this error gets, per
+	// this adapter's existing not-found-case convention above.
+	rereadAssignee := ""
+	if task.Assignee.Valid {
+		rereadAssignee = task.Assignee.String
+	}
+	if assigneeErr := gtd.RequireAssigneeForInProgress(rereadAssignee, gtd.TaskStatusInProgress); assigneeErr != nil {
+		return nil, fmt.Errorf("%w", assigneeErr) // context added one level up by BeginTaskOrchestration
 	}
 	return nil, gtd.ErrNotFound
 }
@@ -1893,15 +2028,25 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 	}
 
 	// Domain-layer gate (P6.7): a NEW assignee value being set THIS call must
-	// resolve through the canonical allowlist before merging in. Empty
-	// string is the explicit-clear case (mergeTaskFields' nullStringIfEmpty
-	// turns it into NULL) and is left untouched — clearing is always allowed.
-	if p.Assignee != nil && strings.TrimSpace(*p.Assignee) != "" {
-		normalized, nerr := gtd.NormalizeActor(*p.Assignee)
-		if nerr != nil {
-			return nil, fmt.Errorf("updating task %s: %w", id, nerr)
+	// resolve through the canonical allowlist before merging in. A
+	// TrimSpace-empty value (literal "" or any whitespace-only string — tab,
+	// NBSP, ideographic space, ...) is the explicit-clear case [F0930-08]:
+	// mergeTaskFields' nullStringIfEmpty turns a literal "" into NULL, so a
+	// whitespace-only value is collapsed to "" here first — clearing is
+	// always allowed, and NormalizeActor is never called on it (it would
+	// reject arbitrary whitespace as an unrecognized actor, the wrong error
+	// for what is semantically a clear request).
+	if p.Assignee != nil {
+		if strings.TrimSpace(*p.Assignee) != "" {
+			normalized, nerr := gtd.NormalizeActor(*p.Assignee)
+			if nerr != nil {
+				return nil, fmt.Errorf("updating task %s: %w", id, nerr)
+			}
+			p.Assignee = &normalized
+		} else {
+			empty := ""
+			p.Assignee = &empty
 		}
-		p.Assignee = &normalized
 	}
 
 	m := mergeTaskFields(existing, p)

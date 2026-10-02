@@ -100,6 +100,17 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 
+				// [D14/F0930-19] task_id here is already a full UUID even when
+				// the caller supplied an 8+-char prefix: the seam's pass-0
+				// (toolspec.go resolveTaskIDPrefix) and log_decision's own
+				// manual resolveTaskID call (tools_decision.go) both mutate
+				// args["task_id"] in place — the SAME map req.GetArguments()
+				// returns — before this middleware ever reads it. So the
+				// uuid.Parse below never sees a raw prefix for a
+				// prefix-resolved call; it only ever sees either a full UUID
+				// (resolved or caller-supplied) or an already-invalid value
+				// the handler itself would have rejected before this
+				// middleware could fire at all.
 				var projectID *uuid.UUID
 				if taskIDStr := stringArg(args, "task_id"); taskIDStr != "" {
 					if taskID, parseErr := uuid.Parse(taskIDStr); parseErr == nil {

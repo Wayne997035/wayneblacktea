@@ -103,26 +103,24 @@ func (s *Server) registerArchTools(ms *server.MCPServer) {
 				"field description below.",
 		),
 		mcp.WithString("slug", mcp.Description("Repository/project identifier (unique key)"), mcp.Required()),
+		// [F0930-23] summary/file_map/last_commit_sha descriptions trimmed:
+		// the omit/clear/replace semantics restated here were already stated
+		// in the tool-level description above — freed budget for F0930-22's
+		// 4 core-write-tool prefix notes without raising
+		// coreToolSerializedMaxBytes.
 		mcp.WithString("summary", mcp.Description(
-			`Human-readable architecture description. Omit this field entirely to leave `+
-				`the stored summary untouched (e.g. when this call is only refreshing `+
-				`file_map or last_commit_sha) — pass "" to explicitly clear it, or any `+
-				`other string to replace it.`,
+			`Human-readable architecture description. Omit to leave untouched; `+
+				`pass "" to clear, or any other string to replace it.`,
 		)),
 		mcp.WithString("file_map", mcp.Description(
-			`JSON object mapping file path to purpose. Omit this field entirely to leave `+
-				`the stored file_map untouched (e.g. when you only read a couple of changed `+
-				`files and don't have the full picture) — pass "" or "{}" to explicitly `+
-				`clear it (both mean the same empty map), or a JSON object to replace it.`,
+			`JSON object mapping file path to purpose. Omit to leave untouched; `+
+				`pass "" or "{}" to clear (both mean empty map), or a JSON object to replace it.`,
 		)),
 		mcp.WithString("last_commit_sha", mcp.Description(
-			`Current git HEAD SHA (run git rev-parse HEAD). UNLIKE summary/file_map, `+
-				`this field always REPLACES the stored value — passing a SHA sets it, `+
-				`and OMITTING this field also clears it to "" (never left untouched, `+
-				`same result as passing "" explicitly). Pass the current HEAD SHA when `+
-				`you have it; if you don't, it is safe to omit — this server does not `+
-				`track drift itself, so compare the returned last_commit_sha against `+
-				`git rev-parse HEAD yourself when you need to know if a refresh is due.`,
+			`Current git HEAD SHA (run git rev-parse HEAD). Omitting this field always `+
+				`REPLACES the stored value with "" — it is never left untouched. This `+
+				`server does not track drift itself — compare the returned `+
+				`last_commit_sha against git rev-parse HEAD yourself when a refresh is due.`,
 		)),
 	), s.handleUpsertProjectArch)
 

@@ -24,7 +24,7 @@ func (s *Server) registerSessionTools(ms *server.MCPServer) {
 		mcp.WithString("project_id", mcp.Description("Active project UUID")),
 		mcp.WithString("next_actions", mcp.Description(
 			`Optional JSON array of next-action objects. Each object: `+
-				`{"step":1,"title":"<short>","command":"<optional>","expected":"<optional>","status":"pending","ref_task_id":"<optional uuid>"}`,
+				`{"step":1,"title":"<short>","command":"<optional>","expected":"<optional>","status":"pending","ref_task_id":"<optional uuid/prefix>"}`,
 		)),
 	), s.handleSetSessionHandoff)
 
@@ -87,7 +87,7 @@ func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRe
 
 	// Parse optional next_actions JSON array.
 	if raw := stringArg(args, "next_actions"); raw != "" {
-		actions, errMsg := parseAndValidateNextActions(raw)
+		actions, errMsg := parseAndValidateNextActions(ctx, s, raw)
 		if errMsg != "" {
 			return mcp.NewToolResultError(errMsg), nil
 		}
@@ -222,7 +222,14 @@ func nextActionControlCharFields(a session.NextAction) []struct{ name, value str
 // parseAndValidateNextActions can attach "next_actions[i]: " once at the call
 // site. Extracted from parseAndValidateNextActions to keep that function
 // under the project's cyclomatic-complexity gate.
-func validateNextActionFields(a session.NextAction) string {
+//
+// a is a pointer into the caller's actions slice element (not a copy)
+// [F0930-19]: on a successful ref_task_id prefix resolution, a.RefTaskID is
+// rewritten in place to the resolved full UUID — same D14 in-place-mutation
+// contract the seam's pass-0 and log_decision's manual resolution both use,
+// so the caller (parseAndValidateNextActions, then handleSetSessionHandoff)
+// persists the resolved UUID, not the raw prefix, into session.HandoffParams.
+func validateNextActionFields(ctx context.Context, s *Server, a *session.NextAction) string {
 	if a.Title == "" {
 		return "title is required"
 	}
@@ -234,7 +241,7 @@ func validateNextActionFields(a session.NextAction) string {
 	if a.Step < 0 || a.Step > maxNextActionItems {
 		return fmt.Sprintf("step must be between 0 and %d", maxNextActionItems)
 	}
-	for _, f := range nextActionControlCharFields(a) {
+	for _, f := range nextActionControlCharFields(*a) {
 		if len([]rune(f.value)) > maxNextActionFieldLen {
 			return fmt.Sprintf("%s exceeds %d characters", f.name, maxNextActionFieldLen)
 		}
@@ -243,9 +250,18 @@ func validateNextActionFields(a session.NextAction) string {
 		}
 	}
 	if a.RefTaskID != nil && *a.RefTaskID != "" {
-		if _, err := uuid.Parse(*a.RefTaskID); err != nil {
-			return "ref_task_id must be a valid UUID"
+		id, errResult := s.resolveTaskIDForRefTaskID(ctx, *a.RefTaskID)
+		if errResult != nil {
+			// extractResultText (middleware_autolog.go): errResult's text is
+			// always one of our own constructed messages (errMsgInvalidTaskIDUUID,
+			// "task not found", or ambiguousTaskIDPrefixMessage's candidate
+			// list) — already bounded (clipSafe'd titles, <=3 candidates), so
+			// a generous cap here is just defence in depth, never expected
+			// to truncate in practice.
+			return extractResultText(errResult, 4000)
 		}
+		resolved := id.String()
+		a.RefTaskID = &resolved
 	}
 	switch a.Status {
 	case session.NextActionPending, session.NextActionDone, session.NextActionSkipped, "":
@@ -256,9 +272,10 @@ func validateNextActionFields(a session.NextAction) string {
 }
 
 // parseAndValidateNextActions parses a JSON array of NextAction objects,
-// enforces count/field-length/UUID caps, and defaults empty Status to pending.
-// Returns the validated slice and an empty errMsg on success.
-func parseAndValidateNextActions(raw string) ([]session.NextAction, string) {
+// enforces count/field-length/UUID caps, resolves each element's ref_task_id
+// prefix (F0930-19), and defaults empty Status to pending. Returns the
+// validated slice and an empty errMsg on success.
+func parseAndValidateNextActions(ctx context.Context, s *Server, raw string) ([]session.NextAction, string) {
 	var actions []session.NextAction
 	if err := json.Unmarshal([]byte(raw), &actions); err != nil {
 		return nil, "invalid next_actions: must be a valid JSON array of next-action objects"
@@ -272,14 +289,17 @@ func parseAndValidateNextActions(raw string) ([]session.NextAction, string) {
 	// reach the first match, and the second item could never be marked done
 	// on its own.
 	seenSteps := make(map[int]bool, len(actions))
-	for i, a := range actions {
-		if reason := validateNextActionFields(a); reason != "" {
+	for i := range actions {
+		// &actions[i], not a range-loop value copy: validateNextActionFields
+		// must mutate the SAME slice element a resolved ref_task_id lands on
+		// (see its own doc comment for why).
+		if reason := validateNextActionFields(ctx, s, &actions[i]); reason != "" {
 			return nil, fmt.Sprintf("next_actions[%d]: %s", i, reason)
 		}
-		if seenSteps[a.Step] {
-			return nil, fmt.Sprintf("next_actions[%d]: duplicate step %d", i, a.Step)
+		if seenSteps[actions[i].Step] {
+			return nil, fmt.Sprintf("next_actions[%d]: duplicate step %d", i, actions[i].Step)
 		}
-		seenSteps[a.Step] = true
+		seenSteps[actions[i].Step] = true
 		if actions[i].Status == "" {
 			actions[i].Status = session.NextActionPending
 		}

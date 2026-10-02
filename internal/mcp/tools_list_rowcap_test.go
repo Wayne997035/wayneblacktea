@@ -29,6 +29,12 @@ type listPage struct {
 	Limit    int  `json:"limit"`
 	Offset   int  `json:"offset"`
 	HasMore  bool `json:"has_more"`
+	// TruncatedByBudget — [F0930-11]. Not in decodeListPage's mandatory
+	// missing-field check below because list_pending_proposals (also decoded
+	// through this struct) does not carry this field; json.Unmarshal leaves
+	// it at its zero value (false) for that tool, which every
+	// list_pending_proposals assertion in this file already tolerates.
+	TruncatedByBudget bool `json:"truncated_by_budget"`
 }
 
 // decodeListPage decodes the envelope and fails loudly on a missing field.
@@ -173,8 +179,19 @@ func TestF170_04_ListProjectsClampsAndPages(t *testing.T) {
 	if clamped.Limit != listPageMaxLimit {
 		t.Errorf("limit = %d for a requested 10000, want the clamp %d", clamped.Limit, listPageMaxLimit)
 	}
-	if clamped.Returned != listPageMaxLimit {
-		t.Errorf("returned = %d, want the clamped %d", clamped.Returned, listPageMaxLimit)
+	// [F0930-11] returned can now be LESS than the row-count clamp: the
+	// shared 18,000-rune budget is a second, independent ceiling on top of
+	// listPageMaxLimit, and rowCapSeedCount's 200-row full-record page
+	// (every row carries CreatedAt/UpdatedAt/WorkspaceID/GoalID alongside
+	// Name/Title) exceeds it before 200 rows accumulate. The clamp itself
+	// (limit == listPageMaxLimit, asserted above) still held — only the
+	// exact-equality assumption for `returned` no longer does.
+	if clamped.Returned > listPageMaxLimit {
+		t.Errorf("returned = %d, want at most the clamped %d", clamped.Returned, listPageMaxLimit)
+	}
+	if clamped.Returned < listPageMaxLimit && !clamped.TruncatedByBudget {
+		t.Errorf("returned = %d (< clamp %d) but truncated_by_budget=false — a page smaller than "+
+			"the row-count clamp must say why", clamped.Returned, listPageMaxLimit)
 	}
 
 	last := decodeListPage(t, callListProjects(t, s, map[string]any{"limit": float64(50), "offset": float64(480)}))
@@ -265,9 +282,15 @@ func TestF170_05_ListGoalsClampsAndPages(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	seedGoalsForPaging(t, s, rowCapSeedCount)
 
+	// [F0930-11] Same rune-budget interaction as TestF170_04_ListProjectsClampsAndPages
+	// above — see its comment for why exact equality no longer holds.
 	clamped := decodeListPage(t, callListGoals(t, s, map[string]any{"limit": float64(10000)}))
-	if clamped.Returned != listPageMaxLimit {
-		t.Errorf("returned = %d for a requested 10000, want the clamp %d", clamped.Returned, listPageMaxLimit)
+	if clamped.Returned > listPageMaxLimit {
+		t.Errorf("returned = %d for a requested 10000, want at most the clamp %d", clamped.Returned, listPageMaxLimit)
+	}
+	if clamped.Returned < listPageMaxLimit && !clamped.TruncatedByBudget {
+		t.Errorf("returned = %d (< clamp %d) but truncated_by_budget=false — a page smaller than "+
+			"the row-count clamp must say why", clamped.Returned, listPageMaxLimit)
 	}
 
 	last := decodeListPage(t, callListGoals(t, s, map[string]any{"limit": float64(50), "offset": float64(480)}))

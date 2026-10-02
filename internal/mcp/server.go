@@ -592,6 +592,12 @@ func (s *Server) MCPServer() *server.MCPServer {
 	s.registerWatchdogTools(ms)
 	s.registerResources(ms)
 	s.registerPrompts(ms)
+	// [F0930-02] Single post-registration pass: set readOnlyHint=true /
+	// destructiveHint=false for every tool in discipline.ReadOnlyTools. See
+	// applyReadOnlyAnnotations' doc comment (tools_readonly_annotations.go)
+	// for why this runs once here instead of at each of the 99
+	// mcp.NewTool() call sites above.
+	applyReadOnlyAnnotations(ms)
 	return ms
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -22,57 +23,57 @@ import (
 
 func callListProjects(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "list_projects", args, s.handleListProjects)
+	return callTool(t, s, "list_projects", args, s.handleListProjects)
 }
 
 func callCreateProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "create_project", args, s.handleCreateProject)
+	return callTool(t, s, "create_project", args, s.handleCreateProject)
 }
 
 func callUpdateProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "update_project", args, s.handleUpdateProject)
+	return callTool(t, s, "update_project", args, s.handleUpdateProject)
 }
 
 func callListGoals(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "list_goals", args, s.handleListGoals)
+	return callTool(t, s, "list_goals", args, s.handleListGoals)
 }
 
 func callCreateGoal(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "create_goal", args, s.handleCreateGoal)
+	return callTool(t, s, "create_goal", args, s.handleCreateGoal)
 }
 
 func callUpdateProjectStatus(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "update_project_status", args, s.handleUpdateProjectStatus)
+	return callTool(t, s, "update_project_status", args, s.handleUpdateProjectStatus)
 }
 
 func callGetProject(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "get_project", args, s.handleGetProject)
+	return callTool(t, s, "get_project", args, s.handleGetProject)
 }
 
 func callLogActivity(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "log_activity", args, s.handleLogActivity)
+	return callTool(t, s, "log_activity", args, s.handleLogActivity)
 }
 
 func callChecklistAddItem(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "task_checklist_add_item", args, s.handleChecklistAddItem)
+	return callTool(t, s, "task_checklist_add_item", args, s.handleChecklistAddItem)
 }
 
 func callChecklistToggle(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "task_checklist_toggle", args, s.handleChecklistToggle)
+	return callTool(t, s, "task_checklist_toggle", args, s.handleChecklistToggle)
 }
 
 func callChecklistComplete(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "task_checklist_complete", args, s.handleChecklistComplete)
+	return callTool(t, s, "task_checklist_complete", args, s.handleChecklistComplete)
 }
 
 // seedProject creates a project via the store and returns it.
@@ -149,6 +150,63 @@ func TestListProjects_ReturnsSeeded(t *testing.T) {
 	}
 	if !strings.Contains(resultText(r), id.String()) {
 		t.Errorf("seeded project %s not found in response", id)
+	}
+}
+
+// TestListProjects_DescriptionTruncatedFlag pins [F0930-14]: list_projects'
+// description is a second, list-view-only clip (listDescriptionMaxRunes=500)
+// on top of the U13 read-time bound (gtdBodyMaxRunes=20,000) — a row whose
+// stored Description exceeds 500 runes must come back cut, and
+// description_truncated must say so, so a caller never silently writes a
+// truncated value back via update_project.
+func TestListProjects_DescriptionTruncatedFlag(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	longDesc := strings.Repeat("測", 1000) // > listDescriptionMaxRunes (500)
+	proj, err := s.gtd.CreateProject(ctx, gtd.CreateProjectParams{
+		Name:        "proj-" + uuid.NewString()[:8],
+		Title:       "Long description project",
+		Area:        "engineering",
+		Description: longDesc,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	r := callListProjects(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("should succeed, got: %s", resultText(r))
+	}
+	var out struct {
+		Projects []struct {
+			ID                   string `json:"id"`
+			Description          string `json:"description"`
+			DescriptionTruncated bool   `json:"description_truncated"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, resultText(r))
+	}
+	var found bool
+	for _, p := range out.Projects {
+		if p.ID != proj.ID.String() {
+			continue
+		}
+		found = true
+		if !p.DescriptionTruncated {
+			t.Error("description_truncated = false for a 1,000-rune description against a 500-rune list cap")
+		}
+		// +1: clipRunes (tools_context.go) appends a single-rune clipMarker
+		// ("…") when it truncates, so a clipped field's rune count is
+		// maxRunes+1, not maxRunes — same convention every other
+		// clipSafe'd field in this codebase follows.
+		if runes := utf8.RuneCountInString(p.Description); runes > listDescriptionMaxRunes+1 {
+			t.Errorf("description is %d runes, want at most %d (%d cap + clipMarker)", runes, listDescriptionMaxRunes+1, listDescriptionMaxRunes)
+		}
+	}
+	if !found {
+		t.Fatalf("seeded project %s not found in list_projects response: %s", proj.ID, resultText(r))
 	}
 }
 
@@ -407,6 +465,59 @@ func TestListGoals_ReturnsSeeded(t *testing.T) {
 	}
 	if !strings.Contains(resultText(list), "goal-1") {
 		t.Errorf("seeded goal not found, got: %s", resultText(list))
+	}
+}
+
+// TestListGoals_DescriptionTruncatedFlag is [F0930-14]'s list_goals half of
+// TestListProjects_DescriptionTruncatedFlag above — same 500-rune list-view
+// clip, same description_truncated contract. list_goals has no single-goal
+// read tool today (no get_goal), so this list projection is currently the
+// ONLY way to read a goal's description at all.
+func TestListGoals_DescriptionTruncatedFlag(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	longDesc := strings.Repeat("測", 1000) // > listDescriptionMaxRunes (500)
+	goal, err := s.gtd.CreateGoal(ctx, gtd.CreateGoalParams{
+		Title:       "Long description goal",
+		Area:        "career",
+		Description: longDesc,
+	})
+	if err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+
+	r := callListGoals(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("should succeed, got: %s", resultText(r))
+	}
+	var out struct {
+		Goals []struct {
+			ID                   string `json:"id"`
+			Description          string `json:"description"`
+			DescriptionTruncated bool   `json:"description_truncated"`
+		} `json:"goals"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, resultText(r))
+	}
+	var found bool
+	for _, g := range out.Goals {
+		if g.ID != goal.ID.String() {
+			continue
+		}
+		found = true
+		if !g.DescriptionTruncated {
+			t.Error("description_truncated = false for a 1,000-rune description against a 500-rune list cap")
+		}
+		// +1: see TestListProjects_DescriptionTruncatedFlag's comment above —
+		// clipRunes appends a single-rune clipMarker on truncation.
+		if runes := utf8.RuneCountInString(g.Description); runes > listDescriptionMaxRunes+1 {
+			t.Errorf("description is %d runes, want at most %d (%d cap + clipMarker)", runes, listDescriptionMaxRunes+1, listDescriptionMaxRunes)
+		}
+	}
+	if !found {
+		t.Fatalf("seeded goal %s not found in list_goals response: %s", goal.ID, resultText(r))
 	}
 }
 

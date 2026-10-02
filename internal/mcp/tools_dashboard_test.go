@@ -345,7 +345,7 @@ func TestReconcileDashboardRoundTrip_CandidateTaskIDFeedsCompleteTask(t *testing
 
 	// The round-trip: candidate's task_id fed straight into complete_task,
 	// exactly as prompts.go's handlePromptReconcileDashboard instructs.
-	completeRes := callTool(t, "complete_task", map[string]any{
+	completeRes := callTool(t, s, "complete_task", map[string]any{
 		"task_id": body.Candidates[0].TaskID, "artifact": "https://github.com/o/r/pull/1",
 	}, s.handleCompleteTask)
 	if completeRes.IsError {
@@ -361,7 +361,7 @@ func TestReconcileDashboardRoundTrip_CandidateTaskIDFeedsCompleteTask(t *testing
 
 	// Negative case: a task_id that does not exist must resolve through
 	// complete_task's existing not-found error, unchanged.
-	missingRes := callTool(t, "complete_task", map[string]any{
+	missingRes := callTool(t, s, "complete_task", map[string]any{
 		"task_id": uuid.New().String(), "artifact": "https://github.com/o/r/pull/2",
 	}, s.handleCompleteTask)
 	if !missingRes.IsError {

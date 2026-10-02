@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
@@ -194,6 +195,12 @@ func TestHandleListDecisions_ProjectWinsOverRepo(t *testing.T) {
 // table row "project not owned / nonexistent -> returns [] (not an error)" —
 // when the store returns an empty result for a well-formed-but-unmatched
 // project_id, handleListDecisions must NOT turn that into a tool error.
+//
+// [F0930-13] Unmarshals into the "decisions" object field, not a bare array
+// — handleListDecisions' response shape changed from a bare array to an
+// object ({"decisions":[...],"returned",...}) so list_decisions can carry
+// the same returned/limit/offset/has_more/truncated_by_budget envelope the
+// other three list tools already have.
 func TestHandleListDecisions_NonexistentProjectReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	dec := &trackingDecisionStore{listResult: nil} // store found nothing
@@ -205,12 +212,14 @@ func TestHandleListDecisions_NonexistentProjectReturnsEmpty(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("expected IsError=false for nonexistent project, got: %s", resultText(r))
 	}
-	var out []db.Decision
-	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
-		t.Fatalf("response is not valid JSON array: %v (%s)", err, resultText(r))
+	var out struct {
+		Decisions []db.Decision `json:"decisions"`
 	}
-	if len(out) != 0 {
-		t.Errorf("expected empty array, got %d rows", len(out))
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("response is not a valid JSON object with a decisions field: %v (%s)", err, resultText(r))
+	}
+	if len(out.Decisions) != 0 {
+		t.Errorf("expected empty decisions array, got %d rows", len(out.Decisions))
 	}
 }
 
@@ -244,13 +253,18 @@ func TestHandleListDecisions_IncludeAutoNonBoolDefaultsFalse(t *testing.T) {
 // TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull verifies the
 // nil-slice-vs-JSON-null gap: when the store returns a nil []db.Decision (0
 // rows — see decision.Store.List / sqlite DecisionStore.List, both leave the
-// slice nil until a row is appended), handleListDecisions must serialize an
-// empty JSON array, not the literal 4-byte text "null".
+// slice nil until a row is appended), handleListDecisions must serialize the
+// "decisions" field as an empty JSON array, not the literal 4-byte text
+// "null".
 //
 // json.Unmarshal([]byte("null"), &slice) leaves slice nil with len==0 — the
 // exact same shape as unmarshaling "[]" — so asserting on len(out) after
 // unmarshal (as TestHandleListDecisions_NonexistentProjectReturnsEmpty does)
 // cannot distinguish the two. This test asserts the raw text instead.
+//
+// [F0930-13] Checks `"decisions":[]` / `"decisions":null` substrings, not
+// the whole-body `== "[]"` equality this test used before the response
+// shape changed from a bare array to an object.
 func TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull(t *testing.T) {
 	t.Parallel()
 	dec := &trackingDecisionStore{listResult: nil}
@@ -261,8 +275,11 @@ func TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", resultText(r))
 	}
 	raw := resultText(r)
-	if raw != "[]" {
-		t.Errorf("raw body = %q, want exactly %q (nil slice must not serialize to JSON null)", raw, "[]")
+	if !strings.Contains(raw, `"decisions":[]`) {
+		t.Errorf("raw body = %q, want it to contain %q", raw, `"decisions":[]`)
+	}
+	if strings.Contains(raw, `"decisions":null`) {
+		t.Errorf("raw body = %q, decisions must not serialize to JSON null", raw)
 	}
 }
 
@@ -277,6 +294,128 @@ func TestHandleListDecisions_IncludeAutoTrue(t *testing.T) {
 	callListDecisions(t, s, map[string]any{"include_auto": true})
 	if !dec.lastListParams.IncludeAuto {
 		t.Error("expected IncludeAuto=true when include_auto=true")
+	}
+}
+
+// TestListDecisions_DefaultAndMaxLimit pins [F0930-13]'s tightened
+// default/max (10/40, down from 20/100 — D5/D13). Asserted against the
+// response's own "limit" field, not the store's ListParams.Limit (which now
+// carries a +1 over-fetch for has_more detection — the same trick
+// handleListTasks/handleListProjects/handleListGoals already use).
+func TestListDecisions_DefaultAndMaxLimit(t *testing.T) {
+	t.Parallel()
+	dec := &trackingDecisionStore{}
+	s := &Server{decision: dec}
+
+	r := callListDecisions(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(r))
+	}
+	var out struct {
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, resultText(r))
+	}
+	if out.Limit != defaultListDecisionsLimit {
+		t.Errorf("default limit = %d, want %d", out.Limit, defaultListDecisionsLimit)
+	}
+
+	rMax := callListDecisions(t, s, map[string]any{"limit": float64(999)})
+	if rMax.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(rMax))
+	}
+	var outMax struct {
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(resultText(rMax)), &outMax); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, resultText(rMax))
+	}
+	if outMax.Limit != maxListDecisionsLimit {
+		t.Errorf("limit=999 should clamp to %d (the new max), got %d — not the old 100", maxListDecisionsLimit, outMax.Limit)
+	}
+}
+
+// TestListDecisions_ResponseIsObject pins [F0930-13]'s breaking wire-format
+// change: list_decisions used to return a bare JSON array
+// (TestHandleListDecisions_NilResultReturnsEmptyArrayNotNull's pre-F0930-13
+// history) and now returns an object carrying the same
+// decisions/returned/limit/offset/has_more/truncated_by_budget envelope the
+// other three list tools already had.
+func TestListDecisions_ResponseIsObject(t *testing.T) {
+	t.Parallel()
+	dec := &trackingDecisionStore{}
+	s := &Server{decision: dec}
+
+	r := callListDecisions(t, s, map[string]any{})
+	if r.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(r))
+	}
+	raw := resultText(r)
+	for _, field := range []string{`"decisions"`, `"returned"`, `"limit"`, `"offset"`, `"has_more"`, `"truncated_by_budget"`} {
+		if !strings.Contains(raw, field) {
+			t.Errorf("response missing %s — want an object envelope like the other three list tools: %s", field, raw)
+		}
+	}
+	if trimmed := strings.TrimSpace(raw); strings.HasPrefix(trimmed, "[") {
+		t.Errorf("response is a bare array, want an object: %s", raw)
+	}
+}
+
+// TestListDecisions_RuneBudgetCJKWorstCase is [F0930-13]/[F0930-11]'s named
+// CJK worst-case acceptance test for list_decisions, mirroring
+// TestListTasks_RuneBudgetCJKWorstCase (tools_gtd_test.go) — a page of
+// CJK-heavy decisions must be cut by the shared listRuneBudget before the
+// row-count clamp (maxListDecisionsLimit=40) would otherwise stop it. Fields
+// are sized below decisionBodyMaxRunes/decisionTitleMaxRunes on purpose
+// (~4,000 runes/row) so several rows accumulate before the budget cuts —
+// exercising the "page too big" truncation path, distinct from the
+// single-row-alone-exceeds-budget edge case list_tasks' sibling test covers.
+func TestListDecisions_RuneBudgetCJKWorstCase(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	ctx := context.Background()
+	title := strings.Repeat("決", 500)
+	body := strings.Repeat("測", 1000)
+	for i := 0; i < 20; i++ {
+		if _, err := s.decision.Log(ctx, decision.LogParams{
+			Title:        title,
+			Context:      body,
+			Decision:     body,
+			Rationale:    body,
+			Alternatives: body,
+			Source:       decision.SourceManual,
+		}); err != nil {
+			t.Fatalf("decision.Log %d: %v", i, err)
+		}
+	}
+
+	r := callListDecisions(t, s, map[string]any{"limit": float64(maxListDecisionsLimit)})
+	if r.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(r))
+	}
+	var out struct {
+		Decisions         json.RawMessage `json:"decisions"`
+		Returned          int             `json:"returned"`
+		HasMore           bool            `json:"has_more"`
+		TruncatedByBudget bool            `json:"truncated_by_budget"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &out); err != nil {
+		t.Fatalf("unmarshal response: %v (%s)", err, resultText(r))
+	}
+	if out.Returned >= maxListDecisionsLimit {
+		t.Errorf("returned = %d, want fewer than the requested %d — a page of ~4,000-rune CJK "+
+			"decisions must not all fit in the %d-rune budget", out.Returned, maxListDecisionsLimit, listRuneBudget)
+	}
+	if !out.HasMore {
+		t.Error("has_more = false — 20 decisions were seeded, fewer must have been returned")
+	}
+	if !out.TruncatedByBudget {
+		t.Error("truncated_by_budget = false — a page smaller than the row-count clamp must say why")
+	}
+	if runes := utf8.RuneCountInString(string(out.Decisions)); runes > listRuneBudget {
+		t.Errorf("decisions array is %d runes, want at most the %d-rune budget "+
+			"(mutation: remove the budget check and this goes red)", runes, listRuneBudget)
 	}
 }
 

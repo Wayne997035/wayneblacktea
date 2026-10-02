@@ -136,6 +136,12 @@ func (s *stubGTDStore) GetTaskByID(_ context.Context, _ uuid.UUID) (*db.Task, er
 	return nil, nil
 }
 
+// FindTaskIDsByPrefix stub — gtd.StoreIface gained this method [F0930-17];
+// this fake's own tests never exercise the prefix-resolution path.
+func (s *stubGTDStore) FindTaskIDsByPrefix(_ context.Context, _ string, _ int) ([]gtd.TaskIDTitle, error) {
+	return nil, nil
+}
+
 func (s *stubGTDStore) RecentCompletedTasks(_ context.Context, _ uuid.UUID, _ int32) ([]db.Task, error) {
 	return nil, nil
 }

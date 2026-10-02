@@ -415,6 +415,14 @@ var expectedNewEntries = map[string]bool{
 	"index|idx_vision_items_promoted_task_id":     true,
 	"index|idx_procedural_memories_project_id":    true,
 	"index|idx_memory_atoms_created_at":           true,
+
+	// migrations/sqlite/000085_pending_proposals_source_entity_idx.up.sql
+	// (D10, F0930-06): supports the decision_outcome_review
+	// dedup NOT EXISTS lookup after F0930-05 dropped its
+	// `AND p.status = 'pending'` predicate. Net-new versus the frozen golden
+	// baseline — see the migration file's own header comment for the full
+	// rationale.
+	"index|idx_pending_proposals_type_proposer_source": true,
 }
 
 // migrations/sqlite/000082_index_parity.up.sql (F0925-15) realigns 3

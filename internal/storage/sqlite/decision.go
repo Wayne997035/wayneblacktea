@@ -235,6 +235,9 @@ func (s *DecisionStore) All(ctx context.Context, limit int32) ([]db.Decision, er
 // Workspace scoping comes from s.db.workspaceArg() (bound at Open time),
 // never from p — mirrors the PG Store.List behaviour. Source is filtered
 // BEFORE ORDER/LIMIT so the limit isn't consumed by rows that get excluded.
+// OFFSET added [F0930-13] — mirrors ListDecisionsFiltered's PG twin
+// (sql/queries/decision.sql); p.Offset defaults to 0 (ListParams zero
+// value), so existing callers are unaffected.
 func (s *DecisionStore) List(ctx context.Context, p decision.ListParams) ([]db.Decision, error) {
 	if err := p.Validate(); err != nil {
 		return nil, errWrap("List", err)
@@ -245,10 +248,11 @@ func (s *DecisionStore) List(ctx context.Context, p decision.ListParams) ([]db.D
 		  AND (?3 IS NULL OR repo_name = ?3)
 		  AND (?4 OR source = 'manual')
 		ORDER BY created_at DESC, id DESC
-		LIMIT ?5`
+		LIMIT ?5
+		OFFSET ?6`
 	return s.list(ctx, "List", q,
 		s.db.workspaceArg(), nullStringFromUUID(p.ProjectID), nullStringIfEmpty(p.RepoName),
-		p.IncludeAuto, p.Limit)
+		p.IncludeAuto, p.Limit, p.Offset)
 }
 
 // ByProject returns the most recent decisions for a given project ID.

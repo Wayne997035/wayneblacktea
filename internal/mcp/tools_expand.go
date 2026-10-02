@@ -285,7 +285,7 @@ func (s *Server) registerExpandTools(ms *server.MCPServer) {
 		mcp.WithString("group",
 			mcp.Description("Group to reveal, or \"all\" / \"reset\". Omit to list the catalogue."),
 			mcp.Enum(expandToolsGroupEnum()...)),
-	), seam(expandToolsName, func(ctx context.Context, args expandToolsArgs) (*mcp.CallToolResult, error) {
+	), seam(s, expandToolsName, func(ctx context.Context, args expandToolsArgs) (*mcp.CallToolResult, error) {
 		return s.handleExpandTools(ctx, ms, args)
 	}))
 }

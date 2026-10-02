@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
@@ -144,10 +145,14 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		// looking for the rest.
 		mcp.WithDescription("Returns one page of active projects, highest priority first. "+
 			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
-			"Read-only."),
+			"description is projected to 500 runes with description_truncated=true when cut — "+
+			"call get_project for the full text before writing it back; NEVER pass a "+
+			"truncated list value into update_project (it REPLACES the stored value entirely). "+
+			"truncated_by_budget=true means this page also stopped early due to response size, "+
+			"independent of has_more — re-call with a smaller limit to keep paging. Read-only."),
 		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
-	), seam("list_projects", s.handleListProjects))
+	), seam(s, "list_projects", s.handleListProjects))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -160,7 +165,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("goal_id", mcp.Description("Parent goal UUID")),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower is higher")),
 			mcp.WithString("repo_name", mcp.Description("VCS repository slug to link this project (e.g. wayneblacktea)")),
-		), seam("create_project", s.handleCreateProject),
+		), seam(s, "create_project", s.handleCreateProject),
 		requiredMsg("name", "name, title and area are required"),
 		requiredMsg("title", "name, title and area are required"),
 		requiredMsg("area", "name, title and area are required"),
@@ -185,7 +190,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				mcp.Enum("active", "completed", "archived", "on_hold")),
 			mcp.WithString("goal_id", mcp.Description("Parent goal UUID (empty string clears the link)")),
 			mcp.WithString("repo_name", mcp.Description("VCS repository slug (empty string clears the link)")),
-		), seam("update_project", s.handleUpdateProject),
+		), seam(s, "update_project", s.handleUpdateProject),
 		uuidArgs("project_id"),
 	)
 
@@ -194,20 +199,27 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"list_tasks",
 			mcp.WithDescription("Lists tasks, optionally filtered by project and status. "+
 				"Supports pagination via limit and offset. "+
-				"Set summary=false to receive full task objects instead of compact summaries."),
+				"Set summary=false to receive full task objects instead of compact summaries. "+
+				"Response also carries a truncated_by_budget flag, independent of has_more: "+
+				"true means this page stopped early due to response size — re-call with a "+
+				"smaller limit (same offset) to keep paging; do not assume the returned rows "+
+				"are the complete result."),
 			mcp.WithString("project_id", mcp.Description("Filter by project UUID")),
 			mcp.WithBoolean("summary", mcp.Description("Return compact task summaries (default true); false → full task objects")),
 			mcp.WithString("status",
 				mcp.Description("Filter by status (default: active = pending + in_progress; all = every status)"),
 				mcp.Enum("active", "all", "pending", "in_progress", "completed", "cancelled")),
-			mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
+			mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 100)")),
 			mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
 			// No mcp.Enum here: the vocabulary lives in the task_areas table
 			// so that adding one costs an INSERT rather than a redeploy
 			// (migration 000079). An enum baked into the schema would put the
 			// redeploy straight back.
 			mcp.WithString("area", mcp.Description("Filter by area slug; read wayneblacktea://gtd/areas for the list and counts")),
-		), seam("list_tasks", s.handleListTasks),
+			mcp.WithString("q",
+				mcp.Description("Case-insensitive title substring 2-200 chars"),
+				mcp.MinLength(2), mcp.MaxLength(200)),
+		), seam(s, "list_tasks", s.handleListTasks),
 		uuidArgs("project_id"),
 	)
 
@@ -255,7 +267,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			// cannot answer "how many are left", which is the only reason this
 			// column exists.
 			mcp.WithString("area", mcp.Description("Area slug; read wayneblacktea://gtd/areas for the list"), mcp.Required()),
-		), seam("add_task", s.handleAddTask),
+		), seam(s, "add_task", s.handleAddTask),
 		uuidArgs("project_id"),
 		noMaxLength("assignee"),
 	)
@@ -268,9 +280,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"If artifact is a GitHub PR URL (https://github.com/.../pull/N) it is also stored as pr_url. "+
 					"If artifact is a 40-character hex SHA it is appended to commit_shas.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			// [F0930-22] core-tool description now names the prefix shortcut
+			// directly (used to live only in mcpProtocolAppendix).
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("artifact", mcp.Description("Link or note for the output (PR URL or commit SHA auto-detected)")),
-		), seam("complete_task", s.handleCompleteTask),
+		), seam(s, "complete_task", s.handleCompleteTask),
 		uuidArgs("task_id"),
 	)
 
@@ -279,10 +293,14 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		// [F170-05] See list_projects above for why "all" had to go.
 		mcp.WithDescription("Returns one page of active goals ordered by due date. "+
 			"Response includes limit/offset/returned/has_more; re-call with offset to page. "+
-			"Read-only."),
+			"description is projected to 500 runes with description_truncated=true when cut — "+
+			"this is currently the only way to read a goal's description, so a truncated value "+
+			"is NOT the full stored text. "+
+			"truncated_by_budget=true means this page also stopped early due to response size, "+
+			"independent of has_more — re-call with a smaller limit to keep paging. Read-only."),
 		mcp.WithNumber("limit", mcp.Description("Max results per page (default 50, max 200)")),
 		mcp.WithNumber("offset", mcp.Description("Pagination offset (default 0)")),
-	), seam("list_goals", s.handleListGoals))
+	), seam(s, "list_goals", s.handleListGoals))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -292,7 +310,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("area", mcp.Description("Life area (e.g. career, health, personal)"), mcp.Required()),
 			mcp.WithString("description", mcp.Description("Detailed description")),
 			mcp.WithString("due_date", mcp.Description("Target date in RFC3339 format (e.g. 2026-12-31T00:00:00Z)")),
-		), seam("create_goal", s.handleCreateGoal),
+		), seam(s, "create_goal", s.handleCreateGoal),
 		requiredMsg("title", "title and area are required"),
 		requiredMsg("area", "title and area are required"),
 	)
@@ -308,7 +326,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"and omitted ones keep their value. MUST call with status=\"in_progress\" the moment work "+
 				"starts. Use complete_task, NEVER update_task, to mark a task completed. See "+
 				"initial_instructions (Per-tool detail) for the full omission/clear semantics per field."),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			// [F0930-22] core-tool description now names the prefix shortcut
+			// directly (used to live only in mcpProtocolAppendix).
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("status",
 				mcp.Description("pending | in_progress | cancelled"),
 				mcp.Enum("pending", "in_progress", "cancelled")),
@@ -330,7 +350,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("area", mcp.Description(
 				"Reclassify the task. Must name an area from wayneblacktea://gtd/areas; omit to keep it.",
 			)),
-		), seam("update_task", s.handleUpdateTask),
+		), seam(s, "update_task", s.handleUpdateTask),
 		uuidArgs("task_id"),
 		// assignee's MaxLength(200) is advisory-only (see add_task's
 		// identical rationale above) — gtd.NormalizeActor's allowlist is the
@@ -344,7 +364,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithDescription("Updates the status of a project."),
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 			mcp.WithString("status", mcp.Description("New status: active, completed, archived, or on_hold"), mcp.Required()),
-		), seam("update_project_status", s.handleUpdateProjectStatus),
+		), seam(s, "update_project_status", s.handleUpdateProjectStatus),
 		uuidArgs("project_id"),
 	)
 
@@ -352,7 +372,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		"get_project",
 		mcp.WithDescription("Returns a project by name with its recent decisions."),
 		mcp.WithString("name", mcp.Description("Project slug name"), mcp.Required()),
-	), seam("get_project", s.handleGetProject))
+	), seam(s, "get_project", s.handleGetProject))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -362,7 +382,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("action", mcp.Description("What was done"), mcp.Required()),
 			mcp.WithString("project_id", mcp.Description("Project UUID (optional)")),
 			mcp.WithString("notes", mcp.Description("Additional notes")),
-		), seam("log_activity", s.handleLogActivity),
+		), seam(s, "log_activity", s.handleLogActivity),
 		requiredMsg("actor", "actor and action are required"),
 		requiredMsg("action", "actor and action are required"),
 		uuidArgs("project_id"),
@@ -376,7 +396,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"session or surface high-importance tasks that have no due date.",
 		),
 		mcp.WithNumber("days", mcp.Description("How many days ahead to include (1-14, default 7)")),
-	), seam("get_upcoming_work", s.handleGetUpcomingWork))
+	), seam(s, "get_upcoming_work", s.handleGetUpcomingWork))
 
 	s.addTool(
 		ms, mcp.NewTool(
@@ -389,10 +409,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"that issued them — a token cannot be handed off to a different "+
 					"session/connection to complete the delete.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
 			mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
-		), seam("delete_task", s.handleDeleteTask),
+		), seam(s, "delete_task", s.handleDeleteTask),
 		uuidArgs("task_id"),
 	)
 
@@ -412,7 +432,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
 			mcp.WithBoolean("confirm", mcp.Description("Set true on the second call to actually delete")),
 			mcp.WithString("deletion_token", mcp.Description("Token returned by the first call; required when confirm=true")),
-		), seam("delete_project", s.handleDeleteProject),
+		), seam(s, "delete_project", s.handleDeleteProject),
 		uuidArgs("project_id"),
 	)
 
@@ -429,7 +449,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"handoffs, work sessions, vision items) — only the project and task rows.",
 			),
 			mcp.WithString("project_id", mcp.Description("Project UUID to restore"), mcp.Required()),
-		), seam("restore_project", s.handleRestoreProject),
+		), seam(s, "restore_project", s.handleRestoreProject),
 		uuidArgs("project_id"),
 	)
 
@@ -440,11 +460,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Appends a new checklist item to a task. Returns the full updated checklist. "+
 					"Use to track sub-steps or acceptance criteria for a task.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("title", mcp.Description("Item title (max 500 chars)"), mcp.Required(), mcp.MaxLength(500)),
 			mcp.WithString("file_ref", mcp.Description("Optional file path reference (max 2000 chars)"), mcp.MaxLength(2000)),
 			mcp.WithString("notes", mcp.Description("Optional notes (max 2000 chars)"), mcp.MaxLength(2000)),
-		), seam("task_checklist_add_item", s.handleChecklistAddItem),
+		), seam(s, "task_checklist_add_item", s.handleChecklistAddItem),
 		uuidArgs("task_id"),
 	)
 
@@ -455,11 +475,11 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Partially updates a checklist item (done flag, title, notes, evidence_url). "+
 					"Returns the full updated checklist.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
 			mcp.WithBoolean("done", mcp.Description("Mark item done (true) or undone (false)"), mcp.Required()),
 			mcp.WithString("evidence_url", mcp.Description("Optional URL or note proving the item is done"), mcp.MaxLength(2000)),
-		), seam("task_checklist_toggle", s.handleChecklistToggle),
+		), seam(s, "task_checklist_toggle", s.handleChecklistToggle),
 		uuidArgs("task_id", "item_id"),
 	)
 
@@ -471,9 +491,9 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"for compatibility. Shorthand for marking a checklist item done=true and recording "+
 					"completed_at=now. Returns the full updated checklist.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("item_id", mcp.Description("Checklist item UUID"), mcp.Required()),
-		), seam("task_checklist_complete", s.handleChecklistComplete),
+		), seam(s, "task_checklist_complete", s.handleChecklistComplete),
 		uuidArgs("task_id", "item_id"),
 	)
 
@@ -485,8 +505,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"in_progress, completed, and cancelled tasks. Use list_tasks for "+
 					"filtered bulk retrieval.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
-		), seam("get_task", s.handleGetTask),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
+		), seam(s, "get_task", s.handleGetTask),
 		uuidArgs("task_id"),
 	)
 
@@ -501,12 +521,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 					"IMPORTANT: This tool MUST NOT call record_outcome or evaluate_outcome — "+
 					"outcome recording stays exclusively in those tools. Reopen→re-complete records no outcome.",
 			),
-			mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+			mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 			mcp.WithString("status",
 				mcp.Description("New status"),
 				mcp.Required(),
 				mcp.Enum("pending", "in_progress", "completed", "cancelled")),
-		), seam("set_task_status", s.handleSetTaskStatus),
+		), seam(s, "set_task_status", s.handleSetTaskStatus),
 		uuidArgs("task_id"),
 	)
 
@@ -520,7 +540,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"reconcile_merged_prs can auto-close the task on PR merge "+
 				"(sprint feature/gtd-enforce-server-side GTD-fix 8/12).",
 		),
-		mcp.WithString("task_id", mcp.Description("Task UUID"), mcp.Required()),
+		mcp.WithString("task_id", mcp.Description("Task UUID (accepts an 8+ char unique prefix)"), mcp.Required()),
 		mcp.WithString("branch_name",
 			mcp.Description("Optional git branch name to persist on the task (e.g. feature/my-feature). "+
 				"Pass this when you already know the branch so the task can be linked for auto-close.")),
@@ -538,7 +558,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	// reject a wholly-missing/empty task_id with "task_id is required" before
 	// the handler runs; only a malformed-but-non-empty task_id now reaches the
 	// hand-written uuid.Parse and its dynamic message.
-	), seam("begin_task", s.handleBeginTask))
+	), seam(s, "begin_task", s.handleBeginTask))
 }
 
 // Read-time bounds for db.Task/db.Project's free-text fields, applied by
@@ -767,6 +787,51 @@ func listPageBounds(rawLimit, rawOffset int32) (limit, offset int32) {
 // now an OBJECT rather than a bare array — the page is only honest if the
 // caller can see limit/offset/returned/has_more, and a truncated bare array
 // looks exactly like a complete one.
+// projectListItem is list_projects' wire row — [F0930-14]. Every db.Project
+// field is spelled out rather than embedding db.Project, mirroring
+// repoListItem's (tools_context.go) reasoning: an embedded struct that later
+// grows its own MarshalJSON would promote that method here and silently drop
+// description_truncated from the wire.
+type projectListItem struct {
+	ID                   uuid.UUID          `json:"id"`
+	GoalID               pgtype.UUID        `json:"goal_id"`
+	Name                 string             `json:"name"`
+	Title                string             `json:"title"`
+	Description          pgtype.Text        `json:"description"`
+	DescriptionTruncated bool               `json:"description_truncated,omitempty"`
+	Status               string             `json:"status"`
+	Area                 string             `json:"area"`
+	Priority             int32              `json:"priority"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	RepoName             pgtype.Text        `json:"repo_name"`
+}
+
+// toProjectListItem projects a wrapUntrustedProject'd row into the list_projects
+// wire shape, clipping Description a second time down to listDescriptionMaxRunes
+// — [F0930-14]. list_projects has no summary mode (unlike list_tasks), so this
+// is the only defense against one long-but-legitimate Description eating most
+// of listRuneBudget on its own (a risk flagged when this budget was designed).
+func toProjectListItem(p *db.Project) projectListItem {
+	desc, truncated := clipListDescription(p.Description)
+	return projectListItem{
+		ID:                   p.ID,
+		GoalID:               p.GoalID,
+		Name:                 p.Name,
+		Title:                p.Title,
+		Description:          desc,
+		DescriptionTruncated: truncated,
+		Status:               p.Status,
+		Area:                 p.Area,
+		Priority:             p.Priority,
+		CreatedAt:            p.CreatedAt,
+		UpdatedAt:            p.UpdatedAt,
+		WorkspaceID:          p.WorkspaceID,
+		RepoName:             p.RepoName,
+	}
+}
+
 func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) (*mcp.CallToolResult, error) {
 	limit, offset := listPageBounds(args.Limit, args.Offset)
 
@@ -782,16 +847,20 @@ func (s *Server) handleListProjects(ctx context.Context, args ListProjectsArgs) 
 	}
 	// make() with an explicit length: a nil slice marshals to JSON null, and
 	// list tools MUST return [].
-	out := make([]db.Project, len(projects))
+	out := make([]projectListItem, len(projects))
 	for i := range projects {
-		out[i] = *wrapUntrustedProject(&projects[i])
+		out[i] = toProjectListItem(wrapUntrustedProject(&projects[i]))
 	}
+	// [F0930-11] Rune-budget pass, same as list_tasks.
+	kept, truncatedByBudget := truncateListByRuneBudget(out, listRuneBudget)
+	hasMore = hasMore || truncatedByBudget
 	return jsonText(map[string]any{
-		"projects": out,
-		"returned": len(out),
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": hasMore,
+		"projects":            kept,
+		"returned":            len(kept),
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
 	})
 }
 
@@ -967,6 +1036,37 @@ func toTaskSummary(t db.Task) taskSummary {
 	return ts
 }
 
+// projectTaskListRows converts a fetched page of db.Task rows into
+// list_tasks' wire representation — compact taskSummary when summaryMode is
+// true, full (wrapUntrustedTask'd) db.Task otherwise — and applies the
+// shared rune budget ([F0930-11]). Split out of handleListTasks purely to
+// keep that function's cyclomatic complexity under the lint gate's
+// threshold; the projection logic and its ordering (summary branch first,
+// rune-budget pass last) are unchanged from what handleListTasks inlined
+// before this split.
+func projectTaskListRows(rows []db.Task, summaryMode bool) (tasks any, returned int, truncatedByBudget bool) {
+	if summaryMode {
+		summaries := make([]taskSummary, 0, len(rows))
+		for _, t := range rows {
+			summaries = append(summaries, toTaskSummary(t))
+		}
+		kept, truncated := truncateListByRuneBudget(summaries, listRuneBudget)
+		return kept, len(kept), truncated
+	}
+	if rows == nil {
+		rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
+	}
+	// U13 Phase B (tools_gtd.go:772): summary=false returns full db.Task
+	// rows, so each one goes through wrapUntrustedTask the same as
+	// get_task's single-record read (line ~793).
+	wrapped := make([]db.Task, len(rows))
+	for i := range rows {
+		wrapped[i] = *wrapUntrustedTask(&rows[i])
+	}
+	kept, truncated := truncateListByRuneBudget(wrapped, listRuneBudget)
+	return kept, len(kept), truncated
+}
+
 func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.CallToolResult, error) {
 	// status: enum-membership (when present) already enforced by the seam
 	// (list_tasks' status arg declares mcp.Enum(...) at registration);
@@ -976,13 +1076,17 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		rawStatus = "active"
 	}
 
-	// limit: <=0 → 50; clamp to 200
+	// limit: <=0 → 50; clamp to 100 — [F0930-12] tightened from 200 (D5): a
+	// 200-row page of full-size rows was the measured repro for the
+	// rune-budget bug this dispatch fixes, so the
+	// row-count cap moved down alongside the new budget rather than relying
+	// on the budget alone to catch it.
 	limit := int(args.Limit)
 	if limit <= 0 {
 		limit = 50
 	}
-	if limit > 200 {
-		limit = 200
+	if limit > 100 {
+		limit = 100
 	}
 
 	// offset: <0 → 0
@@ -1019,12 +1123,29 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		}
 	}
 
+	// [F0930-20] q: trim, then 0 < len < 2 -> reject ("too short"); empty
+	// after trim -> no filter (byte-identical to today for existing
+	// callers); non-empty -> tag-noise screen, same pattern as
+	// checkDecisionNoise/record_outcome's notes. Passed through AS-IS
+	// (not lowercased here) — case-folding happens in SQL (PG ILIKE,
+	// SQLite's driver-default case-insensitive LIKE).
+	q := strings.TrimSpace(args.Q)
+	if q != "" {
+		if len([]rune(q)) < 2 {
+			return mcp.NewToolResultError("q must be at least 2 characters"), nil
+		}
+		if err := sanitize.ValidateNoTagNoise(q); err != nil {
+			return inputErrorResult("invalid q", err), nil
+		}
+	}
+
 	f := gtd.TaskFilter{
 		ProjectID: args.ProjectID,
 		Status:    rawStatus,
 		Limit:     effLimit,
 		Offset:    offset,
 		Area:      args.Area,
+		Q:         q,
 	}
 	rows, err := s.gtd.TasksFiltered(ctx, f)
 	if err != nil {
@@ -1036,35 +1157,25 @@ func (s *Server) handleListTasks(ctx context.Context, args ListTasksArgs) (*mcp.
 		rows = rows[:limit]
 	}
 
-	var tasks any
-	if summaryMode {
-		summaries := make([]taskSummary, 0, len(rows))
-		for _, t := range rows {
-			summaries = append(summaries, toTaskSummary(t))
-		}
-		tasks = summaries
-	} else {
-		if rows == nil {
-			rows = []db.Task{} // list tools MUST return [] not null (a nil slice marshals to JSON null)
-		}
-		// U13 Phase B (tools_gtd.go:772): summary=false returns full db.Task
-		// rows, so each one goes through wrapUntrustedTask the same as
-		// get_task's single-record read (line ~793).
-		wrapped := make([]db.Task, len(rows))
-		for i := range rows {
-			wrapped[i] = *wrapUntrustedTask(&rows[i])
-		}
-		tasks = wrapped
-	}
+	// [F0930-11] The row-count page is further trimmed to fit
+	// listRuneBudget; truncatedByBudget folds into has_more (a caller that
+	// only checks has_more still knows to re-page) but is also reported
+	// separately so a caller can tell "there's a next page" apart from "this
+	// page itself was too big, lower limit". Projection split into
+	// projectTaskListRows to keep this function's cyclomatic complexity under
+	// the lint gate's threshold — behavior unchanged.
+	tasks, returned, truncatedByBudget := projectTaskListRows(rows, summaryMode)
+	hasMore = hasMore || truncatedByBudget
 
 	return jsonText(map[string]any{
-		"tasks":    tasks,
-		"returned": len(rows),
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": hasMore,
-		"status":   rawStatus,
-		"summary":  summaryMode,
+		"tasks":               tasks,
+		"returned":            returned,
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
+		"status":              rawStatus,
+		"summary":             summaryMode,
 	})
 }
 
@@ -1336,6 +1447,38 @@ func (s *Server) applyArtifactSideEffects(ctx context.Context, id uuid.UUID, art
 	return updated
 }
 
+// goalListItem is list_goals' wire row — [F0930-14]. Same "spell out every
+// field, never embed" reasoning as projectListItem above.
+type goalListItem struct {
+	ID                   uuid.UUID          `json:"id"`
+	Title                string             `json:"title"`
+	Description          pgtype.Text        `json:"description"`
+	DescriptionTruncated bool               `json:"description_truncated,omitempty"`
+	Status               string             `json:"status"`
+	Area                 pgtype.Text        `json:"area"`
+	DueDate              pgtype.Timestamptz `json:"due_date"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+}
+
+// toGoalListItem is toProjectListItem's sibling for db.Goal — [F0930-14].
+func toGoalListItem(g *db.Goal) goalListItem {
+	desc, truncated := clipListDescription(g.Description)
+	return goalListItem{
+		ID:                   g.ID,
+		Title:                g.Title,
+		Description:          desc,
+		DescriptionTruncated: truncated,
+		Status:               g.Status,
+		Area:                 g.Area,
+		DueDate:              g.DueDate,
+		CreatedAt:            g.CreatedAt,
+		UpdatedAt:            g.UpdatedAt,
+		WorkspaceID:          g.WorkspaceID,
+	}
+}
+
 // handleListGoals returns one page of active goals — [F170-05], same shape and
 // same reasoning as handleListProjects above.
 func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.CallToolResult, error) {
@@ -1351,12 +1494,21 @@ func (s *Server) handleListGoals(ctx context.Context, args ListGoalsArgs) (*mcp.
 	}
 	// wrapUntrustedGoals is nil-safe and always returns a non-nil slice
 	// ([F160-03]), so the [] -not-null contract holds without a guard here.
+	wrapped := wrapUntrustedGoals(goals) // U13 Phase B (tools_gtd.go:1026)
+	out := make([]goalListItem, len(wrapped))
+	for i := range wrapped {
+		out[i] = toGoalListItem(&wrapped[i])
+	}
+	// [F0930-11] Rune-budget pass, same as list_tasks/list_projects.
+	kept, truncatedByBudget := truncateListByRuneBudget(out, listRuneBudget)
+	hasMore = hasMore || truncatedByBudget
 	return jsonText(map[string]any{
-		"goals":    wrapUntrustedGoals(goals), // U13 Phase B (tools_gtd.go:1026)
-		"returned": len(goals),
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": hasMore,
+		"goals":               kept,
+		"returned":            len(kept),
+		"limit":               limit,
+		"offset":              offset,
+		"has_more":            hasMore,
+		"truncated_by_budget": truncatedByBudget,
 	})
 }
 

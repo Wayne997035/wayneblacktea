@@ -14,7 +14,7 @@ import (
 // callBeginTask invokes begin_task (seam + handleBeginTask) with the given args.
 func callBeginTask(t *testing.T, s *Server, args map[string]any) *mcpmsg.CallToolResult {
 	t.Helper()
-	return callTool(t, "begin_task", args, s.handleBeginTask)
+	return callTool(t, s, "begin_task", args, s.handleBeginTask)
 }
 
 // beginTaskResponse mirrors the MCP envelope.

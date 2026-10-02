@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/likeescape"
 	"github.com/Wayne997035/wayneblacktea/internal/pgconv"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
@@ -403,11 +404,23 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 	if f.UpdatedSince != nil {
 		updatedSinceArg = *f.UpdatedSince
 	}
+	// [F0930-20] likePattern is built once in Go (empty Q → empty pattern,
+	// the "$N::text = '' OR ..." guard below then no-ops exactly like area's
+	// existing empty-string convention) and bound as one parameter — never
+	// string-concatenated into the SQL text itself. likeescape.Escape (D15,
+	// the same shared helper skill/atom already use on both backends) backslash-
+	// escapes \, % and _ in Q so a caller's literal wildcard character can
+	// never act as one.
+	var likePattern string
+	if f.Q != "" {
+		likePattern = "%" + likeescape.Escape(f.Q) + "%"
+	}
 	// The area predicate is appended as the LAST positional parameter of each
 	// branch rather than renumbering the existing ones — renumbering three
 	// near-identical queries by hand is exactly the edit that silently swaps
 	// two placeholders. Empty string means "every area", so existing callers
-	// are unaffected without needing a nil-able type.
+	// are unaffected without needing a nil-able type. Q follows the same
+	// append-only convention, one slot after area.
 	//
 	// area is selected so every task object carries its classification,
 	// consistent across all read paths.
@@ -420,9 +433,10 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
 			  AND ($6::text = '' OR area = $6)
+			  AND ($7::text = '' OR title ILIKE $7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	case "all":
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -430,9 +444,10 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
 			  AND ($5::timestamptz IS NULL OR updated_at >= $5)
 			  AND ($6::text = '' OR area = $6)
+			  AND ($7::text = '' OR title ILIKE $7 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $3 OFFSET $4`
-		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
+		rows, err = s.dbtx.Query(ctx, q, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM tasks
@@ -441,9 +456,11 @@ func (s *Store) queryFilteredTasks(ctx context.Context, selectCols string, f Tas
 			  AND ($3::uuid IS NULL OR workspace_id = $3)
 			  AND ($6::timestamptz IS NULL OR updated_at >= $6)
 			  AND ($7::text = '' OR area = $7)
+			  AND ($8::text = '' OR title ILIKE $8 ESCAPE '\')
 			ORDER BY priority ASC, created_at ASC
 			LIMIT $4 OFFSET $5`
-		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID, f.Limit, f.Offset, updatedSinceArg, f.Area)
+		rows, err = s.dbtx.Query(ctx, q, f.Status, pgconv.ToUUID(f.ProjectID), s.workspaceID,
+			f.Limit, f.Offset, updatedSinceArg, f.Area, likePattern)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing filtered tasks: %w", err)
@@ -904,13 +921,18 @@ func (a *pgBeginTaskAdapter) BeginTx(ctx context.Context) error {
 	return nil
 }
 
-// GuardedUpdate uses BeginTaskStatus (AND status != 'in_progress' guard) to
-// prevent duplicate activity_log rows when two concurrent calls race.
-// ErrNoRows here means either not found OR already in_progress.
+// GuardedUpdate uses BeginTaskStatus (AND status != 'in_progress' guard, AND
+// [F0930-10] an assignee-blankness guard closing the same write-time TOCTOU
+// window SEC-196-02 closed for UpdateTaskStatusGuarded) to prevent duplicate
+// activity_log rows when two concurrent calls race and to reject a
+// concurrent assignee clear between ReadExisting and this write. ErrNoRows
+// here means not found, already in_progress, OR blank assignee —
+// ResolveGuardBlocked re-reads to tell them apart.
 func (a *pgBeginTaskAdapter) GuardedUpdate(ctx context.Context) (bool, error) {
 	task, err := a.qtx.BeginTaskStatus(ctx, db.BeginTaskStatusParams{
 		ID:          a.id,
 		WorkspaceID: uuid.UUID(a.s.workspaceID.Bytes),
+		SpaceChars:  AssigneeSpaceChars,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -925,8 +947,9 @@ func (a *pgBeginTaskAdapter) GuardedUpdate(ctx context.Context) (bool, error) {
 // ResolveGuardBlocked re-reads (via the Store's outer dbtx, not the open tx —
 // Postgres's connection pool has no single-writer constraint, so this read
 // alongside a still-open tx is safe) to distinguish "already in_progress"
-// (idempotent) from "not found". It only commits the (empty, no-op) tx in the
-// idempotent case; the not-found case falls through to the deferred Rollback.
+// (idempotent) from "not found" from (as of [F0930-10]) "blank assignee". It
+// only commits the (empty, no-op) tx in the idempotent case; the other two
+// cases fall through to the deferred Rollback.
 func (a *pgBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.Task, error) {
 	reread, err := a.s.getTaskByID(ctx, a.id)
 	if err != nil {
@@ -937,6 +960,19 @@ func (a *pgBeginTaskAdapter) ResolveGuardBlocked(ctx context.Context) (*db.Task,
 			return nil, fmt.Errorf("%w", err) // context added one level up by BeginTaskOrchestration
 		}
 		return reread, nil
+	}
+	// [F0930-10] status != in_progress is already established above, so the
+	// only remaining reason GuardedUpdate's WHERE clause could have matched
+	// zero rows for a row that still exists is the assignee clause. Returned
+	// bare (not wrapped) — BeginTaskOrchestration's own wrap
+	// ("resolve guard-blocked: %w") is the only wrap this error gets, per
+	// this adapter's existing not-found-case convention above.
+	rereadAssignee := ""
+	if reread.Assignee.Valid {
+		rereadAssignee = reread.Assignee.String
+	}
+	if assigneeErr := RequireAssigneeForInProgress(rereadAssignee, TaskStatusInProgress); assigneeErr != nil {
+		return nil, assigneeErr
 	}
 	return nil, ErrNotFound
 }
@@ -1055,16 +1091,51 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id uuid.UUID, status TaskS
 	row, err := s.q.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
 		ID:          id,
 		Status:      string(status),
+		SpaceChars:  AssigneeSpaceChars,
 		WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// [F0930-10/7abfae44] Zero rows affected means either "not
+			// found" or (only when status == in_progress, since the SQL
+			// clause is a no-op otherwise) "assignee went blank between the
+			// pre-read above and this write" — the same write-time TOCTOU
+			// window SEC-196-02 closed for UpdateTaskStatusGuarded.
+			if status == TaskStatusInProgress {
+				reread, rereadErr := s.getTaskByID(ctx, id)
+				if rereadErr != nil {
+					return nil, rereadErr // ErrNotFound already wrapped by getTaskByID
+				}
+				rereadAssignee := ""
+				if reread.Assignee.Valid {
+					rereadAssignee = reread.Assignee.String
+				}
+				if assigneeErr := RequireAssigneeForInProgress(rereadAssignee, status); assigneeErr != nil {
+					return nil, fmt.Errorf("updating task %s status: %w", id, assigneeErr)
+				}
+			}
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("updating task %s status: %w", id, err)
 	}
 	return &row, nil
 }
+
+// updateTaskStatusGuardedHookKey is a private context key used ONLY by this
+// package's own tests (via WithUpdateTaskStatusGuardedTestHook in
+// store_postgres_test.go) to run a synchronous callback between
+// UpdateTaskStatusGuarded's pre-read and its guarded SQL UPDATE. This is the
+// only deterministic way to exercise the reread branch's status-vs-assignee
+// ordering fix ([F0930-07]) in a unit test: the pre-read above already
+// rejects any assignee that is blank AT PRE-READ TIME with the identical
+// wrapped error, so a blank assignee reaching the reread branch below can
+// only happen via a write that lands strictly between the two statements —
+// unreachable from any purely synchronous call without this hook, and a
+// real goroutine race would be inherently flaky. ctx.Value lookup misses
+// (returns nil) on every production code path.
+type updateTaskStatusGuardedHookKeyType struct{}
+
+var updateTaskStatusGuardedHookKey = updateTaskStatusGuardedHookKeyType{}
 
 // UpdateTaskStatusGuarded sets the status of a task by ID, but only when the
 // row's current status still equals expectedCurrentStatus — a conditional
@@ -1098,6 +1169,10 @@ func (s *Store) UpdateTaskStatusGuarded(
 		}
 	}
 
+	if hook, ok := ctx.Value(updateTaskStatusGuardedHookKey).(func()); ok && hook != nil {
+		hook()
+	}
+
 	row, err := s.q.UpdateTaskStatusGuarded(ctx, db.UpdateTaskStatusGuardedParams{
 		ID:             id,
 		Status:         string(newStatus),
@@ -1119,6 +1194,15 @@ func (s *Store) UpdateTaskStatusGuarded(
 			reread, rereadErr := s.getTaskByID(ctx, id)
 			if rereadErr != nil {
 				return nil, rereadErr // ErrNotFound already wrapped by getTaskByID
+			}
+			// [F0930-07] Status drift is checked BEFORE assignee: if the
+			// row's real status has already moved away from
+			// expectedCurrentStatus, that is a genuine conflict regardless
+			// of assignee state — a concurrent status change must never be
+			// misreported as "assignee required" just because the row also
+			// happens to have a blank assignee.
+			if reread.Status != string(expectedCurrentStatus) {
+				return nil, ErrConflict
 			}
 			if newStatus == TaskStatusInProgress {
 				rereadAssignee := ""
@@ -1175,6 +1259,38 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	return &t, nil
 }
 
+// FindTaskIDsByPrefix returns up to limit tasks whose id starts with prefix,
+// scoped to the configured workspace, ordered by id for a deterministic
+// candidate set across repeat calls and across backends [F0930-17]. Hand-rolled
+// (not sqlc) like getTaskByID/TasksFiltered above, over the same table.
+//
+// prefix is the caller's own canonicalized standard id-text prefix (hex
+// digits and dashes) — neither character is a LIKE wildcard, so no
+// LIKE-escaping is needed here (unlike Q above, which can contain a
+// caller-supplied % or _).
+func (s *Store) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]TaskIDTitle, error) {
+	const q = `SELECT id, title FROM tasks
+		WHERE id::text LIKE $1 || '%' AND ($2::uuid IS NULL OR workspace_id = $2)
+		ORDER BY id LIMIT $3`
+	rows, err := s.dbtx.Query(ctx, q, prefix, s.workspaceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("finding tasks by id prefix %q: %w", prefix, err)
+	}
+	defer rows.Close()
+	var out []TaskIDTitle
+	for rows.Next() {
+		var t TaskIDTitle
+		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+			return nil, fmt.Errorf("scanning task id prefix candidate: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task id prefix candidates: %w", err)
+	}
+	return out, nil
+}
+
 // coalesceString returns ptr if non-nil, otherwise fallback.
 func coalesceString(ptr *string, fallback string) string {
 	if ptr != nil {
@@ -1193,8 +1309,10 @@ func coalesceInt32(ptr *int32, fallback int32) int32 {
 
 // resolveAssigneeForUpdate merges and validates the assignee column for an
 // UpdateTask write in one pass: p.Assignee == nil preserves existing; a
-// non-empty NEW value must resolve through NormalizeActor (P6.7 domain-layer
-// gate) before merging in; empty string is the explicit-clear case. The
+// NEW value that is non-empty after TrimSpace must resolve through
+// NormalizeActor (P6.7 domain-layer gate) before merging in; a TrimSpace-empty
+// value (literal "" or any whitespace-only string — tab, NBSP, ideographic
+// space, ...) is the explicit-clear case [F0930-08]. The
 // merged result is then checked against RequireAssigneeForInProgress using
 // status (already merged by the caller), rejecting a write that would leave
 // the row in_progress with no resolved assignee. Extracted from UpdateTask —
@@ -1210,6 +1328,8 @@ func resolveAssigneeForUpdate(p *UpdateTaskParams, existingAssignee pgtype.Text,
 				return pgtype.Text{}, err
 			}
 			newAssignee = normalized
+		} else {
+			newAssignee = "" // [F0930-08] D7: whitespace-only input is an explicit clear, same as ""
 		}
 		assignee = pgconv.ToText(newAssignee)
 	}
